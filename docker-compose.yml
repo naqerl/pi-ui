@@ -1,0 +1,26 @@
+# Documentation that runs: the two host paths below are the complete runtime state.
+# The image itself contains no credentials and no extensions.
+services:
+  pi-ui:
+    image: ghcr.io/naqerl/pi-ui:${PI_UI_TAG:-latest}
+    build:
+      context: .
+    ports:
+      # The container always listens on 8787; change only the host side with PORT.
+      - "${PORT:-8787}:8787"
+    environment:
+      PORT: "8787"
+      PI_CWD: /workspace
+      PI_CODING_AGENT_DIR: /home/pi/.pi/agent
+      # Set to "1" to boot without loading any extensions from the agent dir.
+      # PI_UI_NO_EXTENSIONS: "1"
+      # Optional: split the transcript out of <workspace>/data (must be inside /workspace to persist).
+      # PI_DATA_DIR: /workspace/data
+    volumes:
+      # One directory for everything a session produces: pi's working tree plus
+      # <mount>/data/session.jsonl. Survives container replacement.
+      - "${PI_WORK_DIR:-./work}:/workspace"
+      # Read-write because pi updates state/history here. auth.json and the extension
+      # list (settings.json, extensions/, installed pi packages) come from this mount.
+      - "${PI_AGENT_DIR:-$HOME/.pi/agent}:/home/pi/.pi/agent"
+    restart: unless-stopped
