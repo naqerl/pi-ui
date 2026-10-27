@@ -51,18 +51,18 @@ async function main() {
     return;
   }
 
-  const name = requested.startsWith("mcp__web__") ? requested : `mcp__web__${requested}`;
-  const entry = registry
-    .snapshot()
-    .tools()
-    .find((candidate) => candidate.tool.name === name);
-  if (entry === undefined) {
-    console.error(`unknown tool: ${name}`);
-    process.exitCode = 1;
-    return;
-  }
-
   try {
+    const name = requested.startsWith("mcp__web__") ? requested : `mcp__web__${requested}`;
+    const entry = registry
+      .snapshot()
+      .tools()
+      .find((candidate) => candidate.tool.name === name);
+    if (entry === undefined) {
+      console.error(`unknown tool: ${name}`);
+      process.exitCode = 1;
+      return;
+    }
+
     if (killChild) {
       const pid = webTools.pid;
       if (pid === undefined) throw new Error("the web MCP child has no process ID");

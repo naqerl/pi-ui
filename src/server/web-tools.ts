@@ -179,7 +179,9 @@ function createRegistration(tool: McpTool, bridge: WebToolsBridge): ToolRegistra
     description: tool.description ?? `Run the ${tool.name} web tool.`,
     parameters: jsonSchemaToTypeBox(tool.inputSchema),
     deferred: true,
-    callers: ["tools"],
+    // Deferred keeps the tools out of the prompt, but `tool_search` only sees deferred tools the
+    // model may call; `tools` stays here for nested calls. Without `model`, search finds nothing.
+    callers: ["model", "tools"],
     async execute(args): Promise<ToolExecutionResult> {
       return bridge.call(tool.name, args as Record<string, unknown>);
     },
