@@ -8,9 +8,7 @@ import {
   type CompactionPolicy,
   type Conversation,
   type ConversationId,
-  createRegistry,
   DEFAULT_COMPACTION_POLICY,
-  defineExtension,
   type EntryRecord,
   type Harness,
   Harness as HarnessImpl,
@@ -22,7 +20,6 @@ import {
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import type {
   ActivityItem,
   ChatMessage,
@@ -30,7 +27,9 @@ import type {
   ToolActivity,
   UsageSummary,
 } from "../shared/types.js";
+import { createAppRegistry } from "./app-registry.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
+import type { WebToolsBridge } from "./web-tools.js";
 
 export const SESSION_CONTEXT: Context = BACKGROUND_CONTEXT;
 
@@ -56,6 +55,7 @@ export interface DurableSessionBoot {
   readonly currentPath: string;
   readonly resumed: boolean;
   readonly interrupted: boolean;
+  readonly webTools: WebToolsBridge | undefined;
 }
 
 export async function openDurableSession(
@@ -67,13 +67,7 @@ export async function openDurableSession(
   await mkdir(dataDir, { recursive: true });
 
   const storage = await openNodeSqliteStorage(databasePath);
-  const registry = createRegistry();
-  registry.install(
-    defineExtension({
-      name: "pi-ui-coding-tools",
-      tools: createCodingTools().tools ?? [],
-    }),
-  );
+  const { registry, webTools } = await createAppRegistry();
 
   const harness = await HarnessImpl.open(
     storage,
@@ -104,6 +98,7 @@ export async function openDurableSession(
     currentPath,
     resumed,
     interrupted,
+    webTools,
   };
 }
 

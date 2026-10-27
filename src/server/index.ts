@@ -211,7 +211,11 @@ const server = serve({ fetch: app.fetch, port }, (info) => {
   if (boot.interrupted) {
     console.log("previous run was interrupted; partial output was kept and the turn is idle");
   }
-  console.log("tools: read, bash, edit, write (no extensions or MCP)");
+  console.log(
+    boot.webTools === undefined
+      ? "tools: read, bash, edit, write (web tools unavailable)"
+      : `tools: read, bash, edit, write + ${boot.webTools.tools.length} web MCP tools`,
+  );
 });
 
 let shuttingDown = false;
@@ -220,6 +224,7 @@ async function shutdown(): Promise<void> {
   shuttingDown = true;
   try {
     await chat.close();
+    await boot.webTools?.close();
     await boot.harness.close(SESSION_CONTEXT);
   } catch (error) {
     console.error("[pi] shutdown failed", error);
