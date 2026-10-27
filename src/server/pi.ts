@@ -1,96 +1,53 @@
-import { basename, relative } from "node:path";
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
   createAgentSession,
   DefaultResourceLoader,
   getAgentDir,
-  type SessionEntry,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 
 const TOOLS = ["read", "bash", "edit", "write"];
 
-export type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
-
-type LoadedExtension = ReturnType<DefaultResourceLoader["getExtensions"]>["extensions"][number];
-
-export interface PiSessionBoot {
-  session: PiSession;
-  extensions: string[];
-}
-
-function extensionLabel(extension: LoadedExtension, agentDir: string): string {
-  if (extension.path.startsWith("builtin:")) return extension.path;
-  const withinAgentDir = relative(agentDir, extension.resolvedPath);
-  if (withinAgentDir.length > 0 && !withinAgentDir.startsWith("..")) return withinAgentDir;
-  return basename(extension.resolvedPath);
-}
-
-function findModel(session: PiSession, spec: string) {
-  const runtime = session.modelRuntime;
-  const slash = spec.indexOf("/");
-  if (slash > 0) {
-    return runtime.getModel(spec.slice(0, slash), spec.slice(slash + 1));
-  }
-
-  const models = runtime.getModels().filter((model) => model.id === spec);
-  const currentProvider = session.model?.provider;
-  return models.find((model) => model.provider === currentProvider) ?? models[0];
-}
-
-export async function createPiSession(
+/**
+ * Build the system prompt with the same coding-agent path as before the move to
+ * pi-durable, then keep it as the conversation's durable `instructions`.
+ *
+ * `src/server/pi.ts` previously let `createAgentSession` build this prompt. The
+ * durable harness renders instructions as the final prompt section, so only the
+ * session layer changed; the prompt text still comes from the installed coding
+ * agent and includes its tool descriptions, docs pointers, cwd, project context,
+ * and skills.
+ */
+export async function buildPiSystemPrompt(
   cwd: string,
-  history: SessionEntry[],
-): Promise<PiSessionBoot> {
+  modelRuntime: ModelRuntime,
+): Promise<string> {
   const agentDir = getAgentDir();
-  // Extensions come from the agent dir, which is mounted from the host. PI_UI_NO_EXTENSIONS=1
-  // restores the extension-free behaviour for setups that need an isolated agent.
   const resourceLoader = new DefaultResourceLoader({
     cwd,
     agentDir,
-    noExtensions: process.env.PI_UI_NO_EXTENSIONS === "1",
+    // The durable registry owns tools now. No coding-agent extensions, MCP, or
+    // codemode are loaded into this prompt-building session.
+    noExtensions: true,
     disabledBuiltinExtensions: ["mcp", "codemode", "tool_search"],
   });
   await resourceLoader.reload();
 
-  const loadedExtensions = resourceLoader.getExtensions();
-  for (const failure of loadedExtensions.errors) {
-    console.warn(`[pi] extension failed to load: ${failure.path}: ${failure.error}`);
-  }
-  const extensions = loadedExtensions.extensions.map((extension) =>
-    extensionLabel(extension, agentDir),
-  );
-
-  const sessionManager = SessionManager.inMemory(cwd, {}, history);
-  const { session, modelFallbackMessage } = await createAgentSession({
+  const sessionManager = SessionManager.inMemory(cwd, {});
+  const { session } = await createAgentSession({
     cwd,
     agentDir,
     sessionManager,
     resourceLoader,
+    modelRuntime,
     tools: TOOLS,
   });
 
-  if (modelFallbackMessage) {
-    console.warn(`[pi] ${modelFallbackMessage}`);
+  try {
+    return session.systemPrompt;
+  } finally {
+    session.dispose();
   }
-
-  const requestedModel = process.env.PI_MODEL?.trim();
-  if (requestedModel) {
-    const model = findModel(session, requestedModel);
-    if (!model) {
-      console.warn(`[pi] PI_MODEL="${requestedModel}" not found; using the configured default`);
-    } else if (session.model?.provider === model.provider && session.model.id === model.id) {
-      // Already the resolved default for this environment.
-    } else {
-      try {
-        await session.setModel(model);
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        console.warn(`[pi] could not select PI_MODEL="${requestedModel}": ${reason}`);
-      }
-    }
-  }
-
-  return { session, extensions };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -118,9 +75,20 @@ export function formatToolResult(result: unknown): string {
     if (parts.length > 0) return parts.join("\n");
   }
   if (isRecord(result) && typeof result.output === "string") return result.output;
+  if (isRecord(result) && Array.isArray(result.output)) return formatToolResult(result.output);
   try {
     return JSON.stringify(result, null, 2);
   } catch {
     return String(result);
+  }
+}
+
+export function formatToolDetails(details: unknown): string | undefined {
+  if (details === undefined || details === null) return undefined;
+  if (typeof details === "string") return details;
+  try {
+    return JSON.stringify(details, null, 2);
+  } catch {
+    return String(details);
   }
 }

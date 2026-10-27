@@ -1,8 +1,8 @@
 # pi-ui
 
-A minimal, single-conversation web UI for the [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) coding agent, with one persistent transcript and no session management. It installs as a PWA and accepts text, titles, and URLs from the native share sheet on platforms that support Web Share Target.
+A minimal, single-conversation web UI for the [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) coding agent, with one durable conversation and no session management. It installs as a PWA and accepts text, titles, and URLs from the native share sheet on platforms that support Web Share Target.
 
-It ships as `ghcr.io/naqerl/pi-ui`. The container has no credentials and no extensions baked in: your real pi agent directory is bind-mounted at runtime, so the UI uses your `auth.json`, your extension list, and your installed pi packages. One host directory holds pi's working tree together with the transcript, so a whole session survives container replacement.
+It ships as `ghcr.io/naqerl/pi-ui`. The container has no credentials baked in: your real pi agent directory is bind-mounted at runtime, so the UI uses your `auth.json` and the model catalog configured there. The conversation is stored in SQLite by `@earendil-works/pi-durable`; one host directory holds pi's working tree together with that database, so a whole session survives container replacement.
 
 ## Quick start (local)
 
@@ -42,14 +42,14 @@ PI_WORK_DIR=$HOME/pi-session PI_AGENT_DIR=$HOME/.pi/agent PORT=9000 docker compo
 
 ### What comes from the mounts
 
-| Host mount                         | Container path       | What lives there                                                                                                                                                                                      |
-| ---------------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `${PI_WORK_DIR:-./work}`           | `/workspace`         | pi's working tree, everything a session creates, and the transcript at `data/session.jsonl`. This is the single directory that backs a whole session.                                                 |
-| `${PI_AGENT_DIR:-$HOME/.pi/agent}` | `/home/pi/.pi/agent` | Your real pi state: `auth.json`, `settings.json` (including the enabled extension list), `extensions/`, installed pi packages, and pi's own history/state. Mounted read-write because pi writes here. |
+| Host mount                         | Container path       | What lives there                                                                                                                                                          |
+| ---------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `${PI_WORK_DIR:-./work}`           | `/workspace`         | pi's working tree, everything a session creates, and the durable conversation at `data/pi.sqlite3`. This is the single directory that backs a whole session.              |
+| `${PI_AGENT_DIR:-$HOME/.pi/agent}` | `/home/pi/.pi/agent` | Your real pi state: `auth.json`, `settings.json`, optional model overrides, installed pi packages, and pi's own history/state. Mounted read-write because pi writes here. |
 
-The transcript is not a separate mount. It is created inside the workspace mount, so replacing the container keeps both the files pi worked on and the conversation that produced them.
+The database is not a separate mount. It is created inside the workspace mount, so replacing the container keeps both the files pi worked on and the conversation that produced them.
 
-The image contains no `auth.json`, no API keys, and no extensions. They reach the process only through the agent-directory mount.
+The image contains no `auth.json` and no API keys. Credentials reach the process only through the agent-directory mount.
 
 ## Configuration
 
@@ -57,14 +57,15 @@ The image contains no `auth.json`, no API keys, and no extensions. They reach th
 | --------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------- |
 | `PORT`                | HTTP port for the server.                                                                               | `8787`                       |
 | `PI_CWD`              | Working directory pi operates in. Must exist or the server refuses to start.                            | `process.cwd()`              |
-| `PI_DATA_DIR`         | Directory for `session.jsonl`. Relative paths resolve against `PI_CWD`; absolute paths are used as-is.  | `<PI_CWD>/data`              |
+| `DATA_DIR`            | Directory for `pi.sqlite3` and `current.json`. Relative paths resolve against `PI_CWD`.                 | `<PI_CWD>/data`              |
 | `PI_MODEL`            | Model to select, as `provider/model-id` or a model id.                                                  | pi's configured default      |
 | `PI_CODING_AGENT_DIR` | pi configuration/auth directory. In the image this is `/home/pi/.pi/agent`, bind-mounted from the host. | pi's `getAgentDir()` default |
-| `PI_UI_NO_EXTENSIONS` | Set to `1` to boot without loading any extensions from the agent directory.                             | unset                        |
 
-The transcript is stored at `<PI_DATA_DIR>/session.jsonl` (by default `<PI_CWD>/data/session.jsonl`), one JSON object per line. The directory is created on first write and is intentionally git-ignored. History is replayed into the in-memory pi session on startup.
+The durable conversation is stored at `<DATA_DIR>/pi.sqlite3` (by default `<PI_CWD>/data/pi.sqlite3`). `<DATA_DIR>/current.json` records the single current conversation ID. On boot the server resumes that conversation when the database still has it; otherwise it creates a new one and rewrites the file. The directory is created on first boot and is intentionally git-ignored.
 
-On boot the server logs the working directory, the transcript path, and the loaded extension state, for example `extensions: 3 (extensions/hello.ts, @scope/package, builtin:…)`. With `PI_UI_NO_EXTENSIONS=1`, or when the agent directory has no extensions enabled, it prints `extensions: none`. The built-in `mcp`, `codemode`, and `tool_search` extensions stay disabled in both modes.
+If the process is killed during a turn, the next boot keeps the committed transcript and marks the unfinished turn `interrupted` in `/api/state`. It does not replay the turn token by token; the composer accepts the next message instead.
+
+On boot the server logs the working directory, database path, conversation ID, whether it was resumed, and whether the previous run was interrupted. It also logs the selected model, or a clear warning when no credentials are available. The registry contains exactly `read`, `bash`, `edit`, and `write`; pi extensions, MCP, tool search, and codemode are not loaded.
 
 ## Install and share
 
@@ -91,13 +92,13 @@ GHCR creates a new package as private on first push. Set the `pi-ui` package's v
 ## What this deliberately does not do
 
 - No chat list, conversation titles, create/delete/switch, or multiple sessions.
-- No accounts, authentication, telemetry, analytics, or database.
+- No accounts, authentication, telemetry, or analytics.
 - No model picker, working-directory picker, settings page, or configuration UI.
 - No attachments, file browser, markdown editor, message editing, or retry controls.
-- No MCP servers, tool search, or codemode built-in extensions. Extensions you enable in the mounted agent directory are loaded; `PI_UI_NO_EXTENSIONS=1` turns them all off.
+- No MCP servers, tool search, codemode, or coding-agent extensions. The durable tool registry is exactly `read`, `bash`, `edit`, and `write`.
 - No unit tests, test framework, or end-to-end browser harness.
 - No markdown rendering, syntax highlighting, syntax-aware code blocks, or rich tool output in the transcript.
 
 ## SDK notes
 
-The server uses the documented pi SDK directly: `createAgentSession`, `SessionManager.inMemory`, `DefaultResourceLoader`, `getAgentDir`, `session.prompt`, `session.abort`, and the documented session event stream. No SDK APIs are invented. `DefaultResourceLoader` reads extensions, settings, skills, and prompts from the agent directory; its built-in `mcp`, `codemode`, and `tool_search` extensions are disabled explicitly. Because the SDK exposes agent events rather than a browser protocol, `src/server/sse.ts` is the single adapter that maps those events to the SSE messages described above; persistence and history replay live in `src/server/store.ts`. On startup the JSONL transcript is replayed into a fresh in-memory session so the next run has the prior conversation as context. `PI_MODEL` selection is best-effort: if the requested model cannot be selected (for example, because its provider has no API key), the server warns and keeps the configured default instead of failing to boot.
+The session layer is `@earendil-works/pi-durable` over `openNodeSqliteStorage()` at `<DATA_DIR>/pi.sqlite3`. User input goes through `Conversation.submit()`; streaming comes from `watchEvents()` and is adapted to the same SSE event names in `src/server/chat-service.ts`. The coding tools come from `createCodingTools()` and are installed with `createRegistry()` and `defineExtension()`. The model catalog is built with the installed coding agent's `ModelRuntime.create()`, following `dist/core/model-runtime.js`: it reads `auth.json`, optional `models-store.json` overrides, and the built-in pi-ai provider catalog from `PI_CODING_AGENT_DIR`. The system prompt is still built by the coding agent's `createAgentSession()`/`DefaultResourceLoader` path from `src/server/pi.ts`, then stored as the durable conversation's `instructions`. `/api/state` reports usage (`input`, `output`, `cacheRead`, `cacheWrite`, `cost`) and context usage from durable usage documents. `PI_MODEL` selection is best-effort: if the requested model cannot be selected, the server warns and keeps the configured default instead of failing to boot.

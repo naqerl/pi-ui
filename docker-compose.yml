@@ -12,15 +12,14 @@ services:
       PORT: "8787"
       PI_CWD: /workspace
       PI_CODING_AGENT_DIR: /home/pi/.pi/agent
-      # Set to "1" to boot without loading any extensions from the agent dir.
-      # PI_UI_NO_EXTENSIONS: "1"
-      # Optional: split the transcript out of <workspace>/data (must be inside /workspace to persist).
-      # PI_DATA_DIR: /workspace/data
+      # Optional: split the durable database out of <workspace>/data
+      # (must be inside /workspace to persist).
+      # DATA_DIR: /workspace/data
     volumes:
       # One directory for everything a session produces: pi's working tree plus
-      # <mount>/data/session.jsonl. Survives container replacement.
+      # <mount>/data/pi.sqlite3 and current.json. Survives container replacement.
       - "${PI_WORK_DIR:-./work}:/workspace"
-      # Read-write because pi updates state/history here. auth.json and the extension
-      # list (settings.json, extensions/, installed pi packages) come from this mount.
+      # Read-write because pi updates state/history here. auth.json and the model
+      # catalog (settings.json, models-store.json, installed pi packages) come from this mount.
       - "${PI_AGENT_DIR:-$HOME/.pi/agent}:/home/pi/.pi/agent"
     restart: unless-stopped

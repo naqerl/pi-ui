@@ -8,8 +8,9 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { BusyError, ChatService } from "./chat-service.js";
-import { createPiSession } from "./pi.js";
-import { resolveTranscriptPath, TranscriptStore } from "./store.js";
+import { createModelCatalog } from "./models.js";
+import { buildPiSystemPrompt } from "./pi.js";
+import { type DurableSessionOptions, openDurableSession, SESSION_CONTEXT } from "./session.js";
 import { StreamHub } from "./stream-hub.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -29,18 +30,32 @@ if (!Number.isInteger(port) || port < 0 || port > 65535) {
   throw new Error(`Invalid PORT: ${process.env.PORT}`);
 }
 
-const transcriptPath = resolveTranscriptPath(cwd);
-const store = new TranscriptStore(transcriptPath);
-await store.load();
-const { session, extensions } = await createPiSession(cwd, store.getHistoryEntries());
+const catalog = await createModelCatalog();
+const instructions = await buildPiSystemPrompt(cwd, catalog.runtime);
+const boot = await openDurableSession({
+  cwd,
+  models: catalog.runtime as unknown as DurableSessionOptions["models"],
+  instructions,
+  model:
+    catalog.model === undefined
+      ? undefined
+      : { provider: catalog.model.provider, modelId: catalog.model.id },
+});
 const hub = new StreamHub();
-const chat = new ChatService(session, store, hub);
+const chat = new ChatService(
+  boot.harness,
+  boot.conversation,
+  hub,
+  catalog.model?.contextWindow,
+  boot.interrupted,
+);
+await chat.start();
 
 const app = new Hono();
 
 app.get("/api/health", (c) => c.json({ ok: true }));
 
-app.get("/api/state", (c) => c.json(chat.getSnapshot()));
+app.get("/api/state", async (c) => c.json(await chat.getSnapshot()));
 
 app.post("/api/message", async (c) => {
   let body: unknown;
@@ -190,19 +205,28 @@ app.use("/*", serveStatic({ root: clientDir }));
 const server = serve({ fetch: app.fetch, port }, (info) => {
   console.log(`pi-ui listening on http://localhost:${info.port}`);
   console.log(`working directory: ${cwd}`);
-  console.log(`transcript: ${transcriptPath}`);
-  console.log(
-    extensions.length > 0
-      ? `extensions: ${extensions.length} (${extensions.join(", ")})`
-      : "extensions: none",
-  );
+  console.log(`storage: ${boot.databasePath}`);
+  console.log(`conversation: ${boot.conversation.id} (${boot.resumed ? "resumed" : "new"})`);
+  console.log(`conversation file: ${boot.currentPath}`);
+  if (boot.interrupted) {
+    console.log("previous run was interrupted; partial output was kept and the turn is idle");
+  }
+  console.log("tools: read, bash, edit, write (no extensions or MCP)");
 });
 
-function shutdown(): void {
-  session.dispose();
+let shuttingDown = false;
+async function shutdown(): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  try {
+    await chat.close();
+    await boot.harness.close(SESSION_CONTEXT);
+  } catch (error) {
+    console.error("[pi] shutdown failed", error);
+  }
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 2_000).unref();
 }
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", () => void shutdown());
+process.on("SIGTERM", () => void shutdown());

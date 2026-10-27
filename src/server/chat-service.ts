@@ -1,13 +1,37 @@
-import type { AgentSessionEvent, SessionMessageEntry } from "@earendil-works/pi-coding-agent";
-import type { ChatMessage, RunState, Snapshot } from "../shared/types.js";
-import type { PiSession } from "./pi.js";
-import { formatToolArguments, formatToolResult } from "./pi.js";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import {
+  type AgentEvent,
+  type AgentEventStream,
+  type Conversation,
+  ConversationBusy,
+  type Harness,
+  type SnapshotEvent,
+  type Submission,
+  watchEvents,
+} from "@earendil-works/pi-durable";
+import type {
+  ChatMessage,
+  RunState,
+  Snapshot,
+  StreamMessageDone,
+  StreamRunState,
+  StreamTextDelta,
+  StreamToolEnd,
+  StreamToolStart,
+  ToolActivity,
+} from "../shared/types.js";
+import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
+import {
+  appendAssistantError,
+  assistantMessageFromEntry,
+  buildTranscript,
+  contextUsage,
+  SESSION_CONTEXT,
+  summarizeUsage,
+  toolActivityFromEntry,
+} from "./session.js";
 import type { SseFrame } from "./sse.js";
-import { mapSessionEvent } from "./sse.js";
-import type { TranscriptStore } from "./store.js";
 import type { StreamHub } from "./stream-hub.js";
-
-type StoredMessage = SessionMessageEntry["message"];
 
 interface ActiveTool {
   name: string;
@@ -23,42 +47,66 @@ export class BusyError extends Error {
 }
 
 export class ChatService {
-  private runState: RunState = "idle";
+  private runState: RunState;
   private currentText = "";
   private currentThinking = "";
   private readonly activeTools = new Map<string, ActiveTool>();
-  private eventChain: Promise<void> = Promise.resolve();
+  private stream: AgentEventStream | undefined;
+  private closed = false;
 
   constructor(
-    private readonly session: PiSession,
-    private readonly store: TranscriptStore,
+    private readonly harness: Harness,
+    private readonly conversation: Conversation,
     private readonly hub: StreamHub,
+    private readonly modelWindow: number | undefined,
+    interrupted: boolean,
   ) {
-    this.session.subscribe((event) => {
-      this.eventChain = this.eventChain
-        .then(() => this.handleEvent(event))
-        .catch((error) => {
-          console.error("[pi] event handling failed", error);
-        });
-    });
+    this.runState = interrupted ? "interrupted" : "idle";
+  }
+
+  async start(): Promise<void> {
+    this.stream = await watchEvents(this.harness, this.conversation.id, SESSION_CONTEXT);
+    this.applySnapshot(this.stream.snapshot);
+    this.stream.start((events) => this.handleEvents(events));
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+    await this.stream?.stop();
   }
 
   getState(): RunState {
     return this.runState;
   }
 
-  getSnapshot(): Snapshot {
-    return { ...this.store.getSnapshot(), run: this.runState };
+  async getSnapshot(): Promise<Snapshot> {
+    const context = await this.conversation.context(SESSION_CONTEXT);
+    const usage = await this.harness.usage(SESSION_CONTEXT);
+    const transcript = buildTranscript(context.entries);
+    return {
+      conversationId: String(this.conversation.id),
+      messages: transcript.messages,
+      activity: transcript.activity,
+      run: this.runState,
+      usage: summarizeUsage(usage),
+      context: contextUsage(context.entries, this.modelWindow),
+    };
   }
 
   replayFrames(): SseFrame[] {
     if (this.runState !== "running") return [];
     const frames: SseFrame[] = [];
     if (this.currentThinking.length > 0) {
-      frames.push({ event: "thinking.delta", data: { text: this.currentThinking } });
+      frames.push({
+        event: "thinking.delta",
+        data: { text: this.currentThinking } satisfies StreamTextDelta,
+      });
     }
     if (this.currentText.length > 0) {
-      frames.push({ event: "message.delta", data: { text: this.currentText } });
+      frames.push({
+        event: "message.delta",
+        data: { text: this.currentText } satisfies StreamTextDelta,
+      });
     }
     for (const [toolCallId, tool] of this.activeTools) {
       frames.push({
@@ -68,7 +116,7 @@ export class ChatService {
           name: tool.name,
           arguments: tool.args,
           timestamp: tool.timestamp,
-        },
+        } satisfies StreamToolStart,
       });
     }
     return frames;
@@ -77,91 +125,317 @@ export class ChatService {
   async submit(text: string): Promise<ChatMessage> {
     if (this.runState === "running") throw new BusyError();
 
-    this.runState = "running";
-    let message: ChatMessage;
+    this.setRunState("running");
+    let submission: Submission;
     try {
-      message = await this.store.appendUser(text);
+      submission = await this.conversation.submit(
+        { type: "input", content: text, whenBusy: "reject" },
+        SESSION_CONTEXT,
+      );
     } catch (error) {
-      this.runState = "idle";
+      if (error instanceof ConversationBusy) {
+        this.setRunState("idle");
+        throw new BusyError();
+      }
+      this.setRunState("idle");
       throw error;
     }
 
-    this.hub.broadcast({ event: "run.state", data: { state: "running" } });
-    void this.execute(text);
+    const message = await this.submittedMessage(submission, text);
+    void this.monitorSubmission(submission);
     return message;
   }
 
   async stop(): Promise<void> {
-    if (this.runState === "idle") return;
-    await this.session.abort();
+    if (this.runState !== "running") return;
+    try {
+      await this.conversation.abort(SESSION_CONTEXT);
+    } catch (error) {
+      console.error("[pi] abort failed", error);
+    } finally {
+      this.setRunState("idle");
+    }
   }
 
-  private async execute(text: string): Promise<void> {
+  private async submittedMessage(submission: Submission, text: string): Promise<ChatMessage> {
+    const record = await submission.status(SESSION_CONTEXT);
+    const entryId = "entry" in record ? record.entry : undefined;
+    if (entryId !== undefined) {
+      const context = await this.conversation.context(SESSION_CONTEXT);
+      const entry = context.entries.find((candidate) => candidate.id === entryId);
+      if (entry) {
+        const message = buildTranscript([entry]).messages[0];
+        if (message) return message;
+      }
+    }
+
+    return {
+      id: `m-${entryId ?? "pending"}`,
+      role: "user",
+      text,
+      timestamp: new Date().toISOString(),
+      order: entryId ?? Number.MAX_SAFE_INTEGER,
+    };
+  }
+
+  private async monitorSubmission(submission: Submission): Promise<void> {
     try {
-      await this.session.prompt(text);
-      await this.eventChain;
+      const settled = await submission.wait(SESSION_CONTEXT);
+      if (settled.status === "unanswered") {
+        console.warn(
+          `[pi] run ${submission.id} ended without an answer: ${settled.reason}` +
+            (settled.detail === undefined ? "" : ` (${JSON.stringify(settled.detail)})`),
+        );
+        if (settled.reason === "no_model") {
+          await this.appendNoModelMessage();
+        }
+      }
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      const message = await this.store.appendAssistantError(`pi run failed: ${reason}`);
-      this.hub.broadcast({ event: "message.done", data: { message } });
+      console.error("[pi] submission wait failed", error);
     } finally {
-      this.runState = "idle";
+      this.setRunState("idle");
+    }
+  }
+
+  private async appendNoModelMessage(): Promise<void> {
+    const text =
+      "pi has no model configured for this conversation. Add provider credentials to " +
+      "PI_CODING_AGENT_DIR/auth.json, then send the message again.";
+    try {
+      await appendAssistantError(this.conversation, text);
+    } catch (error) {
+      console.error("[pi] could not record the missing-model message", error);
+      this.hub.broadcast({
+        event: "message.done",
+        data: { message: null } satisfies StreamMessageDone,
+      });
+    }
+  }
+
+  private async handleEvents(events: readonly AgentEvent[]): Promise<void> {
+    for (const event of events) {
+      if (this.closed) return;
+      try {
+        await this.handleEvent(event);
+      } catch (error) {
+        console.error("[pi] event handling failed", error);
+      }
+    }
+  }
+
+  private async handleEvent(event: AgentEvent): Promise<void> {
+    switch (event.type) {
+      case "snapshot": {
+        this.applySnapshot(event);
+        const frames: SseFrame[] = [
+          {
+            event: "message.done",
+            data: { message: null } satisfies StreamMessageDone,
+          },
+        ];
+        if (this.currentThinking.length > 0) {
+          frames.push({
+            event: "thinking.delta",
+            data: { text: this.currentThinking } satisfies StreamTextDelta,
+          });
+        }
+        if (this.currentText.length > 0) {
+          frames.push({
+            event: "message.delta",
+            data: { text: this.currentText } satisfies StreamTextDelta,
+          });
+        }
+        frames.push({
+          event: "run.state",
+          data: { state: this.runState } satisfies StreamRunState,
+        });
+        this.hub.broadcast(frames);
+        return;
+      }
+
+      case "run_start":
+        this.setRunState("running");
+        return;
+
+      case "run_end":
+        this.setRunState("idle");
+        return;
+
+      case "message_start":
+        if (event.message.role === "assistant") {
+          this.currentText = "";
+          this.currentThinking = "";
+          this.absorbMessage(event.message);
+        }
+        return;
+
+      case "message_update":
+        for (const change of event.changes) {
+          if (change.type === "text_delta") {
+            this.currentText += change.delta;
+            this.hub.broadcast({
+              event: "message.delta",
+              data: { text: change.delta } satisfies StreamTextDelta,
+            });
+          } else if (change.type === "thinking_delta") {
+            this.currentThinking += change.delta;
+            this.hub.broadcast({
+              event: "thinking.delta",
+              data: { text: change.delta } satisfies StreamTextDelta,
+            });
+          } else if (change.type === "block") {
+            if (change.block.type === "text") {
+              this.currentText = change.block.text;
+            } else if (change.block.type === "thinking") {
+              this.currentThinking = change.block.thinking;
+            }
+          } else if (change.type === "message") {
+            this.absorbMessage(change.message);
+          }
+        }
+        return;
+
+      case "message_end": {
+        const message = assistantMessageFromEntry(event.entry);
+        if (!message) return;
+        this.currentText = "";
+        this.currentThinking = "";
+        this.hub.broadcast({
+          event: "message.done",
+          data: { message } satisfies StreamMessageDone,
+        });
+        return;
+      }
+
+      case "tool_execution_start": {
+        if (event.parentToolCallId !== undefined) return;
+        const timestamp = new Date().toISOString();
+        this.activeTools.set(event.toolCallId, {
+          name: event.toolName,
+          args: event.args,
+          timestamp,
+        });
+        this.hub.broadcast({
+          event: "tool.start",
+          data: {
+            toolCallId: event.toolCallId,
+            name: event.toolName,
+            arguments: event.args,
+            timestamp,
+          } satisfies StreamToolStart,
+        });
+        return;
+      }
+
+      case "tool_execution_end": {
+        if (event.parentToolCallId !== undefined) return;
+        const active = this.activeTools.get(event.toolCallId);
+        this.activeTools.delete(event.toolCallId);
+        const activity = this.toolActivity(event, active);
+        this.hub.broadcast({
+          event: "tool.end",
+          data: {
+            toolCallId: event.toolCallId,
+            name: activity.name,
+            isError: activity.isError,
+            output: activity.output,
+            durationMs: activity.durationMs,
+            timestamp: activity.timestamp,
+            activity,
+          } satisfies StreamToolEnd,
+        });
+        return;
+      }
+
+      case "task_failed":
+        console.error(`[pi] ${event.kind} task ${event.taskId} failed: ${event.message}`);
+        return;
+
+      case "compaction_start":
+        console.log(`[pi] compaction started (${event.reason})`);
+        return;
+
+      case "compaction_end":
+        if (event.error) console.error(`[pi] compaction failed: ${event.error}`);
+        else console.log(`[pi] compaction finished (${event.reason})`);
+        return;
+
+      case "auto_retry_start":
+        console.warn(
+          `[pi] retrying the model request (attempt ${event.attempt}): ${event.errorMessage}`,
+        );
+        return;
+
+      default:
+        return;
+    }
+  }
+
+  private applySnapshot(snapshot: SnapshotEvent): void {
+    this.currentText = "";
+    this.currentThinking = "";
+    const partial = snapshot.generation?.message;
+    if (partial) {
+      this.absorbMessage(partial);
+    }
+
+    this.activeTools.clear();
+    for (const slot of snapshot.tools) {
+      if (slot.status === "done") continue;
+      this.activeTools.set(slot.callId, {
+        name: slot.name,
+        args: {},
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+
+  private absorbMessage(message: AssistantMessage): void {
+    const texts: string[] = [];
+    const thinking: string[] = [];
+    for (const block of message.content) {
+      if (block.type === "text") texts.push(block.text);
+      else if (block.type === "thinking") thinking.push(block.thinking);
+    }
+    this.currentText = texts.join("");
+    this.currentThinking = thinking.join("");
+  }
+
+  private toolActivity(
+    event: Extract<AgentEvent, { type: "tool_execution_end" }>,
+    active: ActiveTool | undefined,
+  ): ToolActivity {
+    if (event.entry) {
+      const activity = toolActivityFromEntry(event.entry, active?.args);
+      if (activity) return activity;
+    }
+
+    const result = event.result;
+    return {
+      kind: "tool",
+      id: `local-${event.toolCallId}`,
+      name: event.toolName,
+      arguments: formatToolArguments(active?.args),
+      output: result ? formatToolResult(result) : "The tool did not finish.",
+      details: formatToolDetails(result?.details),
+      isError: result?.isError ?? true,
+      durationMs: result?.durationMs,
+      timestamp: new Date().toISOString(),
+      order: Number.MAX_SAFE_INTEGER,
+    };
+  }
+
+  private setRunState(state: RunState): void {
+    if (this.runState === state) return;
+    this.runState = state;
+    if (state !== "running") {
       this.currentText = "";
       this.currentThinking = "";
       this.activeTools.clear();
-      this.hub.broadcast({ event: "run.state", data: { state: "idle" } });
     }
-  }
-
-  private async handleEvent(event: AgentSessionEvent): Promise<void> {
-    if (event.type === "message_start" && event.message.role === "assistant") {
-      this.currentText = "";
-      this.currentThinking = "";
-      return;
-    }
-
-    if (event.type === "message_update") {
-      const update = event.assistantMessageEvent;
-      if (update.type === "text_delta") this.currentText += update.delta;
-      if (update.type === "thinking_delta") this.currentThinking += update.delta;
-      this.hub.broadcast(mapSessionEvent(event));
-      return;
-    }
-
-    if (event.type === "message_end") {
-      if (event.message.role === "assistant") {
-        const message = await this.store.appendAssistant(event.message as StoredMessage);
-        this.currentText = "";
-        this.currentThinking = "";
-        this.hub.broadcast(mapSessionEvent(event, { assistantMessage: message }));
-      } else if (event.message.role === "toolResult") {
-        await this.store.appendToolResult(event.message as StoredMessage);
-      }
-      return;
-    }
-
-    if (event.type === "tool_execution_start") {
-      this.activeTools.set(event.toolCallId, {
-        name: event.toolName,
-        args: event.args,
-        timestamp: new Date().toISOString(),
-      });
-      this.hub.broadcast(mapSessionEvent(event));
-      return;
-    }
-
-    if (event.type === "tool_execution_end") {
-      const active = this.activeTools.get(event.toolCallId);
-      this.activeTools.delete(event.toolCallId);
-      const tool = await this.store.appendTool({
-        toolCallId: event.toolCallId,
-        name: event.toolName,
-        arguments: formatToolArguments(active?.args),
-        output: formatToolResult(event.result),
-        isError: event.isError,
-        durationMs: event.durationMs,
-      });
-      this.hub.broadcast(mapSessionEvent(event, { toolActivity: tool }));
-    }
+    this.hub.broadcast({
+      event: "run.state",
+      data: { state } satisfies StreamRunState,
+    });
   }
 }

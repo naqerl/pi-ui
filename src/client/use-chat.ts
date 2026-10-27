@@ -66,7 +66,7 @@ export function useChat() {
       const data = parseEvent<StreamRunState>(event as MessageEvent<string>);
       if (!data) return;
       setRunning(data.state === "running");
-      if (data.state === "idle") {
+      if (data.state !== "running") {
         setDraftText("");
         setDraftThinking("");
         setLiveTools([]);

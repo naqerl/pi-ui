@@ -1,4 +1,4 @@
-export type RunState = "idle" | "running";
+export type RunState = "idle" | "running" | "interrupted";
 
 export interface ChatMessage {
   id: string;
@@ -16,6 +16,8 @@ export interface ToolActivity {
   name: string;
   arguments: string;
   output?: string;
+  /** Tool-specific UI data. Never sent to the model. */
+  details?: string;
   isError: boolean;
   durationMs?: number;
   timestamp: string;
@@ -35,10 +37,28 @@ export interface ThinkingActivity {
 
 export type ActivityItem = ToolActivity | ThinkingActivity;
 
+export interface UsageSummary {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  totalTokens: number;
+  cost: number;
+}
+
+export interface ContextUsage {
+  tokens: number;
+  window: number | null;
+  percent: number | null;
+}
+
 export interface Snapshot {
+  conversationId: string;
   messages: ChatMessage[];
   activity: ActivityItem[];
   run: RunState;
+  usage: UsageSummary;
+  context: ContextUsage;
 }
 
 export interface SubmitMessageResponse {
