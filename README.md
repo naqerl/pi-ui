@@ -82,7 +82,7 @@ The composer is pinned to the bottom. Enter sends, Shift+Enter inserts a newline
 
 ## Releases
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds and pushes `ghcr.io/naqerl/pi-ui` to GitHub Container Registry with semver tags, `latest`, provenance, and GitHub Actions layer cache. `v1.1.0` publishes `:1.1.0` and `:1.1`. The workflow can also be started manually with `workflow_dispatch` to rebuild an existing ref. There is intentionally no build on every push to a branch.
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds and pushes `ghcr.io/naqerl/pi-ui` to GitHub Container Registry with semver tags, `latest`, provenance, and GitHub Actions layer cache. Tag `v1.1.0` publishes `:v1.1.0` (the tag the commands above use), `:1.1.0`, `:1.1`, and `:latest`; the `v`-prefixed tag is emitted explicitly with `type=semver,pattern=v{{version}}` because the plain `{{version}}` pattern strips the leading `v`. The workflow can also be started manually with `workflow_dispatch` to rebuild an existing ref. There is intentionally no build on every push to a branch.
 
 The image is built for `linux/amd64` only. The release job does not run an emulated `linux/arm64` build, because the QEMU build does not fit the job budget; add it to `platforms` only after confirming it builds reliably in CI.
 
