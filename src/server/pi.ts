@@ -1,3 +1,4 @@
+import { basename, relative } from "node:path";
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -9,6 +10,20 @@ import {
 const TOOLS = ["read", "bash", "edit", "write"];
 
 export type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
+
+type LoadedExtension = ReturnType<DefaultResourceLoader["getExtensions"]>["extensions"][number];
+
+export interface PiSessionBoot {
+  session: PiSession;
+  extensions: string[];
+}
+
+function extensionLabel(extension: LoadedExtension, agentDir: string): string {
+  if (extension.path.startsWith("builtin:")) return extension.path;
+  const withinAgentDir = relative(agentDir, extension.resolvedPath);
+  if (withinAgentDir.length > 0 && !withinAgentDir.startsWith("..")) return withinAgentDir;
+  return basename(extension.resolvedPath);
+}
 
 function findModel(session: PiSession, spec: string) {
   const runtime = session.modelRuntime;
@@ -22,15 +37,28 @@ function findModel(session: PiSession, spec: string) {
   return models.find((model) => model.provider === currentProvider) ?? models[0];
 }
 
-export async function createPiSession(cwd: string, history: SessionEntry[]): Promise<PiSession> {
+export async function createPiSession(
+  cwd: string,
+  history: SessionEntry[],
+): Promise<PiSessionBoot> {
   const agentDir = getAgentDir();
+  // Extensions come from the agent dir, which is mounted from the host. PI_UI_NO_EXTENSIONS=1
+  // restores the extension-free behaviour for setups that need an isolated agent.
   const resourceLoader = new DefaultResourceLoader({
     cwd,
     agentDir,
-    noExtensions: true,
+    noExtensions: process.env.PI_UI_NO_EXTENSIONS === "1",
     disabledBuiltinExtensions: ["mcp", "codemode", "tool_search"],
   });
   await resourceLoader.reload();
+
+  const loadedExtensions = resourceLoader.getExtensions();
+  for (const failure of loadedExtensions.errors) {
+    console.warn(`[pi] extension failed to load: ${failure.path}: ${failure.error}`);
+  }
+  const extensions = loadedExtensions.extensions.map((extension) =>
+    extensionLabel(extension, agentDir),
+  );
 
   const sessionManager = SessionManager.inMemory(cwd, {}, history);
   const { session, modelFallbackMessage } = await createAgentSession({
@@ -62,7 +90,7 @@ export async function createPiSession(cwd: string, history: SessionEntry[]): Pro
     }
   }
 
-  return session;
+  return { session, extensions };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

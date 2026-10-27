@@ -9,7 +9,7 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { BusyError, ChatService } from "./chat-service.js";
 import { createPiSession } from "./pi.js";
-import { TranscriptStore } from "./store.js";
+import { resolveTranscriptPath, TranscriptStore } from "./store.js";
 import { StreamHub } from "./stream-hub.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -29,9 +29,10 @@ if (!Number.isInteger(port) || port < 0 || port > 65535) {
   throw new Error(`Invalid PORT: ${process.env.PORT}`);
 }
 
-const store = new TranscriptStore();
+const transcriptPath = resolveTranscriptPath(cwd);
+const store = new TranscriptStore(transcriptPath);
 await store.load();
-const session = await createPiSession(cwd, store.getHistoryEntries());
+const { session, extensions } = await createPiSession(cwd, store.getHistoryEntries());
 const hub = new StreamHub();
 const chat = new ChatService(session, store, hub);
 
@@ -189,6 +190,12 @@ app.use("/*", serveStatic({ root: clientDir }));
 const server = serve({ fetch: app.fetch, port }, (info) => {
   console.log(`pi-ui listening on http://localhost:${info.port}`);
   console.log(`working directory: ${cwd}`);
+  console.log(`transcript: ${transcriptPath}`);
+  console.log(
+    extensions.length > 0
+      ? `extensions: ${extensions.length} (${extensions.join(", ")})`
+      : "extensions: none",
+  );
 });
 
 function shutdown(): void {

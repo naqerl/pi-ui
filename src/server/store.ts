@@ -85,6 +85,12 @@ function messageKey(message: StoredMessage): string {
   return `${String(value.role)}:${String(value.timestamp)}:${String(value.toolCallId ?? "")}`;
 }
 
+export function resolveTranscriptPath(cwd: string, dataDir = process.env.PI_DATA_DIR): string {
+  const directory = dataDir?.trim();
+  const resolvedDir = directory ? resolve(cwd, directory) : resolve(cwd, "data");
+  return resolve(resolvedDir, "session.jsonl");
+}
+
 export class TranscriptStore {
   private readonly filePath: string;
   private readonly events: StoredEvent[] = [];
@@ -92,7 +98,7 @@ export class TranscriptStore {
   private nextId = 1;
   private writeChain: Promise<void> = Promise.resolve();
 
-  constructor(filePath = resolve(process.cwd(), "data", "session.jsonl")) {
+  constructor(filePath = resolveTranscriptPath(process.env.PI_CWD?.trim() || process.cwd())) {
     this.filePath = filePath;
   }
 
