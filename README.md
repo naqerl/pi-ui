@@ -65,7 +65,7 @@ The durable conversation is stored at `<DATA_DIR>/pi.sqlite3` (by default `<PI_C
 
 If the process is killed during a turn, the next boot keeps the committed transcript and marks the unfinished turn `interrupted` in `/api/state`. It does not replay the turn token by token; the composer accepts the next message instead.
 
-On boot the server logs the working directory, database path, conversation ID, whether it was resumed, and whether the previous run was interrupted. It also logs the selected model, or a clear warning when no credentials are available. The registry contains exactly `read`, `bash`, `edit`, and `write`; pi extensions, MCP, tool search, and codemode are not loaded.
+On boot the server logs the working directory, database path, conversation ID, whether it was resumed, and whether the previous run was interrupted. It also logs the selected model, or a clear warning when no credentials are available. The registry contains the coding tools (`read`, `bash`, `edit`, `write`) plus four deferred web tools (`mcp__web__web_search`, `mcp__web__fetch_content`, `mcp__web__get_search_content`, `mcp__web__source_check`) bridged from the `pi-web-access` MCP child. `tool_search` is installed so those deferred tools do not inflate the system prompt. Other MCP servers, coding-agent extensions, and codemode are not loaded.
 
 ## Install and share
 
@@ -95,7 +95,7 @@ GHCR creates a new package as private on first push. Set the `pi-ui` package's v
 - No accounts, authentication, telemetry, or analytics.
 - No model picker, working-directory picker, settings page, or configuration UI.
 - No attachments, file browser, markdown editor, message editing, or retry controls.
-- No MCP servers, tool search, codemode, or coding-agent extensions. The durable tool registry is exactly `read`, `bash`, `edit`, and `write`.
+- No arbitrary MCP servers, codemode, or coding-agent extensions. The only MCP child is the bundled `pi-web-access` server behind the four `mcp__web__*` tools; `tool_search` exposes them on demand.
 - No unit tests, test framework, or end-to-end browser harness.
 - No markdown rendering, syntax highlighting, syntax-aware code blocks, or rich tool output in the transcript.
 
