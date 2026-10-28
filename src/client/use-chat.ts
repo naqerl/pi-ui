@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ActivityItem,
   ChatMessage,
+  McpStatus,
   MessageMode,
   QueuedMessage,
   RunState,
@@ -36,6 +37,7 @@ export function useChat() {
   const [runState, setRunState] = useState<RunState>("idle");
   const [runStartedAt, setRunStartedAt] = useState<string | null>(null);
   const [queue, setQueue] = useState<QueuedMessage[]>([]);
+  const [mcp, setMcp] = useState<McpStatus>({ servers: [], unavailable: [] });
   const [ready, setReady] = useState(false);
   const refreshSequence = useRef(0);
 
@@ -53,6 +55,7 @@ export function useChat() {
       setRunState(snapshot.run);
       setRunStartedAt(snapshot.runStartedAt ?? null);
       setQueue(snapshot.queue);
+      setMcp(snapshot.mcp ?? { servers: [], unavailable: [] });
       setReady(true);
     } catch {
       // The SSE connection will keep the UI usable once the server is reachable again.
@@ -282,6 +285,7 @@ export function useChat() {
     interrupted: runState === "interrupted",
     runStartedAt,
     queue,
+    mcp,
     ready,
     send,
     cancelQueued,

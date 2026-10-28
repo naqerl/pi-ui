@@ -66,6 +66,7 @@ const chat = new ChatService(
   boot.interrupted,
   boot.runMarkerStore,
   boot.runMarker,
+  boot.mcp.status,
 );
 await chat.start();
 boot.mcp.setSubmit((text, options) => {

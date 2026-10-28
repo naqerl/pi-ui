@@ -17,6 +17,7 @@ interface ChatViewProps {
   interrupted: boolean;
   runStartedAt: string | null;
   queue: QueuedMessage[];
+  unavailableServers: string[];
   ready: boolean;
   send: (text: string, mode?: MessageMode) => Promise<boolean>;
   cancelQueued: (id: string) => Promise<boolean>;
@@ -510,6 +511,7 @@ export function ChatView({
   interrupted,
   runStartedAt,
   queue,
+  unavailableServers,
   ready,
   send,
   cancelQueued,
@@ -583,10 +585,20 @@ export function ChatView({
       <div className="relative min-h-0 flex-1">
         <main ref={stick.containerRef} className="h-full overflow-y-auto">
           <header className="sticky top-0 z-10 border-b border-border bg-black/85 pt-[env(safe-area-inset-top)] backdrop-blur-md supports-[backdrop-filter]:bg-black/60">
-            <div className="mx-auto flex h-10 w-full max-w-[72ch] items-center px-4">
-              <a href="/" className="text-sm font-medium text-foreground">
+            <div className="mx-auto flex h-10 w-full max-w-[72ch] items-center justify-between gap-3 px-4">
+              <a href="/" className="shrink-0 text-sm font-medium text-foreground">
                 pi
               </a>
+              {unavailableServers.length > 0 && (
+                <span
+                  role="note"
+                  data-testid="mcp-unavailable"
+                  title={unavailableServers.map((name) => `${name} unavailable`).join(" · ")}
+                  className="min-w-0 truncate font-mono text-[11px] leading-4 text-muted-foreground"
+                >
+                  {unavailableServers.map((name) => `${name} unavailable`).join(" · ")}
+                </span>
+              )}
             </div>
           </header>
 

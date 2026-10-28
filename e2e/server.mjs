@@ -9,6 +9,7 @@ mkdirSync(dataDir, { recursive: true });
 mkdirSync(agentDir, { recursive: true });
 
 const live = process.env.PI_E2E_LIVE === "1";
+const allMcpReachable = process.env.PI_E2E_MCP_ALL_REACHABLE === "1";
 let fakeModel;
 if (!live) {
   const { server, port } = await startFakeModelServer();
@@ -48,10 +49,11 @@ if (!live) {
             command: process.execPath,
             args: [join(import.meta.dirname, "stub-mcp.mjs")],
           },
-          broken: {
-            command: process.execPath,
-            args: ["-e", "process.exit(1)"],
-          },
+          // Loopback port 1 is closed, so this HTTP server fails at boot while
+          // the stdio stub above stays reachable.
+          ...(allMcpReachable
+            ? {}
+            : { unreachable: { url: "http://127.0.0.1:1/mcp", requestTimeoutMs: 2000 } }),
         },
       },
       null,

@@ -68,6 +68,20 @@ export interface ContextUsage {
   percent: number | null;
 }
 
+export interface McpServerStatus {
+  name: string;
+  available: boolean;
+  authRejected: boolean;
+  /** Registered tool names for this server; empty when the server is unavailable. */
+  tools: string[];
+}
+
+/** Per-server MCP availability, so a configured-but-unreachable server is visible. */
+export interface McpStatus {
+  servers: McpServerStatus[];
+  unavailable: string[];
+}
+
 export interface Snapshot {
   conversationId: string;
   messages: ChatMessage[];
@@ -77,6 +91,7 @@ export interface Snapshot {
   queue: QueuedMessage[];
   usage: UsageSummary;
   context: ContextUsage;
+  mcp: McpStatus;
 }
 
 export interface SubmitMessageResponse {
