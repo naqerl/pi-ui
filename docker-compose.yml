@@ -1,5 +1,8 @@
 # Documentation that runs: the host paths below are the complete runtime state.
-# The image itself contains no credentials and no extensions.
+# The image itself contains no credentials and no extensions. It is stateless
+# apart from these three host-backed paths: data/ (the durable conversation),
+# PI_CODING_AGENT_DIR (pi credentials and model catalog), and billion-context
+# (compression fold state).
 services:
   pi-ui:
     image: ghcr.io/naqerl/pi-ui:${PI_UI_TAG:-latest}
@@ -12,18 +15,19 @@ services:
       PORT: "8787"
       PI_CWD: /workspace
       PI_CODING_AGENT_DIR: /home/pi/.pi/agent
-      # Optional: split the durable database out of <workspace>/data
-      # (must be inside /workspace to persist).
-      # DATA_DIR: /workspace/data
+      # The durable conversation lives in data/ inside the workspace mount.
+      # Override only if the replacement path is also inside /workspace.
+      DATA_DIR: /workspace/data
     volumes:
-      # One directory for everything a session produces: pi's working tree plus
-      # <mount>/data/pi.sqlite3 and current.json. Survives container replacement.
+      # pi's working tree plus data/pi.sqlite3 and data/current.json (the durable
+      # conversation). Survives container replacement.
       - "${PI_WORK_DIR:-./work}:/workspace"
-      # Read-write because pi updates state/history here. auth.json and the model
-      # catalog (settings.json, models-store.json, installed pi packages) come from this mount.
+      # Read-write because pi updates state/history here. This is PI_CODING_AGENT_DIR:
+      # auth.json, web-search.json, and the model catalog (models-store.json,
+      # settings.json, installed pi packages) come from this mount.
       - "${PI_AGENT_DIR:-$HOME/.pi/agent}:/home/pi/.pi/agent"
-      # billion-context sessions/index. Must be writable by uid 1000 and persist
-      # across container replacement, or compression history is lost.
+      # billion-context fold state (sessions/index.db/logs). Must be writable by
+      # uid 1000 and persist across container replacement, or fold history is lost.
       # Create it first on the host: mkdir -p ~/.local/share/billion-context
       - "${BILI_DATA_DIR:-$HOME/.local/share/billion-context}:/home/pi/.local/share/billion-context"
     restart: unless-stopped
