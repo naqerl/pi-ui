@@ -428,7 +428,6 @@ function Composer({
 
   return (
     <form
-      className="pb-[env(safe-area-inset-bottom)]"
       onSubmit={(event) => {
         event.preventDefault();
         void submit("queue");
@@ -439,6 +438,7 @@ function Composer({
           ref={textareaRef}
           aria-label="Message"
           rows={1}
+          className="bg-transparent"
           value={value}
           placeholder={running ? "Queue a message · Steer with ⌘/Ctrl+Enter" : "Message pi"}
           onChange={(event) => setValue(event.target.value)}
@@ -517,8 +517,27 @@ export function ChatView({
   stop,
 }: ChatViewProps) {
   useViewportHeight();
-  const stick = useStickToBottom(timeline.length);
   const groups = useMemo(() => groupTimeline(timeline), [timeline]);
+  const footerRef = useRef<HTMLDivElement | null>(null);
+  const [footerHeight, setFooterHeight] = useState(0);
+
+  useLayoutEffect(() => {
+    const footer = footerRef.current;
+    if (!footer) return;
+    const measure = () => {
+      const height = footer.getBoundingClientRect().height;
+      setFooterHeight((current) => (Math.abs(current - height) < 0.5 ? current : height));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(footer);
+    return () => observer.disconnect();
+  }, []);
+
+  // Re-run the stick sync when either the timeline or the measured footer height changes:
+  // the footer grows with the queue and working indicator, and the transcript's bottom
+  // padding follows it, so an attached transcript must chase the new scroll height.
+  const stick = useStickToBottom(`${timeline.length}:${footerHeight}`);
 
   const currentActivity = useMemo(() => {
     if (!running) return undefined;
@@ -573,7 +592,8 @@ export function ChatView({
 
           <div
             ref={stick.contentRef}
-            className="mx-auto flex w-full max-w-[72ch] flex-col gap-3 px-4 py-4"
+            className="mx-auto flex w-full max-w-[72ch] flex-col gap-3 px-4 pt-4"
+            style={{ paddingBottom: footerHeight }}
           >
             {!ready && <p className="font-mono text-xs text-muted-foreground">Loading…</p>}
             {groups.map((group) =>
@@ -591,7 +611,10 @@ export function ChatView({
           </div>
         </main>
         {!stick.attached && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-2 flex justify-center">
+          <div
+            className="pointer-events-none absolute inset-x-0 z-20 flex justify-center"
+            style={{ bottom: footerHeight + 8 }}
+          >
             <button
               type="button"
               className="pointer-events-auto border border-border bg-black/85 px-2 py-1 font-mono text-[11px] text-white/90 backdrop-blur-md hover:text-white supports-[backdrop-filter]:bg-black/60"
@@ -601,14 +624,26 @@ export function ChatView({
             </button>
           </div>
         )}
-      </div>
 
-      <div className="shrink-0 border-t border-border bg-black/85 backdrop-blur-md supports-[backdrop-filter]:bg-black/60">
-        <QueueStack queue={queue} running={running} onCancel={cancelQueued} onSteer={steerQueued} />
-        <div className="h-7 shrink-0" aria-live="polite">
-          <WorkingIndicator running={running} startedAt={runStartedAt} activity={currentActivity} />
+        <div
+          ref={footerRef}
+          className="absolute inset-x-0 bottom-0 z-20 border-t border-border bg-black/85 pb-[env(safe-area-inset-bottom)] backdrop-blur-md supports-[backdrop-filter]:bg-black/60"
+        >
+          <QueueStack
+            queue={queue}
+            running={running}
+            onCancel={cancelQueued}
+            onSteer={steerQueued}
+          />
+          <div className="h-7 shrink-0" aria-live="polite">
+            <WorkingIndicator
+              running={running}
+              startedAt={runStartedAt}
+              activity={currentActivity}
+            />
+          </div>
+          <Composer running={running} send={handleSend} stop={stop} />
         </div>
-        <Composer running={running} send={handleSend} stop={stop} />
       </div>
     </div>
   );
