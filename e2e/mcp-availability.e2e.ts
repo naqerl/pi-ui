@@ -108,7 +108,11 @@ test("shows exactly one configured but unreachable MCP server", async ({
     ).toEqual(["unreachable"]);
     const stub = state.mcp.servers.find((server) => server.name === "stub");
     expect(stub?.available).toBe(true);
+    expect(stub?.error).toBeNull();
     expect(stub?.tools).toContain("stub__echo");
+    const unreachable = state.mcp.servers.find((server) => server.name === "unreachable");
+    expect(unreachable?.available).toBe(false);
+    expect(unreachable?.error).toBe("server unreachable is unavailable");
 
     const notice = screen.getByTestId("mcp-unavailable");
     await expect(notice).toBeVisible();
@@ -144,6 +148,7 @@ test("omits the notice when every configured MCP server is reachable", async ({ 
     expect(state.mcp.unavailable).toEqual([]);
     const stub = state.mcp.servers.find((server) => server.name === "stub");
     expect(stub?.available).toBe(true);
+    expect(stub?.error).toBeNull();
     expect(stub?.tools).toContain("stub__echo");
     await expect(screen.getByTestId("mcp-unavailable")).toHaveCount(0);
   } finally {

@@ -72,6 +72,8 @@ export interface McpServerStatus {
   name: string;
   available: boolean;
   authRejected: boolean;
+  /** Secret-free reason the server failed to start; null when it is available. */
+  error: string | null;
   /** Registered tool names for this server; empty when the server is unavailable. */
   tools: string[];
 }

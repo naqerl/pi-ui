@@ -132,6 +132,8 @@ interface RawServerEntry {
 export interface ServerFailure {
   readonly name: string;
   readonly auth: boolean;
+  /** Fixed, secret-free wording: never an URL, command, header, or token. */
+  readonly error: string;
 }
 
 interface ProtocolConnection {
@@ -374,7 +376,11 @@ async function readServers(): Promise<{
         servers[name] = definition;
         timeouts[name] = serverRequestTimeout(name, raw);
       } catch (error) {
-        failures.push({ name, auth: httpStatus(error) === 401 || httpStatus(error) === 403 });
+        failures.push({
+          name,
+          auth: httpStatus(error) === 401 || httpStatus(error) === 403,
+          error: failureReason(name, error),
+        });
         console.warn(describeBootFailure(name, error));
       }
     }
@@ -412,10 +418,14 @@ function credentialsRejected(name: string): string {
   return `server ${name} rejected the configured credentials`;
 }
 
-function describeBootFailure(name: string, error: unknown): string {
+function failureReason(name: string, error: unknown): string {
   const status = httpStatus(error);
-  if (status === 401 || status === 403) return `mcp: ${credentialsRejected(name)}`;
-  return `mcp: server ${name} is unavailable`;
+  if (status === 401 || status === 403) return credentialsRejected(name);
+  return `server ${name} is unavailable`;
+}
+
+function describeBootFailure(name: string, error: unknown): string {
+  return `mcp: ${failureReason(name, error)}`;
 }
 
 function credentialsResult(name: string): CallToolResult {
@@ -614,7 +624,7 @@ export class McpRuntime {
         } catch (error) {
           await adapter.close().catch(() => {});
           const auth = httpStatus(error) === 401 || httpStatus(error) === 403;
-          runtime.failedServers.push({ name, auth });
+          runtime.failedServers.push({ name, auth, error: failureReason(name, error) });
           console.warn(describeBootFailure(name, error));
         }
       }),
@@ -642,6 +652,7 @@ export class McpRuntime {
         name,
         available: failure === undefined,
         authRejected: failure?.auth ?? false,
+        error: failure?.error ?? null,
         tools:
           failure === undefined ? toolNames.filter((toolName) => toolName.startsWith(prefix)) : [],
       };
