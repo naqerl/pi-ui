@@ -1,4 +1,5 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ActivityItem, ChatMessage, MessageMode, QueuedMessage } from "../shared/types";
 import { activitySummary, groupSummary } from "./activity-format";
 import { Button } from "./components/ui/button";
@@ -174,6 +175,59 @@ function QueueStack({
   );
 }
 
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_MOVE_PX = 10;
+const STEER_HINT_KEY = "pi-ui:steer-long-press-hint";
+
+function computedLineHeight(element: HTMLElement): number {
+  const style = getComputedStyle(element);
+  const lineHeight = Number.parseFloat(style.lineHeight);
+  if (Number.isFinite(lineHeight) && lineHeight > 0) return lineHeight;
+  const fontSize = Number.parseFloat(style.fontSize);
+  return (Number.isFinite(fontSize) && fontSize > 0 ? fontSize : 16) * 1.25;
+}
+
+function usesCoarsePointer(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0;
+}
+
+function useViewportHeight() {
+  useEffect(() => {
+    const root = document.documentElement;
+    const viewport = window.visualViewport;
+    let frame: number | null = null;
+    let lastHeight = -1;
+
+    const apply = () => {
+      frame = null;
+      const height = viewport?.height ?? window.innerHeight;
+      if (!Number.isFinite(height) || height <= 0) return;
+      if (Math.abs(height - lastHeight) < 0.5) return;
+      lastHeight = height;
+      root.style.setProperty("--app-height", `${height}px`);
+    };
+    const schedule = () => {
+      if (frame !== null) return;
+      frame = requestAnimationFrame(apply);
+    };
+
+    apply();
+    window.addEventListener("resize", schedule);
+    window.addEventListener("orientationchange", schedule);
+    viewport?.addEventListener("resize", schedule);
+    viewport?.addEventListener("scroll", schedule);
+    return () => {
+      window.removeEventListener("resize", schedule);
+      window.removeEventListener("orientationchange", schedule);
+      viewport?.removeEventListener("resize", schedule);
+      viewport?.removeEventListener("scroll", schedule);
+      if (frame !== null) cancelAnimationFrame(frame);
+      root.style.removeProperty("--app-height");
+    };
+  }, []);
+}
+
 function Composer({
   running,
   send,
@@ -184,28 +238,177 @@ function Composer({
   stop: () => Promise<void>;
 }) {
   const [value, setValue] = useState("");
+  const [holdingSteer, setHoldingSteer] = useState(false);
+  const [showSteerHint, setShowSteerHint] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const rowRef = useRef<HTMLDivElement>(null);
+  const rowWidthRef = useRef<number | null>(null);
+  const holdTimerRef = useRef<number | null>(null);
+  const holdStartRef = useRef<{ x: number; y: number } | null>(null);
+  const longPressRef = useRef(false);
+  const suppressClickRef = useRef(false);
   const canSend = value.trim().length > 0;
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: value drives the autosize measurement
+  const resizeTextarea = useCallback(() => {
+    const element = textareaRef.current;
+    if (!element) return;
+    const style = getComputedStyle(element);
+    const lineHeight = computedLineHeight(element);
+    const paddingY =
+      (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.paddingBottom) || 0);
+    const borderY =
+      (Number.parseFloat(style.borderTopWidth) || 0) +
+      (Number.parseFloat(style.borderBottomWidth) || 0);
+    const minHeight = Number.parseFloat(style.minHeight) || 0;
+    const maxHeight = lineHeight * 8 + paddingY + borderY;
+
+    element.style.height = "0px";
+    const scrollHeight = element.scrollHeight;
+    const oneLineHeight = Math.max(minHeight, lineHeight + paddingY);
+    const contentHeight = scrollHeight + borderY;
+    const singleLine = element.value.length === 0 || scrollHeight <= lineHeight + paddingY + 0.5;
+    const nextHeight = Math.min(
+      Math.max(singleLine ? oneLineHeight : contentHeight, minHeight),
+      maxHeight,
+    );
+
+    element.style.height = `${nextHeight}px`;
+    element.style.overflowY = contentHeight > maxHeight ? "auto" : "hidden";
+  }, []);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: value drives the autosize and caret reset
   useLayoutEffect(() => {
     const element = textareaRef.current;
     if (!element) return;
-    element.style.height = "0px";
-    const lineHeight = Number.parseFloat(getComputedStyle(element).lineHeight) || 20;
-    const maxHeight = lineHeight * 8 + 16;
-    const nextHeight = Math.min(element.scrollHeight, maxHeight);
-    element.style.height = `${nextHeight}px`;
-    element.style.overflowY = element.scrollHeight > maxHeight ? "auto" : "hidden";
-  }, [value]);
+    resizeTextarea();
+    if (element.value.length === 0) element.setSelectionRange(0, 0);
+  }, [value, resizeTextarea]);
+
+  useEffect(() => {
+    const row = rowRef.current;
+    if (!row) return;
+    rowWidthRef.current = row.getBoundingClientRect().width;
+
+    const observer = new ResizeObserver(() => {
+      const width = row.getBoundingClientRect().width;
+      if (rowWidthRef.current !== null && Math.abs(width - rowWidthRef.current) < 0.5) return;
+      rowWidthRef.current = width;
+      resizeTextarea();
+    });
+    observer.observe(row);
+
+    let frame: number | null = null;
+    const handleOrientation = () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        rowWidthRef.current = null;
+        resizeTextarea();
+      });
+    };
+    window.addEventListener("orientationchange", handleOrientation);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("orientationchange", handleOrientation);
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, [resizeTextarea]);
+
+  useEffect(() => {
+    if (!running || !canSend || showSteerHint) return;
+    try {
+      if (sessionStorage.getItem(STEER_HINT_KEY) === "1") return;
+      sessionStorage.setItem(STEER_HINT_KEY, "1");
+    } catch {
+      // Storage is optional; the hint is still announced for this render.
+    }
+    setShowSteerHint(true);
+  }, [canSend, running, showSteerHint]);
+
+  useEffect(
+    () => () => {
+      if (holdTimerRef.current !== null) window.clearTimeout(holdTimerRef.current);
+    },
+    [],
+  );
+
+  const clearHoldTimer = () => {
+    if (holdTimerRef.current === null) return;
+    window.clearTimeout(holdTimerRef.current);
+    holdTimerRef.current = null;
+  };
+
+  const cancelHold = () => {
+    clearHoldTimer();
+    holdStartRef.current = null;
+    setHoldingSteer(false);
+  };
 
   const submit = async (mode: MessageMode) => {
     if (!canSend) return;
-    const sent = await send(value, mode);
-    if (sent) {
-      setValue("");
-      requestAnimationFrame(() => textareaRef.current?.focus());
+    const text = value;
+    const coarse = usesCoarsePointer();
+    setValue("");
+    const sent = await send(text, mode);
+    if (!sent) return;
+    const element = textareaRef.current;
+    if (element === null) return;
+    if (coarse) {
+      element.blur();
+    } else {
+      element.focus({ preventScroll: true });
+      element.setSelectionRange(0, 0);
     }
+  };
+
+  const handleSteerPointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!canSend || (event.pointerType === "mouse" && event.button !== 0)) return;
+    clearHoldTimer();
+    longPressRef.current = false;
+    suppressClickRef.current = false;
+    holdStartRef.current = { x: event.clientX, y: event.clientY };
+    setHoldingSteer(true);
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture is best-effort; the window still receives pointerup.
+    }
+    holdTimerRef.current = window.setTimeout(() => {
+      holdTimerRef.current = null;
+      longPressRef.current = true;
+      setHoldingSteer(false);
+      setShowSteerHint(false);
+      void submit("queue");
+    }, LONG_PRESS_MS);
+  };
+
+  const handleSteerPointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const start = holdStartRef.current;
+    if (start === null) return;
+    if (Math.hypot(event.clientX - start.x, event.clientY - start.y) <= LONG_PRESS_MOVE_PX) return;
+    suppressClickRef.current = true;
+    cancelHold();
+  };
+
+  const handleSteerPointerUp = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (longPressRef.current) suppressClickRef.current = true;
+    clearHoldTimer();
+    holdStartRef.current = null;
+    setHoldingSteer(false);
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // The pointer may already be released.
+    }
+  };
+
+  const handleSteerClick = () => {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return;
+    }
+    if (!canSend) return;
+    void submit("steer");
   };
 
   return (
@@ -216,7 +419,7 @@ function Composer({
         void submit("queue");
       }}
     >
-      <div className="mx-auto flex w-full max-w-[72ch] items-end gap-2 px-4 py-3">
+      <div ref={rowRef} className="mx-auto flex w-full max-w-[72ch] items-end gap-2 px-4 py-3">
         <Textarea
           ref={textareaRef}
           aria-label="Message"
@@ -232,24 +435,45 @@ function Composer({
             }
           }}
         />
-        {running && !canSend ? (
-          <Button type="button" size="sm" variant="outline" onClick={() => void stop()}>
-            Stop
-          </Button>
-        ) : running ? (
-          <>
-            <Button type="button" size="sm" variant="outline" onClick={() => void submit("steer")}>
-              Steer
+        <div className="flex h-9 w-24 shrink-0 items-stretch">
+          {running && !canSend ? (
+            <Button
+              key="stop"
+              type="button"
+              variant="outline"
+              className="h-9 w-full"
+              onClick={() => void stop()}
+            >
+              Stop
             </Button>
-            <Button type="submit" size="sm">
-              Queue
+          ) : running ? (
+            <Button
+              key="steer"
+              type="button"
+              aria-label={holdingSteer ? "Steer (release to queue)" : "Steer"}
+              className={cn("h-9 w-full", holdingSteer && "bg-muted text-foreground")}
+              onClick={handleSteerClick}
+              onPointerDown={handleSteerPointerDown}
+              onPointerMove={handleSteerPointerMove}
+              onPointerUp={handleSteerPointerUp}
+              onPointerCancel={cancelHold}
+            >
+              {holdingSteer ? "Queue…" : "Steer"}
             </Button>
-          </>
-        ) : (
-          <Button type="submit" disabled={!canSend}>
-            Send
-          </Button>
-        )}
+          ) : (
+            <Button key="send" type="submit" className="h-9 w-full" disabled={!canSend}>
+              Send
+            </Button>
+          )}
+        </div>
+      </div>
+      <div
+        className="mx-auto h-4 w-full max-w-[72ch] px-4 font-mono text-[10px] leading-4 text-muted-foreground"
+        aria-live="polite"
+      >
+        {showSteerHint && running && canSend ? (
+          <span>Hold Steer to queue without interrupting the run.</span>
+        ) : null}
       </div>
     </form>
   );
@@ -277,6 +501,7 @@ export function ChatView({
   steerQueued,
   stop,
 }: ChatViewProps) {
+  useViewportHeight();
   const stick = useStickToBottom(timeline.length);
   const groups = useMemo(() => groupTimeline(timeline), [timeline]);
 
