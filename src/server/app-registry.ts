@@ -8,11 +8,11 @@ import { createToolSearchExtension } from "@earendil-works/pi-durable/tool-searc
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { createBiliTools } from "./bili-tools.js";
 import type { BillionContextInline } from "./billion-context.js";
-import { startWebTools, type WebToolsBridge } from "./web-tools.js";
+import { type McpRuntime, startMcpRuntime } from "./mcp-runtime.js";
 
 export interface AppRegistryBoot {
   readonly registry: Registry<ToolRegistration>;
-  readonly webTools: WebToolsBridge | undefined;
+  readonly mcp: McpRuntime;
   readonly biliTools: readonly string[];
 }
 
@@ -21,8 +21,8 @@ export interface AppRegistryOptions {
 }
 
 /**
- * The registry the server boots with. Web tools arrive over MCP and stay deferred;
- * `tool_search` is installed alongside them so loading a tool can expose it later.
+ * The registry the server boots with. MCP tools stay deferred; `tool_search`
+ * is installed alongside them so loading a tool can expose it later.
  */
 export async function createAppRegistry(
   options: AppRegistryOptions = {},
@@ -35,19 +35,9 @@ export async function createAppRegistry(
     }),
   );
 
-  const webTools = await startWebTools();
-  const usableWebTools = webTools !== undefined && webTools.tools.length > 0 ? webTools : undefined;
-  if (webTools !== undefined && usableWebTools === undefined) {
-    await webTools.close();
-  }
-
-  if (usableWebTools !== undefined) {
-    registry.install(
-      defineExtension({
-        name: "pi-ui-web-tools",
-        tools: usableWebTools.tools,
-      }),
-    );
+  const mcp = await startMcpRuntime();
+  if (mcp.toolNames.length > 0) {
+    mcp.install(registry);
     registry.install(createToolSearchExtension());
   }
 
@@ -63,7 +53,7 @@ export async function createAppRegistry(
 
   return {
     registry,
-    webTools: usableWebTools,
+    mcp,
     biliTools: biliTools.map((tool) => tool.name),
   };
 }

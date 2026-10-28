@@ -68,6 +68,13 @@ const chat = new ChatService(
   boot.runMarker,
 );
 await chat.start();
+boot.mcp.setSubmit((text, options) => {
+  void chat
+    .submit(text, options.deliverAs === "steer" ? "steer" : "queue")
+    .catch((error: unknown) => {
+      console.error("[pi] MCP event message failed", error);
+    });
+});
 
 void bili
   .registerIdentity(String(boot.conversation.id))
@@ -263,8 +270,8 @@ const server = serve({ fetch: app.fetch, port }, (info) => {
     );
   }
   const toolParts = ["read", "bash", "edit", "write"];
-  if (boot.webTools !== undefined) {
-    toolParts.push(`${boot.webTools.tools.length} web MCP tools`);
+  if (boot.mcp.toolNames.length > 0) {
+    toolParts.push(`${boot.mcp.toolNames.length} MCP tools (${boot.mcp.serverNames.join(", ")})`);
   }
   if (boot.biliTools.length > 0) {
     toolParts.push(`${boot.biliTools.length} billion-context tools (${boot.biliTools.join(", ")})`);
@@ -279,7 +286,7 @@ async function shutdown(): Promise<void> {
   chat.beginShutdown();
   try {
     await chat.close();
-    await boot.webTools?.close();
+    await boot.mcp.close();
     await boot.harness.close(SESSION_CONTEXT);
   } catch (error) {
     console.error("[pi] shutdown failed", error);

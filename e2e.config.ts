@@ -12,7 +12,7 @@ export default {
         url: "http://127.0.0.1:0",
         command: {
           executable: process.execPath,
-          args: ["e2e/server.mjs"],
+          args: ["--import", "tsx", "e2e/server.mjs"],
           env: { PORT: "{port}" },
           inheritEnv: [
             "PI_E2E_LIVE",

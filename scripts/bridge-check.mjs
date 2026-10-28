@@ -247,22 +247,23 @@ async function checkBili(dataDir, conversationId) {
 }
 
 async function checkWeb() {
-  const { startWebTools } = await import(
-    new URL("../src/server/web-tools.ts", import.meta.url).href
+  const { startMcpRuntime } = await import(
+    new URL("../src/server/mcp-runtime.ts", import.meta.url).href
   );
-  const bridge = await startWebTools();
+  const mcp = await startMcpRuntime();
   try {
-    const names = (bridge?.tools ?? []).map((tool) => tool.name.replace(/^mcp__web__/, ""));
-    const child = bridge?.connected === true ? "alive" : "restarting";
+    const names = mcp.toolNames
+      .filter((name) => name.startsWith("web__"))
+      .map((name) => name.slice("web__".length));
     const expected = WEB_TOOL_NAMES.every((name) => names.includes(name));
     return {
-      ok: bridge !== undefined && expected && child === "alive",
+      ok: expected,
       tools: names.length,
       names,
-      child,
+      child: names.length > 0 ? "alive" : "missing",
     };
   } finally {
-    await bridge?.close();
+    await mcp.close();
   }
 }
 

@@ -39,6 +39,25 @@ if (!live) {
       2,
     ),
   );
+  writeFileSync(
+    join(agentDir, "mcp.json"),
+    JSON.stringify(
+      {
+        mcpServers: {
+          stub: {
+            command: process.execPath,
+            args: [join(import.meta.dirname, "stub-mcp.mjs")],
+          },
+          broken: {
+            command: process.execPath,
+            args: ["-e", "process.exit(1)"],
+          },
+        },
+      },
+      null,
+      2,
+    ),
+  );
   process.env.PI_CODING_AGENT_DIR = agentDir;
   process.env.PI_MODEL = "e2e/e2e-model";
   process.env.PI_OFFLINE = "1";

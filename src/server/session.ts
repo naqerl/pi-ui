@@ -30,9 +30,9 @@ import {
 } from "../shared/types.js";
 import { createAppRegistry } from "./app-registry.js";
 import type { BillionContextInline } from "./billion-context.js";
+import type { McpRuntime } from "./mcp-runtime.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
 import { type RunMarker, RunMarkerStore } from "./run-marker.js";
-import type { WebToolsBridge } from "./web-tools.js";
 
 export const SESSION_CONTEXT: Context = BACKGROUND_CONTEXT;
 
@@ -61,7 +61,7 @@ export interface DurableSessionBoot {
   readonly interrupted: boolean;
   readonly runMarker: RunMarker | undefined;
   readonly runMarkerStore: RunMarkerStore;
-  readonly webTools: WebToolsBridge | undefined;
+  readonly mcp: McpRuntime;
   readonly biliTools: readonly string[];
 }
 
@@ -74,7 +74,7 @@ export async function openDurableSession(
   await mkdir(dataDir, { recursive: true });
 
   const storage = await openNodeSqliteStorage(databasePath);
-  const { registry, webTools, biliTools } = await createAppRegistry({ bili: options.bili });
+  const { registry, mcp, biliTools } = await createAppRegistry({ bili: options.bili });
 
   const harness = await HarnessImpl.open(
     storage,
@@ -133,7 +133,7 @@ export async function openDurableSession(
     interrupted: recovery.recovered || runMarker !== undefined,
     runMarker,
     runMarkerStore,
-    webTools,
+    mcp,
     biliTools,
   };
 }
