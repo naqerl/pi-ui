@@ -5,10 +5,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import {
   AssistantEntry,
-  type CompactionPolicy,
   type Conversation,
   type ConversationId,
-  DEFAULT_COMPACTION_POLICY,
   type EntryRecord,
   type Harness,
   Harness as HarnessImpl,
@@ -28,23 +26,18 @@ import type {
   UsageSummary,
 } from "../shared/types.js";
 import { createAppRegistry } from "./app-registry.js";
+import type { BillionContextInline } from "./billion-context.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
 import type { WebToolsBridge } from "./web-tools.js";
 
 export const SESSION_CONTEXT: Context = BACKGROUND_CONTEXT;
-
-/**
- * One named compaction policy. These are the pi-ish defaults from pi-durable;
- * a later job switches compaction off here without touching the rest of the
- * session layer.
- */
-export const COMPACTION_POLICY: CompactionPolicy = { ...DEFAULT_COMPACTION_POLICY };
 
 export interface DurableSessionOptions {
   readonly cwd: string;
   readonly models: Parameters<typeof HarnessImpl.open>[1]["models"];
   readonly instructions: string;
   readonly model: ModelRef | undefined;
+  readonly bili?: BillionContextInline;
 }
 
 export interface DurableSessionBoot {
@@ -56,6 +49,7 @@ export interface DurableSessionBoot {
   readonly resumed: boolean;
   readonly interrupted: boolean;
   readonly webTools: WebToolsBridge | undefined;
+  readonly biliTools: readonly string[];
 }
 
 export async function openDurableSession(
@@ -67,7 +61,7 @@ export async function openDurableSession(
   await mkdir(dataDir, { recursive: true });
 
   const storage = await openNodeSqliteStorage(databasePath);
-  const { registry, webTools } = await createAppRegistry();
+  const { registry, webTools, biliTools } = await createAppRegistry({ bili: options.bili });
 
   const harness = await HarnessImpl.open(
     storage,
@@ -75,7 +69,12 @@ export async function openDurableSession(
       models: options.models,
       registry: registry as Registry,
       env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? options.cwd }),
-      settings: { compaction: COMPACTION_POLICY },
+      settings: {
+        // billion-context compresses the request on the wire. pi-durable's own
+        // compaction would remove messages before the bridge sees them, so it
+        // stays off; manual compaction remains available.
+        compaction: { enabled: false },
+      },
       onReport: (error) => console.error("[pi] harness report", error),
     },
     SESSION_CONTEXT,
@@ -99,6 +98,7 @@ export async function openDurableSession(
     resumed,
     interrupted,
     webTools,
+    biliTools,
   };
 }
 

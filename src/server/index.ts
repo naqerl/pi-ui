@@ -7,6 +7,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
+import { installBillionContextInline } from "./billion-context.js";
 import { BusyError, ChatService } from "./chat-service.js";
 import { createModelCatalog } from "./models.js";
 import { buildPiSystemPrompt } from "./pi.js";
@@ -30,7 +31,21 @@ if (!Number.isInteger(port) || port < 0 || port > 65535) {
   throw new Error(`Invalid PORT: ${process.env.PORT}`);
 }
 
+// Install billion-context before the durable harness exists, so the first
+// provider request already goes through the in-process wire engine.
+process.env.BILI_PI_INLINE ??= "1";
+const bili = await installBillionContextInline({
+  currentPath: resolve(cwd, process.env.DATA_DIR?.trim() || "data", "current.json"),
+});
+
 const catalog = await createModelCatalog();
+if (catalog.model !== undefined) {
+  bili.setModelMetadata({
+    model: catalog.model.id,
+    contextWindow: catalog.model.contextWindow,
+    maxOutput: catalog.model.maxTokens,
+  });
+}
 const instructions = await buildPiSystemPrompt(cwd, catalog.runtime);
 const boot = await openDurableSession({
   cwd,
@@ -40,6 +55,7 @@ const boot = await openDurableSession({
     catalog.model === undefined
       ? undefined
       : { provider: catalog.model.provider, modelId: catalog.model.id },
+  bili,
 });
 const hub = new StreamHub();
 const chat = new ChatService(
@@ -50,6 +66,17 @@ const chat = new ChatService(
   boot.interrupted,
 );
 await chat.start();
+
+void bili
+  .registerIdentity(String(boot.conversation.id))
+  .then((registered) => {
+    if (registered) {
+      console.log(`billion-context: registered conversation ${boot.conversation.id}`);
+    }
+  })
+  .catch((error: unknown) => {
+    console.warn(`billion-context: identity registration failed: ${String(error)}`);
+  });
 
 const app = new Hono();
 
@@ -211,11 +238,14 @@ const server = serve({ fetch: app.fetch, port }, (info) => {
   if (boot.interrupted) {
     console.log("previous run was interrupted; partial output was kept and the turn is idle");
   }
-  console.log(
-    boot.webTools === undefined
-      ? "tools: read, bash, edit, write (web tools unavailable)"
-      : `tools: read, bash, edit, write + ${boot.webTools.tools.length} web MCP tools`,
-  );
+  const toolParts = ["read", "bash", "edit", "write"];
+  if (boot.webTools !== undefined) {
+    toolParts.push(`${boot.webTools.tools.length} web MCP tools`);
+  }
+  if (boot.biliTools.length > 0) {
+    toolParts.push(`${boot.biliTools.length} billion-context tools (${boot.biliTools.join(", ")})`);
+  }
+  console.log(`tools: ${toolParts.join(" + ")}`);
 });
 
 let shuttingDown = false;

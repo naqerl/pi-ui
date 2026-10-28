@@ -2,7 +2,7 @@
 
 A minimal, single-conversation web UI for the [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) coding agent, with one durable conversation and no session management. It installs as a PWA and accepts text, titles, and URLs from the native share sheet on platforms that support Web Share Target.
 
-It ships as `ghcr.io/naqerl/pi-ui`. The container has no credentials baked in: your real pi agent directory is bind-mounted at runtime, so the UI uses your `auth.json` and the model catalog configured there. The conversation is stored in SQLite by `@earendil-works/pi-durable`; one host directory holds pi's working tree together with that database, so a whole session survives container replacement.
+It ships as `ghcr.io/naqerl/pi-ui`. The container has no credentials baked in: your real pi agent directory is bind-mounted at runtime, so the UI uses your `auth.json` and the model catalog configured there. The conversation is stored in SQLite by `@earendil-works/pi-durable`; one host directory holds pi's working tree together with that database, so a whole session survives container replacement. Context compression runs in-process through `billion-context`; its session/index data lives in a second host directory, `~/.local/share/billion-context`, which must also be writable and persistent.
 
 ## Quick start (local)
 
@@ -21,10 +21,11 @@ docker run -d --name pi-ui --restart unless-stopped \
   -p 8787:8787 \
   -v "${PI_WORK_DIR:-$HOME/pi-work}:/workspace" \
   -v "${PI_AGENT_DIR:-$HOME/.pi/agent}:/home/pi/.pi/agent" \
+  -v "${BILI_DATA_DIR:-$HOME/.local/share/billion-context}:/home/pi/.local/share/billion-context" \
   ghcr.io/naqerl/pi-ui:v1.1.0
 ```
 
-Open <http://localhost:8787>. The host working directory defaults to `~/pi-work`; create it first if `$HOME/pi-work` does not exist. The agent directory defaults to `~/.pi/agent`, which is the directory pi already uses on the host.
+Open <http://localhost:8787>. The host working directory defaults to `~/pi-work`; create it first if `$HOME/pi-work` does not exist. The agent directory defaults to `~/.pi/agent`, which is the directory pi already uses on the host. Create the compression-state directory before the first run too: `mkdir -p ~/.local/share/billion-context`.
 
 The compose file is the same setup with the paths and comments in one place:
 
@@ -34,7 +35,7 @@ docker compose up -d
 docker compose up -d --build
 ```
 
-Both host paths can be overridden with environment variables:
+The host paths can be overridden with environment variables:
 
 ```sh
 PI_WORK_DIR=$HOME/pi-session PI_AGENT_DIR=$HOME/.pi/agent PORT=9000 docker compose up -d
@@ -42,14 +43,19 @@ PI_WORK_DIR=$HOME/pi-session PI_AGENT_DIR=$HOME/.pi/agent PORT=9000 docker compo
 
 ### What comes from the mounts
 
-| Host mount                         | Container path       | What lives there                                                                                                                                                          |
-| ---------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `${PI_WORK_DIR:-./work}`           | `/workspace`         | pi's working tree, everything a session creates, and the durable conversation at `data/pi.sqlite3`. This is the single directory that backs a whole session.              |
-| `${PI_AGENT_DIR:-$HOME/.pi/agent}` | `/home/pi/.pi/agent` | Your real pi state: `auth.json`, `settings.json`, optional model overrides, installed pi packages, and pi's own history/state. Mounted read-write because pi writes here. |
+| Host mount                                             | Container path                          | What lives there                                                                                                                                                                                                                                        |
+| ------------------------------------------------------ | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `${PI_WORK_DIR:-./work}`                               | `/workspace`                            | pi's working tree, everything a session creates, and the durable conversation at `data/pi.sqlite3`. This is the single directory that backs a whole session.                                                                                            |
+| `${PI_AGENT_DIR:-$HOME/.pi/agent}`                     | `/home/pi/.pi/agent`                    | Your real pi state: `auth.json`, `settings.json`, optional model overrides, installed pi packages, and pi's own history/state. Mounted read-write because pi writes here. This mount supplies the provider credentials for both pi and billion-context. |
+| `${BILI_DATA_DIR:-$HOME/.local/share/billion-context}` | `/home/pi/.local/share/billion-context` | billion-context's in-process compression state: session files, `index.db`, and logs. Must be writable by uid 1000 and persistent.                                                                                                                       |
 
 The database is not a separate mount. It is created inside the workspace mount, so replacing the container keeps both the files pi worked on and the conversation that produced them.
 
 The image contains no `auth.json` and no API keys. Credentials reach the process only through the agent-directory mount.
+
+### Context compression state
+
+Billion-context is installed in inline mode. Its engine runs inside the server process and listens on the virtual origin `http://billion-context.inline`; an outermost fetch wrapper stamps each model request with the current durable conversation ID. The engine keeps its own session files and SQLite index under `~/.local/share/billion-context` (honoring `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, and `XDG_STATE_HOME` when set). That directory must be writable by the process and mounted persistently, or compression history is recreated after every container replacement. It does not contain credentials; provider credentials still come from `PI_CODING_AGENT_DIR` (`auth.json`) and the environment. Losing this directory costs compression continuity, not the durable chat transcript, which remains in `<DATA_DIR>/pi.sqlite3`.
 
 ## Configuration
 
@@ -65,7 +71,7 @@ The durable conversation is stored at `<DATA_DIR>/pi.sqlite3` (by default `<PI_C
 
 If the process is killed during a turn, the next boot keeps the committed transcript and marks the unfinished turn `interrupted` in `/api/state`. It does not replay the turn token by token; the composer accepts the next message instead.
 
-On boot the server logs the working directory, database path, conversation ID, whether it was resumed, and whether the previous run was interrupted. It also logs the selected model, or a clear warning when no credentials are available. The registry contains the coding tools (`read`, `bash`, `edit`, `write`) plus four deferred web tools (`mcp__web__web_search`, `mcp__web__fetch_content`, `mcp__web__get_search_content`, `mcp__web__source_check`) bridged from the `pi-web-access` MCP child. `tool_search` is installed so those deferred tools do not inflate the system prompt. Other MCP servers, coding-agent extensions, and codemode are not loaded.
+On boot the server logs the working directory, database path, conversation ID, whether it was resumed, and whether the previous run was interrupted. It also logs the selected model, or a clear warning when no credentials are available. The registry contains the coding tools (`read`, `bash`, `edit`, `write`) plus four deferred web tools (`mcp__web__web_search`, `mcp__web__fetch_content`, `mcp__web__get_search_content`, `mcp__web__source_check`) bridged from the `pi-web-access` MCP child. `tool_search` is installed so those deferred tools do not inflate the system prompt. When the inline engine answers `GET /__bili/plugin/manifest`, the registry also exposes its compression tools (`compress`, `decompress`, `search_context`, `acp_status`, `acp_cache`, `acp_read_original_image`); if the manifest is unreachable those tools are absent and the rest of the server still boots. Other MCP servers, coding-agent extensions, and codemode are not loaded.
 
 ## Install and share
 
@@ -95,10 +101,12 @@ GHCR creates a new package as private on first push. Set the `pi-ui` package's v
 - No accounts, authentication, telemetry, or analytics.
 - No model picker, working-directory picker, settings page, or configuration UI.
 - No attachments, file browser, markdown editor, message editing, or retry controls.
-- No arbitrary MCP servers, codemode, or coding-agent extensions. The only MCP child is the bundled `pi-web-access` server behind the four `mcp__web__*` tools; `tool_search` exposes them on demand.
+- No arbitrary MCP servers, codemode, or coding-agent extensions. The only MCP child is the bundled `pi-web-access` server behind the four `mcp__web__*` tools; `tool_search` exposes them on demand. Billion-context is not spawned as a proxy or extension: it runs in-process in inline mode and only adds its own compression tools when its manifest is reachable.
 - No unit tests, test framework, or end-to-end browser harness.
 - No markdown rendering, syntax highlighting, syntax-aware code blocks, or rich tool output in the transcript.
 
 ## SDK notes
 
 The session layer is `@earendil-works/pi-durable` over `openNodeSqliteStorage()` at `<DATA_DIR>/pi.sqlite3`. User input goes through `Conversation.submit()`; streaming comes from `watchEvents()` and is adapted to the same SSE event names in `src/server/chat-service.ts`. The coding tools come from `createCodingTools()` and are installed with `createRegistry()` and `defineExtension()`. The model catalog is built with the installed coding agent's `ModelRuntime.create()`, following `dist/core/model-runtime.js`: it reads `auth.json`, optional `models-store.json` overrides, and the built-in pi-ai provider catalog from `PI_CODING_AGENT_DIR`. The system prompt is still built by the coding agent's `createAgentSession()`/`DefaultResourceLoader` path from `src/server/pi.ts`, then stored as the durable conversation's `instructions`. `/api/state` reports usage (`input`, `output`, `cacheRead`, `cacheWrite`, `cost`) and context usage from durable usage documents. `PI_MODEL` selection is best-effort: if the requested model cannot be selected, the server warns and keeps the configured default instead of failing to boot.
+
+At bootstrap, before the durable harness exists, `src/server/billion-context.ts` imports `billion-context`'s pi-native entry, keeps its in-process fetch transport, and installs the pi-ui identity wrapper outermost. Every model request is rewritten to `http://billion-context.inline/bili/<provider URL>` and stamped with `x-bili-plugin-conversation` (read from `<DATA_DIR>/current.json`), `x-bili-plugin-agent: pi`, and — once the model catalog is available — the selected model's `x-bili-plugin-model`, `x-bili-plugin-context-window`, and `x-bili-plugin-max-output` limits. The wrapper passes the original method, headers, body stream, and response stream through untouched; it never buffers or re-serialises an SSE response. The one conversation is registered with `POST /__bili/plugin/register` after boot without blocking it. Because the wrapper resolves a single global `current.json`, this design assumes the UI's one-conversation model; a future multi-conversation feature must stamp from the request's durable conversation instead. Automatic pi-durable compaction is disabled so billion-context owns compression; manual compaction still works. `node scripts/bridge-check.mjs --bili` prints the origin, registration, an observed proxied request, the applied conversation header, and either one real model turn or `skipped: no provider credentials`.

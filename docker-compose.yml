@@ -1,4 +1,4 @@
-# Documentation that runs: the two host paths below are the complete runtime state.
+# Documentation that runs: the host paths below are the complete runtime state.
 # The image itself contains no credentials and no extensions.
 services:
   pi-ui:
@@ -22,4 +22,8 @@ services:
       # Read-write because pi updates state/history here. auth.json and the model
       # catalog (settings.json, models-store.json, installed pi packages) come from this mount.
       - "${PI_AGENT_DIR:-$HOME/.pi/agent}:/home/pi/.pi/agent"
+      # billion-context sessions/index. Must be writable by uid 1000 and persist
+      # across container replacement, or compression history is lost.
+      # Create it first on the host: mkdir -p ~/.local/share/billion-context
+      - "${BILI_DATA_DIR:-$HOME/.local/share/billion-context}:/home/pi/.local/share/billion-context"
     restart: unless-stopped
