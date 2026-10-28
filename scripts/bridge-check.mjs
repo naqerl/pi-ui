@@ -76,6 +76,10 @@ async function checkModels() {
   const { createModelCatalog } = await import(
     new URL("../src/server/models.ts", import.meta.url).href
   );
+  // The catalog logs the selected model to stdout when it boots. Keep stdout for the
+  // report only, and send that operational line to stderr instead.
+  const originalLog = console.log;
+  console.log = (...args) => console.error(...args);
   try {
     const catalog = await createModelCatalog();
     const model = catalog.model;
@@ -101,6 +105,8 @@ async function checkModels() {
       credentials: "missing",
       ok: false,
     };
+  } finally {
+    console.log = originalLog;
   }
 }
 
@@ -111,9 +117,10 @@ async function checkDurable(cwd, dataDir, models) {
   const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
 
   const currentPath = join(dataDir, "current.json");
-  const storage = await openNodeSqliteStorage(join(dataDir, "pi.sqlite3"));
+  let storage;
   let harness;
   try {
+    storage = await openNodeSqliteStorage(join(dataDir, "pi.sqlite3"));
     harness = await Harness.open(
       storage,
       { models, registry: createRegistry() },
@@ -149,7 +156,11 @@ async function checkDurable(cwd, dataDir, models) {
     console.error(`[bridge-check] durable check failed: ${errorMessage(error)}`);
     return { ok: false };
   } finally {
-    await harness?.close(BACKGROUND_CONTEXT).catch(() => undefined);
+    if (harness !== undefined) {
+      await harness.close(BACKGROUND_CONTEXT).catch(() => undefined);
+    } else if (storage !== undefined) {
+      await storage.close(BACKGROUND_CONTEXT).catch(() => undefined);
+    }
   }
 }
 
@@ -292,22 +303,22 @@ async function main() {
 
       const durable = await checkDurable(cwd, dataDir, models.runtime);
       if (!durable.ok) requiredMissing = true;
-      if (durable.ok) {
-        report.push(
-          `durable   conversation=${durable.id} entries=${durable.entries} resumed=${String(durable.resumed)}`,
-        );
-      }
+      report.push(
+        durable.ok
+          ? `durable   conversation=${durable.id} entries=${durable.entries} resumed=${String(durable.resumed)}`
+          : "durable   conversation=unavailable entries=0 resumed=false",
+      );
       report.push(
         `models    provider=${models.provider} model=${models.model} credentials=${models.credentials}`,
       );
 
-      if (durable.ok) {
-        const bili = await checkBili(dataDir, options.conversationId);
-        if (!bili.ok) requiredMissing = true;
-        report.push(
-          `bili      origin=${bili.origin} header=${BILI_HEADER}=${bili.id} rewritten=${bili.rewritten} status=${bili.status}`,
-        );
-      }
+      const bili = durable.ok
+        ? await checkBili(dataDir, options.conversationId)
+        : { ok: false, origin: "unavailable", id: "missing", rewritten: 0, status: "unavailable" };
+      if (!bili.ok) requiredMissing = true;
+      report.push(
+        `bili      origin=${bili.origin} header=${BILI_HEADER}=${bili.id} rewritten=${bili.rewritten} status=${bili.status}`,
+      );
     }
 
     if (options.web) {
