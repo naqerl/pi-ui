@@ -4,7 +4,7 @@ import {
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import type { BillionContextInline } from "./billion-context.js";
-import { jsonSchemaToTypeBox } from "./web-tools.js";
+import { jsonSchemaToTypeBox } from "./json-schema.js";
 
 /**
  * Expose billion-context's compression tools only when the in-process engine

@@ -51,4 +51,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -fsS "http://127.0.0.1:${PORT:-8787}/" || exit 1
 
 STOPSIGNAL SIGTERM
-ENTRYPOINT ["node", "dist/server/index.js"]
+ENTRYPOINT ["node", "--import", "tsx", "dist/server/index.js"]

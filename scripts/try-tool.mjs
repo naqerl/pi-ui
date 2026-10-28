@@ -6,20 +6,17 @@ import { register } from "tsx/esm/api";
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const unregister = register({ tsconfig: resolve(root, "tsconfig.json") });
 
-const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
-
 function usage() {
   console.error(
-    "usage: node scripts/try-tool.mjs <web tool> [json arguments] [--kill-child]\n" +
-      '  example: node scripts/try-tool.mjs web_search \'{"query":"pi coding agent","provider":"duckduckgo"}\'',
+    "usage: node scripts/try-tool.mjs <tool> [json arguments]\n" +
+      '  example: node scripts/try-tool.mjs web_search \'{"query":"pi coding agent","provider":"duckduckgo"}\'\n' +
+      "  tool names are <server>__<tool> (or a bare web tool for the built-in web server)",
   );
 }
 
 async function main() {
   const args = process.argv.slice(2);
-  const killChild = args.includes("--kill-child");
-  const positional = args.filter((arg) => arg !== "--kill-child");
-  const requested = positional[0];
+  const requested = args[0];
   if (!requested) {
     usage();
     process.exitCode = 1;
@@ -27,9 +24,9 @@ async function main() {
   }
 
   let toolArguments = {};
-  if (positional[1] !== undefined) {
+  if (args[1] !== undefined) {
     try {
-      const parsed = JSON.parse(positional[1]);
+      const parsed = JSON.parse(args[1]);
       if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
         throw new Error("tool arguments must be a JSON object");
       }
@@ -41,54 +38,27 @@ async function main() {
     }
   }
 
-  const { createAppRegistry } = await import(
-    new URL("../src/server/app-registry.ts", import.meta.url).href
+  const { mcp } = await import(new URL("../src/server/app-registry.ts", import.meta.url).href).then(
+    (module) => module.createAppRegistry(),
   );
-  const { registry, webTools } = await createAppRegistry();
-  if (webTools === undefined) {
-    console.error("web tools are unavailable");
-    process.exitCode = 1;
-    return;
-  }
-
   try {
-    const name = requested.startsWith("mcp__web__") ? requested : `mcp__web__${requested}`;
-    const entry = registry
-      .snapshot()
-      .tools()
-      .find((candidate) => candidate.tool.name === name);
-    if (entry === undefined) {
+    const name = requested.includes("__") ? requested : `web__${requested}`;
+    const tool = mcp.tools.find((candidate) => candidate.name === name);
+    if (tool === undefined) {
       console.error(`unknown tool: ${name}`);
+      console.error(`available: ${mcp.toolNames.join(", ")}`);
       process.exitCode = 1;
       return;
     }
 
-    if (killChild) {
-      const pid = webTools.pid;
-      if (pid === undefined) throw new Error("the web MCP child has no process ID");
-      process.kill(pid, "SIGKILL");
-      const deadline = Date.now() + 5_000;
-      while (webTools.connected && Date.now() < deadline) await sleep(25);
-      if (webTools.connected) throw new Error("the web MCP child did not exit");
-    }
-
-    const result = await entry.tool.execute(toolArguments, {}, {});
+    const result = await tool.execute(
+      toolArguments,
+      { callId: "try-tool" },
+      { abortSignal: new AbortController().signal },
+    );
     console.log(JSON.stringify({ tool: name, result }, null, 2));
-
-    if (killChild) {
-      const text = Array.isArray(result.output)
-        ? result.output
-            .filter((block) => block.type === "text")
-            .map((block) => block.text)
-            .join("\n")
-        : "";
-      if (result.isError !== true || !text.includes("web tools are starting")) {
-        console.error("expected a graceful 'web tools are starting' error result");
-        process.exitCode = 1;
-      }
-    }
   } finally {
-    await webTools.close();
+    await mcp.close();
   }
 }
 
