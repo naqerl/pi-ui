@@ -100,6 +100,14 @@ export async function installBillionContextInline(
 
   process.env.BILI_PI_INLINE ??= "1";
 
+  // billion-context still parses ACP_PORT/PORT as a listening port even in
+  // inline mode, where it never binds one. PORT=0 is node's "pick an ephemeral
+  // port" convention and is valid for the pi-ui HTTP server, but the engine
+  // rejects it; give the engine its documented override instead.
+  if (process.env.PORT === "0" && process.env.ACP_PORT === undefined) {
+    process.env.ACP_PORT = "8787";
+  }
+
   const hadChain = (globalThis as unknown as Record<symbol, unknown>)[INTERCEPT_FLAG] === true;
   if (hadChain) {
     console.warn(
@@ -123,7 +131,10 @@ export async function installBillionContextInline(
 
   ensureBillionContextDirs();
 
-  const inlineFetch = await importPiNativeAndCaptureInlineFetch();
+  // A pre-existing chain already contains the inline transport. Importing
+  // pi-native again would see the chain flag and decline to install, leaving no
+  // accessor to capture (and previously threw); reuse the live chain instead.
+  const inlineFetch = hadChain ? globalThis.fetch : await importPiNativeAndCaptureInlineFetch();
   let fallbackConversationId: string | undefined;
 
   // pi-ui has exactly one durable conversation, so one boot-time path is
@@ -323,7 +334,11 @@ async function importPiNativeAndCaptureInlineFetch(): Promise<typeof globalThis.
     Object.defineProperty = realDefineProperty;
   }
 
-  const inlineFetch = captures[0];
+  const inlineFetch =
+    captures[0] ??
+    ((globalThis as unknown as Record<symbol, unknown>)[INTERCEPT_FLAG] === true
+      ? globalThis.fetch
+      : undefined);
   if (inlineFetch === undefined) {
     throw new Error("billion-context did not install its inline fetch transport");
   }

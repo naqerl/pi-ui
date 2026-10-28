@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { register } from "tsx/esm/api";
@@ -26,27 +26,6 @@ function readConversationId(path) {
     // No durable conversation yet; the check still exercises the wire identity.
   }
   return undefined;
-}
-
-function hasProviderCredentials() {
-  const agentDir = process.env.PI_CODING_AGENT_DIR?.trim();
-  const authDir = agentDir && agentDir.length > 0 ? agentDir : join(homedir(), ".pi", "agent");
-  const authPath = join(authDir, "auth.json");
-  try {
-    const auth = JSON.parse(readFileSync(authPath, "utf8"));
-    if (auth !== null && typeof auth === "object" && Object.keys(auth).length > 0) return true;
-  } catch {
-    // Fall through to environment credentials.
-  }
-  const envNames = [
-    "ANTHROPIC_API_KEY",
-    "OPENAI_API_KEY",
-    "GOOGLE_API_KEY",
-    "GEMINI_API_KEY",
-    "OPENROUTER_API_KEY",
-    "ZEROSHOT_API_KEY",
-  ];
-  return envNames.some((name) => (process.env[name]?.trim().length ?? 0) > 0);
 }
 
 function statusNumbers(status) {
@@ -189,10 +168,9 @@ async function main() {
     return 1;
   }
 
-  if (!hasProviderCredentials()) {
-    console.log("model turn: skipped: no provider credentials");
-    return 0;
-  }
+  // runModelTurn asks the same ModelRuntime the server uses, so credentials
+  // resolved from models.json (for example an apiKey of "$GATEWAY_API_KEY")
+  // count here too; only a genuinely unauthenticated runtime skips the turn.
   return (await runModelTurn(bili, cwd)) ? 0 : 1;
 }
 
