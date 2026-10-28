@@ -11,6 +11,7 @@ import {
   type EntryRecord,
   type Harness,
   Harness as HarnessImpl,
+  LiveDoc,
   type ModelRef,
   type Registry,
   ToolResultEntry,
@@ -101,13 +102,19 @@ export async function openDurableSession(
   await conversation.configure(agent, SESSION_CONTEXT);
 
   const runMarkerStore = new RunMarkerStore(dataDir);
-  const recoveredWork = await recoverInterruptedRun(harness, conversation);
-  let runMarker = await runMarkerStore.read();
+  const storedMarker = await runMarkerStore.read();
+  const recovery = await recoverInterruptedRun(harness, conversation);
+  let runMarker = storedMarker;
   if (runMarker !== undefined && runMarker.partialEntryId === null) {
     const context = await conversation.context(SESSION_CONTEXT);
+    const partialEntryId =
+      interruptedAssistantEntryId(context.entries, runMarker) ??
+      (recovery.partial === undefined
+        ? null
+        : await appendCapturedPartial(conversation, recovery.partial));
     runMarker = {
       ...runMarker,
-      partialEntryId: lastAssistantEntryId(context.entries),
+      partialEntryId,
       updatedAt: new Date().toISOString(),
     };
     await runMarkerStore.write(runMarker);
@@ -123,7 +130,7 @@ export async function openDurableSession(
     databasePath,
     currentPath,
     resumed,
-    interrupted: recoveredWork || runMarker !== undefined,
+    interrupted: recovery.recovered || runMarker !== undefined,
     runMarker,
     runMarkerStore,
     webTools,
@@ -201,15 +208,17 @@ async function writeCurrentConversationId(
 async function recoverInterruptedRun(
   harness: Harness,
   conversation: Conversation,
-): Promise<boolean> {
+): Promise<{ recovered: boolean; partial: AssistantMessage | undefined }> {
   const inspection = await harness.inspect(SESSION_CONTEXT);
   const unfinished =
     inspection.tasks.length > 0 ||
     inspection.submissions.some(
       (submission) => submission.status === "queued" || submission.status === "placed",
     );
-  if (!unfinished) return false;
+  if (!unfinished) return { recovered: false, partial: undefined };
 
+  const live = await harness.snapshot(LiveDoc, conversation.id, SESSION_CONTEXT);
+  const captured = live?.generation?.message;
   console.warn(
     `[pi] conversation ${conversation.id} has unfinished work from the previous process; marking it interrupted`,
   );
@@ -218,15 +227,77 @@ async function recoverInterruptedRun(
   } catch (error) {
     console.error("[pi] could not abort the interrupted run", error);
   }
-  return true;
+  return {
+    recovered: true,
+    partial: captured === undefined ? undefined : (captured as unknown as AssistantMessage),
+  };
 }
 
-function lastAssistantEntryId(entries: readonly EntryRecord[]): number | null {
+async function appendCapturedPartial(
+  conversation: Conversation,
+  message: AssistantMessage,
+): Promise<number | null> {
+  const record = asRecord(message);
+  const hasText = extractText(record.content).trim().length > 0;
+  const hasThinking = contentBlocks(record.content).some(
+    (block) =>
+      block.type === "thinking" &&
+      typeof block.thinking === "string" &&
+      block.thinking.trim().length > 0,
+  );
+  if (!hasText && !hasThinking) return null;
+
+  const partial = { ...record, stopReason: "aborted" } as unknown as AssistantMessage;
+  const entry = await conversation.commit(
+    (tx) => tx.appendEntry(AssistantEntry, conversation.id, { model: [partial] }),
+    SESSION_CONTEXT,
+  );
+  return entry.id;
+}
+
+/**
+ * The assistant entry the interrupted run produced. A marker can outlive the
+ * turn, so restrict the lookup to entries after the user message that started
+ * the marked run: the previous completed answer must never be labelled partial
+ * when the new turn died before committing an answer of its own.
+ */
+function interruptedAssistantEntryId(
+  entries: readonly EntryRecord[],
+  marker: RunMarker,
+): number | null {
+  const startedAt = Date.parse(marker.startedAt);
+  const hasStartedAt = Number.isFinite(startedAt);
+  const markerText = marker.userMessage.trim();
+  let boundary: number | null = null;
+
+  for (const entry of entries) {
+    if (entry.kind !== UserEntry.kind && entry.kind !== STEER_ENTRY_KIND) continue;
+    const message = asRecord(entry.model?.[0]);
+    if (extractText(message.content).trim() !== markerText) continue;
+    if (hasStartedAt && !messageAtOrAfter(message, startedAt)) continue;
+    if (boundary === null || entry.id > boundary) boundary = entry.id;
+  }
+
   let id: number | null = null;
   for (const entry of entries) {
-    if (AssistantEntry.is(entry)) id = entry.id;
+    if (!AssistantEntry.is(entry)) continue;
+    if (boundary !== null) {
+      if (entry.id <= boundary) continue;
+    } else {
+      const message = asRecord(entry.model?.[0]);
+      if (!hasStartedAt || !messageAfter(message, startedAt)) continue;
+    }
+    id = entry.id;
   }
   return id;
+}
+
+function messageAtOrAfter(message: Record<string, unknown>, startedAt: number): boolean {
+  return typeof message.timestamp === "number" && message.timestamp >= startedAt;
+}
+
+function messageAfter(message: Record<string, unknown>, startedAt: number): boolean {
+  return typeof message.timestamp === "number" && message.timestamp > startedAt;
 }
 
 async function appendInterruptionNote(
