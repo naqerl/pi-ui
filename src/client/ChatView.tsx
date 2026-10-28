@@ -178,6 +178,7 @@ function QueueStack({
 const LONG_PRESS_MS = 500;
 const LONG_PRESS_MOVE_PX = 10;
 const STEER_HINT_KEY = "pi-ui:steer-long-press-hint";
+const ACTION_BUTTON_CLASS = "h-9 w-full";
 
 function computedLineHeight(element: HTMLElement): number {
   const style = getComputedStyle(element);
@@ -427,7 +428,7 @@ function Composer({
 
   return (
     <form
-      className="bg-background pb-[env(safe-area-inset-bottom)]"
+      className="pb-[env(safe-area-inset-bottom)]"
       onSubmit={(event) => {
         event.preventDefault();
         void submit("queue");
@@ -455,7 +456,7 @@ function Composer({
               key="stop"
               type="button"
               variant="outline"
-              className="h-9 w-full"
+              className={ACTION_BUTTON_CLASS}
               onClick={() => void stop()}
             >
               Stop
@@ -465,7 +466,7 @@ function Composer({
               key="steer"
               type="button"
               aria-label={holdingSteer ? "Steer (release to queue)" : "Steer"}
-              className={cn("h-9 w-full", holdingSteer && "bg-muted text-foreground")}
+              className={cn(ACTION_BUTTON_CLASS, holdingSteer && "bg-muted text-foreground")}
               onClick={handleSteerClick}
               onPointerDown={handleSteerPointerDown}
               onPointerMove={handleSteerPointerMove}
@@ -475,7 +476,7 @@ function Composer({
               {holdingSteer ? "Queue…" : "Steer"}
             </Button>
           ) : (
-            <Button key="send" type="submit" className="h-9 w-full" disabled={!canSend}>
+            <Button key="send" type="submit" className={ACTION_BUTTON_CLASS} disabled={!canSend}>
               Send
             </Button>
           )}
@@ -551,18 +552,10 @@ export function ChatView({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="border-b border-border pt-[env(safe-area-inset-top)]">
-        <div className="mx-auto flex h-10 w-full max-w-[72ch] items-center px-4">
-          <a href="/" className="text-sm font-medium text-foreground">
-            pi
-          </a>
-        </div>
-      </header>
-
       {interrupted && (
         <div
           role="status"
-          className="border-b border-border bg-muted/40 py-1.5 text-center font-mono text-[11px] text-muted-foreground"
+          className="shrink-0 border-b border-border bg-muted/40 py-1.5 text-center font-mono text-[11px] text-muted-foreground"
         >
           ⚠ run interrupted — the last response may be partial
         </div>
@@ -570,6 +563,14 @@ export function ChatView({
 
       <div className="relative min-h-0 flex-1">
         <main ref={stick.containerRef} className="h-full overflow-y-auto">
+          <header className="sticky top-0 z-10 border-b border-border bg-black/85 pt-[env(safe-area-inset-top)] backdrop-blur-md supports-[backdrop-filter]:bg-black/60">
+            <div className="mx-auto flex h-10 w-full max-w-[72ch] items-center px-4">
+              <a href="/" className="text-sm font-medium text-foreground">
+                pi
+              </a>
+            </div>
+          </header>
+
           <div
             ref={stick.contentRef}
             className="mx-auto flex w-full max-w-[72ch] flex-col gap-3 px-4 py-4"
@@ -593,7 +594,7 @@ export function ChatView({
           <div className="pointer-events-none absolute inset-x-0 bottom-2 flex justify-center">
             <button
               type="button"
-              className="pointer-events-auto border border-border bg-background px-2 py-1 font-mono text-[11px] text-muted-foreground hover:text-foreground"
+              className="pointer-events-auto border border-border bg-black/85 px-2 py-1 font-mono text-[11px] text-white/90 backdrop-blur-md hover:text-white supports-[backdrop-filter]:bg-black/60"
               onClick={stick.scrollToBottom}
             >
               ↓ latest
@@ -602,7 +603,7 @@ export function ChatView({
         )}
       </div>
 
-      <div className="shrink-0 border-t border-border bg-background">
+      <div className="shrink-0 border-t border-border bg-black/85 backdrop-blur-md supports-[backdrop-filter]:bg-black/60">
         <QueueStack queue={queue} running={running} onCancel={cancelQueued} onSteer={steerQueued} />
         <div className="h-7 shrink-0" aria-live="polite">
           <WorkingIndicator running={running} startedAt={runStartedAt} activity={currentActivity} />
