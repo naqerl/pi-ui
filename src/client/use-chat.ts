@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ActivityItem,
   ChatMessage,
+  MessageMode,
+  QueuedMessage,
   Snapshot,
   StreamMessageDone,
   StreamRunState,
@@ -31,6 +33,8 @@ export function useChat() {
   const [draftText, setDraftText] = useState("");
   const [draftThinking, setDraftThinking] = useState("");
   const [running, setRunning] = useState(false);
+  const [runStartedAt, setRunStartedAt] = useState<string | null>(null);
+  const [queue, setQueue] = useState<QueuedMessage[]>([]);
   const [ready, setReady] = useState(false);
   const refreshSequence = useRef(0);
 
@@ -46,6 +50,8 @@ export function useChat() {
       const persistedActivityIds = new Set(snapshot.activity.map((item) => item.id));
       setLiveTools((current) => current.filter((item) => !persistedActivityIds.has(item.id)));
       setRunning(snapshot.run === "running");
+      setRunStartedAt(snapshot.runStartedAt ?? null);
+      setQueue(snapshot.queue);
       setReady(true);
     } catch {
       // The SSE connection will keep the UI usable once the server is reachable again.
@@ -66,6 +72,8 @@ export function useChat() {
       const data = parseEvent<StreamRunState>(event as MessageEvent<string>);
       if (!data) return;
       setRunning(data.state === "running");
+      setRunStartedAt(data.startedAt ?? null);
+      if (data.queue !== undefined) setQueue(data.queue);
       if (data.state !== "running") {
         setDraftText("");
         setDraftThinking("");
@@ -179,15 +187,15 @@ export function useChat() {
   }, [messages, activity, liveTools, draftText, draftThinking]);
 
   const send = useCallback(
-    async (text: string): Promise<boolean> => {
+    async (text: string, mode: MessageMode = "queue"): Promise<boolean> => {
       const trimmed = text.trim();
-      if (trimmed.length === 0 || running) return false;
+      if (trimmed.length === 0) return false;
 
       try {
         const response = await fetch("/api/message", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: trimmed }),
+          body: JSON.stringify({ text: trimmed, mode }),
         });
         if (response.status === 409) {
           await refreshState();
@@ -195,21 +203,67 @@ export function useChat() {
         }
         if (!response.ok) return false;
         const data = (await response.json()) as SubmitMessageResponse;
-        setMessages((current) =>
-          current.some((item) => item.id === data.message.id)
-            ? current
-            : [...current, data.message],
-        );
-        setRunning(true);
-        setDraftText("");
-        setDraftThinking("");
-        setLiveTools([]);
+        setQueue(data.queue);
+        if (!data.queued && !running) {
+          setRunning(true);
+          setRunStartedAt(new Date().toISOString());
+          setDraftText("");
+          setDraftThinking("");
+          setLiveTools([]);
+        }
+        if (!data.queued && data.placed) {
+          setMessages((current) =>
+            current.some((item) => item.id === data.message.id)
+              ? current
+              : [...current, data.message],
+          );
+        }
         return true;
       } catch {
         return false;
       }
     },
     [running, refreshState],
+  );
+
+  const cancelQueued = useCallback(async (id: string): Promise<boolean> => {
+    try {
+      const response = await fetch(`/api/queue/${encodeURIComponent(id)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "cancel" }),
+      });
+      if (!response.ok) return false;
+      const data = (await response.json()) as { queue?: QueuedMessage[] };
+      if (data.queue !== undefined) setQueue(data.queue);
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const steerQueued = useCallback(
+    async (id: string): Promise<boolean> => {
+      try {
+        const response = await fetch(`/api/queue/${encodeURIComponent(id)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "steer" }),
+        });
+        if (response.status === 404) {
+          await refreshState();
+          return false;
+        }
+        if (!response.ok) return false;
+        const data = (await response.json()) as SubmitMessageResponse;
+        setQueue(data.queue);
+        setRunning(true);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [refreshState],
   );
 
   const stop = useCallback(async () => {
@@ -221,5 +275,15 @@ export function useChat() {
     }
   }, [refreshState]);
 
-  return { timeline, running, ready, send, stop };
+  return {
+    timeline,
+    running,
+    runStartedAt,
+    queue,
+    ready,
+    send,
+    cancelQueued,
+    steerQueued,
+    stop,
+  };
 }

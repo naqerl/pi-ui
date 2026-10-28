@@ -15,8 +15,12 @@ export function App() {
     <ChatView
       timeline={chat.timeline}
       running={chat.running}
+      runStartedAt={chat.runStartedAt}
+      queue={chat.queue}
       ready={chat.ready}
       send={chat.send}
+      cancelQueued={chat.cancelQueued}
+      steerQueued={chat.steerQueued}
       stop={chat.stop}
     />
   );

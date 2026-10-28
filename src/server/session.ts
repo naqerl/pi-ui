@@ -18,12 +18,13 @@ import {
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import type {
-  ActivityItem,
-  ChatMessage,
-  ContextUsage,
-  ToolActivity,
-  UsageSummary,
+import {
+  type ActivityItem,
+  type ChatMessage,
+  type ContextUsage,
+  STEER_ENTRY_KIND,
+  type ToolActivity,
+  type UsageSummary,
 } from "../shared/types.js";
 import { createAppRegistry } from "./app-registry.js";
 import type { BillionContextInline } from "./billion-context.js";
@@ -216,11 +217,16 @@ export function buildTranscript(entries: readonly EntryRecord[]): {
 
   for (const entry of sorted) {
     const kind = entry.kind;
-    if (kind !== UserEntry.kind && kind !== AssistantEntry.kind && kind !== ToolResultEntry.kind) {
+    if (
+      kind !== UserEntry.kind &&
+      kind !== STEER_ENTRY_KIND &&
+      kind !== AssistantEntry.kind &&
+      kind !== ToolResultEntry.kind
+    ) {
       continue;
     }
     const message = asRecord(entry.model?.[0]);
-    if (kind === UserEntry.kind) {
+    if (kind === UserEntry.kind || kind === STEER_ENTRY_KIND) {
       const text = extractText(message.content);
       if (text.length > 0) {
         messages.push({
@@ -229,6 +235,7 @@ export function buildTranscript(entries: readonly EntryRecord[]): {
           text,
           timestamp: timestampOf(message),
           order: entry.id * 10_000,
+          ...(kind === STEER_ENTRY_KIND ? { steer: true } : {}),
         });
       }
       continue;

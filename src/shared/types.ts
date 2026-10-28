@@ -1,5 +1,10 @@
 export type RunState = "idle" | "running" | "interrupted";
 
+/** Entry kind used for a steered user message, so the transcript can mark it. */
+export const STEER_ENTRY_KIND = "ui.steer";
+
+export type MessageMode = "queue" | "steer";
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
@@ -8,6 +13,15 @@ export interface ChatMessage {
   /** Monotonic ordering key used to interleave messages and activity. */
   order: number;
   isError?: boolean;
+  /** True for a message injected into a running turn. */
+  steer?: boolean;
+}
+
+/** One message waiting for the current run to finish. */
+export interface QueuedMessage {
+  id: string;
+  text: string;
+  createdAt: string;
 }
 
 export interface ToolActivity {
@@ -57,12 +71,20 @@ export interface Snapshot {
   messages: ChatMessage[];
   activity: ActivityItem[];
   run: RunState;
+  runStartedAt?: string;
+  queue: QueuedMessage[];
   usage: UsageSummary;
   context: ContextUsage;
 }
 
 export interface SubmitMessageResponse {
   message: ChatMessage;
+  mode: MessageMode;
+  /** True while the message is held for the next run instead of being in the transcript. */
+  queued: boolean;
+  /** False when the transcript entry has not been placed yet. */
+  placed: boolean;
+  queue: QueuedMessage[];
 }
 
 export interface HealthResponse {
@@ -96,4 +118,6 @@ export interface StreamTextDelta {
 
 export interface StreamRunState {
   state: RunState;
+  startedAt?: string | null;
+  queue?: QueuedMessage[];
 }

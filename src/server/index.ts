@@ -8,7 +8,7 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { installBillionContextInline } from "./billion-context.js";
-import { BusyError, ChatService } from "./chat-service.js";
+import { ChatService } from "./chat-service.js";
 import { createModelCatalog } from "./models.js";
 import { buildPiSystemPrompt } from "./pi.js";
 import { type DurableSessionOptions, openDurableSession, SESSION_CONTEXT } from "./session.js";
@@ -96,19 +96,42 @@ app.post("/api/message", async (c) => {
       ? body.text.trim()
       : "";
   if (text.length === 0) return c.text("Message text is required", 400);
-
-  try {
-    const message = await chat.submit(text);
-    return c.json({ message }, 202);
-  } catch (error) {
-    if (error instanceof BusyError) return c.text(error.message, 409);
-    throw error;
+  const rawMode =
+    typeof body === "object" && body !== null && "mode" in body ? body.mode : undefined;
+  if (rawMode !== undefined && rawMode !== "queue" && rawMode !== "steer") {
+    return c.text('Mode must be "queue" or "steer"', 400);
   }
+  const mode = rawMode === "steer" ? "steer" : "queue";
+
+  return c.json(await chat.submit(text, mode), 202);
+});
+
+app.post("/api/queue/:id", async (c) => {
+  const id = c.req.param("id");
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.text("Expected a JSON body", 400);
+  }
+  const action =
+    typeof body === "object" && body !== null && "action" in body ? body.action : undefined;
+  if (action === "cancel") {
+    const ok = await chat.cancelQueued(id);
+    if (!ok) return c.notFound();
+    return c.json({ ok: true, queue: (await chat.getSnapshot()).queue });
+  }
+  if (action === "steer") {
+    const result = await chat.steerQueued(id);
+    if (result === null) return c.notFound();
+    return c.json(result, 202);
+  }
+  return c.text('Action must be "cancel" or "steer"', 400);
 });
 
 app.post("/api/stop", async (c) => {
   await chat.stop();
-  return c.json({ ok: true });
+  return c.json({ ok: true, queue: (await chat.getSnapshot()).queue });
 });
 
 app.get("/api/stream", (c) => {
@@ -134,7 +157,7 @@ app.get("/api/stream", (c) => {
     });
 
     try {
-      await client.send({ event: "run.state", data: { state: chat.getState() } });
+      await client.send({ event: "run.state", data: chat.getRunStatus() });
       for (const frame of chat.replayFrames()) {
         await client.send(frame);
       }
@@ -158,13 +181,8 @@ function sharedText(title: string, text: string, url: string): string {
 async function submitShared(c: Context, title: string, text: string, url: string) {
   const message = sharedText(title, text, url);
   if (message.length === 0) return c.redirect("/", 303);
-  try {
-    await chat.submit(message);
-    return c.redirect("/", 303);
-  } catch (error) {
-    if (error instanceof BusyError) return c.text(error.message, 409);
-    throw error;
-  }
+  await chat.submit(message);
+  return c.redirect("/", 303);
 }
 
 app.post("/share", async (c) => {

@@ -3,22 +3,24 @@ import {
   type AgentEvent,
   type AgentEventStream,
   type Conversation,
-  ConversationBusy,
   type Harness,
   type SnapshotEvent,
   type Submission,
   watchEvents,
 } from "@earendil-works/pi-durable";
-import type {
-  ChatMessage,
-  RunState,
-  Snapshot,
-  StreamMessageDone,
-  StreamRunState,
-  StreamTextDelta,
-  StreamToolEnd,
-  StreamToolStart,
-  ToolActivity,
+import {
+  type ChatMessage,
+  type MessageMode,
+  type QueuedMessage,
+  type RunState,
+  type Snapshot,
+  STEER_ENTRY_KIND,
+  type StreamMessageDone,
+  type StreamRunState,
+  type StreamTextDelta,
+  type StreamToolEnd,
+  type StreamToolStart,
+  type ToolActivity,
 } from "../shared/types.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
 import {
@@ -39,11 +41,17 @@ interface ActiveTool {
   timestamp: string;
 }
 
-export class BusyError extends Error {
-  constructor() {
-    super("A run is already streaming");
-    this.name = "BusyError";
-  }
+interface QueuedRun {
+  item: QueuedMessage;
+  submission: Submission;
+}
+
+export interface SubmittedMessage {
+  message: ChatMessage;
+  mode: MessageMode;
+  queued: boolean;
+  placed: boolean;
+  queue: QueuedMessage[];
 }
 
 export class ChatService {
@@ -53,6 +61,9 @@ export class ChatService {
   private readonly activeTools = new Map<string, ActiveTool>();
   private stream: AgentEventStream | undefined;
   private closed = false;
+  private runStartedAt: string | undefined;
+  private readonly queued = new Map<string, QueuedRun>();
+  private readonly steerSubmissions = new Set<string>();
 
   constructor(
     private readonly harness: Harness,
@@ -79,6 +90,14 @@ export class ChatService {
     return this.runState;
   }
 
+  getRunStatus(): StreamRunState {
+    return {
+      state: this.runState,
+      startedAt: this.runStartedAt ?? null,
+      queue: this.queueItems(),
+    };
+  }
+
   async getSnapshot(): Promise<Snapshot> {
     const context = await this.conversation.context(SESSION_CONTEXT);
     const usage = await this.harness.usage(SESSION_CONTEXT);
@@ -88,6 +107,8 @@ export class ChatService {
       messages: transcript.messages,
       activity: transcript.activity,
       run: this.runState,
+      ...(this.runStartedAt === undefined ? {} : { runStartedAt: this.runStartedAt }),
+      queue: this.queueItems(),
       usage: summarizeUsage(usage),
       context: contextUsage(context.entries, this.modelWindow),
     };
@@ -122,63 +143,136 @@ export class ChatService {
     return frames;
   }
 
-  async submit(text: string): Promise<ChatMessage> {
-    if (this.runState === "running") throw new BusyError();
+  async submit(text: string, mode: MessageMode = "queue"): Promise<SubmittedMessage> {
+    const steer = mode === "steer";
+    const startsRun = this.runState !== "running" && this.queued.size === 0;
+    if (startsRun) this.setRunState("running");
 
-    this.setRunState("running");
     let submission: Submission;
     try {
       submission = await this.conversation.submit(
-        { type: "input", content: text, whenBusy: "reject" },
+        {
+          type: "input",
+          content: text,
+          whenBusy: steer ? "steer" : "followUp",
+          ...(steer ? { entry: { kind: STEER_ENTRY_KIND } } : {}),
+        },
         SESSION_CONTEXT,
       );
     } catch (error) {
-      if (error instanceof ConversationBusy) {
-        this.setRunState("idle");
-        throw new BusyError();
-      }
-      this.setRunState("idle");
+      if (startsRun) this.setRunState("idle");
       throw error;
     }
 
-    const message = await this.submittedMessage(submission, text);
-    void this.monitorSubmission(submission);
-    return message;
+    const id = String(submission.id);
+    const queueMode = !steer;
+    const queuedInitially = queueMode && !startsRun;
+    if (queuedInitially) {
+      this.queued.set(id, {
+        item: { id, text, createdAt: new Date().toISOString() },
+        submission,
+      });
+      this.broadcastQueue();
+    }
+    if (steer) this.steerSubmissions.add(id);
+
+    const { message, placed } = await this.submittedMessage(submission, text, steer);
+    const queued = queueMode && !placed;
+    if (queued && !queuedInitially) {
+      this.queued.set(id, {
+        item: { id, text, createdAt: new Date().toISOString() },
+        submission,
+      });
+      this.broadcastQueue();
+    } else if (!queued && queuedInitially && this.queued.delete(id)) {
+      this.broadcastQueue();
+    }
+
+    void this.monitorSubmission(submission, startsRun, queued ? id : undefined);
+    return { message, mode, queued, placed, queue: this.queueItems() };
+  }
+
+  async cancelQueued(id: string): Promise<boolean> {
+    const queued = this.queued.get(id);
+    if (!queued) return false;
+    this.queued.delete(id);
+    this.broadcastQueue();
+    try {
+      await queued.submission.abort(SESSION_CONTEXT);
+    } catch (error) {
+      console.error("[pi] could not cancel a queued message", error);
+    }
+    return true;
+  }
+
+  async steerQueued(id: string): Promise<SubmittedMessage | null> {
+    const queued = this.queued.get(id);
+    if (!queued) return null;
+    this.queued.delete(id);
+    this.broadcastQueue();
+    try {
+      await queued.submission.abort(SESSION_CONTEXT);
+    } catch (error) {
+      console.error("[pi] could not move a queued message into the run", error);
+    }
+    return this.submit(queued.item.text, "steer");
   }
 
   async stop(): Promise<void> {
-    if (this.runState !== "running") return;
+    if (this.runState !== "running" && this.queued.size === 0) return;
+    const wasRunning = this.runState === "running";
     try {
       await this.conversation.abort(SESSION_CONTEXT);
     } catch (error) {
       console.error("[pi] abort failed", error);
     } finally {
-      this.setRunState("idle");
+      this.queued.clear();
+      this.steerSubmissions.clear();
+      if (wasRunning) this.setRunState("idle");
+      else this.broadcastQueue();
     }
   }
 
-  private async submittedMessage(submission: Submission, text: string): Promise<ChatMessage> {
+  private async submittedMessage(
+    submission: Submission,
+    text: string,
+    steer: boolean,
+  ): Promise<{ message: ChatMessage; placed: boolean }> {
     const record = await submission.status(SESSION_CONTEXT);
     const entryId = "entry" in record ? record.entry : undefined;
+    const placed = record.status === "placed" || record.status === "done";
     if (entryId !== undefined) {
       const context = await this.conversation.context(SESSION_CONTEXT);
       const entry = context.entries.find((candidate) => candidate.id === entryId);
       if (entry) {
         const message = buildTranscript([entry]).messages[0];
-        if (message) return message;
+        if (message) {
+          return {
+            message: steer ? { ...message, steer: true } : message,
+            placed,
+          };
+        }
       }
     }
 
     return {
-      id: `m-${entryId ?? "pending"}`,
-      role: "user",
-      text,
-      timestamp: new Date().toISOString(),
-      order: entryId ?? Number.MAX_SAFE_INTEGER,
+      message: {
+        id: `m-pending-${submission.id}`,
+        role: "user",
+        text,
+        timestamp: new Date().toISOString(),
+        order: entryId ?? Number.MAX_SAFE_INTEGER,
+        ...(steer ? { steer: true } : {}),
+      },
+      placed,
     };
   }
 
-  private async monitorSubmission(submission: Submission): Promise<void> {
+  private async monitorSubmission(
+    submission: Submission,
+    startsRun: boolean,
+    queuedId: string | undefined,
+  ): Promise<void> {
     try {
       const settled = await submission.wait(SESSION_CONTEXT);
       if (settled.status === "unanswered") {
@@ -193,7 +287,11 @@ export class ChatService {
     } catch (error) {
       console.error("[pi] submission wait failed", error);
     } finally {
-      this.setRunState("idle");
+      this.steerSubmissions.delete(String(submission.id));
+      if (queuedId !== undefined && this.queued.delete(queuedId)) {
+        this.broadcastQueue();
+      }
+      if (startsRun && this.queued.size === 0) this.setRunState("idle");
     }
   }
 
@@ -247,7 +345,7 @@ export class ChatService {
         }
         frames.push({
           event: "run.state",
-          data: { state: this.runState } satisfies StreamRunState,
+          data: this.getRunStatus() satisfies StreamRunState,
         });
         this.hub.broadcast(frames);
         return;
@@ -347,6 +445,35 @@ export class ChatService {
         return;
       }
 
+      case "submission": {
+        const id = String(event.record.id);
+        if (event.record.type !== "input") return;
+        if (event.record.status === "placed") {
+          const wasQueued = this.queued.delete(id);
+          const wasSteered = this.steerSubmissions.delete(id);
+          if (wasQueued) this.broadcastQueue();
+          if (wasQueued || wasSteered) {
+            this.hub.broadcast({
+              event: "message.done",
+              data: { message: null } satisfies StreamMessageDone,
+            });
+          }
+        } else if (event.record.status === "done" || event.record.status === "unanswered") {
+          if (this.queued.delete(id)) this.broadcastQueue();
+          this.steerSubmissions.delete(id);
+        }
+        return;
+      }
+
+      case "entry_appended":
+        if (event.entry.kind === STEER_ENTRY_KIND) {
+          this.hub.broadcast({
+            event: "message.done",
+            data: { message: null } satisfies StreamMessageDone,
+          });
+        }
+        return;
+
       case "task_failed":
         console.error(`[pi] ${event.kind} task ${event.taskId} failed: ${event.message}`);
         return;
@@ -425,17 +552,31 @@ export class ChatService {
     };
   }
 
+  private queueItems(): QueuedMessage[] {
+    return [...this.queued.values()].map((entry) => entry.item);
+  }
+
+  private broadcastQueue(): void {
+    this.hub.broadcast({
+      event: "run.state",
+      data: this.getRunStatus(),
+    });
+  }
+
   private setRunState(state: RunState): void {
     if (this.runState === state) return;
     this.runState = state;
-    if (state !== "running") {
+    if (state === "running") {
+      this.runStartedAt = new Date().toISOString();
+    } else {
+      this.runStartedAt = undefined;
       this.currentText = "";
       this.currentThinking = "";
       this.activeTools.clear();
     }
     this.hub.broadcast({
       event: "run.state",
-      data: { state } satisfies StreamRunState,
+      data: this.getRunStatus(),
     });
   }
 }
