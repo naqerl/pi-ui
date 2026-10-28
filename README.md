@@ -2,7 +2,7 @@
 
 A minimal, single-conversation web UI for the [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) coding agent, with one durable conversation and no session management. It installs as a PWA and accepts text, titles, and URLs from the native share sheet on platforms that support Web Share Target.
 
-It ships as `ghcr.io/naqerl/pi-ui`. The container has no credentials baked in: your real pi agent directory is bind-mounted at runtime, so the UI uses your `auth.json` and the model catalog configured there. The conversation is stored in SQLite by `@earendil-works/pi-durable`; the workspace host directory holds pi's working tree together with that database and a small durable run marker, so a whole session survives container replacement and a process restart mid-run. Context compression runs in-process through `billion-context`; its fold state lives in a third host directory, `~/.local/share/billion-context`, which must also be writable and persistent. Those three host paths are the only mutable state; the image is otherwise stateless.
+It ships as `ghcr.io/naqerl/pi-ui`. The container has no credentials baked in: your real pi agent directory is bind-mounted at runtime, so the UI uses your `auth.json` and the model catalog configured there. The conversation is stored in SQLite by `@earendil-works/pi-durable`; the workspace host directory holds pi's working tree together with that database and a small durable run marker, so a whole session survives container replacement and a process restart mid-run. Context compression runs in-process through `billion-context`; its fold state lives in a third host directory, `~/.local/share/billion-context`, which must also be writable and persistent. Those three host paths are the only mutable state; the image is otherwise stateless. A fourth, read-only mount of `${ZEROSHOT_CONFIG_DIR:-$HOME/.config/zeroshot}` supplies the hub token that the MCP `Authorization` header reads.
 
 ## Quick start (local)
 
@@ -20,16 +20,17 @@ The browser suite is offline by default: `npm run e2e` starts the built server a
 docker pull ghcr.io/naqerl/pi-ui:v1.1.0
 
 docker run -d --name pi-ui --restart unless-stopped \
-  -p 8787:8787 \
+  --network host \
   -v "${PI_WORK_DIR:-$HOME/pi-work}:/workspace" \
   -v "${PI_AGENT_DIR:-$HOME/.pi/agent}:/home/pi/.pi/agent" \
   -v "${BILI_DATA_DIR:-$HOME/.local/share/billion-context}:/home/pi/.local/share/billion-context" \
+  -v "${ZEROSHOT_CONFIG_DIR:-$HOME/.config/zeroshot}:/home/user/.config/zeroshot:ro" \
   ghcr.io/naqerl/pi-ui:v1.1.0
 ```
 
-Open <http://localhost:8787>. The host working directory defaults to `~/pi-work`; create it first if `$HOME/pi-work` does not exist. The agent directory defaults to `~/.pi/agent`, which is the directory pi already uses on the host. Create the compression-state directory before the first run too: `mkdir -p ~/.local/share/billion-context`.
+Open <http://localhost:8787>. The host working directory defaults to `~/pi-work`; create it first if `$HOME/pi-work` does not exist. The agent directory defaults to `~/.pi/agent`, which is the directory pi already uses on the host. Create the compression-state directory before the first run too: `mkdir -p ~/.local/share/billion-context`. Host networking and the read-only config mount are required for the hub MCP server; see [Why host networking](#why-host-networking).
 
-The compose file is the same setup with the paths and comments in one place:
+The compose file is the same setup with the paths and comments in one place. It uses `network_mode: host` and has no `ports:` mapping:
 
 ```sh
 docker compose up -d
@@ -50,10 +51,24 @@ PI_WORK_DIR=$HOME/pi-session PI_AGENT_DIR=$HOME/.pi/agent PORT=9000 docker compo
 | `${PI_WORK_DIR:-./work}`                               | `/workspace`                            | pi's working tree, everything a session creates, and the durable conversation in `data/` (`pi.sqlite3` plus `current.json`). This is the single directory that backs a whole session.                                                                                                                                                                                 |
 | `${PI_AGENT_DIR:-$HOME/.pi/agent}`                     | `/home/pi/.pi/agent`                    | Your real pi state (`PI_CODING_AGENT_DIR`): `auth.json`, `web-search.json`, `models-store.json`, `settings.json`, optional `mcp.json`, model overrides, installed pi packages, and pi's own history/state. Mounted read-write because pi writes here. This mount supplies the provider credentials for both pi and billion-context, and is trusted MCP configuration. |
 | `${BILI_DATA_DIR:-$HOME/.local/share/billion-context}` | `/home/pi/.local/share/billion-context` | billion-context's in-process fold state: session files, `index.db`, and logs. Must be writable by uid 1000 and persistent.                                                                                                                                                                                                                                            |
+| `${ZEROSHOT_CONFIG_DIR:-$HOME/.config/zeroshot}`       | `/home/user/.config/zeroshot`           | Read-only zeroshot configuration. The hub token at `hub/api-token` is read by the `!`-prefixed `Authorization` command in `mcp.json`; without this mount the header cannot be produced and the hub server disappears.                                                                                                                                                 |
 
 `data/` is not a separate mount: it lives inside the workspace mount, so replacing the container keeps both the files pi worked on and the conversation that produced them. The compose file sets `DATA_DIR=/workspace/data` explicitly for the same reason.
 
-These are the only three mutable paths, and the image is otherwise stateless. The image contains no `auth.json`, no `web-search.json`, no `models-store.json`, and no API keys; that state reaches the process only through the agent-directory mount. The workspace and billion-context mounts hold session data, not credentials.
+These three are the only mutable paths, and the image is otherwise stateless. The zeroshot config mount is read-only. The image contains no `auth.json`, no `web-search.json`, no `models-store.json`, and no API keys; that state reaches the process only through the agent-directory mount. The workspace and billion-context mounts hold session data, not credentials.
+
+### Why host networking
+
+The hub MCP server listens on the host's loopback interface only, and `mcp.json` addresses it as `http://127.0.0.1:7383/mcp`. Under Docker's default bridge network, `127.0.0.1` inside the container is the container itself, so the hub is unreachable even when it is healthy on the host. The same `mcp.json` produces its bearer header with an `!`-prefixed command, `!echo Bearer $(cat /home/user/.config/zeroshot/hub/api-token)`; that command runs inside the container at boot, so `${ZEROSHOT_CONFIG_DIR:-$HOME/.config/zeroshot}` must be mounted at the same absolute path.
+
+Neither failure is fatal, which is why it degrades silently. The tell is two boot lines: per-server unavailability, then a smaller tool count.
+
+```
+mcp: server zeroshot is unavailable
+tools: read + bash + edit + write + 22 MCP tools (tracer, zeroshot, web) + 6 billion-context tools
+```
+
+With host networking and the config mount the second line reports 46 MCP tools instead. The app also surfaces the same state: `/api/state` lists each configured server under `mcp.servers` with `available`, and the chat header shows a compact one-line `zeroshot unavailable` notice when any configured server failed. When every server starts, that notice is absent.
 
 ### Context compression state
 
@@ -115,7 +130,7 @@ On boot the server logs the working directory, database path, conversation ID, w
 
 **Events.** The runtime registers the `pi-mcp-adapter:protocol:v1` bridge that `pi-mcp-events` requires, emits `session_start` at boot and `session_shutdown` on close, and installs `mcp_events` with operations to list event catalogs and open or cancel a subscription. Received event notifications are batched and injected into the durable conversation as follow-up messages. Closing the server cancels subscriptions; a reopened process starts a fresh session.
 
-**Partial failure and trust.** Each server connects independently. A server that fails to start is reported by name and skipped; it contributes no tools, and the remaining servers and the rest of the UI still boot. The model's `bash` tool runs with the server process's access, so it can read the mounted agent directory and any secrets stored there, including `mcp.json`, header values, credential files, and `web-search.json`. Treat the mounted agent directory as trusted only for that model: anything readable under it is reachable by `bash`, not merely by the server. `mcp.json` can also point at arbitrary local commands, just like pi's own config, so keep it trusted and avoid storing secrets in world-readable files.
+**Partial failure and trust.** Each server connects independently. A server that fails to start is reported by name and skipped; it contributes no tools, and the remaining servers and the rest of the UI still boot. The same availability is exposed by `/api/state` under `mcp.servers` (with each server's registered `tools`) and `mcp.unavailable`, and the chat header renders one compact `name unavailable` line while any configured server is missing; a configured-but-unreachable server is never invisible. The model's `bash` tool runs with the server process's access, so it can read the mounted agent directory and any secrets stored there, including `mcp.json`, header values, credential files, and `web-search.json`. Treat the mounted agent directory as trusted only for that model: anything readable under it is reachable by `bash`, not merely by the server. `mcp.json` can also point at arbitrary local commands, just like pi's own config, so keep it trusted and avoid storing secrets in world-readable files.
 
 ## Install and share
 

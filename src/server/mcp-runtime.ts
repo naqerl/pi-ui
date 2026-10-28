@@ -13,6 +13,7 @@ import {
   type Transport,
 } from "@modelcontextprotocol/client";
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import type { McpServerStatus, McpStatus } from "../shared/types.js";
 import {
   type DurableExtensionApi,
   DurableExtensionShim,
@@ -365,9 +366,9 @@ async function readServers(): Promise<{
   if (configured !== undefined) {
     for (const [name, raw] of Object.entries(configured)) {
       if (name.startsWith("$")) continue;
-      names.push(name);
       const entry = serverEntry(raw);
       if (entry.disabled === true) continue;
+      names.push(name);
       try {
         const definition = buildServerDefinition(name, raw);
         servers[name] = definition;
@@ -628,6 +629,27 @@ export class McpRuntime {
 
   get toolNames(): readonly string[] {
     return this.shim.tools.map((tool) => tool.name);
+  }
+
+  /** Names and availability only: never a URL, command, header, or token. */
+  get status(): McpStatus {
+    const failures = new Map(this.failedServers.map((failure) => [failure.name, failure]));
+    const toolNames = this.toolNames;
+    const servers: McpServerStatus[] = this.serverNames.map((name) => {
+      const failure = failures.get(name);
+      const prefix = `${sanitizeServerName(name)}__`;
+      return {
+        name,
+        available: failure === undefined,
+        authRejected: failure?.auth ?? false,
+        tools:
+          failure === undefined ? toolNames.filter((toolName) => toolName.startsWith(prefix)) : [],
+      };
+    });
+    return {
+      servers,
+      unavailable: servers.filter((server) => !server.available).map((server) => server.name),
+    };
   }
 
   setSubmit(sink: DurableExtensionSink | undefined): void {

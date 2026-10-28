@@ -18,6 +18,7 @@ export function App() {
       interrupted={chat.interrupted}
       runStartedAt={chat.runStartedAt}
       queue={chat.queue}
+      unavailableServers={chat.mcp.unavailable}
       ready={chat.ready}
       send={chat.send}
       cancelQueued={chat.cancelQueued}

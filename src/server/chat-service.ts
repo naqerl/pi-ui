@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-durable";
 import {
   type ChatMessage,
+  type McpStatus,
   type MessageMode,
   type QueuedMessage,
   type RunState,
@@ -88,6 +89,7 @@ export class ChatService {
     interrupted: boolean,
     private readonly markerStore: RunMarkerStore,
     initialMarker: RunMarker | undefined,
+    private readonly mcp: McpStatus,
   ) {
     this.runState = interrupted ? "interrupted" : "idle";
     this.marker = initialMarker;
@@ -139,6 +141,7 @@ export class ChatService {
       queue: this.queueItems(),
       usage: summarizeUsage(usage),
       context: contextUsage(context.entries, this.modelWindow),
+      mcp: this.mcp,
     };
   }
 
