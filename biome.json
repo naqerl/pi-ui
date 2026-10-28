@@ -7,7 +7,8 @@
       "!**/dist",
       "!**/data",
       "!**/package-lock.json",
-      "!**/public/icons"
+      "!**/public/icons",
+      "!**/.e2e"
     ]
   },
   "formatter": {

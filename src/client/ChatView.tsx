@@ -4,6 +4,7 @@ import { activitySummary, groupSummary } from "./activity-format";
 import { Button } from "./components/ui/button";
 import { Textarea } from "./components/ui/textarea";
 import { cn } from "./lib/utils";
+import { Markdown } from "./markdown";
 import { groupTimeline } from "./timeline-groups";
 import type { TimelineItem } from "./use-chat";
 import { useStickToBottom } from "./use-stick-to-bottom";
@@ -12,6 +13,7 @@ import { WorkingIndicator } from "./WorkingIndicator";
 interface ChatViewProps {
   timeline: TimelineItem[];
   running: boolean;
+  interrupted: boolean;
   runStartedAt: string | null;
   queue: QueuedMessage[];
   ready: boolean;
@@ -22,6 +24,14 @@ interface ChatViewProps {
 }
 
 function MessageBubble({ message }: { message: ChatMessage }) {
+  if (message.role === "system") {
+    return (
+      <div className="px-2 py-1 text-center font-mono text-[11px] text-muted-foreground">
+        ⚠ {message.text}
+      </div>
+    );
+  }
+
   const mine = message.role === "user";
   return (
     <div
@@ -29,6 +39,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         "max-w-[85%] border px-3 py-2 text-sm leading-relaxed",
         mine ? "ml-auto bg-muted" : "mr-auto bg-background",
         message.isError && "border-destructive text-destructive",
+        message.partial && "border-dashed",
       )}
     >
       {message.steer && (
@@ -36,7 +47,16 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           steer
         </div>
       )}
-      <div className="whitespace-pre-wrap break-words">{message.text}</div>
+      {message.partial && (
+        <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+          partial
+        </div>
+      )}
+      {mine ? (
+        <div className="whitespace-pre-wrap break-words">{message.text}</div>
+      ) : (
+        <Markdown text={message.text} />
+      )}
     </div>
   );
 }
@@ -212,21 +232,16 @@ function Composer({
             }
           }}
         />
-        {running ? (
+        {running && !canSend ? (
+          <Button type="button" size="sm" variant="outline" onClick={() => void stop()}>
+            Stop
+          </Button>
+        ) : running ? (
           <>
-            <Button type="button" size="sm" variant="outline" onClick={() => void stop()}>
-              Stop
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={!canSend}
-              onClick={() => void submit("steer")}
-            >
+            <Button type="button" size="sm" variant="outline" onClick={() => void submit("steer")}>
               Steer
             </Button>
-            <Button type="submit" size="sm" disabled={!canSend}>
+            <Button type="submit" size="sm">
               Queue
             </Button>
           </>
@@ -253,6 +268,7 @@ function lastUserMessageOrder(timeline: TimelineItem[]): number {
 export function ChatView({
   timeline,
   running,
+  interrupted,
   runStartedAt,
   queue,
   ready,
@@ -297,18 +313,21 @@ export function ChatView({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="border-b border-border pt-[env(safe-area-inset-top)]">
-        <div className="mx-auto flex h-10 w-full max-w-[72ch] items-center justify-between px-4">
+        <div className="mx-auto flex h-10 w-full max-w-[72ch] items-center px-4">
           <a href="/" className="text-sm font-medium text-foreground">
             pi
           </a>
-          <a
-            href="/activity"
-            className="text-xs text-muted-foreground transition-colors hover:text-foreground"
-          >
-            Activity
-          </a>
         </div>
       </header>
+
+      {interrupted && (
+        <div
+          role="status"
+          className="border-b border-border bg-muted/40 py-1.5 text-center font-mono text-[11px] text-muted-foreground"
+        >
+          ⚠ run interrupted — the last response may be partial
+        </div>
+      )}
 
       <div className="relative min-h-0 flex-1">
         <main ref={stick.containerRef} className="h-full overflow-y-auto">

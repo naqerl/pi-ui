@@ -4,6 +4,7 @@ import type {
   ChatMessage,
   MessageMode,
   QueuedMessage,
+  RunState,
   Snapshot,
   StreamMessageDone,
   StreamRunState,
@@ -32,7 +33,7 @@ export function useChat() {
   const [liveTools, setLiveTools] = useState<ToolActivity[]>([]);
   const [draftText, setDraftText] = useState("");
   const [draftThinking, setDraftThinking] = useState("");
-  const [running, setRunning] = useState(false);
+  const [runState, setRunState] = useState<RunState>("idle");
   const [runStartedAt, setRunStartedAt] = useState<string | null>(null);
   const [queue, setQueue] = useState<QueuedMessage[]>([]);
   const [ready, setReady] = useState(false);
@@ -49,7 +50,7 @@ export function useChat() {
       setActivity(snapshot.activity);
       const persistedActivityIds = new Set(snapshot.activity.map((item) => item.id));
       setLiveTools((current) => current.filter((item) => !persistedActivityIds.has(item.id)));
-      setRunning(snapshot.run === "running");
+      setRunState(snapshot.run);
       setRunStartedAt(snapshot.runStartedAt ?? null);
       setQueue(snapshot.queue);
       setReady(true);
@@ -71,7 +72,7 @@ export function useChat() {
     source.addEventListener("run.state", (event) => {
       const data = parseEvent<StreamRunState>(event as MessageEvent<string>);
       if (!data) return;
-      setRunning(data.state === "running");
+      setRunState(data.state);
       setRunStartedAt(data.startedAt ?? null);
       if (data.queue !== undefined) setQueue(data.queue);
       if (data.state !== "running") {
@@ -204,8 +205,8 @@ export function useChat() {
         if (!response.ok) return false;
         const data = (await response.json()) as SubmitMessageResponse;
         setQueue(data.queue);
-        if (!data.queued && !running) {
-          setRunning(true);
+        if (!data.queued && !(runState === "running")) {
+          setRunState("running");
           setRunStartedAt(new Date().toISOString());
           setDraftText("");
           setDraftThinking("");
@@ -223,7 +224,7 @@ export function useChat() {
         return false;
       }
     },
-    [running, refreshState],
+    [runState, refreshState],
   );
 
   const cancelQueued = useCallback(async (id: string): Promise<boolean> => {
@@ -257,7 +258,7 @@ export function useChat() {
         if (!response.ok) return false;
         const data = (await response.json()) as SubmitMessageResponse;
         setQueue(data.queue);
-        setRunning(true);
+        setRunState("running");
         return true;
       } catch {
         return false;
@@ -277,7 +278,8 @@ export function useChat() {
 
   return {
     timeline,
-    running,
+    running: runState === "running",
+    interrupted: runState === "interrupted",
     runStartedAt,
     queue,
     ready,

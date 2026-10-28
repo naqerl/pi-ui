@@ -7,6 +7,7 @@ import {
   AssistantEntry,
   type Conversation,
   type ConversationId,
+  defineEntry,
   type EntryRecord,
   type Harness,
   Harness as HarnessImpl,
@@ -29,9 +30,17 @@ import {
 import { createAppRegistry } from "./app-registry.js";
 import type { BillionContextInline } from "./billion-context.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
+import { type RunMarker, RunMarkerStore } from "./run-marker.js";
 import type { WebToolsBridge } from "./web-tools.js";
 
 export const SESSION_CONTEXT: Context = BACKGROUND_CONTEXT;
+
+const InterruptedRunEntry = defineEntry<{
+  markerKey: string;
+  partialEntryId: number | null;
+  note: string;
+  createdAt: string;
+}>("ui.run-interrupted");
 
 export interface DurableSessionOptions {
   readonly cwd: string;
@@ -49,6 +58,8 @@ export interface DurableSessionBoot {
   readonly currentPath: string;
   readonly resumed: boolean;
   readonly interrupted: boolean;
+  readonly runMarker: RunMarker | undefined;
+  readonly runMarkerStore: RunMarkerStore;
   readonly webTools: WebToolsBridge | undefined;
   readonly biliTools: readonly string[];
 }
@@ -89,7 +100,22 @@ export async function openDurableSession(
   const { conversation, resumed } = await loadConversation(harness, currentPath, agent);
   await conversation.configure(agent, SESSION_CONTEXT);
 
-  const interrupted = await recoverInterruptedRun(harness, conversation);
+  const runMarkerStore = new RunMarkerStore(dataDir);
+  const recoveredWork = await recoverInterruptedRun(harness, conversation);
+  let runMarker = await runMarkerStore.read();
+  if (runMarker !== undefined && runMarker.partialEntryId === null) {
+    const context = await conversation.context(SESSION_CONTEXT);
+    runMarker = {
+      ...runMarker,
+      partialEntryId: lastAssistantEntryId(context.entries),
+      updatedAt: new Date().toISOString(),
+    };
+    await runMarkerStore.write(runMarker);
+  }
+  if (runMarker !== undefined) {
+    await appendInterruptionNote(conversation, runMarker);
+  }
+
   return {
     harness,
     conversation,
@@ -97,7 +123,9 @@ export async function openDurableSession(
     databasePath,
     currentPath,
     resumed,
-    interrupted,
+    interrupted: recoveredWork || runMarker !== undefined,
+    runMarker,
+    runMarkerStore,
     webTools,
     biliTools,
   };
@@ -166,9 +194,9 @@ async function writeCurrentConversationId(
 
 /**
  * A process that died mid-turn reopens with live durable work. Abort it once,
- * which settles the in-flight generation (keeping its partial answer) without
- * replaying tokens or continuing the turn. The snapshot then reports
- * `interrupted` and the user can send the next message.
+ * which settles the in-flight generation and keeps its partial answer without
+ * replaying tokens. The run marker then decides whether the turn is continued
+ * once or left stopped.
  */
 async function recoverInterruptedRun(
   harness: Harness,
@@ -193,6 +221,46 @@ async function recoverInterruptedRun(
   return true;
 }
 
+function lastAssistantEntryId(entries: readonly EntryRecord[]): number | null {
+  let id: number | null = null;
+  for (const entry of entries) {
+    if (AssistantEntry.is(entry)) id = entry.id;
+  }
+  return id;
+}
+
+async function appendInterruptionNote(
+  conversation: Conversation,
+  marker: RunMarker,
+): Promise<void> {
+  const context = await conversation.context(SESSION_CONTEXT);
+  const alreadyRecorded = context.entries.some((entry) => {
+    if (entry.kind !== InterruptedRunEntry.kind || !isRecord(entry.data)) return false;
+    return entry.data.markerKey === marker.idempotencyKey;
+  });
+  if (alreadyRecorded) return;
+
+  const note = marker.stopRequested
+    ? "The previous run was stopped before the server restarted. The last response may be partial; it was not continued automatically."
+    : "The previous run was interrupted by a server restart. The last response is partial; pi is continuing automatically.";
+  try {
+    await conversation.commit(
+      (tx) =>
+        tx.appendEntry(InterruptedRunEntry, conversation.id, {
+          data: {
+            markerKey: marker.idempotencyKey,
+            partialEntryId: marker.partialEntryId,
+            note,
+            createdAt: new Date().toISOString(),
+          },
+        }),
+      SESSION_CONTEXT,
+    );
+  } catch (error) {
+    console.error("[pi] could not record the interrupted-run note", error);
+  }
+}
+
 export function buildTranscript(entries: readonly EntryRecord[]): {
   messages: ChatMessage[];
   activity: ActivityItem[];
@@ -201,6 +269,16 @@ export function buildTranscript(entries: readonly EntryRecord[]): {
   const activity: ActivityItem[] = [];
   const sorted = [...entries].sort((a, b) => a.id - b.id);
   const toolCalls = new Map<string, { name: string; arguments: unknown }>();
+  const partialEntryIds = new Set<number>();
+  for (const entry of sorted) {
+    if (entry.kind !== InterruptedRunEntry.kind || !isRecord(entry.data)) continue;
+    if (
+      typeof entry.data.partialEntryId === "number" &&
+      Number.isSafeInteger(entry.data.partialEntryId)
+    ) {
+      partialEntryIds.add(entry.data.partialEntryId);
+    }
+  }
 
   for (const entry of sorted) {
     if (entry.kind !== AssistantEntry.kind) continue;
@@ -217,6 +295,20 @@ export function buildTranscript(entries: readonly EntryRecord[]): {
 
   for (const entry of sorted) {
     const kind = entry.kind;
+    if (kind === InterruptedRunEntry.kind) {
+      if (!isRecord(entry.data) || typeof entry.data.note !== "string") continue;
+      messages.push({
+        id: `m-${entry.id}`,
+        role: "system",
+        text: entry.data.note,
+        timestamp:
+          typeof entry.data.createdAt === "string"
+            ? entry.data.createdAt
+            : new Date().toISOString(),
+        order: entry.id * 10_000,
+      });
+      continue;
+    }
     if (
       kind !== UserEntry.kind &&
       kind !== STEER_ENTRY_KIND &&
@@ -255,6 +347,7 @@ export function buildTranscript(entries: readonly EntryRecord[]): {
           timestamp: timestampOf(message),
           order: entry.id * 10_000 + 5_000,
           isError: errorText.length > 0,
+          ...(partialEntryIds.has(entry.id) ? { partial: true } : {}),
         });
       }
       let thinkingIndex = 0;

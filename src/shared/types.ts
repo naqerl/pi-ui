@@ -7,7 +7,7 @@ export type MessageMode = "queue" | "steer";
 
 export interface ChatMessage {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   text: string;
   timestamp: string;
   /** Monotonic ordering key used to interleave messages and activity. */
@@ -15,6 +15,8 @@ export interface ChatMessage {
   isError?: boolean;
   /** True for a message injected into a running turn. */
   steer?: boolean;
+  /** True when a server restart cut off this assistant response. */
+  partial?: boolean;
 }
 
 /** One message waiting for the current run to finish. */

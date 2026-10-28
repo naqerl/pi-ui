@@ -10,6 +10,7 @@
     "start": "node dist/server/index.js",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
+    "e2e": "e2e run",
     "icons": "node scripts/generate-icons.mjs"
   },
   "dependencies": {
@@ -24,6 +25,7 @@
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "hono": "4.13.14",
+    "marked": "18.0.11",
     "pi-web-access": "0.44.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
@@ -32,12 +34,14 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.3",
+    "@e2e-dev/web": "0.15.3",
     "@tailwindcss/vite": "4.3.3",
     "@types/node": "24.19.2",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",
     "concurrently": "10.0.6",
+    "e2e": "0.21.3",
     "tailwindcss": "4.3.3",
     "tsx": "4.23.15",
     "typescript": "5.9.3",

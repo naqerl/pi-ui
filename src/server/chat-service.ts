@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
   type AgentEvent,
@@ -23,6 +24,7 @@ import {
   type ToolActivity,
 } from "../shared/types.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
+import type { RunMarker, RunMarkerStore } from "./run-marker.js";
 import {
   appendAssistantError,
   assistantMessageFromEntry,
@@ -46,6 +48,16 @@ interface QueuedRun {
   submission: Submission;
 }
 
+interface SubmitOptions {
+  /** Durable deduplication key, used by recovery and queue restoration. */
+  requestId?: string;
+  /** Reuse the interrupted run's marker instead of starting a fresh one. */
+  resume?: boolean;
+}
+
+const CONTINUATION_TEXT =
+  "Continue from where the previous response was interrupted. Do not repeat what is already complete.";
+
 export interface SubmittedMessage {
   message: ChatMessage;
   mode: MessageMode;
@@ -64,6 +76,9 @@ export class ChatService {
   private runStartedAt: string | undefined;
   private readonly queued = new Map<string, QueuedRun>();
   private readonly steerSubmissions = new Set<string>();
+  private marker: RunMarker | undefined;
+  private markerWrites: Promise<void> = Promise.resolve();
+  private shuttingDown = false;
 
   constructor(
     private readonly harness: Harness,
@@ -71,19 +86,32 @@ export class ChatService {
     private readonly hub: StreamHub,
     private readonly modelWindow: number | undefined,
     interrupted: boolean,
+    private readonly markerStore: RunMarkerStore,
+    initialMarker: RunMarker | undefined,
   ) {
     this.runState = interrupted ? "interrupted" : "idle";
+    this.marker = initialMarker;
+    if (interrupted) {
+      this.runStartedAt = initialMarker?.startedAt;
+    }
   }
 
   async start(): Promise<void> {
     this.stream = await watchEvents(this.harness, this.conversation.id, SESSION_CONTEXT);
     this.applySnapshot(this.stream.snapshot);
     this.stream.start((events) => this.handleEvents(events));
+    await this.autoContinueInterruptedRun();
+    await this.restorePersistedQueue();
   }
 
   async close(): Promise<void> {
     this.closed = true;
     await this.stream?.stop();
+  }
+
+  /** Keep the run marker on disk while the process winds down. */
+  beginShutdown(): void {
+    this.shuttingDown = true;
   }
 
   getState(): RunState {
@@ -143,10 +171,32 @@ export class ChatService {
     return frames;
   }
 
-  async submit(text: string, mode: MessageMode = "queue"): Promise<SubmittedMessage> {
+  async submit(
+    text: string,
+    mode: MessageMode = "queue",
+    options: SubmitOptions = {},
+  ): Promise<SubmittedMessage> {
     const steer = mode === "steer";
     const startsRun = this.runState !== "running" && this.queued.size === 0;
-    if (startsRun) this.setRunState("running");
+    const resumeMarker = startsRun && options.resume === true ? this.marker : undefined;
+    const startedAt = resumeMarker?.startedAt ?? new Date().toISOString();
+    if (startsRun) {
+      const marker: RunMarker = {
+        version: 1,
+        userMessage: resumeMarker?.userMessage ?? text,
+        startedAt,
+        mode: resumeMarker?.mode ?? mode,
+        stopRequested: false,
+        idempotencyKey: resumeMarker?.idempotencyKey ?? randomUUID(),
+        autoContinued: resumeMarker?.autoContinued ?? false,
+        queue: resumeMarker?.queue ?? this.queueItems(),
+        partialEntryId: resumeMarker?.partialEntryId ?? null,
+        updatedAt: new Date().toISOString(),
+      };
+      this.marker = marker;
+      await this.writeMarker(marker);
+      this.setRunState("running", startedAt);
+    }
 
     let submission: Submission;
     try {
@@ -155,12 +205,13 @@ export class ChatService {
           type: "input",
           content: text,
           whenBusy: steer ? "steer" : "followUp",
+          ...(options.requestId === undefined ? {} : { requestId: options.requestId }),
           ...(steer ? { entry: { kind: STEER_ENTRY_KIND } } : {}),
         },
         SESSION_CONTEXT,
       );
     } catch (error) {
-      if (startsRun) this.setRunState("idle");
+      if (startsRun) this.setRunState(this.marker === undefined ? "idle" : "interrupted");
       throw error;
     }
 
@@ -172,6 +223,7 @@ export class ChatService {
         item: { id, text, createdAt: new Date().toISOString() },
         submission,
       });
+      await this.persistMarkerState();
       this.broadcastQueue();
     }
     if (steer) this.steerSubmissions.add(id);
@@ -183,8 +235,10 @@ export class ChatService {
         item: { id, text, createdAt: new Date().toISOString() },
         submission,
       });
+      await this.persistMarkerState();
       this.broadcastQueue();
     } else if (!queued && queuedInitially && this.queued.delete(id)) {
+      await this.persistMarkerState();
       this.broadcastQueue();
     }
 
@@ -196,12 +250,14 @@ export class ChatService {
     const queued = this.queued.get(id);
     if (!queued) return false;
     this.queued.delete(id);
+    await this.persistMarkerState();
     this.broadcastQueue();
     try {
       await queued.submission.abort(SESSION_CONTEXT);
     } catch (error) {
       console.error("[pi] could not cancel a queued message", error);
     }
+    this.maybeClearMarker();
     return true;
   }
 
@@ -209,6 +265,7 @@ export class ChatService {
     const queued = this.queued.get(id);
     if (!queued) return null;
     this.queued.delete(id);
+    await this.persistMarkerState();
     this.broadcastQueue();
     try {
       await queued.submission.abort(SESSION_CONTEXT);
@@ -221,6 +278,14 @@ export class ChatService {
   async stop(): Promise<void> {
     if (this.runState !== "running" && this.queued.size === 0) return;
     const wasRunning = this.runState === "running";
+    if (wasRunning && this.marker !== undefined) {
+      this.marker = {
+        ...this.marker,
+        stopRequested: true,
+        updatedAt: new Date().toISOString(),
+      };
+      await this.writeMarker(this.marker);
+    }
     try {
       await this.conversation.abort(SESSION_CONTEXT);
     } catch (error) {
@@ -228,9 +293,86 @@ export class ChatService {
     } finally {
       this.queued.clear();
       this.steerSubmissions.clear();
-      if (wasRunning) this.setRunState("idle");
-      else this.broadcastQueue();
+      if (wasRunning) {
+        this.setRunState("idle");
+      } else {
+        await this.persistMarkerState();
+        this.broadcastQueue();
+      }
     }
+  }
+
+  private async autoContinueInterruptedRun(): Promise<void> {
+    const marker = this.marker;
+    if (
+      marker === undefined ||
+      marker.stopRequested ||
+      marker.autoContinued ||
+      this.runState === "running"
+    ) {
+      return;
+    }
+
+    const next: RunMarker = {
+      ...marker,
+      autoContinued: true,
+      updatedAt: new Date().toISOString(),
+    };
+    this.marker = next;
+    await this.writeMarker(next);
+    try {
+      await this.submit(CONTINUATION_TEXT, "steer", {
+        requestId: `run-continuation:${marker.idempotencyKey}`,
+        resume: true,
+      });
+    } catch (error) {
+      console.error("[pi] could not continue the interrupted run", error);
+    }
+  }
+
+  private async restorePersistedQueue(): Promise<void> {
+    const marker = this.marker;
+    if (marker === undefined || marker.stopRequested) return;
+    for (const item of marker.queue) {
+      try {
+        await this.submit(item.text, "queue", {
+          requestId: `run-queue:${marker.idempotencyKey}:${item.id}`,
+        });
+      } catch (error) {
+        console.error("[pi] could not restore a queued message", error);
+      }
+    }
+  }
+
+  private async persistMarkerState(): Promise<void> {
+    const marker = this.marker;
+    if (marker === undefined) return;
+    const next: RunMarker = {
+      ...marker,
+      queue: this.queueItems(),
+      updatedAt: new Date().toISOString(),
+    };
+    this.marker = next;
+    await this.writeMarker(next);
+  }
+
+  private async writeMarker(marker: RunMarker): Promise<void> {
+    this.markerWrites = this.markerWrites
+      .then(() => this.markerStore.write(marker))
+      .catch((error: unknown) => {
+        console.error("[pi] could not persist the run marker", error);
+      });
+    await this.markerWrites;
+  }
+
+  private async clearMarker(): Promise<void> {
+    this.marker = undefined;
+    this.markerWrites = this.markerWrites
+      .then(() => this.markerStore.clear())
+      .catch((error: unknown) => {
+        console.error("[pi] could not clear the run marker", error);
+      });
+    await this.markerWrites;
   }
 
   private async submittedMessage(
@@ -289,9 +431,11 @@ export class ChatService {
     } finally {
       this.steerSubmissions.delete(String(submission.id));
       if (queuedId !== undefined && this.queued.delete(queuedId)) {
+        await this.persistMarkerState();
         this.broadcastQueue();
       }
       if (startsRun && this.queued.size === 0) this.setRunState("idle");
+      else this.maybeClearMarker();
     }
   }
 
@@ -451,7 +595,10 @@ export class ChatService {
         if (event.record.status === "placed") {
           const wasQueued = this.queued.delete(id);
           const wasSteered = this.steerSubmissions.delete(id);
-          if (wasQueued) this.broadcastQueue();
+          if (wasQueued) {
+            await this.persistMarkerState();
+            this.broadcastQueue();
+          }
           if (wasQueued || wasSteered) {
             this.hub.broadcast({
               event: "message.done",
@@ -459,7 +606,10 @@ export class ChatService {
             });
           }
         } else if (event.record.status === "done" || event.record.status === "unanswered") {
-          if (this.queued.delete(id)) this.broadcastQueue();
+          if (this.queued.delete(id)) {
+            await this.persistMarkerState();
+            this.broadcastQueue();
+          }
           this.steerSubmissions.delete(id);
         }
         return;
@@ -563,17 +713,27 @@ export class ChatService {
     });
   }
 
-  private setRunState(state: RunState): void {
-    if (this.runState === state) return;
+  private maybeClearMarker(): void {
+    if (this.runState === "idle" && !this.shuttingDown && this.queued.size === 0) {
+      void this.clearMarker();
+    }
+  }
+
+  private setRunState(state: RunState, startedAt?: string): void {
+    if (this.runState === state) {
+      this.maybeClearMarker();
+      return;
+    }
     this.runState = state;
     if (state === "running") {
-      this.runStartedAt = new Date().toISOString();
+      this.runStartedAt = startedAt ?? new Date().toISOString();
     } else {
-      this.runStartedAt = undefined;
+      if (state === "idle") this.runStartedAt = undefined;
       this.currentText = "";
       this.currentThinking = "";
       this.activeTools.clear();
     }
+    this.maybeClearMarker();
     this.hub.broadcast({
       event: "run.state",
       data: this.getRunStatus(),

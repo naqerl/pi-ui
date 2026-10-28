@@ -64,6 +64,8 @@ const chat = new ChatService(
   hub,
   catalog.model?.contextWindow,
   boot.interrupted,
+  boot.runMarkerStore,
+  boot.runMarker,
 );
 await chat.start();
 
@@ -254,7 +256,11 @@ const server = serve({ fetch: app.fetch, port }, (info) => {
   console.log(`conversation: ${boot.conversation.id} (${boot.resumed ? "resumed" : "new"})`);
   console.log(`conversation file: ${boot.currentPath}`);
   if (boot.interrupted) {
-    console.log("previous run was interrupted; partial output was kept and the turn is idle");
+    console.log(
+      boot.runMarker === undefined || boot.runMarker.stopRequested
+        ? "previous run was interrupted; partial output was kept"
+        : "previous run was interrupted; the partial output was kept and the turn is continuing",
+    );
   }
   const toolParts = ["read", "bash", "edit", "write"];
   if (boot.webTools !== undefined) {
@@ -270,6 +276,7 @@ let shuttingDown = false;
 async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
+  chat.beginShutdown();
   try {
     await chat.close();
     await boot.webTools?.close();
