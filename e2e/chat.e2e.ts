@@ -41,6 +41,56 @@ test("resets the composer to one line with the caret at the start after send", a
   expect(state?.selectionEnd).toBe(0);
 });
 
+test("resets a multi-line draft to one line after send", async ({ app, browser, screen }) => {
+  await app.open("/");
+  const composer = screen.getByRole("textbox", "Message");
+  const initial = await composer.boundingBox();
+  expect(initial).not.toBeNull();
+
+  await composer.fill("line one\nline two\nline three");
+  const expanded = await composer.boundingBox();
+  expect(expanded).not.toBeNull();
+  expect(expanded?.height ?? 0).toBeGreaterThan(initial?.height ?? 0);
+
+  await screen.getByRole("button", "Send").tap();
+  await expect(composer).toHaveValue("");
+
+  const state = await browser.evaluate(() => {
+    const element = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
+    if (element === null) return null;
+    return {
+      height: element.getBoundingClientRect().height,
+      overflowY: getComputedStyle(element).overflowY,
+      scrollTop: element.scrollTop,
+      selectionStart: element.selectionStart,
+      selectionEnd: element.selectionEnd,
+    };
+  });
+  expect(state).not.toBeNull();
+  expect(state?.height ?? 0).toBeLessThanOrEqual(38);
+  expect(state?.overflowY).toBe("hidden");
+  expect(state?.scrollTop).toBe(0);
+  expect(state?.selectionStart).toBe(0);
+  expect(state?.selectionEnd).toBe(0);
+});
+
+test("keeps the draft when a send is rejected", async ({ app, browser, screen }) => {
+  await browser.route("**/api/message", async (route) => {
+    await route.fulfill({ status: 409, body: "conflict" });
+  });
+  await app.open("/");
+  const composer = screen.getByRole("textbox", "Message");
+  await composer.fill("keep this draft\nwith two lines");
+  const before = await composer.boundingBox();
+  expect(before).not.toBeNull();
+
+  await screen.getByRole("button", "Send").tap();
+  await expect(composer).toHaveValue("keep this draft\nwith two lines");
+
+  const after = await composer.boundingBox();
+  expect(after?.height ?? 0).toBeCloseTo(before?.height ?? 0, 0);
+});
+
 test("renders assistant markdown without unsafe HTML", async ({ app, browser, screen }) => {
   await app.open("/");
   const composer = screen.getByRole("textbox", "Message");
@@ -140,9 +190,53 @@ test("long-presses Steer to queue the message", async ({ app, browser, screen })
   await expect(composer).toHaveValue("");
   await expect(screen.getByText("long press queued", { exact: true })).toBeVisible();
   await expect(screen.getByRole("button", "Stop")).toBeVisible();
+  await expect(screen.getByText("Hold Steer to queue without interrupting the run.")).toHaveCount(
+    0,
+  );
+
+  await composer.fill("second draft");
+  await expect(screen.getByRole("button", "Steer")).toBeVisible();
+  await expect(screen.getByText("Hold Steer to queue without interrupting the run.")).toHaveCount(
+    0,
+  );
+  await composer.fill("");
+  await expect(screen.getByRole("button", "Stop")).toBeVisible();
 
   await screen.getByRole("button", "cancel").tap();
   await expect(screen.getByText("long press queued", { exact: true })).toHaveCount(0);
+  await screen.getByRole("button", "Stop").tap();
+});
+
+test("announces the steer long-press hint only once across runs", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await app.open("/");
+  await browser.evaluate(() => {
+    sessionStorage.removeItem("pi-ui:steer-long-press-hint");
+    return true;
+  });
+  const composer = screen.getByRole("textbox", "Message");
+
+  await composer.fill("SLOW first run");
+  await screen.getByRole("button", "Send").tap();
+  await expect(screen.getByRole("button", "Stop")).toBeVisible();
+  await composer.fill("first draft");
+  await expect(screen.getByText("Hold Steer to queue without interrupting the run.")).toBeVisible();
+  await composer.fill("");
+  await screen.getByRole("button", "Stop").tap();
+  await expect(screen.getByRole("button", "Send")).toBeVisible();
+
+  await composer.fill("SLOW second run");
+  await screen.getByRole("button", "Send").tap();
+  await expect(screen.getByRole("button", "Stop")).toBeVisible();
+  await composer.fill("second run draft");
+  await expect(screen.getByRole("button", "Steer")).toBeVisible();
+  await expect(screen.getByText("Hold Steer to queue without interrupting the run.")).toHaveCount(
+    0,
+  );
+  await composer.fill("");
   await screen.getByRole("button", "Stop").tap();
 });
 

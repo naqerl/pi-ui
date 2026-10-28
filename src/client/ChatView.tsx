@@ -188,8 +188,8 @@ function computedLineHeight(element: HTMLElement): number {
 }
 
 function usesCoarsePointer(): boolean {
-  if (typeof window === "undefined") return false;
-  return window.matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0;
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+  return window.matchMedia("(pointer: coarse)").matches;
 }
 
 function useViewportHeight() {
@@ -240,6 +240,7 @@ function Composer({
   const [value, setValue] = useState("");
   const [holdingSteer, setHoldingSteer] = useState(false);
   const [showSteerHint, setShowSteerHint] = useState(false);
+  const steerHintConsumedRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
   const rowWidthRef = useRef<number | null>(null);
@@ -274,6 +275,7 @@ function Composer({
 
     element.style.height = `${nextHeight}px`;
     element.style.overflowY = contentHeight > maxHeight ? "auto" : "hidden";
+    if (singleLine) element.scrollTop = 0;
   }, []);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: value drives the autosize and caret reset
@@ -315,14 +317,24 @@ function Composer({
   }, [resizeTextarea]);
 
   useEffect(() => {
-    if (!running || !canSend || showSteerHint) return;
+    if (steerHintConsumedRef.current || !running || !canSend) return;
     try {
-      if (sessionStorage.getItem(STEER_HINT_KEY) === "1") return;
+      if (sessionStorage.getItem(STEER_HINT_KEY) === "1") {
+        steerHintConsumedRef.current = true;
+        return;
+      }
       sessionStorage.setItem(STEER_HINT_KEY, "1");
     } catch {
-      // Storage is optional; the hint is still announced for this render.
+      // Storage is optional; the in-memory ref still makes the hint one-time.
     }
+    steerHintConsumedRef.current = true;
     setShowSteerHint(true);
+  }, [canSend, running]);
+
+  useEffect(() => {
+    if (!showSteerHint) return;
+    if (running && canSend) return;
+    setShowSteerHint(false);
   }, [canSend, running, showSteerHint]);
 
   useEffect(
@@ -346,12 +358,14 @@ function Composer({
 
   const submit = async (mode: MessageMode) => {
     if (!canSend) return;
+    const element = textareaRef.current;
     const text = value;
     const coarse = usesCoarsePointer();
-    setValue("");
     const sent = await send(text, mode);
     if (!sent) return;
-    const element = textareaRef.current;
+    // Keep a draft typed while the request was in flight; only clear the text we sent.
+    if (element !== null && element.value !== text) return;
+    setValue("");
     if (element === null) return;
     if (coarse) {
       element.blur();
