@@ -18,10 +18,13 @@ const alignClasses: Record<NonNullable<Tokens.Table["align"][number]>, string> =
 };
 
 function inline(tokens: readonly Token[] | undefined, keyPrefix: string): ReactNode[] {
-  return (tokens ?? []).map((token, index) => inlineToken(token, `${keyPrefix}-${index}`));
+  const list = tokens ?? [];
+  return list.map((token, index) =>
+    inlineToken(token, `${keyPrefix}-${index}`, index === 0 || index === list.length - 1),
+  );
 }
 
-function inlineToken(token: Token, key: string): ReactNode {
+function inlineToken(token: Token, key: string, edge: boolean): ReactNode {
   switch (token.type) {
     case "text":
       if (token.tokens !== undefined) {
@@ -87,7 +90,7 @@ function inlineToken(token: Token, key: string): ReactNode {
       );
     }
     case "br":
-      return <br key={key} />;
+      return edge ? null : <br key={key} />;
     case "escape":
     case "html":
       return <Fragment key={key}>{token.text}</Fragment>;
@@ -121,6 +124,7 @@ function blockToken(token: Token, key: string): ReactNode {
       );
     }
     case "paragraph":
+      if (token.text.trim().length === 0) return null;
       return (
         <p key={key} className="whitespace-pre-wrap break-words">
           {inline(token.tokens, key)}
@@ -194,6 +198,7 @@ function blockToken(token: Token, key: string): ReactNode {
     case "hr":
       return <hr key={key} className="border-border" />;
     case "html":
+      if (token.text.trim().length === 0) return null;
       return (
         <p key={key} className="whitespace-pre-wrap break-words font-mono text-xs">
           {token.text}
@@ -204,6 +209,7 @@ function blockToken(token: Token, key: string): ReactNode {
         return <Fragment key={key}>{blocks(token.tokens, key)}</Fragment>;
       }
       if ("text" in token && typeof token.text === "string") {
+        if (token.text.trim().length === 0) return null;
         return (
           <p key={key} className="whitespace-pre-wrap break-words">
             {token.text}
@@ -255,7 +261,14 @@ function safeHref(value: string): string | undefined {
   return undefined;
 }
 
+function normalize(text: string): string {
+  return text
+    .replace(/[ \t\u00a0\u200b]+$/gm, "")
+    .replace(/^\n+/, "")
+    .replace(/\n+$/, "");
+}
+
 export function Markdown({ text }: { text: string }) {
-  const tokens = useMemo(() => lexer(text), [text]);
+  const tokens = useMemo(() => lexer(normalize(text)), [text]);
   return <div className="space-y-2">{blocks(tokens, "md")}</div>;
 }
