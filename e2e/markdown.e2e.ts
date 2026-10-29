@@ -212,3 +212,51 @@ test("keeps long tokens, code blocks and tables inside the bubbles at 390px", as
     expect(scroller.scrolls).toBe(true);
   }
 });
+
+test("shows hh:mm at the bottom right of user and assistant messages", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  const at = new Date(Date.UTC(2026, 0, 1, 7, 5, 0)).toISOString();
+  const later = new Date(Date.UTC(2026, 0, 1, 18, 42, 0)).toISOString();
+  await browser.route("**/api/state", async (route) => {
+    await route.fulfill({
+      json: {
+        ...snapshot,
+        messages: [
+          { id: "time-user", role: "user", text: "What time is it?", timestamp: at, order: 1 },
+          { id: "time-bot", role: "assistant", text: "Late.", timestamp: later, order: 2 },
+        ],
+      },
+    });
+  });
+  await app.open("/");
+  await expect(screen.getByText("Late.", { exact: true })).toBeVisible();
+
+  const times = await browser.evaluate(() => {
+    const expected = (iso: string) => {
+      const date = new Date(iso);
+      return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+    };
+    return Array.from(document.querySelectorAll<HTMLTimeElement>("main time")).map((time) => {
+      const bubble = time.closest<HTMLElement>(".max-w-\\[85\\%\\]");
+      const box = bubble?.getBoundingClientRect();
+      const own = time.getBoundingClientRect();
+      return {
+        text: time.textContent,
+        expected: expected(time.dateTime),
+        format: /^\d{2}:\d{2}$/.test(time.textContent ?? ""),
+        rightGap: box === undefined ? -1 : box.right - own.right,
+        bottomGap: box === undefined ? -1 : box.bottom - own.bottom,
+      };
+    });
+  });
+  expect(times.length).toBe(2);
+  for (const time of times) {
+    expect(time.format).toBe(true);
+    expect(time.text).toBe(time.expected);
+    expect(time.rightGap).toBeLessThan(16);
+    expect(time.bottomGap).toBeLessThan(12);
+  }
+});

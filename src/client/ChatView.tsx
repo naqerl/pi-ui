@@ -66,6 +66,27 @@ function pageFromLocation(): number {
   return index < 0 ? 0 : index;
 }
 
+/** Local wall-clock `hh:mm` for a message, or null when the timestamp does not parse. */
+function clockTime(timestamp: string): string | null {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return null;
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+function MessageTime({ timestamp }: { timestamp: string }) {
+  const time = clockTime(timestamp);
+  if (time === null) return null;
+  return (
+    <div className="-mb-0.5 mt-1 text-right font-mono text-[10px] leading-none text-muted-foreground tabular-nums">
+      <time dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>
+        {time}
+      </time>
+    </div>
+  );
+}
+
 function MessageBubble({ message }: { message: ChatMessage }) {
   if (message.role === "system") {
     return (
@@ -104,6 +125,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
       ) : (
         <Markdown text={message.text} />
       )}
+      <MessageTime timestamp={message.timestamp} />
     </div>
   );
 }
