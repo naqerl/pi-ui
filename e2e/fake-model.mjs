@@ -159,6 +159,52 @@ export function startFakeModelServer() {
       Connection: "keep-alive",
     });
 
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+    const last = messages.at(-1);
+    // "JOBSTART <command>" calls job_start once; the tool result is then read back.
+    const jobCommand = prompt.match(/^JOBSTART (.+)$/m)?.[1];
+    if (last?.role === "user" && jobCommand) {
+      writeEvent(res, {
+        id: "chatcmpl-e2e",
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: "e2e-model",
+        choices: [
+          {
+            index: 0,
+            delta: {
+              role: "assistant",
+              tool_calls: [
+                {
+                  index: 0,
+                  id: `call_${Date.now()}`,
+                  type: "function",
+                  function: {
+                    name: "job_start",
+                    arguments: JSON.stringify({ command: jobCommand }),
+                  },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      });
+      writeEvent(res, chunkFor("", "tool_calls"));
+      res.write("data: [DONE]\n\n");
+      res.end();
+      return;
+    }
+    if (last?.role === "tool") {
+      const result = textOf(last.content).replace(/<acp[^>]*>[^<]*<\/acp>\n?/g, "");
+      const reply = `Tool result: ${result.split("\n")[0]}`;
+      for (const piece of reply.match(/.{1,18}/gs) ?? []) writeEvent(res, chunkFor(piece));
+      writeEvent(res, chunkFor("", "stop"));
+      res.write("data: [DONE]\n\n");
+      res.end();
+      return;
+    }
+
     if (prompt.includes("SLOW")) {
       writeEvent(res, chunkFor("Working on it"));
       const heartbeat = setInterval(() => res.write(": keepalive\n\n"), 10_000);

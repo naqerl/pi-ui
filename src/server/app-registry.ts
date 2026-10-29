@@ -8,6 +8,8 @@ import { createToolSearchExtension } from "@earendil-works/pi-durable/tool-searc
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { createBiliTools } from "./bili-tools.js";
 import type { BillionContextInline } from "./billion-context.js";
+import { createJobTools } from "./job-tools.js";
+import type { JobManager } from "./jobs.js";
 import { type McpRuntime, startMcpRuntime } from "./mcp-runtime.js";
 import { createTaskTools, type TaskBridge } from "./task-tools.js";
 
@@ -16,11 +18,14 @@ export interface AppRegistryBoot {
   readonly mcp: McpRuntime;
   readonly biliTools: readonly string[];
   readonly taskTools: readonly string[];
+  readonly jobTools: readonly string[];
 }
 
 export interface AppRegistryOptions {
   readonly bili?: BillionContextInline;
   readonly tasks: TaskBridge;
+  /** Background shell jobs. Without it, the job tools are not offered. */
+  readonly jobs?: JobManager;
 }
 
 /**
@@ -43,6 +48,11 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
     }),
   );
 
+  const jobTools = options.jobs === undefined ? [] : createJobTools(options.jobs);
+  if (jobTools.length > 0) {
+    registry.install(defineExtension({ name: "pi-ui-job-tools", tools: jobTools }));
+  }
+
   const mcp = await startMcpRuntime();
   if (mcp.toolNames.length > 0) {
     mcp.install(registry);
@@ -64,5 +74,6 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
     mcp,
     biliTools: biliTools.map((tool) => tool.name),
     taskTools: taskTools.map((tool) => tool.name),
+    jobTools: jobTools.map((tool) => tool.name),
   };
 }

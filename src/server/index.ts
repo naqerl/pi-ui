@@ -10,6 +10,7 @@ import { streamSSE } from "hono/streaming";
 import type { TaskLedger, TaskStatus } from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
 import { ChatService } from "./chat-service.js";
+import { JobManager, jobNotice } from "./jobs.js";
 import { McpEventFeed } from "./mcp-events.js";
 import { MAX_MEDIA_BYTES, MediaError, MediaStore, parseAttachmentIds } from "./media.js";
 import { createModelCatalog } from "./models.js";
@@ -43,6 +44,8 @@ const taskBridge: TaskBridge = {
 if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
   throw new Error(`PI_CWD is not a directory: ${cwd}`);
 }
+const jobs = new JobManager(dataDir, cwd);
+await jobs.load();
 
 const port = Number(process.env.PORT || 8787);
 if (!Number.isInteger(port) || port < 0 || port > 65535) {
@@ -59,7 +62,9 @@ const bili = await installBillionContextInline({
 const catalog = await createModelCatalog();
 const instructions = `${await buildPiSystemPrompt(cwd, catalog.runtime)}
 
-Tasks are a shared todo ledger on the tasks page. You can list them with task_list, mark one done with task_done, and create a blocker for one with task_block. A done blocker does not block. A task with an open subtask cannot be marked done. You cannot add a task that blocks nothing, reopen a task, or delete one.`;
+Tasks are a shared todo ledger on the tasks page. You can list them with task_list, mark one done with task_done, and create a blocker for one with task_block. A done blocker does not block. A task with an open subtask cannot be marked done. You cannot add a task that blocks nothing, reopen a task, or delete one.
+
+Long-running shell commands (builds, test suites, servers) can run in the background with job_start; list them with job_list, read their output with job_output, and stop one with job_cancel. When a job ends on its own you receive a message with its exit status and last output, so you do not need to poll.`;
 const boot = await openDurableSession({
   cwd,
   models: catalog.runtime as unknown as DurableSessionOptions["models"],
@@ -71,6 +76,7 @@ const boot = await openDurableSession({
   keepStoredModel: (ref) => catalog.runtime.getModel(ref.provider, ref.modelId) !== undefined,
   bili,
   tasks: taskBridge,
+  jobs,
 });
 const activeModel =
   boot.model === undefined
@@ -116,6 +122,11 @@ await chat.start();
 boot.mcp.setObserver((notice) => {
   if (!events.ingest(notice)) return;
   hub.broadcast({ event: "mcp.events", data: events.state });
+});
+jobs.setNotifier((job, tail) => {
+  void chat.submit(jobNotice(job, tail), "queue").catch((error: unknown) => {
+    console.error(`[pi] background job ${job.id} message failed`, error);
+  });
 });
 boot.mcp.setSubmit((text, options) => {
   void chat
@@ -544,7 +555,7 @@ const server = serve({ fetch: app.fetch, port }, (info) => {
         : "previous run was interrupted; the partial output was kept and the turn is continuing",
     );
   }
-  const toolParts = ["read", "bash", "edit", "write", ...boot.taskTools];
+  const toolParts = ["read", "bash", "edit", "write", ...boot.taskTools, ...boot.jobTools];
   if (boot.mcp.toolNames.length > 0) {
     toolParts.push(`${boot.mcp.toolNames.length} MCP tools (${boot.mcp.serverNames.join(", ")})`);
   }

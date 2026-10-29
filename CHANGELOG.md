@@ -4,6 +4,7 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## 1.5.0 - 2026-10-29
 
+- The agent can run shell commands as background jobs, list them, read their output and cancel them. pi tells the agent when a job finishes.
 - On start after an update, pi tells the agent which version it now runs and what changed, from this changelog.
 - Long sessions open with the latest 30 messages; older ones load as you scroll up. Markdown renders as it nears the screen, long tool output is collapsed, and heavy views load on demand.
 - A finished reply scrolls into view from its start, with its run info on top.
