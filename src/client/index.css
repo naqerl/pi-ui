@@ -74,6 +74,11 @@
     height: 100%;
   }
 
+  /* A rightward swipe would otherwise leave the page as the browser's back gesture. */
+  html {
+    overscroll-behavior-x: none;
+  }
+
   #root {
     position: fixed;
     top: 0;

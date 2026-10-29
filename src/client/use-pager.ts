@@ -11,18 +11,20 @@ interface Gesture {
   id: number;
   x: number;
   y: number;
+  /** Last finger position. A cancelled touch can report clientX 0. */
+  lastX: number;
   locked: "undecided" | "h" | "v";
   width: number;
   page: number;
 }
 
 /** Chat and tasks share one horizontal pager. Touch swipes; a trackpad scrolls sideways. */
-export function usePager(count: number) {
-  const [page, setPageState] = useState(0);
+export function usePager(count: number, initial = 0) {
+  const start = Math.max(0, Math.min(count - 1, initial));
+  const [page, setPageState] = useState(start);
   const [dragX, setDragX] = useState(0);
   const [dragging, setDragging] = useState(false);
-  const [fine, setFine] = useState(false);
-  const pageRef = useRef(0);
+  const pageRef = useRef(start);
   const gesture = useRef<Gesture | null>(null);
   const suppressClick = useRef(false);
   const pagerRef = useRef<HTMLDivElement>(null);
@@ -39,14 +41,6 @@ export function usePager(count: number) {
   );
 
   useEffect(() => {
-    const query = window.matchMedia("(hover: hover) and (pointer: fine)");
-    const apply = () => setFine(query.matches);
-    apply();
-    query.addEventListener("change", apply);
-    return () => query.removeEventListener("change", apply);
-  }, []);
-
-  useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
       if (!event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
@@ -56,6 +50,49 @@ export function usePager(count: number) {
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [setPage]);
+
+  useEffect(() => {
+    const node = pagerRef.current;
+    if (node === null) return;
+    let startX = 0;
+    let startY = 0;
+    let mode: "undecided" | "h" | "v" = "undecided";
+    let tracking = false;
+
+    const onStart = (event: TouchEvent) => {
+      if (event.touches.length !== 1) {
+        tracking = false;
+        return;
+      }
+      const touch = event.touches[0];
+      if (touch === undefined) return;
+      startX = touch.clientX;
+      startY = touch.clientY;
+      mode = "undecided";
+      tracking = true;
+    };
+    // Rightward movement is the browser's back gesture. preventDefault keeps
+    // that swipe on the pager so it can return from tasks to chat.
+    const onMove = (event: TouchEvent) => {
+      if (!tracking || event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      if (touch === undefined) return;
+      const dx = touch.clientX - startX;
+      const dy = touch.clientY - startY;
+      if (mode === "undecided") {
+        if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+        mode = Math.abs(dx) > Math.abs(dy) ? "h" : "v";
+      }
+      if (mode === "h" && event.cancelable) event.preventDefault();
+    };
+
+    node.addEventListener("touchstart", onStart, { capture: true, passive: true });
+    node.addEventListener("touchmove", onMove, { capture: true, passive: false });
+    return () => {
+      node.removeEventListener("touchstart", onStart, { capture: true });
+      node.removeEventListener("touchmove", onMove, { capture: true });
+    };
+  }, []);
 
   useEffect(() => {
     const node = pagerRef.current;
@@ -80,6 +117,7 @@ export function usePager(count: number) {
       id: event.pointerId,
       x: event.clientX,
       y: event.clientY,
+      lastX: event.clientX,
       locked: "undecided",
       width: event.currentTarget.getBoundingClientRect().width,
       page: pageRef.current,
@@ -89,7 +127,8 @@ export function usePager(count: number) {
   const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const current = gesture.current;
     if (current === null || event.pointerId !== current.id) return;
-    const dx = event.clientX - current.x;
+    current.lastX = event.clientX;
+    const dx = current.lastX - current.x;
     const dy = event.clientY - current.y;
     if (current.locked === "undecided") {
       if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
@@ -122,7 +161,7 @@ export function usePager(count: number) {
       setDragX(0);
       return;
     }
-    const dx = event.clientX - current.x;
+    const dx = current.lastX - current.x;
     if (Math.abs(dx) > 8) suppressClick.current = true;
     const threshold = Math.min(72, current.width * 0.18);
     let next = current.page;
@@ -142,7 +181,6 @@ export function usePager(count: number) {
     page,
     setPage,
     dragging,
-    fine,
     dragX,
     pagerRef,
     pagerProps: {

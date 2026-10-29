@@ -42,6 +42,30 @@ const PAGES = [
   { id: "tasks", label: "Tasks" },
 ] as const;
 
+function SubtaskProgress({ tasks }: { tasks: Task[] }) {
+  const subtasks = tasks.filter((task) => task.parentId !== null);
+  if (subtasks.length === 0) return null;
+  const done = subtasks.filter((task) => task.status === "done").length;
+  const label = `${done}/${subtasks.length} completed subtasks`;
+  return (
+    <span
+      role="status"
+      data-testid="subtask-progress"
+      title={label}
+      aria-label={label}
+      className="shrink-0 font-mono text-[11px] leading-4 text-muted-foreground"
+    >
+      {done}/{subtasks.length}
+    </span>
+  );
+}
+
+function pageFromLocation(): number {
+  const name = new URLSearchParams(window.location.search).get("page");
+  const index = PAGES.findIndex((item) => item.id === name);
+  return index < 0 ? 0 : index;
+}
+
 function MessageBubble({ message }: { message: ChatMessage }) {
   if (message.role === "system") {
     return (
@@ -141,23 +165,6 @@ const ACTION_BUTTON_CLASS = "h-9 w-full hover:bg-foreground/10";
 /** Space above the first message and below the last, on every viewport. */
 const TRANSCRIPT_END_GAP = 16;
 
-function Chevron({ direction }: { direction: "left" | "right" }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      aria-hidden="true"
-      className="size-4"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      {direction === "left" ? <path d="m15 18-6-6 6-6" /> : <path d="m9 18 6-6-6-6" />}
-    </svg>
-  );
-}
-
 function SendIcon() {
   return (
     <svg
@@ -246,6 +253,8 @@ function Composer({
   send,
   stop,
   addTask,
+  error,
+  onDismissError,
 }: {
   tasksPage: boolean;
   parentTitle: string | null;
@@ -253,6 +262,8 @@ function Composer({
   send: (text: string, mode?: MessageMode) => Promise<boolean>;
   stop: () => Promise<void>;
   addTask: (text: string) => Promise<boolean>;
+  error: string | null;
+  onDismissError: () => void;
 }) {
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -352,9 +363,21 @@ function Composer({
         void submit(running ? "steer" : "queue");
       }}
     >
+      {error !== null && (
+        <p
+          id="composer-error"
+          role="alert"
+          data-testid="composer-error"
+          className="px-3 pt-1.5 font-mono text-[11px] leading-4 text-destructive"
+        >
+          {error}
+        </p>
+      )}
       <div ref={rowRef} className="flex w-full items-end gap-2 p-1.5">
         <Textarea
           ref={textareaRef}
+          aria-invalid={error !== null ? true : undefined}
+          aria-errormessage={error !== null ? "composer-error" : undefined}
           aria-label={tasksPage ? (parentTitle === null ? "New task" : "New subtask") : "Message"}
           rows={1}
           className="bg-transparent"
@@ -366,7 +389,10 @@ function Composer({
                 : `Subtask of ${parentTitle}`
               : "Message pi"
           }
-          onChange={(event) => setValue(event.target.value)}
+          onChange={(event) => {
+            setValue(event.target.value);
+            if (error !== null) onDismissError();
+          }}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
@@ -454,14 +480,34 @@ export function ChatView({
   applyTasks,
 }: ChatViewProps) {
   useViewportHeight();
-  const pager = usePager(PAGES.length);
+  const pager = usePager(PAGES.length, pageFromLocation());
   const [armedParentId, setArmedParentId] = useState<string | null>(null);
+  const [composerError, setComposerError] = useState<string | null>(null);
   const tasksPage = pager.page === 1;
   const armed = tasks.find((task) => task.id === armedParentId) ?? null;
 
   useEffect(() => {
     if (!tasksPage || (armedParentId !== null && armed === null)) setArmedParentId(null);
   }, [armed, armedParentId, tasksPage]);
+
+  useEffect(() => {
+    const id = PAGES[pager.page]?.id;
+    if (id === undefined) return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("page") === id) return;
+    url.searchParams.set("page", id);
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${url.pathname}${url.search}${url.hash}`,
+    );
+  }, [pager.page]);
+
+  useEffect(() => {
+    const onPop = () => pager.setPage(pageFromLocation());
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [pager.setPage]);
   const groups = useMemo(() => groupTimeline(timeline), [timeline]);
   const headerRef = useRef<HTMLElement | null>(null);
   const footerRef = useRef<HTMLDivElement | null>(null);
@@ -529,9 +575,13 @@ export function ChatView({
   };
 
   const addTask = async (text: string) => {
-    const ledger = await createTask(text, tasksPage ? (armed?.id ?? null) : null);
-    if (ledger === null) return false;
-    applyTasks(ledger);
+    const outcome = await createTask(text, tasksPage ? (armed?.id ?? null) : null);
+    if (!outcome.ok) {
+      setComposerError(outcome.error);
+      return false;
+    }
+    setComposerError(null);
+    applyTasks(outcome.ledger);
     return true;
   };
 
@@ -556,7 +606,7 @@ export function ChatView({
           {...pager.pagerProps}
           data-testid="pager"
           data-page={PAGES[pager.page].id}
-          className="absolute inset-0 touch-pan-y overflow-hidden overscroll-x-contain"
+          className="absolute inset-0 overflow-hidden overscroll-x-none"
         >
           <div
             className={cn(
@@ -574,7 +624,7 @@ export function ChatView({
               aria-hidden={pager.page !== 0 && !pager.dragging}
               inert={pager.page !== 0 && !pager.dragging ? true : undefined}
             >
-              <main ref={stick.containerRef} className="h-full overflow-y-auto">
+              <main ref={stick.containerRef} className="h-full overflow-x-hidden overflow-y-auto">
                 <div
                   ref={stick.contentRef}
                   className="mx-auto flex w-full max-w-[72ch] flex-col gap-4 px-4"
@@ -618,9 +668,37 @@ export function ChatView({
           </div>
         </div>
         <header ref={headerRef} className="float-header absolute z-10 flex flex-col theme-radius">
-          <div className="flex w-full items-center gap-3 px-[18px] py-1.5">
-            <PiMenu />
-            <div className="ml-auto flex min-w-0 items-center justify-end gap-3 empty:hidden">
+          <div className="grid w-full grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center px-[18px] py-1.5">
+            <div className="justify-self-start">
+              <PiMenu />
+            </div>
+            <div
+              role="tablist"
+              aria-label="Pages"
+              data-testid="page-dots"
+              className="flex items-center justify-center"
+            >
+              {PAGES.map((item, index) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={pager.page === index}
+                  aria-label={item.label}
+                  data-testid={`page-dot-${item.id}`}
+                  className="grid h-6 w-6 place-items-center"
+                  onClick={() => selectPage(index)}
+                >
+                  <span
+                    className={cn(
+                      "block h-1.5 rounded-full",
+                      pager.page === index ? "w-4 bg-foreground" : "w-1.5 bg-foreground/40",
+                    )}
+                  />
+                </button>
+              ))}
+            </div>
+            <div className="flex min-w-0 items-center justify-end gap-3 justify-self-end empty:hidden">
               <McpHeader events={mcpEvents} />
               {unavailableServers.length > 0 && (
                 <span
@@ -632,6 +710,7 @@ export function ChatView({
                   {unavailableServers.map((name) => `${name} unavailable`).join(" · ")}
                 </span>
               )}
+              {tasksPage && <SubtaskProgress tasks={tasks} />}
             </div>
           </div>
           {running && (
@@ -675,54 +754,6 @@ export function ChatView({
         )}
 
         <div ref={footerRef} className="float-footer absolute z-20 theme-radius">
-          <div
-            role="tablist"
-            aria-label="Pages"
-            data-testid="page-dots"
-            className="flex items-center justify-center gap-1 pt-1.5"
-          >
-            {pager.fine && (
-              <button
-                type="button"
-                aria-label="Show chat"
-                disabled={pager.page === 0}
-                className="grid h-6 w-6 place-items-center text-muted-foreground hover:text-foreground disabled:opacity-30"
-                onClick={() => selectPage(pager.page - 1)}
-              >
-                <Chevron direction="left" />
-              </button>
-            )}
-            {PAGES.map((item, index) => (
-              <button
-                key={item.id}
-                type="button"
-                role="tab"
-                aria-selected={pager.page === index}
-                aria-label={item.label}
-                data-testid={`page-dot-${item.id}`}
-                className="grid h-6 w-6 place-items-center"
-                onClick={() => selectPage(index)}
-              >
-                <span
-                  className={cn(
-                    "block h-1.5 rounded-full",
-                    pager.page === index ? "w-4 bg-foreground" : "w-1.5 bg-foreground/40",
-                  )}
-                />
-              </button>
-            ))}
-            {pager.fine && (
-              <button
-                type="button"
-                aria-label="Show tasks"
-                disabled={pager.page === PAGES.length - 1}
-                className="grid h-6 w-6 place-items-center text-muted-foreground hover:text-foreground disabled:opacity-30"
-                onClick={() => selectPage(pager.page + 1)}
-              >
-                <Chevron direction="right" />
-              </button>
-            )}
-          </div>
           {tasksPage && armed !== null && (
             <div className="flex items-center gap-2 px-3 font-mono text-[10px] text-muted-foreground">
               <span className="min-w-0 truncate">subtask of {armed.title}</span>
@@ -743,6 +774,8 @@ export function ChatView({
             send={handleSend}
             stop={stop}
             addTask={addTask}
+            error={tasksPage ? composerError : null}
+            onDismissError={() => setComposerError(null)}
           />
         </div>
       </div>

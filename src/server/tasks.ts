@@ -5,7 +5,6 @@ import { blockerClosesCycle, descendantIds, hasOpenDescendant } from "../shared/
 import type { Task, TaskLedger, TaskStatus } from "../shared/types.js";
 
 const ALPHABET = "abcdefghijkmnopqrstuvwxyz23456789";
-const TITLE_LIMIT = 400;
 const TASK_LIMIT = 500;
 
 export class TaskError extends Error {
@@ -92,9 +91,6 @@ export class TaskStore {
   create(title: string, parentId: string | null): Promise<TaskLedger> {
     const text = title.trim();
     if (text.length === 0) return Promise.reject(new TaskError("Task title is required", 400));
-    if (text.length > TITLE_LIMIT) {
-      return Promise.reject(new TaskError("Task title is too long", 400));
-    }
     return this.commit((tasks) => {
       if (tasks.length >= TASK_LIMIT) throw new TaskError("Task list is full", 400);
       if (parentId !== null) {
@@ -111,6 +107,34 @@ export class TaskStore {
         createdAt: new Date().toISOString(),
       };
       return [...tasks, task];
+    });
+  }
+
+  /** Create a new open task and append it to `id`'s blockers. */
+  addBlocker(id: string, title: string): Promise<TaskLedger> {
+    const text = title.trim();
+    if (text.length === 0) return Promise.reject(new TaskError("Task title is required", 400));
+    return this.commit((tasks) => {
+      const index = tasks.findIndex((task) => task.id === id);
+      const current = tasks[index];
+      if (current === undefined) throw new TaskError("Unknown task", 404);
+      if (tasks.length >= TASK_LIMIT) throw new TaskError("Task list is full", 400);
+      const blocker: Task = {
+        id: newId(new Set(tasks.map((item) => item.id))),
+        title: text,
+        status: "open",
+        parentId: null,
+        blockedBy: [],
+        createdAt: new Date().toISOString(),
+      };
+      const withBlocker = [...tasks, blocker];
+      const next = {
+        ...current,
+        blockedBy: normalizeBlockers(withBlocker, id, [...current.blockedBy, blocker.id]),
+      };
+      const copy = withBlocker.slice();
+      copy[index] = next;
+      return copy;
     });
   }
 

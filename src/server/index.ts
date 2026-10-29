@@ -15,6 +15,7 @@ import { createModelCatalog } from "./models.js";
 import { buildPiSystemPrompt } from "./pi.js";
 import { type DurableSessionOptions, openDurableSession, SESSION_CONTEXT } from "./session.js";
 import { StreamHub } from "./stream-hub.js";
+import type { TaskBridge } from "./task-tools.js";
 import { TaskError, TaskStore } from "./tasks.js";
 import { injectTheme, resolveTheme, writeThemeSlug } from "./themes.js";
 
@@ -30,6 +31,10 @@ const dataDir = resolve(cwd, process.env.DATA_DIR?.trim() || "data");
 const themeFile = resolve(dataDir, "theme.json");
 const taskStore = new TaskStore(resolve(dataDir, "tasks.json"));
 await taskStore.load();
+const taskBridge: TaskBridge = {
+  store: taskStore,
+  publish() {},
+};
 if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
   throw new Error(`PI_CWD is not a directory: ${cwd}`);
 }
@@ -47,7 +52,9 @@ const bili = await installBillionContextInline({
 });
 
 const catalog = await createModelCatalog();
-const instructions = await buildPiSystemPrompt(cwd, catalog.runtime);
+const instructions = `${await buildPiSystemPrompt(cwd, catalog.runtime)}
+
+Tasks are a shared todo ledger on the tasks page. You can list them with task_list, mark one done with task_done, and create a blocker for one with task_block. A done blocker does not block. A task with an open subtask cannot be marked done. You cannot add a task that blocks nothing, reopen a task, or delete one.`;
 const boot = await openDurableSession({
   cwd,
   models: catalog.runtime as unknown as DurableSessionOptions["models"],
@@ -58,6 +65,7 @@ const boot = await openDurableSession({
       : { provider: catalog.model.provider, modelId: catalog.model.id },
   keepStoredModel: (ref) => catalog.runtime.getModel(ref.provider, ref.modelId) !== undefined,
   bili,
+  tasks: taskBridge,
 });
 const activeModel =
   boot.model === undefined
@@ -80,6 +88,9 @@ if (activeModel !== undefined) {
   }
 }
 const hub = new StreamHub();
+taskBridge.publish = (ledger) => {
+  hub.broadcast({ event: "tasks", data: ledger });
+};
 const chat = new ChatService(
   boot.harness,
   boot.conversation,
@@ -183,7 +194,7 @@ app.get("/api/state", async (c) =>
 app.get("/api/tasks", (c) => c.json(taskStore.ledger()));
 
 function publishTasks(ledger: TaskLedger) {
-  hub.broadcast({ event: "tasks", data: ledger });
+  taskBridge.publish(ledger);
   return ledger;
 }
 
@@ -449,7 +460,7 @@ const server = serve({ fetch: app.fetch, port }, (info) => {
         : "previous run was interrupted; the partial output was kept and the turn is continuing",
     );
   }
-  const toolParts = ["read", "bash", "edit", "write"];
+  const toolParts = ["read", "bash", "edit", "write", ...boot.taskTools];
   if (boot.mcp.toolNames.length > 0) {
     toolParts.push(`${boot.mcp.toolNames.length} MCP tools (${boot.mcp.serverNames.join(", ")})`);
   }

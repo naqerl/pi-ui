@@ -1,6 +1,6 @@
 {
   "name": "pi-ui",
-  "version": "1.1.0",
+  "version": "1.4.0",
   "private": true,
   "type": "module",
   "description": "Minimal single-chat web UI for pi, installable as a PWA with a native share target",

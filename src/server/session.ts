@@ -33,6 +33,7 @@ import type { BillionContextInline } from "./billion-context.js";
 import type { McpRuntime } from "./mcp-runtime.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
 import { type RunMarker, RunMarkerStore } from "./run-marker.js";
+import type { TaskBridge } from "./task-tools.js";
 
 export const SESSION_CONTEXT: Context = BACKGROUND_CONTEXT;
 
@@ -51,6 +52,7 @@ export interface DurableSessionOptions {
   /** When a resumed conversation already stores a model, keep it if this returns true. */
   readonly keepStoredModel?: (model: ModelRef) => boolean;
   readonly bili?: BillionContextInline;
+  readonly tasks: TaskBridge;
 }
 
 export interface DurableSessionBoot {
@@ -65,6 +67,7 @@ export interface DurableSessionBoot {
   readonly runMarkerStore: RunMarkerStore;
   readonly mcp: McpRuntime;
   readonly biliTools: readonly string[];
+  readonly taskTools: readonly string[];
   /** Model stored on the conversation after boot. A menu choice wins over `PI_MODEL`. */
   readonly model: ModelRef | undefined;
 }
@@ -78,7 +81,10 @@ export async function openDurableSession(
   await mkdir(dataDir, { recursive: true });
 
   const storage = await openNodeSqliteStorage(databasePath);
-  const { registry, mcp, biliTools } = await createAppRegistry({ bili: options.bili });
+  const { registry, mcp, biliTools, taskTools } = await createAppRegistry({
+    bili: options.bili,
+    tasks: options.tasks,
+  });
 
   const harness = await HarnessImpl.open(
     storage,
@@ -155,6 +161,7 @@ export async function openDurableSession(
     runMarkerStore,
     mcp,
     biliTools,
+    taskTools,
     model,
   };
 }

@@ -17,7 +17,7 @@ The browser suite is offline by default: `npm run e2e` starts the built server a
 ## Run the container
 
 ```sh
-docker pull ghcr.io/naqerl/pi-ui:v1.1.0
+docker pull ghcr.io/naqerl/pi-ui:v1.4.0
 
 docker run -d --name pi-ui --restart unless-stopped \
   --network host \
@@ -25,7 +25,7 @@ docker run -d --name pi-ui --restart unless-stopped \
   -v "${PI_AGENT_DIR:-$HOME/.pi/agent}:/home/pi/.pi/agent" \
   -v "${BILI_DATA_DIR:-$HOME/.local/share/billion-context}:/home/pi/.local/share/billion-context" \
   -v "${ZEROSHOT_CONFIG_DIR:-$HOME/.config/zeroshot}:/home/user/.config/zeroshot:ro" \
-  ghcr.io/naqerl/pi-ui:v1.1.0
+  ghcr.io/naqerl/pi-ui:v1.4.0
 ```
 
 Open <http://localhost:8787>. The host working directory defaults to `~/pi-work`; create it first if `$HOME/pi-work` does not exist. The agent directory defaults to `~/.pi/agent`, which is the directory pi already uses on the host. Create the compression-state directory before the first run too: `mkdir -p ~/.local/share/billion-context`. Host networking and the read-only config mount are required for the hub MCP server; see [Why host networking](#why-host-networking).
@@ -110,7 +110,7 @@ For a `pi-web-access` bump, compare the MCP tool schemas in the installed packag
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
 | `PORT`                | HTTP port for the server.                                                                                                                                                    | `8787`                       |
 | `PI_CWD`              | Working directory pi operates in. Must exist or the server refuses to start.                                                                                                 | `process.cwd()`              |
-| `DATA_DIR`            | Directory for `pi.sqlite3`, `current.json`, `tasks.json`, and the durable `run.json` marker. Relative paths resolve against `PI_CWD`.                                          | `<PI_CWD>/data`              |
+| `DATA_DIR`            | Directory for `pi.sqlite3`, `current.json`, `tasks.json`, and the durable `run.json` marker. Relative paths resolve against `PI_CWD`.                                        | `<PI_CWD>/data`              |
 | `PI_MODEL`            | Initial model, as `provider/model-id` or a model id. A choice in the pi menu is stored on the conversation and kept across restarts while that model remains in the catalog. | pi's configured default      |
 | `PI_CODING_AGENT_DIR` | pi configuration/auth directory. In the image this is `/home/pi/.pi/agent`, bind-mounted from the host.                                                                      | pi's `getAgentDir()` default |
 
@@ -118,7 +118,7 @@ The durable conversation is stored at `<DATA_DIR>/pi.sqlite3` (by default `<PI_C
 
 If the process is killed during a turn, the next boot keeps the committed transcript, marks the last assistant text `partial`, appends a system note, and reports `interrupted` in `/api/state` and the chat banner. Unless a stop was requested, it then submits exactly one continuation as a steered turn, guarded by a durable request id and the marker's `autoContinued` flag. Queued messages from the marker are restored as queued follow-ups. An explicit `SIGTERM`/`SIGINT` leaves the marker in place; a normal completion, a stop, or a drained queue clears it.
 
-On boot the server logs the working directory, database path, conversation ID, whether it was resumed, and whether the previous run was interrupted. It also logs the selected model, or a clear warning when no credentials are available. The registry contains the coding tools (`read`, `bash`, `edit`, `write`) plus tools from the configured MCP servers and the built-in `web` server (`web__web_search`, `web__fetch_content`, `web__get_search_content`, `web__source_check`, from `pi-web-access`). `tool_search` is installed whenever MCP tools exist so they do not inflate the system prompt. When the inline engine answers `GET /__bili/plugin/manifest`, the registry also exposes its compression tools (`compress`, `decompress`, `search_context`, `acp_status`, `acp_cache`, `acp_read_original_image`); if the manifest is unreachable those tools are absent and the rest of the server still boots. Coding-agent extensions and codemode are not loaded; MCP goes through the dedicated adapter described below.
+On boot the server logs the working directory, database path, conversation ID, whether it was resumed, and whether the previous run was interrupted. It also logs the selected model, or a clear warning when no credentials are available. The registry contains the coding tools (`read`, `bash`, `edit`, `write`) and the task tools (`task_list`, `task_done`, `task_block`), plus tools from the configured MCP servers and the built-in `web` server (`web__web_search`, `web__fetch_content`, `web__get_search_content`, `web__source_check`, from `pi-web-access`). `tool_search` is installed whenever MCP tools exist so they do not inflate the system prompt. When the inline engine answers `GET /__bili/plugin/manifest`, the registry also exposes its compression tools (`compress`, `decompress`, `search_context`, `acp_status`, `acp_cache`, `acp_read_original_image`); if the manifest is unreachable those tools are absent and the rest of the server still boots. Coding-agent extensions and codemode are not loaded; MCP goes through the dedicated adapter described below.
 
 ## MCP
 
@@ -152,7 +152,7 @@ Assistant messages render a deliberately small Markdown subset from `marked` tok
 
 While a run is active, Enter and the Steer button inject the draft into the running turn. A steered message appears in the transcript where it entered the run, with a small `steer` label. The composer does not queue follow-ups. Programmatic clients can still post `mode: "queue"` to `POST /api/message`; MCP event messages use that path so a subscription can wake the model. Those follow-ups use pi-durable and are mirrored in `run.json`, so a restart restores them. `POST /api/queue/:id` accepts `{"action":"cancel"}` or `{"action":"steer"}`, and `POST /api/stop` clears that programmatic queue immediately, without asking for confirmation, then stops the run.
 
-The chat and the task list are two pages of the same view. Dots centered on the top edge of the composer show the current page, and selecting a dot moves there. A horizontal swipe does the same on a touch screen. On a desktop, the dots have flanking arrows, a sideways trackpad scroll switches pages, and Alt plus a horizontal arrow does too. On the tasks page the composer creates a task instead of messaging pi: the placeholder is `New task`, and Enter adds it. Choosing `subtask` on a row aims the next submission at that task, and `top level` aims it back at the list. Each task can be marked done, removed, or blocked by another task. An open blocker shows `blocked by`, and a task with an open subtask cannot be marked done until those subtasks are done. The ledger is one list in `DATA_DIR/tasks.json`, shared by every browser on this server. It is a todo list with subtasks and blockers. It does not claim work, assign agents, or record evidence.
+The chat and the task list are two pages of the same view. The address bar stores the open page as `?page=chat` or `?page=tasks`, and a refresh returns to it. Dots in the center of the header show the current page, and selecting a dot moves there. A horizontal swipe does the same on a touch screen. A sideways trackpad scroll switches pages, and Alt plus a horizontal arrow does too. On the tasks page the composer creates a task instead of messaging pi: the placeholder is `New task`, and Enter adds it. A title can be as long as the draft. When that add fails, the reason is shown above the composer and the draft stays. A failed card or menu action shows its reason on that card, or at the top of the menu while the menu is open. A tap on a card marks that task done, and a second tap reopens it. A long press opens the card actions on a touch screen, and a right click opens them on a desktop: subtask, blocker, and remove. Choosing `subtask` aims the next submission at that task, and `top level` aims it back at the list. The end of the header shows how many subtasks are done, as `x/y`. An open blocker shows `blocked by`, and a task with an open subtask cannot be marked done until those subtasks are done. The ledger is one list in `DATA_DIR/tasks.json`, shared by every browser on this server. It is a todo list with subtasks and blockers. The agent can list that ledger, mark a task done, and create a blocker for a task. An open page updates when it does. It cannot add a task that blocks nothing, reopen a task, or delete one, and it does not claim work, assign agents, or record evidence.
 
 Live MCP subscriptions appear in the header as server names, followed by a short `new event from <server>` notice. Selecting the names opens `/events`, which lists the subscriptions and the same event log on every connected client. Draft text is broadcast as a full snapshot with a revision, so a client that connects mid-run shows the same text as the others.
 
@@ -160,11 +160,11 @@ The transcript follows new output only while the reader is at the bottom (within
 
 ## Releases
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds and pushes `ghcr.io/naqerl/pi-ui` to GitHub Container Registry with semver tags, `latest`, provenance, and GitHub Actions layer cache. Tag `v1.1.0` publishes `:v1.1.0` (the tag the commands above use), `:1.1.0`, `:1.1`, and `:latest`; the `v`-prefixed tag is emitted explicitly with `type=semver,pattern=v{{version}}` because the plain `{{version}}` pattern strips the leading `v`. The workflow can also be started manually with `workflow_dispatch` to rebuild an existing ref. There is intentionally no build on every push to a branch.
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds and pushes `ghcr.io/naqerl/pi-ui` to GitHub Container Registry with semver tags, `latest`, provenance, and GitHub Actions layer cache. Tag `v1.4.0` publishes `:v1.4.0` (the tag the commands above use), `:1.4.0`, `:1.4`, and `:latest`; the `v`-prefixed tag is emitted explicitly with `type=semver,pattern=v{{version}}` because the plain `{{version}}` pattern strips the leading `v`. The workflow can also be started manually with `workflow_dispatch` to rebuild an existing ref. There is intentionally no build on every push to a branch.
 
 The image is built for `linux/amd64` only. The release job does not run an emulated `linux/arm64` build, because the QEMU build does not fit the job budget; add it to `platforms` only after confirming it builds reliably in CI.
 
-GHCR creates a new package as private on first push. Set the `pi-ui` package's visibility to public once in the package settings on GitHub; after that, `docker pull ghcr.io/naqerl/pi-ui:v1.1.0` works without authentication. The publish job prints the resulting tags and digest in the workflow run summary.
+GHCR creates a new package as private on first push. Set the `pi-ui` package's visibility to public once in the package settings on GitHub; after that, `docker pull ghcr.io/naqerl/pi-ui:v1.4.0` works without authentication. The publish job prints the resulting tags and digest in the workflow run summary.
 
 ## What this deliberately does not do
 
