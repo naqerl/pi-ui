@@ -6,6 +6,12 @@ import type { OmarchyTheme, OmarchyThemes, ThemeColors } from "../shared/types.j
 /** Colors and lengths that can sit in an HTML style attribute. */
 const SAFE_CSS = /^[#%(),.\s\w/+-]+$/;
 
+/** Stock Omarchy themes. The image copies the vendored catalog to this path. */
+const STOCK_THEMES = "/usr/share/omarchy/themes";
+
+/** Page theme when the desktop has no current name and nothing is saved. */
+const FALLBACK_SLUG = "vantablack";
+
 function displayName(slug: string): string {
   return slug
     .split("-")
@@ -116,15 +122,16 @@ async function currentSlug(): Promise<string | null> {
   try {
     const text = await readFile(join(homedir(), ".local/state/omarchy/current/theme.name"), "utf8");
     const slug = text.trim();
-    return slug.length > 0 ? slug : null;
+    if (slug.length > 0) return slug;
   } catch {
-    return null;
+    // No desktop theme. Vantablack is in the image catalog.
   }
+  return FALLBACK_SLUG;
 }
 
 /** Stock themes plus any user theme of the same slug, which wins. */
 export async function listThemes(): Promise<OmarchyThemes> {
-  const stock = "/usr/share/omarchy/themes";
+  const stock = STOCK_THEMES;
   const user = join(homedir(), ".config/omarchy/themes");
   const slugs = [...new Set([...(await slugsIn(stock)), ...(await slugsIn(user))])].sort();
   const themes: OmarchyTheme[] = [];
@@ -215,7 +222,11 @@ export function injectTheme(html: string, theme: OmarchyTheme | null): string {
     const cleaned = attrs.replace(/\sstyle="[^"]*"/i, "");
     return `<html${cleaned} style="${style}">`;
   });
-  const withoutThemeColor = opened.replace(/\s*<meta\s+name="theme-color"\b[^>]*>/gi, "");
+  // `\b` after the closing quote never matches: `"` and the following space are both non-words.
+  const withoutThemeColor = opened.replace(
+    /[ \t]*<meta\b[^>]*\bname="theme-color"[^>]*>\r?\n?/gi,
+    "",
+  );
   const meta = `<meta name="theme-color" content="${theme.colors.background}" />`;
   if (!withoutThemeColor.includes("</head>")) return withoutThemeColor;
   return withoutThemeColor.replace("</head>", `    ${meta}\n  </head>`);

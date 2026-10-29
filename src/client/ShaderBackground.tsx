@@ -17,19 +17,55 @@ function readThemeInk(): ThemeInk {
   return { back: style.backgroundColor, front: style.color };
 }
 
+/** Comma-separated rgb() and hex. Paper rejects oklch and space-separated rgb(). */
+const PAPER_RGB = /^rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*(?:,\s*[0-9.]+)?\s*\)$/i;
+
 function channels(color: string): [number, number, number] | null {
   const match = color.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/);
   if (match === null) return null;
   return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
 
+let colorProbe: CanvasRenderingContext2D | null | undefined;
+
+/** Resolve oklch and other CSS colors to sRGB bytes. Computed style keeps oklch. */
+function canvasChannels(color: string): [number, number, number] | null {
+  if (colorProbe === undefined) {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1;
+    canvas.height = 1;
+    colorProbe = canvas.getContext("2d", { willReadFrequently: true });
+  }
+  if (colorProbe === null) return null;
+  colorProbe.fillStyle = "#000000";
+  colorProbe.fillStyle = color;
+  colorProbe.fillRect(0, 0, 1, 1);
+  const pixel = colorProbe.getImageData(0, 0, 1, 1).data;
+  return [pixel[0] ?? 0, pixel[1] ?? 0, pixel[2] ?? 0];
+}
+
+function rgb(parts: [number, number, number]): string {
+  return `rgb(${Math.round(parts[0])}, ${Math.round(parts[1])}, ${Math.round(parts[2])})`;
+}
+
+function resolved(color: string): [number, number, number] | null {
+  return channels(color) ?? canvasChannels(color);
+}
+
+/** A color string Paper's parser accepts. Already-valid strings stay unchanged. */
+function paperColor(color: string): string {
+  if (color.startsWith("#") || PAPER_RGB.test(color)) return color;
+  const parsed = resolved(color);
+  return parsed === null ? color : rgb(parsed);
+}
+
 /** Pull the theme foreground toward the page so the warp stays a texture. */
 function dimInk(back: string, front: string): string {
-  const bg = channels(back);
-  const fg = channels(front);
-  if (bg === null || fg === null) return front;
-  const mix = (from: number, to: number) => Math.round(from + (to - from) * INK);
-  return `rgb(${mix(bg[0], fg[0])}, ${mix(bg[1], fg[1])}, ${mix(bg[2], fg[2])})`;
+  const bg = resolved(back);
+  const fg = resolved(front);
+  if (bg === null || fg === null) return paperColor(front);
+  const mix = (from: number, to: number) => from + (to - from) * INK;
+  return rgb([mix(bg[0], fg[0]), mix(bg[1], fg[1]), mix(bg[2], fg[2])]);
 }
 
 function useReducedMotion(): boolean {
@@ -77,6 +113,7 @@ export function ShaderBackground() {
   const shape = SHAPE;
   const type = TYPE;
   const size = SIZE;
+  const back = paperColor(colors.back);
   const front = dimInk(colors.back, colors.front);
 
   return (
@@ -87,11 +124,13 @@ export function ShaderBackground() {
       data-shader-speed={speed}
       data-shader-back={colors.back}
       data-shader-front={front}
+      data-shader-color-back={back}
+      data-shader-color-front={front}
       data-shader-ink={INK}
       className="pointer-events-none fixed inset-0 z-0"
     >
       <Dithering
-        colorBack={colors.back}
+        colorBack={back}
         colorFront={front}
         shape={shape}
         type={type}

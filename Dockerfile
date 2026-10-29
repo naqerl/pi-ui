@@ -43,6 +43,8 @@ RUN set -eux; \
 COPY --from=build --chown=pi:pi /app/dist ./dist
 COPY --from=build --chown=pi:pi /app/node_modules ./node_modules
 COPY --from=build --chown=pi:pi /app/package.json /app/package-lock.json ./
+# Color and rounding files only. Wallpaper assets stay out of the image.
+COPY --chown=pi:pi themes/omarchy /usr/share/omarchy/themes
 
 USER pi
 EXPOSE 8787
