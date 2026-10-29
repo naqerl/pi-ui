@@ -544,12 +544,17 @@ export function ChatView({
   // A run adds a status line to the header, and the composer grows with the draft.
   const stick = useStickToBottom(`${timeline.length}:${footerClearance}:${headerClearance}`);
 
-  const currentActivity = useMemo(() => {
+  const currentTool = useMemo(() => {
     if (!running) return undefined;
     const lastUserOrder = lastUserMessageOrder(timeline);
     for (let index = timeline.length - 1; index >= 0; index--) {
       const item = timeline[index];
-      if (item.kind === "activity" && item.activity.order > lastUserOrder) {
+      if (
+        item.kind === "activity" &&
+        item.activity.kind === "tool" &&
+        item.activity.pending === true &&
+        item.activity.order > lastUserOrder
+      ) {
         return item.activity;
       }
     }
@@ -722,10 +727,10 @@ export function ChatView({
               <WorkingIndicator running={running} startedAt={runStartedAt} />
               <span
                 data-testid="header-activity"
-                title={currentActivity === undefined ? "thinking" : activityLabel(currentActivity)}
+                title={currentTool === undefined ? "working" : activityLabel(currentTool)}
                 className="min-w-0 truncate"
               >
-                {currentActivity === undefined ? "thinking" : activityLabel(currentActivity)}
+                {currentTool === undefined ? "working" : activityLabel(currentTool)}
               </span>
             </div>
           )}

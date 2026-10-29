@@ -483,6 +483,74 @@ function protocolError(name: string, error: unknown): Error {
   return new Error(`MCP server ${name} is unavailable`);
 }
 
+const STALE_SESSION_CODE = -32600;
+
+/**
+ * A restarted server rejects the previous HTTP session with JSON-RPC -32600
+ * Invalid Request. pi-mcp-events treats any protocol error as terminal, so
+ * the subscription stays failed and looks idle. Any other error, including
+ * method-not-found, still reaches the adapter unchanged.
+ */
+function isStaleSessionResponse(message: unknown): boolean {
+  if (!isRecord(message) || "method" in message || !isRecord(message.error)) return false;
+  const text = message.error.message;
+  return message.error.code === STALE_SESSION_CODE || text === "Invalid Request";
+}
+
+/**
+ * The adapter installs its handlers on the transport it is given, while the
+ * MCP client delivers frames to the transport it connected. Keep delivery on
+ * the connected transport, and present the adapter with handlers that hide a
+ * stale Invalid Request behind an ordinary close.
+ */
+function watchStaleSession(transport: Transport, retire: () => void): Transport {
+  let onMessage = transport.onmessage;
+  let onClose = transport.onclose;
+  let retired = false;
+
+  const retireOnce = () => {
+    if (retired) return;
+    retired = true;
+    try {
+      onClose?.();
+    } finally {
+      setTimeout(retire, 0);
+    }
+  };
+
+  transport.onmessage = (message, extra) => {
+    if (retired) return;
+    if (isStaleSessionResponse(message)) {
+      retireOnce();
+      return;
+    }
+    onMessage?.(message, extra);
+  };
+  transport.onclose = () => {
+    retireOnce();
+  };
+
+  return new Proxy(transport, {
+    get(target, property) {
+      if (property === "onmessage") return onMessage;
+      if (property === "onclose") return onClose;
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+    set(target, property, value) {
+      if (property === "onmessage") {
+        onMessage = typeof value === "function" ? (value as Transport["onmessage"]) : undefined;
+        return true;
+      }
+      if (property === "onclose") {
+        onClose = typeof value === "function" ? (value as Transport["onclose"]) : undefined;
+        return true;
+      }
+      return Reflect.set(target, property, value, target);
+    },
+  });
+}
+
 function sameProtocolDefinition(a: McpProtocolDefinition, b: McpProtocolDefinition): boolean {
   return (
     a.namespace === b.namespace &&
@@ -690,15 +758,22 @@ export class McpRuntime {
       await transport.close().catch(() => {});
       throw protocolError(name, error);
     }
+    const entry = { client, transport, controller };
+    this.protocolConnections.add(entry);
+    const watched = watchStaleSession(transport, () => {
+      if (!this.protocolConnections.delete(entry)) return;
+      controller.abort();
+      void client.close().catch(() => {});
+      void transport.close().catch(() => {});
+    });
     const connection: ProtocolServerConnection = {
       status: "connected",
-      transport,
+      transport: watched,
       client,
       activeProtocolOperations: 0,
       lastUsedAt: Date.now(),
       requestMetadata: () => undefined,
     };
-    this.protocolConnections.add({ client, transport, controller });
     return { connection, signal: controller.signal };
   }
 

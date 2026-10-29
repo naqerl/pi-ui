@@ -96,12 +96,25 @@ function groupDurationMs(items: ActivityItem[]): number {
   return Math.max(0, Math.max(...timestamps) - Math.min(...timestamps));
 }
 
+function formatChars(count: number): string {
+  if (count < 1000) return `${count} chars`;
+  const thousands = count / 1000;
+  const rounded = thousands >= 10 ? Math.round(thousands) : Math.round(thousands * 10) / 10;
+  return `${rounded}k chars`;
+}
+
 export function groupSummary(items: ActivityItem[], running: boolean): string {
-  const tools = items.filter((item) => item.kind === "tool").length;
-  const thinking = items.filter((item) => item.kind === "thinking").length;
+  const tools = items.filter((item) => item.kind === "tool");
+  const thinking = items.filter((item) => item.kind === "thinking");
   const parts: string[] = [];
-  if (tools > 0) parts.push(`${tools} tool call${tools === 1 ? "" : "s"}`);
-  if (thinking > 0) parts.push(`${thinking} thinking`);
+  if (tools.length > 0) parts.push(`${tools.length} tool call${tools.length === 1 ? "" : "s"}`);
+  const pending = [...tools].reverse().find((item) => item.pending === true);
+  if (pending !== undefined) parts.push(pending.name);
+  if (thinking.length > 0) {
+    parts.push(`${thinking.length} thinking`);
+    const chars = thinking.reduce((sum, item) => sum + item.text.length, 0);
+    if (chars > 0) parts.push(formatChars(chars));
+  }
   parts.push(running ? "running" : formatDuration(groupDurationMs(items)));
   return parts.join(" · ");
 }

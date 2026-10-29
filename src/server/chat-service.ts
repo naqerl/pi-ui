@@ -80,6 +80,7 @@ export class ChatService {
   private currentText = "";
   private currentThinking = "";
   private draftRevision = 0;
+  private toolsRevision = 0;
   private eventFeed: McpEventFeed | undefined;
   private readonly activeTools = new Map<string, ActiveTool>();
   private stream: AgentEventStream | undefined;
@@ -216,6 +217,8 @@ export class ChatService {
         thinking: this.currentThinking,
         revision: this.draftRevision,
       },
+      activeTools: this.activeToolActivities(),
+      toolsRevision: this.toolsRevision,
     };
   }
 
@@ -248,14 +251,37 @@ export class ChatService {
     });
   }
 
+  private publishDraft(previousText: string, previousThinking: string): void {
+    if (this.currentText !== previousText) this.broadcastText();
+    if (this.currentThinking !== previousThinking) this.broadcastThinking();
+  }
+
+  private activeToolActivities(): ToolActivity[] {
+    const items: ToolActivity[] = [];
+    for (const [toolCallId, tool] of this.activeTools) {
+      items.push({
+        kind: "tool",
+        id: `live-${toolCallId}`,
+        name: tool.name,
+        arguments: formatToolArguments(tool.args),
+        isError: false,
+        timestamp: tool.timestamp,
+        order: Number.MAX_SAFE_INTEGER - 1,
+        pending: true,
+      });
+    }
+    return items;
+  }
+
   replayFrames(): SseFrame[] {
+    const revision = this.bumpDraft();
     const frames: SseFrame[] = [
       {
         event: "draft.sync",
         data: {
           text: this.currentText,
           thinking: this.currentThinking,
-          revision: this.draftRevision,
+          revision,
         } satisfies StreamDraftSync,
       },
       { event: "mcp.events", data: this.mcpEventsState() },
@@ -269,6 +295,7 @@ export class ChatService {
           name: tool.name,
           arguments: tool.args,
           timestamp: tool.timestamp,
+          toolsRevision: this.toolsRevision,
         } satisfies StreamToolStart,
       });
     }
@@ -573,27 +600,25 @@ export class ChatService {
     switch (event.type) {
       case "snapshot": {
         this.applySnapshot(event);
-        const frames: SseFrame[] = [
+        const revision = this.bumpDraft();
+        this.hub.broadcast([
           {
             event: "message.done",
             data: { message: null } satisfies StreamMessageDone,
           },
-        ];
-        if (this.currentThinking.length > 0 || this.currentText.length > 0) {
-          frames.push({
+          {
             event: "draft.sync",
             data: {
               text: this.currentText,
               thinking: this.currentThinking,
-              revision: this.draftRevision,
+              revision,
             } satisfies StreamDraftSync,
-          });
-        }
-        frames.push({
-          event: "run.state",
-          data: this.getRunStatus() satisfies StreamRunState,
-        });
-        this.hub.broadcast(frames);
+          },
+          {
+            event: "run.state",
+            data: this.getRunStatus() satisfies StreamRunState,
+          },
+        ]);
         return;
       }
 
@@ -607,9 +632,12 @@ export class ChatService {
 
       case "message_start":
         if (event.message.role === "assistant") {
+          const previousText = this.currentText;
+          const previousThinking = this.currentThinking;
           this.currentText = "";
           this.currentThinking = "";
           this.absorbMessage(event.message);
+          this.publishDraft(previousText, previousThinking);
         }
         return;
 
@@ -621,6 +649,16 @@ export class ChatService {
           } else if (change.type === "thinking_delta") {
             this.currentThinking += change.delta;
             this.broadcastThinking();
+          } else if (change.type === "text_start") {
+            if (change.block.type === "text" && change.block.text.length > 0) {
+              this.currentText += change.block.text;
+              this.broadcastText();
+            }
+          } else if (change.type === "thinking_start") {
+            if (change.block.type === "thinking" && change.block.thinking.length > 0) {
+              this.currentThinking += change.block.thinking;
+              this.broadcastThinking();
+            }
           } else if (change.type === "block") {
             if (change.block.type === "text") {
               this.currentText = change.block.text;
@@ -630,14 +668,16 @@ export class ChatService {
               this.broadcastThinking();
             }
           } else if (change.type === "message") {
+            const previousText = this.currentText;
+            const previousThinking = this.currentThinking;
             this.absorbMessage(change.message);
+            this.publishDraft(previousText, previousThinking);
           }
         }
         return;
 
       case "message_end": {
         const message = assistantMessageFromEntry(event.entry);
-        if (!message) return;
         this.currentText = "";
         this.currentThinking = "";
         const revision = this.bumpDraft();
@@ -662,6 +702,7 @@ export class ChatService {
           args: event.args,
           timestamp,
         });
+        this.toolsRevision += 1;
         this.hub.broadcast({
           event: "tool.start",
           data: {
@@ -669,6 +710,7 @@ export class ChatService {
             name: event.toolName,
             arguments: event.args,
             timestamp,
+            toolsRevision: this.toolsRevision,
           } satisfies StreamToolStart,
         });
         return;
@@ -678,6 +720,7 @@ export class ChatService {
         if (event.parentToolCallId !== undefined) return;
         const active = this.activeTools.get(event.toolCallId);
         this.activeTools.delete(event.toolCallId);
+        this.toolsRevision += 1;
         const activity = this.toolActivity(event, active);
         this.hub.broadcast({
           event: "tool.end",
@@ -689,6 +732,7 @@ export class ChatService {
             durationMs: activity.durationMs,
             timestamp: activity.timestamp,
             activity,
+            toolsRevision: this.toolsRevision,
           } satisfies StreamToolEnd,
         });
         return;
@@ -770,6 +814,7 @@ export class ChatService {
         timestamp: new Date().toISOString(),
       });
     }
+    this.toolsRevision += 1;
   }
 
   private absorbMessage(message: AssistantMessage): void {
@@ -836,7 +881,10 @@ export class ChatService {
       if (state === "idle") this.runStartedAt = undefined;
       this.currentText = "";
       this.currentThinking = "";
-      this.activeTools.clear();
+      if (this.activeTools.size > 0) {
+        this.activeTools.clear();
+        this.toolsRevision += 1;
+      }
     }
     this.maybeClearMarker();
     this.hub.broadcast({

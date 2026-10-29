@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startMcpRuntime } from "../src/server/mcp-runtime.ts";
 
 const stub = join(import.meta.dirname, "stub-mcp.mjs");
+const staleStub = join(import.meta.dirname, "stale-mcp.mjs");
 const secret = "super-secret-token-9f3c";
 
 function writeConfig(servers) {
@@ -104,4 +105,81 @@ try {
   console.warn = warn;
   await secureRuntime?.close();
   authServer.close();
+}
+
+// A live subscription that receives Invalid Request must open a new session.
+// Method not found stays failed and must not open another stream.
+function subscription(listed, server) {
+  const parsed = JSON.parse(listed.output[0].text);
+  return parsed.subscriptions.find((item) => item.server === server);
+}
+
+async function waitFor(predicate, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return predicate();
+}
+
+const staleDir = mkdtempSync(join(tmpdir(), "pi-ui-mcp-stale-"));
+const recoveredState = join(staleDir, "recovered.txt");
+const terminalState = join(staleDir, "terminal.txt");
+writeFileSync(
+  join(staleDir, "mcp.json"),
+  JSON.stringify(
+    {
+      mcpServers: {
+        recovered: {
+          command: process.execPath,
+          args: [staleStub],
+          env: { STALE_MCP_MODE: "invalid-request", STALE_MCP_STATE: recoveredState },
+        },
+        terminal: {
+          command: process.execPath,
+          args: [staleStub],
+          env: { STALE_MCP_MODE: "method-not-found", STALE_MCP_STATE: terminalState },
+        },
+      },
+    },
+    null,
+    2,
+  ),
+);
+process.env.PI_CODING_AGENT_DIR = staleDir;
+const recoveredMessages = [];
+const staleRuntime = await startMcpRuntime({
+  submit: (text) => recoveredMessages.push(text),
+});
+try {
+  const events = staleRuntime.tools.find((tool) => tool.name === "mcp_events");
+  assert.ok(events, "mcp_events was not installed for the stale session");
+  const subscribed = await execute(events, {
+    action: "subscribe",
+    server: "recovered",
+    name: "stub-event",
+  });
+  assert.equal(subscribed.isError, undefined, JSON.stringify(subscribed));
+  const sawRecovery = await waitFor(
+    () => recoveredMessages.some((text) => text.includes("recovered-event")),
+    10_000,
+  );
+  assert.ok(sawRecovery, `subscription did not reconnect: ${recoveredMessages.join("\n")}`);
+  const live = subscription(await execute(events, { action: "list" }), "recovered");
+  assert.equal(live?.status, "active");
+  assert.equal(readFileSync(recoveredState, "utf8").trim(), "2");
+
+  const rejected = await execute(events, {
+    action: "subscribe",
+    server: "terminal",
+    name: "stub-event",
+  });
+  assert.equal(rejected.isError, undefined, JSON.stringify(rejected));
+  await new Promise((resolve) => setTimeout(resolve, 2_500));
+  assert.equal(readFileSync(terminalState, "utf8").trim(), "1");
+  const dead = subscription(await execute(events, { action: "list" }), "terminal");
+  assert.equal(dead?.status, "failed");
+  assert.match(dead?.error ?? "", /Method not found/);
+} finally {
+  await staleRuntime.close();
 }

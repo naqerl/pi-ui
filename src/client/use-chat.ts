@@ -69,6 +69,7 @@ export function useChat() {
   const [ready, setReady] = useState(false);
   const refreshSequence = useRef(0);
   const draftRevision = useRef(0);
+  const toolsRevision = useRef(0);
   const eventsRevision = useRef(0);
   const taskRevision = useRef(-1);
   const [taskLedger, setTaskLedger] = useState<TaskLedger>({ tasks: [], revision: -1 });
@@ -103,7 +104,15 @@ export function useChat() {
       setPendingSteers((pending) => retainPendingSteers(snapshot.messages, pending));
       setActivity(snapshot.activity);
       const persistedActivityIds = new Set(snapshot.activity.map((item) => item.id));
-      setLiveTools((current) => current.filter((item) => !persistedActivityIds.has(item.id)));
+      const toolsAreCurrent =
+        snapshot.activeTools !== undefined &&
+        (snapshot.toolsRevision === undefined || snapshot.toolsRevision >= toolsRevision.current);
+      if (toolsAreCurrent && snapshot.activeTools !== undefined) {
+        if (snapshot.toolsRevision !== undefined) toolsRevision.current = snapshot.toolsRevision;
+        setLiveTools(snapshot.activeTools.filter((item) => !persistedActivityIds.has(item.id)));
+      } else {
+        setLiveTools((current) => current.filter((item) => !persistedActivityIds.has(item.id)));
+      }
       setRunState(snapshot.run);
       setRunStartedAt(snapshot.runStartedAt ?? null);
       setQueue(snapshot.queue);
@@ -120,6 +129,9 @@ export function useChat() {
   useEffect(() => {
     void refreshState();
     const source = new EventSource("/api/stream");
+    source.onopen = () => {
+      void refreshState();
+    };
 
     source.addEventListener("theme", (event) => {
       const data = parseEvent<StreamTheme>(event as MessageEvent<string>);
@@ -213,6 +225,9 @@ export function useChat() {
       };
       setLiveTools((current) => [...current.filter((item) => item.id !== tool.id), tool]);
       setDraftThinking("");
+      if (typeof data.toolsRevision === "number") {
+        toolsRevision.current = Math.max(toolsRevision.current, data.toolsRevision);
+      }
     });
 
     source.addEventListener("tool.end", (event) => {
@@ -222,11 +237,22 @@ export function useChat() {
       setLiveTools((current) =>
         current.map((item) => (item.id === liveId ? { ...data.activity, pending: false } : item)),
       );
+      if (typeof data.toolsRevision === "number") {
+        toolsRevision.current = Math.max(toolsRevision.current, data.toolsRevision);
+      }
       void refreshState();
     });
 
     return () => source.close();
   }, [applyDraft, applyEvents, applyTasks, refreshState]);
+
+  useEffect(() => {
+    if (runState !== "running") return;
+    const timer = setInterval(() => {
+      void refreshState();
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [runState, refreshState]);
 
   const timeline = useMemo(() => {
     const persistedActivityIds = new Set(activity.map((item) => item.id));

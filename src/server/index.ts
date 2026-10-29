@@ -315,15 +315,23 @@ app.post("/api/stop", async (c) => {
 
 app.get("/api/stream", (c) => {
   return streamSSE(c, async (stream) => {
+    let tail = Promise.resolve();
+    const enqueue = (write: () => Promise<unknown>): Promise<void> => {
+      const run = tail.then(write).then(() => undefined);
+      tail = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      return run;
+    };
     const client = {
-      send: async (frame: { event: string; data: unknown }) => {
-        await stream.writeSSE({ event: frame.event, data: JSON.stringify(frame.data) });
-      },
+      send: (frame: { event: string; data: unknown }) =>
+        enqueue(() => stream.writeSSE({ event: frame.event, data: JSON.stringify(frame.data) })),
     };
     hub.add(client);
 
     const heartbeat = setInterval(() => {
-      void stream.write(": heartbeat\n\n").catch(() => undefined);
+      void enqueue(() => stream.write(": heartbeat\n\n"));
     }, 20_000);
 
     const closed = new Promise<void>((resolveClosed) => {

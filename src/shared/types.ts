@@ -191,6 +191,9 @@ export interface Snapshot {
   mcpEvents?: McpEventsState;
   draft?: DraftSync;
   tasks?: TaskLedger;
+  /** Tools still running. A refresh uses this when `toolsRevision` is current. */
+  activeTools?: ToolActivity[];
+  toolsRevision?: number;
 }
 
 export interface SubmitMessageResponse {
@@ -216,6 +219,7 @@ export interface StreamToolStart {
   name: string;
   arguments: unknown;
   timestamp: string;
+  toolsRevision?: number;
 }
 
 export interface StreamToolEnd {
@@ -226,6 +230,7 @@ export interface StreamToolEnd {
   durationMs?: number;
   timestamp: string;
   activity: ToolActivity;
+  toolsRevision?: number;
 }
 
 export interface StreamTextDelta {
