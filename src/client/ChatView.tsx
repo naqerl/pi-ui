@@ -6,8 +6,9 @@ import type {
   MessageMode,
   Task,
   TaskLedger,
+  TokenSpend,
 } from "../shared/types";
-import { activityLabel, groupSummary } from "./activity-format";
+import { groupSummary } from "./activity-format";
 import { Button } from "./components/ui/button";
 import { Textarea } from "./components/ui/textarea";
 import { cn } from "./lib/utils";
@@ -27,7 +28,6 @@ interface ChatViewProps {
   timeline: TimelineItem[];
   running: boolean;
   interrupted: boolean;
-  runStartedAt: string | null;
   mcpEvents: McpEventsState;
   unavailableServers: string[];
   ready: boolean;
@@ -112,11 +112,22 @@ function ActivityGroup({
   groupKey,
   items,
   live,
+  usage,
 }: {
   groupKey: string;
   items: ActivityItem[];
   live: boolean;
+  usage?: TokenSpend;
 }) {
+  const [now, setNow] = useState(Date.now);
+
+  useEffect(() => {
+    if (!live) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [live]);
+
   return (
     <a
       href={`/activity?run=${encodeURIComponent(groupKey)}`}
@@ -125,7 +136,7 @@ function ActivityGroup({
       <span aria-hidden="true" className="inline-block w-3 shrink-0">
         ▸
       </span>
-      <span className="truncate whitespace-nowrap">{groupSummary(items, live)}</span>
+      <span className="truncate whitespace-nowrap">{groupSummary(items, live, now, usage)}</span>
     </a>
   );
 }
@@ -470,7 +481,6 @@ export function ChatView({
   timeline,
   running,
   interrupted,
-  runStartedAt,
   mcpEvents,
   unavailableServers,
   ready,
@@ -541,25 +551,8 @@ export function ChatView({
   }, []);
 
   // Re-run the stick sync when the transcript or either floating bar changes height.
-  // A run adds a status line to the header, and the composer grows with the draft.
+  // A run slides a status line out of the composer, and the composer grows with the draft.
   const stick = useStickToBottom(`${timeline.length}:${footerClearance}:${headerClearance}`);
-
-  const currentTool = useMemo(() => {
-    if (!running) return undefined;
-    const lastUserOrder = lastUserMessageOrder(timeline);
-    for (let index = timeline.length - 1; index >= 0; index--) {
-      const item = timeline[index];
-      if (
-        item.kind === "activity" &&
-        item.activity.kind === "tool" &&
-        item.activity.pending === true &&
-        item.activity.order > lastUserOrder
-      ) {
-        return item.activity;
-      }
-    }
-    return undefined;
-  }, [running, timeline]);
 
   const liveActivityGroupKey = useMemo(() => {
     if (!running) return undefined;
@@ -639,18 +632,25 @@ export function ChatView({
                   }}
                 >
                   {!ready && <p className="font-mono text-xs text-muted-foreground">Loading…</p>}
-                  {groups.map((group) =>
-                    group.kind === "message" ? (
-                      <MessageBubble key={group.key} message={group.message} />
-                    ) : (
+                  {groups.map((group, index) => {
+                    if (group.kind === "message") {
+                      return <MessageBubble key={group.key} message={group.message} />;
+                    }
+                    const next = groups[index + 1];
+                    const usage =
+                      next?.kind === "message" && next.message.role === "assistant"
+                        ? next.message.usage
+                        : undefined;
+                    return (
                       <ActivityGroup
                         key={group.key}
                         groupKey={group.key}
                         items={group.items}
                         live={group.key === liveActivityGroupKey}
+                        usage={usage}
                       />
-                    ),
-                  )}
+                    );
+                  })}
                 </div>
               </main>
             </section>
@@ -718,22 +718,6 @@ export function ChatView({
               {tasksPage && <SubtaskProgress tasks={tasks} />}
             </div>
           </div>
-          {running && (
-            <div
-              data-testid="working-status"
-              aria-live="polite"
-              className="flex w-full min-w-0 items-center gap-2 border-t border-border px-[18px] py-1.5 font-mono text-[11px] leading-4 text-muted-foreground"
-            >
-              <WorkingIndicator running={running} startedAt={runStartedAt} />
-              <span
-                data-testid="header-activity"
-                title={currentTool === undefined ? "working" : activityLabel(currentTool)}
-                className="min-w-0 truncate"
-              >
-                {currentTool === undefined ? "working" : activityLabel(currentTool)}
-              </span>
-            </div>
-          )}
         </header>
         {ready && groups.length === 0 && pager.page === 0 && (
           <p
@@ -759,6 +743,21 @@ export function ChatView({
         )}
 
         <div ref={footerRef} className="float-footer absolute z-20 theme-radius">
+          <div
+            data-testid="working-status"
+            data-open={running ? "true" : "false"}
+            aria-hidden={running ? undefined : true}
+            className="working-strip"
+          >
+            <div className="working-strip-clip">
+              <div
+                aria-live="polite"
+                className="working-strip-slide ink-line flex w-full min-w-0 items-center border-b px-[18px] py-1.5 font-mono text-[11px] leading-4 text-muted-foreground"
+              >
+                <WorkingIndicator running={running} />
+              </div>
+            </div>
+          </div>
           {tasksPage && armed !== null && (
             <div className="flex items-center gap-2 px-3 font-mono text-[10px] text-muted-foreground">
               <span className="min-w-0 truncate">subtask of {armed.title}</span>

@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { formatElapsed } from "./activity-format";
 
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const FRAME_MS = 80;
@@ -41,31 +40,14 @@ function BrailleSpinner({ running }: { running: boolean }) {
   );
 }
 
-interface WorkingIndicatorProps {
-  running: boolean;
-  startedAt: string | null;
-}
-
-/** Braille spinner and elapsed time. Rendered under the header controls while a run is active. */
-export function WorkingIndicator({ running, startedAt }: WorkingIndicatorProps) {
-  const [now, setNow] = useState(Date.now);
-
-  useEffect(() => {
-    if (!running) return;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 250);
-    return () => window.clearInterval(timer);
-  }, [running]);
-
-  if (!running) return null;
-
-  const parsedStart = startedAt === null ? Number.NaN : Date.parse(startedAt);
-  const elapsed = Number.isFinite(parsedStart) ? Math.max(0, now - parsedStart) : 0;
-
+/** The word working and a braille spinner. Shown above the composer while a run is active. */
+export function WorkingIndicator({ running }: { running: boolean }) {
   return (
-    <div className="flex shrink-0 items-center gap-2">
+    <div className="flex min-w-0 items-center gap-2">
       <BrailleSpinner running={running} />
-      <span className="shrink-0 tabular-nums">{formatElapsed(elapsed)}</span>
+      <span data-testid="header-activity" className="truncate">
+        working
+      </span>
     </div>
   );
 }

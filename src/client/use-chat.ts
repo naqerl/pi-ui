@@ -69,6 +69,7 @@ export function useChat() {
   const [ready, setReady] = useState(false);
   const refreshSequence = useRef(0);
   const draftRevision = useRef(0);
+  const draftThinkingAt = useRef<string | null>(null);
   const toolsRevision = useRef(0);
   const eventsRevision = useRef(0);
   const taskRevision = useRef(-1);
@@ -254,6 +255,9 @@ export function useChat() {
     return () => clearInterval(timer);
   }, [runState, refreshState]);
 
+  if (draftThinking.length === 0) draftThinkingAt.current = null;
+  else if (draftThinkingAt.current === null) draftThinkingAt.current = new Date().toISOString();
+
   const timeline = useMemo(() => {
     const persistedActivityIds = new Set(activity.map((item) => item.id));
     const items: TimelineItem[] = [
@@ -281,7 +285,7 @@ export function useChat() {
           id: "draft-thinking",
           name: "thinking",
           text: draftThinking,
-          timestamp: new Date().toISOString(),
+          timestamp: draftThinkingAt.current ?? new Date().toISOString(),
           order: Number.MAX_SAFE_INTEGER - 3,
           pending: true,
         },

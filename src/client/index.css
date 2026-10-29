@@ -143,6 +143,39 @@
     }
   }
 
+  /* The working line stays mounted so it can slide up out of the composer
+     and back down. 0fr keeps it out of the layout while idle. */
+  .working-strip {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 220ms ease;
+  }
+
+  .working-strip[data-open="true"] {
+    grid-template-rows: 1fr;
+  }
+
+  .working-strip-clip {
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .working-strip-slide {
+    transform: translateY(100%);
+    transition: transform 220ms ease;
+  }
+
+  .working-strip[data-open="true"] .working-strip-slide {
+    transform: translateY(0);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .working-strip,
+    .working-strip-slide {
+      transition: none;
+    }
+  }
+
   .float-page {
     width: min(72ch, calc(100% - 1.5rem));
     padding-top: max(0.75rem, env(safe-area-inset-top));

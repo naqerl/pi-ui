@@ -13,7 +13,6 @@ export function App() {
       timeline={chat.timeline}
       running={chat.running}
       interrupted={chat.interrupted}
-      runStartedAt={chat.runStartedAt}
       mcpEvents={chat.mcpEvents}
       unavailableServers={chat.mcp.unavailable}
       ready={chat.ready}

@@ -537,6 +537,11 @@ test("uses one action-button height and a stable composer bar height", async ({
   await composer.fill("SLOW response please");
   await screen.getByRole("button", "Send").tap();
   await expect(screen.getByRole("button", "Stop")).toBeVisible();
+  await expect(screen.getByTestId("working-status")).toHaveAttribute("data-open", "true");
+  await browser.evaluate(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return true;
+  });
   const stop = await measure();
 
   await composer.fill("typed while running");
@@ -582,8 +587,9 @@ test("uses one action-button height and a stable composer bar height", async ({
     expect(state?.right ?? 0).toBeCloseTo(state?.rowRight ?? -1, 0);
     expect(state?.right ?? 0).toBeCloseTo(send?.right ?? -1, 0);
     expect(state?.textareaRight ?? 0).toBeCloseTo(send?.textareaRight ?? -1, 0);
-    expect(state?.barHeight ?? 0).toBeCloseTo(send?.barHeight ?? -1, 0);
   }
+  expect(stop?.barHeight ?? 0).toBeGreaterThan(send?.barHeight ?? 0);
+  expect(steer?.barHeight ?? 0).toBeCloseTo(stop?.barHeight ?? -1, 0);
   expect(queue.height ?? 0).toBeCloseTo(send?.height ?? -1, 0);
   expect(queue.right ?? 0).toBeCloseTo(queue.rowRight ?? -1, 0);
 

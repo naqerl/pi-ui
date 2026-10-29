@@ -199,22 +199,30 @@ test("shows one Stop while the field is empty, then one Steer while it has text"
 
   await expect(composer).toHaveAttribute("placeholder", "Message pi");
   await expect(screen.getByTestId("header-activity")).toHaveText("working");
+  await expect(screen.getByTestId("working-status")).toHaveAttribute("data-open", "true");
   const status = await browser.evaluate(() => {
     const header = document.querySelector("header");
     const footer = document.querySelector("textarea")?.closest("form")?.parentElement ?? null;
     const working = document.querySelector("[data-testid=working-status]");
     if (header === null || footer === null || working === null) return null;
+    const slide = working.querySelector(".working-strip-slide");
     return {
       inHeader: header.contains(working),
       inFooter: footer.contains(working),
+      firstInFooter: footer.firstElementChild === working,
       headerWidth: header.getBoundingClientRect().width,
       footerWidth: footer.getBoundingClientRect().width,
+      transition: getComputedStyle(working).transitionProperty,
+      slide: slide === null ? "" : getComputedStyle(slide).transform,
     };
   });
   expect(status).not.toBeNull();
-  expect(status?.inHeader).toBe(true);
-  expect(status?.inFooter).toBe(false);
+  expect(status?.inHeader).toBe(false);
+  expect(status?.inFooter).toBe(true);
+  expect(status?.firstInFooter).toBe(true);
   expect(status?.headerWidth ?? 0).toBeCloseTo(status?.footerWidth ?? -1, 0);
+  expect(status?.transition ?? "").toContain("grid-template-rows");
+  expect(status?.slide ?? "").not.toBe("none");
 
   await composer.fill("typed while running");
   await expect(screen.getByRole("button", "Stop")).toHaveCount(0);
@@ -228,6 +236,7 @@ test("shows one Stop while the field is empty, then one Steer while it has text"
   await screen.getByRole("button", "Stop").tap();
   await expect(screen.getByRole("button", "Stop")).toHaveCount(0);
   await expect(screen.getByRole("button", "Send")).toHaveCount(1);
+  await expect(screen.getByTestId("working-status")).toHaveAttribute("data-open", "false");
 });
 
 test("steers a running turn from the button and from Enter", async ({ app, screen }) => {

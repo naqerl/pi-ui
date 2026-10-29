@@ -17,6 +17,14 @@ export interface ChatMessage {
   steer?: boolean;
   /** True when a server restart cut off this assistant response. */
   partial?: boolean;
+  /** Input and output tokens for this assistant call. Omitted when the call also produced activity. */
+  usage?: TokenSpend;
+}
+
+/** Provider-reported input and output for one model call. Cache tokens are not included. */
+export interface TokenSpend {
+  input: number;
+  output: number;
 }
 
 /** One message waiting for the current run to finish. */
@@ -39,6 +47,8 @@ export interface ToolActivity {
   timestamp: string;
   order: number;
   pending?: boolean;
+  /** Present on the single item that carries this model call's spend. */
+  usage?: TokenSpend;
 }
 
 export interface ThinkingActivity {
@@ -49,6 +59,8 @@ export interface ThinkingActivity {
   timestamp: string;
   order: number;
   pending?: boolean;
+  /** Present on the single item that carries this model call's spend. */
+  usage?: TokenSpend;
 }
 
 export type ActivityItem = ToolActivity | ThinkingActivity;

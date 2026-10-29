@@ -1,4 +1,4 @@
-import type { ActivityItem } from "../shared/types";
+import type { ActivityItem, TokenSpend } from "../shared/types";
 
 const ARGUMENT_KEYS = [
   "command",
@@ -51,12 +51,6 @@ export function activityLabel(activity: ActivityItem): string {
   return argument.length > 0 ? `${activity.name} · ${argument}` : activity.name;
 }
 
-export function formatElapsed(durationMs: number): string {
-  const seconds = Math.max(0, Math.floor(durationMs / 1_000));
-  if (seconds < 60) return `${seconds}s`;
-  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-}
-
 export function formatDuration(durationMs: number | undefined): string {
   if (durationMs === undefined) return "?";
   if (durationMs < 60_000) return `${(durationMs / 1_000).toFixed(1)}s`;
@@ -78,43 +72,64 @@ export function activitySummary(activity: ActivityItem): string {
   return `${activity.name} · ${formatDuration(activity.durationMs)} · ${activityStatus(activity)}`;
 }
 
-function groupDurationMs(items: ActivityItem[]): number {
-  let sum = 0;
-  let hasToolDuration = false;
-  for (const item of items) {
-    if (item.kind === "tool" && item.durationMs !== undefined) {
-      sum += item.durationMs;
-      hasToolDuration = true;
-    }
-  }
-  if (hasToolDuration) return sum;
-
-  const timestamps = items
+function groupWallMs(items: ActivityItem[], running: boolean, now: number): number {
+  const stamps = items
     .map((item) => Date.parse(item.timestamp))
     .filter((value) => Number.isFinite(value));
-  if (timestamps.length < 2) return 0;
-  return Math.max(0, Math.max(...timestamps) - Math.min(...timestamps));
+  if (stamps.length === 0) return 0;
+  const start = Math.min(...stamps);
+  if (running) return Math.max(0, now - start);
+  const span = Math.max(...stamps) - start;
+  if (span > 0) return span;
+  let sum = 0;
+  for (const item of items) {
+    if (item.kind === "tool" && item.durationMs !== undefined) sum += item.durationMs;
+  }
+  return sum;
 }
 
-function formatChars(count: number): string {
-  if (count < 1000) return `${count} chars`;
-  const thousands = count / 1000;
+function formatTokens(count: number): string {
+  const value = Math.max(0, Math.round(count));
+  if (value < 1000) return String(value);
+  const thousands = value / 1000;
   const rounded = thousands >= 10 ? Math.round(thousands) : Math.round(thousands * 10) / 10;
-  return `${rounded}k chars`;
+  return `${rounded}k`;
 }
 
-export function groupSummary(items: ActivityItem[], running: boolean): string {
+function sumSpend(items: ActivityItem[], extra: TokenSpend | undefined): TokenSpend | undefined {
+  let input = 0;
+  let output = 0;
+  let seen = false;
+  for (const item of items) {
+    if (item.usage === undefined) continue;
+    input += item.usage.input;
+    output += item.usage.output;
+    seen = true;
+  }
+  if (extra !== undefined) {
+    input += extra.input;
+    output += extra.output;
+    seen = true;
+  }
+  return seen ? { input, output } : undefined;
+}
+
+export function groupSummary(
+  items: ActivityItem[],
+  running: boolean,
+  now = Date.now(),
+  extra?: TokenSpend,
+): string {
   const tools = items.filter((item) => item.kind === "tool");
   const thinking = items.filter((item) => item.kind === "thinking");
   const parts: string[] = [];
   if (tools.length > 0) parts.push(`${tools.length} tool call${tools.length === 1 ? "" : "s"}`);
-  const pending = [...tools].reverse().find((item) => item.pending === true);
-  if (pending !== undefined) parts.push(pending.name);
-  if (thinking.length > 0) {
-    parts.push(`${thinking.length} thinking`);
-    const chars = thinking.reduce((sum, item) => sum + item.text.length, 0);
-    if (chars > 0) parts.push(formatChars(chars));
+  if (thinking.length > 0) parts.push(`${thinking.length} thinking`);
+  const spend = sumSpend(items, extra);
+  if (spend !== undefined) {
+    parts.push(`${formatTokens(spend.input)} in`);
+    parts.push(`${formatTokens(spend.output)} out`);
   }
-  parts.push(running ? "running" : formatDuration(groupDurationMs(items)));
+  parts.push(formatDuration(groupWallMs(items, running, now)));
   return parts.join(" · ");
 }

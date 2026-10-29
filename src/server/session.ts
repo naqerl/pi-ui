@@ -25,6 +25,7 @@ import {
   type ChatMessage,
   type ContextUsage,
   STEER_ENTRY_KIND,
+  type TokenSpend,
   type ToolActivity,
   type UsageSummary,
 } from "../shared/types.js";
@@ -368,6 +369,7 @@ export function buildTranscript(entries: readonly EntryRecord[]): {
   const activity: ActivityItem[] = [];
   const sorted = [...entries].sort((a, b) => a.id - b.id);
   const toolCalls = new Map<string, { name: string; arguments: unknown }>();
+  const pendingToolSpend = new Map<string, TokenSpend>();
   const partialEntryIds = new Set<number>();
   for (const entry of sorted) {
     if (entry.kind !== InterruptedRunEntry.kind || !isRecord(entry.data)) continue;
@@ -438,7 +440,22 @@ export function buildTranscript(entries: readonly EntryRecord[]): {
         typeof message.errorMessage === "string" && message.errorMessage.length > 0
           ? message.errorMessage
           : "";
-      if (text.length > 0 || errorText.length > 0) {
+      const spend = tokenSpend(message.usage);
+      const blocks = contentBlocks(message.content);
+      const thinkingBlocks = blocks.filter(
+        (block) =>
+          block.type === "thinking" &&
+          typeof block.thinking === "string" &&
+          block.thinking.trim().length > 0,
+      );
+      const toolCallIds = blocks
+        .filter(
+          (block): block is Record<string, unknown> & { id: string } =>
+            block.type === "toolCall" && typeof block.id === "string",
+        )
+        .map((block) => block.id);
+      const visible = text.length > 0 || errorText.length > 0;
+      if (visible) {
         messages.push({
           id: `m-${entry.id}`,
           role: "assistant",
@@ -447,21 +464,27 @@ export function buildTranscript(entries: readonly EntryRecord[]): {
           order: entry.id * 10_000 + 5_000,
           isError: errorText.length > 0,
           ...(partialEntryIds.has(entry.id) ? { partial: true } : {}),
+          ...(spend !== undefined && thinkingBlocks.length === 0 && toolCallIds.length === 0
+            ? { usage: spend }
+            : {}),
         });
       }
-      let thinkingIndex = 0;
-      for (const block of contentBlocks(message.content)) {
-        if (block.type !== "thinking" || typeof block.thinking !== "string") continue;
-        if (block.thinking.trim().length === 0) continue;
+      thinkingBlocks.forEach((block, index) => {
+        const thinking = block.thinking;
+        if (typeof thinking !== "string") return;
         activity.push({
           kind: "thinking",
-          id: `t-${entry.id}-${thinkingIndex}`,
+          id: `t-${entry.id}-${index}`,
           name: "thinking",
-          text: block.thinking,
+          text: thinking,
           timestamp: timestampOf(message),
-          order: entry.id * 10_000 + 1 + thinkingIndex * 2,
+          order: entry.id * 10_000 + 1 + index * 2,
+          ...(index === 0 && spend !== undefined ? { usage: spend } : {}),
         });
-        thinkingIndex++;
+      });
+      const firstToolCall = toolCallIds[0];
+      if (spend !== undefined && thinkingBlocks.length === 0 && firstToolCall !== undefined) {
+        pendingToolSpend.set(firstToolCall, spend);
       }
       continue;
     }
@@ -470,7 +493,11 @@ export function buildTranscript(entries: readonly EntryRecord[]): {
       const toolCallId = typeof message.toolCallId === "string" ? message.toolCallId : "";
       const call = toolCalls.get(toolCallId);
       const tool = toolActivityFromEntry(entry, call?.arguments);
-      if (tool) activity.push(tool);
+      if (tool) {
+        const usage = pendingToolSpend.get(toolCallId);
+        if (usage !== undefined) pendingToolSpend.delete(toolCallId);
+        activity.push(usage === undefined ? tool : { ...tool, usage });
+      }
     }
   }
 
@@ -505,6 +532,17 @@ export function assistantMessageFromEntry(entry: EntryRecord): ChatMessage | nul
       ? message.errorMessage
       : "";
   if (text.length === 0 && errorText.length === 0) return null;
+  const blocks = contentBlocks(message.content);
+  const hasThinking = blocks.some(
+    (block) =>
+      block.type === "thinking" &&
+      typeof block.thinking === "string" &&
+      block.thinking.trim().length > 0,
+  );
+  const hasToolCall = blocks.some(
+    (block) => block.type === "toolCall" && typeof block.id === "string",
+  );
+  const spend = tokenSpend(message.usage);
   return {
     id: `m-${entry.id}`,
     role: "assistant",
@@ -512,6 +550,7 @@ export function assistantMessageFromEntry(entry: EntryRecord): ChatMessage | nul
     timestamp: timestampOf(message),
     order: entry.id * 10_000 + 5_000,
     isError: errorText.length > 0,
+    ...(spend !== undefined && !hasThinking && !hasToolCall ? { usage: spend } : {}),
   };
 }
 
@@ -617,6 +656,14 @@ function extractText(content: unknown): string {
     }
   }
   return parts.join("\n\n");
+}
+
+function tokenSpend(usage: unknown): TokenSpend | undefined {
+  if (!isRecord(usage)) return undefined;
+  const { input, output } = usage;
+  if (typeof input !== "number" || typeof output !== "number") return undefined;
+  if (!Number.isFinite(input) || !Number.isFinite(output)) return undefined;
+  return { input: Math.max(0, input), output: Math.max(0, output) };
 }
 
 function emptyUsage(): Usage {
