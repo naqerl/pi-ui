@@ -7,6 +7,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
+import type { TaskLedger, TaskStatus } from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
 import { ChatService } from "./chat-service.js";
 import { McpEventFeed } from "./mcp-events.js";
@@ -14,6 +15,7 @@ import { createModelCatalog } from "./models.js";
 import { buildPiSystemPrompt } from "./pi.js";
 import { type DurableSessionOptions, openDurableSession, SESSION_CONTEXT } from "./session.js";
 import { StreamHub } from "./stream-hub.js";
+import { TaskError, TaskStore } from "./tasks.js";
 import { injectTheme, resolveTheme, writeThemeSlug } from "./themes.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -24,7 +26,10 @@ const clientDir = existsSync(resolve(builtClientDir, "index.html"))
   : fallbackClientDir;
 
 const cwd = resolve(process.env.PI_CWD?.trim() || process.cwd());
-const themeFile = resolve(cwd, process.env.DATA_DIR?.trim() || "data", "theme.json");
+const dataDir = resolve(cwd, process.env.DATA_DIR?.trim() || "data");
+const themeFile = resolve(dataDir, "theme.json");
+const taskStore = new TaskStore(resolve(dataDir, "tasks.json"));
+await taskStore.load();
 if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
   throw new Error(`PI_CWD is not a directory: ${cwd}`);
 }
@@ -171,7 +176,81 @@ app.post("/api/theme", async (c) => {
   return c.json(data);
 });
 
-app.get("/api/state", async (c) => c.json(await chat.getSnapshot()));
+app.get("/api/state", async (c) =>
+  c.json({ ...(await chat.getSnapshot()), tasks: taskStore.ledger() }),
+);
+
+app.get("/api/tasks", (c) => c.json(taskStore.ledger()));
+
+function publishTasks(ledger: TaskLedger) {
+  hub.broadcast({ event: "tasks", data: ledger });
+  return ledger;
+}
+
+function taskFailure(c: Context, error: unknown) {
+  if (error instanceof TaskError) return c.text(error.message, error.status as 400);
+  console.error("[pi] tasks failed", error);
+  return c.text("Could not update tasks", 500);
+}
+
+app.post("/api/tasks", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.text("Expected a JSON body", 400);
+  }
+  const title =
+    typeof body === "object" && body !== null && "title" in body && typeof body.title === "string"
+      ? body.title
+      : "";
+  const parentId =
+    typeof body === "object" && body !== null && "parentId" in body ? body.parentId : null;
+  if (parentId !== null && typeof parentId !== "string")
+    return c.text("parentId must be a string", 400);
+  try {
+    return c.json(publishTasks(await taskStore.create(title, parentId)), 201);
+  } catch (error) {
+    return taskFailure(c, error);
+  }
+});
+
+app.patch("/api/tasks/:id", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.text("Expected a JSON body", 400);
+  }
+  if (typeof body !== "object" || body === null) return c.text("Expected a JSON body", 400);
+  const patch: { status?: TaskStatus; blockedBy?: string[] } = {};
+  if ("status" in body) {
+    if (body.status !== "open" && body.status !== "done") {
+      return c.text('Status must be "open" or "done"', 400);
+    }
+    patch.status = body.status;
+  }
+  if ("blockedBy" in body) {
+    if (!Array.isArray(body.blockedBy)) return c.text("blockedBy must be a list of task ids", 400);
+    patch.blockedBy = body.blockedBy.filter((id): id is string => typeof id === "string");
+    if (patch.blockedBy.length !== body.blockedBy.length) {
+      return c.text("blockedBy must be a list of task ids", 400);
+    }
+  }
+  try {
+    return c.json(publishTasks(await taskStore.update(c.req.param("id"), patch)));
+  } catch (error) {
+    return taskFailure(c, error);
+  }
+});
+
+app.delete("/api/tasks/:id", async (c) => {
+  try {
+    return c.json(publishTasks(await taskStore.remove(c.req.param("id"))));
+  } catch (error) {
+    return taskFailure(c, error);
+  }
+});
 
 app.post("/api/message", async (c) => {
   let body: unknown;
@@ -255,6 +334,7 @@ app.get("/api/stream", (c) => {
         console.error("[pi] theme snapshot failed", error);
       }
       await client.send({ event: "run.state", data: chat.getRunStatus() });
+      await client.send({ event: "tasks", data: taskStore.ledger() });
       const currentModel = chat.currentModel();
       if (currentModel !== null) {
         await client.send({ event: "model", data: currentModel });

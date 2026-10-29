@@ -17,8 +17,10 @@ export function App() {
       mcpEvents={chat.mcpEvents}
       unavailableServers={chat.mcp.unavailable}
       ready={chat.ready}
+      tasks={chat.tasks}
       send={chat.send}
       stop={chat.stop}
+      applyTasks={chat.applyTasks}
     />
   );
 

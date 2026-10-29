@@ -1,13 +1,23 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ActivityItem, ChatMessage, McpEventsState, MessageMode } from "../shared/types";
+import type {
+  ActivityItem,
+  ChatMessage,
+  McpEventsState,
+  MessageMode,
+  Task,
+  TaskLedger,
+} from "../shared/types";
 import { activityLabel, groupSummary } from "./activity-format";
 import { Button } from "./components/ui/button";
 import { Textarea } from "./components/ui/textarea";
 import { cn } from "./lib/utils";
 import { Markdown } from "./markdown";
 import { PiMenu } from "./PiMenu";
+import { TasksView } from "./TasksView";
+import { createTask } from "./task-client";
 import { groupTimeline } from "./timeline-groups";
 import type { TimelineItem } from "./use-chat";
+import { usePager } from "./use-pager";
 import { useStickToBottom } from "./use-stick-to-bottom";
 import { WorkingIndicator } from "./WorkingIndicator";
 
@@ -21,9 +31,16 @@ interface ChatViewProps {
   mcpEvents: McpEventsState;
   unavailableServers: string[];
   ready: boolean;
+  tasks: Task[];
   send: (text: string, mode?: MessageMode) => Promise<boolean>;
   stop: () => Promise<void>;
+  applyTasks: (ledger: TaskLedger) => void;
 }
+
+const PAGES = [
+  { id: "chat", label: "Chat" },
+  { id: "tasks", label: "Tasks" },
+] as const;
 
 function MessageBubble({ message }: { message: ChatMessage }) {
   if (message.role === "system") {
@@ -124,6 +141,23 @@ const ACTION_BUTTON_CLASS = "h-9 w-full hover:bg-foreground/10";
 /** Space above the first message and below the last, on every viewport. */
 const TRANSCRIPT_END_GAP = 16;
 
+function Chevron({ direction }: { direction: "left" | "right" }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      className="size-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      {direction === "left" ? <path d="m15 18-6-6 6-6" /> : <path d="m9 18 6-6-6-6" />}
+    </svg>
+  );
+}
+
 function SendIcon() {
   return (
     <svg
@@ -206,13 +240,19 @@ function useViewportHeight() {
 }
 
 function Composer({
+  tasksPage,
+  parentTitle,
   running,
   send,
   stop,
+  addTask,
 }: {
+  tasksPage: boolean;
+  parentTitle: string | null;
   running: boolean;
   send: (text: string, mode?: MessageMode) => Promise<boolean>;
   stop: () => Promise<void>;
+  addTask: (text: string) => Promise<boolean>;
 }) {
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -291,7 +331,7 @@ function Composer({
     const element = textareaRef.current;
     const text = value;
     const coarse = usesCoarsePointer();
-    const sent = await send(text, mode);
+    const sent = tasksPage ? await addTask(text) : await send(text, mode);
     if (!sent) return;
     // Keep a draft typed while the request was in flight; only clear the text we sent.
     if (element !== null && element.value !== text) return;
@@ -315,11 +355,17 @@ function Composer({
       <div ref={rowRef} className="flex w-full items-end gap-2 p-1.5">
         <Textarea
           ref={textareaRef}
-          aria-label="Message"
+          aria-label={tasksPage ? (parentTitle === null ? "New task" : "New subtask") : "Message"}
           rows={1}
           className="bg-transparent"
           value={value}
-          placeholder="Message pi"
+          placeholder={
+            tasksPage
+              ? parentTitle === null
+                ? "New task"
+                : `Subtask of ${parentTitle}`
+              : "Message pi"
+          }
           onChange={(event) => setValue(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -329,7 +375,19 @@ function Composer({
           }}
         />
         <div className="flex h-9 w-9 shrink-0 items-stretch">
-          {running && !canSend ? (
+          {tasksPage ? (
+            <Button
+              key="add-task"
+              type="submit"
+              variant="ghost"
+              size="icon"
+              aria-label="Add task"
+              className={ACTION_BUTTON_CLASS}
+              disabled={!canSend}
+            >
+              <SendIcon />
+            </Button>
+          ) : running && !canSend ? (
             <Button
               key="stop"
               type="button"
@@ -390,10 +448,20 @@ export function ChatView({
   mcpEvents,
   unavailableServers,
   ready,
+  tasks,
   send,
   stop,
+  applyTasks,
 }: ChatViewProps) {
   useViewportHeight();
+  const pager = usePager(PAGES.length);
+  const [armedParentId, setArmedParentId] = useState<string | null>(null);
+  const tasksPage = pager.page === 1;
+  const armed = tasks.find((task) => task.id === armedParentId) ?? null;
+
+  useEffect(() => {
+    if (!tasksPage || (armedParentId !== null && armed === null)) setArmedParentId(null);
+  }, [armed, armedParentId, tasksPage]);
   const groups = useMemo(() => groupTimeline(timeline), [timeline]);
   const headerRef = useRef<HTMLElement | null>(null);
   const footerRef = useRef<HTMLDivElement | null>(null);
@@ -460,6 +528,18 @@ export function ChatView({
     return sent;
   };
 
+  const addTask = async (text: string) => {
+    const ledger = await createTask(text, tasksPage ? (armed?.id ?? null) : null);
+    if (ledger === null) return false;
+    applyTasks(ledger);
+    return true;
+  };
+
+  const selectPage = (index: number) => {
+    pager.setPage(index);
+    if (index !== 1) setArmedParentId(null);
+  };
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       {interrupted && (
@@ -472,30 +552,71 @@ export function ChatView({
       )}
 
       <div className="relative min-h-0 flex-1">
-        <main ref={stick.containerRef} className="h-full overflow-y-auto">
+        <div
+          {...pager.pagerProps}
+          data-testid="pager"
+          data-page={PAGES[pager.page].id}
+          className="absolute inset-0 touch-pan-y overflow-hidden overscroll-x-contain"
+        >
           <div
-            ref={stick.contentRef}
-            className="mx-auto flex w-full max-w-[72ch] flex-col gap-4 px-4"
+            className={cn(
+              "flex h-full w-full",
+              pager.dragging
+                ? "transition-none"
+                : "transition-transform duration-300 ease-out motion-reduce:transition-none",
+            )}
             style={{
-              paddingTop: headerClearance + TRANSCRIPT_END_GAP,
-              paddingBottom: footerClearance + TRANSCRIPT_END_GAP,
+              transform: `translate3d(calc(${-pager.page * 100}% + ${pager.dragX}px), 0, 0)`,
             }}
           >
-            {!ready && <p className="font-mono text-xs text-muted-foreground">Loading…</p>}
-            {groups.map((group) =>
-              group.kind === "message" ? (
-                <MessageBubble key={group.key} message={group.message} />
-              ) : (
-                <ActivityGroup
-                  key={group.key}
-                  groupKey={group.key}
-                  items={group.items}
-                  live={group.key === liveActivityGroupKey}
-                />
-              ),
-            )}
+            <section
+              className="h-full min-w-0 shrink-0 grow-0 basis-full"
+              aria-hidden={pager.page !== 0 && !pager.dragging}
+              inert={pager.page !== 0 && !pager.dragging ? true : undefined}
+            >
+              <main ref={stick.containerRef} className="h-full overflow-y-auto">
+                <div
+                  ref={stick.contentRef}
+                  className="mx-auto flex w-full max-w-[72ch] flex-col gap-4 px-4"
+                  style={{
+                    paddingTop: headerClearance + TRANSCRIPT_END_GAP,
+                    paddingBottom: footerClearance + TRANSCRIPT_END_GAP,
+                  }}
+                >
+                  {!ready && <p className="font-mono text-xs text-muted-foreground">Loading…</p>}
+                  {groups.map((group) =>
+                    group.kind === "message" ? (
+                      <MessageBubble key={group.key} message={group.message} />
+                    ) : (
+                      <ActivityGroup
+                        key={group.key}
+                        groupKey={group.key}
+                        items={group.items}
+                        live={group.key === liveActivityGroupKey}
+                      />
+                    ),
+                  )}
+                </div>
+              </main>
+            </section>
+            <section
+              className="h-full min-w-0 shrink-0 grow-0 basis-full"
+              aria-label="Tasks"
+              aria-hidden={pager.page !== 1 && !pager.dragging}
+              inert={pager.page !== 1 && !pager.dragging ? true : undefined}
+            >
+              <TasksView
+                tasks={tasks}
+                ready={ready}
+                headerClearance={headerClearance}
+                footerClearance={footerClearance}
+                armedParentId={armed?.id ?? null}
+                onArmParent={setArmedParentId}
+                onLedger={applyTasks}
+              />
+            </section>
           </div>
-        </main>
+        </div>
         <header ref={headerRef} className="float-header absolute z-10 flex flex-col theme-radius">
           <div className="flex w-full items-center gap-3 px-[18px] py-1.5">
             <PiMenu />
@@ -530,7 +651,7 @@ export function ChatView({
             </div>
           )}
         </header>
-        {ready && groups.length === 0 && (
+        {ready && groups.length === 0 && pager.page === 0 && (
           <p
             className="pointer-events-none absolute inset-x-0 z-10 -translate-y-1/2 px-4 text-center font-mono text-xs text-muted-foreground"
             style={{ top: `calc((100% - ${footerClearance}px) / 2)` }}
@@ -538,7 +659,7 @@ export function ChatView({
             Send a message to start.
           </p>
         )}
-        {!stick.attached && (
+        {!stick.attached && pager.page === 0 && (
           <div
             className="pointer-events-none absolute inset-x-0 z-20 flex justify-center"
             style={{ bottom: footerClearance + 8 }}
@@ -554,7 +675,75 @@ export function ChatView({
         )}
 
         <div ref={footerRef} className="float-footer absolute z-20 theme-radius">
-          <Composer running={running} send={handleSend} stop={stop} />
+          <div
+            role="tablist"
+            aria-label="Pages"
+            data-testid="page-dots"
+            className="flex items-center justify-center gap-1 pt-1.5"
+          >
+            {pager.fine && (
+              <button
+                type="button"
+                aria-label="Show chat"
+                disabled={pager.page === 0}
+                className="grid h-6 w-6 place-items-center text-muted-foreground hover:text-foreground disabled:opacity-30"
+                onClick={() => selectPage(pager.page - 1)}
+              >
+                <Chevron direction="left" />
+              </button>
+            )}
+            {PAGES.map((item, index) => (
+              <button
+                key={item.id}
+                type="button"
+                role="tab"
+                aria-selected={pager.page === index}
+                aria-label={item.label}
+                data-testid={`page-dot-${item.id}`}
+                className="grid h-6 w-6 place-items-center"
+                onClick={() => selectPage(index)}
+              >
+                <span
+                  className={cn(
+                    "block h-1.5 rounded-full",
+                    pager.page === index ? "w-4 bg-foreground" : "w-1.5 bg-foreground/40",
+                  )}
+                />
+              </button>
+            ))}
+            {pager.fine && (
+              <button
+                type="button"
+                aria-label="Show tasks"
+                disabled={pager.page === PAGES.length - 1}
+                className="grid h-6 w-6 place-items-center text-muted-foreground hover:text-foreground disabled:opacity-30"
+                onClick={() => selectPage(pager.page + 1)}
+              >
+                <Chevron direction="right" />
+              </button>
+            )}
+          </div>
+          {tasksPage && armed !== null && (
+            <div className="flex items-center gap-2 px-3 font-mono text-[10px] text-muted-foreground">
+              <span className="min-w-0 truncate">subtask of {armed.title}</span>
+              <button
+                type="button"
+                className="shrink-0 hover:text-foreground"
+                aria-label="New top-level task"
+                onClick={() => setArmedParentId(null)}
+              >
+                top level
+              </button>
+            </div>
+          )}
+          <Composer
+            tasksPage={tasksPage}
+            parentTitle={tasksPage ? (armed?.title ?? null) : null}
+            running={running}
+            send={handleSend}
+            stop={stop}
+            addTask={addTask}
+          />
         </div>
       </div>
     </div>

@@ -160,6 +160,24 @@ export interface DraftSync {
   revision: number;
 }
 
+export type TaskStatus = "open" | "done";
+
+/** One todo. Subtasks point at a parent. `blockedBy` names tasks that gate this one. */
+export interface Task {
+  id: string;
+  title: string;
+  status: TaskStatus;
+  parentId: string | null;
+  /** Other task ids. A done blocker no longer keeps this task blocked. */
+  blockedBy: string[];
+  createdAt: string;
+}
+
+export interface TaskLedger {
+  tasks: Task[];
+  revision: number;
+}
+
 export interface Snapshot {
   conversationId: string;
   messages: ChatMessage[];
@@ -172,6 +190,7 @@ export interface Snapshot {
   mcp: McpStatus;
   mcpEvents?: McpEventsState;
   draft?: DraftSync;
+  tasks?: TaskLedger;
 }
 
 export interface SubmitMessageResponse {

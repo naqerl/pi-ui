@@ -17,6 +17,7 @@ import type {
   StreamToolEnd,
   StreamToolStart,
   SubmitMessageResponse,
+  TaskLedger,
   ToolActivity,
 } from "../shared/types";
 
@@ -69,6 +70,14 @@ export function useChat() {
   const refreshSequence = useRef(0);
   const draftRevision = useRef(0);
   const eventsRevision = useRef(0);
+  const taskRevision = useRef(-1);
+  const [taskLedger, setTaskLedger] = useState<TaskLedger>({ tasks: [], revision: -1 });
+
+  const applyTasks = useCallback((ledger: TaskLedger) => {
+    if (ledger.revision < taskRevision.current) return;
+    taskRevision.current = ledger.revision;
+    setTaskLedger(ledger);
+  }, []);
 
   const applyDraft = useCallback((draft: StreamDraftSync) => {
     if (draft.revision < draftRevision.current) return;
@@ -101,11 +110,12 @@ export function useChat() {
       setMcp(snapshot.mcp ?? { servers: [], unavailable: [] });
       if (snapshot.draft !== undefined) applyDraft(snapshot.draft);
       if (snapshot.mcpEvents !== undefined) applyEvents(snapshot.mcpEvents);
+      if (snapshot.tasks !== undefined) applyTasks(snapshot.tasks);
       setReady(true);
     } catch {
       // The SSE connection will keep the UI usable once the server is reachable again.
     }
-  }, [applyDraft, applyEvents]);
+  }, [applyDraft, applyEvents, applyTasks]);
 
   useEffect(() => {
     void refreshState();
@@ -131,6 +141,11 @@ export function useChat() {
     source.addEventListener("mcp.events", (event) => {
       const data = parseEvent<McpEventsState>(event as MessageEvent<string>);
       if (data) applyEvents(data);
+    });
+
+    source.addEventListener("tasks", (event) => {
+      const data = parseEvent<TaskLedger>(event as MessageEvent<string>);
+      if (data) applyTasks(data);
     });
 
     source.addEventListener("run.state", (event) => {
@@ -211,7 +226,7 @@ export function useChat() {
     });
 
     return () => source.close();
-  }, [applyDraft, applyEvents, refreshState]);
+  }, [applyDraft, applyEvents, applyTasks, refreshState]);
 
   const timeline = useMemo(() => {
     const persistedActivityIds = new Set(activity.map((item) => item.id));
@@ -374,7 +389,9 @@ export function useChat() {
     queue,
     mcp,
     mcpEvents,
+    tasks: taskLedger.tasks,
     ready,
+    applyTasks,
     send,
     cancelQueued,
     steerQueued,
