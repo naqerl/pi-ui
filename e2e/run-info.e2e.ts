@@ -60,3 +60,37 @@ test("puts the run info on a card that is not the page background", async ({ app
   expect(paint?.background).not.toBe(paint?.page);
   expect(paint?.border).toBe("1px");
 });
+
+test("fits the run info on a phone without naming thinking", async ({ app, browser }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await browser.route("**/api/state", async (route) => {
+    await route.fulfill({ json: snapshot });
+  });
+  await app.open("/");
+  const info = browser.locator('[data-testid="run-info"]');
+  await expect(info).toBeVisible();
+  const box = await browser.evaluate(() => {
+    const element = document.querySelector<HTMLElement>('[data-testid="run-info"]');
+    if (element === null) return null;
+    const rect = element.getBoundingClientRect();
+    return {
+      text: element.textContent ?? "",
+      right: rect.right,
+      left: rect.left,
+      height: rect.height,
+      page: document.documentElement.clientWidth,
+      clipped: element.scrollWidth > element.clientWidth,
+    };
+  });
+  expect(box).not.toBeNull();
+  expect(box?.text).toContain("9 tool calls");
+  expect(box?.text).toContain("7.1k in");
+  expect(box?.text).toContain("4.7k out");
+  expect(box?.text).not.toContain("thinking");
+  expect(box?.text).not.toContain("…");
+  expect(box?.clipped).toBe(false);
+  expect(box?.left ?? -1).toBeGreaterThanOrEqual(0);
+  expect(box?.right ?? 9999).toBeLessThanOrEqual(box?.page ?? 0);
+  // A comfortable touch target on a phone.
+  expect(box?.height ?? 0).toBeGreaterThanOrEqual(36);
+});

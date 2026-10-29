@@ -8,7 +8,7 @@ import type {
   TaskLedger,
   TokenSpend,
 } from "../shared/types";
-import { groupSummary } from "./activity-format";
+import { groupSummaryParts } from "./activity-format";
 import { Button } from "./components/ui/button";
 import { Textarea } from "./components/ui/textarea";
 import { cn } from "./lib/utils";
@@ -150,16 +150,30 @@ function ActivityGroup({
     return () => window.clearInterval(timer);
   }, [live]);
 
+  const parts = groupSummaryParts(items, live, now, usage);
   return (
     <a
       href={`/activity?run=${encodeURIComponent(groupKey)}`}
       data-testid="run-info"
-      className="theme-radius flex w-fit min-w-0 max-w-full items-center gap-2 border border-border/70 bg-surface px-2.5 py-1.5 font-mono text-xs text-muted-foreground hover:text-foreground"
+      aria-label={`Run activity: ${parts.join(", ")}`}
+      className="theme-radius flex min-h-9 w-fit min-w-0 max-w-full items-start gap-2 border border-border/70 bg-surface px-2.5 py-2 font-mono text-xs leading-5 text-muted-foreground hover:text-foreground sm:min-h-0 sm:py-1.5"
     >
       <span aria-hidden="true" className="inline-block w-3 shrink-0">
         ▸
       </span>
-      <span className="truncate whitespace-nowrap">{groupSummary(items, live, now, usage)}</span>
+      {/* Each piece stays whole and the line wraps between pieces on a narrow screen. */}
+      <span className="flex min-w-0 flex-wrap gap-x-1.5">
+        {parts.map((part, index) => (
+          <span key={part} className="whitespace-nowrap">
+            {index > 0 && (
+              <span aria-hidden="true" className="mr-1.5 text-muted-foreground/60">
+                ·
+              </span>
+            )}
+            {part}
+          </span>
+        ))}
+      </span>
     </a>
   );
 }

@@ -114,22 +114,33 @@ function sumSpend(items: ActivityItem[], extra: TokenSpend | undefined): TokenSp
   return seen ? { input, output } : undefined;
 }
 
-export function groupSummary(
+/**
+ * The pieces of a run's summary line: tool calls, tokens, and time. Thinking blocks are counted
+ * in the group but not named here; `/activity` still lists them.
+ */
+export function groupSummaryParts(
   items: ActivityItem[],
   running: boolean,
   now = Date.now(),
   extra?: TokenSpend,
-): string {
+): string[] {
   const tools = items.filter((item) => item.kind === "tool");
-  const thinking = items.filter((item) => item.kind === "thinking");
   const parts: string[] = [];
   if (tools.length > 0) parts.push(`${tools.length} tool call${tools.length === 1 ? "" : "s"}`);
-  if (thinking.length > 0) parts.push(`${thinking.length} thinking`);
   const spend = sumSpend(items, extra);
   if (spend !== undefined) {
     parts.push(`${formatTokens(spend.input)} in`);
     parts.push(`${formatTokens(spend.output)} out`);
   }
   parts.push(formatDuration(groupWallMs(items, running, now)));
-  return parts.join(" · ");
+  return parts;
+}
+
+export function groupSummary(
+  items: ActivityItem[],
+  running: boolean,
+  now = Date.now(),
+  extra?: TokenSpend,
+): string {
+  return groupSummaryParts(items, running, now, extra).join(" · ");
 }

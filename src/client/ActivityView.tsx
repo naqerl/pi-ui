@@ -43,7 +43,7 @@ function ActivityRow({ activity }: { activity: ActivityItem }) {
         <span className="inline-block w-3 shrink-0 transition-transform group-data-[state=open]:rotate-90">
           ▸
         </span>
-        <span className="min-w-0 flex-1 truncate">{activitySummary(activity)}</span>
+        <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{activitySummary(activity)}</span>
       </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="theme-radius space-y-3 border-b border-border bg-muted/40 px-3 py-3 pl-8 text-xs">
