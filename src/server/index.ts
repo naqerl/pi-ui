@@ -17,7 +17,7 @@ import { type DurableSessionOptions, openDurableSession, SESSION_CONTEXT } from 
 import { StreamHub } from "./stream-hub.js";
 import type { TaskBridge } from "./task-tools.js";
 import { TaskError, TaskStore } from "./tasks.js";
-import { injectTheme, resolveTheme, writeThemeSlug } from "./themes.js";
+import { injectTheme, resolveTheme, themeManifest, writeThemeSlug } from "./themes.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const builtClientDir = resolve(here, "../client");
@@ -431,7 +431,12 @@ app.get("/events/", serveIndex);
 
 app.get("/manifest.webmanifest", async (c) => {
   try {
-    const manifest = await readFile(resolve(clientDir, "manifest.webmanifest"), "utf8");
+    let manifest = await readFile(resolve(clientDir, "manifest.webmanifest"), "utf8");
+    try {
+      manifest = themeManifest(manifest, (await resolveTheme(themeFile)).active);
+    } catch (error) {
+      console.error("[pi] manifest theme failed", error);
+    }
     return c.body(manifest, 200, {
       "Content-Type": "application/manifest+json",
       "Cache-Control": "no-cache",

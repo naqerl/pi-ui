@@ -717,6 +717,58 @@ test("follows the theme color and corner radius on the chrome", async ({
   expect(square.surface.toLowerCase()).toBe("#1a1a1a");
   expect(square.buttonRadius).toBe("0px");
   await expect.poll(() => shaderFollowsTheme(browser)).toBe(true);
+  // The installed app's status and navigation bars follow one unscoped theme-color.
+  const bars = await browser.evaluate(() =>
+    [...document.querySelectorAll('meta[name="theme-color"]')].map((meta) => ({
+      content: meta.getAttribute("content") ?? "",
+      media: meta.getAttribute("media") ?? "",
+    })),
+  );
+  expect(bars).toEqual([{ content: "#000000", media: "" }]);
+});
+
+test("paints the app manifest with the active theme", async ({ app, browser, screen }) => {
+  await app.open("/");
+  await expect(screen.getByRole("button", "pi")).toBeVisible();
+  const painted = await browser.evaluate(async () => {
+    const catalog = (await (await fetch("/api/themes", { cache: "no-store" })).json()) as {
+      themes: Array<{ slug: string; colors: { background: string } }>;
+    };
+    const read = async () =>
+      (await (await fetch("/manifest.webmanifest", { cache: "no-store" })).json()) as {
+        theme_color?: string;
+        background_color?: string;
+        name?: string;
+      };
+    const plain =
+      /^(#[0-9a-f]{3}(?:[0-9a-f]{3})?|rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\))$/i;
+    const usable = catalog.themes.filter((theme) => plain.test(theme.colors.background));
+    const results: Array<{ background: string; theme: string; back: string; name: string }> = [];
+    for (const theme of usable.slice(0, 2)) {
+      await fetch("/api/theme", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ slug: theme.slug }),
+      });
+      const manifest = await read();
+      results.push({
+        background: theme.colors.background,
+        theme: manifest.theme_color ?? "",
+        back: manifest.background_color ?? "",
+        name: manifest.name ?? "",
+      });
+    }
+    const fallback = await read();
+    return { results, name: fallback.name ?? "", theme: fallback.theme_color ?? "" };
+  });
+  // Without installed themes the stock manifest is served untouched.
+  expect(painted.name).toBe("pi");
+  expect(painted.theme.length).toBeGreaterThan(0);
+  for (const result of painted.results) {
+    expect(result.theme).toBe(result.background);
+    expect(result.back).toBe(result.background);
+    expect(result.name).toBe("pi");
+  }
 });
 
 test("embeds the saved theme in the first document", async ({ app, browser, screen }) => {

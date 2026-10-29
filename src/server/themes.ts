@@ -231,3 +231,26 @@ export function injectTheme(html: string, theme: OmarchyTheme | null): string {
   if (!withoutThemeColor.includes("</head>")) return withoutThemeColor;
   return withoutThemeColor.replace("</head>", `    ${meta}\n  </head>`);
 }
+
+/** Plain hex or comma rgb(): what an installed app's system bars can paint. */
+const MANIFEST_COLOR =
+  /^(#[0-9a-f]{3}(?:[0-9a-f]{3})?|rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\))$/i;
+
+/**
+ * The web app manifest painted with the active theme. An installed app reads
+ * `theme_color` and `background_color` for its splash screen and system bars
+ * (status bar, and the navigation bar with the home button on Android) before
+ * the page sets its own `theme-color`. Both follow the page background so the
+ * bars blend into the app. Unknown or unsafe colors leave the file as it is.
+ */
+export function themeManifest(manifest: string, theme: OmarchyTheme | null): string {
+  if (theme === null) return manifest;
+  const color = theme.colors.background.trim();
+  if (!MANIFEST_COLOR.test(color)) return manifest;
+  try {
+    const parsed = JSON.parse(manifest) as Record<string, unknown>;
+    return `${JSON.stringify({ ...parsed, theme_color: color, background_color: color }, null, 2)}\n`;
+  } catch {
+    return manifest;
+  }
+}

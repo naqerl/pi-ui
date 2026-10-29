@@ -28,10 +28,14 @@ function applyTheme(colors: ThemeColors): void {
   root.style.colorScheme = colors.mode;
   root.style.backgroundColor = colors.background;
   root.style.color = colors.foreground;
-  for (const meta of document.querySelectorAll('meta[name="theme-color"]')) {
-    meta.removeAttribute("media");
-    meta.setAttribute("content", colors.background);
-  }
+  // One unscoped theme-color drives the browser chrome and, in an installed app,
+  // the system status and navigation bars, so they repaint with every theme change.
+  const metas = [...document.querySelectorAll('meta[name="theme-color"]')];
+  const meta = metas[0] ?? document.head.appendChild(document.createElement("meta"));
+  for (const extra of metas.slice(1)) extra.remove();
+  meta.setAttribute("name", "theme-color");
+  meta.removeAttribute("media");
+  meta.setAttribute("content", colors.background);
 }
 
 function legacySlug(): string | null {
