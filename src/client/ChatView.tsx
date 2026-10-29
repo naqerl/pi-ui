@@ -153,7 +153,8 @@ function ActivityGroup({
   return (
     <a
       href={`/activity?run=${encodeURIComponent(groupKey)}`}
-      className="flex min-w-0 items-center gap-2 font-mono text-xs text-muted-foreground hover:text-foreground"
+      data-testid="run-info"
+      className="theme-radius flex w-fit min-w-0 max-w-full items-center gap-2 border border-border/70 bg-surface px-2.5 py-1.5 font-mono text-xs text-muted-foreground hover:text-foreground"
     >
       <span aria-hidden="true" className="inline-block w-3 shrink-0">
         ▸
