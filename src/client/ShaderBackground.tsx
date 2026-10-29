@@ -1,5 +1,5 @@
 import { Dithering } from "@paper-design/shaders-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const SHAPE = "warp" as const;
 const TYPE = "4x4" as const;
@@ -84,11 +84,78 @@ function useReducedMotion(): boolean {
   return reduced;
 }
 
+function contextLost(canvas: HTMLCanvasElement | null): boolean {
+  if (canvas === null) return false;
+  // Returns the canvas's existing context; a fresh canvas would get a new one.
+  const gl = canvas.getContext("webgl2");
+  return gl === null || gl.isContextLost();
+}
+
+/**
+ * Mobile browsers drop the WebGL context of a page that sits in the background
+ * (GPU memory pressure, a frozen or bfcached installed app). Paper never rebuilds
+ * its program after that, so the full-screen canvas stays blank, which reads as
+ * a white page until a restart. Remount the shader with a fresh canvas whenever
+ * the page is visible again and the context is gone.
+ */
+function useShaderRecovery(host: React.RefObject<HTMLDivElement | null>): number {
+  const [generation, setGeneration] = useState(0);
+
+  useEffect(() => {
+    const element = host.current;
+    if (element === null) return;
+    let pending = false;
+    const canvas = () => element.querySelector("canvas");
+    const remount = () => {
+      pending = false;
+      setGeneration((value) => value + 1);
+    };
+    const recoverWhenVisible = () => {
+      if (document.visibilityState === "visible") remount();
+      else pending = true;
+    };
+    const onLost = (event: Event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLCanvasElement)) return;
+      // Lets the browser restore it; the remount below replaces it either way.
+      event.preventDefault();
+      // Paper's own dispose also loses the context; that canvas is gone a tick later.
+      window.setTimeout(() => {
+        if (target.isConnected && element.contains(target)) recoverWhenVisible();
+      }, 0);
+    };
+    const onRestored = () => remount();
+    const check = () => {
+      if (document.visibilityState !== "visible") return;
+      if (pending || contextLost(canvas())) remount();
+    };
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) check();
+    };
+    element.addEventListener("webglcontextlost", onLost, true);
+    element.addEventListener("webglcontextrestored", onRestored, true);
+    document.addEventListener("visibilitychange", check);
+    window.addEventListener("pageshow", onPageShow);
+    window.addEventListener("focus", check);
+    return () => {
+      element.removeEventListener("webglcontextlost", onLost, true);
+      element.removeEventListener("webglcontextrestored", onRestored, true);
+      document.removeEventListener("visibilitychange", check);
+      window.removeEventListener("pageshow", onPageShow);
+      window.removeEventListener("focus", check);
+    };
+  }, [host]);
+
+  return generation;
+}
+
 /** Warp dither behind every page. It drifts on its own and ignores the pointer. */
 export function ShaderBackground() {
   const [colors, setColors] = useState(readThemeInk);
   const reduced = useReducedMotion();
   const speed = reduced ? 0 : 1;
+  const host = useRef<HTMLDivElement>(null);
+  const generation = useShaderRecovery(host);
 
   useEffect(() => {
     const sync = () => {
@@ -118,8 +185,10 @@ export function ShaderBackground() {
 
   return (
     <div
+      ref={host}
       aria-hidden="true"
       data-testid="shader-bg"
+      data-shader-generation={generation}
       data-shader-shape={shape}
       data-shader-speed={speed}
       data-shader-back={colors.back}
@@ -128,8 +197,11 @@ export function ShaderBackground() {
       data-shader-color-front={front}
       data-shader-ink={INK}
       className="pointer-events-none fixed inset-0 z-0"
+      // The theme color shows instead of a blank canvas while the shader recovers.
+      style={{ backgroundColor: back }}
     >
       <Dithering
+        key={generation}
         colorBack={back}
         colorFront={front}
         shape={shape}
