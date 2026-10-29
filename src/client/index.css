@@ -1,8 +1,9 @@
 @import "tailwindcss";
 
 :root {
-  --radius: 0rem;
+  --radius: 0px;
   --background: oklch(1 0 0);
+  --surface: oklch(0.96 0 0);
   --foreground: oklch(0.145 0 0);
   --muted: oklch(0.97 0 0);
   --muted-foreground: oklch(0.556 0 0);
@@ -14,6 +15,7 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --background: oklch(0.145 0 0);
+    --surface: oklch(0.22 0 0);
     --foreground: oklch(0.985 0 0);
     --muted: oklch(0.269 0 0);
     --muted-foreground: oklch(0.708 0 0);
@@ -25,25 +27,45 @@
 
 @theme inline {
   --color-background: var(--background);
+  --color-surface: var(--surface);
   --color-foreground: var(--foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
-  --radius-sm: 0rem;
-  --radius-md: 0rem;
-  --radius-lg: 0rem;
-  --radius-xl: 0rem;
+  --radius-sm: var(--radius);
+  --radius-md: var(--radius);
+  --radius-lg: var(--radius);
+  --radius-xl: var(--radius);
   --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
+
+/* Boxed controls follow the active theme's Hyprland rounding. 0px stays square. */
 
 @layer base {
   *,
   ::before,
   ::after {
     border-color: var(--border);
-    border-radius: 0;
+  }
+
+  button,
+  textarea,
+  input,
+  pre,
+  code,
+  .theme-radius {
+    border-radius: var(--radius);
+  }
+
+  ::selection {
+    background: color-mix(in oklch, var(--foreground) 22%, transparent);
+  }
+
+  main {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklch, var(--foreground) 28%, transparent) transparent;
   }
 
   html,
@@ -53,7 +75,12 @@
   }
 
   #root {
+    position: fixed;
+    top: 0;
+    right: 0;
+    left: 0;
     height: var(--app-height, 100dvh);
+    transform: translateY(var(--app-shift, 0px));
   }
 
   body {
@@ -66,9 +93,72 @@
     -webkit-font-smoothing: antialiased;
   }
 
+  /* Floating chrome. On a wide screen the bars are a little wider than the
+     transcript column. On a narrow screen that cap is the full width.
+     The composer fills solid while the field is focused. */
+  .float-header,
+  .float-footer {
+    left: 50%;
+    width: min(100%, calc(72ch + 2rem));
+    transform: translateX(-50%);
+    background-color: color-mix(in srgb, var(--surface) 72%, transparent);
+    -webkit-backdrop-filter: blur(18px);
+    backdrop-filter: blur(18px);
+    border-left: 1px solid color-mix(in srgb, var(--foreground) 28%, transparent);
+    border-right: 1px solid color-mix(in srgb, var(--foreground) 28%, transparent);
+  }
+
+  .float-header {
+    top: 0;
+    padding-top: env(safe-area-inset-top);
+    border-bottom: 1px solid color-mix(in srgb, var(--foreground) 28%, transparent);
+  }
+
+  .float-footer {
+    bottom: 0;
+    padding-bottom: env(safe-area-inset-bottom);
+    border-top: 1px solid color-mix(in srgb, var(--foreground) 28%, transparent);
+    transition:
+      background-color 280ms ease,
+      backdrop-filter 280ms ease,
+      -webkit-backdrop-filter 280ms ease;
+  }
+
+  .float-footer:focus-within {
+    background-color: var(--surface);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    /* The home-indicator inset would sit between the field and the keyboard. */
+    padding-bottom: 0;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .float-footer {
+      transition: none;
+    }
+  }
+
+  .float-page {
+    width: min(72ch, calc(100% - 1.5rem));
+    padding-top: max(0.75rem, env(safe-area-inset-top));
+  }
+
+  /* Same outer inset the chat column keeps from the screen, filling what remains. */
+  .activity-screen {
+    box-sizing: border-box;
+    height: 100%;
+    padding: max(0.75rem, env(safe-area-inset-top)) max(0.75rem, env(safe-area-inset-right))
+      max(0.75rem, env(safe-area-inset-bottom)) max(0.75rem, env(safe-area-inset-left));
+  }
+
   button,
   textarea,
   input {
     font: inherit;
   }
+}
+
+/* Theme border often matches the surface, so chrome edges use the foreground. */
+.ink-line {
+  border-color: color-mix(in srgb, var(--foreground) 28%, transparent);
 }

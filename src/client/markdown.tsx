@@ -3,9 +3,9 @@ import { lexer, type Token, type Tokens } from "marked";
 import { Fragment, type ReactNode, useMemo } from "react";
 
 const headingClasses: Record<number, string> = {
-  1: "mt-3 mb-1 text-base font-semibold first:mt-0",
-  2: "mt-3 mb-1 text-sm font-semibold first:mt-0",
-  3: "mt-2 mb-1 text-sm font-medium first:mt-0",
+  1: "mt-4 mb-1 text-base font-semibold tracking-tight first:mt-0",
+  2: "mt-3 mb-1 text-sm font-semibold tracking-tight first:mt-0",
+  3: "mt-3 mb-1 text-sm font-medium first:mt-0",
   4: "mt-2 mb-1 text-sm font-medium first:mt-0",
   5: "mt-2 mb-1 text-xs font-semibold first:mt-0",
   6: "mt-2 mb-1 text-xs font-medium first:mt-0",
@@ -51,10 +51,7 @@ function inlineToken(token: Token, key: string, edge: boolean): ReactNode {
       );
     case "codespan":
       return (
-        <code
-          key={key}
-          className="border border-border bg-muted px-1 py-0.5 font-mono text-[0.9em]"
-        >
+        <code key={key} className="bg-foreground/[0.06] px-1 py-px font-mono text-[0.85em]">
           {token.text}
         </code>
       );
@@ -67,7 +64,7 @@ function inlineToken(token: Token, key: string, edge: boolean): ReactNode {
           href={href}
           target="_blank"
           rel="noreferrer noopener"
-          className="break-all underline underline-offset-2 hover:text-foreground"
+          className="break-all underline decoration-foreground/40 underline-offset-2 hover:decoration-foreground"
         >
           {inline(token.tokens, key)}
         </a>
@@ -83,7 +80,7 @@ function inlineToken(token: Token, key: string, edge: boolean): ReactNode {
           href={href}
           target="_blank"
           rel="noreferrer noopener"
-          className="break-all underline underline-offset-2 hover:text-foreground"
+          className="break-all underline decoration-foreground/40 underline-offset-2 hover:decoration-foreground"
         >
           {label}
         </a>
@@ -134,7 +131,7 @@ function blockToken(token: Token, key: string): ReactNode {
       return (
         <pre
           key={key}
-          className="overflow-x-auto border border-border bg-muted/50 p-3 font-mono text-xs leading-relaxed"
+          className="overflow-x-auto border border-border bg-muted px-3 py-2.5 font-mono text-xs leading-relaxed"
         >
           <code className="font-mono">{token.text}</code>
         </pre>
@@ -142,7 +139,10 @@ function blockToken(token: Token, key: string): ReactNode {
     case "blockquote": {
       const node = token as Tokens.Blockquote;
       return (
-        <blockquote key={key} className="border-l-2 border-border pl-3 text-muted-foreground">
+        <blockquote
+          key={key}
+          className="border-l-2 border-foreground/30 pl-3 text-muted-foreground"
+        >
           {blocks(node.tokens, key)}
         </blockquote>
       );
@@ -151,7 +151,14 @@ function blockToken(token: Token, key: string): ReactNode {
       const node = token as Tokens.List;
       const Tag = node.ordered ? "ol" : "ul";
       return (
-        <Tag key={key} className={node.ordered ? "list-decimal pl-5" : "list-disc pl-5"}>
+        <Tag
+          key={key}
+          className={
+            node.ordered
+              ? "my-1 list-decimal space-y-1 pl-5 marker:text-muted-foreground"
+              : "my-1 list-disc space-y-1 pl-5 marker:text-muted-foreground"
+          }
+        >
           {node.items.map((item, index) => (
             <li key={`${key}-item-${index}`} className="pl-1">
               {listItem(item, `${key}-item-${index}`)}
@@ -166,7 +173,7 @@ function blockToken(token: Token, key: string): ReactNode {
         <div key={key} className="overflow-x-auto">
           <table className="w-full border-collapse text-left text-xs">
             <thead>
-              <tr className="border-b border-border">
+              <tr className="border-b border-border bg-muted/50">
                 {node.header.map((cell, index) => (
                   <th
                     key={`${key}-h-${index}`}
@@ -196,7 +203,7 @@ function blockToken(token: Token, key: string): ReactNode {
       );
     }
     case "hr":
-      return <hr key={key} className="border-border" />;
+      return <hr key={key} className="my-3 border-border" />;
     case "html":
       if (token.text.trim().length === 0) return null;
       return (

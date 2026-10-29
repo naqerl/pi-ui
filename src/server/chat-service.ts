@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
   type AgentEvent,
   type AgentEventStream,
@@ -11,12 +12,16 @@ import {
 } from "@earendil-works/pi-durable";
 import {
   type ChatMessage,
+  type McpEventsState,
   type McpStatus,
   type MessageMode,
+  type ModelList,
+  type ModelOption,
   type QueuedMessage,
   type RunState,
   type Snapshot,
   STEER_ENTRY_KIND,
+  type StreamDraftSync,
   type StreamMessageDone,
   type StreamRunState,
   type StreamTextDelta,
@@ -24,6 +29,9 @@ import {
   type StreamToolStart,
   type ToolActivity,
 } from "../shared/types.js";
+import type { BillionContextInline } from "./billion-context.js";
+import type { McpEventFeed } from "./mcp-events.js";
+import { listAvailableModels, modelOption } from "./models.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
 import type { RunMarker, RunMarkerStore } from "./run-marker.js";
 import {
@@ -71,6 +79,8 @@ export class ChatService {
   private runState: RunState;
   private currentText = "";
   private currentThinking = "";
+  private draftRevision = 0;
+  private eventFeed: McpEventFeed | undefined;
   private readonly activeTools = new Map<string, ActiveTool>();
   private stream: AgentEventStream | undefined;
   private closed = false;
@@ -80,18 +90,25 @@ export class ChatService {
   private marker: RunMarker | undefined;
   private markerWrites: Promise<void> = Promise.resolve();
   private shuttingDown = false;
+  private modelWindow: number | undefined;
+  private selected: ModelOption | null;
 
   constructor(
     private readonly harness: Harness,
     private readonly conversation: Conversation,
     private readonly hub: StreamHub,
-    private readonly modelWindow: number | undefined,
+    modelWindow: number | undefined,
     interrupted: boolean,
     private readonly markerStore: RunMarkerStore,
     initialMarker: RunMarker | undefined,
     private readonly mcp: McpStatus,
+    private readonly catalog: ModelRuntime,
+    initialModel: Model<Api> | undefined,
+    private readonly bili: BillionContextInline,
   ) {
     this.runState = interrupted ? "interrupted" : "idle";
+    this.modelWindow = modelWindow;
+    this.selected = initialModel === undefined ? null : modelOption(initialModel);
     this.marker = initialMarker;
     if (interrupted) {
       this.runStartedAt = initialMarker?.startedAt;
@@ -120,12 +137,63 @@ export class ChatService {
     return this.runState;
   }
 
+  setEventFeed(feed: McpEventFeed): void {
+    this.eventFeed = feed;
+  }
+
+  mcpEventsState(): McpEventsState {
+    return this.eventFeed?.state ?? { subscriptions: [], events: [], notice: null, revision: 0 };
+  }
+
   getRunStatus(): StreamRunState {
     return {
       state: this.runState,
       startedAt: this.runStartedAt ?? null,
       queue: this.queueItems(),
     };
+  }
+
+  currentModel(): ModelOption | null {
+    return this.selected;
+  }
+
+  async modelsView(): Promise<ModelList> {
+    const models = await listAvailableModels(this.catalog);
+    const current = this.selected;
+    if (
+      current !== null &&
+      !models.some((item) => item.provider === current.provider && item.id === current.id)
+    ) {
+      models.unshift(current);
+    }
+    return { current, models };
+  }
+
+  /** Store the choice on the conversation. An in-flight turn keeps the model it started with. */
+  async setModel(provider: string, id: string): Promise<ModelOption | undefined> {
+    const model = this.catalog.getModel(provider, id);
+    if (model === undefined) return undefined;
+    const available = await listAvailableModels(this.catalog);
+    const allowed = available.some((item) => item.provider === provider && item.id === id);
+    const already = this.selected?.provider === provider && this.selected.id === id;
+    if (!allowed && !already) return undefined;
+    const choice = modelOption(model);
+    if (!already) {
+      await this.conversation.configure(
+        { model: { provider: model.provider, modelId: model.id } },
+        SESSION_CONTEXT,
+      );
+      this.modelWindow = model.contextWindow;
+      this.selected = choice;
+      this.bili.setModelMetadata({
+        model: model.id,
+        contextWindow: model.contextWindow,
+        maxOutput: model.maxTokens,
+      });
+      console.log(`[pi] model: ${model.provider}/${model.id}`);
+      this.hub.broadcast({ event: "model", data: choice });
+    }
+    return choice;
   }
 
   async getSnapshot(): Promise<Snapshot> {
@@ -142,24 +210,57 @@ export class ChatService {
       usage: summarizeUsage(usage),
       context: contextUsage(context.entries, this.modelWindow),
       mcp: this.mcp,
+      mcpEvents: this.mcpEventsState(),
+      draft: {
+        text: this.currentText,
+        thinking: this.currentThinking,
+        revision: this.draftRevision,
+      },
     };
   }
 
+  private bumpDraft(): number {
+    this.draftRevision += 1;
+    return this.draftRevision;
+  }
+
+  private broadcastText(): void {
+    const revision = this.bumpDraft();
+    this.hub.broadcast({
+      event: "message.delta",
+      data: {
+        text: this.currentText,
+        full: this.currentText,
+        revision,
+      } satisfies StreamTextDelta,
+    });
+  }
+
+  private broadcastThinking(): void {
+    const revision = this.bumpDraft();
+    this.hub.broadcast({
+      event: "thinking.delta",
+      data: {
+        text: this.currentThinking,
+        full: this.currentThinking,
+        revision,
+      } satisfies StreamTextDelta,
+    });
+  }
+
   replayFrames(): SseFrame[] {
-    if (this.runState !== "running") return [];
-    const frames: SseFrame[] = [];
-    if (this.currentThinking.length > 0) {
-      frames.push({
-        event: "thinking.delta",
-        data: { text: this.currentThinking } satisfies StreamTextDelta,
-      });
-    }
-    if (this.currentText.length > 0) {
-      frames.push({
-        event: "message.delta",
-        data: { text: this.currentText } satisfies StreamTextDelta,
-      });
-    }
+    const frames: SseFrame[] = [
+      {
+        event: "draft.sync",
+        data: {
+          text: this.currentText,
+          thinking: this.currentThinking,
+          revision: this.draftRevision,
+        } satisfies StreamDraftSync,
+      },
+      { event: "mcp.events", data: this.mcpEventsState() },
+    ];
+    if (this.runState !== "running") return frames;
     for (const [toolCallId, tool] of this.activeTools) {
       frames.push({
         event: "tool.start",
@@ -478,16 +579,14 @@ export class ChatService {
             data: { message: null } satisfies StreamMessageDone,
           },
         ];
-        if (this.currentThinking.length > 0) {
+        if (this.currentThinking.length > 0 || this.currentText.length > 0) {
           frames.push({
-            event: "thinking.delta",
-            data: { text: this.currentThinking } satisfies StreamTextDelta,
-          });
-        }
-        if (this.currentText.length > 0) {
-          frames.push({
-            event: "message.delta",
-            data: { text: this.currentText } satisfies StreamTextDelta,
+            event: "draft.sync",
+            data: {
+              text: this.currentText,
+              thinking: this.currentThinking,
+              revision: this.draftRevision,
+            } satisfies StreamDraftSync,
           });
         }
         frames.push({
@@ -518,21 +617,17 @@ export class ChatService {
         for (const change of event.changes) {
           if (change.type === "text_delta") {
             this.currentText += change.delta;
-            this.hub.broadcast({
-              event: "message.delta",
-              data: { text: change.delta } satisfies StreamTextDelta,
-            });
+            this.broadcastText();
           } else if (change.type === "thinking_delta") {
             this.currentThinking += change.delta;
-            this.hub.broadcast({
-              event: "thinking.delta",
-              data: { text: change.delta } satisfies StreamTextDelta,
-            });
+            this.broadcastThinking();
           } else if (change.type === "block") {
             if (change.block.type === "text") {
               this.currentText = change.block.text;
+              this.broadcastText();
             } else if (change.block.type === "thinking") {
               this.currentThinking = change.block.thinking;
+              this.broadcastThinking();
             }
           } else if (change.type === "message") {
             this.absorbMessage(change.message);
@@ -545,10 +640,17 @@ export class ChatService {
         if (!message) return;
         this.currentText = "";
         this.currentThinking = "";
-        this.hub.broadcast({
-          event: "message.done",
-          data: { message } satisfies StreamMessageDone,
-        });
+        const revision = this.bumpDraft();
+        this.hub.broadcast([
+          {
+            event: "draft.sync",
+            data: { text: "", thinking: "", revision } satisfies StreamDraftSync,
+          },
+          {
+            event: "message.done",
+            data: { message } satisfies StreamMessageDone,
+          },
+        ]);
         return;
       }
 

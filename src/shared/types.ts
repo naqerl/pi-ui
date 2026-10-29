@@ -82,6 +82,84 @@ export interface McpStatus {
   unavailable: string[];
 }
 
+export interface McpSubscriptionView {
+  id: string;
+  server: string;
+  name: string;
+  status: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface McpEventView {
+  id: string;
+  server: string;
+  name: string;
+  timestamp: string;
+  summary: string;
+}
+
+/** Shared across browsers. `notice` is `new event from <server>` for the latest event. */
+export interface McpEventsState {
+  subscriptions: McpSubscriptionView[];
+  events: McpEventView[];
+  notice: string | null;
+  revision: number;
+}
+
+export interface ThemeColors {
+  mode: "light" | "dark";
+  background: string;
+  /** Raised or recessed panel. Header, footer, and user bubbles use this, not `background`. */
+  surface: string;
+  foreground: string;
+  muted: string;
+  mutedForeground: string;
+  border: string;
+  accent: string;
+  destructive: string;
+  selection: string;
+  /** Corner radius in pixels, from the theme's Hyprland `rounding`. `0` is square. */
+  radius: number;
+}
+
+export interface OmarchyTheme {
+  slug: string;
+  name: string;
+  colors: ThemeColors;
+}
+
+export interface OmarchyThemes {
+  /** Omarchy's current desktop theme, when that theme is installed. */
+  current: string | null;
+  /** Slug saved for this server. Null until a theme is chosen here. */
+  selected: string | null;
+  themes: OmarchyTheme[];
+}
+
+/** Broadcast when the saved theme changes, and replayed to a client that just connected. */
+export interface StreamTheme {
+  slug: string;
+  colors: ThemeColors;
+}
+
+/** One credentialed catalog model the menu can select. */
+export interface ModelOption {
+  provider: string;
+  id: string;
+  name: string;
+}
+
+export interface ModelList {
+  current: ModelOption | null;
+  models: ModelOption[];
+}
+
+export interface DraftSync {
+  text: string;
+  thinking: string;
+  revision: number;
+}
+
 export interface Snapshot {
   conversationId: string;
   messages: ChatMessage[];
@@ -92,6 +170,8 @@ export interface Snapshot {
   usage: UsageSummary;
   context: ContextUsage;
   mcp: McpStatus;
+  mcpEvents?: McpEventsState;
+  draft?: DraftSync;
 }
 
 export interface SubmitMessageResponse {
@@ -131,6 +211,15 @@ export interface StreamToolEnd {
 
 export interface StreamTextDelta {
   text: string;
+  /** Full draft after this change, so every client replaces instead of appending twice. */
+  full?: string;
+  revision?: number;
+}
+
+export interface StreamDraftSync {
+  text: string;
+  thinking: string;
+  revision: number;
 }
 
 export interface StreamRunState {

@@ -48,6 +48,8 @@ export interface DurableSessionOptions {
   readonly models: Parameters<typeof HarnessImpl.open>[1]["models"];
   readonly instructions: string;
   readonly model: ModelRef | undefined;
+  /** When a resumed conversation already stores a model, keep it if this returns true. */
+  readonly keepStoredModel?: (model: ModelRef) => boolean;
   readonly bili?: BillionContextInline;
 }
 
@@ -63,6 +65,8 @@ export interface DurableSessionBoot {
   readonly runMarkerStore: RunMarkerStore;
   readonly mcp: McpRuntime;
   readonly biliTools: readonly string[];
+  /** Model stored on the conversation after boot. A menu choice wins over `PI_MODEL`. */
+  readonly model: ModelRef | undefined;
 }
 
 export async function openDurableSession(
@@ -93,13 +97,29 @@ export async function openDurableSession(
     SESSION_CONTEXT,
   );
 
-  const agent = {
+  const { conversation, resumed } = await loadConversation(harness, currentPath, {
     cwd: options.cwd,
     instructions: options.instructions,
     ...(options.model === undefined ? {} : { model: options.model }),
-  };
-  const { conversation, resumed } = await loadConversation(harness, currentPath, agent);
-  await conversation.configure(agent, SESSION_CONTEXT);
+  });
+  let model = options.model;
+  if (resumed) {
+    const stored = (await conversation.agent(SESSION_CONTEXT)).model;
+    if (
+      stored !== undefined &&
+      (options.keepStoredModel === undefined || options.keepStoredModel(stored))
+    ) {
+      model = stored;
+    }
+  }
+  await conversation.configure(
+    {
+      cwd: options.cwd,
+      instructions: options.instructions,
+      ...(model === undefined ? {} : { model }),
+    },
+    SESSION_CONTEXT,
+  );
 
   const runMarkerStore = new RunMarkerStore(dataDir);
   const storedMarker = await runMarkerStore.read();
@@ -135,6 +155,7 @@ export async function openDurableSession(
     runMarkerStore,
     mcp,
     biliTools,
+    model,
   };
 }
 

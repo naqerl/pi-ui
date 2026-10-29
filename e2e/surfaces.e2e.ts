@@ -26,6 +26,35 @@ async function openSeeded(app: { open: (path: string) => Promise<void> }, browse
   await app.open("/");
 }
 
+async function shaderFollowsTheme(browser: Browser) {
+  return browser.evaluate(() => {
+    const node = document.querySelector("[data-testid=shader-bg]");
+    if (node === null) return false;
+    const page = getComputedStyle(document.body);
+    const channels = (color: string | null) => {
+      const match = color?.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/);
+      if (match === null || match === undefined) return null;
+      return [Number(match[1]), Number(match[2]), Number(match[3])];
+    };
+    const amount = Number(node.getAttribute("data-shader-ink"));
+    const back = channels(page.backgroundColor);
+    const ink = channels(page.color);
+    const front = channels(node.getAttribute("data-shader-front"));
+    if (back === null || ink === null || front === null || !(amount > 0 && amount < 1))
+      return false;
+    const expected = back.map((channel, index) =>
+      Math.round(channel + ((ink[index] ?? channel) - channel) * amount),
+    );
+    return (
+      node.getAttribute("data-shader-shape") === "warp" &&
+      node.getAttribute("data-shader-speed") === "1" &&
+      node.getAttribute("data-shader-back") === page.backgroundColor &&
+      front.every((channel, index) => channel === expected[index]) &&
+      node.querySelector("canvas") !== null
+    );
+  });
+}
+
 async function waitForFrames(browser: Browser) {
   await browser.evaluate(async () => {
     await new Promise<void>((resolve) => {
@@ -44,7 +73,7 @@ function alphaOf(color: string): number {
   return parts.length === 4 ? Number(parts[3]) : 1;
 }
 
-test("renders the header, composer bar and latest button as translucent blur", async ({
+test("paints the header, composer bar and latest button apart from the page", async ({
   app,
   browser,
   screen,
@@ -61,30 +90,97 @@ test("renders the header, composer bar and latest button as translucent blur", a
 
   const styles = await browser.evaluate(() => {
     const read = (element: Element | null) => {
-      if (element === null) return null;
-      const style = getComputedStyle(element);
-      return {
-        backdropFilter: style.backdropFilter || style.getPropertyValue("-webkit-backdrop-filter"),
-        backgroundColor: style.backgroundColor,
-      };
+      if (element === null) return "";
+      return getComputedStyle(element).backgroundColor;
     };
     const textarea = document.querySelector('textarea[aria-label="Message"]');
     const latest = Array.from(document.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("↓ latest"),
     );
     return {
+      page: getComputedStyle(document.body).backgroundColor,
       header: read(document.querySelector("header")),
       composer: read(textarea?.closest("form")?.parentElement ?? null),
       latest: read(latest ?? null),
+      assistant: read(
+        Array.from(document.querySelectorAll("main div")).find(
+          (element) =>
+            element.className.includes("max-w-[85%]") &&
+            element.textContent?.includes("Seed message 1"),
+        ) ?? null,
+      ),
     };
   });
 
-  for (const surface of [styles.header, styles.composer, styles.latest]) {
-    expect(surface).not.toBeNull();
-    expect(surface?.backdropFilter ?? "").toContain("blur");
-    expect(alphaOf(surface?.backgroundColor ?? "")).toBeGreaterThan(0);
-    expect(alphaOf(surface?.backgroundColor ?? "")).toBeLessThan(1);
+  for (const surface of [styles.header, styles.composer, styles.latest, styles.assistant]) {
+    expect(surface).not.toBe("");
+    expect(surface).not.toBe(styles.page);
   }
+  expect(alphaOf(styles.header)).toBeGreaterThan(0);
+  expect(alphaOf(styles.header)).toBeLessThan(1);
+  expect(alphaOf(styles.composer)).toBeGreaterThan(0);
+  expect(alphaOf(styles.composer)).toBeLessThan(1);
+  expect(alphaOf(styles.latest)).toBe(1);
+  expect(alphaOf(styles.assistant)).toBe(1);
+
+  const glass = await browser.evaluate(async () => {
+    const header = document.querySelector("header");
+    const field = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
+    const footer = field?.closest("form")?.parentElement ?? null;
+    if (header === null || field === null || footer === null) return null;
+    const transition = getComputedStyle(footer).transitionProperty;
+    const headerBlur = getComputedStyle(header).backdropFilter;
+    footer.style.transition = "none";
+    field.blur();
+    const idle = getComputedStyle(footer).backgroundColor;
+    const idleBlur = getComputedStyle(footer).backdropFilter;
+    field.focus();
+    const focusedBackground = getComputedStyle(footer).backgroundColor;
+    const footerBlur = getComputedStyle(footer).backdropFilter;
+    footer.style.transition = "";
+    return {
+      headerBlur,
+      idleBlur,
+      footerBlur,
+      idle,
+      focused: focusedBackground,
+      transition,
+    };
+  });
+  expect(glass).not.toBeNull();
+  expect(glass?.headerBlur ?? "").toContain("blur");
+  expect(glass?.idleBlur ?? "").toContain("blur");
+  expect(glass?.footerBlur ?? "none").toBe("none");
+  expect(glass?.transition ?? "").toContain("background-color");
+  expect(alphaOf(glass?.idle ?? "")).toBeGreaterThan(0);
+  expect(alphaOf(glass?.idle ?? "")).toBeLessThan(1);
+  expect(alphaOf(glass?.focused ?? "")).toBe(1);
+
+  const widths = await browser.evaluate(() => {
+    const header = document.querySelector("header");
+    const footer = document.querySelector("textarea")?.closest("form")?.parentElement ?? null;
+    const headerRow = header?.firstElementChild ?? null;
+    const footerRow = document.querySelector("textarea")?.parentElement ?? null;
+    if (header === null || footer === null || headerRow === null || footerRow === null) return null;
+    const headerStyle = getComputedStyle(headerRow);
+    const footerStyle = getComputedStyle(footerRow);
+    return {
+      header: header.getBoundingClientRect().width,
+      footer: footer.getBoundingClientRect().width,
+      headerPad: `${headerStyle.paddingTop} ${headerStyle.paddingLeft}`,
+      footerPad: `${footerStyle.paddingTop} ${footerStyle.paddingLeft}`,
+      fieldPadLeft: getComputedStyle(document.querySelector("textarea") ?? document.body)
+        .paddingLeft,
+    };
+  });
+  expect(widths).not.toBeNull();
+  expect(widths?.header ?? 0).toBeCloseTo(widths?.footer ?? -1, 0);
+  expect(widths?.headerPad.split(" ")[0]).toBe(widths?.footerPad.split(" ")[0]);
+  expect(Number.parseFloat(widths?.headerPad.split(" ")[1] ?? "")).toBeCloseTo(
+    Number.parseFloat(widths?.footerPad.split(" ")[1] ?? "") +
+      Number.parseFloat(widths?.fieldPadLeft ?? ""),
+    0,
+  );
 
   const input = await browser.evaluate(() => {
     const textarea = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
@@ -163,38 +259,70 @@ test("overlays the transcript with the blurred footer", async ({ app, browser, s
       backgroundColor: style.backgroundColor,
       mainTop: mainBox.top,
       mainBottom: mainBox.bottom,
+      mainLeft: mainBox.left,
+      mainRight: mainBox.right,
       footerTop: footerBox.top,
       footerBottom: footerBox.bottom,
+      footerLeft: footerBox.left,
+      footerRight: footerBox.right,
       point: point !== null,
       hitInFooter: hit !== null && footer.contains(hit),
       behindInMessage: behindBubble !== undefined,
       lastTop: lastBox?.top ?? null,
       lastBottom: lastBox?.bottom ?? null,
       footerTopAtBottom: footerAfter.top,
+      footerBottomAtBottom: footerAfter.bottom,
+      columnLeft: main.lastElementChild?.getBoundingClientRect().left ?? null,
+      columnRight: main.lastElementChild?.getBoundingClientRect().right ?? null,
+      contentPaddingTop: getComputedStyle(main.lastElementChild ?? main).paddingTop,
       contentPaddingBottom: getComputedStyle(main.lastElementChild ?? main).paddingBottom,
+      headerBottom: document.querySelector("header")?.getBoundingClientRect().bottom ?? null,
       footerHeight: footerAfter.height,
+      headerBorderBottom: getComputedStyle(document.querySelector("header") ?? document.body)
+        .borderBottomWidth,
+      headerBorderLeft: getComputedStyle(document.querySelector("header") ?? document.body)
+        .borderLeftWidth,
+      footerBorderTop: getComputedStyle(footer).borderTopWidth,
+      footerBorderRight: getComputedStyle(footer).borderRightWidth,
     };
   });
 
   expect(geometry).not.toBeNull();
   expect(geometry?.footerTop ?? 0).toBeLessThan(geometry?.mainBottom ?? -1);
   expect(geometry?.footerBottom ?? 0).toBeGreaterThan(geometry?.mainTop ?? Number.MAX_VALUE);
-  expect(geometry?.footerBottom ?? 0).toBeCloseTo(geometry?.mainBottom ?? -1, 0);
-  expect(geometry?.classes ?? "").toContain("backdrop-blur-md");
-  expect(geometry?.classes ?? "").toContain("bg-black/85");
-  expect(geometry?.classes ?? "").toContain("supports-[backdrop-filter]:bg-black/60");
-  expect(geometry?.classes ?? "").toContain("pb-[env(safe-area-inset-bottom)]");
+  expect((geometry?.mainBottom ?? 0) - (geometry?.footerBottomAtBottom ?? 0)).toBeLessThanOrEqual(
+    1,
+  );
+  expect(geometry?.footerLeft ?? 0).toBeGreaterThan((geometry?.mainLeft ?? 0) + 4);
+  expect(geometry?.footerRight ?? 0).toBeLessThan((geometry?.mainRight ?? 0) - 4);
+  expect(geometry?.footerLeft ?? 0).toBeLessThan((geometry?.columnLeft ?? 0) - 4);
+  expect(geometry?.footerRight ?? 0).toBeGreaterThan((geometry?.columnRight ?? 0) + 4);
+  expect((geometry?.footerLeft ?? 0) - (geometry?.mainLeft ?? 0)).toBeCloseTo(
+    (geometry?.mainRight ?? 0) - (geometry?.footerRight ?? 0),
+    0,
+  );
+  expect(geometry?.classes ?? "").toContain("float-footer");
   expect(geometry?.backdropFilter ?? "").toContain("blur");
   expect(alphaOf(geometry?.backgroundColor ?? "")).toBeGreaterThan(0);
   expect(alphaOf(geometry?.backgroundColor ?? "")).toBeLessThan(1);
   expect(geometry?.point).toBe(true);
   expect(geometry?.hitInFooter).toBe(true);
   expect(geometry?.behindInMessage).toBe(true);
+  const endGap = 16;
   expect(geometry?.lastBottom ?? Number.MAX_VALUE).toBeLessThanOrEqual(
-    (geometry?.footerTopAtBottom ?? -1) + 1,
+    (geometry?.footerTopAtBottom ?? -1) - endGap + 1,
   );
   expect(geometry?.lastTop ?? Number.MAX_VALUE).toBeLessThan(geometry?.footerTopAtBottom ?? -1);
-  expect(geometry?.contentPaddingBottom ?? "").toBe(`${geometry?.footerHeight ?? -1}px`);
+  const padding = Number.parseFloat(geometry?.contentPaddingBottom ?? "");
+  const clearance = (geometry?.mainBottom ?? 0) - (geometry?.footerTopAtBottom ?? 0);
+  expect(padding).toBeCloseTo(clearance + endGap, 0);
+  const paddingTop = Number.parseFloat(geometry?.contentPaddingTop ?? "");
+  const headerClearance = (geometry?.headerBottom ?? 0) - (geometry?.mainTop ?? 0);
+  expect(paddingTop).toBeCloseTo(headerClearance + endGap, 0);
+  expect(geometry?.headerBorderBottom).toBe("1px");
+  expect(geometry?.headerBorderLeft).toBe("1px");
+  expect(geometry?.footerBorderTop).toBe("1px");
+  expect(geometry?.footerBorderRight).toBe("1px");
 });
 
 test("returns the composer to one line after sending over the overlay footer", async ({
@@ -221,6 +349,7 @@ test("returns the composer to one line after sending over the overlay footer", a
     const element = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
     const footer = element?.closest("form")?.parentElement ?? null;
     if (element === null) return null;
+    if (footer !== null) footer.style.transition = "none";
     return {
       overflowY: getComputedStyle(element).overflowY,
       background: getComputedStyle(element).backgroundColor,
@@ -230,8 +359,7 @@ test("returns the composer to one line after sending over the overlay footer", a
   expect(state).not.toBeNull();
   expect(state?.overflowY).toBe("hidden");
   expect(alphaOf(state?.background ?? "")).toBe(0);
-  expect(alphaOf(state?.footerBackground ?? "")).toBeGreaterThan(0);
-  expect(alphaOf(state?.footerBackground ?? "")).toBeLessThan(1);
+  expect(alphaOf(state?.footerBackground ?? "")).toBe(1);
 });
 
 test("keeps the interrupted-run warning visible outside the scroll container", async ({
@@ -272,19 +400,30 @@ test("scrolls message content under the sticky header", async ({ app, browser, s
   await expect(screen.getByText("Seed message 59", { exact: false })).toBeVisible();
 
   const geometry = await browser.evaluate(async () => {
+    const frames = () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
     const main = document.querySelector("main");
     const header = document.querySelector("header");
     if (main === null || header === null) return null;
     main.scrollTop = Math.floor((main.scrollHeight - main.clientHeight) / 2);
-    await new Promise<void>((resolve) => {
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-    });
+    await frames();
 
-    const mainBox = main.getBoundingClientRect();
-    const headerBox = header.getBoundingClientRect();
     const bubbles = Array.from(main.querySelectorAll("div")).filter((element) =>
       element.className.includes("max-w-[85%]"),
     );
+    const headerNow = header.getBoundingClientRect();
+    const wide =
+      bubbles.find((element) => element.getBoundingClientRect().width > headerNow.width) ??
+      bubbles[0];
+    if (wide !== undefined) {
+      main.scrollTop += wide.getBoundingClientRect().top - headerNow.top;
+      await frames();
+    }
+
+    const mainBox = main.getBoundingClientRect();
+    const headerBox = header.getBoundingClientRect();
     const behind = bubbles.find((element) => {
       const box = element.getBoundingClientRect();
       return (
@@ -300,14 +439,30 @@ test("scrolls message content under the sticky header", async ({ app, browser, s
     );
     return {
       mainTop: mainBox.top,
+      mainLeft: mainBox.left,
+      mainRight: mainBox.right,
+      mainWidth: mainBox.width,
       headerTop: headerBox.top,
+      headerLeft: headerBox.left,
+      headerRight: headerBox.right,
+      headerWidth: headerBox.width,
+      columnLeft: main.firstElementChild?.getBoundingClientRect().left ?? 0,
+      columnRight: main.firstElementChild?.getBoundingClientRect().right ?? 0,
       hitInsideHeader: hit !== null && header.contains(hit),
-      behindText: behind?.textContent ?? null,
+      behindText: behind?.textContent ?? "",
     };
   });
 
   expect(geometry).not.toBeNull();
-  expect(geometry?.headerTop ?? 0).toBeCloseTo(geometry?.mainTop ?? -1, 0);
+  expect((geometry?.headerTop ?? 0) - (geometry?.mainTop ?? 0)).toBeLessThanOrEqual(1);
+  expect(geometry?.headerLeft ?? 0).toBeGreaterThan((geometry?.mainLeft ?? 0) + 4);
+  expect(geometry?.headerRight ?? 0).toBeLessThan((geometry?.mainRight ?? 0) - 4);
+  expect(geometry?.headerLeft ?? 0).toBeLessThan((geometry?.columnLeft ?? 0) - 4);
+  expect(geometry?.headerRight ?? 0).toBeGreaterThan((geometry?.columnRight ?? 0) + 4);
+  expect((geometry?.headerLeft ?? 0) - (geometry?.mainLeft ?? 0)).toBeCloseTo(
+    (geometry?.mainRight ?? 0) - (geometry?.headerRight ?? 0),
+    0,
+  );
   expect(geometry?.hitInsideHeader).toBe(true);
   expect(geometry?.behindText ?? "").toContain("Seed message");
 });
@@ -400,7 +555,7 @@ test("uses one action-button height and a stable composer bar height", async ({
     const textarea = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
     const row = textarea?.parentElement ?? null;
     const labels = Array.from(row?.querySelectorAll("button") ?? []).map(
-      (button) => button.textContent ?? "",
+      (button) => button.getAttribute("aria-label") ?? "",
     );
     await new Promise<void>((resolve) => {
       requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
@@ -419,7 +574,8 @@ test("uses one action-button height and a stable composer bar height", async ({
   });
   await browser.mouse.up();
 
-  expect(queue.labels.some((label) => label.includes("Queue"))).toBe(true);
+  expect(queue.labels).toEqual(["Steer"]);
+  expect(queue.labels.some((label) => label.includes("Queue"))).toBe(false);
   for (const state of [send, stop, steer]) {
     expect(state).not.toBeNull();
     expect(state?.height ?? 0).toBeCloseTo(send?.height ?? -1, 0);
@@ -433,4 +589,180 @@ test("uses one action-button height and a stable composer bar height", async ({
 
   await composer.fill("");
   await screen.getByRole("button", "Stop").tap();
+});
+
+test("follows the theme color and corner radius on the chrome", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.route("**/api/themes", async (route) => {
+    await route.fulfill({
+      json: {
+        current: "solitude",
+        selected: "solitude",
+        themes: [
+          {
+            slug: "vantablack",
+            name: "Vantablack",
+            colors: {
+              mode: "dark",
+              background: "#000000",
+              foreground: "#ffffff",
+              surface: "#1a1a1a",
+              muted: "#090909",
+              mutedForeground: "#7a7a7a",
+              border: "#1a1a1a",
+              accent: "#8d8d8d",
+              destructive: "#a4a4a4",
+              selection: "#1a1a1a",
+              radius: 0,
+            },
+          },
+          {
+            slug: "solitude",
+            name: "Solitude",
+            colors: {
+              mode: "dark",
+              background: "#101315",
+              foreground: "#cacccc",
+              surface: "#0c0e10",
+              muted: "#080a0b",
+              mutedForeground: "#4b4e55",
+              border: "#343d41",
+              accent: "#798186",
+              destructive: "#de6145",
+              selection: "#343d41",
+              radius: 6,
+            },
+          },
+        ],
+      },
+    });
+  });
+  await app.open("/");
+  // The document and the live stream follow the server theme. Save Solitude
+  // first so that setup matches the menu catalog below, then load once more.
+  const posted = await browser.evaluate(async () => {
+    const response = await fetch("/api/theme", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ slug: "solitude" }),
+    });
+    return response.ok;
+  });
+  if (posted) await app.open("/");
+  await expect(screen.getByRole("button", "pi")).toBeVisible();
+  await expect
+    .poll(() =>
+      browser.evaluate(() =>
+        getComputedStyle(document.documentElement).getPropertyValue("--radius").trim(),
+      ),
+    )
+    .toBe("6px");
+
+  const solitude = await browser.evaluate(() => {
+    const header = document.querySelector("header");
+    const send = Array.from(document.querySelectorAll("button")).find(
+      (button) => button.getAttribute("aria-label") === "Send",
+    );
+    const headerStyle = header === null ? null : getComputedStyle(header);
+    return {
+      radius: getComputedStyle(document.documentElement).getPropertyValue("--radius").trim(),
+      background: getComputedStyle(document.documentElement)
+        .getPropertyValue("--background")
+        .trim(),
+      surface: getComputedStyle(document.documentElement).getPropertyValue("--surface").trim(),
+      page: getComputedStyle(document.body).backgroundColor,
+      headerBackground: headerStyle?.backgroundColor ?? "",
+      buttonRadius: send === undefined ? "" : getComputedStyle(send).borderRadius,
+    };
+  });
+  expect(solitude.radius).toBe("6px");
+  expect(solitude.background.toLowerCase()).toBe("#101315");
+  expect(solitude.surface.toLowerCase()).toBe("#0c0e10");
+  expect(alphaOf(solitude.headerBackground)).toBeGreaterThan(0);
+  expect(alphaOf(solitude.headerBackground)).toBeLessThan(1);
+  expect(solitude.headerBackground).not.toBe(solitude.page);
+  expect(solitude.buttonRadius).toBe("6px");
+  await expect.poll(() => shaderFollowsTheme(browser)).toBe(true);
+
+  await screen.getByRole("button", "pi").tap();
+  await screen.getByRole("menuitem", { name: /^Theme/ }).tap();
+  await screen.getByRole("menuitemradio", { name: "Vantablack" }).tap();
+
+  const square = await browser.evaluate(() => {
+    const send = Array.from(document.querySelectorAll("button")).find(
+      (button) => button.getAttribute("aria-label") === "Send",
+    );
+    return {
+      radius: getComputedStyle(document.documentElement).getPropertyValue("--radius").trim(),
+      background: getComputedStyle(document.documentElement)
+        .getPropertyValue("--background")
+        .trim(),
+      surface: getComputedStyle(document.documentElement).getPropertyValue("--surface").trim(),
+      buttonRadius: send === undefined ? "" : getComputedStyle(send).borderRadius,
+    };
+  });
+  expect(square.radius).toBe("0px");
+  expect(square.background.toLowerCase()).toBe("#000000");
+  expect(square.surface.toLowerCase()).toBe("#1a1a1a");
+  expect(square.buttonRadius).toBe("0px");
+  await expect.poll(() => shaderFollowsTheme(browser)).toBe(true);
+});
+
+test("embeds the saved theme in the first document", async ({ app, browser, screen }) => {
+  await app.open("/");
+  await expect(screen.getByRole("button", "pi")).toBeVisible();
+  const saved = await browser.evaluate(async () => {
+    const catalog = (await (await fetch("/api/themes", { cache: "no-store" })).json()) as {
+      themes: Array<{
+        slug: string;
+        colors: { background: string; surface: string; radius: number; mode: string };
+      }>;
+    };
+    const theme = catalog.themes.find((item) => item.slug === "solitude") ?? catalog.themes[0];
+    if (theme === undefined) {
+      return {
+        skipped: true,
+        ok: false,
+        slug: "",
+        background: "",
+        surface: "",
+        radius: "",
+        mode: "",
+        selected: "",
+        tag: "",
+      };
+    }
+    const response = await fetch("/api/theme", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ slug: theme.slug }),
+    });
+    const html = await (await fetch(`/?document=${Date.now()}`, { cache: "reload" })).text();
+    const listed = (await (await fetch("/api/themes", { cache: "no-store" })).json()) as {
+      selected?: string | null;
+    };
+    const tag = html.match(/<html\b[^>]*>/)?.[0] ?? "";
+    return {
+      skipped: false,
+      ok: response.ok,
+      slug: theme.slug,
+      background: theme.colors.background,
+      surface: theme.colors.surface,
+      radius: String(theme.colors.radius),
+      mode: theme.colors.mode,
+      selected: listed.selected ?? "",
+      tag,
+    };
+  });
+  if (saved.skipped) return;
+  expect(saved.ok).toBe(true);
+  expect(saved.selected).toBe(saved.slug);
+  expect(saved.tag).toContain(`--background:${saved.background}`);
+  expect(saved.tag).toContain(`--surface:${saved.surface}`);
+  expect(saved.tag).toContain(`--radius:${saved.radius}px`);
+  expect(saved.tag).toContain(`color-scheme:${saved.mode}`);
+  expect(saved.tag).toContain(`background-color:${saved.background}`);
 });

@@ -144,18 +144,79 @@ test("keeps the composer geometry stable across run start and stop", async ({ ap
 
 test("shows one Stop while the field is empty, then one Steer while it has text", async ({
   app,
+  browser,
   screen,
 }) => {
   await app.open("/");
   const composer = screen.getByRole("textbox", "Message");
+  const sendMark = await browser.evaluate(() => {
+    const button = document.querySelector('button[aria-label="Send"]');
+    const mark = button?.querySelector("svg");
+    if (button == null || mark == null) return null;
+    const box = mark.getBoundingClientRect();
+    return {
+      width: box.width,
+      height: box.height,
+      background: getComputedStyle(button).backgroundColor,
+    };
+  });
+  expect(sendMark).not.toBeNull();
+  expect(sendMark?.width).toBeGreaterThan(0);
+  expect(sendMark?.width).toBeCloseTo(sendMark?.height ?? -1, 0);
+  expect(
+    sendMark?.background === "transparent" || sendMark?.background === "rgba(0, 0, 0, 0)",
+  ).toBe(true);
   await composer.fill("SLOW response please");
   await screen.getByRole("button", "Send").tap();
 
   await expect(screen.getByRole("button", "Stop")).toHaveCount(1);
   await expect(screen.getByRole("button", "Stop")).toBeVisible();
   await expect(screen.getByRole("button", "Steer")).toHaveCount(0);
+  const stopMark = await browser.evaluate(() => {
+    const button = document.querySelector('button[aria-label="Stop"]');
+    const mark = button?.querySelector("svg");
+    const circle = mark?.querySelector("circle");
+    const square = mark?.querySelector("rect");
+    if (mark === null || mark === undefined || circle === null || circle === undefined) return null;
+    if (square === null || square === undefined) return null;
+    return {
+      circle: getComputedStyle(circle).fill,
+      ink: getComputedStyle(mark).color,
+      square: getComputedStyle(square).fill,
+    };
+  });
+  expect(stopMark).not.toBeNull();
+  expect(stopMark?.circle).toBe(stopMark?.ink);
+  expect(stopMark?.square).toBe("rgb(255, 255, 255)");
+  const stopSize = await browser.evaluate(() => {
+    const mark = document.querySelector('button[aria-label="Stop"] svg');
+    if (mark == null) return null;
+    const box = mark.getBoundingClientRect();
+    return { width: box.width, height: box.height };
+  });
+  expect(stopSize?.width).toBeCloseTo(sendMark?.width ?? -1, 0);
+  expect(stopSize?.height).toBeCloseTo(sendMark?.height ?? -1, 0);
 
-  await composer.fill("queued while running");
+  await expect(composer).toHaveAttribute("placeholder", "Message pi");
+  await expect(screen.getByTestId("header-activity")).toHaveText("thinking");
+  const status = await browser.evaluate(() => {
+    const header = document.querySelector("header");
+    const footer = document.querySelector("textarea")?.closest("form")?.parentElement ?? null;
+    const working = document.querySelector("[data-testid=working-status]");
+    if (header === null || footer === null || working === null) return null;
+    return {
+      inHeader: header.contains(working),
+      inFooter: footer.contains(working),
+      headerWidth: header.getBoundingClientRect().width,
+      footerWidth: footer.getBoundingClientRect().width,
+    };
+  });
+  expect(status).not.toBeNull();
+  expect(status?.inHeader).toBe(true);
+  expect(status?.inFooter).toBe(false);
+  expect(status?.headerWidth ?? 0).toBeCloseTo(status?.footerWidth ?? -1, 0);
+
+  await composer.fill("typed while running");
   await expect(screen.getByRole("button", "Stop")).toHaveCount(0);
   await expect(screen.getByRole("button", "Steer")).toHaveCount(1);
   await expect(screen.getByRole("button", "Steer")).toBeVisible();
@@ -169,103 +230,35 @@ test("shows one Stop while the field is empty, then one Steer while it has text"
   await expect(screen.getByRole("button", "Send")).toHaveCount(1);
 });
 
-test("long-presses Steer to queue the message", async ({ app, browser, screen }) => {
+test("steers a running turn from the button and from Enter", async ({ app, screen }) => {
   await app.open("/");
   const composer = screen.getByRole("textbox", "Message");
   await composer.fill("SLOW response please");
   await screen.getByRole("button", "Send").tap();
   await expect(screen.getByRole("button", "Stop")).toBeVisible();
 
-  await browser.evaluate(() => {
-    sessionStorage.removeItem("pi-ui:steer-long-press-hint");
-    return true;
-  });
-  await composer.fill("long press queued");
-  await expect(screen.getByText("Hold Steer to queue without interrupting the run.")).toBeVisible();
+  try {
+    await composer.fill("steer from the button");
+    await expect(composer).toHaveAttribute("placeholder", "Message pi");
+    await expect(screen.getByText("Hold Steer to queue without interrupting the run.")).toHaveCount(
+      0,
+    );
+    await screen.getByRole("button", "Steer").tap();
 
-  const steer = screen.getByRole("button", "Steer");
-  await expect(steer).toBeVisible();
-  await steer.longPress({ duration: 700 });
+    await expect(composer).toHaveValue("");
+    await expect(screen.getByText("steer from the button", { exact: true })).toBeVisible();
+    await expect(screen.getByRole("button", "Queue")).toHaveCount(0);
+    await expect(screen.getByRole("button", "cancel")).toHaveCount(0);
 
-  await expect(composer).toHaveValue("");
-  await expect(screen.getByText("long press queued", { exact: true })).toBeVisible();
-  await expect(screen.getByRole("button", "Stop")).toBeVisible();
-  await expect(screen.getByText("Hold Steer to queue without interrupting the run.")).toHaveCount(
-    0,
-  );
-
-  await composer.fill("second draft");
-  await expect(screen.getByRole("button", "Steer")).toBeVisible();
-  await expect(screen.getByText("Hold Steer to queue without interrupting the run.")).toHaveCount(
-    0,
-  );
-  await composer.fill("");
-  await expect(screen.getByRole("button", "Stop")).toBeVisible();
-
-  await screen.getByRole("button", "cancel").tap();
-  await expect(screen.getByText("long press queued", { exact: true })).toHaveCount(0);
-  await screen.getByRole("button", "Stop").tap();
-});
-
-test("announces the steer long-press hint only once across runs", async ({
-  app,
-  browser,
-  screen,
-}) => {
-  await app.open("/");
-  await browser.evaluate(() => {
-    sessionStorage.removeItem("pi-ui:steer-long-press-hint");
-    return true;
-  });
-  const composer = screen.getByRole("textbox", "Message");
-
-  await composer.fill("SLOW first run");
-  await screen.getByRole("button", "Send").tap();
-  await expect(screen.getByRole("button", "Stop")).toBeVisible();
-  await composer.fill("first draft");
-  await expect(screen.getByText("Hold Steer to queue without interrupting the run.")).toBeVisible();
-  await composer.fill("");
-  await screen.getByRole("button", "Stop").tap();
-  await expect(screen.getByRole("button", "Send")).toBeVisible();
-
-  await composer.fill("SLOW second run");
-  await screen.getByRole("button", "Send").tap();
-  await expect(screen.getByRole("button", "Stop")).toBeVisible();
-  await composer.fill("second run draft");
-  await expect(screen.getByRole("button", "Steer")).toBeVisible();
-  await expect(screen.getByText("Hold Steer to queue without interrupting the run.")).toHaveCount(
-    0,
-  );
-  await composer.fill("");
-  await screen.getByRole("button", "Stop").tap();
-});
-
-test("cancels a Steer long press when the pointer moves", async ({ app, browser, screen }) => {
-  await app.open("/");
-  const composer = screen.getByRole("textbox", "Message");
-  await composer.fill("SLOW response please");
-  await screen.getByRole("button", "Send").tap();
-  await expect(screen.getByRole("button", "Stop")).toBeVisible();
-
-  await composer.fill("not queued");
-  const steer = screen.getByRole("button", "Steer");
-  const box = await steer.boundingBox();
-  expect(box).not.toBeNull();
-  const x = (box?.x ?? 0) + (box?.width ?? 0) / 2;
-  const y = (box?.y ?? 0) + (box?.height ?? 0) / 2;
-
-  await browser.mouse.move(x, y);
-  await browser.mouse.down();
-  await browser.mouse.move(x + 20, y);
-  await new Promise((resolve) => setTimeout(resolve, 650));
-  await browser.mouse.up();
-
-  await expect(composer).toHaveValue("not queued");
-  await expect(screen.getByRole("button", "Steer")).toBeVisible();
-  await expect(screen.getByRole("button", "cancel")).toHaveCount(0);
-
-  await composer.fill("");
-  await screen.getByRole("button", "Stop").tap();
+    await composer.fill("steer from enter");
+    await composer.press("Enter");
+    await expect(composer).toHaveValue("");
+    await expect(screen.getByText("steer from enter", { exact: true })).toBeVisible();
+    await expect(screen.getByRole("button", "Queue")).toHaveCount(0);
+  } finally {
+    const stop = screen.getByRole("button", "Stop");
+    if ((await stop.count()) > 0) await stop.tap();
+  }
 });
 
 test("blurs the composer after send on a coarse-pointer mobile viewport", async ({
@@ -322,23 +315,158 @@ test("keeps the composer height and bottom edge when the viewport height changes
     const element = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
     if (element === null) return null;
     const box = element.getBoundingClientRect();
-    return { height: box.height, bottom: box.bottom, viewportHeight: window.innerHeight };
+    const header = document.querySelector("header")?.getBoundingClientRect();
+    const footer = element.closest("form")?.parentElement?.getBoundingClientRect();
+    return {
+      height: box.height,
+      bottom: box.bottom,
+      viewportHeight: window.innerHeight,
+      viewportWidth: window.innerWidth,
+      headerLeft: header?.left ?? null,
+      headerRight: header?.right ?? null,
+      footerLeft: footer?.left ?? null,
+      footerRight: footer?.right ?? null,
+      endTop: (() => {
+        const main = document.querySelector("main");
+        const content = main?.firstElementChild;
+        const headerBox = document.querySelector("header")?.getBoundingClientRect();
+        if (main == null || content == null || headerBox == null || footer == null) {
+          return null;
+        }
+        const mainBox = main.getBoundingClientRect();
+        return (
+          Number.parseFloat(getComputedStyle(content).paddingTop) - (headerBox.bottom - mainBox.top)
+        );
+      })(),
+      endBottom: (() => {
+        const main = document.querySelector("main");
+        const content = main?.firstElementChild;
+        if (main == null || content == null || footer == null) return null;
+        const mainBox = main.getBoundingClientRect();
+        return (
+          Number.parseFloat(getComputedStyle(content).paddingBottom) - (mainBox.bottom - footer.top)
+        );
+      })(),
+    };
   });
 
   expect(geometry).not.toBeNull();
   expect(geometry?.height ?? 0).toBeCloseTo(before?.height ?? 0, 0);
   expect(geometry?.bottom ?? 0).toBeLessThanOrEqual((geometry?.viewportHeight ?? 0) + 1);
+  expect(Math.abs(geometry?.headerLeft ?? 1)).toBeLessThanOrEqual(1);
+  expect(
+    Math.abs((geometry?.headerRight ?? 0) - (geometry?.viewportWidth ?? 0)),
+  ).toBeLessThanOrEqual(1);
+  expect(Math.abs(geometry?.footerLeft ?? 1)).toBeLessThanOrEqual(1);
+  expect(
+    Math.abs((geometry?.footerRight ?? 0) - (geometry?.viewportWidth ?? 0)),
+  ).toBeLessThanOrEqual(1);
+  expect(geometry?.endTop ?? 0).toBeCloseTo(16, 0);
+  expect(geometry?.endBottom ?? 0).toBeCloseTo(16, 0);
 });
 
 test("removes the header Activity link while keeping the activity route", async ({
   app,
+  browser,
   screen,
 }) => {
   await app.open("/");
   await expect(screen.getByRole("link", "Activity")).toHaveCount(0);
-  await expect(screen.getByRole("link", "pi")).toBeVisible();
+  await screen.getByRole("button", "pi").tap();
+  await expect(screen.getByRole("menuitem", { name: /^Theme/ })).toBeVisible();
+  const menuEdge = await browser.evaluate(() => {
+    const menu = document.querySelector('[role="menu"]');
+    if (menu === null) return null;
+    const style = getComputedStyle(menu);
+    return {
+      width: style.borderTopWidth,
+      border: style.borderTopColor,
+      background: style.backgroundColor,
+    };
+  });
+  expect(menuEdge?.width).toBe("1px");
+  expect(menuEdge?.border).not.toBe(menuEdge?.background);
 
   await app.open("/activity");
   await expect(screen.getByRole("heading", { name: "Activity", level: 1 })).toBeVisible();
   await expect(screen.getByRole("link", "Back to chat")).toBeVisible();
+  const card = await browser.evaluate(() => {
+    const frame = document.querySelector("[data-testid=activity-card]");
+    const scroll = document.querySelector("[data-testid=activity-scroll]");
+    const heading = document.querySelector("h1");
+    if (frame === null || scroll === null || heading === null) return null;
+    const box = frame.getBoundingClientRect();
+    return {
+      top: box.top,
+      left: box.left,
+      right: window.innerWidth - box.right,
+      bottom: window.innerHeight - box.bottom,
+      headingOutside: !scroll.contains(heading),
+      overflow: getComputedStyle(scroll).overflowY,
+    };
+  });
+  expect(card).not.toBeNull();
+  expect(card?.top ?? 0).toBeGreaterThan(8);
+  expect(card?.left ?? 0).toBeGreaterThan(8);
+  expect(card?.right ?? 0).toBeGreaterThan(8);
+  expect(card?.bottom ?? 0).toBeGreaterThan(8);
+  expect(card?.headingOutside).toBe(true);
+  expect(card?.overflow).toBe("auto");
+
+  await app.open("/events");
+  await expect(screen.getByRole("heading", { name: "MCP subscriptions", level: 1 })).toBeVisible();
+  await expect(screen.getByRole("link", "Back to chat")).toBeVisible();
+  await expect(screen.getByRole("button", "pi")).toBeVisible();
+});
+
+test("switches the model from the pi menu", async ({ app, browser, screen }) => {
+  await app.open("/");
+  const before = await browser.evaluate(async () => {
+    const response = await fetch("/api/models", { cache: "no-store" });
+    return (await response.json()) as {
+      current: { id: string } | null;
+      models: Array<{ id: string }>;
+    };
+  });
+  expect(before.current?.id).toBe("e2e-model");
+  expect(before.models.map((item) => item.id).sort()).toEqual(["e2e-model", "e2e-other"]);
+
+  await screen.getByRole("button", "pi").tap();
+  await expect(screen.getByRole("menuitem", { name: /^Model/ })).toBeVisible();
+  await screen.getByRole("menuitem", { name: /^Model/ }).tap();
+  await expect(screen.getByRole("menuitemradio", { name: /E2E Other/ })).toBeVisible();
+  await screen.getByRole("menuitemradio", { name: /E2E Other/ }).tap();
+
+  await expect
+    .poll(async () =>
+      browser.evaluate(async () => {
+        const body = (await (await fetch("/api/models", { cache: "no-store" })).json()) as {
+          current: { id: string } | null;
+        };
+        return body.current?.id ?? "";
+      }),
+    )
+    .toBe("e2e-other");
+
+  const contextWindow = await browser.evaluate(async () => {
+    const state = (await (await fetch("/api/state", { cache: "no-store" })).json()) as {
+      context: { window: number | null };
+    };
+    return state.context.window;
+  });
+  expect(contextWindow).toBe(8192);
+
+  await app.open("/");
+  await screen.getByRole("button", "pi").tap();
+  await expect(screen.getByRole("menuitem", { name: /e2e-other/ })).toBeVisible();
+
+  const restored = await browser.evaluate(async () => {
+    const response = await fetch("/api/model", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: "e2e", id: "e2e-model" }),
+    });
+    return response.ok;
+  });
+  expect(restored).toBe(true);
 });

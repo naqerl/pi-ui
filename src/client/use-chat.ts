@@ -2,19 +2,44 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ActivityItem,
   ChatMessage,
+  McpEventsState,
   McpStatus,
   MessageMode,
+  ModelOption,
   QueuedMessage,
   RunState,
   Snapshot,
+  StreamDraftSync,
   StreamMessageDone,
   StreamRunState,
   StreamTextDelta,
+  StreamTheme,
   StreamToolEnd,
   StreamToolStart,
   SubmitMessageResponse,
   ToolActivity,
 } from "../shared/types";
+
+const EMPTY_EVENTS: McpEventsState = {
+  subscriptions: [],
+  events: [],
+  notice: null,
+  revision: 0,
+};
+
+/** Drop a local steer bubble once the snapshot has the same user text at that time. */
+function retainPendingSteers(snapshot: ChatMessage[], pending: ChatMessage[]): ChatMessage[] {
+  return pending.filter((item) => {
+    const pendingTime = Date.parse(item.timestamp);
+    if (!Number.isFinite(pendingTime)) return false;
+    return !snapshot.some(
+      (message) =>
+        message.role === "user" &&
+        message.text === item.text &&
+        Date.parse(message.timestamp) >= pendingTime - 2_000,
+    );
+  });
+}
 
 export type TimelineItem =
   | { kind: "message"; order: number; message: ChatMessage }
@@ -38,8 +63,25 @@ export function useChat() {
   const [runStartedAt, setRunStartedAt] = useState<string | null>(null);
   const [queue, setQueue] = useState<QueuedMessage[]>([]);
   const [mcp, setMcp] = useState<McpStatus>({ servers: [], unavailable: [] });
+  const [mcpEvents, setMcpEvents] = useState<McpEventsState>(EMPTY_EVENTS);
+  const [pendingSteers, setPendingSteers] = useState<ChatMessage[]>([]);
   const [ready, setReady] = useState(false);
   const refreshSequence = useRef(0);
+  const draftRevision = useRef(0);
+  const eventsRevision = useRef(0);
+
+  const applyDraft = useCallback((draft: StreamDraftSync) => {
+    if (draft.revision < draftRevision.current) return;
+    draftRevision.current = draft.revision;
+    setDraftText(draft.text);
+    setDraftThinking(draft.thinking);
+  }, []);
+
+  const applyEvents = useCallback((state: McpEventsState) => {
+    if (state.revision < eventsRevision.current) return;
+    eventsRevision.current = state.revision;
+    setMcpEvents(state);
+  }, []);
 
   const refreshState = useCallback(async () => {
     const sequence = ++refreshSequence.current;
@@ -49,6 +91,7 @@ export function useChat() {
       const snapshot = (await response.json()) as Snapshot;
       if (sequence !== refreshSequence.current) return;
       setMessages(snapshot.messages);
+      setPendingSteers((pending) => retainPendingSteers(snapshot.messages, pending));
       setActivity(snapshot.activity);
       const persistedActivityIds = new Set(snapshot.activity.map((item) => item.id));
       setLiveTools((current) => current.filter((item) => !persistedActivityIds.has(item.id)));
@@ -56,21 +99,39 @@ export function useChat() {
       setRunStartedAt(snapshot.runStartedAt ?? null);
       setQueue(snapshot.queue);
       setMcp(snapshot.mcp ?? { servers: [], unavailable: [] });
+      if (snapshot.draft !== undefined) applyDraft(snapshot.draft);
+      if (snapshot.mcpEvents !== undefined) applyEvents(snapshot.mcpEvents);
       setReady(true);
     } catch {
       // The SSE connection will keep the UI usable once the server is reachable again.
     }
-  }, []);
+  }, [applyDraft, applyEvents]);
 
   useEffect(() => {
     void refreshState();
     const source = new EventSource("/api/stream");
 
-    source.onopen = () => {
-      setDraftText("");
-      setDraftThinking("");
-      setLiveTools([]);
-    };
+    source.addEventListener("theme", (event) => {
+      const data = parseEvent<StreamTheme>(event as MessageEvent<string>);
+      if (!data) return;
+      window.dispatchEvent(new CustomEvent("pi-theme", { detail: data }));
+    });
+
+    source.addEventListener("model", (event) => {
+      const data = parseEvent<ModelOption>(event as MessageEvent<string>);
+      if (!data) return;
+      window.dispatchEvent(new CustomEvent("pi-model", { detail: data }));
+    });
+
+    source.addEventListener("draft.sync", (event) => {
+      const data = parseEvent<StreamDraftSync>(event as MessageEvent<string>);
+      if (data) applyDraft(data);
+    });
+
+    source.addEventListener("mcp.events", (event) => {
+      const data = parseEvent<McpEventsState>(event as MessageEvent<string>);
+      if (data) applyEvents(data);
+    });
 
     source.addEventListener("run.state", (event) => {
       const data = parseEvent<StreamRunState>(event as MessageEvent<string>);
@@ -88,12 +149,24 @@ export function useChat() {
 
     source.addEventListener("message.delta", (event) => {
       const data = parseEvent<StreamTextDelta>(event as MessageEvent<string>);
-      if (data) setDraftText((current) => current + data.text);
+      if (!data) return;
+      if (data.revision !== undefined) {
+        if (data.revision < draftRevision.current) return;
+        draftRevision.current = data.revision;
+      }
+      if (typeof data.full === "string") setDraftText(data.full);
+      else setDraftText((current) => current + data.text);
     });
 
     source.addEventListener("thinking.delta", (event) => {
       const data = parseEvent<StreamTextDelta>(event as MessageEvent<string>);
-      if (data) setDraftThinking((current) => current + data.text);
+      if (!data) return;
+      if (data.revision !== undefined) {
+        if (data.revision < draftRevision.current) return;
+        draftRevision.current = data.revision;
+      }
+      if (typeof data.full === "string") setDraftThinking(data.full);
+      else setDraftThinking((current) => current + data.text);
     });
 
     source.addEventListener("message.done", (event) => {
@@ -103,6 +176,7 @@ export function useChat() {
         setMessages((current) =>
           current.some((item) => item.id === message.id) ? current : [...current, message],
         );
+        setPendingSteers((pending) => pending.filter((item) => item.text !== message.text));
       }
       setDraftText("");
       setDraftThinking("");
@@ -137,7 +211,7 @@ export function useChat() {
     });
 
     return () => source.close();
-  }, [refreshState]);
+  }, [applyDraft, applyEvents, refreshState]);
 
   const timeline = useMemo(() => {
     const persistedActivityIds = new Set(activity.map((item) => item.id));
@@ -187,8 +261,14 @@ export function useChat() {
       });
     }
 
+    for (const message of pendingSteers) {
+      const order =
+        message.order >= Number.MAX_SAFE_INTEGER - 1 ? Number.MAX_SAFE_INTEGER - 4 : message.order;
+      items.push({ kind: "message", order, message });
+    }
+
     return items.sort((a, b) => a.order - b.order);
-  }, [messages, activity, liveTools, draftText, draftThinking]);
+  }, [messages, activity, liveTools, draftText, draftThinking, pendingSteers]);
 
   const send = useCallback(
     async (text: string, mode: MessageMode = "queue"): Promise<boolean> => {
@@ -217,6 +297,13 @@ export function useChat() {
         }
         if (!data.queued && data.placed) {
           setMessages((current) =>
+            current.some((item) => item.id === data.message.id)
+              ? current
+              : [...current, data.message],
+          );
+          setPendingSteers((pending) => pending.filter((item) => item.text !== data.message.text));
+        } else if (!data.queued && data.message.steer === true) {
+          setPendingSteers((current) =>
             current.some((item) => item.id === data.message.id)
               ? current
               : [...current, data.message],
@@ -286,6 +373,7 @@ export function useChat() {
     runStartedAt,
     queue,
     mcp,
+    mcpEvents,
     ready,
     send,
     cancelQueued,

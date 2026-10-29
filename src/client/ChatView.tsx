@@ -1,27 +1,27 @@
-import type { PointerEvent as ReactPointerEvent } from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ActivityItem, ChatMessage, MessageMode, QueuedMessage } from "../shared/types";
-import { activitySummary, groupSummary } from "./activity-format";
+import type { ActivityItem, ChatMessage, McpEventsState, MessageMode } from "../shared/types";
+import { activityLabel, groupSummary } from "./activity-format";
 import { Button } from "./components/ui/button";
 import { Textarea } from "./components/ui/textarea";
 import { cn } from "./lib/utils";
 import { Markdown } from "./markdown";
+import { PiMenu } from "./PiMenu";
 import { groupTimeline } from "./timeline-groups";
 import type { TimelineItem } from "./use-chat";
 import { useStickToBottom } from "./use-stick-to-bottom";
 import { WorkingIndicator } from "./WorkingIndicator";
+
+const LIVE_STATUS = new Set(["opening", "active", "reconnecting"]);
 
 interface ChatViewProps {
   timeline: TimelineItem[];
   running: boolean;
   interrupted: boolean;
   runStartedAt: string | null;
-  queue: QueuedMessage[];
+  mcpEvents: McpEventsState;
   unavailableServers: string[];
   ready: boolean;
   send: (text: string, mode?: MessageMode) => Promise<boolean>;
-  cancelQueued: (id: string) => Promise<boolean>;
-  steerQueued: (id: string) => Promise<boolean>;
   stop: () => Promise<void>;
 }
 
@@ -35,13 +35,17 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   }
 
   const mine = message.role === "user";
+  const framed = mine || message.isError === true || message.partial === true;
   return (
     <div
       className={cn(
-        "max-w-[85%] border px-3 py-2 text-sm leading-relaxed",
-        mine ? "ml-auto bg-muted" : "mr-auto bg-background",
+        "theme-radius w-fit max-w-[85%] bg-surface px-3 py-2 text-sm leading-relaxed",
+        mine ? "ml-auto" : "mr-auto",
+        framed && "border",
+        mine && "border-foreground/15",
         message.isError && "border-destructive text-destructive",
         message.partial && "border-dashed",
+        message.partial && !message.isError && "border-muted-foreground/70",
       )}
     >
       {message.steer && (
@@ -63,18 +67,6 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   );
 }
 
-function ActivityLine({ activity }: { activity: ActivityItem }) {
-  return (
-    <a
-      href="/activity"
-      className="block truncate font-mono text-xs text-muted-foreground hover:text-foreground"
-      title="Open activity"
-    >
-      ▸ {activitySummary(activity)}
-    </a>
-  );
-}
-
 function ActivityGroup({
   groupKey,
   items,
@@ -84,102 +76,80 @@ function ActivityGroup({
   items: ActivityItem[];
   live: boolean;
 }) {
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const open = expanded[groupKey] === true;
-  const toggle = () =>
-    setExpanded((current) => ({ ...current, [groupKey]: current[groupKey] !== true }));
-
   return (
-    <div>
-      <div className="flex items-center gap-2 font-mono text-xs text-muted-foreground">
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={toggle}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left hover:text-foreground"
-        >
-          <span
-            aria-hidden="true"
-            className={cn("inline-block w-3 shrink-0 transition-transform", open && "rotate-90")}
-          >
-            ▸
-          </span>
-          <span className="truncate whitespace-nowrap">{groupSummary(items, live)}</span>
-        </button>
+    <a
+      href={`/activity?run=${encodeURIComponent(groupKey)}`}
+      className="flex min-w-0 items-center gap-2 font-mono text-xs text-muted-foreground hover:text-foreground"
+    >
+      <span aria-hidden="true" className="inline-block w-3 shrink-0">
+        ▸
+      </span>
+      <span className="truncate whitespace-nowrap">{groupSummary(items, live)}</span>
+    </a>
+  );
+}
+
+function McpHeader({ events }: { events: McpEventsState }) {
+  const names: string[] = [];
+  for (const subscription of events.subscriptions) {
+    if (!LIVE_STATUS.has(subscription.status) || names.includes(subscription.server)) continue;
+    names.push(subscription.server);
+  }
+  if (names.length === 0 && events.notice === null) return null;
+  return (
+    <>
+      {names.length > 0 && (
         <a
-          href="/activity"
-          className="shrink-0 whitespace-nowrap text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          href="/events"
+          data-testid="mcp-subscriptions"
+          title={names.join(" · ")}
+          className="min-w-0 truncate font-mono text-[11px] leading-4 text-muted-foreground hover:text-foreground"
         >
-          open in activity
+          {names.join(" · ")}
         </a>
-      </div>
-      {open && (
-        <div className="mt-2 space-y-1 border-l border-border pl-3">
-          {items.map((activity) => (
-            <ActivityLine key={activity.id} activity={activity} />
-          ))}
-        </div>
       )}
-    </div>
+      {events.notice !== null && (
+        <span
+          data-testid="mcp-event-notice"
+          className="min-w-0 truncate font-mono text-[11px] leading-4 text-foreground"
+        >
+          {events.notice}
+        </span>
+      )}
+    </>
   );
 }
 
-function queuePreview(text: string): string {
-  const oneLine = text.replace(/\s+/g, " ").trim();
-  return oneLine.length > 60 ? `${oneLine.slice(0, 59)}…` : oneLine;
-}
+const ACTION_BUTTON_CLASS = "h-9 w-full hover:bg-foreground/10";
+/** Space above the first message and below the last, on every viewport. */
+const TRANSCRIPT_END_GAP = 16;
 
-function QueueStack({
-  queue,
-  running,
-  onCancel,
-  onSteer,
-}: {
-  queue: QueuedMessage[];
-  running: boolean;
-  onCancel: (id: string) => Promise<boolean>;
-  onSteer: (id: string) => Promise<boolean>;
-}) {
-  if (queue.length === 0) return null;
+function SendIcon() {
   return (
-    <div className="border-b border-border bg-muted/40">
-      <div className="mx-auto w-full max-w-[72ch] px-4">
-        {queue.map((item, index) => (
-          <div
-            key={item.id}
-            className="flex items-center gap-2 border-b border-border py-1.5 font-mono text-xs text-muted-foreground last:border-b-0"
-          >
-            <span className="w-4 shrink-0 tabular-nums">{index + 1}.</span>
-            <span className="min-w-0 flex-1 truncate" title={item.text}>
-              {queuePreview(item.text)}
-            </span>
-            {running && (
-              <button
-                type="button"
-                className="shrink-0 hover:text-foreground"
-                onClick={() => void onSteer(item.id)}
-              >
-                steer now
-              </button>
-            )}
-            <button
-              type="button"
-              className="shrink-0 hover:text-destructive"
-              onClick={() => void onCancel(item.id)}
-            >
-              cancel
-            </button>
-          </div>
-        ))}
-      </div>
-    </div>
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      className="size-5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M22 2 11 13" />
+      <path d="m22 2-7 20-4-9-9-4Z" />
+    </svg>
   );
 }
 
-const LONG_PRESS_MS = 500;
-const LONG_PRESS_MOVE_PX = 10;
-const STEER_HINT_KEY = "pi-ui:steer-long-press-hint";
-const ACTION_BUTTON_CLASS = "h-9 w-full";
+function StopIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="size-5 text-destructive">
+      <circle cx="12" cy="12" r="10" fill="currentColor" />
+      <rect x="8" y="8" width="8" height="8" rx="1" fill="#fff" />
+    </svg>
+  );
+}
 
 function computedLineHeight(element: HTMLElement): number {
   const style = getComputedStyle(element);
@@ -200,14 +170,18 @@ function useViewportHeight() {
     const viewport = window.visualViewport;
     let frame: number | null = null;
     let lastHeight = -1;
+    let lastOffset = -1;
 
     const apply = () => {
       frame = null;
       const height = viewport?.height ?? window.innerHeight;
+      const offset = viewport?.offsetTop ?? 0;
       if (!Number.isFinite(height) || height <= 0) return;
-      if (Math.abs(height - lastHeight) < 0.5) return;
+      if (Math.abs(height - lastHeight) < 0.5 && Math.abs(offset - lastOffset) < 0.5) return;
       lastHeight = height;
+      lastOffset = offset;
       root.style.setProperty("--app-height", `${height}px`);
+      root.style.setProperty("--app-shift", `${offset}px`);
     };
     const schedule = () => {
       if (frame !== null) return;
@@ -226,6 +200,7 @@ function useViewportHeight() {
       viewport?.removeEventListener("scroll", schedule);
       if (frame !== null) cancelAnimationFrame(frame);
       root.style.removeProperty("--app-height");
+      root.style.removeProperty("--app-shift");
     };
   }, []);
 }
@@ -240,16 +215,9 @@ function Composer({
   stop: () => Promise<void>;
 }) {
   const [value, setValue] = useState("");
-  const [holdingSteer, setHoldingSteer] = useState(false);
-  const [showSteerHint, setShowSteerHint] = useState(false);
-  const steerHintConsumedRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
   const rowWidthRef = useRef<number | null>(null);
-  const holdTimerRef = useRef<number | null>(null);
-  const holdStartRef = useRef<{ x: number; y: number } | null>(null);
-  const longPressRef = useRef(false);
-  const suppressClickRef = useRef(false);
   const canSend = value.trim().length > 0;
 
   const resizeTextarea = useCallback(() => {
@@ -318,46 +286,6 @@ function Composer({
     };
   }, [resizeTextarea]);
 
-  useEffect(() => {
-    if (steerHintConsumedRef.current || !running || !canSend) return;
-    try {
-      if (sessionStorage.getItem(STEER_HINT_KEY) === "1") {
-        steerHintConsumedRef.current = true;
-        return;
-      }
-      sessionStorage.setItem(STEER_HINT_KEY, "1");
-    } catch {
-      // Storage is optional; the in-memory ref still makes the hint one-time.
-    }
-    steerHintConsumedRef.current = true;
-    setShowSteerHint(true);
-  }, [canSend, running]);
-
-  useEffect(() => {
-    if (!showSteerHint) return;
-    if (running && canSend) return;
-    setShowSteerHint(false);
-  }, [canSend, running, showSteerHint]);
-
-  useEffect(
-    () => () => {
-      if (holdTimerRef.current !== null) window.clearTimeout(holdTimerRef.current);
-    },
-    [],
-  );
-
-  const clearHoldTimer = () => {
-    if (holdTimerRef.current === null) return;
-    window.clearTimeout(holdTimerRef.current);
-    holdTimerRef.current = null;
-  };
-
-  const cancelHold = () => {
-    clearHoldTimer();
-    holdStartRef.current = null;
-    setHoldingSteer(false);
-  };
-
   const submit = async (mode: MessageMode) => {
     if (!canSend) return;
     const element = textareaRef.current;
@@ -377,119 +305,68 @@ function Composer({
     }
   };
 
-  const handleSteerPointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!canSend || (event.pointerType === "mouse" && event.button !== 0)) return;
-    clearHoldTimer();
-    longPressRef.current = false;
-    suppressClickRef.current = false;
-    holdStartRef.current = { x: event.clientX, y: event.clientY };
-    setHoldingSteer(true);
-    try {
-      event.currentTarget.setPointerCapture(event.pointerId);
-    } catch {
-      // Pointer capture is best-effort; the window still receives pointerup.
-    }
-    holdTimerRef.current = window.setTimeout(() => {
-      holdTimerRef.current = null;
-      longPressRef.current = true;
-      setHoldingSteer(false);
-      setShowSteerHint(false);
-      void submit("queue");
-    }, LONG_PRESS_MS);
-  };
-
-  const handleSteerPointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    const start = holdStartRef.current;
-    if (start === null) return;
-    if (Math.hypot(event.clientX - start.x, event.clientY - start.y) <= LONG_PRESS_MOVE_PX) return;
-    suppressClickRef.current = true;
-    cancelHold();
-  };
-
-  const handleSteerPointerUp = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (longPressRef.current) suppressClickRef.current = true;
-    clearHoldTimer();
-    holdStartRef.current = null;
-    setHoldingSteer(false);
-    try {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    } catch {
-      // The pointer may already be released.
-    }
-  };
-
-  const handleSteerClick = () => {
-    if (suppressClickRef.current) {
-      suppressClickRef.current = false;
-      return;
-    }
-    if (!canSend) return;
-    void submit("steer");
-  };
-
   return (
     <form
       onSubmit={(event) => {
         event.preventDefault();
-        void submit("queue");
+        void submit(running ? "steer" : "queue");
       }}
     >
-      <div ref={rowRef} className="mx-auto flex w-full max-w-[72ch] items-end gap-2 px-4 py-3">
+      <div ref={rowRef} className="flex w-full items-end gap-2 p-1.5">
         <Textarea
           ref={textareaRef}
           aria-label="Message"
           rows={1}
           className="bg-transparent"
           value={value}
-          placeholder={running ? "Queue a message · Steer with ⌘/Ctrl+Enter" : "Message pi"}
+          placeholder="Message pi"
           onChange={(event) => setValue(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
-              const steer = running && (event.metaKey || event.ctrlKey);
-              void submit(steer ? "steer" : "queue");
+              void submit(running ? "steer" : "queue");
             }
           }}
         />
-        <div className="flex h-9 w-24 shrink-0 items-stretch">
+        <div className="flex h-9 w-9 shrink-0 items-stretch">
           {running && !canSend ? (
             <Button
               key="stop"
               type="button"
-              variant="outline"
+              variant="ghost"
+              size="icon"
+              aria-label="Stop"
               className={ACTION_BUTTON_CLASS}
               onClick={() => void stop()}
             >
-              Stop
+              <StopIcon />
             </Button>
           ) : running ? (
             <Button
               key="steer"
               type="button"
-              aria-label={holdingSteer ? "Steer (release to queue)" : "Steer"}
-              className={cn(ACTION_BUTTON_CLASS, holdingSteer && "bg-muted text-foreground")}
-              onClick={handleSteerClick}
-              onPointerDown={handleSteerPointerDown}
-              onPointerMove={handleSteerPointerMove}
-              onPointerUp={handleSteerPointerUp}
-              onPointerCancel={cancelHold}
+              variant="ghost"
+              size="icon"
+              aria-label="Steer"
+              className={ACTION_BUTTON_CLASS}
+              onClick={() => void submit("steer")}
             >
-              {holdingSteer ? "Queue…" : "Steer"}
+              <SendIcon />
             </Button>
           ) : (
-            <Button key="send" type="submit" className={ACTION_BUTTON_CLASS} disabled={!canSend}>
-              Send
+            <Button
+              key="send"
+              type="submit"
+              variant="ghost"
+              size="icon"
+              aria-label="Send"
+              className={ACTION_BUTTON_CLASS}
+              disabled={!canSend}
+            >
+              <SendIcon />
             </Button>
           )}
         </div>
-      </div>
-      <div
-        className="mx-auto h-4 w-full max-w-[72ch] px-4 font-mono text-[10px] leading-4 text-muted-foreground"
-        aria-live="polite"
-      >
-        {showSteerHint && running && canSend ? (
-          <span>Hold Steer to queue without interrupting the run.</span>
-        ) : null}
       </div>
     </form>
   );
@@ -510,36 +387,48 @@ export function ChatView({
   running,
   interrupted,
   runStartedAt,
-  queue,
+  mcpEvents,
   unavailableServers,
   ready,
   send,
-  cancelQueued,
-  steerQueued,
   stop,
 }: ChatViewProps) {
   useViewportHeight();
   const groups = useMemo(() => groupTimeline(timeline), [timeline]);
+  const headerRef = useRef<HTMLElement | null>(null);
   const footerRef = useRef<HTMLDivElement | null>(null);
-  const [footerHeight, setFooterHeight] = useState(0);
+  const [headerClearance, setHeaderClearance] = useState(0);
+  const [footerClearance, setFooterClearance] = useState(0);
 
   useLayoutEffect(() => {
+    const header = headerRef.current;
     const footer = footerRef.current;
-    if (!footer) return;
+    const container = footer?.parentElement;
+    if (header === null || footer === null || container == null) return;
     const measure = () => {
-      const height = footer.getBoundingClientRect().height;
-      setFooterHeight((current) => (Math.abs(current - height) < 0.5 ? current : height));
+      const containerBox = container.getBoundingClientRect();
+      const headerBox = header.getBoundingClientRect();
+      const footerBox = footer.getBoundingClientRect();
+      const nextHeader = headerBox.bottom - containerBox.top;
+      const nextFooter = containerBox.bottom - footerBox.top;
+      setHeaderClearance((current) =>
+        Math.abs(current - nextHeader) < 0.5 ? current : nextHeader,
+      );
+      setFooterClearance((current) =>
+        Math.abs(current - nextFooter) < 0.5 ? current : nextFooter,
+      );
     };
     measure();
     const observer = new ResizeObserver(measure);
+    observer.observe(header);
     observer.observe(footer);
+    observer.observe(container);
     return () => observer.disconnect();
   }, []);
 
-  // Re-run the stick sync when either the timeline or the measured footer height changes:
-  // the footer grows with the queue and working indicator, and the transcript's bottom
-  // padding follows it, so an attached transcript must chase the new scroll height.
-  const stick = useStickToBottom(`${timeline.length}:${footerHeight}`);
+  // Re-run the stick sync when the transcript or either floating bar changes height.
+  // A run adds a status line to the header, and the composer grows with the draft.
+  const stick = useStickToBottom(`${timeline.length}:${footerClearance}:${headerClearance}`);
 
   const currentActivity = useMemo(() => {
     if (!running) return undefined;
@@ -576,7 +465,7 @@ export function ChatView({
       {interrupted && (
         <div
           role="status"
-          className="shrink-0 border-b border-border bg-muted/40 py-1.5 text-center font-mono text-[11px] text-muted-foreground"
+          className="shrink-0 border-b border-border bg-muted py-1.5 text-center font-mono text-[11px] text-foreground"
         >
           ⚠ run interrupted — the last response may be partial
         </div>
@@ -584,28 +473,13 @@ export function ChatView({
 
       <div className="relative min-h-0 flex-1">
         <main ref={stick.containerRef} className="h-full overflow-y-auto">
-          <header className="sticky top-0 z-10 border-b border-border bg-black/85 pt-[env(safe-area-inset-top)] backdrop-blur-md supports-[backdrop-filter]:bg-black/60">
-            <div className="mx-auto flex h-10 w-full max-w-[72ch] items-center justify-between gap-3 px-4">
-              <a href="/" className="shrink-0 text-sm font-medium text-foreground">
-                pi
-              </a>
-              {unavailableServers.length > 0 && (
-                <span
-                  role="note"
-                  data-testid="mcp-unavailable"
-                  title={unavailableServers.map((name) => `${name} unavailable`).join(" · ")}
-                  className="min-w-0 truncate font-mono text-[11px] leading-4 text-muted-foreground"
-                >
-                  {unavailableServers.map((name) => `${name} unavailable`).join(" · ")}
-                </span>
-              )}
-            </div>
-          </header>
-
           <div
             ref={stick.contentRef}
-            className="mx-auto flex w-full max-w-[72ch] flex-col gap-3 px-4 pt-4"
-            style={{ paddingBottom: footerHeight }}
+            className="mx-auto flex w-full max-w-[72ch] flex-col gap-4 px-4"
+            style={{
+              paddingTop: headerClearance + TRANSCRIPT_END_GAP,
+              paddingBottom: footerClearance + TRANSCRIPT_END_GAP,
+            }}
           >
             {!ready && <p className="font-mono text-xs text-muted-foreground">Loading…</p>}
             {groups.map((group) =>
@@ -622,14 +496,56 @@ export function ChatView({
             )}
           </div>
         </main>
+        <header ref={headerRef} className="float-header absolute z-10 flex flex-col theme-radius">
+          <div className="flex w-full items-center gap-3 px-[18px] py-1.5">
+            <PiMenu />
+            <div className="ml-auto flex min-w-0 items-center justify-end gap-3 empty:hidden">
+              <McpHeader events={mcpEvents} />
+              {unavailableServers.length > 0 && (
+                <span
+                  role="note"
+                  data-testid="mcp-unavailable"
+                  title={unavailableServers.map((name) => `${name} unavailable`).join(" · ")}
+                  className="min-w-0 truncate font-mono text-[11px] leading-4 text-muted-foreground"
+                >
+                  {unavailableServers.map((name) => `${name} unavailable`).join(" · ")}
+                </span>
+              )}
+            </div>
+          </div>
+          {running && (
+            <div
+              data-testid="working-status"
+              aria-live="polite"
+              className="flex w-full min-w-0 items-center gap-2 border-t border-border px-[18px] py-1.5 font-mono text-[11px] leading-4 text-muted-foreground"
+            >
+              <WorkingIndicator running={running} startedAt={runStartedAt} />
+              <span
+                data-testid="header-activity"
+                title={currentActivity === undefined ? "thinking" : activityLabel(currentActivity)}
+                className="min-w-0 truncate"
+              >
+                {currentActivity === undefined ? "thinking" : activityLabel(currentActivity)}
+              </span>
+            </div>
+          )}
+        </header>
+        {ready && groups.length === 0 && (
+          <p
+            className="pointer-events-none absolute inset-x-0 z-10 -translate-y-1/2 px-4 text-center font-mono text-xs text-muted-foreground"
+            style={{ top: `calc((100% - ${footerClearance}px) / 2)` }}
+          >
+            Send a message to start.
+          </p>
+        )}
         {!stick.attached && (
           <div
             className="pointer-events-none absolute inset-x-0 z-20 flex justify-center"
-            style={{ bottom: footerHeight + 8 }}
+            style={{ bottom: footerClearance + 8 }}
           >
             <button
               type="button"
-              className="pointer-events-auto border border-border bg-black/85 px-2 py-1 font-mono text-[11px] text-white/90 backdrop-blur-md hover:text-white supports-[backdrop-filter]:bg-black/60"
+              className="pointer-events-auto bg-foreground px-2 py-1 font-mono text-[11px] text-background"
               onClick={stick.scrollToBottom}
             >
               ↓ latest
@@ -637,23 +553,7 @@ export function ChatView({
           </div>
         )}
 
-        <div
-          ref={footerRef}
-          className="absolute inset-x-0 bottom-0 z-20 border-t border-border bg-black/85 pb-[env(safe-area-inset-bottom)] backdrop-blur-md supports-[backdrop-filter]:bg-black/60"
-        >
-          <QueueStack
-            queue={queue}
-            running={running}
-            onCancel={cancelQueued}
-            onSteer={steerQueued}
-          />
-          <div className="h-7 shrink-0" aria-live="polite">
-            <WorkingIndicator
-              running={running}
-              startedAt={runStartedAt}
-              activity={currentActivity}
-            />
-          </div>
+        <div ref={footerRef} className="float-footer absolute z-20 theme-radius">
           <Composer running={running} send={handleSend} stop={stop} />
         </div>
       </div>

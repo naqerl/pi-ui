@@ -656,6 +656,11 @@ export class McpRuntime {
     this.shim.setMessageSink(sink);
   }
 
+  /** Observes MCP event batches and mcp_events tool results. Never includes secrets. */
+  setObserver(observer: Parameters<DurableExtensionShim["setObserver"]>[0]): void {
+    this.shim.setObserver(observer);
+  }
+
   install(registry: Parameters<DurableExtensionShim["install"]>[0]): void {
     this.shim.install(registry);
   }

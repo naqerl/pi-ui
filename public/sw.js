@@ -1,7 +1,8 @@
-const CACHE = "pi-ui-v1";
+const CACHE = "pi-ui-v2";
 const SHELL = [
   "/",
   "/activity",
+  "/events",
   "/manifest.webmanifest",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
@@ -18,7 +19,7 @@ async function cacheShell() {
     }),
   );
 
-  for (const page of ["/", "/activity"]) {
+  for (const page of ["/", "/activity", "/events"]) {
     const response = await cache.match(page);
     if (!response) continue;
     const html = await response.clone().text();

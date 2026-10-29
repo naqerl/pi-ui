@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { ModelOption } from "../shared/types.js";
 
 export interface ModelCatalog {
   readonly runtime: ModelRuntime;
@@ -43,6 +44,34 @@ export async function createModelCatalog(): Promise<ModelCatalog> {
   if (modelError) console.warn(`[pi] model catalog: ${modelError}`);
 
   return { runtime, agentDir, model };
+}
+
+export function modelOption(model: Model<Api>): ModelOption {
+  return {
+    provider: model.provider,
+    id: model.id,
+    name: model.name.length > 0 ? model.name : model.id,
+  };
+}
+
+/** Models with configured credentials. The snapshot is filled during catalog creation. */
+export async function listAvailableModels(runtime: ModelRuntime): Promise<ModelOption[]> {
+  const available = await runtime.getAvailable();
+  const seen = new Set<string>();
+  const models: ModelOption[] = [];
+  for (const model of available) {
+    const key = `${model.provider}/${model.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    models.push(modelOption(model));
+  }
+  models.sort(
+    (left, right) =>
+      left.provider.localeCompare(right.provider) ||
+      left.name.localeCompare(right.name) ||
+      left.id.localeCompare(right.id),
+  );
+  return models;
 }
 
 function selectModel(

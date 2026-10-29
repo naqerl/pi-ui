@@ -9,10 +9,12 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { installBillionContextInline } from "./billion-context.js";
 import { ChatService } from "./chat-service.js";
+import { McpEventFeed } from "./mcp-events.js";
 import { createModelCatalog } from "./models.js";
 import { buildPiSystemPrompt } from "./pi.js";
 import { type DurableSessionOptions, openDurableSession, SESSION_CONTEXT } from "./session.js";
 import { StreamHub } from "./stream-hub.js";
+import { injectTheme, resolveTheme, writeThemeSlug } from "./themes.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const builtClientDir = resolve(here, "../client");
@@ -22,6 +24,7 @@ const clientDir = existsSync(resolve(builtClientDir, "index.html"))
   : fallbackClientDir;
 
 const cwd = resolve(process.env.PI_CWD?.trim() || process.cwd());
+const themeFile = resolve(cwd, process.env.DATA_DIR?.trim() || "data", "theme.json");
 if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
   throw new Error(`PI_CWD is not a directory: ${cwd}`);
 }
@@ -39,13 +42,6 @@ const bili = await installBillionContextInline({
 });
 
 const catalog = await createModelCatalog();
-if (catalog.model !== undefined) {
-  bili.setModelMetadata({
-    model: catalog.model.id,
-    contextWindow: catalog.model.contextWindow,
-    maxOutput: catalog.model.maxTokens,
-  });
-}
 const instructions = await buildPiSystemPrompt(cwd, catalog.runtime);
 const boot = await openDurableSession({
   cwd,
@@ -55,20 +51,50 @@ const boot = await openDurableSession({
     catalog.model === undefined
       ? undefined
       : { provider: catalog.model.provider, modelId: catalog.model.id },
+  keepStoredModel: (ref) => catalog.runtime.getModel(ref.provider, ref.modelId) !== undefined,
   bili,
 });
+const activeModel =
+  boot.model === undefined
+    ? undefined
+    : catalog.runtime.getModel(boot.model.provider, boot.model.modelId);
+if (activeModel !== undefined) {
+  bili.setModelMetadata({
+    model: activeModel.id,
+    contextWindow: activeModel.contextWindow,
+    maxOutput: activeModel.maxTokens,
+  });
+  if (
+    catalog.model === undefined ||
+    catalog.model.provider !== activeModel.provider ||
+    catalog.model.id !== activeModel.id
+  ) {
+    console.log(
+      `[pi] model: ${activeModel.provider}/${activeModel.id} (kept from the conversation)`,
+    );
+  }
+}
 const hub = new StreamHub();
 const chat = new ChatService(
   boot.harness,
   boot.conversation,
   hub,
-  catalog.model?.contextWindow,
+  activeModel?.contextWindow,
   boot.interrupted,
   boot.runMarkerStore,
   boot.runMarker,
   boot.mcp.status,
+  catalog.runtime,
+  activeModel,
+  bili,
 );
+const events = new McpEventFeed();
+chat.setEventFeed(events);
 await chat.start();
+boot.mcp.setObserver((notice) => {
+  if (!events.ingest(notice)) return;
+  hub.broadcast({ event: "mcp.events", data: events.state });
+});
 boot.mcp.setSubmit((text, options) => {
   void chat
     .submit(text, options.deliverAs === "steer" ? "steer" : "queue")
@@ -91,6 +117,59 @@ void bili
 const app = new Hono();
 
 app.get("/api/health", (c) => c.json({ ok: true }));
+
+app.get("/api/themes", async (c) => c.json((await resolveTheme(themeFile)).themes));
+
+app.get("/api/models", async (c) => c.json(await chat.modelsView()));
+
+app.post("/api/model", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.text("Expected a JSON body", 400);
+  }
+  const provider =
+    typeof body === "object" &&
+    body !== null &&
+    "provider" in body &&
+    typeof body.provider === "string"
+      ? body.provider.trim()
+      : "";
+  const id =
+    typeof body === "object" && body !== null && "id" in body && typeof body.id === "string"
+      ? body.id.trim()
+      : "";
+  if (provider.length === 0 || id.length === 0) return c.text("provider and id are required", 400);
+  try {
+    const selected = await chat.setModel(provider, id);
+    if (selected === undefined) return c.text("Unknown model", 404);
+    return c.json(selected);
+  } catch (error) {
+    console.error("[pi] model switch failed", error);
+    return c.text("Could not switch model", 500);
+  }
+});
+
+app.post("/api/theme", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.text("Expected a JSON body", 400);
+  }
+  const slug =
+    typeof body === "object" && body !== null && "slug" in body && typeof body.slug === "string"
+      ? body.slug
+      : "";
+  const { themes } = await resolveTheme(themeFile);
+  const theme = themes.themes.find((item) => item.slug === slug);
+  if (theme === undefined) return c.text("Unknown theme", 404);
+  await writeThemeSlug(themeFile, theme.slug);
+  const data = { slug: theme.slug, colors: theme.colors };
+  hub.broadcast({ event: "theme", data });
+  return c.json(data);
+});
 
 app.get("/api/state", async (c) => c.json(await chat.getSnapshot()));
 
@@ -167,7 +246,19 @@ app.get("/api/stream", (c) => {
     });
 
     try {
+      try {
+        const { active } = await resolveTheme(themeFile);
+        if (active !== null) {
+          await client.send({ event: "theme", data: { slug: active.slug, colors: active.colors } });
+        }
+      } catch (error) {
+        console.error("[pi] theme snapshot failed", error);
+      }
       await client.send({ event: "run.state", data: chat.getRunStatus() });
+      const currentModel = chat.currentModel();
+      if (currentModel !== null) {
+        await client.send({ event: "model", data: currentModel });
+      }
       for (const frame of chat.replayFrames()) {
         await client.send(frame);
       }
@@ -217,7 +308,13 @@ app.get("/share", async (c) => {
 const indexPath = resolve(clientDir, "index.html");
 const serveIndex = async (c: Context) => {
   try {
-    const html = await readFile(indexPath, "utf8");
+    let html = await readFile(indexPath, "utf8");
+    try {
+      const { active } = await resolveTheme(themeFile);
+      html = injectTheme(html, active);
+    } catch (error) {
+      console.error("[pi] theme injection failed", error);
+    }
     return c.body(html, 200, {
       "Content-Type": "text/html; charset=UTF-8",
       "Cache-Control": "no-cache",
@@ -230,6 +327,8 @@ const serveIndex = async (c: Context) => {
 app.get("/", serveIndex);
 app.get("/activity", serveIndex);
 app.get("/activity/", serveIndex);
+app.get("/events", serveIndex);
+app.get("/events/", serveIndex);
 
 app.get("/manifest.webmanifest", async (c) => {
   try {

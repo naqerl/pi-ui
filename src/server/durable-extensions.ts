@@ -8,6 +8,7 @@ import {
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import type { Static, TSchema } from "typebox";
+import type { ExtensionNotice } from "./mcp-events.js";
 
 /**
  * The small part of pi's extension API that the MCP adapter and pi-mcp-events
@@ -88,7 +89,12 @@ export class DurableExtensionShim implements DurableExtensionApi {
   private readonly installed: ToolRegistration[] = [];
   private readonly handlers = new Map<string, DurableExtensionHandler[]>();
   private sink: DurableExtensionSink | undefined;
+  private observer: ((notice: ExtensionNotice) => void) | undefined;
   private closed = false;
+
+  setObserver(observer: ((notice: ExtensionNotice) => void) | undefined): void {
+    this.observer = observer;
+  }
 
   get tools(): readonly ToolRegistration[] {
     return this.installed;
@@ -111,8 +117,14 @@ export class DurableExtensionShim implements DurableExtensionApi {
       // MCP tools stay behind tool_search, as the hand-rolled bridge did.
       deferred: true,
       callers: ["model", "tools"],
-      async execute(args: Static<TSchema>, api, context) {
+      execute: async (args: Static<TSchema>, api, context) => {
         const result = await tool.execute(api.callId, args, context.abortSignal);
+        if (tool.name === "mcp_events") {
+          this.observer?.({
+            customType: "mcp-events-tool",
+            details: { args, result: result.details ?? null },
+          });
+        }
         return {
           output: result.content,
           details: result.details as unknown as ToolExecutionResult["details"],
@@ -131,6 +143,7 @@ export class DurableExtensionShim implements DurableExtensionApi {
 
   sendMessage(message: DurableExtensionMessage, options: DurableSendOptions = {}): void {
     if (this.closed) return;
+    this.observer?.({ customType: message.customType, details: message.details });
     const text = messageText(message);
     if (text.length === 0) return;
     this.sink?.(text, options);
