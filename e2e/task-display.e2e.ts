@@ -31,7 +31,7 @@ test("shows the empty task list in the latest-indicator style", async ({
   browser,
   screen,
 }) => {
-  await browser.route("**/api/state", async (route) => {
+  await browser.route("**/api/state**", async (route) => {
     await route.fulfill({ json: snapshotWith([]) });
   });
   await app.open("/?page=tasks");
@@ -69,7 +69,7 @@ test("shows the empty task list in the latest-indicator style", async ({
 
 test("renders inline markdown in task titles", async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 390, height: 844 });
-  await browser.route("**/api/state", async (route) => {
+  await browser.route("**/api/state**", async (route) => {
     await route.fulfill({
       json: snapshotWith([
         {

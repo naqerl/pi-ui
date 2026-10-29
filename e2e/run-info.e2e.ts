@@ -38,7 +38,7 @@ const snapshot = {
 };
 
 test("puts the run info on a card that is not the page background", async ({ app, browser }) => {
-  await browser.route("**/api/state", async (route) => {
+  await browser.route("**/api/state**", async (route) => {
     await route.fulfill({ json: snapshot });
   });
   await app.open("/");
@@ -63,7 +63,7 @@ test("puts the run info on a card that is not the page background", async ({ app
 
 test("fits the run info on a phone without naming thinking", async ({ app, browser }) => {
   await browser.setViewport({ width: 390, height: 844 });
-  await browser.route("**/api/state", async (route) => {
+  await browser.route("**/api/state**", async (route) => {
     await route.fulfill({ json: snapshot });
   });
   await app.open("/");

@@ -29,7 +29,9 @@ if (!live) {
                 name: "E2E Model",
                 reasoning: false,
                 input: ["text", "image"],
-                contextWindow: 32768,
+                // Large enough that the suite's shared conversation (history seeds
+                // ~50 bulky turns) never triggers preflight compression mid-run.
+                contextWindow: 1_048_576,
                 maxTokens: 2048,
               },
               {

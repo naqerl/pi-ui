@@ -20,7 +20,7 @@ const snapshot = {
 };
 
 async function openSeeded(app: { open: (path: string) => Promise<void> }, browser: Browser) {
-  await browser.route("**/api/state", async (route) => {
+  await browser.route("**/api/state**", async (route) => {
     await route.fulfill({ json: snapshot });
   });
   await app.open("/");
@@ -369,7 +369,7 @@ test("keeps the interrupted-run warning visible outside the scroll container", a
   browser,
   screen,
 }) => {
-  await browser.route("**/api/state", async (route) => {
+  await browser.route("**/api/state**", async (route) => {
     await route.fulfill({ json: { ...snapshot, run: "interrupted" } });
   });
   await app.open("/");
@@ -518,7 +518,8 @@ test("uses one action-button height and a stable composer bar height", async ({
       );
       const bar = textarea?.closest("form")?.parentElement ?? null;
       const row = textarea?.parentElement ?? null;
-      const button = row?.querySelector("button") ?? null;
+      // The action button sits last in the row, after the attach button.
+      const button = [...(row?.querySelectorAll("button") ?? [])].at(-1) ?? null;
       if (textarea === null || bar === null || row === null || button === null) return null;
       const buttonBox = button.getBoundingClientRect();
       const textareaBox = textarea.getBoundingClientRect();
@@ -561,13 +562,13 @@ test("uses one action-button height and a stable composer bar height", async ({
   const queue = await browser.evaluate(async () => {
     const textarea = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
     const row = textarea?.parentElement ?? null;
-    const labels = Array.from(row?.querySelectorAll("button") ?? []).map(
-      (button) => button.getAttribute("aria-label") ?? "",
-    );
+    const labels = Array.from(row?.querySelectorAll("button") ?? [])
+      .map((button) => button.getAttribute("aria-label") ?? "")
+      .filter((label) => label !== "Attach image");
     await new Promise<void>((resolve) => {
       requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
     });
-    const button = row?.querySelector("button") ?? null;
+    const button = [...(row?.querySelectorAll("button") ?? [])].at(-1) ?? null;
     const rowBox = row?.getBoundingClientRect() ?? null;
     const paddingRight =
       row === null ? 0 : Number.parseFloat(getComputedStyle(row).paddingRight) || 0;

@@ -69,11 +69,13 @@ for (const width of [390, 1280]) {
     expect(first).toBeGreaterThanOrEqual(30);
     expect(first).toBeLessThanOrEqual(32);
 
-    const before = await browser.evaluate(scrollToTopAndPick);
+    let before = await browser.evaluate(scrollToTopAndPick);
     expect(before).not.toBeNull();
-    for (let attempt = 0; attempt < 40; attempt++) {
+    for (let attempt = 0; attempt < 100; attempt++) {
       if ((await browser.evaluate(bubbleCount)) > first) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
+      // Nudge the sentinel again in case the first scroll landed before it observed.
+      if (attempt % 20 === 19) before = await browser.evaluate(scrollToTopAndPick);
     }
     expect(await browser.evaluate(bubbleCount)).toBeGreaterThan(first);
     await new Promise((resolve) => setTimeout(resolve, 300));

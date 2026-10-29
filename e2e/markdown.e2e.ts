@@ -36,7 +36,7 @@ test("does not let whitespace-only lines inflate assistant markdown bubbles", as
   browser,
   screen,
 }) => {
-  await browser.route("**/api/state", async (route) => {
+  await browser.route("**/api/state**", async (route) => {
     await route.fulfill({ json: snapshot });
   });
   await app.open("/");
@@ -143,7 +143,7 @@ test("keeps long tokens, code blocks and tables inside the bubbles at 390px", as
     timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, order)).toISOString(),
     order,
   });
-  await browser.route("**/api/state", async (route) => {
+  await browser.route("**/api/state**", async (route) => {
     await route.fulfill({
       json: { ...snapshot, messages: [message("user", 1), message("assistant", 2)] },
     });
@@ -220,7 +220,7 @@ test("shows hh:mm at the bottom right of user and assistant messages", async ({
 }) => {
   const at = new Date(Date.UTC(2026, 0, 1, 7, 5, 0)).toISOString();
   const later = new Date(Date.UTC(2026, 0, 1, 18, 42, 0)).toISOString();
-  await browser.route("**/api/state", async (route) => {
+  await browser.route("**/api/state**", async (route) => {
     await route.fulfill({
       json: {
         ...snapshot,
@@ -263,7 +263,7 @@ test("shows hh:mm at the bottom right of user and assistant messages", async ({
 
 test("copies a fenced code block from its copy button", async ({ app, browser, screen }) => {
   const code = "const answer = 42;\nconsole.log(answer);";
-  await browser.route("**/api/state", async (route) => {
+  await browser.route("**/api/state**", async (route) => {
     await route.fulfill({
       json: {
         ...snapshot,

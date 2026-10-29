@@ -45,7 +45,7 @@ const busy = snapshot({
 for (const width of [390, 1280]) {
   test(`shows conversation stats left of chat at ${width}px`, async ({ app, browser, screen }) => {
     await browser.setViewport({ width, height: 844 });
-    await browser.route("**/api/state", async (route) => {
+    await browser.route("**/api/state**", async (route) => {
       await route.fulfill({ json: busy });
     });
     await app.open("/");
@@ -112,7 +112,7 @@ for (const width of [390, 1280]) {
 
 test("marks stats the server cannot report as unavailable", async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 390, height: 844 });
-  await browser.route("**/api/state", async (route) => {
+  await browser.route("**/api/state**", async (route) => {
     await route.fulfill({
       json: snapshot({
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
