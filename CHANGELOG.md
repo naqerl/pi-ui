@@ -2,6 +2,11 @@
 
 Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
 
+## 1.5.1 - 2026-10-29
+
+- An installed app no longer opens on a white splash before it paints: the manifest's `background_color` defaults to #171717, matching `theme_color`.
+- The page declares `color-scheme` — `light dark` statically, the active theme's mode from the server, and updated when the theme changes — so the system bars and native controls follow the theme.
+
 ## 1.5.0 - 2026-10-29
 
 - The agent can run shell commands as background jobs, list them, read their output and cancel them. pi tells the agent when a job finishes.
