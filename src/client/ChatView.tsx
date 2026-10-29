@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type {
   ActivityItem,
   ChatMessage,
@@ -11,12 +20,16 @@ import type {
 import { groupSummaryParts } from "./activity-format";
 import { Button } from "./components/ui/button";
 import { Textarea } from "./components/ui/textarea";
+import {
+  DeferredMarkdown,
+  LazyInlineMarkdown,
+  lazyPlainInline,
+  loadMarkdown,
+} from "./lazy-markdown";
 import { cn } from "./lib/utils";
-import { InlineMarkdown, Markdown, plainInline } from "./markdown";
 import { ATTACH_ACCEPT, mediaUrl, uploadMedia } from "./media-client";
 import { PiMenu } from "./PiMenu";
-import { type ChatStats, StatsView } from "./StatsView";
-import { TasksView } from "./TasksView";
+import type { ChatStats } from "./StatsView";
 import { createTask } from "./task-client";
 import { groupTimeline } from "./timeline-groups";
 import type { SendOutcome, TimelineItem } from "./use-chat";
@@ -39,6 +52,20 @@ interface ChatViewProps {
   applyTasks: (ledger: TaskLedger) => void;
   stats: ChatStats;
   refreshStats?: () => void;
+  history?: HistoryControl;
+}
+
+// The side pages and the Markdown renderer are their own chunks, so the chat paints first.
+const loadStatsView = () => import("./StatsView");
+const loadTasksView = () => import("./TasksView");
+const StatsView = lazy(() => loadStatsView().then((m) => ({ default: m.StatsView })));
+const TasksView = lazy(() => loadTasksView().then((m) => ({ default: m.TasksView })));
+void loadMarkdown();
+
+export interface HistoryControl {
+  hasEarlier: boolean;
+  loading: boolean;
+  loadEarlier: () => void | Promise<void>;
 }
 
 const PAGES = [
@@ -158,7 +185,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           <div className="whitespace-pre-wrap [overflow-wrap:anywhere]">{message.text}</div>
         )
       ) : (
-        <Markdown text={message.text} />
+        <DeferredMarkdown text={message.text} />
       )}
       <MessageTime timestamp={message.timestamp} />
     </div>
@@ -722,6 +749,52 @@ function Composer({
   );
 }
 
+/**
+ * The row above the oldest loaded message. Coming within a screen of it loads the page before;
+ * the stick hook keeps the message on screen in place while the older ones land above it.
+ */
+function EarlierMessages({
+  history,
+  scroller,
+  attached,
+}: {
+  history: HistoryControl;
+  scroller: { current: HTMLElement | null };
+  attached: boolean;
+}) {
+  const row = useRef<HTMLDivElement | null>(null);
+  const { loadEarlier, loading } = history;
+
+  useEffect(() => {
+    const element = row.current;
+    const root = scroller.current;
+    if (element === null || root === null || loading) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        // Before the first scroll to the end the row is in view; only load once the reader
+        // has moved off the end, or when the loaded part does not fill the screen.
+        if (attached && root.scrollHeight > root.clientHeight + 1) return;
+        void loadEarlier();
+      },
+      { root, rootMargin: "800px 0px 0px 0px" },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [attached, loadEarlier, loading, scroller]);
+
+  return (
+    <div
+      ref={row}
+      data-testid="earlier-messages"
+      data-stick-skip=""
+      className="py-1 text-center font-mono text-[11px] text-muted-foreground"
+    >
+      {loading ? "Loading earlier messages…" : "Earlier messages"}
+    </div>
+  );
+}
+
 function lastUserMessageOrder(timeline: TimelineItem[]): number {
   let order = Number.NEGATIVE_INFINITY;
   for (const item of timeline) {
@@ -745,6 +818,7 @@ export function ChatView({
   applyTasks,
   stats,
   refreshStats,
+  history,
 }: ChatViewProps) {
   useViewportHeight();
   const pager = usePager(PAGES.length, pageFromLocation());
@@ -783,6 +857,14 @@ export function ChatView({
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, [pager.setPage]);
+  useEffect(() => {
+    // Fetch the side pages once the chat is up, so a swipe does not wait on the network.
+    const timer = window.setTimeout(() => {
+      void loadStatsView();
+      void loadTasksView();
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, []);
   const groups = useMemo(() => groupTimeline(timeline), [timeline]);
   const headerRef = useRef<HTMLElement | null>(null);
   const footerRef = useRef<HTMLDivElement | null>(null);
@@ -932,12 +1014,14 @@ export function ChatView({
               aria-hidden={pager.page !== STATS_PAGE && !pager.dragging}
               inert={pager.page !== STATS_PAGE && !pager.dragging ? true : undefined}
             >
-              <StatsView
-                stats={stats}
-                ready={ready}
-                headerClearance={headerClearance}
-                footerClearance={footerClearance}
-              />
+              <Suspense fallback={null}>
+                <StatsView
+                  stats={stats}
+                  ready={ready}
+                  headerClearance={headerClearance}
+                  footerClearance={footerClearance}
+                />
+              </Suspense>
             </section>
             <section
               className="h-full min-w-0 shrink-0 grow-0 basis-full"
@@ -954,6 +1038,13 @@ export function ChatView({
                   }}
                 >
                   {!ready && <p className="font-mono text-xs text-muted-foreground">Loading…</p>}
+                  {history?.hasEarlier === true && (
+                    <EarlierMessages
+                      history={history}
+                      scroller={stick.containerRef}
+                      attached={stick.attached}
+                    />
+                  )}
                   {groups.map((group, index) => {
                     if (group.kind === "message") {
                       return <MessageBubble key={group.key} message={group.message} />;
@@ -982,15 +1073,17 @@ export function ChatView({
               aria-hidden={pager.page !== TASKS_PAGE && !pager.dragging}
               inert={pager.page !== TASKS_PAGE && !pager.dragging ? true : undefined}
             >
-              <TasksView
-                tasks={tasks}
-                ready={ready}
-                headerClearance={headerClearance}
-                footerClearance={footerClearance}
-                armedParentId={armed?.id ?? null}
-                onArmParent={setArmedParentId}
-                onLedger={applyTasks}
-              />
+              <Suspense fallback={null}>
+                <TasksView
+                  tasks={tasks}
+                  ready={ready}
+                  headerClearance={headerClearance}
+                  footerClearance={footerClearance}
+                  armedParentId={armed?.id ?? null}
+                  onArmParent={setArmedParentId}
+                  onLedger={applyTasks}
+                />
+              </Suspense>
             </section>
           </div>
         </div>
@@ -1083,7 +1176,7 @@ export function ChatView({
           {tasksPage && armed !== null && (
             <div className="flex items-center gap-2 px-3 font-mono text-[10px] text-muted-foreground">
               <span className="min-w-0 truncate">
-                subtask of <InlineMarkdown text={armed.title} />
+                subtask of <LazyInlineMarkdown text={armed.title} />
               </span>
               <button
                 type="button"
@@ -1097,7 +1190,7 @@ export function ChatView({
           )}
           <Composer
             tasksPage={tasksPage}
-            parentTitle={tasksPage && armed !== null ? plainInline(armed.title) : null}
+            parentTitle={tasksPage && armed !== null ? lazyPlainInline(armed.title) : null}
             running={running}
             send={handleSend}
             stop={stop}

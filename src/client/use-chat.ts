@@ -20,6 +20,7 @@ import type {
   SubmitMessageResponse,
   TaskLedger,
   ToolActivity,
+  TranscriptHistory,
   UsageSummary,
 } from "../shared/types";
 
@@ -59,7 +60,27 @@ function parseEvent<T>(event: MessageEvent<string>): T | null {
   }
 }
 
-export function useChat() {
+/** Messages fetched per scroll-up page. */
+const HISTORY_PAGE = 30;
+
+/** Keeps every held item below `from`, then the snapshot's items from `from` up. */
+function mergeWindow<T extends { order: number }>(current: T[], from: number, fresh: T[]): T[] {
+  return [...current.filter((item) => item.order < from), ...fresh];
+}
+
+/** Adds an older page in front of what is held, skipping anything already there. */
+function prependPage<T extends { id: string }>(current: T[], page: T[]): T[] {
+  const held = new Set(current.map((item) => item.id));
+  return [...page.filter((item) => !held.has(item.id)), ...current];
+}
+
+export interface UseChatOptions {
+  /** Load the whole transcript at once (activity and events pages). */
+  fullHistory?: boolean;
+}
+
+export function useChat(options: UseChatOptions = {}) {
+  const fullHistory = options.fullHistory === true;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [liveTools, setLiveTools] = useState<ToolActivity[]>([]);
@@ -74,6 +95,13 @@ export function useChat() {
   const [mcpEvents, setMcpEvents] = useState<McpEventsState>(EMPTY_EVENTS);
   const [pendingSteers, setPendingSteers] = useState<ChatMessage[]>([]);
   const [ready, setReady] = useState(false);
+  const [hasEarlier, setHasEarlier] = useState(false);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  /** Lowest transcript order held; refreshes ask for everything from here up. */
+  const windowFrom = useRef<number | null>(null);
+  const hasEarlierRef = useRef(false);
+  const conversationRef = useRef<string | null>(null);
+  const historyLoading = useRef(false);
   const refreshSequence = useRef(0);
   const draftRevision = useRef(0);
   const draftThinkingAt = useRef<string | null>(null);
@@ -104,13 +132,28 @@ export function useChat() {
   const refreshState = useCallback(async () => {
     const sequence = ++refreshSequence.current;
     try {
-      const response = await fetch("/api/state", { cache: "no-store" });
+      const from = windowFrom.current ?? (fullHistory ? 0 : null);
+      const url = from === null ? "/api/state" : `/api/state?from=${from}`;
+      const response = await fetch(url, { cache: "no-store" });
       if (!response.ok) return;
       const snapshot = (await response.json()) as Snapshot;
       if (sequence !== refreshSequence.current) return;
-      setMessages(snapshot.messages);
+      const snapshotFrom = snapshot.from ?? 0;
+      const sameConversation = conversationRef.current === snapshot.conversationId;
+      conversationRef.current = snapshot.conversationId;
+      if (!sameConversation || windowFrom.current === null || snapshotFrom < windowFrom.current) {
+        windowFrom.current = snapshotFrom;
+        hasEarlierRef.current = snapshot.hasEarlier === true;
+        setHasEarlier(hasEarlierRef.current);
+      }
+      if (sameConversation) {
+        setMessages((current) => mergeWindow(current, snapshotFrom, snapshot.messages));
+        setActivity((current) => mergeWindow(current, snapshotFrom, snapshot.activity));
+      } else {
+        setMessages(snapshot.messages);
+        setActivity(snapshot.activity);
+      }
       setPendingSteers((pending) => retainPendingSteers(snapshot.messages, pending));
-      setActivity(snapshot.activity);
       const persistedActivityIds = new Set(snapshot.activity.map((item) => item.id));
       const toolsAreCurrent =
         snapshot.activeTools !== undefined &&
@@ -134,7 +177,33 @@ export function useChat() {
     } catch {
       // The SSE connection will keep the UI usable once the server is reachable again.
     }
-  }, [applyDraft, applyEvents, applyTasks]);
+  }, [applyDraft, applyEvents, applyTasks, fullHistory]);
+
+  /** Fetches the page of transcript just older than what is held. */
+  const loadEarlier = useCallback(async () => {
+    const before = windowFrom.current;
+    if (historyLoading.current || before === null || !hasEarlierRef.current) return;
+    historyLoading.current = true;
+    setLoadingEarlier(true);
+    try {
+      const response = await fetch(`/api/history?before=${before}&limit=${HISTORY_PAGE}`, {
+        cache: "no-store",
+      });
+      if (!response.ok) return;
+      const page = (await response.json()) as TranscriptHistory;
+      if (windowFrom.current !== before) return;
+      windowFrom.current = page.from;
+      hasEarlierRef.current = page.hasEarlier;
+      setMessages((current) => prependPage(current, page.messages));
+      setActivity((current) => prependPage(current, page.activity));
+      setHasEarlier(page.hasEarlier);
+    } catch {
+      // A later scroll tries again.
+    } finally {
+      historyLoading.current = false;
+      setLoadingEarlier(false);
+    }
+  }, []);
 
   useEffect(() => {
     void refreshState();
@@ -444,6 +513,9 @@ export function useChat() {
     mcpEvents,
     tasks: taskLedger.tasks,
     ready,
+    hasEarlier,
+    loadingEarlier,
+    loadEarlier,
     applyTasks,
     send,
     cancelQueued,

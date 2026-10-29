@@ -204,8 +204,13 @@ export interface TaskLedger {
 
 export interface Snapshot {
   conversationId: string;
+  /** The newest page of the transcript, or everything from the `from` the request asked for. */
   messages: ChatMessage[];
   activity: ActivityItem[];
+  /** Lowest transcript order in this snapshot; `GET /api/history?before=<from>` reads older items. */
+  from?: number;
+  /** True when the transcript has messages older than `from`. */
+  hasEarlier?: boolean;
   run: RunState;
   runStartedAt?: string;
   queue: QueuedMessage[];
@@ -218,6 +223,13 @@ export interface Snapshot {
   /** Tools still running. A refresh uses this when `toolsRevision` is current. */
   activeTools?: ToolActivity[];
   toolsRevision?: number;
+}
+
+export interface TranscriptHistory {
+  messages: ChatMessage[];
+  activity: ActivityItem[];
+  from: number;
+  hasEarlier: boolean;
 }
 
 export interface SubmitMessageResponse {

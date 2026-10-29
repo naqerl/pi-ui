@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 const NEAR_BOTTOM_PX = 48;
 
@@ -35,15 +35,24 @@ export function useStickToBottom(dependency: unknown) {
       return;
     }
     const containerTop = container.getBoundingClientRect().top;
+    // Prefer the first element that starts inside the viewport: an element cut off at the top
+    // can still change height (its Markdown renders late), which must not move what is read.
+    let partial: Anchor | null = null;
     for (const child of content.children) {
       if (!(child instanceof HTMLElement)) continue;
+      // Rows such as "Earlier messages" stay put while content lands next to them.
+      if (child.dataset.stickSkip !== undefined) continue;
       const rect = child.getBoundingClientRect();
-      if (rect.bottom > containerTop + 1) {
-        anchorRef.current = { element: child, offset: rect.top - containerTop };
+      if (rect.bottom <= containerTop + 1) continue;
+      const anchor = { element: child, offset: rect.top - containerTop };
+      if (rect.top >= containerTop - 1 && rect.top < containerTop + container.clientHeight) {
+        anchorRef.current = anchor;
         return;
       }
+      partial ??= anchor;
+      if (rect.top >= containerTop + container.clientHeight) break;
     }
-    anchorRef.current = null;
+    anchorRef.current = partial;
   }, []);
 
   const sync = useCallback(() => {
@@ -139,9 +148,12 @@ export function useStickToBottom(dependency: unknown) {
   }, [handleScroll, scheduleSync]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: dependency is only the trigger for a post-commit sync
-  useEffect(() => {
+  useLayoutEffect(() => {
+    // Correct before paint, so older messages loading above the reader never show a jump,
+    // then again next frame for anything that settles after layout.
+    sync();
     scheduleSync();
-  }, [dependency, scheduleSync]);
+  }, [dependency, sync, scheduleSync]);
 
   return { containerRef, contentRef, attached, scrollToBottom, revealTop };
 }

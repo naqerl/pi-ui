@@ -28,6 +28,7 @@ import {
   type StreamToolEnd,
   type StreamToolStart,
   type ToolActivity,
+  type TranscriptHistory,
 } from "../shared/types.js";
 import type { BillionContextInline } from "./billion-context.js";
 import type { McpEventFeed } from "./mcp-events.js";
@@ -46,6 +47,7 @@ import {
 } from "./session.js";
 import type { SseFrame } from "./sse.js";
 import type { StreamHub } from "./stream-hub.js";
+import { type WindowRequest, windowTranscript } from "./transcript-window.js";
 
 interface ActiveTool {
   name: string;
@@ -214,14 +216,25 @@ export class ChatService {
     return choice;
   }
 
-  async getSnapshot(): Promise<Snapshot> {
+  /** One page of older transcript, ending just below `request.before`. */
+  async getHistory(request: WindowRequest): Promise<TranscriptHistory> {
+    const context = await this.conversation.context(SESSION_CONTEXT);
+    return windowTranscript(buildTranscript(context.entries, this.mediaRef), request);
+  }
+
+  async getSnapshot(request: WindowRequest = {}): Promise<Snapshot> {
     const context = await this.conversation.context(SESSION_CONTEXT);
     const usage = await this.harness.usage(SESSION_CONTEXT);
-    const transcript = buildTranscript(context.entries, this.mediaRef);
+    const transcript = windowTranscript(
+      buildTranscript(context.entries, this.mediaRef),
+      request.before === undefined ? request : {},
+    );
     return {
       conversationId: String(this.conversation.id),
       messages: transcript.messages,
       activity: transcript.activity,
+      from: transcript.from,
+      hasEarlier: transcript.hasEarlier,
       run: this.runState,
       ...(this.runStartedAt === undefined ? {} : { runStartedAt: this.runStartedAt }),
       queue: this.queueItems(),

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { ActivityItem } from "../shared/types";
 import { activitySummary } from "./activity-format";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
@@ -12,7 +12,21 @@ interface ActivityViewProps {
   ready: boolean;
 }
 
+/** Output longer than this shows its start until the reader asks for the rest. */
+const PREVIEW_LINES = 40;
+const PREVIEW_CHARS = 4000;
+
+function preview(text: string): string | null {
+  const lines = text.split("\n");
+  if (lines.length <= PREVIEW_LINES && text.length <= PREVIEW_CHARS) return null;
+  return lines.slice(0, PREVIEW_LINES).join("\n").slice(0, PREVIEW_CHARS);
+}
+
 function Detail({ label, children, error }: { label: string; children: string; error?: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const short = useMemo(() => preview(children), [children]);
+  const lineCount = useMemo(() => children.split("\n").length, [children]);
+  const collapsed = short !== null && !expanded;
   return (
     <div>
       <div className="mb-1 font-mono text-[11px] uppercase tracking-wide text-muted-foreground">
@@ -24,8 +38,19 @@ function Detail({ label, children, error }: { label: string; children: string; e
           error && "text-destructive",
         )}
       >
-        {children}
+        {collapsed ? `${short}\n…` : children}
       </pre>
+      {short !== null && (
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          className="mt-1 font-mono text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+        >
+          {expanded
+            ? "Show less"
+            : `Show all ${lineCount} lines (${children.length.toLocaleString()} characters)`}
+        </button>
+      )}
     </div>
   );
 }

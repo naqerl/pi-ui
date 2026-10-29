@@ -19,6 +19,7 @@ import { StreamHub } from "./stream-hub.js";
 import type { TaskBridge } from "./task-tools.js";
 import { TaskError, TaskStore } from "./tasks.js";
 import { injectTheme, resolveTheme, themeManifest, writeThemeSlug } from "./themes.js";
+import { windowRequestFromQuery } from "./transcript-window.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const builtClientDir = resolve(here, "../client");
@@ -192,8 +193,17 @@ app.post("/api/theme", async (c) => {
 });
 
 app.get("/api/state", async (c) =>
-  c.json({ ...(await chat.getSnapshot()), tasks: taskStore.ledger() }),
+  c.json({
+    ...(await chat.getSnapshot(windowRequestFromQuery(c.req.query()))),
+    tasks: taskStore.ledger(),
+  }),
 );
+
+app.get("/api/history", async (c) => {
+  const request = windowRequestFromQuery(c.req.query());
+  if (request.before === undefined) return c.text("before is required", 400);
+  return c.json(await chat.getHistory(request));
+});
 
 app.get("/api/tasks", (c) => c.json(taskStore.ledger()));
 

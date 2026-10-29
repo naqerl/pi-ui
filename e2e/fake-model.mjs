@@ -33,7 +33,36 @@ function lastUserText(body) {
   return "";
 }
 
+function bulkAnswer(prompt) {
+  const turn = prompt.match(/BULK (\d+)/)?.[1] ?? "0";
+  const paragraphs = Array.from(
+    { length: 12 },
+    (_, index) =>
+      `Bulk turn ${turn}, paragraph ${index + 1}: **bold**, _italic_, \`inline code\` and a [link](https://example.com/${index}).`,
+  );
+  const code = [
+    "```ts",
+    ...Array.from(
+      { length: 30 },
+      (_, index) => `const value${index} = compute(${index}, "turn ${turn}");`,
+    ),
+    "```",
+  ];
+  return [
+    `# Bulk answer ${turn}`,
+    "",
+    ...paragraphs.flatMap((line) => [line, ""]),
+    ...code,
+    "",
+    `- item one ${turn}`,
+    "- item two",
+    "",
+    `Bulk end ${turn}`,
+  ].join("\n");
+}
+
 function responseFor(prompt) {
+  if (prompt.includes("BULK")) return bulkAnswer(prompt);
   if (prompt.includes("LONG")) {
     return Array.from(
       { length: 40 },
@@ -132,9 +161,12 @@ export function startFakeModelServer() {
 
     const images = lastUserImages(body);
     const text = images > 0 ? `${responseFor(prompt)} [images: ${images}]` : responseFor(prompt);
-    for (const piece of text.match(/.{1,18}/gs) ?? []) {
+    const bulk = prompt.includes("BULK");
+    for (const piece of text.match(bulk ? /.{1,4000}/gs : /.{1,18}/gs) ?? []) {
       writeEvent(res, chunkFor(piece));
-      await new Promise((resolve) => setTimeout(resolve, prompt.includes("LONGDRIP") ? 40 : 8));
+      if (!bulk) {
+        await new Promise((resolve) => setTimeout(resolve, prompt.includes("LONGDRIP") ? 40 : 8));
+      }
     }
     writeEvent(res, chunkFor("", "stop"));
     writeEvent(res, {

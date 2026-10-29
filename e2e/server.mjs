@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startFakeModelServer } from "./fake-model.mjs";
 
-const dataDir = mkdtempSync(join(tmpdir(), "pi-ui-e2e-data-"));
+const dataDir = process.env.PI_E2E_DATA_DIR ?? mkdtempSync(join(tmpdir(), "pi-ui-e2e-data-"));
 const agentDir = mkdtempSync(join(tmpdir(), "pi-ui-e2e-agent-"));
 mkdirSync(dataDir, { recursive: true });
 mkdirSync(agentDir, { recursive: true });
