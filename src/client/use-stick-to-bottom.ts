@@ -91,6 +91,24 @@ export function useStickToBottom(dependency: unknown) {
     recordAnchor();
   }, [recordAnchor, updateAttached]);
 
+  /**
+   * Detach and put `element`'s top `inset` px below the top of the scroller, then keep it
+   * there while content around it settles. The browser clamps at the end of the transcript.
+   */
+  const revealTop = useCallback(
+    (element: HTMLElement, inset: number) => {
+      const container = containerRef.current;
+      if (!container || !element.isConnected) return;
+      const containerTop = container.getBoundingClientRect().top;
+      const top = element.getBoundingClientRect().top;
+      container.scrollTop += top - containerTop - inset;
+      const distance = container.scrollHeight - container.scrollTop - container.clientHeight;
+      updateAttached(distance <= NEAR_BOTTOM_PX);
+      recordAnchor();
+    },
+    [recordAnchor, updateAttached],
+  );
+
   useEffect(() => {
     const container = containerRef.current;
     const content = contentRef.current;
@@ -125,5 +143,5 @@ export function useStickToBottom(dependency: unknown) {
     scheduleSync();
   }, [dependency, scheduleSync]);
 
-  return { containerRef, contentRef, attached, scrollToBottom };
+  return { containerRef, contentRef, attached, scrollToBottom, revealTop };
 }

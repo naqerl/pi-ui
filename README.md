@@ -158,7 +158,7 @@ Stats, the chat, and the task list are three pages of the same view, in that ord
 
 Live MCP subscriptions appear in the header as server names, followed by a short `new event from <server>` notice. Selecting the names opens `/events`, which lists the subscriptions and the same event log on every connected client. Draft text is broadcast as a full snapshot with a revision, so a client that connects mid-run shows the same text as the others.
 
-The transcript follows new output only while the reader is at the bottom (within about 48 px). Scrolling up detaches it; new tool calls and streamed text then leave the viewport alone and a `↓ latest` button appears, filled with the foreground color so it reads apart from the messages. Sending a message or selecting that button re-attaches to the end. Height changes above the viewport keep the top visible element anchored instead of jumping to the bottom.
+The transcript follows new output only while the reader is at the bottom (within about 48 px). Scrolling up detaches it; new tool calls and streamed text then leave the viewport alone and a `↓ latest` button appears, filled with the foreground color so it reads apart from the messages. Sending a message or selecting that button re-attaches to the end. Height changes above the viewport keep the top visible element anchored instead of jumping to the bottom. When a run finishes while the reader is still at the bottom, the transcript scrolls back so the final reply starts 16px below the header, with its run info row on top, and `↓ latest` stays available for the end. A reader who scrolled away during the run keeps their position.
 
 ## Releases
 

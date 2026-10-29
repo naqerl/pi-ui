@@ -34,6 +34,13 @@ function lastUserText(body) {
 }
 
 function responseFor(prompt) {
+  if (prompt.includes("LONG")) {
+    return Array.from(
+      { length: 40 },
+      (_, index) =>
+        `Paragraph ${index + 1} of a long answer. It keeps going so the reply is taller than the screen.`,
+    ).join("\n\n");
+  }
   if (prompt.includes("MARKDOWN")) {
     return [
       "# Markdown heading",
@@ -127,7 +134,7 @@ export function startFakeModelServer() {
     const text = images > 0 ? `${responseFor(prompt)} [images: ${images}]` : responseFor(prompt);
     for (const piece of text.match(/.{1,18}/gs) ?? []) {
       writeEvent(res, chunkFor(piece));
-      await new Promise((resolve) => setTimeout(resolve, 8));
+      await new Promise((resolve) => setTimeout(resolve, prompt.includes("LONGDRIP") ? 40 : 8));
     }
     writeEvent(res, chunkFor("", "stop"));
     writeEvent(res, {

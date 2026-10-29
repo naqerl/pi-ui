@@ -108,6 +108,8 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   const framed = mine || message.isError === true || message.partial === true;
   return (
     <div
+      data-message-id={message.id}
+      data-role={message.role}
       className={cn(
         "theme-radius w-fit min-w-0 max-w-[85%] bg-surface px-3 py-2 text-sm leading-relaxed [overflow-wrap:anywhere]",
         mine ? "ml-auto" : "mr-auto",
@@ -816,6 +818,45 @@ export function ChatView({
   // Re-run the stick sync when the transcript or either floating bar changes height.
   // A run slides a status line out of the composer, and the composer grows with the draft.
   const stick = useStickToBottom(`${timeline.length}:${footerClearance}:${headerClearance}`);
+
+  // When a reply finishes, show it from its start (with the run info row above it) instead of
+  // leaving the reader at its last line. Only when the reader is still following the end:
+  // someone who scrolled away during the run stays where they are.
+  const wasRunningRef = useRef(running);
+  const [revealAfter, setRevealAfter] = useState<number | null>(null);
+  useEffect(() => {
+    const was = wasRunningRef.current;
+    wasRunningRef.current = running;
+    if (running && !was) setRevealAfter(null);
+    else if (!running && was && stick.attached) setRevealAfter(lastUserMessageOrder(timeline));
+  }, [running, stick.attached, timeline]);
+  const revealTop = stick.revealTop;
+  useEffect(() => {
+    if (revealAfter === null) return;
+    let reply: ChatMessage | undefined;
+    for (const item of timeline) {
+      if (item.kind === "message" && item.message.role === "assistant") {
+        if (item.message.order > revealAfter) reply = item.message;
+      }
+    }
+    if (reply === undefined) {
+      // The final message can land just after the run state flips; give it a moment.
+      const timer = window.setTimeout(() => setRevealAfter(null), 3000);
+      return () => window.clearTimeout(timer);
+    }
+    const id = reply.id;
+    setRevealAfter(null);
+    requestAnimationFrame(() => {
+      const bubble = document.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`);
+      if (bubble === null) return;
+      const previous = bubble.previousElementSibling;
+      const target =
+        previous instanceof HTMLElement && previous.dataset.testid === "run-info"
+          ? previous
+          : bubble;
+      revealTop(target, headerClearance + TRANSCRIPT_END_GAP);
+    });
+  }, [revealAfter, timeline, revealTop, headerClearance]);
 
   const liveActivityGroupKey = useMemo(() => {
     if (!running) return undefined;
