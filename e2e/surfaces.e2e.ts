@@ -726,6 +726,12 @@ test("follows the theme color and corner radius on the chrome", async ({
     })),
   );
   expect(bars).toEqual([{ content: "#000000", media: "" }]);
+  const scheme = await browser.evaluate(() =>
+    [...document.querySelectorAll('meta[name="color-scheme"]')].map(
+      (meta) => meta.getAttribute("content") ?? "",
+    ),
+  );
+  expect(scheme).toEqual(["dark"]);
 });
 
 test("paints the app manifest with the active theme", async ({ app, browser, screen }) => {
@@ -760,11 +766,18 @@ test("paints the app manifest with the active theme", async ({ app, browser, scr
       });
     }
     const fallback = await read();
-    return { results, name: fallback.name ?? "", theme: fallback.theme_color ?? "" };
+    return {
+      results,
+      name: fallback.name ?? "",
+      theme: fallback.theme_color ?? "",
+      back: fallback.background_color ?? "",
+    };
   });
-  // Without installed themes the stock manifest is served untouched.
+  // Without installed themes the stock manifest is served untouched, and its
+  // defaults are dark so an installed app never bakes in a white system bar.
   expect(painted.name).toBe("pi");
   expect(painted.theme.length).toBeGreaterThan(0);
+  expect(painted.back).not.toBe("#ffffff");
   for (const result of painted.results) {
     expect(result.theme).toBe(result.background);
     expect(result.back).toBe(result.background);
@@ -794,6 +807,7 @@ test("embeds the saved theme in the first document", async ({ app, browser, scre
         mode: "",
         selected: "",
         tag: "",
+        schemes: [] as string[],
       };
     }
     const response = await fetch("/api/theme", {
@@ -806,6 +820,9 @@ test("embeds the saved theme in the first document", async ({ app, browser, scre
       selected?: string | null;
     };
     const tag = html.match(/<html\b[^>]*>/)?.[0] ?? "";
+    const schemes = [...html.matchAll(/<meta\b[^>]*\bname="color-scheme"[^>]*>/g)].map(
+      (match) => match[0],
+    );
     return {
       skipped: false,
       ok: response.ok,
@@ -816,6 +833,7 @@ test("embeds the saved theme in the first document", async ({ app, browser, scre
       mode: theme.colors.mode,
       selected: listed.selected ?? "",
       tag,
+      schemes,
     };
   });
   if (saved.skipped) return;
@@ -826,4 +844,6 @@ test("embeds the saved theme in the first document", async ({ app, browser, scre
   expect(saved.tag).toContain(`--radius:${saved.radius}px`);
   expect(saved.tag).toContain(`color-scheme:${saved.mode}`);
   expect(saved.tag).toContain(`background-color:${saved.background}`);
+  // One scheme for the UA's own surfaces, matching the theme rather than the phone.
+  expect(saved.schemes).toEqual([`<meta name="color-scheme" content="${saved.mode}" />`]);
 });

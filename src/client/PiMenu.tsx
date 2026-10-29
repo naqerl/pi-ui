@@ -36,6 +36,11 @@ function applyTheme(colors: ThemeColors): void {
   meta.setAttribute("name", "theme-color");
   meta.removeAttribute("media");
   meta.setAttribute("content", colors.background);
+  const scheme =
+    document.querySelector('meta[name="color-scheme"]') ??
+    document.head.appendChild(document.createElement("meta"));
+  scheme.setAttribute("name", "color-scheme");
+  scheme.setAttribute("content", colors.mode);
 }
 
 function legacySlug(): string | null {

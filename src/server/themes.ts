@@ -213,7 +213,7 @@ export function themeStyle(colors: ThemeColors): string | null {
   return parts.join(";");
 }
 
-/** Put the active theme on `<html>` and replace the default `theme-color` metas. */
+/** Put the active theme on `<html>` and replace the default `color-scheme` and `theme-color` metas. */
 export function injectTheme(html: string, theme: OmarchyTheme | null): string {
   if (theme === null) return html;
   const style = themeStyle(theme.colors);
@@ -227,9 +227,21 @@ export function injectTheme(html: string, theme: OmarchyTheme | null): string {
     /[ \t]*<meta\b[^>]*\bname="theme-color"[^>]*>\r?\n?/gi,
     "",
   );
-  const meta = `<meta name="theme-color" content="${theme.colors.background}" />`;
-  if (!withoutThemeColor.includes("</head>")) return withoutThemeColor;
-  return withoutThemeColor.replace("</head>", `    ${meta}\n  </head>`);
+  // The UA paints its own surfaces (form controls, scrollbars, overscroll) in the
+  // theme's scheme before any stylesheet loads.
+  const withoutScheme = withoutThemeColor.replace(
+    /[ \t]*<meta\b[^>]*\bname="color-scheme"[^>]*>\r?\n?/gi,
+    "",
+  );
+  const metas = [
+    `<meta name="color-scheme" content="${theme.colors.mode}" />`,
+    `<meta name="theme-color" content="${theme.colors.background}" />`,
+  ];
+  if (!withoutScheme.includes("</head>")) return withoutScheme;
+  return withoutScheme.replace(
+    "</head>",
+    `${metas.map((meta) => `    ${meta}\n`).join("")}  </head>`,
+  );
 }
 
 /** Plain hex or comma rgb(): what an installed app's system bars can paint. */
