@@ -95,7 +95,11 @@ export function TasksView({
       >
         {!ready && <p className="font-mono text-xs text-muted-foreground">Loading…</p>}
         {ready && tasks.length === 0 && (
-          <p className="py-8 text-center font-mono text-xs text-muted-foreground">No tasks yet.</p>
+          <p className="py-8 text-center">
+            <span className="bg-foreground px-2 py-1 font-mono text-[11px] text-background">
+              No tasks yet.
+            </span>
+          </p>
         )}
         <ul className="flex flex-col gap-4">
           {roots.map((task) => (
