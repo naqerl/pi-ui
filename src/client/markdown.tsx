@@ -1,6 +1,6 @@
 // biome-ignore-all lint/suspicious/noArrayIndexKey: Markdown tokens have no ids; their order is the identity.
 import { lexer, type Token, type Tokens } from "marked";
-import { Fragment, type ReactNode, useMemo } from "react";
+import { Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
 
 const headingClasses: Record<number, string> = {
   1: "mt-4 mb-1 text-base font-semibold tracking-tight first:mt-0",
@@ -131,14 +131,7 @@ function blockToken(token: Token, key: string): ReactNode {
         </p>
       );
     case "code":
-      return (
-        <pre
-          key={key}
-          className="max-w-full overflow-x-auto whitespace-pre border border-border bg-muted px-3 py-2.5 font-mono text-xs leading-relaxed [overflow-wrap:normal]"
-        >
-          <code className="font-mono">{token.text}</code>
-        </pre>
-      );
+      return <CodeBlock key={key} text={token.text} />;
     case "blockquote": {
       const node = token as Tokens.Blockquote;
       return (
@@ -252,6 +245,60 @@ function listItem(item: Tokens.ListItem, key: string): ReactNode {
         ),
       )}
     </>
+  );
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard !== undefined && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Fall back to a selection copy below; plain-http hosts have no clipboard API.
+  }
+  const field = document.createElement("textarea");
+  field.value = text;
+  field.setAttribute("readonly", "");
+  field.style.position = "fixed";
+  field.style.opacity = "0";
+  document.body.append(field);
+  field.select();
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } catch {
+    copied = false;
+  }
+  field.remove();
+  return copied;
+}
+
+function CodeBlock({ text }: { text: string }) {
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+
+  useEffect(() => {
+    if (state === "idle") return;
+    const timer = window.setTimeout(() => setState("idle"), 1500);
+    return () => window.clearTimeout(timer);
+  }, [state]);
+
+  return (
+    <div className="group relative min-w-0 max-w-full">
+      <pre className="max-w-full overflow-x-auto whitespace-pre border border-border bg-muted px-3 py-2.5 pr-14 font-mono text-xs leading-relaxed [overflow-wrap:normal]">
+        <code className="font-mono">{text}</code>
+      </pre>
+      <button
+        type="button"
+        aria-label={state === "copied" ? "Copied" : "Copy code"}
+        onClick={() => {
+          void copyText(text).then((ok) => setState(ok ? "copied" : "failed"));
+        }}
+        className="theme-radius absolute top-1 right-1 border border-border bg-surface px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground opacity-90 transition-opacity hover:text-foreground focus-visible:opacity-100"
+      >
+        {state === "copied" ? "copied" : state === "failed" ? "failed" : "copy"}
+      </button>
+    </div>
   );
 }
 

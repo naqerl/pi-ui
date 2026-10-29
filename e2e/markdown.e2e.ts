@@ -260,3 +260,45 @@ test("shows hh:mm at the bottom right of user and assistant messages", async ({
     expect(time.bottomGap).toBeLessThan(12);
   }
 });
+
+test("copies a fenced code block from its copy button", async ({ app, browser, screen }) => {
+  const code = "const answer = 42;\nconsole.log(answer);";
+  await browser.route("**/api/state", async (route) => {
+    await route.fulfill({
+      json: {
+        ...snapshot,
+        messages: [
+          {
+            id: "copy-bot",
+            role: "assistant",
+            text: `Here:\n\n\`\`\`ts\n${code}\n\`\`\``,
+            timestamp: new Date(Date.UTC(2026, 0, 1)).toISOString(),
+            order: 1,
+          },
+        ],
+      },
+    });
+  });
+  await app.open("/");
+  const button = screen.getByRole("button", "Copy code");
+  await expect(button).toBeVisible();
+
+  await browser.evaluate(() => {
+    const target = window as unknown as { copied?: string };
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => {
+          target.copied = text;
+        },
+      },
+    });
+    return true;
+  });
+  await button.tap();
+  await expect(screen.getByRole("button", "Copied")).toBeVisible();
+  const copied = await browser.evaluate(
+    () => (window as unknown as { copied?: string }).copied ?? null,
+  );
+  expect(copied).toBe(code);
+});
