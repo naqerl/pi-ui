@@ -18,7 +18,11 @@ export class TaskError extends Error {
 }
 
 function cloneTask(task: Task): Task {
-  return { ...task, blockedBy: [...task.blockedBy] };
+  return {
+    ...task,
+    blockedBy: [...task.blockedBy],
+    ...(task.attachments === undefined ? {} : { attachments: [...task.attachments] }),
+  };
 }
 
 function newId(taken: Set<string>): string {
@@ -44,7 +48,9 @@ function isTask(value: unknown): value is Task {
     (task.parentId === null || typeof task.parentId === "string") &&
     Array.isArray(task.blockedBy) &&
     task.blockedBy.every((id) => typeof id === "string") &&
-    typeof task.createdAt === "string"
+    typeof task.createdAt === "string" &&
+    (task.attachments === undefined ||
+      (Array.isArray(task.attachments) && task.attachments.every((id) => typeof id === "string")))
   );
 }
 
@@ -88,7 +94,11 @@ export class TaskStore {
       typeof revision === "number" && Number.isInteger(revision) && revision >= 0 ? revision : 0;
   }
 
-  create(title: string, parentId: string | null): Promise<TaskLedger> {
+  create(
+    title: string,
+    parentId: string | null,
+    attachments: readonly string[] = [],
+  ): Promise<TaskLedger> {
     const text = title.trim();
     if (text.length === 0) return Promise.reject(new TaskError("Task title is required", 400));
     return this.commit((tasks) => {
@@ -105,6 +115,7 @@ export class TaskStore {
         parentId,
         blockedBy: [],
         createdAt: new Date().toISOString(),
+        ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
       };
       return [...tasks, task];
     });

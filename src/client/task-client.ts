@@ -15,11 +15,19 @@ async function requestTask(url: string, init: RequestInit): Promise<TaskOutcome>
   }
 }
 
-export function createTask(title: string, parentId: string | null): Promise<TaskOutcome> {
+export function createTask(
+  title: string,
+  parentId: string | null,
+  attachments: string[] = [],
+): Promise<TaskOutcome> {
   return requestTask("/api/tasks", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title, parentId }),
+    body: JSON.stringify({
+      title,
+      parentId,
+      ...(attachments.length > 0 ? { attachments } : {}),
+    }),
   });
 }
 

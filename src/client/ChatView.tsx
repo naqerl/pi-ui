@@ -13,12 +13,13 @@ import { Button } from "./components/ui/button";
 import { Textarea } from "./components/ui/textarea";
 import { cn } from "./lib/utils";
 import { InlineMarkdown, Markdown, plainInline } from "./markdown";
+import { ATTACH_ACCEPT, mediaUrl, uploadMedia } from "./media-client";
 import { PiMenu } from "./PiMenu";
 import { type ChatStats, StatsView } from "./StatsView";
 import { TasksView } from "./TasksView";
 import { createTask } from "./task-client";
 import { groupTimeline } from "./timeline-groups";
-import type { TimelineItem } from "./use-chat";
+import type { SendOutcome, TimelineItem } from "./use-chat";
 import { usePager } from "./use-pager";
 import { useStickToBottom } from "./use-stick-to-bottom";
 import { WorkingIndicator } from "./WorkingIndicator";
@@ -33,7 +34,7 @@ interface ChatViewProps {
   unavailableServers: string[];
   ready: boolean;
   tasks: Task[];
-  send: (text: string, mode?: MessageMode) => Promise<boolean>;
+  send: (text: string, mode?: MessageMode, attachments?: string[]) => Promise<SendOutcome>;
   stop: () => Promise<void>;
   applyTasks: (ledger: TaskLedger) => void;
   stats: ChatStats;
@@ -127,8 +128,33 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           partial
         </div>
       )}
+      {message.attachments !== undefined && message.attachments.length > 0 && (
+        <div
+          className="mb-1.5 flex flex-wrap justify-end gap-1.5"
+          data-testid="message-attachments"
+        >
+          {message.attachments.map((item) => (
+            <a
+              key={item.id}
+              href={mediaUrl(item.id)}
+              target="_blank"
+              rel="noreferrer"
+              className="block overflow-hidden rounded-sm border border-foreground/10"
+            >
+              <img
+                src={mediaUrl(item.id)}
+                alt="Attachment"
+                loading="lazy"
+                className="block max-h-48 max-w-full object-cover"
+              />
+            </a>
+          ))}
+        </div>
+      )}
       {mine ? (
-        <div className="whitespace-pre-wrap [overflow-wrap:anywhere]">{message.text}</div>
+        message.text.length > 0 && (
+          <div className="whitespace-pre-wrap [overflow-wrap:anywhere]">{message.text}</div>
+        )
       ) : (
         <Markdown text={message.text} />
       )}
@@ -301,6 +327,141 @@ function useViewportHeight() {
   }, []);
 }
 
+interface Attachment {
+  key: string;
+  preview: string;
+  name: string;
+  status: "uploading" | "ready" | "error";
+  id?: string;
+  error?: string;
+}
+
+let attachmentKey = 0;
+
+/** Images picked or pasted into the composer, uploaded as soon as they are added. */
+function useAttachments() {
+  const [items, setItems] = useState<Attachment[]>([]);
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+
+  useEffect(
+    () => () => {
+      for (const item of itemsRef.current) URL.revokeObjectURL(item.preview);
+    },
+    [],
+  );
+
+  const add = useCallback((files: Iterable<File>) => {
+    for (const file of files) {
+      const key = `a${++attachmentKey}`;
+      const preview = URL.createObjectURL(file);
+      setItems((current) => [...current, { key, preview, name: file.name, status: "uploading" }]);
+      uploadMedia(file).then(
+        (ref) =>
+          setItems((current) =>
+            current.map((item) =>
+              item.key === key ? { ...item, status: "ready", id: ref.id } : item,
+            ),
+          ),
+        (error: unknown) =>
+          setItems((current) =>
+            current.map((item) =>
+              item.key === key
+                ? {
+                    ...item,
+                    status: "error",
+                    error: error instanceof Error ? error.message : "Upload failed",
+                  }
+                : item,
+            ),
+          ),
+      );
+    }
+  }, []);
+
+  const remove = useCallback((key: string) => {
+    setItems((current) => {
+      const item = current.find((entry) => entry.key === key);
+      if (item !== undefined) URL.revokeObjectURL(item.preview);
+      return current.filter((entry) => entry.key !== key);
+    });
+  }, []);
+
+  const clear = useCallback((sent: readonly string[]) => {
+    setItems((current) => {
+      for (const item of current) if (sent.includes(item.key)) URL.revokeObjectURL(item.preview);
+      return current.filter((item) => !sent.includes(item.key));
+    });
+  }, []);
+
+  return { items, add, remove, clear };
+}
+
+function PlusIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      className="size-5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+    >
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function AttachmentStrip({
+  items,
+  onRemove,
+}: {
+  items: Attachment[];
+  onRemove: (key: string) => void;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <ul
+      aria-label="Attachments"
+      data-testid="composer-attachments"
+      className="flex gap-2 overflow-x-auto px-2.5 pt-2.5 pb-0.5"
+    >
+      {items.map((item, index) => (
+        <li
+          key={item.key}
+          data-status={item.status}
+          className="relative shrink-0"
+          title={item.error ?? item.name}
+        >
+          <img
+            src={item.preview}
+            alt={`Attachment ${index + 1}`}
+            className={cn(
+              "block size-16 rounded-sm border object-cover",
+              item.status === "error" ? "border-destructive opacity-60" : "border-foreground/15",
+              item.status === "uploading" && "animate-pulse opacity-60",
+            )}
+          />
+          {item.status === "error" && (
+            <span className="absolute inset-x-0 bottom-0 truncate bg-destructive px-1 font-mono text-[9px] leading-4 text-white">
+              {item.error}
+            </span>
+          )}
+          <button
+            type="button"
+            aria-label={`Remove attachment ${index + 1}`}
+            className="absolute -top-1.5 -right-1.5 grid size-5 place-items-center rounded-full bg-foreground font-mono text-[11px] leading-none text-background"
+            onClick={() => onRemove(item.key)}
+          >
+            ×
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function Composer({
   tasksPage,
   parentTitle,
@@ -314,17 +475,27 @@ function Composer({
   tasksPage: boolean;
   parentTitle: string | null;
   running: boolean;
-  send: (text: string, mode?: MessageMode) => Promise<boolean>;
+  send: (text: string, mode?: MessageMode, attachments?: string[]) => Promise<boolean>;
   stop: () => Promise<void>;
-  addTask: (text: string) => Promise<boolean>;
+  addTask: (text: string, attachments?: string[]) => Promise<boolean>;
   error: string | null;
   onDismissError: () => void;
 }) {
   const [value, setValue] = useState("");
+  const attachments = useAttachments();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const uploading = attachments.items.some((item) => item.status === "uploading");
+  const failed = attachments.items.some((item) => item.status === "error");
+  const readyIds = attachments.items.flatMap((item) =>
+    item.status === "ready" && item.id !== undefined ? [item.id] : [],
+  );
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
   const rowWidthRef = useRef<number | null>(null);
-  const canSend = value.trim().length > 0;
+
+  const hasText = value.trim().length > 0;
+  // A task still needs a title; a chat message can be images alone.
+  const canSend = !uploading && !failed && (hasText || (!tasksPage && readyIds.length > 0));
 
   const resizeTextarea = useCallback(() => {
     const element = textareaRef.current;
@@ -397,8 +568,11 @@ function Composer({
     const element = textareaRef.current;
     const text = value;
     const coarse = usesCoarsePointer();
-    const sent = tasksPage ? await addTask(text) : await send(text, mode);
+    const ids = readyIds;
+    const sentKeys = attachments.items.map((item) => item.key);
+    const sent = tasksPage ? await addTask(text, ids) : await send(text, mode, ids);
     if (!sent) return;
+    attachments.clear(sentKeys);
     // Keep a draft typed while the request was in flight; only clear the text we sent.
     if (element !== null && element.value !== text) return;
     setValue("");
@@ -428,7 +602,33 @@ function Composer({
           {error}
         </p>
       )}
-      <div ref={rowRef} className="flex w-full items-end gap-2 p-1.5">
+      <AttachmentStrip items={attachments.items} onRemove={attachments.remove} />
+      <div ref={rowRef} className="flex w-full items-end gap-1 p-1.5">
+        <input
+          ref={fileRef}
+          type="file"
+          accept={ATTACH_ACCEPT}
+          multiple
+          hidden
+          data-testid="attach-input"
+          onChange={(event) => {
+            const files = event.target.files;
+            if (files !== null) attachments.add([...files]);
+            event.target.value = "";
+          }}
+        />
+        <div className="flex h-9 w-9 shrink-0 items-stretch">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label={tasksPage ? "Attach image to task" : "Attach image"}
+            className={ACTION_BUTTON_CLASS}
+            onClick={() => fileRef.current?.click()}
+          >
+            <PlusIcon />
+          </Button>
+        </div>
         <Textarea
           ref={textareaRef}
           aria-invalid={error !== null ? true : undefined}
@@ -447,6 +647,14 @@ function Composer({
           onChange={(event) => {
             setValue(event.target.value);
             if (error !== null) onDismissError();
+          }}
+          onPaste={(event) => {
+            const files = [...event.clipboardData.files].filter((file) =>
+              file.type.startsWith("image/"),
+            );
+            if (files.length === 0) return;
+            event.preventDefault();
+            attachments.add(files);
           }}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -468,7 +676,7 @@ function Composer({
             >
               <SendIcon />
             </Button>
-          ) : running && !canSend ? (
+          ) : running && !hasText && attachments.items.length === 0 ? (
             <Button
               key="stop"
               type="button"
@@ -488,6 +696,7 @@ function Composer({
               size="icon"
               aria-label="Steer"
               className={ACTION_BUTTON_CLASS}
+              disabled={!canSend}
               onClick={() => void submit("steer")}
             >
               <SendIcon />
@@ -540,6 +749,9 @@ export function ChatView({
   const [armedParentId, setArmedParentId] = useState<string | null>(null);
   const [composerError, setComposerError] = useState<string | null>(null);
   const tasksPage = pager.page === TASKS_PAGE;
+  // An error belongs to the page it was raised on.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset on page change only
+  useEffect(() => setComposerError(null), [pager.page]);
   const statsPage = pager.page === STATS_PAGE;
   const armed = tasks.find((task) => task.id === armedParentId) ?? null;
 
@@ -617,14 +829,19 @@ export function ChatView({
     return undefined;
   }, [groups, running, timeline]);
 
-  const handleSend = async (text: string, mode: MessageMode = "queue") => {
-    const sent = await send(text, mode);
-    if (sent) requestAnimationFrame(() => stick.scrollToBottom());
-    return sent;
+  const handleSend = async (text: string, mode: MessageMode = "queue", attachments?: string[]) => {
+    const outcome = await send(text, mode, attachments);
+    if (!outcome.ok) {
+      if (outcome.error !== null) setComposerError(outcome.error);
+      return false;
+    }
+    setComposerError(null);
+    requestAnimationFrame(() => stick.scrollToBottom());
+    return true;
   };
 
-  const addTask = async (text: string) => {
-    const outcome = await createTask(text, tasksPage ? (armed?.id ?? null) : null);
+  const addTask = async (text: string, attachments: string[] = []) => {
+    const outcome = await createTask(text, tasksPage ? (armed?.id ?? null) : null, attachments);
     if (!outcome.ok) {
       setComposerError(outcome.error);
       return false;
@@ -844,7 +1061,7 @@ export function ChatView({
             send={handleSend}
             stop={stop}
             addTask={addTask}
-            error={tasksPage ? composerError : null}
+            error={composerError}
             onDismissError={() => setComposerError(null)}
           />
         </div>

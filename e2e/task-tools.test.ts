@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import { MediaStore } from "../src/server/media.js";
 import { createTaskTools, type TaskBridge } from "../src/server/task-tools.js";
 import { TaskStore } from "../src/server/tasks.js";
 import type { TaskLedger } from "../src/shared/types.js";
@@ -33,6 +34,7 @@ before(async () => {
   await store.load();
   bridge = {
     store,
+    media: new MediaStore(join(directory, "media")),
     publish(ledger) {
       published.push(ledger);
     },
@@ -47,7 +49,7 @@ test("task tools list, mark done, and create a blocker", async () => {
   published = [];
   assert.deepEqual(
     createTaskTools(bridge).map((tool) => tool.name),
-    ["task_list", "task_done", "task_block"],
+    ["task_list", "task_view", "task_done", "task_block"],
   );
 
   const parent = (await bridge.store.create("Write the ledger", null)).tasks.find(
@@ -96,4 +98,23 @@ test("task tools list, mark done, and create a blocker", async () => {
 
   assert.ok(published.length > 0);
   assert.equal(published.at(-1)?.revision, bridge.store.ledger().revision);
+});
+
+test("task_view returns a task's images", async () => {
+  const media = bridge.media;
+  assert.ok(media);
+  const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+  const ref = await media.save(png, "image/png");
+  await assert.rejects(media.save(Uint8Array.from([1, 2, 3]), "image/png"));
+  const created = (await bridge.store.create("Look at this", null, [ref.id])).tasks.find(
+    (task) => task.title === "Look at this",
+  );
+  assert.ok(created);
+  assert.match(text(await call("task_list", {})).text, new RegExp(`${created.id} open images=1`));
+  const viewed = await call("task_view", { id: created.id });
+  assert.equal(viewed.isError === true, false);
+  const image = viewed.output?.find((item) => item.type === "image");
+  assert.ok(image && image.type === "image");
+  assert.equal(image.mimeType, "image/png");
+  assert.equal(image.data, Buffer.from(png).toString("base64"));
 });

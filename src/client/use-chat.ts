@@ -44,6 +44,9 @@ function retainPendingSteers(snapshot: ChatMessage[], pending: ChatMessage[]): C
   });
 }
 
+/** A send that failed for a reason worth showing carries it in `error`. */
+export type SendOutcome = { ok: true } | { ok: false; error: string | null };
+
 export type TimelineItem =
   | { kind: "message"; order: number; message: ChatMessage }
   | { kind: "activity"; order: number; activity: ActivityItem };
@@ -322,21 +325,32 @@ export function useChat() {
   }, [messages, activity, liveTools, draftText, draftThinking, pendingSteers]);
 
   const send = useCallback(
-    async (text: string, mode: MessageMode = "queue"): Promise<boolean> => {
+    async (
+      text: string,
+      mode: MessageMode = "queue",
+      attachments: string[] = [],
+    ): Promise<SendOutcome> => {
       const trimmed = text.trim();
-      if (trimmed.length === 0) return false;
+      if (trimmed.length === 0 && attachments.length === 0) return { ok: false, error: null };
 
       try {
         const response = await fetch("/api/message", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: trimmed, mode }),
+          body: JSON.stringify({
+            text: trimmed,
+            mode,
+            ...(attachments.length > 0 ? { attachments } : {}),
+          }),
         });
         if (response.status === 409) {
           await refreshState();
-          return false;
+          return { ok: false, error: null };
         }
-        if (!response.ok) return false;
+        if (!response.ok) {
+          const reason = (await response.text()).trim();
+          return { ok: false, error: reason.length > 0 ? reason : "Message was not sent" };
+        }
         const data = (await response.json()) as SubmitMessageResponse;
         setQueue(data.queue);
         if (!data.queued && !(runState === "running")) {
@@ -360,9 +374,9 @@ export function useChat() {
               : [...current, data.message],
           );
         }
-        return true;
+        return { ok: true };
       } catch {
-        return false;
+        return { ok: false, error: "Message was not sent" };
       }
     },
     [runState, refreshState],

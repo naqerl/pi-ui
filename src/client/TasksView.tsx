@@ -10,6 +10,7 @@ import {
 } from "../shared/tasks";
 import type { Task, TaskLedger } from "../shared/types";
 import { InlineMarkdown, plainInline } from "./markdown";
+import { mediaUrl } from "./media-client";
 import { removeTask, type TaskOutcome, updateTask } from "./task-client";
 
 const LONG_PRESS_MS = 500;
@@ -284,6 +285,24 @@ function TaskBranch({
           </span>
           <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{task.id}</span>
         </span>
+        {task.attachments !== undefined && task.attachments.length > 0 && (
+          <span className="mt-2 flex flex-wrap gap-1.5 pl-6" data-testid="task-attachments">
+            {task.attachments.map((id, index) => (
+              <img
+                key={id}
+                src={mediaUrl(id)}
+                alt={`Task attachment ${index + 1}`}
+                loading="lazy"
+                draggable={false}
+                className={
+                  done
+                    ? "block size-12 rounded-sm border border-foreground/15 object-cover opacity-60"
+                    : "block size-12 rounded-sm border border-foreground/15 object-cover"
+                }
+              />
+            ))}
+          </span>
+        )}
         {blocked.length > 0 && (
           <span className="mt-1 block text-left font-mono text-[10px] text-muted-foreground">
             blocked by {blocked}

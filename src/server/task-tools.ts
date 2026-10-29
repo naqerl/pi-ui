@@ -6,11 +6,14 @@ import {
 import { Type } from "typebox";
 import { compareTasks, liveBlockerIds } from "../shared/tasks.js";
 import type { Task, TaskLedger } from "../shared/types.js";
+import type { MediaStore } from "./media.js";
 import { TaskError, type TaskStore } from "./tasks.js";
 
 /** The process-wide ledger and the hook that tells open browsers it changed. */
 export interface TaskBridge {
   readonly store: TaskStore;
+  /** Where task images live. Without it, task_view returns only the text. */
+  readonly media?: MediaStore;
   publish(ledger: TaskLedger): void;
 }
 
@@ -30,7 +33,9 @@ function formatLedger(ledger: TaskLedger): string {
     const live = liveBlockerIds(ledger.tasks, task);
     const blocked = live.length > 0 ? ` blocked-by=${live.join(",")}` : "";
     const title = task.title.replace(/\s+/g, " ").trim();
-    lines.push(`${"  ".repeat(depth)}${task.id} ${task.status}${blocked} ${title}`);
+    const count = task.attachments?.length ?? 0;
+    const images = count > 0 ? ` images=${count}` : "";
+    lines.push(`${"  ".repeat(depth)}${task.id} ${task.status}${blocked}${images} ${title}`);
     const children = ledger.tasks
       .filter((item) => item.parentId === task.id)
       .sort((a, b) => compareTasks(ledger.tasks, a, b));
@@ -43,6 +48,8 @@ function formatLedger(ledger: TaskLedger): string {
   for (const root of roots) write(root, 0);
   return lines.join("\n");
 }
+
+type ToolResultContent = NonNullable<ToolExecutionResult["output"]>[number][];
 
 function failure(error: unknown): ToolExecutionResult {
   const message = error instanceof TaskError ? error.message : "Could not update tasks";
@@ -68,10 +75,39 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
     defineTool({
       name: "task_list",
       description:
-        "List the shared todo ledger: id, status, live blockers, and title. Ready tasks come first, then blocked, then done. A done blocker is omitted.",
+        "List the shared todo ledger: id, status, live blockers, attached image count, and title. Ready tasks come first, then blocked, then done. A done blocker is omitted. Use task_view to see a task's images.",
       parameters: Type.Object({}),
       async execute() {
         return { output: [{ type: "text", text: formatLedger(bridge.store.ledger()) }] };
+      },
+    }),
+    defineTool({
+      name: "task_view",
+      description:
+        "Show one task in full: its title, status, blockers, and the images attached to it when it was created.",
+      parameters: idSchema,
+      async execute(args) {
+        const task = bridge.store.ledger().tasks.find((item) => item.id === args.id);
+        if (task === undefined) return failure(new TaskError("Unknown task", 404));
+        const ids = task.attachments ?? [];
+        const header = [
+          `${task.id} ${task.status}${task.parentId === null ? "" : ` parent=${task.parentId}`}`,
+          task.blockedBy.length > 0 ? `blocked-by=${task.blockedBy.join(",")}` : "",
+          task.title,
+          ids.length > 0
+            ? `${ids.length} attached image${ids.length === 1 ? "" : "s"} follow.`
+            : "",
+        ].filter((line) => line.length > 0);
+        const output: ToolResultContent = [{ type: "text", text: header.join("\n") }];
+        for (const id of ids) {
+          if (bridge.media === undefined) break;
+          try {
+            output.push(...(await bridge.media.images([id])));
+          } catch {
+            output.push({ type: "text", text: `image ${id} is missing` });
+          }
+        }
+        return { output };
       },
     }),
     defineTool({

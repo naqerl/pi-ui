@@ -5,10 +5,18 @@ export const STEER_ENTRY_KIND = "ui.steer";
 
 export type MessageMode = "queue" | "steer";
 
+/** An image kept in `DATA_DIR/media`, served at `/api/media/<id>`. */
+export interface MediaRef {
+  id: string;
+  mimeType: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
   text: string;
+  /** Images sent with a user message. */
+  attachments?: MediaRef[];
   timestamp: string;
   /** Monotonic ordering key used to interleave messages and activity. */
   order: number;
@@ -32,6 +40,8 @@ export interface QueuedMessage {
   id: string;
   text: string;
   createdAt: string;
+  /** Media ids sent with the message. */
+  attachments?: string[];
 }
 
 export interface ToolActivity {
@@ -183,6 +193,8 @@ export interface Task {
   /** Other task ids. A done blocker no longer keeps this task blocked. */
   blockedBy: string[];
   createdAt: string;
+  /** Media ids attached when the task was created. */
+  attachments?: string[];
 }
 
 export interface TaskLedger {

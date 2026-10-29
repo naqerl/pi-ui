@@ -11,6 +11,19 @@ function textOf(content) {
     .join("\n");
 }
 
+function lastUserImages(body) {
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message && message.role === "user") {
+      return Array.isArray(message.content)
+        ? message.content.filter((part) => part && part.type === "image_url").length
+        : 0;
+    }
+  }
+  return 0;
+}
+
 function lastUserText(body) {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   for (let index = messages.length - 1; index >= 0; index--) {
@@ -110,7 +123,8 @@ export function startFakeModelServer() {
       return;
     }
 
-    const text = responseFor(prompt);
+    const images = lastUserImages(body);
+    const text = images > 0 ? `${responseFor(prompt)} [images: ${images}]` : responseFor(prompt);
     for (const piece of text.match(/.{1,18}/gs) ?? []) {
       writeEvent(res, chunkFor(piece));
       await new Promise((resolve) => setTimeout(resolve, 8));

@@ -28,7 +28,7 @@ if (!live) {
                 id: "e2e-model",
                 name: "E2E Model",
                 reasoning: false,
-                input: ["text"],
+                input: ["text", "image"],
                 contextWindow: 32768,
                 maxTokens: 2048,
               },

@@ -24,6 +24,7 @@ import {
   type ActivityItem,
   type ChatMessage,
   type ContextUsage,
+  type MediaRef,
   STEER_ENTRY_KIND,
   type TokenSpend,
   type ToolActivity,
@@ -361,7 +362,13 @@ async function appendInterruptionNote(
   }
 }
 
-export function buildTranscript(entries: readonly EntryRecord[]): {
+/** Maps an image block in a user entry to its served media id. */
+export type MediaResolver = (data: string, mimeType: string) => MediaRef | undefined;
+
+export function buildTranscript(
+  entries: readonly EntryRecord[],
+  media?: MediaResolver,
+): {
   messages: ChatMessage[];
   activity: ActivityItem[];
 } {
@@ -421,11 +428,13 @@ export function buildTranscript(entries: readonly EntryRecord[]): {
     const message = asRecord(entry.model?.[0]);
     if (kind === UserEntry.kind || kind === STEER_ENTRY_KIND) {
       const text = extractText(message.content);
-      if (text.length > 0) {
+      const attachments = media === undefined ? [] : userImages(message.content, media);
+      if (text.length > 0 || attachments.length > 0) {
         messages.push({
           id: `m-${entry.id}`,
           role: "user",
           text,
+          ...(attachments.length > 0 ? { attachments } : {}),
           timestamp: timestampOf(message),
           order: entry.id * 10_000,
           ...(kind === STEER_ENTRY_KIND ? { steer: true } : {}),
@@ -634,6 +643,17 @@ function contextTokensOf(usage: Usage): number {
       ? usage.totalTokens
       : usage.input + usage.output + usage.cacheRead + usage.cacheWrite) || 0
   );
+}
+
+function userImages(content: unknown, media: MediaResolver): MediaRef[] {
+  const refs: MediaRef[] = [];
+  for (const block of contentBlocks(content)) {
+    if (block.type !== "image") continue;
+    if (typeof block.data !== "string" || typeof block.mimeType !== "string") continue;
+    const ref = media(block.data, block.mimeType);
+    if (ref !== undefined) refs.push(ref);
+  }
+  return refs;
 }
 
 function timestampOf(message: Record<string, unknown>): string {

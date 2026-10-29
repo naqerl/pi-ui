@@ -31,6 +31,7 @@ import {
 } from "../shared/types.js";
 import type { BillionContextInline } from "./billion-context.js";
 import type { McpEventFeed } from "./mcp-events.js";
+import { MEDIA_TYPES, MediaError, type MediaStore } from "./media.js";
 import { listAvailableModels, modelOption } from "./models.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
 import type { RunMarker, RunMarkerStore } from "./run-marker.js";
@@ -62,6 +63,8 @@ interface SubmitOptions {
   requestId?: string;
   /** Reuse the interrupted run's marker instead of starting a fresh one. */
   resume?: boolean;
+  /** Media ids sent as images after the text. */
+  attachments?: string[];
 }
 
 const CONTINUATION_TEXT =
@@ -106,6 +109,7 @@ export class ChatService {
     private readonly catalog: ModelRuntime,
     initialModel: Model<Api> | undefined,
     private readonly bili: BillionContextInline,
+    private readonly media: MediaStore,
   ) {
     this.runState = interrupted ? "interrupted" : "idle";
     this.modelWindow = modelWindow;
@@ -115,6 +119,19 @@ export class ChatService {
       this.runStartedAt = initialMarker?.startedAt;
     }
   }
+
+  /**
+   * pi-ai swaps images for an "image omitted" note when the model is text-only, so the agent
+   * would never see them. Refuse up front instead. With no model chosen the run fails anyway.
+   */
+  private assertAcceptsImages(): void {
+    if (this.selected === null) return;
+    const model = this.catalog.getModel(this.selected.provider, this.selected.id);
+    if (model === undefined || model.input.includes("image")) return;
+    throw new MediaError(`${this.selected.name} does not accept images`, 400);
+  }
+
+  private readonly mediaRef = (data: string, mimeType: string) => this.media.refFor(data, mimeType);
 
   async start(): Promise<void> {
     this.stream = await watchEvents(this.harness, this.conversation.id, SESSION_CONTEXT);
@@ -200,7 +217,7 @@ export class ChatService {
   async getSnapshot(): Promise<Snapshot> {
     const context = await this.conversation.context(SESSION_CONTEXT);
     const usage = await this.harness.usage(SESSION_CONTEXT);
-    const transcript = buildTranscript(context.entries);
+    const transcript = buildTranscript(context.entries, this.mediaRef);
     return {
       conversationId: String(this.conversation.id),
       messages: transcript.messages,
@@ -308,6 +325,14 @@ export class ChatService {
     options: SubmitOptions = {},
   ): Promise<SubmittedMessage> {
     const steer = mode === "steer";
+    const attachments = options.attachments ?? [];
+    if (attachments.length > 0) this.assertAcceptsImages();
+    // Read the images first, so an unknown id fails before the run state changes.
+    const images = await this.media.images(attachments);
+    const content =
+      images.length === 0
+        ? text
+        : [...(text.length > 0 ? [{ type: "text" as const, text }] : []), ...images];
     const startsRun = this.runState !== "running" && this.queued.size === 0;
     const resumeMarker = startsRun && options.resume === true ? this.marker : undefined;
     const startedAt = resumeMarker?.startedAt ?? new Date().toISOString();
@@ -334,7 +359,7 @@ export class ChatService {
       submission = await this.conversation.submit(
         {
           type: "input",
-          content: text,
+          content,
           whenBusy: steer ? "steer" : "followUp",
           ...(options.requestId === undefined ? {} : { requestId: options.requestId }),
           ...(steer ? { entry: { kind: STEER_ENTRY_KIND } } : {}),
@@ -351,7 +376,12 @@ export class ChatService {
     const queuedInitially = queueMode && !startsRun;
     if (queuedInitially) {
       this.queued.set(id, {
-        item: { id, text, createdAt: new Date().toISOString() },
+        item: {
+          id,
+          text,
+          createdAt: new Date().toISOString(),
+          ...(attachments.length > 0 ? { attachments } : {}),
+        },
         submission,
       });
       await this.persistMarkerState();
@@ -359,11 +389,16 @@ export class ChatService {
     }
     if (steer) this.steerSubmissions.add(id);
 
-    const { message, placed } = await this.submittedMessage(submission, text, steer);
+    const { message, placed } = await this.submittedMessage(submission, text, steer, attachments);
     const queued = queueMode && !placed;
     if (queued && !queuedInitially) {
       this.queued.set(id, {
-        item: { id, text, createdAt: new Date().toISOString() },
+        item: {
+          id,
+          text,
+          createdAt: new Date().toISOString(),
+          ...(attachments.length > 0 ? { attachments } : {}),
+        },
         submission,
       });
       await this.persistMarkerState();
@@ -403,7 +438,9 @@ export class ChatService {
     } catch (error) {
       console.error("[pi] could not move a queued message into the run", error);
     }
-    return this.submit(queued.item.text, "steer");
+    return this.submit(queued.item.text, "steer", {
+      ...(queued.item.attachments === undefined ? {} : { attachments: queued.item.attachments }),
+    });
   }
 
   async stop(): Promise<void> {
@@ -468,6 +505,7 @@ export class ChatService {
       try {
         await this.submit(item.text, "queue", {
           requestId: `run-queue:${marker.idempotencyKey}:${item.id}`,
+          ...(item.attachments === undefined ? {} : { attachments: item.attachments }),
         });
       } catch (error) {
         console.error("[pi] could not restore a queued message", error);
@@ -510,6 +548,7 @@ export class ChatService {
     submission: Submission,
     text: string,
     steer: boolean,
+    attachments: string[] = [],
   ): Promise<{ message: ChatMessage; placed: boolean }> {
     const record = await submission.status(SESSION_CONTEXT);
     const entryId = "entry" in record ? record.entry : undefined;
@@ -518,7 +557,7 @@ export class ChatService {
       const context = await this.conversation.context(SESSION_CONTEXT);
       const entry = context.entries.find((candidate) => candidate.id === entryId);
       if (entry) {
-        const message = buildTranscript([entry]).messages[0];
+        const message = buildTranscript([entry], this.mediaRef).messages[0];
         if (message) {
           return {
             message: steer ? { ...message, steer: true } : message,
@@ -533,6 +572,16 @@ export class ChatService {
         id: `m-pending-${submission.id}`,
         role: "user",
         text,
+        ...(attachments.length > 0
+          ? {
+              attachments: attachments.map((id) => ({
+                id,
+                mimeType:
+                  Object.entries(MEDIA_TYPES).find(([, ext]) => id.endsWith(`.${ext}`))?.[0] ??
+                  "image/png",
+              })),
+            }
+          : {}),
         timestamp: new Date().toISOString(),
         order: entryId ?? Number.MAX_SAFE_INTEGER,
         ...(steer ? { steer: true } : {}),

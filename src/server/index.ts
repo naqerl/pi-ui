@@ -11,6 +11,7 @@ import type { TaskLedger, TaskStatus } from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
 import { ChatService } from "./chat-service.js";
 import { McpEventFeed } from "./mcp-events.js";
+import { MAX_MEDIA_BYTES, MediaError, MediaStore, parseAttachmentIds } from "./media.js";
 import { createModelCatalog } from "./models.js";
 import { buildPiSystemPrompt } from "./pi.js";
 import { type DurableSessionOptions, openDurableSession, SESSION_CONTEXT } from "./session.js";
@@ -30,9 +31,11 @@ const cwd = resolve(process.env.PI_CWD?.trim() || process.cwd());
 const dataDir = resolve(cwd, process.env.DATA_DIR?.trim() || "data");
 const themeFile = resolve(dataDir, "theme.json");
 const taskStore = new TaskStore(resolve(dataDir, "tasks.json"));
+const media = new MediaStore(resolve(dataDir, "media"));
 await taskStore.load();
 const taskBridge: TaskBridge = {
   store: taskStore,
+  media,
   publish() {},
 };
 if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
@@ -103,6 +106,7 @@ const chat = new ChatService(
   catalog.runtime,
   activeModel,
   bili,
+  media,
 );
 const events = new McpEventFeed();
 chat.setEventFeed(events);
@@ -200,6 +204,8 @@ function publishTasks(ledger: TaskLedger) {
 
 function taskFailure(c: Context, error: unknown) {
   if (error instanceof TaskError) return c.text(error.message, error.status as 400);
+  if (error instanceof MediaError)
+    return c.text(error.message, error.status === 404 ? 400 : error.status);
   console.error("[pi] tasks failed", error);
   return c.text("Could not update tasks", 500);
 }
@@ -220,7 +226,14 @@ app.post("/api/tasks", async (c) => {
   if (parentId !== null && typeof parentId !== "string")
     return c.text("parentId must be a string", 400);
   try {
-    return c.json(publishTasks(await taskStore.create(title, parentId)), 201);
+    const attachments = parseAttachmentIds(
+      media,
+      typeof body === "object" && body !== null && "attachments" in body
+        ? body.attachments
+        : undefined,
+    );
+    for (const id of attachments) await media.read(id);
+    return c.json(publishTasks(await taskStore.create(title, parentId, attachments)), 201);
   } catch (error) {
     return taskFailure(c, error);
   }
@@ -274,7 +287,21 @@ app.post("/api/message", async (c) => {
     typeof body === "object" && body !== null && "text" in body && typeof body.text === "string"
       ? body.text.trim()
       : "";
-  if (text.length === 0) return c.text("Message text is required", 400);
+  let attachments: string[];
+  try {
+    attachments = parseAttachmentIds(
+      media,
+      typeof body === "object" && body !== null && "attachments" in body
+        ? body.attachments
+        : undefined,
+    );
+  } catch (error) {
+    if (error instanceof MediaError) return c.text(error.message, error.status as 400);
+    throw error;
+  }
+  if (text.length === 0 && attachments.length === 0) {
+    return c.text("Message text is required", 400);
+  }
   const rawMode =
     typeof body === "object" && body !== null && "mode" in body ? body.mode : undefined;
   if (rawMode !== undefined && rawMode !== "queue" && rawMode !== "steer") {
@@ -282,7 +309,40 @@ app.post("/api/message", async (c) => {
   }
   const mode = rawMode === "steer" ? "steer" : "queue";
 
-  return c.json(await chat.submit(text, mode), 202);
+  try {
+    return c.json(await chat.submit(text, mode, { attachments }), 202);
+  } catch (error) {
+    if (error instanceof MediaError)
+      return c.text(error.status === 404 ? "Unknown attachment" : error.message, 400);
+    throw error;
+  }
+});
+
+app.post("/api/media", async (c) => {
+  const mimeType = (c.req.header("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+  const declared = Number(c.req.header("content-length") ?? "0");
+  if (declared > MAX_MEDIA_BYTES) return c.text("An image can be at most 10 MB", 413);
+  try {
+    const bytes = new Uint8Array(await c.req.arrayBuffer());
+    return c.json(await media.save(bytes, mimeType), 201);
+  } catch (error) {
+    if (error instanceof MediaError) return c.text(error.message, error.status);
+    throw error;
+  }
+});
+
+app.get("/api/media/:id", async (c) => {
+  try {
+    const { bytes, mimeType } = await media.read(c.req.param("id"));
+    return c.body(new Uint8Array(bytes), 200, {
+      "Content-Type": mimeType,
+      "Cache-Control": "private, max-age=31536000, immutable",
+      "X-Content-Type-Options": "nosniff",
+    });
+  } catch (error) {
+    if (error instanceof MediaError) return c.notFound();
+    throw error;
+  }
 });
 
 app.post("/api/queue/:id", async (c) => {
