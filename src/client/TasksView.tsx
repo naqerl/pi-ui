@@ -9,6 +9,7 @@ import {
   liveBlockerIds,
 } from "../shared/tasks";
 import type { Task, TaskLedger } from "../shared/types";
+import { InlineMarkdown, plainInline } from "./markdown";
 import { removeTask, type TaskOutcome, updateTask } from "./task-client";
 
 const LONG_PRESS_MS = 500;
@@ -178,7 +179,10 @@ function TaskBranch({
   const done = task.status === "done";
   const openChildren = !done && hasOpenDescendant(tasks, task.id);
   const blocked = liveBlockerIds(tasks, task)
-    .map((id) => tasks.find((item) => item.id === id)?.title ?? id)
+    .map((id) => {
+      const title = tasks.find((item) => item.id === id)?.title;
+      return title === undefined ? id : plainInline(title);
+    })
     .join(", ");
   const notice = problem?.id === task.id && menuTaskId !== task.id ? problem.message : null;
   const press = useRef<number | null>(null);
@@ -209,7 +213,7 @@ function TaskBranch({
         data-task-card=""
         aria-pressed={done}
         aria-disabled={openChildren}
-        aria-label={done ? `Reopen ${task.title}` : `Done ${task.title}`}
+        aria-label={done ? `Reopen ${plainInline(task.title)}` : `Done ${plainInline(task.title)}`}
         aria-describedby={notice !== null ? `task-error-${task.id}` : undefined}
         title={openChildren ? "Finish open subtasks first" : undefined}
         className={
@@ -272,11 +276,11 @@ function TaskBranch({
           <span
             className={
               done
-                ? "min-w-0 flex-1 break-words text-sm text-muted-foreground line-through"
-                : "min-w-0 flex-1 break-words text-sm"
+                ? "min-w-0 flex-1 whitespace-pre-wrap text-sm text-muted-foreground line-through [overflow-wrap:anywhere]"
+                : "min-w-0 flex-1 whitespace-pre-wrap text-sm [overflow-wrap:anywhere]"
             }
           >
-            {task.title}
+            <InlineMarkdown text={task.title} />
           </span>
           <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{task.id}</span>
         </span>
@@ -366,7 +370,7 @@ function TaskMenu({
       <button
         type="button"
         role="menuitem"
-        aria-label={`Subtask of ${task.title}`}
+        aria-label={`Subtask of ${plainInline(task.title)}`}
         className="block w-full theme-radius px-2 py-1.5 text-left font-mono text-[11px] hover:bg-foreground/10"
         onClick={onArm}
       >
@@ -376,7 +380,7 @@ function TaskMenu({
         type="button"
         role="menuitem"
         aria-expanded={pickerOpen}
-        aria-label={`Blockers for ${task.title}`}
+        aria-label={`Blockers for ${plainInline(task.title)}`}
         className="block w-full theme-radius px-2 py-1.5 text-left font-mono text-[11px] hover:bg-foreground/10"
         onClick={onTogglePicker}
       >
@@ -395,7 +399,7 @@ function TaskMenu({
                 <button
                   type="button"
                   aria-pressed={selected}
-                  aria-label={`Blocked by ${other.title}`}
+                  aria-label={`Blocked by ${plainInline(other.title)}`}
                   disabled={cycle}
                   className="text-left font-mono text-[11px] text-foreground disabled:opacity-40"
                   onClick={() => {
@@ -405,7 +409,7 @@ function TaskMenu({
                     onBlockers(blockedBy);
                   }}
                 >
-                  {selected ? "●" : "○"} {other.title}
+                  {selected ? "●" : "○"} <InlineMarkdown text={other.title} />
                 </button>
               </li>
             );
@@ -415,7 +419,7 @@ function TaskMenu({
       <button
         type="button"
         role="menuitem"
-        aria-label={`Remove ${task.title}`}
+        aria-label={`Remove ${plainInline(task.title)}`}
         className="block w-full theme-radius px-2 py-1.5 text-left font-mono text-[11px] hover:bg-foreground/10"
         onClick={onRemove}
       >

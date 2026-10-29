@@ -12,7 +12,7 @@ import { groupSummaryParts } from "./activity-format";
 import { Button } from "./components/ui/button";
 import { Textarea } from "./components/ui/textarea";
 import { cn } from "./lib/utils";
-import { Markdown } from "./markdown";
+import { InlineMarkdown, Markdown, plainInline } from "./markdown";
 import { PiMenu } from "./PiMenu";
 import { TasksView } from "./TasksView";
 import { createTask } from "./task-client";
@@ -797,7 +797,9 @@ export function ChatView({
           </div>
           {tasksPage && armed !== null && (
             <div className="flex items-center gap-2 px-3 font-mono text-[10px] text-muted-foreground">
-              <span className="min-w-0 truncate">subtask of {armed.title}</span>
+              <span className="min-w-0 truncate">
+                subtask of <InlineMarkdown text={armed.title} />
+              </span>
               <button
                 type="button"
                 className="shrink-0 hover:text-foreground"
@@ -810,7 +812,7 @@ export function ChatView({
           )}
           <Composer
             tasksPage={tasksPage}
-            parentTitle={tasksPage ? (armed?.title ?? null) : null}
+            parentTitle={tasksPage && armed !== null ? plainInline(armed.title) : null}
             running={running}
             send={handleSend}
             stop={stop}

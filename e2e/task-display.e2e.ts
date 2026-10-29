@@ -66,3 +66,65 @@ test("shows the empty task list in the latest-indicator style", async ({
   expect(paint?.size).toBe("11px");
   expect(paint?.font).toContain("mono");
 });
+
+test("renders inline markdown in task titles", async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await browser.route("**/api/state", async (route) => {
+    await route.fulfill({
+      json: snapshotWith([
+        {
+          id: "t1",
+          title: "Ship **bold** and _soft_ `npm run build` ~~old~~ see [docs](https://example.com)",
+          status: "open",
+          parentId: null,
+          blockedBy: [],
+          createdAt: at(0),
+        },
+        {
+          id: "t2",
+          title: "Waits on *the build*",
+          status: "open",
+          parentId: null,
+          blockedBy: ["t1"],
+          createdAt: at(1),
+        },
+      ]),
+    });
+  });
+  await app.open("/?page=tasks");
+  await expect(
+    screen.getByRole("button", "Done Ship bold and soft npm run build old see docs"),
+  ).toBeVisible();
+  const rendered = await browser.evaluate(() => {
+    const card = document.querySelector('[data-testid="task-t1"] [data-task-card]');
+    const blocked = document.querySelector('[data-testid="task-t2"] [data-task-card]');
+    if (card === null || blocked === null) return null;
+    return {
+      strong: card.querySelector("strong")?.textContent ?? null,
+      em: card.querySelector("em")?.textContent ?? null,
+      code: card.querySelector("code")?.textContent ?? null,
+      del: card.querySelector("del")?.textContent ?? null,
+      anchors: card.querySelectorAll("a").length,
+      link: [...card.querySelectorAll("span")].some(
+        (span) =>
+          span.textContent === "docs" && getComputedStyle(span).textDecorationLine === "underline",
+      ),
+      raw: card.textContent?.includes("**") ?? true,
+      blockedBy: blocked.textContent ?? "",
+      emBlocked: blocked.querySelector("em")?.textContent ?? null,
+      overflow: card.scrollWidth > card.clientWidth,
+    };
+  });
+  expect(rendered).toEqual({
+    strong: "bold",
+    em: "soft",
+    code: "npm run build",
+    del: "old",
+    anchors: 0,
+    link: true,
+    raw: false,
+    blockedBy: expect.stringContaining("blocked by Ship bold and soft npm run build old see docs"),
+    emBlocked: "the build",
+    overflow: false,
+  });
+});

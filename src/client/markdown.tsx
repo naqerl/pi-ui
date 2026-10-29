@@ -1,5 +1,5 @@
 // biome-ignore-all lint/suspicious/noArrayIndexKey: Markdown tokens have no ids; their order is the identity.
-import { lexer, type Token, type Tokens } from "marked";
+import { Lexer, lexer, type Token, type Tokens } from "marked";
 import { Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
 
 const headingClasses: Record<number, string> = {
@@ -17,36 +17,43 @@ const alignClasses: Record<NonNullable<Tokens.Table["align"][number]>, string> =
   right: "text-right",
 };
 
-function inline(tokens: readonly Token[] | undefined, keyPrefix: string): ReactNode[] {
+/** Inside a button (a task card) links cannot be interactive, so they render as styled text. */
+type InlineMode = "interactive" | "static";
+
+function inline(
+  tokens: readonly Token[] | undefined,
+  keyPrefix: string,
+  mode: InlineMode = "interactive",
+): ReactNode[] {
   const list = tokens ?? [];
   return list.map((token, index) =>
-    inlineToken(token, `${keyPrefix}-${index}`, index === 0 || index === list.length - 1),
+    inlineToken(token, `${keyPrefix}-${index}`, index === 0 || index === list.length - 1, mode),
   );
 }
 
-function inlineToken(token: Token, key: string, edge: boolean): ReactNode {
+function inlineToken(token: Token, key: string, edge: boolean, mode: InlineMode): ReactNode {
   switch (token.type) {
     case "text":
       if (token.tokens !== undefined) {
-        return <Fragment key={key}>{inline(token.tokens, key)}</Fragment>;
+        return <Fragment key={key}>{inline(token.tokens, key, mode)}</Fragment>;
       }
       return token.text;
     case "strong":
       return (
         <strong key={key} className="font-semibold">
-          {inline(token.tokens, key)}
+          {inline(token.tokens, key, mode)}
         </strong>
       );
     case "em":
       return (
         <em key={key} className="italic">
-          {inline(token.tokens, key)}
+          {inline(token.tokens, key, mode)}
         </em>
       );
     case "del":
       return (
         <del key={key} className="line-through">
-          {inline(token.tokens, key)}
+          {inline(token.tokens, key, mode)}
         </del>
       );
     case "codespan":
@@ -60,7 +67,18 @@ function inlineToken(token: Token, key: string, edge: boolean): ReactNode {
       );
     case "link": {
       const href = safeHref(token.href);
-      if (href === undefined) return <Fragment key={key}>{inline(token.tokens, key)}</Fragment>;
+      if (href === undefined)
+        return <Fragment key={key}>{inline(token.tokens, key, mode)}</Fragment>;
+      if (mode === "static") {
+        return (
+          <span
+            key={key}
+            className="underline decoration-foreground/40 underline-offset-2 [overflow-wrap:anywhere]"
+          >
+            {inline(token.tokens, key, mode)}
+          </span>
+        );
+      }
       return (
         <a
           key={key}
@@ -69,14 +87,14 @@ function inlineToken(token: Token, key: string, edge: boolean): ReactNode {
           rel="noreferrer noopener"
           className="underline decoration-foreground/40 underline-offset-2 [overflow-wrap:anywhere] hover:decoration-foreground"
         >
-          {inline(token.tokens, key)}
+          {inline(token.tokens, key, mode)}
         </a>
       );
     }
     case "image": {
       const href = safeHref(token.href);
       const label = token.text.length > 0 ? token.text : "image";
-      if (href === undefined) return <Fragment key={key}>{label}</Fragment>;
+      if (href === undefined || mode === "static") return <Fragment key={key}>{label}</Fragment>;
       return (
         <a
           key={key}
@@ -96,7 +114,7 @@ function inlineToken(token: Token, key: string, edge: boolean): ReactNode {
       return <Fragment key={key}>{token.text}</Fragment>;
     default:
       if ("tokens" in token && Array.isArray(token.tokens)) {
-        return <Fragment key={key}>{inline(token.tokens, key)}</Fragment>;
+        return <Fragment key={key}>{inline(token.tokens, key, mode)}</Fragment>;
       }
       if ("text" in token && typeof token.text === "string") {
         return <Fragment key={key}>{token.text}</Fragment>;
@@ -334,4 +352,29 @@ export function Markdown({ text }: { text: string }) {
       {blocks(tokens, "md")}
     </div>
   );
+}
+
+/**
+ * One-line Markdown for task titles: bold, italic, strikethrough, inline code and links.
+ * Block syntax stays literal, line breaks are kept, and links are plain styled text because
+ * the title sits inside the task card's button.
+ */
+export function InlineMarkdown({ text }: { text: string }) {
+  const tokens = useMemo(() => Lexer.lexInline(text), [text]);
+  return <>{inline(tokens, "imd", "static")}</>;
+}
+
+/** The text a reader sees in {@link InlineMarkdown}, for labels and titles. */
+export function plainInline(text: string): string {
+  const flatten = (tokens: readonly Token[] | undefined): string =>
+    (tokens ?? [])
+      .map((token) => {
+        if ("tokens" in token && Array.isArray(token.tokens) && token.type !== "codespan") {
+          return flatten(token.tokens);
+        }
+        if (token.type === "br") return "\n";
+        return "text" in token && typeof token.text === "string" ? token.text : "";
+      })
+      .join("");
+  return flatten(Lexer.lexInline(text));
 }
