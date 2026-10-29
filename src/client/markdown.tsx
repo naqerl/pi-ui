@@ -51,7 +51,10 @@ function inlineToken(token: Token, key: string, edge: boolean): ReactNode {
       );
     case "codespan":
       return (
-        <code key={key} className="bg-foreground/[0.06] px-1 py-px font-mono text-[0.85em]">
+        <code
+          key={key}
+          className="bg-foreground/[0.06] px-1 py-px font-mono text-[0.85em] [overflow-wrap:anywhere] [box-decoration-break:clone] [-webkit-box-decoration-break:clone]"
+        >
           {token.text}
         </code>
       );
@@ -64,7 +67,7 @@ function inlineToken(token: Token, key: string, edge: boolean): ReactNode {
           href={href}
           target="_blank"
           rel="noreferrer noopener"
-          className="break-all underline decoration-foreground/40 underline-offset-2 hover:decoration-foreground"
+          className="underline decoration-foreground/40 underline-offset-2 [overflow-wrap:anywhere] hover:decoration-foreground"
         >
           {inline(token.tokens, key)}
         </a>
@@ -80,7 +83,7 @@ function inlineToken(token: Token, key: string, edge: boolean): ReactNode {
           href={href}
           target="_blank"
           rel="noreferrer noopener"
-          className="break-all underline decoration-foreground/40 underline-offset-2 hover:decoration-foreground"
+          className="underline decoration-foreground/40 underline-offset-2 [overflow-wrap:anywhere] hover:decoration-foreground"
         >
           {label}
         </a>
@@ -131,7 +134,7 @@ function blockToken(token: Token, key: string): ReactNode {
       return (
         <pre
           key={key}
-          className="overflow-x-auto border border-border bg-muted px-3 py-2.5 font-mono text-xs leading-relaxed"
+          className="max-w-full overflow-x-auto whitespace-pre border border-border bg-muted px-3 py-2.5 font-mono text-xs leading-relaxed [overflow-wrap:normal]"
         >
           <code className="font-mono">{token.text}</code>
         </pre>
@@ -160,7 +163,7 @@ function blockToken(token: Token, key: string): ReactNode {
           }
         >
           {node.items.map((item, index) => (
-            <li key={`${key}-item-${index}`} className="pl-1">
+            <li key={`${key}-item-${index}`} className="min-w-0 pl-1">
               {listItem(item, `${key}-item-${index}`)}
             </li>
           ))}
@@ -170,14 +173,14 @@ function blockToken(token: Token, key: string): ReactNode {
     case "table": {
       const node = token as Tokens.Table;
       return (
-        <div key={key} className="overflow-x-auto">
-          <table className="w-full border-collapse text-left text-xs">
+        <div key={key} className="max-w-full overflow-x-auto">
+          <table className="w-max min-w-full border-collapse text-left text-xs [overflow-wrap:normal]">
             <thead>
               <tr className="border-b border-border bg-muted/50">
                 {node.header.map((cell, index) => (
                   <th
                     key={`${key}-h-${index}`}
-                    className={`border border-border px-2 py-1 font-semibold ${alignClass(cell.align)}`}
+                    className={`max-w-[24rem] border border-border px-2 py-1 font-semibold break-words ${alignClass(cell.align)}`}
                   >
                     {inline(cell.tokens, `${key}-h-${index}`)}
                   </th>
@@ -190,7 +193,7 @@ function blockToken(token: Token, key: string): ReactNode {
                   {row.map((cell, cellIndex) => (
                     <td
                       key={`${key}-r-${rowIndex}-c-${cellIndex}`}
-                      className={`border border-border px-2 py-1 align-top ${alignClass(cell.align)}`}
+                      className={`max-w-[24rem] border border-border px-2 py-1 align-top break-words ${alignClass(cell.align)}`}
                     >
                       {inline(cell.tokens, `${key}-r-${rowIndex}-c-${cellIndex}`)}
                     </td>
@@ -277,5 +280,11 @@ function normalize(text: string): string {
 
 export function Markdown({ text }: { text: string }) {
   const tokens = useMemo(() => lexer(normalize(text)), [text]);
-  return <div className="space-y-2">{blocks(tokens, "md")}</div>;
+  // overflow-wrap:anywhere lets long hashes, URLs and inline code break inside a bubble;
+  // code blocks and tables opt back out and scroll sideways instead.
+  return (
+    <div className="min-w-0 max-w-full space-y-2 [overflow-wrap:anywhere]">
+      {blocks(tokens, "md")}
+    </div>
+  );
 }

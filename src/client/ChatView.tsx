@@ -80,7 +80,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   return (
     <div
       className={cn(
-        "theme-radius w-fit max-w-[85%] bg-surface px-3 py-2 text-sm leading-relaxed",
+        "theme-radius w-fit min-w-0 max-w-[85%] bg-surface px-3 py-2 text-sm leading-relaxed [overflow-wrap:anywhere]",
         mine ? "ml-auto" : "mr-auto",
         framed && "border",
         mine && "border-foreground/15",
@@ -100,7 +100,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         </div>
       )}
       {mine ? (
-        <div className="whitespace-pre-wrap break-words">{message.text}</div>
+        <div className="whitespace-pre-wrap [overflow-wrap:anywhere]">{message.text}</div>
       ) : (
         <Markdown text={message.text} />
       )}

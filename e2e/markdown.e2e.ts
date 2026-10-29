@@ -102,10 +102,113 @@ test("does not let whitespace-only lines inflate assistant markdown bubbles", as
   }
 
   expect(boxes[5]?.html).toBe(
-    '<div class="space-y-2"><p class="whitespace-pre-wrap break-words">Just one paragraph.</p></div>',
+    '<div class="min-w-0 max-w-full space-y-2 [overflow-wrap:anywhere]"><p class="whitespace-pre-wrap break-words">Just one paragraph.</p></div>',
   );
   expect(boxes[6]?.paragraphs).toBe(2);
   expect(boxes[6]?.html).toBe(
-    '<div class="space-y-2"><p class="whitespace-pre-wrap break-words">First paragraph.</p><p class="whitespace-pre-wrap break-words">Second paragraph.</p></div>',
+    '<div class="min-w-0 max-w-full space-y-2 [overflow-wrap:anywhere]"><p class="whitespace-pre-wrap break-words">First paragraph.</p><p class="whitespace-pre-wrap break-words">Second paragraph.</p></div>',
   );
+});
+
+const overflowText = [
+  'Cancelled `hub_force_stop {job:"hj_57af322b37f14e7cda5e09d6f0d1eb4f"}` and reran it.',
+  "",
+  "See https://example.com/a/very/long/path/that/keeps/going/without/any/spaces/at/all/9f8e7d6c5b4a3f2e1d0c",
+  "",
+  "Supercalifragilisticexpialidociousandthensomemorelettersthatnevertakeabreath.",
+  "",
+  "1. New daemon confirmed (`pid 1771245`).",
+  '2. `hub_force_stop {job:"hj_57af322b37f14e7cda5e09d6f0d1eb4f"}` — the call hung.',
+  "3. Rerun `hj_4003e6a19daf43e347271b2e06147eae` on https://example.com/v1/hub/jobs/01a18973-93d3-7ef0-9eb4-38da457bf679",
+  "",
+  "```",
+  "const wide = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';",
+  "```",
+  "",
+  "| job | run | pin | status |",
+  "| --- | --- | --- | --- |",
+  "| hj_4003e6a19daf43e347271b2e06147eae | 01a18973-93d3-7ef0-9eb4-38da457bf679 | b6d648f7 | running |",
+].join("\n");
+
+test("keeps long tokens, code blocks and tables inside the bubbles at 390px", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  const message = (role: string, order: number) => ({
+    id: `overflow-${role}`,
+    role,
+    text: overflowText,
+    timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, order)).toISOString(),
+    order,
+  });
+  await browser.route("**/api/state", async (route) => {
+    await route.fulfill({
+      json: { ...snapshot, messages: [message("user", 1), message("assistant", 2)] },
+    });
+  });
+  await app.open("/");
+  await expect(screen.getByText("Cancelled", { exact: false }).first()).toBeVisible();
+
+  const report = await browser.evaluate(() => {
+    const bubbles = Array.from(document.querySelectorAll<HTMLElement>("main .max-w-\\[85\\%\\]"));
+    const page = document.documentElement.clientWidth;
+    return bubbles.map((bubble) => {
+      const box = bubble.getBoundingClientRect();
+      let worst = 0;
+      let culprit = "";
+      for (const child of Array.from(bubble.querySelectorAll<HTMLElement>("*"))) {
+        // Content inside a horizontal scroller may extend past it; the scroller itself may not.
+        let clipped = false;
+        for (let up = child.parentElement; up !== null && up !== bubble; up = up.parentElement) {
+          if (getComputedStyle(up).overflowX === "auto") clipped = true;
+        }
+        if (clipped) continue;
+        const rects = [child.getBoundingClientRect()];
+        for (const node of Array.from(child.childNodes)) {
+          if (node.nodeType !== Node.TEXT_NODE) continue;
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          rects.push(...Array.from(range.getClientRects()));
+        }
+        for (const rect of rects) {
+          if (rect.width === 0) continue;
+          const over = Math.max(rect.right - box.right, box.left - rect.left);
+          if (over > worst) {
+            worst = over;
+            culprit = `${child.tagName}.${child.className} ${child.textContent?.slice(0, 40)}`;
+          }
+        }
+      }
+      const scrollers = Array.from(bubble.querySelectorAll<HTMLElement>("pre, table"))
+        .map((node) => (node.tagName === "PRE" ? node : node.parentElement))
+        .filter((node): node is HTMLElement => node !== null)
+        .map((node) => ({
+          overflowX: getComputedStyle(node).overflowX,
+          scrolls: node.scrollWidth > node.clientWidth,
+        }));
+      return {
+        right: box.right,
+        page,
+        bubbleScroll: bubble.scrollWidth - bubble.clientWidth,
+        worst,
+        culprit,
+        scrollers,
+      };
+    });
+  });
+
+  expect(report.length).toBe(2);
+  for (const bubble of report) {
+    expect(bubble.right).toBeLessThanOrEqual(bubble.page);
+    expect(bubble.bubbleScroll).toBeLessThanOrEqual(0);
+    expect(bubble.worst).toBeLessThanOrEqual(0.5);
+  }
+  const assistant = report[1];
+  expect(assistant.scrollers.length).toBe(2);
+  for (const scroller of assistant.scrollers) {
+    expect(scroller.overflowX).toBe("auto");
+    expect(scroller.scrolls).toBe(true);
+  }
 });
