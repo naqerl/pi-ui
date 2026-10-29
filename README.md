@@ -164,6 +164,8 @@ Long sessions open fast: `/api/state` returns only the latest 30 messages (stret
 
 ## Releases
 
+`CHANGELOG.md` lists each release under a `## <version>` heading; add the next section with every change and bump `version` in `package.json` before tagging. The image ships the changelog. On start the server compares its version with `DATA_DIR/version.json`: after an update it appends the unseen changelog sections to the conversation as a context message for the agent, shows a one-line `Updated pi-ui from A to B` note in the chat, and records the new version. A fresh install only records the version; an existing conversation from before this check gets the current version's section. `GET /api/health` reports the running version.
+
 Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds and pushes `ghcr.io/naqerl/pi-ui` to GitHub Container Registry with semver tags, `latest`, provenance, and GitHub Actions layer cache. Tag `v1.4.1` publishes `:v1.4.1` (the tag the commands above use), `:1.4.1`, `:1.4`, and `:latest`; the `v`-prefixed tag is emitted explicitly with `type=semver,pattern=v{{version}}` because the plain `{{version}}` pattern strips the leading `v`. The workflow can also be started manually with `workflow_dispatch` to rebuild an existing ref. There is intentionally no build on every push to a branch.
 
 The image is built for `linux/amd64` only. The release job does not run an emulated `linux/arm64` build, because the QEMU build does not fit the job budget; add it to `platforms` only after confirming it builds reliably in CI.

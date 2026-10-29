@@ -61,7 +61,19 @@ function bulkAnswer(prompt) {
   ].join("\n");
 }
 
-function responseFor(prompt) {
+/** The update line pi-ui put in context on start, for "WHATVERSION" prompts. */
+function updateNotice(body) {
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  for (const message of messages) {
+    const text = message?.role === "user" ? textOf(message.content) : "";
+    if (text.includes("<pi-ui-update>"))
+      return text.split("\n").find((line) => line.startsWith("pi-ui ")) ?? "";
+  }
+  return "none";
+}
+
+function responseFor(prompt, body = {}) {
+  if (prompt.includes("WHATVERSION")) return `Update notice: ${updateNotice(body)}`;
   if (prompt.includes("BULK")) return bulkAnswer(prompt);
   if (prompt.includes("LONG")) {
     return Array.from(
@@ -160,7 +172,8 @@ export function startFakeModelServer() {
     }
 
     const images = lastUserImages(body);
-    const text = images > 0 ? `${responseFor(prompt)} [images: ${images}]` : responseFor(prompt);
+    const text =
+      images > 0 ? `${responseFor(prompt, body)} [images: ${images}]` : responseFor(prompt, body);
     const bulk = prompt.includes("BULK");
     for (const piece of text.match(bulk ? /.{1,4000}/gs : /.{1,18}/gs) ?? []) {
       writeEvent(res, chunkFor(piece));

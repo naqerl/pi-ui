@@ -36,6 +36,7 @@ import type { McpRuntime } from "./mcp-runtime.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
 import { type RunMarker, RunMarkerStore } from "./run-marker.js";
 import type { TaskBridge } from "./task-tools.js";
+import { pendingVersionNotice, writeLastSeenVersion } from "./version-notice.js";
 
 export const SESSION_CONTEXT: Context = BACKGROUND_CONTEXT;
 
@@ -45,6 +46,14 @@ const InterruptedRunEntry = defineEntry<{
   note: string;
   createdAt: string;
 }>("ui.run-interrupted");
+
+/** A version change seen at start. `model` carries the notice so the agent reads it in context. */
+const VersionUpdateEntry = defineEntry<{
+  from: string | null;
+  to: string;
+  note: string;
+  createdAt: string;
+}>("ui.version-update");
 
 export interface DurableSessionOptions {
   readonly cwd: string;
@@ -72,6 +81,8 @@ export interface DurableSessionBoot {
   readonly taskTools: readonly string[];
   /** Model stored on the conversation after boot. A menu choice wins over `PI_MODEL`. */
   readonly model: ModelRef | undefined;
+  /** pi-ui's own version from package.json. */
+  readonly version: string;
 }
 
 export async function openDurableSession(
@@ -150,6 +161,7 @@ export async function openDurableSession(
   if (runMarker !== undefined) {
     await appendInterruptionNote(conversation, runMarker);
   }
+  const version = await recordVersion(conversation, dataDir, resumed);
 
   return {
     harness,
@@ -165,7 +177,63 @@ export async function openDurableSession(
     biliTools,
     taskTools,
     model,
+    version,
   };
+}
+
+/**
+ * Compares the running version with the last one this data directory saw. After an update the
+ * agent gets the new changelog sections as a context message, then the new version is recorded.
+ */
+async function recordVersion(
+  conversation: Conversation,
+  dataDir: string,
+  resumed: boolean,
+): Promise<string> {
+  const { notice, version } = await pendingVersionNotice({ dataDir, resumed });
+  if (notice !== undefined) {
+    try {
+      const context = await conversation.context(SESSION_CONTEXT);
+      const already = context.entries.some(
+        (entry) =>
+          entry.kind === VersionUpdateEntry.kind &&
+          isRecord(entry.data) &&
+          entry.data.to === notice.to &&
+          entry.data.from === (notice.from ?? null),
+      );
+      if (!already) {
+        await conversation.commit(
+          (tx) =>
+            tx.appendEntry(VersionUpdateEntry, conversation.id, {
+              model: [
+                {
+                  role: "user",
+                  content: [{ type: "text", text: notice.prompt }],
+                  timestamp: Date.now(),
+                },
+              ],
+              data: {
+                from: notice.from ?? null,
+                to: notice.to,
+                note: notice.note,
+                createdAt: new Date().toISOString(),
+              },
+            }),
+          SESSION_CONTEXT,
+        );
+      }
+      console.log(`[pi] ${notice.note}`);
+    } catch (error) {
+      console.error("[pi] could not record the version update", error);
+      return version;
+    }
+  }
+  try {
+    await writeLastSeenVersion(dataDir, version);
+  } catch (error) {
+    console.error("[pi] could not record the running version", error);
+  }
+  return version;
 }
 
 async function loadConversation(
@@ -403,7 +471,7 @@ export function buildTranscript(
 
   for (const entry of sorted) {
     const kind = entry.kind;
-    if (kind === InterruptedRunEntry.kind) {
+    if (kind === InterruptedRunEntry.kind || kind === VersionUpdateEntry.kind) {
       if (!isRecord(entry.data) || typeof entry.data.note !== "string") continue;
       messages.push({
         id: `m-${entry.id}`,

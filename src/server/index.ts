@@ -20,6 +20,7 @@ import type { TaskBridge } from "./task-tools.js";
 import { TaskError, TaskStore } from "./tasks.js";
 import { injectTheme, resolveTheme, themeManifest, writeThemeSlug } from "./themes.js";
 import { windowRequestFromQuery } from "./transcript-window.js";
+import { readAppVersion } from "./version-notice.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const builtClientDir = resolve(here, "../client");
@@ -137,7 +138,7 @@ void bili
 
 const app = new Hono();
 
-app.get("/api/health", (c) => c.json({ ok: true }));
+app.get("/api/health", async (c) => c.json({ ok: true, version: await readAppVersion() }));
 
 app.get("/api/themes", async (c) => c.json((await resolveTheme(themeFile)).themes));
 
