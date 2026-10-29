@@ -20,6 +20,8 @@ export function App() {
       send={chat.send}
       stop={chat.stop}
       applyTasks={chat.applyTasks}
+      stats={{ usage: chat.usage, context: chat.context, mcp: chat.mcp }}
+      refreshStats={chat.refresh}
     />
   );
 

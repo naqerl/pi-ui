@@ -14,6 +14,7 @@ import { Textarea } from "./components/ui/textarea";
 import { cn } from "./lib/utils";
 import { InlineMarkdown, Markdown, plainInline } from "./markdown";
 import { PiMenu } from "./PiMenu";
+import { type ChatStats, StatsView } from "./StatsView";
 import { TasksView } from "./TasksView";
 import { createTask } from "./task-client";
 import { groupTimeline } from "./timeline-groups";
@@ -35,12 +36,18 @@ interface ChatViewProps {
   send: (text: string, mode?: MessageMode) => Promise<boolean>;
   stop: () => Promise<void>;
   applyTasks: (ledger: TaskLedger) => void;
+  stats: ChatStats;
+  refreshStats?: () => void;
 }
 
 const PAGES = [
+  { id: "stats", label: "Stats" },
   { id: "chat", label: "Chat" },
   { id: "tasks", label: "Tasks" },
 ] as const;
+const STATS_PAGE = 0;
+const CHAT_PAGE = 1;
+const TASKS_PAGE = 2;
 
 function SubtaskProgress({ tasks }: { tasks: Task[] }) {
   const subtasks = tasks.filter((task) => task.parentId !== null);
@@ -63,7 +70,7 @@ function SubtaskProgress({ tasks }: { tasks: Task[] }) {
 function pageFromLocation(): number {
   const name = new URLSearchParams(window.location.search).get("page");
   const index = PAGES.findIndex((item) => item.id === name);
-  return index < 0 ? 0 : index;
+  return index < 0 ? CHAT_PAGE : index;
 }
 
 /** Local wall-clock `hh:mm` for a message, or null when the timestamp does not parse. */
@@ -525,17 +532,24 @@ export function ChatView({
   send,
   stop,
   applyTasks,
+  stats,
+  refreshStats,
 }: ChatViewProps) {
   useViewportHeight();
   const pager = usePager(PAGES.length, pageFromLocation());
   const [armedParentId, setArmedParentId] = useState<string | null>(null);
   const [composerError, setComposerError] = useState<string | null>(null);
-  const tasksPage = pager.page === 1;
+  const tasksPage = pager.page === TASKS_PAGE;
+  const statsPage = pager.page === STATS_PAGE;
   const armed = tasks.find((task) => task.id === armedParentId) ?? null;
 
   useEffect(() => {
     if (!tasksPage || (armedParentId !== null && armed === null)) setArmedParentId(null);
   }, [armed, armedParentId, tasksPage]);
+
+  useEffect(() => {
+    if (statsPage) refreshStats?.();
+  }, [statsPage, refreshStats]);
 
   useEffect(() => {
     const id = PAGES[pager.page]?.id;
@@ -622,7 +636,7 @@ export function ChatView({
 
   const selectPage = (index: number) => {
     pager.setPage(index);
-    if (index !== 1) setArmedParentId(null);
+    if (index !== TASKS_PAGE) setArmedParentId(null);
   };
 
   return (
@@ -656,8 +670,21 @@ export function ChatView({
           >
             <section
               className="h-full min-w-0 shrink-0 grow-0 basis-full"
-              aria-hidden={pager.page !== 0 && !pager.dragging}
-              inert={pager.page !== 0 && !pager.dragging ? true : undefined}
+              aria-label="Stats"
+              aria-hidden={pager.page !== STATS_PAGE && !pager.dragging}
+              inert={pager.page !== STATS_PAGE && !pager.dragging ? true : undefined}
+            >
+              <StatsView
+                stats={stats}
+                ready={ready}
+                headerClearance={headerClearance}
+                footerClearance={footerClearance}
+              />
+            </section>
+            <section
+              className="h-full min-w-0 shrink-0 grow-0 basis-full"
+              aria-hidden={pager.page !== CHAT_PAGE && !pager.dragging}
+              inert={pager.page !== CHAT_PAGE && !pager.dragging ? true : undefined}
             >
               <main ref={stick.containerRef} className="h-full overflow-x-hidden overflow-y-auto">
                 <div
@@ -694,8 +721,8 @@ export function ChatView({
             <section
               className="h-full min-w-0 shrink-0 grow-0 basis-full"
               aria-label="Tasks"
-              aria-hidden={pager.page !== 1 && !pager.dragging}
-              inert={pager.page !== 1 && !pager.dragging ? true : undefined}
+              aria-hidden={pager.page !== TASKS_PAGE && !pager.dragging}
+              inert={pager.page !== TASKS_PAGE && !pager.dragging ? true : undefined}
             >
               <TasksView
                 tasks={tasks}
@@ -740,7 +767,7 @@ export function ChatView({
                 </button>
               ))}
             </div>
-            <div className="flex min-w-0 items-center justify-end gap-3 justify-self-end empty:hidden">
+            <div className="flex min-w-0 max-w-full items-center justify-end gap-3 justify-self-end overflow-hidden empty:hidden">
               <McpHeader events={mcpEvents} />
               {unavailableServers.length > 0 && (
                 <span
@@ -756,7 +783,7 @@ export function ChatView({
             </div>
           </div>
         </header>
-        {ready && groups.length === 0 && pager.page === 0 && (
+        {ready && groups.length === 0 && pager.page === CHAT_PAGE && (
           <p
             className="pointer-events-none absolute inset-x-0 z-10 -translate-y-1/2 px-4 text-center font-mono text-xs text-muted-foreground"
             style={{ top: `calc((100% - ${footerClearance}px) / 2)` }}
@@ -764,7 +791,7 @@ export function ChatView({
             Send a message to start.
           </p>
         )}
-        {!stick.attached && pager.page === 0 && (
+        {!stick.attached && pager.page === CHAT_PAGE && (
           <div
             className="pointer-events-none absolute inset-x-0 z-20 flex justify-center"
             style={{ bottom: footerClearance + 8 }}

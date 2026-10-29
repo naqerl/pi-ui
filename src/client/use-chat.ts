@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ActivityItem,
   ChatMessage,
+  ContextUsage,
   McpEventsState,
   McpStatus,
   MessageMode,
@@ -19,6 +20,7 @@ import type {
   SubmitMessageResponse,
   TaskLedger,
   ToolActivity,
+  UsageSummary,
 } from "../shared/types";
 
 const EMPTY_EVENTS: McpEventsState = {
@@ -64,6 +66,8 @@ export function useChat() {
   const [runStartedAt, setRunStartedAt] = useState<string | null>(null);
   const [queue, setQueue] = useState<QueuedMessage[]>([]);
   const [mcp, setMcp] = useState<McpStatus>({ servers: [], unavailable: [] });
+  const [usage, setUsage] = useState<UsageSummary | null>(null);
+  const [context, setContext] = useState<ContextUsage | null>(null);
   const [mcpEvents, setMcpEvents] = useState<McpEventsState>(EMPTY_EVENTS);
   const [pendingSteers, setPendingSteers] = useState<ChatMessage[]>([]);
   const [ready, setReady] = useState(false);
@@ -118,6 +122,8 @@ export function useChat() {
       setRunStartedAt(snapshot.runStartedAt ?? null);
       setQueue(snapshot.queue);
       setMcp(snapshot.mcp ?? { servers: [], unavailable: [] });
+      setUsage(snapshot.usage ?? null);
+      setContext(snapshot.context ?? null);
       if (snapshot.draft !== undefined) applyDraft(snapshot.draft);
       if (snapshot.mcpEvents !== undefined) applyEvents(snapshot.mcpEvents);
       if (snapshot.tasks !== undefined) applyTasks(snapshot.tasks);
@@ -418,6 +424,9 @@ export function useChat() {
     runStartedAt,
     queue,
     mcp,
+    usage,
+    context,
+    refresh: refreshState,
     mcpEvents,
     tasks: taskLedger.tasks,
     ready,

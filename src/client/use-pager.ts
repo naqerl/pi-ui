@@ -18,7 +18,7 @@ interface Gesture {
   page: number;
 }
 
-/** Chat and tasks share one horizontal pager. Touch swipes; a trackpad scrolls sideways. */
+/** Stats, chat, and tasks share one horizontal pager. Touch swipes; a trackpad scrolls sideways. */
 export function usePager(count: number, initial = 0) {
   const start = Math.max(0, Math.min(count - 1, initial));
   const [page, setPageState] = useState(start);
