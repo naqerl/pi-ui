@@ -67,8 +67,10 @@ async function waitForFrames(browser: Browser) {
 function alphaOf(color: string): number {
   const slash = color.match(/\/\s*([0-9.]+)\s*\)/);
   if (slash !== null) return Number(slash[1]);
+  if (color === "transparent") return 0;
   const rgb = color.match(/^rgba?\(([^)]+)\)$/);
-  if (rgb === null) return Number.NaN;
+  // oklch(), lab() and color() print an alpha only after a slash.
+  if (rgb === null) return /^[a-z-]+\([^)]*\)$/.test(color) ? 1 : Number.NaN;
   const parts = rgb[1].split(/[,\s/]+/).filter(Boolean);
   return parts.length === 4 ? Number(parts[3]) : 1;
 }
