@@ -29,6 +29,10 @@ const SPAN_CLASS: Record<WidgetSpan, string> = {
 
 const HEARTBEAT_MS = 20_000;
 
+/** Explains what the token rows count, shown above the token widget's rows. */
+const TOKENS_NOTE =
+  "Totals cover this conversation. Input excludes cached tokens; cache hit is cache read over all prompt tokens.";
+
 function viewerId(): string {
   const key = "pi-dashboard-viewer";
   try {
@@ -298,6 +302,8 @@ function WidgetCard({
   const press = useRef<{ timer: number; x: number; y: number } | null>(null);
   const cardRef = useRef<HTMLElement | null>(null);
   const error = value?.error;
+  const note =
+    widget.source.type === "builtin" && widget.source.name === "tokens" ? TOKENS_NOTE : undefined;
 
   useEffect(() => {
     if (!menu) return;
@@ -382,6 +388,14 @@ function WidgetCard({
           </button>
         </span>
       </div>
+      {note === undefined ? null : (
+        <p
+          className="pb-1 text-[10px] leading-4 text-muted-foreground [overflow-wrap:anywhere]"
+          data-testid={`widget-${widget.id}-note`}
+        >
+          {note}
+        </p>
+      )}
       {menu ? (
         <div
           role="menu"

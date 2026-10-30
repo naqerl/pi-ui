@@ -75,7 +75,15 @@ for (const width of [390, 1280]) {
         null;
       const page = document.querySelector("[data-testid=stats-page]");
       const cards = [...(page?.querySelectorAll("section") ?? [])];
+      const tokens = document.querySelector('[data-testid="widget-tokens"]');
+      const note = tokens?.querySelector('[data-testid="widget-tokens-note"]') ?? null;
+      const firstRow = tokens?.querySelector("dl > div") ?? null;
       return {
+        note: note?.textContent ?? null,
+        noteBeforeRows:
+          note !== null &&
+          firstRow !== null &&
+          (note.compareDocumentPosition(firstRow) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
         context: value("stat-context"),
         input: value("stat-input"),
         output: value("stat-output"),
@@ -90,6 +98,8 @@ for (const width of [390, 1280]) {
       };
     });
     expect(read).toEqual({
+      note: "Totals cover this conversation. Input excludes cached tokens; cache hit is cache read over all prompt tokens.",
+      noteBeforeRows: true,
       context: expect.stringContaining("52,700 / 200,000 · 26.4%"),
       input: "12,000",
       output: "4,700",
