@@ -12,6 +12,7 @@ import type {
   ActivityItem,
   ChatMessage,
   MessageMode,
+  QueuedMessage,
   Task,
   TaskLedger,
   TokenSpend,
@@ -47,6 +48,10 @@ interface ChatViewProps {
   tasks: Task[];
   send: (text: string, mode?: MessageMode, attachments?: string[]) => Promise<SendOutcome>;
   stop: () => Promise<void>;
+  /** Takes back the newest steer the run has not reached yet; absent or null when none can be. */
+  unsendSteer?: () => Promise<QueuedMessage | null>;
+  /** How many steers are waiting for the run's next turn boundary. */
+  pendingSteers?: number;
   applyTasks: (ledger: TaskLedger) => void;
   stats: ChatStats;
   refreshStats?: () => void;
@@ -138,11 +143,13 @@ function MessageBubble({ message }: { message: ChatMessage }) {
     <div
       data-message-id={message.id}
       data-role={message.role}
+      data-pending-steer={message.pendingSteer ? "true" : undefined}
       className={cn(
         "theme-radius w-fit min-w-0 max-w-[85%] bg-surface px-3 py-2 text-sm leading-relaxed [overflow-wrap:anywhere]",
         mine ? "ml-auto" : "mr-auto",
         framed && "border",
         mine && "border-foreground/15",
+        message.pendingSteer && "border-dashed opacity-70",
         message.isError && "border-destructive text-destructive",
         message.partial && "border-dashed",
         message.partial && !message.isError && "border-muted-foreground/70",
@@ -150,7 +157,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
     >
       {message.steer && (
         <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-          steer
+          {message.pendingSteer ? "steer · pending" : "steer"}
         </div>
       )}
       {message.partial && (
@@ -393,7 +400,21 @@ function useAttachments() {
     });
   }, []);
 
-  return { items, add, remove, clear };
+  /** Puts already uploaded media back, such as the images of a steer taken back. */
+  const restore = useCallback((ids: readonly string[]) => {
+    setItems((current) => [
+      ...current,
+      ...ids.map((id) => ({
+        key: `a${++attachmentKey}`,
+        preview: mediaUrl(id),
+        name: id,
+        status: "ready" as const,
+        id,
+      })),
+    ]);
+  }, []);
+
+  return { items, add, remove, clear, restore };
 }
 
 function PlusIcon() {
@@ -467,6 +488,7 @@ function Composer({
   running,
   send,
   stop,
+  unsendSteer,
   addTask,
   error,
   onDismissError,
@@ -476,6 +498,7 @@ function Composer({
   running: boolean;
   send: (text: string, mode?: MessageMode, attachments?: string[]) => Promise<boolean>;
   stop: () => Promise<void>;
+  unsendSteer?: () => Promise<QueuedMessage | null>;
   addTask: (text: string, attachments?: string[]) => Promise<boolean>;
   error: string | null;
   onDismissError: () => void;
@@ -656,6 +679,31 @@ function Composer({
             attachments.add(files);
           }}
           onKeyDown={(event) => {
+            // ArrowUp in an empty composer takes back the newest steer the run has not reached.
+            if (
+              event.key === "ArrowUp" &&
+              unsendSteer !== undefined &&
+              value.length === 0 &&
+              attachments.items.length === 0 &&
+              !event.shiftKey &&
+              !event.altKey &&
+              !event.metaKey &&
+              !event.ctrlKey &&
+              !event.nativeEvent.isComposing
+            ) {
+              event.preventDefault();
+              void unsendSteer().then((steer) => {
+                if (steer === null) return;
+                setValue(steer.text);
+                if (steer.attachments !== undefined) attachments.restore(steer.attachments);
+                const element = textareaRef.current;
+                if (element === null) return;
+                requestAnimationFrame(() =>
+                  element.setSelectionRange(steer.text.length, steer.text.length),
+                );
+              });
+              return;
+            }
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
               void submit(running ? "steer" : "queue");
@@ -768,7 +816,8 @@ function EarlierMessages({
 function lastUserMessageOrder(timeline: TimelineItem[]): number {
   let order = Number.NEGATIVE_INFINITY;
   for (const item of timeline) {
-    if (item.kind === "message" && item.message.role === "user") {
+    // A steer the run has not reached sits below the run's live work and does not start a turn.
+    if (item.kind === "message" && item.message.role === "user" && !item.message.pendingSteer) {
       order = Math.max(order, item.message.order);
     }
   }
@@ -784,6 +833,8 @@ export function ChatView({
   tasks,
   send,
   stop,
+  unsendSteer,
+  pendingSteers = 0,
   applyTasks,
   stats,
   refreshStats,
@@ -1153,6 +1204,7 @@ export function ChatView({
             running={running}
             send={handleSend}
             stop={stop}
+            unsendSteer={!tasksPage && pendingSteers > 0 ? unsendSteer : undefined}
             addTask={addTask}
             error={composerError}
             onDismissError={() => setComposerError(null)}

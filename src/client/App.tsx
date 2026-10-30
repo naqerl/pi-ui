@@ -36,6 +36,8 @@ export function App() {
       tasks={chat.tasks}
       send={chat.send}
       stop={chat.stop}
+      unsendSteer={chat.unsendSteer}
+      pendingSteers={chat.steers.length}
       applyTasks={chat.applyTasks}
       stats={{
         usage: chat.usage,

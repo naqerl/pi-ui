@@ -24,6 +24,8 @@ export interface ChatMessage {
   isError?: boolean;
   /** True for a message injected into a running turn. */
   steer?: boolean;
+  /** A steer still waiting for the run's next turn boundary; it can be taken back. */
+  pendingSteer?: boolean;
   /** Set when the message is a background job result or MCP event; the chat shows a one-line notice. */
   notice?: ChatNotice;
   /** True when a server restart cut off this assistant response. */
@@ -221,6 +223,8 @@ export interface Snapshot {
   /** Quiet time after which the working strip says the agent has gone quiet. */
   quietAfterMs?: number;
   queue: QueuedMessage[];
+  /** Steers waiting for the run's next turn boundary, oldest first. */
+  steers?: QueuedMessage[];
   usage: UsageSummary;
   context: ContextUsage;
   mcp: McpStatus;
@@ -247,6 +251,8 @@ export interface SubmitMessageResponse {
   /** False when the transcript entry has not been placed yet. */
   placed: boolean;
   queue: QueuedMessage[];
+  /** Steers waiting for the run's next turn boundary. */
+  steers?: QueuedMessage[];
 }
 
 export interface HealthResponse {
@@ -299,4 +305,5 @@ export interface StreamRunState {
   startedAt?: string | null;
   lastEventAt?: string | null;
   queue?: QueuedMessage[];
+  steers?: QueuedMessage[];
 }

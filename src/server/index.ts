@@ -477,6 +477,23 @@ app.post("/api/queue/:id", async (c) => {
   return c.text('Action must be "cancel" or "steer"', 400);
 });
 
+// Takes back a steer the run has not reached yet; a delivered one is in the transcript and stays.
+app.post("/api/steer/:id", async (c) => {
+  const id = c.req.param("id");
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.text("Expected a JSON body", 400);
+  }
+  const action =
+    typeof body === "object" && body !== null && "action" in body ? body.action : undefined;
+  if (action !== "unsend") return c.text('Action must be "unsend"', 400);
+  const steer = await chat.unsendSteer(id);
+  if (steer === null) return c.text("The steer was already delivered", 409);
+  return c.json({ ok: true, steer, steers: chat.getRunStatus().steers ?? [] });
+});
+
 app.post("/api/stop", async (c) => {
   await chat.stop();
   return c.json({ ok: true, queue: (await chat.getSnapshot()).queue });

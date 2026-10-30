@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DashboardState } from "../shared/dashboard";
+import { pendingSteerMessage } from "../shared/steers";
 import type {
   ActivityItem,
   ChatMessage,
@@ -33,20 +34,6 @@ const EMPTY_EVENTS: McpEventsState = {
   notice: null,
   revision: 0,
 };
-
-/** Drop a local steer bubble once the snapshot has the same user text at that time. */
-function retainPendingSteers(snapshot: ChatMessage[], pending: ChatMessage[]): ChatMessage[] {
-  return pending.filter((item) => {
-    const pendingTime = Date.parse(item.timestamp);
-    if (!Number.isFinite(pendingTime)) return false;
-    return !snapshot.some(
-      (message) =>
-        message.role === "user" &&
-        message.text === item.text &&
-        Date.parse(message.timestamp) >= pendingTime - 2_000,
-    );
-  });
-}
 
 /** A send that failed for a reason worth showing carries it in `error`. */
 export type SendOutcome = { ok: true } | { ok: false; error: string | null };
@@ -98,7 +85,7 @@ export function useChat(options: UseChatOptions = {}) {
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [context, setContext] = useState<ContextUsage | null>(null);
   const [mcpEvents, setMcpEvents] = useState<McpEventsState>(EMPTY_EVENTS);
-  const [pendingSteers, setPendingSteers] = useState<ChatMessage[]>([]);
+  const [steers, setSteers] = useState<QueuedMessage[]>([]);
   const [ready, setReady] = useState(false);
   const [hasEarlier, setHasEarlier] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
@@ -158,7 +145,6 @@ export function useChat(options: UseChatOptions = {}) {
         setMessages(snapshot.messages);
         setActivity(snapshot.activity);
       }
-      setPendingSteers((pending) => retainPendingSteers(snapshot.messages, pending));
       const persistedActivityIds = new Set(snapshot.activity.map((item) => item.id));
       const toolsAreCurrent =
         snapshot.activeTools !== undefined &&
@@ -174,6 +160,7 @@ export function useChat(options: UseChatOptions = {}) {
       setLastEventAt(snapshot.runLastEventAt ?? null);
       if (snapshot.quietAfterMs !== undefined) setQuietAfterMs(snapshot.quietAfterMs);
       setQueue(snapshot.queue);
+      setSteers(snapshot.steers ?? []);
       setMcp(snapshot.mcp ?? { servers: [], unavailable: [] });
       setUsage(snapshot.usage ?? null);
       setContext(snapshot.context ?? null);
@@ -258,6 +245,7 @@ export function useChat(options: UseChatOptions = {}) {
       setRunStartedAt(data.startedAt ?? null);
       if (data.lastEventAt !== undefined) setLastEventAt(data.lastEventAt);
       if (data.queue !== undefined) setQueue(data.queue);
+      if (data.steers !== undefined) setSteers(data.steers);
       if (data.state !== "running") {
         setDraftText("");
         setDraftThinking("");
@@ -295,7 +283,6 @@ export function useChat(options: UseChatOptions = {}) {
         setMessages((current) =>
           current.some((item) => item.id === message.id) ? current : [...current, message],
         );
-        setPendingSteers((pending) => pending.filter((item) => item.text !== message.text));
       }
       setDraftText("");
       setDraftThinking("");
@@ -406,14 +393,15 @@ export function useChat(options: UseChatOptions = {}) {
       });
     }
 
-    for (const message of pendingSteers) {
-      const order =
-        message.order >= Number.MAX_SAFE_INTEGER - 1 ? Number.MAX_SAFE_INTEGER - 4 : message.order;
-      items.push({ kind: "message", order, message });
+    // Steers the run has not reached go below everything it is still doing; once delivered, the
+    // snapshot has them where they entered the conversation.
+    for (const steer of steers) {
+      const message = pendingSteerMessage(steer);
+      items.push({ kind: "message", order: message.order, message });
     }
 
     return items.sort((a, b) => a.order - b.order);
-  }, [messages, activity, liveTools, draftText, draftThinking, pendingSteers]);
+  }, [messages, activity, liveTools, draftText, draftThinking, steers]);
 
   const send = useCallback(
     async (
@@ -444,6 +432,7 @@ export function useChat(options: UseChatOptions = {}) {
         }
         const data = (await response.json()) as SubmitMessageResponse;
         setQueue(data.queue);
+        if (data.steers !== undefined) setSteers(data.steers);
         if (!data.queued && !(runState === "running")) {
           setRunState("running");
           setRunStartedAt(new Date().toISOString());
@@ -453,13 +442,6 @@ export function useChat(options: UseChatOptions = {}) {
         }
         if (!data.queued && data.placed) {
           setMessages((current) =>
-            current.some((item) => item.id === data.message.id)
-              ? current
-              : [...current, data.message],
-          );
-          setPendingSteers((pending) => pending.filter((item) => item.text !== data.message.text));
-        } else if (!data.queued && data.message.steer === true) {
-          setPendingSteers((current) =>
             current.some((item) => item.id === data.message.id)
               ? current
               : [...current, data.message],
@@ -488,6 +470,28 @@ export function useChat(options: UseChatOptions = {}) {
       return false;
     }
   }, []);
+
+  /** Takes back the newest steer the run has not reached; null when there is none left to take. */
+  const unsendSteer = useCallback(async (): Promise<QueuedMessage | null> => {
+    const latest = steers.at(-1);
+    if (latest === undefined) return null;
+    try {
+      const response = await fetch(`/api/steer/${encodeURIComponent(latest.id)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "unsend" }),
+      });
+      if (!response.ok) {
+        await refreshState();
+        return null;
+      }
+      const data = (await response.json()) as { steer: QueuedMessage; steers: QueuedMessage[] };
+      setSteers(data.steers);
+      return data.steer;
+    } catch {
+      return null;
+    }
+  }, [steers, refreshState]);
 
   const steerQueued = useCallback(
     async (id: string): Promise<boolean> => {
@@ -544,6 +548,8 @@ export function useChat(options: UseChatOptions = {}) {
     send,
     cancelQueued,
     steerQueued,
+    steers,
+    unsendSteer,
     stop,
   };
 }

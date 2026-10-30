@@ -130,6 +130,9 @@ export async function openDurableSession(
         // compaction would remove messages before the bridge sees them, so it
         // stays off; manual compaction remains available.
         compaction: { enabled: false },
+        // Every steer waiting at a turn boundary goes in at that boundary, in the order sent,
+        // instead of one per boundary, which pushed later steers past the run's end.
+        steeringMode: "all",
       },
       onReport: (error) => console.error("[pi] harness report", error),
     },

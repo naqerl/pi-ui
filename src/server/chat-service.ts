@@ -8,6 +8,7 @@ import {
   type Harness,
   type SnapshotEvent,
   type Submission,
+  type SubmissionId,
   watchEvents,
 } from "@earendil-works/pi-durable";
 import { parseNotice } from "../shared/notices.js";
@@ -16,6 +17,7 @@ import {
   type DurableRunFacts,
   reconcileRunState,
 } from "../shared/run-health.js";
+import { contentText, settledSteerIds } from "../shared/steers.js";
 import {
   type ChatMessage,
   type McpEventsState,
@@ -96,6 +98,7 @@ export interface SubmittedMessage {
   queued: boolean;
   placed: boolean;
   queue: QueuedMessage[];
+  steers: QueuedMessage[];
 }
 
 export class ChatService {
@@ -117,7 +120,8 @@ export class ChatService {
   private checkingRun = false;
   private quietLogged = false;
   private readonly queued = new Map<string, QueuedRun>();
-  private readonly steerSubmissions = new Set<string>();
+  /** Steers durable holds in its inbox for the next turn boundary, by submission id. */
+  private readonly steers = new Map<string, QueuedMessage>();
   private marker: RunMarker | undefined;
   private markerWrites: Promise<void> = Promise.resolve();
   private shuttingDown = false;
@@ -170,6 +174,7 @@ export class ChatService {
     this.watchdog.unref?.();
     await this.autoContinueInterruptedRun();
     await this.restorePersistedQueue();
+    await this.restorePendingSteers();
   }
 
   async close(): Promise<void> {
@@ -292,6 +297,7 @@ export class ChatService {
       startedAt: this.runStartedAt ?? null,
       lastEventAt: new Date(this.lastEventAt).toISOString(),
       queue: this.queueItems(),
+      steers: this.steerItems(),
     };
   }
 
@@ -374,6 +380,7 @@ export class ChatService {
       runLastEventAt: new Date(this.lastEventAt).toISOString(),
       quietAfterMs: QUIET_AFTER_MS,
       queue: this.queueItems(),
+      steers: this.steerItems(),
       usage: summarizeUsage(usage),
       context: contextUsage(context.entries, this.modelWindow),
       mcp: this.mcp,
@@ -539,9 +546,18 @@ export class ChatService {
       await this.persistMarkerState();
       this.broadcastQueue();
     }
-    if (steer) this.steerSubmissions.add(id);
+    if (steer) {
+      this.steers.set(id, {
+        id,
+        text,
+        createdAt: new Date().toISOString(),
+        ...(attachments.length > 0 ? { attachments } : {}),
+      });
+    }
 
     const { message, placed } = await this.submittedMessage(submission, text, steer, attachments);
+    if (steer && (placed || startsRun)) this.steers.delete(id);
+    if (steer) this.broadcastQueue();
     const queued = queueMode && !placed;
     if (queued && !queuedInitially) {
       this.queued.set(id, {
@@ -561,7 +577,7 @@ export class ChatService {
     }
 
     void this.monitorSubmission(submission, startsRun, queued ? id : undefined);
-    return { message, mode, queued, placed, queue: this.queueItems() };
+    return { message, mode, queued, placed, queue: this.queueItems(), steers: this.steerItems() };
   }
 
   async cancelQueued(id: string): Promise<boolean> {
@@ -570,13 +586,37 @@ export class ChatService {
     this.queued.delete(id);
     await this.persistMarkerState();
     this.broadcastQueue();
-    try {
-      await queued.submission.abort(SESSION_CONTEXT);
-    } catch (error) {
-      console.error("[pi] could not cancel a queued message", error);
-    }
+    const aborted = await this.withdraw(id, "cancel a queued message");
     this.maybeClearMarker();
-    return true;
+    return aborted;
+  }
+
+  /**
+   * Takes back a steer durable has not placed yet and returns it, so its text can go back to the
+   * composer. Null when it is unknown or already in the transcript; a delivered steer stays.
+   */
+  async unsendSteer(id: string): Promise<QueuedMessage | null> {
+    const item = this.steers.get(id);
+    if (item === undefined) return null;
+    const aborted = await this.withdraw(id, "take back a steer");
+    this.steers.delete(id);
+    this.broadcastQueue();
+    return aborted ? item : null;
+  }
+
+  /** Withdraws a submission still in durable's inbox; false when it was placed or settled. */
+  private async withdraw(id: string, what: string): Promise<boolean> {
+    try {
+      const result = await this.harness.abortSubmission(
+        Number(id) as SubmissionId,
+        SESSION_CONTEXT,
+        this.conversation.id,
+      );
+      return result === "aborted";
+    } catch (error) {
+      console.error(`[pi] could not ${what}`, error);
+      return false;
+    }
   }
 
   async steerQueued(id: string): Promise<SubmittedMessage | null> {
@@ -585,11 +625,8 @@ export class ChatService {
     this.queued.delete(id);
     await this.persistMarkerState();
     this.broadcastQueue();
-    try {
-      await queued.submission.abort(SESSION_CONTEXT);
-    } catch (error) {
-      console.error("[pi] could not move a queued message into the run", error);
-    }
+    // A message durable already placed is in the transcript; sending it again would duplicate it.
+    if (!(await this.withdraw(id, "move a queued message into the run"))) return null;
     return this.submit(queued.item.text, "steer", {
       ...(queued.item.attachments === undefined ? {} : { attachments: queued.item.attachments }),
     });
@@ -612,7 +649,7 @@ export class ChatService {
       console.error("[pi] abort failed", error);
     } finally {
       this.queued.clear();
-      this.steerSubmissions.clear();
+      this.steers.clear();
       if (wasRunning) {
         this.setRunState("idle");
       } else {
@@ -763,7 +800,7 @@ export class ChatService {
     } catch (error) {
       console.error("[pi] submission wait failed", error);
     } finally {
-      this.steerSubmissions.delete(String(submission.id));
+      if (this.steers.delete(String(submission.id))) this.broadcastQueue();
       if (queuedId !== undefined && this.queued.delete(queuedId)) {
         await this.persistMarkerState();
         this.broadcastQueue();
@@ -814,6 +851,7 @@ export class ChatService {
     switch (event.type) {
       case "snapshot": {
         this.applySnapshot(event);
+        this.dropDeliveredSteers(event.inbox);
         // A snapshot replaces events durable dropped, a run's end among them.
         this.reconcileRun({
           run: event.run !== undefined,
@@ -963,12 +1001,10 @@ export class ChatService {
         if (event.record.type !== "input") return;
         if (event.record.status === "placed") {
           const wasQueued = this.queued.delete(id);
-          const wasSteered = this.steerSubmissions.delete(id);
-          if (wasQueued) {
-            await this.persistMarkerState();
-            this.broadcastQueue();
-          }
+          const wasSteered = this.steers.delete(id);
           if (wasQueued || wasSteered) {
+            if (wasQueued) await this.persistMarkerState();
+            this.broadcastQueue();
             this.hub.broadcast({
               event: "message.done",
               data: { message: null } satisfies StreamMessageDone,
@@ -979,10 +1015,14 @@ export class ChatService {
             await this.persistMarkerState();
             this.broadcastQueue();
           }
-          this.steerSubmissions.delete(id);
+          if (this.steers.delete(id)) this.broadcastQueue();
         }
         return;
       }
+
+      case "inbox_update":
+        this.dropDeliveredSteers(event.items);
+        return;
 
       case "entry_appended":
         if (event.entry.kind === STEER_ENTRY_KIND) {
@@ -1074,6 +1114,43 @@ export class ChatService {
 
   private queueItems(): QueuedMessage[] {
     return [...this.queued.values()].map((entry) => entry.item);
+  }
+
+  private steerItems(): QueuedMessage[] {
+    return [...this.steers.values()];
+  }
+
+  /** Durable's inbox is the truth for pending steers; any it no longer holds was placed or withdrawn. */
+  private dropDeliveredSteers(inbox: readonly { id: SubmissionId; mode: string }[]): void {
+    const settled = settledSteerIds(this.steers.keys(), inbox);
+    for (const id of settled) this.steers.delete(id);
+    if (settled.length > 0) this.broadcastQueue();
+  }
+
+  /** After a restart, steers still in durable's inbox are listed again, so they can be taken back. */
+  private async restorePendingSteers(): Promise<void> {
+    try {
+      const state = await this.conversation.viewState(SESSION_CONTEXT);
+      try {
+        const inbox = state.value.docs["pi.inbox"] as
+          | { items?: { id?: unknown; mode?: unknown; content?: unknown }[] }
+          | undefined;
+        for (const item of inbox?.items ?? []) {
+          if (item.mode !== "steer" || item.id === undefined) continue;
+          const id = String(item.id);
+          if (this.steers.has(id)) continue;
+          this.steers.set(id, {
+            id,
+            text: contentText(item.content),
+            createdAt: new Date().toISOString(),
+          });
+        }
+      } finally {
+        state.dispose();
+      }
+    } catch (error) {
+      console.error("[pi] could not read pending steers", error);
+    }
   }
 
   private broadcastQueue(): void {
