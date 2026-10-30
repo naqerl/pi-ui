@@ -75,8 +75,6 @@ interface QueuedRun {
 interface SubmitOptions {
   /** Durable deduplication key, used by recovery and queue restoration. */
   requestId?: string;
-  /** Reuse the interrupted run's marker instead of starting a fresh one. */
-  resume?: boolean;
   /** Media ids sent as images after the text. */
   attachments?: string[];
   /** Place an input as this application entry instead of a normal user entry. */
@@ -92,9 +90,6 @@ function positiveEnv(name: string): number | undefined {
   const value = Number(process.env[name]);
   return Number.isFinite(value) && value > 0 ? value : undefined;
 }
-
-const CONTINUATION_TEXT =
-  "Continue from where the previous response was interrupted. Do not repeat what is already complete.";
 
 export interface SubmittedMessage {
   message: ChatMessage;
@@ -175,13 +170,18 @@ export class ChatService {
     const stream = await watchEvents(this.harness, this.conversation.id, SESSION_CONTEXT);
     this.stream = stream;
     this.applySnapshot(stream.snapshot);
+    if (stream.snapshot.run !== undefined) {
+      this.setRunState("running", this.runStartedAt);
+    }
     stream.start((events) => this.handleEvents(events));
     this.watchStreamEnd(stream);
     this.watchdog = setInterval(() => void this.checkQuietRun(), WATCHDOG_INTERVAL_MS);
     this.watchdog.unref?.();
-    await this.autoContinueInterruptedRun();
     await this.restorePersistedQueue();
     await this.restorePendingSteers();
+    // Durable carries a turn across a restart from its committed checkpoint. A
+    // stop requested before the restart was settled in recovery, so leave it be.
+    if (this.marker?.stopRequested !== true) this.harness.resume();
   }
 
   async close(): Promise<void> {
@@ -497,19 +497,17 @@ export class ChatService {
         ? text
         : [...(text.length > 0 ? [{ type: "text" as const, text }] : []), ...images];
     const startsRun = this.runState !== "running" && this.queued.size === 0;
-    const resumeMarker = startsRun && options.resume === true ? this.marker : undefined;
-    const startedAt = resumeMarker?.startedAt ?? new Date().toISOString();
+    const startedAt = new Date().toISOString();
     if (startsRun) {
       const marker: RunMarker = {
         version: 1,
-        userMessage: resumeMarker?.userMessage ?? text,
+        userMessage: text,
         startedAt,
-        mode: resumeMarker?.mode ?? mode,
+        mode,
         stopRequested: false,
-        idempotencyKey: resumeMarker?.idempotencyKey ?? randomUUID(),
-        autoContinued: resumeMarker?.autoContinued ?? false,
-        queue: resumeMarker?.queue ?? this.queueItems(),
-        partialEntryId: resumeMarker?.partialEntryId ?? null,
+        idempotencyKey: randomUUID(),
+        queue: this.queueItems(),
+        partialEntryId: null,
         updatedAt: new Date().toISOString(),
       };
       this.marker = marker;
@@ -667,34 +665,6 @@ export class ChatService {
         await this.persistMarkerState();
         this.broadcastQueue();
       }
-    }
-  }
-
-  private async autoContinueInterruptedRun(): Promise<void> {
-    const marker = this.marker;
-    if (
-      marker === undefined ||
-      marker.stopRequested ||
-      marker.autoContinued ||
-      this.runState === "running"
-    ) {
-      return;
-    }
-
-    const next: RunMarker = {
-      ...marker,
-      autoContinued: true,
-      updatedAt: new Date().toISOString(),
-    };
-    this.marker = next;
-    await this.writeMarker(next);
-    try {
-      await this.submit(CONTINUATION_TEXT, "steer", {
-        requestId: `run-continuation:${marker.idempotencyKey}`,
-        resume: true,
-      });
-    } catch (error) {
-      console.error("[pi] could not continue the interrupted run", error);
     }
   }
 

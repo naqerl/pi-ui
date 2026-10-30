@@ -661,7 +661,7 @@ const server = serve({ fetch: app.fetch, port }, (info) => {
     console.log(
       boot.runMarker === undefined || boot.runMarker.stopRequested
         ? "previous run was interrupted; partial output was kept"
-        : "previous run was interrupted; the partial output was kept and the turn is continuing",
+        : "previous run was interrupted; resuming the turn with pi-durable",
     );
   }
   const toolParts = [

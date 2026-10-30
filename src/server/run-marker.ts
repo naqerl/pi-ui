@@ -6,7 +6,7 @@ import type { MessageMode, QueuedMessage } from "../shared/types.js";
 /**
  * Durable record of the turn that is currently in flight. It lives next to
  * `pi.sqlite3` and `current.json`, so a process that dies mid-run leaves enough
- * information behind to mark the transcript partial and continue once.
+ * information behind to mark the transcript partial and resume the turn once.
  */
 export interface RunMarker {
   readonly version: 1;
@@ -16,10 +16,8 @@ export interface RunMarker {
   readonly mode: MessageMode;
   /** Set before an explicit stop so a restart never continues a stopped run. */
   readonly stopRequested: boolean;
-  /** Stable key for the continuation submission's request id. */
+  /** Stable key for restored queue request ids and the interrupted-run note. */
   readonly idempotencyKey: string;
-  /** At most one automatic continuation is admitted per marker. */
-  readonly autoContinued: boolean;
   readonly queue: readonly QueuedMessage[];
   /** Last assistant entry when the marker was recovered, so the UI can label it partial. */
   readonly partialEntryId: number | null;
@@ -77,7 +75,6 @@ function isRunMarker(value: unknown): value is RunMarker {
     (value.mode === "queue" || value.mode === "steer") &&
     typeof value.stopRequested === "boolean" &&
     typeof value.idempotencyKey === "string" &&
-    typeof value.autoContinued === "boolean" &&
     Array.isArray(value.queue) &&
     value.queue.every(isQueuedMessage) &&
     (value.partialEntryId === null ||
