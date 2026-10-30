@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,7 +45,8 @@ test("a job runs in the background and reports its end with the last output", as
   assert.equal(ended.status, "failed");
   assert.equal(ended.exitCode, 3);
   assert.match(tail, /line 3/);
-  assert.match(tail, new RegExp(cwd.replace(/[/\\^$*+?.()|[\]{}]/g, "\\$&")));
+  const printedCwd = realpathSync(cwd);
+  assert.match(tail, new RegExp(printedCwd.replace(/[/\\^$*+?.()|[\]{}]/g, "\\$&")));
   const text = jobNotice(ended, tail);
   assert.match(text, /background job j\d+ finished/);
   assert.match(text, /exited 3/);

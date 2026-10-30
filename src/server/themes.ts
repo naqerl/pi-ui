@@ -1,6 +1,7 @@
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { manifestColor } from "../shared/color.js";
 import type { OmarchyTheme, OmarchyThemes, ThemeColors } from "../shared/types.js";
 
 /** Colors and lengths that can sit in an HTML style attribute. */
@@ -234,9 +235,10 @@ export function injectTheme(html: string, theme: OmarchyTheme | null): string {
     /[ \t]*<meta\b[^>]*\bname="color-scheme"[^>]*>\r?\n?/gi,
     "",
   );
+  const chromeColor = manifestColor(theme.colors.background) ?? theme.colors.background;
   const metas = [
     `<meta name="color-scheme" content="${theme.colors.mode}" />`,
-    `<meta name="theme-color" content="${theme.colors.background}" />`,
+    `<meta name="theme-color" content="${chromeColor}" />`,
   ];
   if (!withoutScheme.includes("</head>")) return withoutScheme;
   return withoutScheme.replace(
@@ -244,10 +246,6 @@ export function injectTheme(html: string, theme: OmarchyTheme | null): string {
     `${metas.map((meta) => `    ${meta}\n`).join("")}  </head>`,
   );
 }
-
-/** Plain hex or comma rgb(): what an installed app's system bars can paint. */
-const MANIFEST_COLOR =
-  /^(#[0-9a-f]{3}(?:[0-9a-f]{3})?|rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\))$/i;
 
 /**
  * The web app manifest painted with the active theme. An installed app reads
@@ -258,8 +256,8 @@ const MANIFEST_COLOR =
  */
 export function themeManifest(manifest: string, theme: OmarchyTheme | null): string {
   if (theme === null) return manifest;
-  const color = theme.colors.background.trim();
-  if (!MANIFEST_COLOR.test(color)) return manifest;
+  const color = manifestColor(theme.colors.background);
+  if (color === null) return manifest;
   try {
     const parsed = JSON.parse(manifest) as Record<string, unknown>;
     return `${JSON.stringify({ ...parsed, theme_color: color, background_color: color }, null, 2)}\n`;
