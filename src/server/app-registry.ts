@@ -13,6 +13,9 @@ import { createDashboardTools } from "./dashboard-tools.js";
 import { createJobTools } from "./job-tools.js";
 import type { JobManager } from "./jobs.js";
 import { type McpRuntime, startMcpRuntime } from "./mcp-runtime.js";
+import type { SnapshotCache } from "./memory/snapshot.js";
+import type { MemoryStore } from "./memory/store.js";
+import { createMemoryTools } from "./memory/tools.js";
 import { createTaskTools, type TaskBridge } from "./task-tools.js";
 
 export interface AppRegistryBoot {
@@ -22,6 +25,7 @@ export interface AppRegistryBoot {
   readonly taskTools: readonly string[];
   readonly jobTools: readonly string[];
   readonly dashboardTools: readonly string[];
+  readonly memoryTools: readonly string[];
 }
 
 export interface AppRegistryOptions {
@@ -31,6 +35,8 @@ export interface AppRegistryOptions {
   readonly jobs?: JobManager;
   /** The agent-editable dashboard page. Without it, the dashboard tools are not offered. */
   readonly dashboard?: DashboardManager;
+  /** The layered memory tree and its injected-snapshot cache. */
+  readonly memory?: { readonly store: MemoryStore; readonly snapshot?: SnapshotCache };
 }
 
 /**
@@ -64,6 +70,14 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
     registry.install(defineExtension({ name: "pi-ui-dashboard-tools", tools: dashboardTools }));
   }
 
+  const memoryTools =
+    options.memory === undefined
+      ? []
+      : createMemoryTools(options.memory.store, options.memory.snapshot);
+  if (memoryTools.length > 0) {
+    registry.install(defineExtension({ name: "pi-ui-memory-tools", tools: memoryTools }));
+  }
+
   const mcp = await startMcpRuntime();
   if (mcp.toolNames.length > 0) {
     mcp.install(registry);
@@ -87,5 +101,6 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
     taskTools: taskTools.map((tool) => tool.name),
     jobTools: jobTools.map((tool) => tool.name),
     dashboardTools: dashboardTools.map((tool) => tool.name),
+    memoryTools: memoryTools.map((tool) => tool.name),
   };
 }

@@ -90,7 +90,7 @@ in `dashboard_upsert`.
 | `markdown`  | `text`* (raw HTML shows as text)                                                                                                                              |
 | `status`    | `items` with `label`, `state`, `detail`, `key`; or one `state`* and `label`. `ok`/`running`/`up` are green, `warn`/`off`/`starting` amber, anything else red. |
 
-## Example: live Hetzner servers
+## Example: live ExampleCloud servers
 
 Give the container the token (in `docker-compose.yml` under `environment`):
 
@@ -102,13 +102,13 @@ Then ask the agent for a "Live servers" table and the monthly cost. It calls:
 
 ```json
 {
-  "id": "hetzner-servers",
+  "id": "example-cloud-servers",
   "title": "Live servers",
   "kind": "table",
   "source": {
     "type": "poll",
     "intervalSec": 60,
-    "script": "const res = await fetch(\"https://api.hetzner.cloud/v1/servers\", {\n  headers: { Authorization: `Bearer ${env.HCLOUD_TOKEN}` },\n});\nif (!res.ok) throw new Error(`Hetzner API ${res.status}`);\nconst { servers } = await res.json();\nreturn servers.map((s) => ({\n  name: s.name,\n  status: s.status,\n  type: s.server_type.name,\n  ip: s.public_net.ipv4.ip,\n}));"
+    "script": "const res = await fetch(\"https://api.example-cloud.cloud/v1/servers\", {\n  headers: { Authorization: `Bearer ${env.HCLOUD_TOKEN}` },\n});\nif (!res.ok) throw new Error(`ExampleCloud API ${res.status}`);\nconst { servers } = await res.json();\nreturn servers.map((s) => ({\n  name: s.name,\n  status: s.status,\n  type: s.server_type.name,\n  ip: s.public_net.ipv4.ip,\n}));"
   },
   "mapping": {
     "rows": "$",
@@ -124,13 +124,13 @@ Then ask the agent for a "Live servers" table and the monthly cost. It calls:
 
 ```json
 {
-  "id": "hetzner-cost",
-  "title": "Hetzner monthly cost",
+  "id": "example-cloud-cost",
+  "title": "ExampleCloud monthly cost",
   "kind": "stat",
   "source": {
     "type": "poll",
     "intervalSec": 300,
-    "script": "const res = await fetch(\"https://api.hetzner.cloud/v1/servers\", {\n  headers: { Authorization: `Bearer ${env.HCLOUD_TOKEN}` },\n});\nif (!res.ok) throw new Error(`Hetzner API ${res.status}`);\nconst { servers } = await res.json();\nconst total = servers.reduce((sum, s) => {\n  const price = s.server_type.prices.find((p) => p.location === s.datacenter.location.name) ?? s.server_type.prices[0];\n  return sum + Number(price.price_monthly.gross);\n}, 0);\nreturn { total: `€${total.toFixed(2)}`, servers: `${servers.length} servers` };"
+    "script": "const res = await fetch(\"https://api.example-cloud.cloud/v1/servers\", {\n  headers: { Authorization: `Bearer ${env.HCLOUD_TOKEN}` },\n});\nif (!res.ok) throw new Error(`ExampleCloud API ${res.status}`);\nconst { servers } = await res.json();\nconst total = servers.reduce((sum, s) => {\n  const price = s.server_type.prices.find((p) => p.location === s.datacenter.location.name) ?? s.server_type.prices[0];\n  return sum + Number(price.price_monthly.gross);\n}, 0);\nreturn { total: `€${total.toFixed(2)}`, servers: `${servers.length} servers` };"
   },
   "mapping": { "value": "total", "label": "servers" }
 }
@@ -142,12 +142,12 @@ and places them:
 {
   "sections": [
     {
-      "title": "Hetzner",
+      "title": "ExampleCloud",
       "widgets": [
-        { "id": "hetzner-cost", "span": "third" },
+        { "id": "example-cloud-cost", "span": "third" },
         { "id": "context", "span": "third" },
         { "id": "tokens", "span": "third" },
-        { "id": "hetzner-servers", "span": "full" }
+        { "id": "example-cloud-servers", "span": "full" }
       ]
     },
     { "title": "Agent", "widgets": [{ "id": "mcp", "span": "full" }] }
@@ -158,7 +158,7 @@ and places them:
 The cost is the sum of each server type's monthly gross price; it leaves out
 traffic, volumes, backups and primary IPs.
 
-`e2e/dashboard.e2e.ts` runs these widgets against a fake Hetzner endpoint in
+`e2e/dashboard.e2e.ts` runs these widgets against a fake ExampleCloud endpoint in
 `e2e/fake-model.mjs`, never the real API.
 
 ## Tests
@@ -167,7 +167,7 @@ traffic, volumes, backups and primary IPs.
   mapping errors, masking, the poll worker (fetch, env, prev, log, timeout,
   crash, size cap), visible-only polling, backoff and its single notice, tool
   validation and persistence.
-- `e2e/dashboard.e2e.ts`: the fake model builds the Hetzner widgets and layout,
+- `e2e/dashboard.e2e.ts`: the fake model builds the ExampleCloud widgets and layout,
   which render at 1280 and 390 px; polling stops when the page is left and
   starts again on return; the card menu removes a widget.
 - `PI_DASHBOARD_MIN_INTERVAL_MS` lowers the 30 s minimum. It is meant for tests.

@@ -61,11 +61,11 @@ const scopeOf = (title) => {
 const DESCRIPTION = {
   core: "who the user is, how to work",
   machines: "operator infrastructure",
-  citydiff: "project",
+  storefront: "project",
   zeroshot: "project",
   projects: "project",
   forge: "delivery lanes",
-  cyberpass: "project",
+  gateway: "project",
   harness: "pi harness",
   prefs: "operator preferences",
   misc: "unclassified",

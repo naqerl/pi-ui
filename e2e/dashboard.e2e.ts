@@ -2,11 +2,11 @@ import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
 // Poll scripts the fake model hands to dashboard_upsert. They call the fake
-// Hetzner API on the fake model server ({{FAKE_HTTP}}) with env.HCLOUD_TOKEN.
-const serversScript = `const res = await fetch("{{FAKE_HTTP}}/hetzner/v1/servers", {
+// ExampleCloud API on the fake model server ({{FAKE_HTTP}}) with env.HCLOUD_TOKEN.
+const serversScript = `const res = await fetch("{{FAKE_HTTP}}/example-cloud/v1/servers", {
   headers: { Authorization: \`Bearer \${env.HCLOUD_TOKEN}\` },
 });
-if (!res.ok) throw new Error(\`Hetzner API \${res.status}\`);
+if (!res.ok) throw new Error(\`ExampleCloud API \${res.status}\`);
 const { servers } = await res.json();
 log("servers", servers.length);
 return servers.map((s) => ({
@@ -16,10 +16,10 @@ return servers.map((s) => ({
   ip: s.public_net.ipv4.ip,
 }));`;
 
-const costScript = `const res = await fetch("{{FAKE_HTTP}}/hetzner/v1/servers", {
+const costScript = `const res = await fetch("{{FAKE_HTTP}}/example-cloud/v1/servers", {
   headers: { Authorization: \`Bearer \${env.HCLOUD_TOKEN}\` },
 });
-if (!res.ok) throw new Error(\`Hetzner API \${res.status}\`);
+if (!res.ok) throw new Error(\`ExampleCloud API \${res.status}\`);
 const { servers } = await res.json();
 const total = servers.reduce(
   (sum, s) => sum + Number(s.server_type.prices[0].price_monthly.gross),
@@ -31,7 +31,7 @@ const createCalls = [
   {
     name: "dashboard_upsert",
     arguments: {
-      id: "hetzner-servers",
+      id: "example-cloud-servers",
       title: "Live servers",
       kind: "table",
       source: { type: "poll", script: serversScript, intervalSec: 0.5 },
@@ -44,8 +44,8 @@ const createCalls = [
   {
     name: "dashboard_upsert",
     arguments: {
-      id: "hetzner-cost",
-      title: "Hetzner monthly cost",
+      id: "example-cloud-cost",
+      title: "ExampleCloud monthly cost",
       kind: "stat",
       source: { type: "poll", script: costScript, intervalSec: 0.5 },
       mapping: { value: "total", label: "servers" },
@@ -56,12 +56,12 @@ const createCalls = [
     arguments: {
       sections: [
         {
-          title: "Hetzner",
+          title: "ExampleCloud",
           widgets: [
-            { id: "hetzner-cost", span: "third" },
+            { id: "example-cloud-cost", span: "third" },
             { id: "context", span: "third" },
             { id: "tokens", span: "third" },
-            { id: "hetzner-servers", span: "full" },
+            { id: "example-cloud-servers", span: "full" },
           ],
         },
         { title: "Agent", widgets: [{ id: "mcp", span: "full" }] },
@@ -71,7 +71,7 @@ const createCalls = [
 ];
 
 const resetCalls = [
-  { name: "dashboard_remove", arguments: { id: "hetzner-servers" } },
+  { name: "dashboard_remove", arguments: { id: "example-cloud-servers" } },
   {
     name: "dashboard_layout",
     arguments: {
@@ -141,22 +141,23 @@ test("the agent builds dashboard widgets that render at 1280px and 390px", async
               width: rect.width,
             };
       };
-      const table = document.querySelector("[data-testid=widget-hetzner-servers] table");
+      const table = document.querySelector("[data-testid=widget-example-cloud-servers] table");
       const cards = [...(page?.querySelectorAll("section") ?? [])];
       return {
         sections: [...document.querySelectorAll("[data-testid=dashboard-section] > h2")].map(
           (h) => h.textContent,
         ),
-        cost: document.querySelector("[data-testid=stat-hetzner-cost] dd")?.textContent ?? null,
+        cost:
+          document.querySelector("[data-testid=stat-example-cloud-cost] dd")?.textContent ?? null,
         costLabel:
-          document.querySelector("[data-testid=stat-hetzner-cost] dt")?.textContent ?? null,
+          document.querySelector("[data-testid=stat-example-cloud-cost] dt")?.textContent ?? null,
         header: [...(table?.querySelectorAll("th") ?? [])].map((th) => th.textContent),
         rows: [...(table?.querySelectorAll("tbody tr") ?? [])].map((tr) =>
           [...tr.querySelectorAll("td")].map((td) => td.textContent),
         ),
-        cost_box: box("hetzner-cost"),
+        cost_box: box("example-cloud-cost"),
         context_box: box("context"),
-        servers_box: box("hetzner-servers"),
+        servers_box: box("example-cloud-servers"),
         overflow: page === null ? true : page.scrollWidth > page.clientWidth,
         inside: cards.every(
           (card) => card.getBoundingClientRect().right <= window.innerWidth + 0.5,
@@ -166,7 +167,7 @@ test("the agent builds dashboard widgets that render at 1280px and 390px", async
     });
 
   const wide = await layout();
-  expect(wide.sections).toEqual(["Hetzner", "Agent"]);
+  expect(wide.sections).toEqual(["ExampleCloud", "Agent"]);
   expect(wide.cost).toContain("€16.67");
   expect(wide.costLabel).toBe("3 servers");
   expect(wide.header).toEqual(["Name", "Status", "Type", "IP"]);
@@ -219,9 +220,9 @@ test("polls run only while the dashboard is visible, and widgets can be removed"
 
   // Visible: the servers widget keeps refreshing.
   await expect.poll(async () => (await readDashboard(browser)).polling).toBe(true);
-  const first = (await readDashboard(browser)).values["hetzner-servers"]?.updatedAt;
+  const first = (await readDashboard(browser)).values["example-cloud-servers"]?.updatedAt;
   await expect
-    .poll(async () => (await readDashboard(browser)).values["hetzner-servers"]?.updatedAt, {
+    .poll(async () => (await readDashboard(browser)).values["example-cloud-servers"]?.updatedAt, {
       timeout: 10_000,
     })
     .not.toBe(first);
@@ -232,28 +233,32 @@ test("polls run only while the dashboard is visible, and widgets can be removed"
     .poll(async () => (await readDashboard(browser)).polling, { timeout: 5_000 })
     .toBe(false);
   await new Promise((resolve) => setTimeout(resolve, 1_500));
-  const parked = (await readDashboard(browser)).values["hetzner-servers"]?.updatedAt;
+  const parked = (await readDashboard(browser)).values["example-cloud-servers"]?.updatedAt;
   await new Promise((resolve) => setTimeout(resolve, 2_500));
-  expect((await readDashboard(browser)).values["hetzner-servers"]?.updatedAt).toBe(parked);
+  expect((await readDashboard(browser)).values["example-cloud-servers"]?.updatedAt).toBe(parked);
 
   // Back on the page: polling resumes.
   await screen.getByRole("tab", "Stats").tap();
   await expect.poll(async () => (await readDashboard(browser)).polling).toBe(true);
   await expect
-    .poll(async () => (await readDashboard(browser)).values["hetzner-servers"]?.updatedAt, {
+    .poll(async () => (await readDashboard(browser)).values["example-cloud-servers"]?.updatedAt, {
       timeout: 10_000,
     })
     .not.toBe(parked);
 
   // The user removes a widget from its menu.
-  await screen.getByRole("button", "Hetzner monthly cost menu").tap();
+  await screen.getByRole("button", "ExampleCloud monthly cost menu").tap();
   await screen.getByRole("menuitem", "Remove widget").tap();
   await expect
     .poll(() =>
-      browser.evaluate(() => document.querySelector("[data-testid=widget-hetzner-cost]") === null),
+      browser.evaluate(
+        () => document.querySelector("[data-testid=widget-example-cloud-cost]") === null,
+      ),
     )
     .toBe(true);
-  expect((await readDashboard(browser)).widgets.map((w) => w.id)).not.toContain("hetzner-cost");
+  expect((await readDashboard(browser)).widgets.map((w) => w.id)).not.toContain(
+    "example-cloud-cost",
+  );
 
   // The agent removes the other one and restores the default layout.
   await screen.getByRole("tab", "Chat").tap();

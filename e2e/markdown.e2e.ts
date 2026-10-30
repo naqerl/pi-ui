@@ -111,15 +111,15 @@ test("does not let whitespace-only lines inflate assistant markdown bubbles", as
 });
 
 const overflowText = [
-  'Cancelled `hub_force_stop {job:"hj_57af322b37f14e7cda5e09d6f0d1eb4f"}` and reran it.',
+  'Cancelled `hub_force_stop {job:"job_57af322b37f14e7cda5e09d6f0d1eb4f"}` and reran it.',
   "",
   "See https://example.com/a/very/long/path/that/keeps/going/without/any/spaces/at/all/9f8e7d6c5b4a3f2e1d0c",
   "",
   "Supercalifragilisticexpialidociousandthensomemorelettersthatnevertakeabreath.",
   "",
   "1. New daemon confirmed (`pid 1771245`).",
-  '2. `hub_force_stop {job:"hj_57af322b37f14e7cda5e09d6f0d1eb4f"}` — the call hung.',
-  "3. Rerun `hj_4003e6a19daf43e347271b2e06147eae` on https://example.com/v1/hub/jobs/01a18973-93d3-7ef0-9eb4-38da457bf679",
+  '2. `hub_force_stop {job:"job_57af322b37f14e7cda5e09d6f0d1eb4f"}` — the call hung.',
+  "3. Rerun `job_4003e6a19daf43e347271b2e06147eae` on https://example.com/v1/hub/jobs/01a18973-93d3-7ef0-9eb4-38da457bf679",
   "",
   "```",
   "const wide = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';",
@@ -127,7 +127,7 @@ const overflowText = [
   "",
   "| job | run | pin | status |",
   "| --- | --- | --- | --- |",
-  "| hj_4003e6a19daf43e347271b2e06147eae | 01a18973-93d3-7ef0-9eb4-38da457bf679 | b6d648f7 | running |",
+  "| job_4003e6a19daf43e347271b2e06147eae | 01a18973-93d3-7ef0-9eb4-38da457bf679 | b6d648f7 | running |",
 ].join("\n");
 
 test("keeps long tokens, code blocks and tables inside the bubbles at 390px", async ({
