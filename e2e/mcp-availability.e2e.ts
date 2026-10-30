@@ -110,32 +110,36 @@ test("shows exactly one configured but unreachable MCP server", async ({
     expect(stub?.available).toBe(true);
     expect(stub?.tools).toContain("stub__echo");
 
-    const notice = screen.getByTestId("mcp-unavailable");
-    await expect(notice).toBeVisible();
-    await expect(notice).toHaveText("unreachable unavailable");
+    // The header no longer carries MCP text; the MCP widget on Stats does.
+    await expect(screen.getByRole("textbox", "Message")).toBeVisible();
+    expect(
+      await browser.evaluate(() => document.querySelector("header")?.textContent ?? ""),
+    ).not.toMatch(/unreachable|unavailable/);
+    await screen.getByRole("tab", "Stats").tap();
+    await expect(screen.getByTestId("stat-mcp-unreachable")).toBeVisible();
+    expect(
+      await browser.evaluate(() =>
+        [...document.querySelectorAll('[data-testid="widget-mcp"] li[data-state]')]
+          .map(
+            (item) =>
+              `${item.getAttribute("data-testid")}:${item.getAttribute("data-state")}:${item.textContent}`,
+          )
+          .filter((row) => /^stat-mcp-(stub|unreachable):/.test(row)),
+      ),
+    ).toEqual([
+      "stat-mcp-stub:ok:stubconnected · 1 tool",
+      "stat-mcp-unreachable:error:unreachableunavailable",
+    ]);
+    await expect(screen.getByTestId("widget-mcp-events")).toBeVisible();
 
-    const shape = await browser.evaluate(() => {
-      const element = document.querySelector('[data-testid="mcp-unavailable"]');
-      const header = document.querySelector("header");
-      if (element === null || header === null) return null;
-      return {
-        insideHeader: header.contains(element),
-        height: element.getBoundingClientRect().height,
-        lines: element.getClientRects().length,
-      };
-    });
-    expect(shape).not.toBeNull();
-    expect(shape?.insideHeader).toBe(true);
-    expect(shape?.height ?? 0).toBeLessThanOrEqual(18);
-    expect(shape?.lines).toBe(1);
-
-    await app.screenshot("mcp-unavailable-notice");
+    await app.screenshot("mcp-unavailable-widget");
+    await screen.getByRole("tab", "Chat").tap();
   } finally {
     await spawned.stop();
   }
 });
 
-test("omits the notice when every configured MCP server is reachable", async ({ app, screen }) => {
+test("shows every server as connected when all are reachable", async ({ app, browser, screen }) => {
   const spawned = await startApp(true);
   try {
     await app.open(`${spawned.url}/`);
@@ -145,7 +149,14 @@ test("omits the notice when every configured MCP server is reachable", async ({ 
     const stub = state.mcp.servers.find((server) => server.name === "stub");
     expect(stub?.available).toBe(true);
     expect(stub?.tools).toContain("stub__echo");
-    await expect(screen.getByTestId("mcp-unavailable")).toHaveCount(0);
+    await screen.getByRole("tab", "Stats").tap();
+    await expect(screen.getByTestId("stat-mcp-stub")).toBeVisible();
+    expect(
+      await browser.evaluate(
+        () => document.querySelector('[data-testid="widget-mcp"]')?.textContent ?? "",
+      ),
+    ).not.toMatch(/unavailable/);
+    await screen.getByRole("tab", "Chat").tap();
   } finally {
     await spawned.stop();
   }

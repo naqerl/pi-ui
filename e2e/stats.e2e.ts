@@ -177,3 +177,60 @@ test("swipes right from chat to stats", async ({ app, browser }) => {
   });
   expect(page).toBe("stats");
 });
+
+test("lists MCP events newest first in the default widget, not the header", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  const events = Array.from({ length: 25 }, (_, index) => ({
+    id: `e${index}`,
+    server: "web",
+    name: "alerts",
+    timestamp: new Date(Date.UTC(2026, 9, 30, 1, 0, index)).toISOString(),
+    summary: `alert ${index}`,
+  }));
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({
+      json: {
+        ...busy,
+        mcpEvents: {
+          subscriptions: [
+            { id: "s1", server: "web", name: "alerts", status: "active", arguments: {} },
+          ],
+          events,
+          notice: "new event from web",
+          revision: 25,
+        },
+      },
+    });
+  });
+  await app.open("/");
+  await expect(screen.getByRole("textbox", "Message")).toBeVisible();
+  expect(
+    await browser.evaluate(() => document.querySelector("header")?.textContent ?? ""),
+  ).not.toMatch(/web|linear|unavailable|new event/);
+
+  await screen.getByRole("tab", "Stats").tap();
+  await expect(screen.getByTestId("widget-mcp-events")).toBeVisible();
+  const read = await browser.evaluate(() => {
+    const rows = [...document.querySelectorAll('[data-testid="widget-mcp-events"] dl > div')];
+    return {
+      count: rows.length,
+      first: rows[0]?.getAttribute("data-testid") ?? null,
+      last: rows.at(-1)?.getAttribute("data-testid") ?? null,
+      label: rows[0]?.querySelector("dt")?.textContent ?? null,
+      value: rows[0]?.querySelector("dd")?.textContent ?? null,
+      web: document.querySelector('[data-testid="stat-mcp-web"]')?.textContent ?? null,
+    };
+  });
+  expect(read.count).toBe(20);
+  expect(read.first).toBe("stat-mcp-event-e24");
+  expect(read.last).toBe("stat-mcp-event-e5");
+  expect(read.label).toBe("web · alerts");
+  expect(read.value ?? "").toMatch(/^\d\d:\d\d:\d\d · alert 24$/);
+  expect(read.web).toBe("webconnected · 2 tools · subscribed: alerts");
+  await app.screenshot("mcp-events-widget");
+  await screen.getByRole("tab", "Chat").tap();
+});

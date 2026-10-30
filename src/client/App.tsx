@@ -27,14 +27,17 @@ export function App() {
       timeline={chat.timeline}
       running={chat.running}
       interrupted={chat.interrupted}
-      mcpEvents={chat.mcpEvents}
-      unavailableServers={chat.mcp.unavailable}
       ready={chat.ready}
       tasks={chat.tasks}
       send={chat.send}
       stop={chat.stop}
       applyTasks={chat.applyTasks}
-      stats={{ usage: chat.usage, context: chat.context, mcp: chat.mcp }}
+      stats={{
+        usage: chat.usage,
+        context: chat.context,
+        mcp: chat.mcp,
+        mcpEvents: chat.mcpEvents,
+      }}
       refreshStats={chat.refresh}
       history={{
         hasEarlier: chat.hasEarlier,

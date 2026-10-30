@@ -159,6 +159,7 @@ dashboard.setHost({
       usage: stats.usage,
       context: stats.context,
       mcp: stats.mcp,
+      mcpEvents: chat.mcpEventsState(),
       jobs: builtinJobs(),
       session: builtinSession(),
     };

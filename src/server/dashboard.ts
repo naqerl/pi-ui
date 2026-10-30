@@ -19,6 +19,7 @@ import {
   maskDeep,
   maskSecrets,
   renderWidget,
+  upgradeDashboard,
   validateMapping,
   viewNumber,
   WIDGET_KINDS,
@@ -290,8 +291,13 @@ export class DashboardManager {
       this.config = defaultDashboard();
       await this.saveConfig();
     } else {
+      let upgraded = false;
       try {
-        const parsed = JSON.parse(raw) as { widgets?: unknown[]; layout?: unknown };
+        const parsed = JSON.parse(raw) as {
+          widgets?: unknown[];
+          layout?: unknown;
+          seeded?: unknown;
+        };
         const widgets: Widget[] = [];
         for (const item of Array.isArray(parsed.widgets) ? parsed.widgets : []) {
           try {
@@ -312,11 +318,16 @@ export class DashboardManager {
             widgets.map((widget) => widget.id),
           );
         }
-        this.config = { version: 1, widgets, layout };
+        // Files from before the seed marker hold the first set of defaults.
+        const seeded =
+          typeof parsed.seeded === "number" && Number.isInteger(parsed.seeded) ? parsed.seeded : 1;
+        this.config = { version: 1, seeded, widgets, layout };
+        upgraded = upgradeDashboard(this.config);
       } catch (error) {
         console.error("[pi] dashboard.json is not valid JSON; using the default dashboard", error);
         this.config = defaultDashboard();
       }
+      if (upgraded) await this.saveConfig();
     }
     try {
       const state = JSON.parse(await readFile(this.statePath, "utf8")) as {

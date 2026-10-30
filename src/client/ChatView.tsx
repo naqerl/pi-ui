@@ -11,7 +11,6 @@ import {
 import type {
   ActivityItem,
   ChatMessage,
-  McpEventsState,
   MessageMode,
   Task,
   TaskLedger,
@@ -37,14 +36,10 @@ import { usePager } from "./use-pager";
 import { useStickToBottom } from "./use-stick-to-bottom";
 import { WorkingIndicator } from "./WorkingIndicator";
 
-const LIVE_STATUS = new Set(["opening", "active", "reconnecting"]);
-
 interface ChatViewProps {
   timeline: TimelineItem[];
   running: boolean;
   interrupted: boolean;
-  mcpEvents: McpEventsState;
-  unavailableServers: string[];
   ready: boolean;
   tasks: Task[];
   send: (text: string, mode?: MessageMode, attachments?: string[]) => Promise<SendOutcome>;
@@ -237,37 +232,6 @@ function ActivityGroup({
         ))}
       </span>
     </a>
-  );
-}
-
-function McpHeader({ events }: { events: McpEventsState }) {
-  const names: string[] = [];
-  for (const subscription of events.subscriptions) {
-    if (!LIVE_STATUS.has(subscription.status) || names.includes(subscription.server)) continue;
-    names.push(subscription.server);
-  }
-  if (names.length === 0 && events.notice === null) return null;
-  return (
-    <>
-      {names.length > 0 && (
-        <a
-          href="/events"
-          data-testid="mcp-subscriptions"
-          title={names.join(" · ")}
-          className="min-w-0 truncate font-mono text-[11px] leading-4 text-muted-foreground hover:text-foreground"
-        >
-          {names.join(" · ")}
-        </a>
-      )}
-      {events.notice !== null && (
-        <span
-          data-testid="mcp-event-notice"
-          className="min-w-0 truncate font-mono text-[11px] leading-4 text-foreground"
-        >
-          {events.notice}
-        </span>
-      )}
-    </>
   );
 }
 
@@ -809,8 +773,6 @@ export function ChatView({
   timeline,
   running,
   interrupted,
-  mcpEvents,
-  unavailableServers,
   ready,
   tasks,
   send,
@@ -1120,17 +1082,6 @@ export function ChatView({
               ))}
             </div>
             <div className="flex min-w-0 max-w-full items-center justify-end gap-3 justify-self-end overflow-hidden empty:hidden">
-              <McpHeader events={mcpEvents} />
-              {unavailableServers.length > 0 && (
-                <span
-                  role="note"
-                  data-testid="mcp-unavailable"
-                  title={unavailableServers.map((name) => `${name} unavailable`).join(" · ")}
-                  className="min-w-0 truncate font-mono text-[11px] leading-4 text-muted-foreground"
-                >
-                  {unavailableServers.map((name) => `${name} unavailable`).join(" · ")}
-                </span>
-              )}
               {tasksPage && <SubtaskProgress tasks={tasks} />}
             </div>
           </div>

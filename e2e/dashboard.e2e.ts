@@ -81,6 +81,7 @@ const resetCalls = [
             { id: "context", span: "full" },
             { id: "tokens", span: "full" },
             { id: "mcp", span: "full" },
+            { id: "mcp-events", span: "full" },
           ],
         },
       ],
@@ -262,5 +263,5 @@ test("polls run only while the dashboard is visible, and widgets can be removed"
     .poll(async () => (await readDashboard(browser)).widgets.map((w) => w.id), {
       timeout: 20_000,
     })
-    .toEqual(["context", "tokens", "mcp"]);
+    .toEqual(["context", "tokens", "mcp", "mcp-events"]);
 });

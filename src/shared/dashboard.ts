@@ -3,12 +3,20 @@
  * source data into a widget's view, token masking, and the builtin sources.
  * Shared by the server (poll and static widgets) and the client (builtins).
  */
-import type { ContextUsage, McpStatus, UsageSummary } from "./types.js";
+import type { ContextUsage, McpEventsState, McpStatus, UsageSummary } from "./types.js";
 
 export const WIDGET_KINDS = ["stat", "list", "table", "sparkline", "markdown", "status"] as const;
 export type WidgetKind = (typeof WIDGET_KINDS)[number];
 
-export const BUILTIN_SOURCES = ["tokens", "context", "cache", "mcp", "jobs", "session"] as const;
+export const BUILTIN_SOURCES = [
+  "tokens",
+  "context",
+  "cache",
+  "mcp",
+  "mcp_events",
+  "jobs",
+  "session",
+] as const;
 export type BuiltinName = (typeof BUILTIN_SOURCES)[number];
 
 export const WIDGET_SPANS = ["full", "half", "third"] as const;
@@ -52,6 +60,11 @@ export interface DashboardLayout {
 
 export interface DashboardConfig {
   version: 1;
+  /**
+   * The last set of default widgets this file was given. A newer pi-ui adds the
+   * defaults introduced since then once; a default removed later stays removed.
+   */
+  seeded: number;
   widgets: Widget[];
   layout: DashboardLayout;
 }
@@ -533,8 +546,25 @@ export interface BuiltinInputs {
   usage: UsageSummary | null;
   context: ContextUsage | null;
   mcp: McpStatus;
+  mcpEvents: McpEventsState;
   jobs: BuiltinJob[];
   session: BuiltinSession;
+}
+
+/** Recent MCP events the `mcp_events` builtin lists, newest first. */
+export const MCP_EVENT_LIMIT = 20;
+const LIVE_SUBSCRIPTION = new Set(["opening", "active", "reconnecting"]);
+
+function clockTime(timestamp: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return timestamp;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function subscriptionState(status: string): StatusState {
+  if (LIVE_SUBSCRIPTION.has(status)) return status === "active" ? "ok" : "warn";
+  return status === "stopped" ? "warn" : "error";
 }
 
 function exact(count: number): string {
@@ -630,24 +660,75 @@ export function builtinData(name: BuiltinName, inputs: BuiltinInputs): unknown {
         text: hit === null ? unavailable("no model call yet") : percent(hit),
       };
     }
-    case "mcp":
+    case "mcp": {
+      const live = inputs.mcpEvents.subscriptions.filter((item) =>
+        LIVE_SUBSCRIPTION.has(item.status),
+      );
       return {
         count: mcp.servers.length,
         unavailable: mcp.unavailable,
-        servers: mcp.servers.map((server) => ({
-          key: `mcp-${server.name}`,
-          name: server.name,
-          available: server.available,
-          authRejected: server.authRejected,
-          tools: server.tools.length,
-          state: server.available ? "ok" : server.authRejected ? "warn" : "error",
-          detail: server.available
+        servers: mcp.servers.map((server) => {
+          const subscribed = live
+            .filter((item) => item.server === server.name)
+            .map((item) => item.name);
+          const base = server.available
             ? `connected · ${server.tools.length} tool${server.tools.length === 1 ? "" : "s"}`
             : server.authRejected
               ? "auth rejected"
-              : "unavailable",
+              : "unavailable";
+          return {
+            key: `mcp-${server.name}`,
+            name: server.name,
+            available: server.available,
+            authRejected: server.authRejected,
+            tools: server.tools.length,
+            subscriptions: subscribed,
+            state: server.available ? "ok" : server.authRejected ? "warn" : "error",
+            detail:
+              subscribed.length === 0 ? base : `${base} · subscribed: ${subscribed.join(", ")}`,
+          };
+        }),
+      };
+    }
+    case "mcp_events": {
+      const { events, subscriptions } = inputs.mcpEvents;
+      const recent = events.slice(-MCP_EVENT_LIMIT).reverse();
+      return {
+        total: events.length,
+        live: [
+          ...new Set(
+            subscriptions
+              .filter((item) => LIVE_SUBSCRIPTION.has(item.status))
+              .map((item) => item.server),
+          ),
+        ],
+        latest: recent[0] === undefined ? null : `new event from ${recent[0].server}`,
+        events: recent.map((event) => ({
+          key: `mcp-event-${event.id}`,
+          id: event.id,
+          server: event.server,
+          name: event.name,
+          timestamp: event.timestamp,
+          time: clockTime(event.timestamp),
+          summary: event.summary,
+          label: `${event.server} · ${event.name}`,
+          value:
+            event.summary.length > 0
+              ? `${clockTime(event.timestamp)} · ${event.summary}`
+              : clockTime(event.timestamp),
+        })),
+        subscriptions: subscriptions.map((item) => ({
+          key: `mcp-sub-${item.id}`,
+          id: item.id,
+          server: item.server,
+          name: item.name,
+          status: item.status,
+          label: `${item.server} · ${item.name}`,
+          state: subscriptionState(item.status),
+          detail: item.status,
         })),
       };
+    }
     case "jobs": {
       const jobs = [...inputs.jobs].reverse();
       return {
@@ -675,9 +756,27 @@ export function builtinData(name: BuiltinName, inputs: BuiltinInputs): unknown {
 }
 
 /** The stats page as widgets: what a new dashboard starts with. */
+/** Bump when a default widget is added; see `upgradeDashboard`. */
+export const DASHBOARD_SEED = 2;
+
+const MCP_EVENTS_WIDGET: Widget = {
+  id: "mcp-events",
+  title: "MCP events",
+  kind: "list",
+  source: { type: "builtin", name: "mcp_events" },
+  mapping: {
+    items: "events",
+    key: "key",
+    label: "label",
+    value: "value",
+    empty: "=no MCP events yet",
+  },
+};
+
 export function defaultDashboard(): DashboardConfig {
   return {
     version: 1,
+    seeded: DASHBOARD_SEED,
     widgets: [
       {
         id: "context",
@@ -707,6 +806,7 @@ export function defaultDashboard(): DashboardConfig {
           empty: "=no MCP servers configured",
         },
       },
+      MCP_EVENTS_WIDGET,
     ],
     layout: {
       sections: [
@@ -715,9 +815,39 @@ export function defaultDashboard(): DashboardConfig {
             { id: "context", span: "full" },
             { id: "tokens", span: "full" },
             { id: "mcp", span: "full" },
+            { id: "mcp-events", span: "full" },
           ],
         },
       ],
     },
   };
+}
+
+/**
+ * Gives a dashboard seeded by an older pi-ui the defaults added since, once.
+ * Seed 2 adds the MCP events list after the MCP widget. A widget the user or
+ * agent removed after its seed is not brought back, because `seeded` already
+ * covers it. Returns whether anything changed.
+ */
+export function upgradeDashboard(config: DashboardConfig): boolean {
+  if (config.seeded >= DASHBOARD_SEED) return false;
+  if (config.seeded < 2 && !config.widgets.some((widget) => widget.id === MCP_EVENTS_WIDGET.id)) {
+    if (config.widgets.length < MAX_WIDGETS) {
+      config.widgets.push(structuredClone(MCP_EVENTS_WIDGET));
+      const slot = { id: MCP_EVENTS_WIDGET.id, span: "full" as const };
+      const home = config.layout.sections.find((section) =>
+        section.widgets.some((item) => item.id === "mcp"),
+      );
+      if (home !== undefined) {
+        const after = home.widgets.findIndex((item) => item.id === "mcp");
+        home.widgets.splice(after + 1, 0, slot);
+      } else if (config.layout.sections.length > 0) {
+        config.layout.sections[config.layout.sections.length - 1]?.widgets.push(slot);
+      } else {
+        config.layout.sections.push({ widgets: [slot] });
+      }
+    }
+  }
+  config.seeded = DASHBOARD_SEED;
+  return true;
 }

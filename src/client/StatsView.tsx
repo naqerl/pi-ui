@@ -10,7 +10,7 @@ import {
   type WidgetValue,
   type WidgetView,
 } from "../shared/dashboard";
-import type { ContextUsage, McpStatus, UsageSummary } from "../shared/types";
+import type { ContextUsage, McpEventsState, McpStatus, UsageSummary } from "../shared/types";
 import { getDashboard, setDashboard, subscribeDashboard } from "./dashboard-store";
 import { Markdown } from "./markdown";
 
@@ -18,6 +18,7 @@ export interface ChatStats {
   usage: UsageSummary | null;
   context: ContextUsage | null;
   mcp: McpStatus;
+  mcpEvents: McpEventsState;
 }
 
 const SPAN_CLASS: Record<WidgetSpan, string> = {
@@ -463,6 +464,7 @@ export function StatsView({
     usage: stats.usage,
     context: stats.context,
     mcp: stats.mcp,
+    mcpEvents: stats.mcpEvents,
     jobs: dashboard?.builtins.jobs ?? [],
     session: dashboard?.builtins.session ?? { conversationId: "", model: null, run: "idle" },
   };

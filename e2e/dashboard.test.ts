@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -10,9 +10,11 @@ import { type PollOutcome, type PollRun, runPollScript } from "../src/server/das
 import { createDashboardTools } from "../src/server/dashboard-tools.js";
 import {
   builtinData,
+  DASHBOARD_SEED,
   type DashboardState,
   defaultDashboard,
   evalPath,
+  MCP_EVENT_LIMIT,
   maskSecrets,
   renderWidget,
   validateMapping,
@@ -177,12 +179,15 @@ test("the default dashboard is the old stats page as builtin widgets", () => {
       ["context", "stat", { type: "builtin", name: "context" }],
       ["tokens", "list", { type: "builtin", name: "tokens" }],
       ["mcp", "status", { type: "builtin", name: "mcp" }],
+      ["mcp-events", "list", { type: "builtin", name: "mcp_events" }],
     ],
   );
+  assert.equal(config.seeded, DASHBOARD_SEED);
   const inputs = {
     usage: null,
     context: null,
     mcp: { servers: [] },
+    mcpEvents: { subscriptions: [], events: [], notice: null, revision: 0 },
     jobs: [],
     session: { conversationId: "c", model: null, run: "idle" },
   } as unknown as Parameters<typeof builtinData>[1];
@@ -190,6 +195,97 @@ test("the default dashboard is the old stats page as builtin widgets", () => {
     if (item.source.type !== "builtin") continue;
     renderWidget(item, builtinData(item.source.name, inputs));
   }
+});
+
+test("MCP builtins list recent events newest first and subscriptions per server", () => {
+  const events = Array.from({ length: 25 }, (_, index) => ({
+    id: `e${index}`,
+    server: "stub",
+    name: "ticks",
+    timestamp: new Date(Date.UTC(2026, 9, 30, 1, 0, index)).toISOString(),
+    summary: `tick ${index}`,
+  }));
+  const inputs = {
+    usage: null,
+    context: null,
+    mcp: {
+      unavailable: ["down"],
+      servers: [
+        { name: "stub", available: true, authRejected: false, tools: ["stub__echo"] },
+        { name: "down", available: false, authRejected: false, tools: [] },
+      ],
+    },
+    mcpEvents: {
+      subscriptions: [
+        { id: "s1", server: "stub", name: "ticks", status: "active", arguments: {} },
+        { id: "s2", server: "down", name: "feed", status: "failed", arguments: {} },
+      ],
+      events,
+      notice: "new event from stub",
+      revision: 25,
+    },
+    jobs: [],
+    session: { conversationId: "c", model: null, run: "idle" },
+  } as unknown as Parameters<typeof builtinData>[1];
+  const feed = builtinData("mcp_events", inputs) as {
+    total: number;
+    live: string[];
+    events: { id: string; label: string; value: string }[];
+  };
+  assert.equal(feed.total, 25);
+  assert.deepEqual(feed.live, ["stub"]);
+  assert.equal(feed.events.length, MCP_EVENT_LIMIT);
+  assert.equal(feed.events[0]?.id, "e24");
+  assert.equal(feed.events.at(-1)?.id, "e5");
+  assert.equal(feed.events[0]?.label, "stub · ticks");
+  assert.match(feed.events[0]?.value ?? "", /\d\d:\d\d:\d\d · tick 24$/);
+  const status = builtinData("mcp", inputs) as { servers: { name: string; detail: string }[] };
+  assert.deepEqual(
+    status.servers.map((server) => server.detail),
+    ["connected · 1 tool · subscribed: ticks", "unavailable"],
+  );
+  const widget = defaultDashboard().widgets.find((item) => item.id === "mcp-events");
+  assert.ok(widget);
+  const view = renderWidget(widget, feed) as { kind: string; items: unknown[] };
+  assert.equal(view.kind, "list");
+  assert.equal(view.items.length, MCP_EVENT_LIMIT);
+});
+
+test("an older dashboard.json gets the MCP events widget once", async () => {
+  const dir = await tempDir();
+  const old = defaultDashboard() as unknown as Record<string, unknown>;
+  delete old.seeded;
+  const config = old as unknown as ReturnType<typeof defaultDashboard>;
+  config.widgets = config.widgets.filter((item) => item.id !== "mcp-events");
+  config.layout = {
+    sections: [
+      { title: "Infra", widgets: [{ id: "mcp", span: "half" }] },
+      {
+        widgets: [
+          { id: "context", span: "full" },
+          { id: "tokens", span: "full" },
+        ],
+      },
+    ],
+  };
+  await writeFile(join(dir, "dashboard.json"), JSON.stringify(config));
+  const first = new DashboardManager(dir);
+  await first.load();
+  assert.deepEqual(
+    first.layout().sections[0]?.widgets.map((slot) => slot.id),
+    ["mcp", "mcp-events"],
+  );
+  const saved = JSON.parse(await readFile(join(dir, "dashboard.json"), "utf8"));
+  assert.equal(saved.seeded, DASHBOARD_SEED);
+  assert.ok(saved.widgets.some((item: { id: string }) => item.id === "mcp-events"));
+
+  await first.remove("mcp-events");
+  await first.flush();
+  const second = new DashboardManager(dir);
+  await second.load();
+  assert.ok(!second.widgets().some((item) => item.id === "mcp-events"));
+  second.dispose();
+  first.dispose();
 });
 
 // ── masking ──────────────────────────────────────────────────────────────
@@ -272,6 +368,7 @@ function fakeHost(): FakeHost {
         usage: null,
         context: null,
         mcp: { servers: [] },
+        mcpEvents: { subscriptions: [], events: [], notice: null, revision: 0 },
         jobs: [],
         session: { conversationId: "c", model: null, run: "idle" },
       } as unknown as Awaited<ReturnType<DashboardHost["builtinInputs"]>>;
@@ -393,7 +490,7 @@ test("upsert, push, layout and remove validate and persist", async () => {
   dashboard.setHost(host);
   assert.deepEqual(
     dashboard.widgets().map((item) => item.id),
-    ["context", "tokens", "mcp"],
+    ["context", "tokens", "mcp", "mcp-events"],
   );
   await assert.rejects(
     dashboard.upsert({
@@ -434,7 +531,7 @@ test("upsert, push, layout and remove validate and persist", async () => {
   });
   assert.deepEqual(
     layout.layout.sections.at(-1)?.widgets.map((slot) => slot.id),
-    ["mcp"],
+    ["mcp", "mcp-events"],
   );
   assert.ok(layout.notes.some((note) => /mcp/.test(note)));
   await dashboard.remove("tokens");
@@ -452,7 +549,7 @@ test("upsert, push, layout and remove validate and persist", async () => {
       ]),
     [
       ["Money", ["cost:half", "context:half"]],
-      [undefined, ["mcp:full"]],
+      [undefined, ["mcp:full", "mcp-events:full"]],
     ],
   );
   const state = again.state();
@@ -571,7 +668,7 @@ test("the tools return the first render so the agent can iterate", async () => {
   const got = JSON.parse((await call("dashboard_get", {})).text);
   assert.deepEqual(
     got.widgets.map((item: { id: string }) => item.id),
-    ["context", "tokens", "mcp", "servers"],
+    ["context", "tokens", "mcp", "mcp-events", "servers"],
   );
   assert.equal((await call("dashboard_remove", { id: "ghost" })).isError, true);
   dashboard.dispose();
