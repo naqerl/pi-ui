@@ -61,6 +61,9 @@ interface ChatViewProps {
 // The side pages and the Markdown renderer are their own chunks, so the chat paints first.
 const loadStatsView = () => import("./StatsView");
 const loadTasksView = () => import("./TasksView");
+const ActivityDialog = lazy(() =>
+  import("./ActivityView").then((m) => ({ default: m.ActivityDialog })),
+);
 const StatsView = lazy(() => loadStatsView().then((m) => ({ default: m.StatsView })));
 const TasksView = lazy(() => loadTasksView().then((m) => ({ default: m.TasksView })));
 void loadMarkdown();
@@ -102,6 +105,13 @@ function pageFromLocation(): number {
   const name = new URLSearchParams(window.location.search).get("page");
   const index = PAGES.findIndex((item) => item.id === name);
   return index < 0 ? CHAT_PAGE : index;
+}
+
+/** The deep link /activity?run=... opens the chat with that run's activity already showing. */
+function activityRunFromLocation(): string | null | undefined {
+  const path = window.location.pathname.replace(/\/+$/, "");
+  if (path !== "/activity") return undefined;
+  return new URLSearchParams(window.location.search).get("run");
 }
 
 /** Local wall-clock `hh:mm` for a message, or null when the timestamp does not parse. */
@@ -225,11 +235,13 @@ function ActivityGroup({
   items,
   live,
   usage,
+  onOpen,
 }: {
   groupKey: string;
   items: ActivityItem[];
   live: boolean;
   usage?: TokenSpend;
+  onOpen: (groupKey: string, trigger: HTMLButtonElement) => void;
 }) {
   const [now, setNow] = useState(Date.now);
 
@@ -242,11 +254,13 @@ function ActivityGroup({
 
   const parts = groupSummaryParts(items, live, now, usage);
   return (
-    <a
-      href={`/activity?run=${encodeURIComponent(groupKey)}`}
+    <button
+      type="button"
+      onClick={(event) => onOpen(groupKey, event.currentTarget)}
+      aria-haspopup="dialog"
       data-testid="run-info"
       aria-label={`Run activity: ${parts.join(", ")}`}
-      className="theme-radius flex min-h-9 w-fit min-w-0 max-w-full items-start gap-2 border border-border/70 bg-surface px-2.5 py-2 font-mono text-xs leading-5 text-muted-foreground hover:text-foreground sm:min-h-0 sm:py-1.5"
+      className="theme-radius flex min-h-9 w-fit min-w-0 max-w-full items-start gap-2 border border-border/70 bg-surface px-2.5 py-2 text-left font-mono text-xs leading-5 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40 sm:min-h-0 sm:py-1.5"
     >
       <span aria-hidden="true" className="inline-block w-3 shrink-0">
         ▸
@@ -264,7 +278,7 @@ function ActivityGroup({
           </span>
         ))}
       </span>
-    </a>
+    </button>
   );
 }
 
@@ -864,6 +878,10 @@ export function ChatView({
   const pager = usePager(PAGES.length, pageFromLocation());
   const [armedParentId, setArmedParentId] = useState<string | null>(null);
   const [composerError, setComposerError] = useState<string | null>(null);
+  const [activityRun, setActivityRun] = useState<string | null | undefined>(
+    activityRunFromLocation,
+  );
+  const activityTriggerRef = useRef<HTMLButtonElement | null>(null);
   const tasksPage = pager.page === TASKS_PAGE;
   // An error belongs to the page it was raised on.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on page change only
@@ -1031,6 +1049,31 @@ export function ChatView({
     return true;
   };
 
+  const openActivity = (run: string, trigger: HTMLButtonElement) => {
+    activityTriggerRef.current = trigger;
+    setActivityRun(run);
+  };
+
+  const closeActivity = useCallback(() => {
+    const trigger = activityTriggerRef.current;
+    setActivityRun(undefined);
+    const path = window.location.pathname.replace(/\/+$/, "");
+    if (path === "/activity") {
+      // A direct deep link closes back to the chat rather than reloading the modal.
+      const url = new URL(window.location.href);
+      url.pathname = "/";
+      url.searchParams.delete("run");
+      window.history.replaceState(
+        window.history.state,
+        "",
+        `${url.pathname}${url.search}${url.hash}`,
+      );
+    }
+    requestAnimationFrame(() => {
+      if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+    });
+  }, []);
+
   const selectPage = (index: number) => {
     pager.setPage(index);
     if (index !== TASKS_PAGE) setArmedParentId(null);
@@ -1119,6 +1162,7 @@ export function ChatView({
                         items={group.items}
                         live={group.key === liveActivityGroupKey}
                         usage={usage}
+                        onOpen={openActivity}
                       />
                     );
                   })}
@@ -1255,6 +1299,16 @@ export function ChatView({
           />
         </div>
       </div>
+      {activityRun !== undefined && (
+        <Suspense fallback={null}>
+          <ActivityDialog
+            timeline={timeline}
+            ready={ready}
+            run={activityRun}
+            onClose={closeActivity}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }
