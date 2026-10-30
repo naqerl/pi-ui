@@ -58,6 +58,7 @@ export class JobManager {
   private readonly children = new Map<string, ChildProcess>();
   private readonly killTimers = new Map<string, NodeJS.Timeout>();
   private notifier: JobNotifier | undefined;
+  private changeListener: (() => void) | undefined;
   private readonly pending: JobRecord[] = [];
   private sequence = 0;
   private writes: Promise<void> = Promise.resolve();
@@ -97,6 +98,11 @@ export class JobManager {
     if (notifier === undefined) return;
     const pending = this.pending.splice(0);
     for (const job of pending) this.notify(job);
+  }
+
+  /** Called after any job starts, ends or is cancelled. */
+  onChange(listener: (() => void) | undefined): void {
+    this.changeListener = listener;
   }
 
   list(): JobRecord[] {
@@ -294,6 +300,11 @@ export class JobManager {
   }
 
   private save(): void {
+    try {
+      this.changeListener?.();
+    } catch (error) {
+      console.error("[pi] job change listener failed", error);
+    }
     const body = `${JSON.stringify({ jobs: this.list() }, null, 2)}\n`;
     this.writes = this.writes
       .then(async () => {

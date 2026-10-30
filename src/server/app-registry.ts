@@ -8,6 +8,8 @@ import { createToolSearchExtension } from "@earendil-works/pi-durable/tool-searc
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { createBiliTools } from "./bili-tools.js";
 import type { BillionContextInline } from "./billion-context.js";
+import type { DashboardManager } from "./dashboard.js";
+import { createDashboardTools } from "./dashboard-tools.js";
 import { createJobTools } from "./job-tools.js";
 import type { JobManager } from "./jobs.js";
 import { type McpRuntime, startMcpRuntime } from "./mcp-runtime.js";
@@ -19,6 +21,7 @@ export interface AppRegistryBoot {
   readonly biliTools: readonly string[];
   readonly taskTools: readonly string[];
   readonly jobTools: readonly string[];
+  readonly dashboardTools: readonly string[];
 }
 
 export interface AppRegistryOptions {
@@ -26,6 +29,8 @@ export interface AppRegistryOptions {
   readonly tasks: TaskBridge;
   /** Background shell jobs. Without it, the job tools are not offered. */
   readonly jobs?: JobManager;
+  /** The agent-editable dashboard page. Without it, the dashboard tools are not offered. */
+  readonly dashboard?: DashboardManager;
 }
 
 /**
@@ -53,6 +58,12 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
     registry.install(defineExtension({ name: "pi-ui-job-tools", tools: jobTools }));
   }
 
+  const dashboardTools =
+    options.dashboard === undefined ? [] : createDashboardTools(options.dashboard);
+  if (dashboardTools.length > 0) {
+    registry.install(defineExtension({ name: "pi-ui-dashboard-tools", tools: dashboardTools }));
+  }
+
   const mcp = await startMcpRuntime();
   if (mcp.toolNames.length > 0) {
     mcp.install(registry);
@@ -75,5 +86,6 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
     biliTools: biliTools.map((tool) => tool.name),
     taskTools: taskTools.map((tool) => tool.name),
     jobTools: jobTools.map((tool) => tool.name),
+    dashboardTools: dashboardTools.map((tool) => tool.name),
   };
 }

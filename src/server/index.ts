@@ -10,6 +10,7 @@ import { streamSSE } from "hono/streaming";
 import type { TaskLedger, TaskStatus } from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
 import { ChatService } from "./chat-service.js";
+import { DashboardManager } from "./dashboard.js";
 import { JobManager, jobNotice } from "./jobs.js";
 import { McpEventFeed } from "./mcp-events.js";
 import { MAX_MEDIA_BYTES, MediaError, MediaStore, parseAttachmentIds } from "./media.js";
@@ -46,6 +47,13 @@ if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
 }
 const jobs = new JobManager(dataDir, cwd);
 await jobs.load();
+const dashboardMinInterval = Number(process.env.PI_DASHBOARD_MIN_INTERVAL_MS);
+const dashboard = new DashboardManager(dataDir, {
+  ...(Number.isFinite(dashboardMinInterval) && dashboardMinInterval > 0
+    ? { minIntervalMs: dashboardMinInterval }
+    : {}),
+});
+await dashboard.load();
 
 const port = Number(process.env.PORT || 8787);
 if (!Number.isInteger(port) || port < 0 || port > 65535) {
@@ -64,7 +72,9 @@ const instructions = `${await buildPiSystemPrompt(cwd, catalog.runtime)}
 
 Tasks are a shared todo ledger on the tasks page. You can list them with task_list, mark one done with task_done, and create a blocker for one with task_block. A done blocker does not block. A task with an open subtask cannot be marked done. You cannot add a task that blocks nothing, reopen a task, or delete one.
 
-Long-running shell commands (builds, test suites, servers) can run in the background with job_start; list them with job_list, read their output with job_output, and stop one with job_cancel. When a job ends on its own you receive a message with its exit status and last output, so you do not need to poll.`;
+Long-running shell commands (builds, test suites, servers) can run in the background with job_start; list them with job_list, read their output with job_output, and stop one with job_cancel. When a job ends on its own you receive a message with its exit status and last output, so you do not need to poll.
+
+The dashboard page (the Stats tab, left of chat) is yours to arrange for the user: dashboard_get shows it, dashboard_upsert adds or changes a widget (built-in pi-ui stats, a poll script that fetches JSON, or data you push with dashboard_push), dashboard_remove deletes one and dashboard_layout places them. Widgets only display data. Poll scripts read secrets from env; never put a token in a widget.`;
 const boot = await openDurableSession({
   cwd,
   models: catalog.runtime as unknown as DurableSessionOptions["models"],
@@ -77,6 +87,7 @@ const boot = await openDurableSession({
   bili,
   tasks: taskBridge,
   jobs,
+  dashboard,
 });
 const activeModel =
   boot.model === undefined
@@ -123,6 +134,46 @@ boot.mcp.setObserver((notice) => {
   if (!events.ingest(notice)) return;
   hub.broadcast({ event: "mcp.events", data: events.state });
 });
+function builtinJobs() {
+  return jobs.list().map((job) => ({
+    id: job.id,
+    name: job.name,
+    status: job.status,
+    exitCode: job.exitCode,
+    startedAt: job.startedAt,
+    endedAt: job.endedAt,
+  }));
+}
+function builtinSession() {
+  const model = chat.currentModel();
+  return {
+    conversationId: String(boot.conversation.id),
+    model: model === null ? null : `${model.provider}/${model.id}`,
+    run: chat.getRunStatus().state,
+  };
+}
+dashboard.setHost({
+  async builtinInputs() {
+    const stats = await chat.statsSnapshot();
+    return {
+      usage: stats.usage,
+      context: stats.context,
+      mcp: stats.mcp,
+      jobs: builtinJobs(),
+      session: builtinSession(),
+    };
+  },
+  builtinsLite: () => ({ jobs: builtinJobs(), session: builtinSession() }),
+  notify(text) {
+    void chat.submit(text, "queue").catch((error: unknown) => {
+      console.error("[pi] dashboard message failed", error);
+    });
+  },
+  broadcast(state) {
+    hub.broadcast({ event: "dashboard", data: state });
+  },
+});
+jobs.onChange(() => dashboard.broadcast());
 jobs.setNotifier((job, tail) => {
   void chat.submit(jobNotice(job, tail), "queue").catch((error: unknown) => {
     console.error(`[pi] background job ${job.id} message failed`, error);
@@ -218,6 +269,36 @@ app.get("/api/history", async (c) => {
 });
 
 app.get("/api/tasks", (c) => c.json(taskStore.ledger()));
+
+app.get("/api/dashboard", (c) => c.json(dashboard.state()));
+
+app.delete("/api/dashboard/widgets/:id", async (c) => {
+  try {
+    await dashboard.remove(c.req.param("id"));
+    return c.json(dashboard.state());
+  } catch (error) {
+    return c.text(error instanceof Error ? error.message : String(error), 404);
+  }
+});
+
+app.post("/api/dashboard/viewer", async (c) => {
+  let body: unknown;
+  try {
+    // sendBeacon posts text/plain, so parse the raw text.
+    body = JSON.parse(await c.req.text());
+  } catch {
+    return c.text("Expected a JSON body", 400);
+  }
+  const viewer =
+    typeof body === "object" && body !== null && "viewer" in body && typeof body.viewer === "string"
+      ? body.viewer.trim().slice(0, 80)
+      : "";
+  const visible =
+    typeof body === "object" && body !== null && "visible" in body && body.visible === true;
+  if (viewer.length === 0) return c.text("viewer is required", 400);
+  dashboard.setViewer(viewer, visible);
+  return c.json({ polling: dashboard.polling() });
+});
 
 function publishTasks(ledger: TaskLedger) {
   taskBridge.publish(ledger);
@@ -436,6 +517,7 @@ app.get("/api/stream", (c) => {
       }
       await client.send({ event: "run.state", data: chat.getRunStatus() });
       await client.send({ event: "tasks", data: taskStore.ledger() });
+      await client.send({ event: "dashboard", data: dashboard.state() });
       const currentModel = chat.currentModel();
       if (currentModel !== null) {
         await client.send({ event: "model", data: currentModel });
@@ -555,7 +637,15 @@ const server = serve({ fetch: app.fetch, port }, (info) => {
         : "previous run was interrupted; the partial output was kept and the turn is continuing",
     );
   }
-  const toolParts = ["read", "bash", "edit", "write", ...boot.taskTools, ...boot.jobTools];
+  const toolParts = [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    ...boot.taskTools,
+    ...boot.jobTools,
+    ...boot.dashboardTools,
+  ];
   if (boot.mcp.toolNames.length > 0) {
     toolParts.push(`${boot.mcp.toolNames.length} MCP tools (${boot.mcp.serverNames.join(", ")})`);
   }
@@ -570,7 +660,9 @@ async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   chat.beginShutdown();
+  dashboard.dispose();
   try {
+    await dashboard.flush();
     await chat.close();
     await boot.mcp.close();
     await boot.harness.close(SESSION_CONTEXT);

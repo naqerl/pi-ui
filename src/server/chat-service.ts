@@ -222,6 +222,18 @@ export class ChatService {
     return windowTranscript(buildTranscript(context.entries, this.mediaRef), request);
   }
 
+  /** Usage, context and MCP status without building the transcript window. */
+  async statsSnapshot(): Promise<Pick<Snapshot, "usage" | "context" | "mcp" | "conversationId">> {
+    const context = await this.conversation.context(SESSION_CONTEXT);
+    const usage = await this.harness.usage(SESSION_CONTEXT);
+    return {
+      conversationId: String(this.conversation.id),
+      usage: summarizeUsage(usage),
+      context: contextUsage(context.entries, this.modelWindow),
+      mcp: this.mcp,
+    };
+  }
+
   async getSnapshot(request: WindowRequest = {}): Promise<Snapshot> {
     const context = await this.conversation.context(SESSION_CONTEXT);
     const usage = await this.harness.usage(SESSION_CONTEXT);

@@ -32,6 +32,7 @@ import {
 } from "../shared/types.js";
 import { createAppRegistry } from "./app-registry.js";
 import type { BillionContextInline } from "./billion-context.js";
+import type { DashboardManager } from "./dashboard.js";
 import type { JobManager } from "./jobs.js";
 import type { McpRuntime } from "./mcp-runtime.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
@@ -66,6 +67,7 @@ export interface DurableSessionOptions {
   readonly bili?: BillionContextInline;
   readonly tasks: TaskBridge;
   readonly jobs?: JobManager;
+  readonly dashboard?: DashboardManager;
 }
 
 export interface DurableSessionBoot {
@@ -82,6 +84,7 @@ export interface DurableSessionBoot {
   readonly biliTools: readonly string[];
   readonly taskTools: readonly string[];
   readonly jobTools: readonly string[];
+  readonly dashboardTools: readonly string[];
   /** Model stored on the conversation after boot. A menu choice wins over `PI_MODEL`. */
   readonly model: ModelRef | undefined;
   /** pi-ui's own version from package.json. */
@@ -97,11 +100,14 @@ export async function openDurableSession(
   await mkdir(dataDir, { recursive: true });
 
   const storage = await openNodeSqliteStorage(databasePath);
-  const { registry, mcp, biliTools, taskTools, jobTools } = await createAppRegistry({
-    bili: options.bili,
-    tasks: options.tasks,
-    ...(options.jobs === undefined ? {} : { jobs: options.jobs }),
-  });
+  const { registry, mcp, biliTools, taskTools, jobTools, dashboardTools } = await createAppRegistry(
+    {
+      bili: options.bili,
+      tasks: options.tasks,
+      ...(options.jobs === undefined ? {} : { jobs: options.jobs }),
+      ...(options.dashboard === undefined ? {} : { dashboard: options.dashboard }),
+    },
+  );
 
   const harness = await HarnessImpl.open(
     storage,
@@ -181,6 +187,7 @@ export async function openDurableSession(
     biliTools,
     taskTools,
     jobTools,
+    dashboardTools,
     model,
     version,
   };
