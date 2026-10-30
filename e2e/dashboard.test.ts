@@ -15,6 +15,7 @@ import {
   defaultDashboard,
   evalPath,
   MCP_EVENT_LIMIT,
+  MCP_EVENT_WIDGET_LIMIT,
   maskSecrets,
   renderWidget,
   validateMapping,
@@ -198,7 +199,7 @@ test("the default dashboard is the old stats page as builtin widgets", () => {
 });
 
 test("MCP builtins list recent events newest first and subscriptions per server", () => {
-  const events = Array.from({ length: 25 }, (_, index) => ({
+  const events = Array.from({ length: MCP_EVENT_LIMIT + 5 }, (_, index) => ({
     id: `e${index}`,
     server: "stub",
     name: "ticks",
@@ -234,9 +235,9 @@ test("MCP builtins list recent events newest first and subscriptions per server"
   };
   assert.equal(feed.total, 25);
   assert.deepEqual(feed.live, ["stub"]);
-  assert.equal(feed.events.length, MCP_EVENT_LIMIT);
+  assert.equal(feed.events.length, MCP_EVENT_WIDGET_LIMIT);
   assert.equal(feed.events[0]?.id, "e24");
-  assert.equal(feed.events.at(-1)?.id, "e5");
+  assert.equal(feed.events.at(-1)?.id, "e22");
   assert.equal(feed.events[0]?.label, "stub · ticks");
   assert.match(feed.events[0]?.value ?? "", /\d\d:\d\d:\d\d · tick 24$/);
   const status = builtinData("mcp", inputs) as { servers: { name: string; detail: string }[] };
@@ -248,7 +249,68 @@ test("MCP builtins list recent events newest first and subscriptions per server"
   assert.ok(widget);
   const view = renderWidget(widget, feed) as { kind: string; items: unknown[] };
   assert.equal(view.kind, "list");
-  assert.equal(view.items.length, MCP_EVENT_LIMIT);
+  assert.equal(view.items.length, MCP_EVENT_WIDGET_LIMIT);
+});
+
+test("the MCP events widget shows the last 3 events and keeps the full total", () => {
+  const events = Array.from({ length: 5 }, (_, index) => ({
+    id: `e${index}`,
+    server: "stub",
+    name: "ticks",
+    timestamp: new Date(Date.UTC(2026, 9, 30, 1, 0, index)).toISOString(),
+    summary: `tick ${index}`,
+  }));
+  const inputs = {
+    usage: null,
+    context: null,
+    mcp: { unavailable: [], servers: [] },
+    mcpEvents: { subscriptions: [], events, notice: null, revision: 5 },
+    jobs: [],
+    session: { conversationId: "c", model: null, run: "idle" },
+  } as unknown as Parameters<typeof builtinData>[1];
+  const feed = builtinData("mcp_events", inputs) as {
+    total: number;
+    events: {
+      key: string;
+      id: string;
+      server: string;
+      name: string;
+      timestamp: string;
+      time: string;
+      summary: string;
+      label: string;
+      value: string;
+    }[];
+  };
+  assert.equal(feed.total, 5);
+  assert.deepEqual(
+    feed.events.map((event) => event.id),
+    ["e4", "e3", "e2"],
+  );
+  assert.deepEqual(
+    feed.events.map((event) => event.summary),
+    ["tick 4", "tick 3", "tick 2"],
+  );
+  assert.deepEqual(
+    feed.events.map((event) => event.label),
+    ["stub · ticks", "stub · ticks", "stub · ticks"],
+  );
+  assert.deepEqual(Object.keys(feed.events[0] ?? {}).sort(), [
+    "id",
+    "key",
+    "label",
+    "name",
+    "server",
+    "summary",
+    "time",
+    "timestamp",
+    "value",
+  ]);
+  const widget = defaultDashboard().widgets.find((item) => item.id === "mcp-events");
+  assert.ok(widget);
+  const view = renderWidget(widget, feed) as { kind: string; items: unknown[] };
+  assert.equal(view.kind, "list");
+  assert.equal(view.items.length, MCP_EVENT_WIDGET_LIMIT);
 });
 
 test("an older dashboard.json gets the MCP events widget once", async () => {

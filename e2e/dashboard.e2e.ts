@@ -1,5 +1,5 @@
 import { test } from "@e2e-dev/web";
-import { expect } from "e2e";
+import { expect, type JsonValue } from "e2e";
 
 // Poll scripts the fake model hands to dashboard_upsert. They call the fake
 // ExampleCloud API on the fake model server ({{FAKE_HTTP}}) with env.HCLOUD_TOKEN.
@@ -269,4 +269,44 @@ test("polls run only while the dashboard is visible, and widgets can be removed"
       timeout: 20_000,
     })
     .toEqual(["context", "tokens", "mcp", "mcp-events"]);
+});
+
+test("the MCP events widget shows at most 3 rows", async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  const events = Array.from({ length: 5 }, (_, index) => ({
+    id: `e${index}`,
+    server: "web",
+    name: "alerts",
+    timestamp: new Date(Date.UTC(2026, 9, 30, 1, 0, index)).toISOString(),
+    summary: `alert ${index}`,
+  }));
+  await app.open("/");
+  const state = await browser.evaluate(async () => {
+    const res = await fetch("/api/state");
+    return (await res.json()) as { [key: string]: JsonValue };
+  });
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({
+      json: {
+        ...state,
+        mcpEvents: {
+          subscriptions: [],
+          events,
+          notice: "new event from web",
+          revision: 5,
+        },
+      },
+    });
+  });
+  await app.open("/?page=stats");
+  await expect(screen.getByTestId("widget-mcp-events")).toBeVisible();
+  const read = await browser.evaluate(() => {
+    const rows = [...document.querySelectorAll('[data-testid="widget-mcp-events"] dl > div')];
+    return {
+      count: rows.length,
+      ids: rows.map((row) => row.getAttribute("data-testid")),
+    };
+  });
+  expect(read.count).toBe(3);
+  expect(read.ids).toEqual(["stat-mcp-event-e4", "stat-mcp-event-e3", "stat-mcp-event-e2"]);
 });
