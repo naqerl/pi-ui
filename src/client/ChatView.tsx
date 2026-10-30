@@ -37,14 +37,12 @@ import { groupTimeline, type TimelineGroup } from "./timeline-groups";
 import type { SendOutcome, TimelineItem } from "./use-chat";
 import { usePager } from "./use-pager";
 import { useStickToBottom } from "./use-stick-to-bottom";
-import { type RunClock, WorkingIndicator } from "./WorkingIndicator";
+import { WorkingIndicator } from "./WorkingIndicator";
 
 interface ChatViewProps {
   timeline: TimelineItem[];
   running: boolean;
   interrupted: boolean;
-  /** When the run started and when the agent last did anything, for the working strip. */
-  runClock?: RunClock;
   ready: boolean;
   tasks: Task[];
   send: (text: string, mode?: MessageMode, attachments?: string[]) => Promise<SendOutcome>;
@@ -971,7 +969,6 @@ export function ChatView({
   timeline,
   running,
   interrupted,
-  runClock,
   ready,
   tasks,
   send,
@@ -1338,11 +1335,7 @@ export function ChatView({
                 aria-live="polite"
                 className="min-w-0 flex-1 truncate font-mono text-[11px] leading-4 text-muted-foreground"
               >
-                {running ? (
-                  <WorkingIndicator running={running} clock={runClock} />
-                ) : (
-                  <span>idle</span>
-                )}
+                {running ? <WorkingIndicator running={running} /> : <span>idle</span>}
               </div>
               {tasksPage && <SubtaskProgress tasks={tasks} />}
             </div>

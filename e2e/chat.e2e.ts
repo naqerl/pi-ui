@@ -291,7 +291,8 @@ test("shows one Stop while the field is empty, then one Steer while it has text"
   expect(stopSize?.height).toBeCloseTo(sendMark?.height ?? -1, 0);
 
   await expect(composer).toHaveAttribute("placeholder", "Message pi");
-  await expect(screen.getByTestId("header-activity")).toHaveText(/^working( · |$)/);
+  await expect(screen.getByTestId("header-activity")).toHaveText("working");
+  await expect(screen.getByTestId("working-detail")).toHaveCount(0);
   await expect(screen.getByTestId("working-status")).toHaveAttribute("data-open", "true");
   const status = await browser.evaluate(() => {
     const header = document.querySelector("header");
