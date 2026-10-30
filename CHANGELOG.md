@@ -4,6 +4,10 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.5 - 2026-10-30
+
+- A steer stays visible from the moment the server accepts it until the turn that consumed it produced a real message: it renders as a pending bubble, turns into the transcript entry atomically, and reports a drop instead of disappearing.
+
 ## 1.6.4 - 2026-10-30
 
 - The floating header is gone. Run status, the page indicator and the settings menu now share one row on top of the composer dock — active runs keep the working indicator, an idle chat says `idle`, and the `pi` label became a bordered gear button with the same popover. The dock and its navigation row stay visible on the stats page (only the composer body collapses, hidden and inert), and the header's clearance measurement and the working-strip slide styles are deleted.
