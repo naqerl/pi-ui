@@ -202,7 +202,7 @@ export function PiMenu() {
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={menuId}
-        className="grid size-7 shrink-0 place-items-center border border-foreground/30 bg-surface text-foreground theme-radius hover:bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground"
+        className="grid h-9 w-9 -my-1 shrink-0 place-items-center text-foreground theme-radius hover:bg-foreground/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground"
         onClick={() => {
           setSection("menu");
           setOpen((current) => !current);

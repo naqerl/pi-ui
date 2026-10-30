@@ -631,6 +631,8 @@ test("follows the theme color and corner radius on the chrome", async ({
     );
     const dockStyle = dock === null ? null : getComputedStyle(dock);
     const gearStyle = gear === null ? null : getComputedStyle(gear);
+    const gearBox = gear?.getBoundingClientRect();
+    const sendBox = send?.getBoundingClientRect();
     return {
       radius: getComputedStyle(document.documentElement).getPropertyValue("--radius").trim(),
       background: getComputedStyle(document.documentElement)
@@ -640,6 +642,13 @@ test("follows the theme color and corner radius on the chrome", async ({
       page: getComputedStyle(document.body).backgroundColor,
       dockBackground: dockStyle?.backgroundColor ?? "",
       gearBackground: gearStyle?.backgroundColor ?? "",
+      gearBorder: gearStyle?.borderTopWidth ?? "",
+      gearWidth: gearBox?.width ?? 0,
+      gearHeight: gearBox?.height ?? 0,
+      gearRight: gearBox?.right ?? 0,
+      sendWidth: sendBox?.width ?? 0,
+      sendHeight: sendBox?.height ?? 0,
+      sendRight: sendBox?.right ?? 0,
       buttonRadius: send === undefined ? "" : getComputedStyle(send).borderRadius,
     };
   });
@@ -649,7 +658,11 @@ test("follows the theme color and corner radius on the chrome", async ({
   expect(alphaOf(solitude.dockBackground)).toBeGreaterThan(0);
   expect(alphaOf(solitude.dockBackground)).toBeLessThan(1);
   expect(solitude.dockBackground).not.toBe(solitude.page);
-  expect(alphaOf(solitude.gearBackground)).toBe(1);
+  expect(alphaOf(solitude.gearBackground)).toBe(0);
+  expect(solitude.gearBorder).toBe("0px");
+  expect(solitude.gearWidth).toBeCloseTo(solitude.sendWidth, 0);
+  expect(solitude.gearHeight).toBeCloseTo(solitude.sendHeight, 0);
+  expect(solitude.gearRight).toBeCloseTo(solitude.sendRight, 0);
   expect(solitude.buttonRadius).toBe("6px");
   await expect.poll(() => shaderFollowsTheme(browser)).toBe(true);
 

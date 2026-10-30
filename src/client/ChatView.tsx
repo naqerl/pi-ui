@@ -1339,7 +1339,7 @@ export function ChatView({
           data-testid="composer-dock"
           className="float-footer absolute z-20 theme-radius"
         >
-          <div className="ink-line flex items-center gap-3 border-b px-[18px] py-1.5">
+          <div className="ink-line flex items-center gap-3 border-b py-1.5 pr-1.5 pl-[18px]">
             <div className="flex min-w-0 flex-1 items-center gap-2">
               <div
                 data-testid="working-status"
