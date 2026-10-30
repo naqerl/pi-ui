@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { NoticeLine } from "../src/client/NoticeView.js";
 import { type JobRecord, jobNotice } from "../src/server/jobs.js";
-import { parseNotice } from "../src/shared/notices.js";
+import { type ChatNotice, parseNotice } from "../src/shared/notices.js";
+import type { ChatMessage } from "../src/shared/types.js";
 
 function job(overrides: Partial<JobRecord>): JobRecord {
   return {
@@ -96,6 +100,57 @@ test("an MCP subscription status becomes a notice", () => {
   assert.ok(notice?.kind === "mcp");
   assert.equal(notice.summary, "MCP github: repo failed");
   assert.equal(notice.statuses[0]?.error, "401");
+});
+
+function chipMarkup(notice: ChatNotice): string {
+  const message: ChatMessage = {
+    id: "chip",
+    role: "user",
+    text: "",
+    timestamp: "2026-10-30T10:00:00.000Z",
+    order: 1,
+  };
+  return renderToStaticMarkup(createElement(NoticeLine, { message, notice }));
+}
+
+test("job and MCP chips carry the blurred glass surface", () => {
+  const failedJob = parseNotice(jobNotice(job({ status: "failed", exitCode: 2 }), ""));
+  assert.ok(failedJob?.kind === "job");
+  const mcp = parseNotice(
+    `${EVENTS}${JSON.stringify({
+      events: [
+        {
+          subscription_id: "s1",
+          server: "github",
+          event: { name: "push", timestamp: "2026-10-30T10:00:00Z", eventId: "e1", data: {} },
+        },
+      ],
+      dropped_events: 0,
+    })}`,
+  );
+  assert.ok(mcp?.kind === "mcp");
+
+  for (const notice of [failedJob, mcp]) {
+    const markup = chipMarkup(notice);
+    assert.match(markup, /class="[^"]*\bbackdrop-blur-md\b/);
+    assert.match(markup, /class="[^"]*\bbg-surface\/90\b/);
+    assert.match(markup, /class="[^"]*\bshadow-sm\b/);
+    assert.match(markup, /data-testid="chat-notice"/);
+    assert.match(markup, new RegExp(`data-notice-kind="${notice.kind}"`));
+    assert.match(markup, /aria-haspopup="dialog"/);
+    assert.match(markup, /data-testid="chat-notice-summary"/);
+  }
+});
+
+test("a failed job chip keeps its destructive styling", () => {
+  const notice = parseNotice(jobNotice(job({ status: "failed", exitCode: 2 }), ""));
+  assert.ok(notice?.kind === "job");
+  const markup = chipMarkup(notice);
+  assert.match(markup, /class="[^"]*\bborder-destructive\/40\b/);
+  assert.match(markup, /class="[^"]*\btext-destructive\b/);
+  assert.match(markup, /class="[^"]*\bhover:text-destructive\b/);
+  assert.match(markup, /class="[^"]*\bbackdrop-blur-md\b/);
+  assert.match(markup, /⚙/);
 });
 
 test("ordinary messages and broken payloads are not notices", () => {

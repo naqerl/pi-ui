@@ -31,7 +31,7 @@ export function NoticeLine({ message, notice }: { message: ChatMessage; notice: 
         title={notice.summary}
         onClick={() => setOpen(true)}
         className={cn(
-          "flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border border-foreground/10 bg-surface/70 px-2.5 py-0.5 font-mono text-[11px] leading-5 text-muted-foreground transition-colors hover:border-foreground/25 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
+          "flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border border-foreground/10 bg-surface/90 px-2.5 py-0.5 font-mono text-[11px] leading-5 text-muted-foreground shadow-sm backdrop-blur-md transition-colors hover:border-foreground/25 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
           failed(notice) && "border-destructive/40 text-destructive hover:text-destructive",
         )}
       >
