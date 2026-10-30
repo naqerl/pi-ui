@@ -10,6 +10,7 @@ import {
   type Submission,
   watchEvents,
 } from "@earendil-works/pi-durable";
+import { parseNotice } from "../shared/notices.js";
 import {
   type ChatMessage,
   type McpEventsState,
@@ -23,6 +24,7 @@ import {
   STEER_ENTRY_KIND,
   type StreamDraftSync,
   type StreamMessageDone,
+  type StreamNotice,
   type StreamRunState,
   type StreamTextDelta,
   type StreamToolEnd,
@@ -38,6 +40,7 @@ import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.j
 import type { RunMarker, RunMarkerStore } from "./run-marker.js";
 import {
   appendAssistantError,
+  appendJobNotice,
   assistantMessageFromEntry,
   buildTranscript,
   contextUsage,
@@ -592,11 +595,13 @@ export class ChatService {
       }
     }
 
+    const notice = parseNotice(text);
     return {
       message: {
         id: `m-pending-${submission.id}`,
         role: "user",
         text,
+        ...(notice === null ? {} : { notice }),
         ...(attachments.length > 0
           ? {
               attachments: attachments.map((id) => ({
@@ -642,6 +647,16 @@ export class ChatService {
       if (startsRun && this.queued.size === 0) this.setRunState("idle");
       else this.maybeClearMarker();
     }
+  }
+
+  /**
+   * Records a chat-only notice (a job the agent is not told about) and shows it to
+   * open clients. The agent never sees it.
+   */
+  async recordNotice(text: string): Promise<void> {
+    const message = await appendJobNotice(this.conversation, text);
+    if (message === undefined) return;
+    this.hub.broadcast({ event: "notice", data: { message } satisfies StreamNotice });
   }
 
   private async appendNoModelMessage(): Promise<void> {

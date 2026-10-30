@@ -49,7 +49,9 @@ const KILL_AFTER_MS = 5_000;
  * Shell commands the agent runs in the background. Each job runs `bash -lc` in its own
  * process group with stdout and stderr appended to `DATA_DIR/jobs/<id>.log`, so output
  * survives a server restart and a long build cannot fill memory. When a job ends on its
- * own, the notifier gets its record and the last lines of output.
+ * own, the notifier gets its record and the last lines of output. Jobs the agent is not
+ * told about (cancelled, or started with `notify: false`) go to the quiet notifier, which
+ * the chat shows without involving the agent.
  */
 export class JobManager {
   private readonly dir: string;
@@ -58,6 +60,7 @@ export class JobManager {
   private readonly children = new Map<string, ChildProcess>();
   private readonly killTimers = new Map<string, NodeJS.Timeout>();
   private notifier: JobNotifier | undefined;
+  private quietNotifier: JobNotifier | undefined;
   private changeListener: (() => void) | undefined;
   private readonly pending: JobRecord[] = [];
   private sequence = 0;
@@ -93,6 +96,11 @@ export class JobManager {
   }
 
   /** Sets who hears about finished jobs, and hands it any that ended before it was set. */
+  /** Receives jobs that end without telling the agent: cancelled ones and `notify: false` ones. */
+  setQuietNotifier(notifier: JobNotifier | undefined): void {
+    this.quietNotifier = notifier;
+  }
+
   setNotifier(notifier: JobNotifier | undefined): void {
     this.notifier = notifier;
     if (notifier === undefined) return;
@@ -188,7 +196,10 @@ export class JobManager {
       timer.unref();
       this.killTimers.set(job.id, timer);
     }
-    void this.appendLog(job.id, "\n[pi-ui] cancelled\n");
+    const record = { ...job };
+    void this.appendLog(job.id, "\n[pi-ui] cancelled\n").then(() =>
+      this.notify(record, this.quietNotifier),
+    );
     return { ...job };
   }
 
@@ -262,13 +273,15 @@ export class JobManager {
     job.signal = signal;
     job.endedAt = new Date().toISOString();
     this.save();
-    if (!job.notify) return;
+    if (!job.notify) {
+      this.notify({ ...job }, this.quietNotifier);
+      return;
+    }
     if (this.notifier === undefined) this.pending.push({ ...job });
     else this.notify({ ...job });
   }
 
-  private notify(job: JobRecord): void {
-    const notifier = this.notifier;
+  private notify(job: JobRecord, notifier = this.notifier): void {
     if (notifier === undefined) return;
     void this.output(job.id, { tail: 20 })
       .then((output) => output.text)

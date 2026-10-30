@@ -20,6 +20,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { parseNotice } from "../shared/notices.js";
 import {
   type ActivityItem,
   type ChatMessage,
@@ -56,6 +57,15 @@ const VersionUpdateEntry = defineEntry<{
   note: string;
   createdAt: string;
 }>("ui.version-update");
+
+/**
+ * A background job the agent is not told about (cancelled, or started with
+ * `notify: false`). It has no `model` part, so it only shows in the chat.
+ */
+const JobNoticeEntry = defineEntry<{
+  text: string;
+  createdAt: string;
+}>("ui.job-notice");
 
 export interface DurableSessionOptions {
   readonly cwd: string;
@@ -483,6 +493,23 @@ export function buildTranscript(
 
   for (const entry of sorted) {
     const kind = entry.kind;
+    if (kind === JobNoticeEntry.kind) {
+      if (!isRecord(entry.data) || typeof entry.data.text !== "string") continue;
+      const notice = parseNotice(entry.data.text);
+      if (notice === null) continue;
+      messages.push({
+        id: `m-${entry.id}`,
+        role: "system",
+        text: entry.data.text,
+        notice,
+        timestamp:
+          typeof entry.data.createdAt === "string"
+            ? entry.data.createdAt
+            : new Date().toISOString(),
+        order: entry.id * 10_000,
+      });
+      continue;
+    }
     if (kind === InterruptedRunEntry.kind || kind === VersionUpdateEntry.kind) {
       if (!isRecord(entry.data) || typeof entry.data.note !== "string") continue;
       messages.push({
@@ -510,6 +537,7 @@ export function buildTranscript(
       const text = extractText(message.content);
       const attachments = media === undefined ? [] : userImages(message.content, media);
       if (text.length > 0 || attachments.length > 0) {
+        const notice = parseNotice(text);
         messages.push({
           id: `m-${entry.id}`,
           role: "user",
@@ -518,6 +546,7 @@ export function buildTranscript(
           timestamp: timestampOf(message),
           order: entry.id * 10_000,
           ...(kind === STEER_ENTRY_KIND ? { steer: true } : {}),
+          ...(notice === null ? {} : { notice }),
         });
       }
       continue;
@@ -641,6 +670,29 @@ export function assistantMessageFromEntry(entry: EntryRecord): ChatMessage | nul
     isError: errorText.length > 0,
     ...(spend !== undefined && !hasThinking && !hasToolCall ? { usage: spend } : {}),
   };
+}
+
+/** Records a chat-only job notice and returns it as a transcript message. */
+export async function appendJobNotice(
+  conversation: Conversation,
+  text: string,
+): Promise<ChatMessage | undefined> {
+  const createdAt = new Date().toISOString();
+  await conversation.commit(
+    (tx) => tx.appendEntry(JobNoticeEntry, conversation.id, { data: { text, createdAt } }),
+    SESSION_CONTEXT,
+  );
+  const context = await conversation.context(SESSION_CONTEXT);
+  const entry = [...context.entries]
+    .reverse()
+    .find(
+      (candidate) =>
+        candidate.kind === JobNoticeEntry.kind &&
+        isRecord(candidate.data) &&
+        candidate.data.createdAt === createdAt &&
+        candidate.data.text === text,
+    );
+  return entry === undefined ? undefined : buildTranscript([entry]).messages[0];
 }
 
 export async function appendAssistantError(

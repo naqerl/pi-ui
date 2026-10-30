@@ -65,11 +65,13 @@ test("output pages forward by offset and tails by lines", async () => {
   assert.equal(middle.text, "500\n");
 });
 
-test("cancel stops the job and its children without a message", async () => {
+test("cancel stops the job and its children, telling only the chat", async () => {
   const jobs = new JobManager(dataDir, cwd);
   await jobs.load();
   const notices: string[] = [];
+  const quiet: { id: string; status: string; tail: string }[] = [];
   jobs.setNotifier((job) => notices.push(job.id));
+  jobs.setQuietNotifier((job, tail) => quiet.push({ id: job.id, status: job.status, tail }));
   const job = jobs.start({ command: "sleep 30 & sleep 30; wait" });
   await new Promise((resolve) => setTimeout(resolve, 200));
   const cancelled = jobs.cancel(job.id);
@@ -86,18 +88,26 @@ test("cancel stops the job and its children without a message", async () => {
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.deepEqual(notices, []);
   assert.equal(jobs.get(job.id).status, "cancelled");
+  await until(() => quiet.length > 0);
+  assert.equal(quiet[0]?.id, job.id);
+  assert.equal(quiet[0]?.status, "cancelled");
+  assert.match(quiet[0]?.tail ?? "", /\[pi-ui\] cancelled/);
 });
 
 test("notify false stays quiet, and a restart keeps the list", async () => {
   const jobs = new JobManager(dataDir, cwd);
   await jobs.load();
   const notices: string[] = [];
+  const quiet: string[] = [];
   jobs.setNotifier((job) => notices.push(job.id));
+  jobs.setQuietNotifier((job) => quiet.push(job.id));
   const job = jobs.start({ command: "true", notify: false });
   await until(() => jobs.get(job.id).status !== "running");
   await jobs.flush();
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.deepEqual(notices, []);
+  await until(() => quiet.length > 0);
+  assert.deepEqual(quiet, [job.id]);
   const reloaded = new JobManager(dataDir, cwd);
   await reloaded.load();
   assert.equal(reloaded.get(job.id).status, "exited");

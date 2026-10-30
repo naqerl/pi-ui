@@ -180,6 +180,11 @@ jobs.setNotifier((job, tail) => {
     console.error(`[pi] background job ${job.id} message failed`, error);
   });
 });
+jobs.setQuietNotifier((job, tail) => {
+  void chat.recordNotice(jobNotice(job, tail)).catch((error: unknown) => {
+    console.error(`[pi] background job ${job.id} notice failed`, error);
+  });
+});
 boot.mcp.setSubmit((text, options) => {
   void chat
     .submit(text, options.deliverAs === "steer" ? "steer" : "queue")

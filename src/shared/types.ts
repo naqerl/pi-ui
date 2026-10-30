@@ -1,3 +1,4 @@
+import type { ChatNotice } from "./notices.js";
 export type RunState = "idle" | "running" | "interrupted";
 
 /** Entry kind used for a steered user message, so the transcript can mark it. */
@@ -23,6 +24,8 @@ export interface ChatMessage {
   isError?: boolean;
   /** True for a message injected into a running turn. */
   steer?: boolean;
+  /** Set when the message is a background job result or MCP event; the chat shows a one-line notice. */
+  notice?: ChatNotice;
   /** True when a server restart cut off this assistant response. */
   partial?: boolean;
   /** Input and output tokens for this assistant call. Omitted when the call also produced activity. */
@@ -244,6 +247,11 @@ export interface SubmitMessageResponse {
 
 export interface HealthResponse {
   ok: true;
+}
+
+/** A chat-only notice appended outside a run; clients add it without touching the draft. */
+export interface StreamNotice {
+  message: ChatMessage;
 }
 
 export interface StreamMessageDone {
