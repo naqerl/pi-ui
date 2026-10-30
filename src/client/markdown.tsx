@@ -292,8 +292,30 @@ async function copyText(text: string): Promise<boolean> {
   return copied;
 }
 
+const hoverCapableQuery = "(hover: hover) and (pointer: fine)";
+
+function useHoverCapablePointer() {
+  const [hoverCapable, setHoverCapable] = useState(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+    return window.matchMedia(hoverCapableQuery).matches;
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia(hoverCapableQuery);
+    const update = () => setHoverCapable(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+
+  return hoverCapable;
+}
+
 function CodeBlock({ text }: { text: string }) {
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+  const hoverCapable = useHoverCapablePointer();
+  const feedback = state !== "idle";
 
   useEffect(() => {
     if (state === "idle") return;
@@ -312,7 +334,11 @@ function CodeBlock({ text }: { text: string }) {
         onClick={() => {
           void copyText(text).then((ok) => setState(ok ? "copied" : "failed"));
         }}
-        className="theme-radius absolute top-1 right-1 border border-border bg-surface px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground opacity-90 transition-opacity hover:text-foreground focus-visible:opacity-100"
+        className={`theme-radius absolute top-1 right-1 border border-border bg-surface px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-opacity hover:text-foreground ${
+          feedback || !hoverCapable
+            ? "opacity-90"
+            : "opacity-0 group-hover:opacity-90 focus-visible:opacity-100"
+        }`}
       >
         {state === "copied" ? "copied" : state === "failed" ? "failed" : "copy"}
       </button>

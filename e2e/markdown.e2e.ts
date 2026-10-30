@@ -1,4 +1,4 @@
-import { test } from "@e2e-dev/web";
+import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
 const seededTexts = [
@@ -30,6 +30,36 @@ const snapshot = {
   usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 },
   context: { tokens: 0, window: null, percent: null },
 };
+
+const codeBlockSnapshot = (code: string) => ({
+  ...snapshot,
+  messages: [
+    {
+      id: "copy-bot",
+      role: "assistant",
+      text: `Here:\n\n\`\`\`ts\n${code}\n\`\`\``,
+      timestamp: new Date(Date.UTC(2026, 0, 1)).toISOString(),
+      order: 1,
+    },
+  ],
+});
+
+function readCopyButton(browser: Browser) {
+  return browser.evaluate(() => {
+    const pre = document.querySelector<HTMLElement>("main pre");
+    const button = pre?.parentElement?.querySelector<HTMLElement>("button") ?? null;
+    if (pre === null || button === null) return null;
+    const box = pre.getBoundingClientRect();
+    return {
+      opacity: Number.parseFloat(getComputedStyle(button).opacity),
+      height: box.height,
+      scrollWidth: pre.scrollWidth,
+      clientWidth: pre.clientWidth,
+      label: button.getAttribute("aria-label"),
+      text: button.textContent,
+    };
+  });
+}
 
 test("does not let whitespace-only lines inflate assistant markdown bubbles", async ({
   app,
@@ -261,27 +291,58 @@ test("shows hh:mm at the bottom right of user and assistant messages", async ({
   }
 });
 
-test("copies a fenced code block from its copy button", async ({ app, browser, screen }) => {
+test("hides the code copy button until its block is hovered or focused", async ({
+  app,
+  browser,
+  screen,
+}) => {
   const code = "const answer = 42;\nconsole.log(answer);";
   await browser.route("**/api/state**", async (route) => {
-    await route.fulfill({
-      json: {
-        ...snapshot,
-        messages: [
-          {
-            id: "copy-bot",
-            role: "assistant",
-            text: `Here:\n\n\`\`\`ts\n${code}\n\`\`\``,
-            timestamp: new Date(Date.UTC(2026, 0, 1)).toISOString(),
-            order: 1,
-          },
-        ],
-      },
-    });
+    await route.fulfill({ json: codeBlockSnapshot(code) });
   });
   await app.open("/");
   const button = screen.getByRole("button", "Copy code");
   await expect(button).toBeVisible();
+  await expect.poll(async () => (await readCopyButton(browser))?.opacity ?? -1).toBe(0);
+  const initial = await readCopyButton(browser);
+  expect(initial).not.toBeNull();
+  expect(initial?.height ?? 0).toBeGreaterThan(0);
+  expect(initial?.scrollWidth ?? 0).toBeLessThanOrEqual(initial?.clientWidth ?? 0);
+
+  await browser.locator("main pre").first().hover();
+  await expect.poll(async () => (await readCopyButton(browser))?.opacity ?? -1).toBe(0.9);
+  const hovered = await readCopyButton(browser);
+  expect(hovered?.height).toBeCloseTo(initial?.height ?? 0, 1);
+
+  await browser.mouse.move(0, 0);
+  await expect.poll(async () => (await readCopyButton(browser))?.opacity ?? -1).toBe(0);
+
+  let reached = false;
+  for (let index = 0; index < 30; index += 1) {
+    await browser.keyboard.press("Tab");
+    const focused = await browser.evaluate(
+      () => document.activeElement?.getAttribute("aria-label") ?? "",
+    );
+    if (focused === "Copy code") {
+      reached = true;
+      break;
+    }
+  }
+  expect(reached).toBe(true);
+  await expect.poll(async () => (await readCopyButton(browser))?.opacity ?? -1).toBe(1);
+  expect((await readCopyButton(browser))?.height).toBeCloseTo(initial?.height ?? 0, 1);
+});
+
+test("copies a fenced code block from its copy button", async ({ app, browser, screen }) => {
+  const code = "const answer = 42;\nconsole.log(answer);";
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({ json: codeBlockSnapshot(code) });
+  });
+  await app.open("/");
+  const button = screen.getByRole("button", "Copy code");
+  await expect(button).toBeVisible();
+  await button.hover();
+  await expect.poll(async () => (await readCopyButton(browser))?.opacity ?? -1).toBe(0.9);
 
   await browser.evaluate(() => {
     const target = window as unknown as { copied?: string };
@@ -295,10 +356,55 @@ test("copies a fenced code block from its copy button", async ({ app, browser, s
     });
     return true;
   });
-  await button.tap();
-  await expect(screen.getByRole("button", "Copied")).toBeVisible();
+  const box = await button.boundingBox();
+  if (box === null) throw new Error("copy button has no box");
+  await browser.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await browser.mouse.down();
+  await browser.mouse.up();
+  await browser.mouse.move(0, 0);
+  await expect.poll(async () => (await readCopyButton(browser))?.label ?? "").toBe("Copied");
   const copied = await browser.evaluate(
     () => (window as unknown as { copied?: string }).copied ?? null,
   );
   expect(copied).toBe(code);
+  expect((await readCopyButton(browser))?.opacity).toBe(0.9);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  expect((await readCopyButton(browser))?.text).toBe("copied");
+  await expect
+    .poll(async () => (await readCopyButton(browser))?.opacity ?? -1, { timeout: 3_000 })
+    .toBe(0);
+  expect((await readCopyButton(browser))?.label).toBe("Copy code");
+});
+
+test("keeps the code copy button visible on a coarse pointer", async ({ app, browser, screen }) => {
+  await browser.addInitScript(`
+    (() => {
+      const original = window.matchMedia.bind(window);
+      window.matchMedia = (query) => {
+        if (query !== "(hover: hover) and (pointer: fine)") return original(query);
+        return {
+          matches: false,
+          media: query,
+          onchange: null,
+          addListener() {},
+          removeListener() {},
+          addEventListener() {},
+          removeEventListener() {},
+          dispatchEvent() { return false; },
+        };
+      };
+    })();
+  `);
+  const code = "const answer = 42;\nconsole.log(answer);";
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({ json: codeBlockSnapshot(code) });
+  });
+  await app.open("/");
+  const hoverCapable = await browser.evaluate(
+    () => window.matchMedia("(hover: hover) and (pointer: fine)").matches,
+  );
+  expect(hoverCapable).toBe(false);
+  const button = screen.getByRole("button", "Copy code");
+  await expect(button).toBeVisible();
+  await expect.poll(async () => (await readCopyButton(browser))?.opacity ?? -1).toBe(0.9);
 });
