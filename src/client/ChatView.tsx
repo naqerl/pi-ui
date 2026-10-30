@@ -1018,6 +1018,7 @@ export function ChatView({
                 <StatsView
                   stats={stats}
                   ready={ready}
+                  active={statsPage}
                   headerClearance={headerClearance}
                   footerClearance={footerClearance}
                 />

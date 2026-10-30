@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { DashboardState } from "../shared/dashboard";
 import type {
   ActivityItem,
   ChatMessage,
@@ -23,6 +24,7 @@ import type {
   TranscriptHistory,
   UsageSummary,
 } from "../shared/types";
+import { setDashboard } from "./dashboard-store";
 
 const EMPTY_EVENTS: McpEventsState = {
   subscriptions: [],
@@ -232,6 +234,11 @@ export function useChat(options: UseChatOptions = {}) {
     source.addEventListener("mcp.events", (event) => {
       const data = parseEvent<McpEventsState>(event as MessageEvent<string>);
       if (data) applyEvents(data);
+    });
+
+    source.addEventListener("dashboard", (event) => {
+      const data = parseEvent<DashboardState>(event as MessageEvent<string>);
+      if (data) setDashboard(data);
     });
 
     source.addEventListener("tasks", (event) => {
