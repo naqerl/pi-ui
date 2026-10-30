@@ -46,7 +46,17 @@ export interface McpNoticeDetails {
   summary: string;
 }
 
-export type ChatNotice = JobNoticeDetails | McpNoticeDetails;
+/** The restart note recorded for an interrupted run. */
+export interface InterruptedNoticeDetails {
+  kind: "interrupted";
+  note: string;
+  /** True when the run was stopped deliberately before the restart. */
+  stopped: boolean;
+  /** The note is the summary, so old callers can read either field. */
+  summary?: string;
+}
+
+export type ChatNotice = JobNoticeDetails | McpNoticeDetails | InterruptedNoticeDetails;
 
 const JOB_HEAD = /^\[background job (\S+) finished\] (\S+) (.+?): (.*)$/;
 const MCP_EVENTS_HEAD = "MCP event data follows.";

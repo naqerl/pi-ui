@@ -271,3 +271,91 @@ test("an MCP event notice shows the server, event and payload", async ({
   await screen.getByRole("button", "Close").tap();
   await expect.poll(() => dialogText(browser)).toBe(null);
 });
+
+const interruptedNote =
+  "The previous run was interrupted by a server restart. The last response is partial; pi is resuming the run.";
+const interruptedSnapshot = {
+  conversationId: "notices-interrupted-e2e",
+  messages: [
+    {
+      id: "partial-reply",
+      role: "assistant",
+      text: "The partial answer is still here.",
+      timestamp: at(1),
+      order: 10_000,
+      partial: true,
+    },
+    {
+      id: "interrupted-note",
+      role: "system",
+      text: interruptedNote,
+      timestamp: at(2),
+      order: 20_000,
+      notice: { kind: "interrupted", note: interruptedNote, stopped: false },
+    },
+  ],
+  activity: [],
+  run: "idle",
+  queue: [],
+  usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 },
+  context: { tokens: 0, window: null, percent: null },
+};
+
+test("an interrupted run keeps its partial reply and shows a warning-toned chip", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({ json: JSON.parse(JSON.stringify(interruptedSnapshot)) });
+  });
+  await app.open("/");
+  await expect
+    .poll(() => notices(browser))
+    .toEqual([{ kind: "interrupted", role: "system", summary: interruptedNote }]);
+  await expect(
+    screen.getByText("The partial answer is still here.", { exact: true }),
+  ).toBeVisible();
+  expect(await rawBubbles(browser)).toBe(0);
+
+  const chip = await browser.evaluate(() => {
+    const node = document.querySelector<HTMLElement>(
+      '[data-testid="chat-notice"][data-notice-kind="interrupted"]',
+    );
+    if (node === null) return null;
+    const probe = document.createElement("div");
+    probe.className = "border border-amber-500/40 bg-amber-500/10 text-amber-500";
+    document.body.appendChild(probe);
+    const style = getComputedStyle(node);
+    const warning = getComputedStyle(probe);
+    const computed = {
+      classes: node.className,
+      text: node.textContent ?? "",
+      background: style.backgroundColor,
+      warningBackground: warning.backgroundColor,
+      color: style.color,
+      warningColor: warning.color,
+      border: style.borderTopColor,
+      warningBorder: warning.borderTopColor,
+    };
+    probe.remove();
+    return computed;
+  });
+  expect(chip).not.toBeNull();
+  expect(chip?.text ?? "").toContain("⚠");
+  expect(chip?.background).toBe(chip?.warningBackground);
+  expect(chip?.color).toBe(chip?.warningColor);
+  expect(chip?.border).toBe(chip?.warningBorder);
+  expect(chip?.classes ?? "").not.toContain("bg-surface/90");
+  expect(chip?.classes ?? "").not.toContain("text-muted-foreground");
+
+  await browser.evaluate(() => {
+    document
+      .querySelector<HTMLElement>('[data-testid="chat-notice"][data-notice-kind="interrupted"]')
+      ?.click();
+    return null;
+  });
+  await expect(screen.getByRole("dialog")).toBeVisible();
+  expect(await dialogText(browser)).toContain(interruptedNote);
+});

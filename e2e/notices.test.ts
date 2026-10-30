@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { AssistantEntry, type EntryRecord } from "@earendil-works/pi-durable";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { NoticeLine } from "../src/client/NoticeView.js";
 import { type JobRecord, jobNotice } from "../src/server/jobs.js";
+import { buildTranscript } from "../src/server/session.js";
 import { type ChatNotice, parseNotice } from "../src/shared/notices.js";
 import type { ChatMessage } from "../src/shared/types.js";
 
@@ -151,6 +153,59 @@ test("a failed job chip keeps its destructive styling", () => {
   assert.match(markup, /class="[^"]*\bhover:text-destructive\b/);
   assert.match(markup, /class="[^"]*\bbackdrop-blur-md\b/);
   assert.match(markup, /⚙/);
+});
+
+test("an interrupted run becomes one warning chip after the partial reply", () => {
+  const note =
+    "The previous run was interrupted by a server restart. The last response is partial; pi is resuming the run.";
+  const transcript = buildTranscript([
+    {
+      id: 1,
+      kind: AssistantEntry.kind,
+      model: [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "partial answer" }],
+          timestamp: 1_700_000_000_000,
+        },
+      ],
+    },
+    {
+      id: 2,
+      kind: "ui.run-interrupted",
+      data: {
+        markerKey: "run-1",
+        partialEntryId: 1,
+        note,
+        stopped: false,
+        createdAt: "2026-10-30T10:00:00.000Z",
+      },
+    },
+  ] as unknown as EntryRecord[]);
+
+  assert.equal(transcript.messages.length, 2);
+  assert.equal(transcript.messages[0]?.text, "partial answer");
+  assert.equal(transcript.messages[0]?.partial, true);
+  const message = transcript.messages[1];
+  assert.equal(message?.role, "system");
+  assert.equal(message?.text, note);
+  assert.deepEqual(message?.notice, { kind: "interrupted", note, stopped: false });
+  assert.ok(message?.notice !== undefined);
+
+  const markup = renderToStaticMarkup(
+    createElement(NoticeLine, { message, notice: message.notice }),
+  );
+  assert.match(markup, /data-notice-kind="interrupted"/);
+  assert.match(markup, /⚠/);
+  assert.match(markup, /class="[^"]*\bbackdrop-blur-md\b/);
+  assert.match(markup, /class="[^"]*\bborder-amber-500\/40\b/);
+  assert.match(markup, /class="[^"]*\bbg-amber-500\/10\b/);
+  assert.match(markup, /class="[^"]*\btext-amber-500\b/);
+  // The neutral chip surface must not compete with the warning tone in CSS order.
+  assert.doesNotMatch(markup, /class="[^"]*\bbg-surface\/90\b/);
+  assert.doesNotMatch(markup, /class="[^"]*\btext-muted-foreground\b/);
+  assert.doesNotMatch(markup, /class="[^"]*\bborder-foreground\/10\b/);
+  assert.match(markup, new RegExp(`title="${note.replaceAll(".", "\\.")}"`));
 });
 
 test("ordinary messages and broken payloads are not notices", () => {

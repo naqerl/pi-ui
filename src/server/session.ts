@@ -53,6 +53,7 @@ const InterruptedRunEntry = defineEntry<{
   markerKey: string;
   partialEntryId: number | null;
   note: string;
+  stopped: boolean;
   createdAt: string;
 }>("ui.run-interrupted");
 
@@ -484,6 +485,7 @@ async function appendInterruptionNote(
             markerKey: marker.idempotencyKey,
             partialEntryId: marker.partialEntryId,
             note,
+            stopped: marker.stopRequested,
             createdAt: new Date().toISOString(),
           },
         }),
@@ -554,12 +556,22 @@ export function buildTranscript(
     }
     if (kind === InterruptedRunEntry.kind) {
       if (!isRecord(entry.data) || typeof entry.data.note !== "string") continue;
+      const note = entry.data.note;
       messages.push({
         id: `m-${entry.id}`,
         role: "system",
-        text: entry.data.note,
+        text: note,
         timestamp: entryTimestamp(entry.data),
         order: entry.id * 10_000,
+        notice: {
+          kind: "interrupted",
+          note,
+          // Older entries predate the flag; their wording still says which case it was.
+          stopped:
+            typeof entry.data.stopped === "boolean"
+              ? entry.data.stopped
+              : note.startsWith("The previous run was stopped"),
+        },
       });
       continue;
     }

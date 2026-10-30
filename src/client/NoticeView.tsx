@@ -1,5 +1,10 @@
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
-import type { ChatNotice, JobNoticeDetails, McpNoticeDetails } from "../shared/notices";
+import type {
+  ChatNotice,
+  InterruptedNoticeDetails,
+  JobNoticeDetails,
+  McpNoticeDetails,
+} from "../shared/notices";
 import { formatDateTime, formatTime } from "../shared/time";
 import type { ChatMessage } from "../shared/types";
 import { cn } from "./lib/utils";
@@ -23,11 +28,22 @@ function failed(notice: ChatNotice): boolean {
   return notice.kind === "job" && (notice.status === "failed" || notice.status === "lost");
 }
 
-/** A background job result or MCP event, shown as one centred line. Tapping it opens the details. */
+function noticeLabel(notice: ChatNotice): string {
+  return notice.kind === "interrupted" ? notice.note : notice.summary;
+}
+
+function noticeGlyph(notice: ChatNotice): string {
+  if (notice.kind === "job") return "⚙";
+  if (notice.kind === "mcp") return "↯";
+  return "⚠";
+}
+
+/** A background job result, MCP event or restart note, shown as one centred line. */
 export function NoticeLine({ message, notice }: { message: ChatMessage; notice: ChatNotice }) {
   const [open, setOpen] = useState(false);
   const timestamp = noticeTimestamp(message, notice);
   const time = noticeClock(message, notice);
+  const label = noticeLabel(notice);
   return (
     <div
       data-message-id={message.id}
@@ -39,18 +55,22 @@ export function NoticeLine({ message, notice }: { message: ChatMessage; notice: 
         data-testid="chat-notice"
         data-notice-kind={notice.kind}
         aria-haspopup="dialog"
-        title={notice.summary}
+        title={label}
         onClick={() => setOpen(true)}
         className={cn(
-          "flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border border-foreground/10 bg-surface/90 px-2.5 py-0.5 font-mono text-[11px] leading-5 text-muted-foreground shadow-sm backdrop-blur-md transition-colors hover:border-foreground/25 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
-          failed(notice) && "border-destructive/40 text-destructive hover:text-destructive",
+          "flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-mono text-[11px] leading-5 shadow-sm backdrop-blur-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
+          notice.kind === "interrupted"
+            ? "border-amber-500/40 bg-amber-500/10 text-amber-500 hover:border-amber-500/60 hover:text-amber-500"
+            : failed(notice)
+              ? "border-destructive/40 bg-surface/90 text-destructive hover:border-foreground/25 hover:text-destructive"
+              : "border-foreground/10 bg-surface/90 text-muted-foreground hover:border-foreground/25 hover:text-foreground",
         )}
       >
         <span aria-hidden="true" className="shrink-0">
-          {notice.kind === "job" ? "⚙" : "↯"}
+          {noticeGlyph(notice)}
         </span>
         <span className="min-w-0 truncate" data-testid="chat-notice-summary">
-          {notice.summary}
+          {label}
         </span>
         {time !== "" && (
           <time dateTime={timestamp} className="shrink-0 tabular-nums opacity-60">
@@ -76,6 +96,7 @@ function NoticeDialog({
   const titleId = useId();
   const timestamp = noticeTimestamp(message, notice);
   const dateTime = formatDateTime(timestamp);
+  const label = noticeLabel(notice);
   useEffect(() => {
     const dialog = ref.current;
     if (dialog !== null && !dialog.open) dialog.showModal();
@@ -101,11 +122,17 @@ function NoticeDialog({
         <header className="flex items-start gap-3 border-b border-foreground/10 px-4 py-3">
           <div className="min-w-0 flex-1">
             <div className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-              {notice.kind === "job" ? "Background job" : "MCP event"}
+              {notice.kind === "job"
+                ? "Background job"
+                : notice.kind === "mcp"
+                  ? "MCP event"
+                  : notice.stopped
+                    ? "Run stopped"
+                    : "Run interrupted"}
               {dateTime !== "" && ` · ${dateTime}`}
             </div>
             <h2 id={titleId} className="mt-0.5 font-mono text-sm [overflow-wrap:anywhere]">
-              {notice.summary}
+              {label}
             </h2>
           </div>
           <button
@@ -119,11 +146,21 @@ function NoticeDialog({
           </button>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 text-sm">
-          {notice.kind === "job" ? <JobDetails notice={notice} /> : <McpDetails notice={notice} />}
+          {notice.kind === "job" ? (
+            <JobDetails notice={notice} />
+          ) : notice.kind === "mcp" ? (
+            <McpDetails notice={notice} />
+          ) : (
+            <InterruptedDetails notice={notice} />
+          )}
         </div>
       </div>
     </dialog>
   );
+}
+
+function InterruptedDetails({ notice }: { notice: InterruptedNoticeDetails }) {
+  return <p className="[overflow-wrap:anywhere]">{notice.note}</p>;
 }
 
 function Fields({ rows }: { rows: [string, ReactNode][] }) {
