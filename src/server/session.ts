@@ -513,7 +513,7 @@ export function buildTranscript(
       });
       continue;
     }
-    if (kind === InterruptedRunEntry.kind || kind === VersionUpdateEntry.kind) {
+    if (kind === InterruptedRunEntry.kind) {
       if (!isRecord(entry.data) || typeof entry.data.note !== "string") continue;
       messages.push({
         id: `m-${entry.id}`,
@@ -524,6 +524,24 @@ export function buildTranscript(
             ? entry.data.createdAt
             : new Date().toISOString(),
         order: entry.id * 10_000,
+      });
+      continue;
+    }
+    if (kind === VersionUpdateEntry.kind) {
+      if (!isRecord(entry.data) || typeof entry.data.note !== "string") continue;
+      messages.push({
+        id: `m-${entry.id}`,
+        role: "system",
+        text: entry.data.note,
+        timestamp:
+          typeof entry.data.createdAt === "string"
+            ? entry.data.createdAt
+            : new Date().toISOString(),
+        order: entry.id * 10_000,
+        version: {
+          from: typeof entry.data.from === "string" ? entry.data.from : null,
+          to: typeof entry.data.to === "string" ? entry.data.to : "",
+        },
       });
       continue;
     }

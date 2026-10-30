@@ -28,6 +28,8 @@ export interface ChatMessage {
   pendingSteer?: boolean;
   /** Set when the message is a background job result or MCP event; the chat shows a one-line notice. */
   notice?: ChatNotice;
+  /** Set on the pi-ui version-update note, so the chat can paint it with the theme accent. */
+  version?: { from: string | null; to: string };
   /** True when a server restart cut off this assistant response. */
   partial?: boolean;
   /** Input and output tokens for this assistant call. Omitted when the call also produced activity. */

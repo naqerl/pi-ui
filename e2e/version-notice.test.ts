@@ -3,6 +3,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import type { EntryRecord } from "@earendil-works/pi-durable";
+import { buildTranscript } from "../src/server/session.js";
 import {
   APP_ROOT,
   buildVersionNotice,
@@ -74,6 +76,23 @@ test("the shipped changelog has a section for the package version", async () => 
   };
   const changelog = await readFile(join(APP_ROOT, "CHANGELOG.md"), "utf8");
   assert.ok(parseChangelog(changelog).some((section) => section.version === pkg.version));
+});
+
+test("the update note keeps its versions for the chat", () => {
+  const entry = {
+    id: 1,
+    conversationId: "version-notice-test",
+    kind: "ui.version-update",
+    data: {
+      from: "1.4.3",
+      to: "1.5.0",
+      note: "Updated pi-ui from 1.4.3 to 1.5.0. The agent has the changelog.",
+      createdAt: "2026-10-30T00:00:00.000Z",
+    },
+  } as unknown as EntryRecord;
+  const { messages } = buildTranscript([entry]);
+  assert.equal(messages[0]?.role, "system");
+  assert.deepEqual(messages[0]?.version, { from: "1.4.3", to: "1.5.0" });
 });
 
 test("a start only notifies when the version moved", async () => {

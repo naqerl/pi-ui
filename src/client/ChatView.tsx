@@ -125,11 +125,31 @@ function MessageTime({ timestamp }: { timestamp: string }) {
   );
 }
 
+/** True for the pi-ui update note, including entries recorded before it carried a marker. */
+function isVersionUpdate(message: ChatMessage): boolean {
+  return (
+    message.version !== undefined ||
+    /^(?:Updated pi-ui from \S+ to \S+|pi-ui \d)/.test(message.text)
+  );
+}
+
 function MessageBubble({ message }: { message: ChatMessage }) {
   if (message.notice !== undefined) {
     return <NoticeLine message={message} notice={message.notice} />;
   }
   if (message.role === "system") {
+    if (isVersionUpdate(message)) {
+      return (
+        <div
+          data-message-id={message.id}
+          data-role={message.role}
+          data-testid="version-update"
+          className="theme-radius mx-auto w-fit min-w-0 max-w-[92%] bg-accent px-3 py-1 text-center font-mono text-[11px] leading-5 text-background [overflow-wrap:anywhere]"
+        >
+          {message.text}
+        </div>
+      );
+    }
     return (
       <div className="px-2 py-1 text-center font-mono text-[11px] text-muted-foreground">
         ⚠ {message.text}
