@@ -14,6 +14,18 @@ const notices = (browser: Page) =>
     })),
   );
 
+/** The alpha channel of a computed color, as a 0–1 number. */
+function alphaOf(color: string): number {
+  const slash = color.match(/\/\s*([0-9.]+)\s*\)/);
+  if (slash !== null) return Number(slash[1]);
+  if (color === "transparent") return 0;
+  const rgb = color.match(/^rgba?\(([^)]+)\)$/);
+  // oklch(), lab() and color() print an alpha only after a slash.
+  if (rgb === null) return /^[a-z-]+\([^)]*\)$/.test(color) ? 1 : Number.NaN;
+  const parts = rgb[1].split(/[,\s/]+/).filter(Boolean);
+  return parts.length === 4 ? Number(parts[3]) : 1;
+}
+
 /** The job rows on the activity page, oldest first. */
 const jobRows = (browser: Page) =>
   browser.evaluate(() =>
@@ -80,6 +92,14 @@ test("a finished job shows only on the activity page with its details", async ({
       timeout: 10_000,
     })
     .toBe(true);
+  const failedJobClasses = await browser.evaluate((text) => {
+    const row = [...document.querySelectorAll<HTMLElement>('[data-testid="activity-job"]')].find(
+      (node) => node.textContent?.includes(text),
+    );
+    return row?.className ?? "";
+  }, marker);
+  expect(failedJobClasses).toContain("text-destructive");
+
   await browser.evaluate((text) => {
     [...document.querySelectorAll<HTMLElement>('[data-testid="activity-job"]')]
       .find((node) => node.textContent?.includes(text))
@@ -194,6 +214,25 @@ test("an MCP event notice shows the server, event and payload", async ({
   // The mocked transcript has a job result but no tool activity, so a job-only run-info row
   // here would mean the job leaked into the chat.
   expect(await chatRunInfo(browser)).toBe(0);
+  const chip = await browser.evaluate(() => {
+    const node = document.querySelector<HTMLElement>(
+      '[data-testid="chat-notice"][data-notice-kind="mcp"]',
+    );
+    if (node === null) return null;
+    const style = getComputedStyle(node);
+    return {
+      classes: node.className,
+      blur: style.backdropFilter || style.getPropertyValue("-webkit-backdrop-filter"),
+      background: style.backgroundColor,
+    };
+  });
+  expect(chip).not.toBeNull();
+  expect(chip?.classes ?? "").toContain("backdrop-blur-md");
+  expect(chip?.classes ?? "").toContain("bg-surface/90");
+  expect(chip?.classes ?? "").toContain("shadow-sm");
+  expect(chip?.blur ?? "").toContain("blur");
+  expect(alphaOf(chip?.background ?? "")).toBeGreaterThan(0.7);
+  expect(alphaOf(chip?.background ?? "")).toBeLessThan(1);
   await app.screenshot("notices-mobile");
 
   await browser.evaluate(() => {
