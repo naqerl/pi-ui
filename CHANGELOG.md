@@ -4,6 +4,9 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.10 - 2026-10-30
+
+- The agent can draw a diagram into the chat with `draw_diagram` and revise it in place with `replace_diagram`: diagrams are stored under `DATA_DIR/diagrams`, a message carries only `{id, revision}`, and an invalid source renders as an error card rather than a blank. Rendering is bundled through `pele`, so a drawing needs no network.
 ## 1.6.9 - 2026-10-30
 
 - The composer's run status is the animation plus the word `working`: the elapsed timer and the `no output for …` text are gone, along with the interval that re-rendered the dock every second.
