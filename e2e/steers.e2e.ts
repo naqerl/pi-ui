@@ -1,3 +1,6 @@
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
@@ -45,7 +48,10 @@ test("steers sent during a tool call all arrive right after it, in order", async
 }) => {
   await app.open("/");
   const tag = Date.now();
-  const calls = [{ name: "bash", arguments: { command: "sleep 4; echo slept" } }];
+  // The tool waits until the test has seen both steers pending, however slow the machine.
+  const release = join(tmpdir(), `pi-ui-steers-${tag}`);
+  const wait = `for i in $(seq 600); do [ -e '${release}' ] && break; sleep 0.1; done; echo released`;
+  const calls = [{ name: "bash", arguments: { command: wait } }];
   const composer = screen.getByRole("textbox", "Message");
   await composer.fill(`TOOLCALLS ${JSON.stringify(calls)}`);
   await screen.getByRole("button", "Send").tap();
@@ -64,6 +70,7 @@ test("steers sent during a tool call all arrive right after it, in order", async
   expect(pending[0]?.text).toContain(`alpha ${tag}`);
   expect(pending[1]?.text).toContain(`beta ${tag}`);
   expect(pending[0]?.text).toContain("steer · pending");
+  writeFileSync(release, "");
 
   // Both go in after the tool round; the model answers them in the same run.
   await expect(screen.getByText(`Echo: beta ${tag}`, { exact: false })).toBeVisible({
