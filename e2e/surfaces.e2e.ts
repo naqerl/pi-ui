@@ -812,6 +812,76 @@ test("paints the app manifest with the active theme", async ({ app, browser, scr
   }
 });
 
+test("keeps the manifest on the server URL when the theme changes", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.route("**/api/themes", async (route) => {
+    await route.fulfill({
+      json: {
+        current: "pmbi",
+        selected: "pmbi",
+        themes: [
+          {
+            slug: "pmbi",
+            name: "Pmbi",
+            colors: {
+              mode: "dark",
+              background: "#101315",
+              foreground: "#eeeeee",
+              surface: "#202428",
+              muted: "#0c0e10",
+              mutedForeground: "#888888",
+              border: "#343d41",
+              accent: "#66ccff",
+              destructive: "#c24040",
+              selection: "#202428",
+              radius: 0,
+            },
+          },
+        ],
+      },
+    });
+  });
+  await app.open("/");
+  await expect(screen.getByRole("button", "Settings")).toBeVisible();
+  await expect
+    .poll(() =>
+      browser.evaluate(
+        () => document.querySelector<HTMLLinkElement>('link[rel="manifest"]')?.href ?? "",
+      ),
+    )
+    .toContain("?rev=");
+  const manifest = await browser.evaluate(async () => {
+    const link = document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
+    const href = link?.href ?? "";
+    if (href === "") return null;
+    const data = (await (await fetch(href, { cache: "no-store" })).json()) as {
+      start_url?: string;
+      scope?: string;
+      icons?: Array<{ src?: string }>;
+      share_target?: { action?: string };
+    };
+    return {
+      href,
+      blob: href.startsWith("blob:"),
+      startUrl: data.start_url ?? "",
+      scope: data.scope ?? "",
+      icon: data.icons?.[0]?.src ?? "",
+      action: data.share_target?.action ?? "",
+    };
+  });
+  // A blob manifest makes Chrome ignore every relative install member.
+  expect(manifest).not.toBeNull();
+  expect(manifest?.blob).toBe(false);
+  expect(new URL(manifest?.href ?? "").pathname).toBe("/manifest.webmanifest");
+  expect(manifest?.startUrl).toBe("/");
+  expect(manifest?.scope).toBe("/");
+  expect(manifest?.icon).toBe("/icons/icon-192.png");
+  expect(manifest?.action).toBe("/share");
+});
+
 test("embeds the saved theme in the first document", async ({ app, browser, screen }) => {
   await app.open("/");
   await expect(screen.getByRole("button", "Settings")).toBeVisible();

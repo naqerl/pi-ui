@@ -6,43 +6,11 @@ import type {
   OmarchyTheme,
   OmarchyThemes,
   StreamTheme,
-  ThemeColors,
 } from "../shared/types";
+import { applyTheme } from "./theme";
 
 /** Earlier builds kept the choice here. One load copies it to the server, then drops it. */
 const LEGACY_THEME_KEY = "pi-ui:theme";
-
-function applyTheme(colors: ThemeColors): void {
-  const root = document.documentElement;
-  const pairs: Array<[string, string]> = [
-    ["--background", colors.background],
-    ["--surface", colors.surface],
-    ["--foreground", colors.foreground],
-    ["--muted", colors.muted],
-    ["--muted-foreground", colors.mutedForeground],
-    ["--border", colors.border],
-    ["--accent", colors.accent],
-    ["--destructive", colors.destructive],
-  ];
-  for (const [name, value] of pairs) root.style.setProperty(name, value);
-  root.style.setProperty("--radius", `${colors.radius}px`);
-  root.style.colorScheme = colors.mode;
-  root.style.backgroundColor = colors.background;
-  root.style.color = colors.foreground;
-  // One unscoped theme-color drives the browser chrome and, in an installed app,
-  // the system status and navigation bars, so they repaint with every theme change.
-  const metas = [...document.querySelectorAll('meta[name="theme-color"]')];
-  const meta = metas[0] ?? document.head.appendChild(document.createElement("meta"));
-  for (const extra of metas.slice(1)) extra.remove();
-  meta.setAttribute("name", "theme-color");
-  meta.removeAttribute("media");
-  meta.setAttribute("content", colors.background);
-  const scheme =
-    document.querySelector('meta[name="color-scheme"]') ??
-    document.head.appendChild(document.createElement("meta"));
-  scheme.setAttribute("name", "color-scheme");
-  scheme.setAttribute("content", colors.mode);
-}
 
 function legacySlug(): string | null {
   try {

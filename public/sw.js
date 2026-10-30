@@ -96,7 +96,7 @@ self.addEventListener("fetch", (event) => {
 
   if (url.pathname === "/api/stream") return;
 
-  if (url.pathname.startsWith("/api/")) {
+  if (url.pathname.startsWith("/api/") || url.pathname === "/manifest.webmanifest") {
     event.respondWith(networkFirst(request));
     return;
   }

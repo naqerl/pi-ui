@@ -57,6 +57,7 @@ export function App() {
 
   return (
     <>
+      <div data-testid="safe-area-blocker" aria-hidden="true" className="safe-area-blocker" />
       <Suspense fallback={null}>
         <ShaderBackground />
       </Suspense>

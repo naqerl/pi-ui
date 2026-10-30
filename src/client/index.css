@@ -82,7 +82,22 @@
 
   /* A rightward swipe would otherwise leave the page as the browser's back gesture. */
   html {
+    background-color: var(--background);
     overscroll-behavior-x: none;
+  }
+
+  /* Pin the theme colour below every page. The negative insets bleed the paint
+     past the layout viewport, so an installed app's home-indicator row cannot
+     expose the platform's white backdrop when the visual viewport stops short. */
+  .safe-area-blocker {
+    position: fixed;
+    top: calc(-1 * env(safe-area-inset-top));
+    right: calc(-1 * env(safe-area-inset-right));
+    bottom: calc(-1 * env(safe-area-inset-bottom));
+    left: calc(-1 * env(safe-area-inset-left));
+    z-index: 0;
+    background-color: var(--background);
+    pointer-events: none;
   }
 
   #root {
