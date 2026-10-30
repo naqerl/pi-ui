@@ -55,7 +55,85 @@ function Detail({ label, children, error }: { label: string; children: string; e
   );
 }
 
+function jobStatus(activity: Extract<ActivityItem, { kind: "job" }>): string {
+  switch (activity.notice.status) {
+    case "exited":
+      return "finished";
+    case "lost":
+      return "lost (server restarted)";
+    default:
+      return activity.notice.status;
+  }
+}
+
+function JobField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="contents">
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="min-w-0 [overflow-wrap:anywhere]">{value}</dd>
+    </div>
+  );
+}
+
+function JobActivityRow({ activity }: { activity: Extract<ActivityItem, { kind: "job" }> }) {
+  const { notice } = activity;
+  const failed = notice.status === "failed" || notice.status === "lost";
+  const time = new Date(activity.timestamp);
+  const clock = Number.isNaN(time.getTime())
+    ? ""
+    : `${String(time.getHours()).padStart(2, "0")}:${String(time.getMinutes()).padStart(2, "0")}`;
+  return (
+    <Collapsible>
+      <CollapsibleTrigger
+        data-testid="activity-job"
+        data-notice-kind="job"
+        className={cn(
+          "group flex w-full items-center gap-2 border-b border-border py-3 text-left font-mono text-xs hover:text-foreground",
+          failed ? "text-destructive" : "text-muted-foreground",
+        )}
+      >
+        <span className="inline-block w-3 shrink-0 transition-transform group-data-[state=open]:rotate-90">
+          ▸
+        </span>
+        <span aria-hidden="true" className="shrink-0">
+          ⚙
+        </span>
+        <span
+          data-testid="activity-job-summary"
+          className="min-w-0 flex-1 [overflow-wrap:anywhere]"
+        >
+          {notice.summary}
+        </span>
+        {clock !== "" && (
+          <time dateTime={activity.timestamp} className="shrink-0 tabular-nums opacity-60">
+            {clock}
+          </time>
+        )}
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="theme-radius space-y-3 border-b border-border bg-muted/40 px-3 py-3 pl-8 text-xs">
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-xs">
+            <JobField label="Job" value={notice.id} />
+            <JobField label="Name" value={notice.name} />
+            <JobField label="Command" value={notice.command} />
+            <JobField label="Status" value={jobStatus(activity)} />
+            {notice.exitCode !== null && (
+              <JobField label="Exit code" value={String(notice.exitCode)} />
+            )}
+            {notice.signal !== null && <JobField label="Signal" value={notice.signal} />}
+            {notice.duration !== null && <JobField label="Duration" value={notice.duration} />}
+          </dl>
+          <Detail label="last output">
+            {notice.output === "" ? "(no output)" : notice.output}
+          </Detail>
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 function ActivityRow({ activity }: { activity: ActivityItem }) {
+  if (activity.kind === "job") return <JobActivityRow activity={activity} />;
   const failed = activity.kind === "tool" && activity.isError;
   return (
     <Collapsible>
@@ -118,8 +196,8 @@ export function ActivityView({ timeline, ready }: ActivityViewProps) {
           <h1 className="text-sm font-medium">Activity</h1>
           <p className="mt-2 text-xs text-muted-foreground">
             {run === null
-              ? "Every tool call and thinking block in this conversation, in order."
-              : "Tool calls and thinking from this run."}
+              ? "Every tool call, thinking block and job result in this conversation, in order."
+              : "Tool calls, thinking blocks and job results from this run."}
           </p>
         </div>
         <div

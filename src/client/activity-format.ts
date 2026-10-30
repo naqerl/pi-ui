@@ -47,6 +47,7 @@ export function firstMeaningfulArgument(argumentsText: string): string {
 
 export function activityLabel(activity: ActivityItem): string {
   if (activity.kind === "thinking") return "thinking";
+  if (activity.kind === "job") return activity.notice.summary;
   const argument = firstMeaningfulArgument(activity.arguments);
   return argument.length > 0 ? `${activity.name} · ${argument}` : activity.name;
 }
@@ -60,6 +61,11 @@ export function formatDuration(durationMs: number | undefined): string {
 
 export function activityStatus(activity: ActivityItem): string {
   if (activity.kind === "thinking") return "ok";
+  if (activity.kind === "job") {
+    return activity.notice.status === "failed" || activity.notice.status === "lost"
+      ? "failed"
+      : "ok";
+  }
   if (activity.pending) return "running";
   return activity.isError ? "failed" : "ok";
 }
@@ -68,6 +74,7 @@ export function activitySummary(activity: ActivityItem): string {
   if (activity.kind === "thinking") {
     return `${activity.name} · ${activity.text.length} chars`;
   }
+  if (activity.kind === "job") return activity.notice.summary;
   if (activity.pending) return `${activity.name} · running`;
   return `${activity.name} · ${formatDuration(activity.durationMs)} · ${activityStatus(activity)}`;
 }
@@ -101,7 +108,7 @@ function sumSpend(items: ActivityItem[], extra: TokenSpend | undefined): TokenSp
   let output = 0;
   let seen = false;
   for (const item of items) {
-    if (item.usage === undefined) continue;
+    if (item.kind === "job" || item.usage === undefined) continue;
     input += item.usage.input;
     output += item.usage.output;
     seen = true;
