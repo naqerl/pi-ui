@@ -5,7 +5,10 @@ describes everything, a large `MEMORY.md` hides most of itself and recall depend
 path. pi-ui therefore keeps memory in three layers — **index → bodies → retrieval** — plus a
 consolidation pass.
 
-The tree lives in the pi-ui data directory:
+The tree lives in the pi-ui data directory (`DATA_DIR`, `/workspace/data` in the container), which
+is inside the workspace mount — so memory survives a container restart or replacement the same way
+the durable conversation does, and no mount of its own is needed. `PI_MEMORY_DIR` and `--memory=`
+only redirect the command-line tools below; the server always uses `<DATA_DIR>/memory`.
 
 ```text
 data/memory/
