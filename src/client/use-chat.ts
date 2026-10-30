@@ -272,6 +272,11 @@ export function useChat(options: UseChatOptions = {}) {
       if (data) applyEvents(data);
     });
 
+    source.addEventListener("mcp.status", (event) => {
+      const data = parseEvent<McpStatus>(event as MessageEvent<string>);
+      if (data) setMcp(data);
+    });
+
     source.addEventListener("dashboard", (event) => {
       const data = parseEvent<DashboardState>(event as MessageEvent<string>);
       if (data) setDashboard(data);

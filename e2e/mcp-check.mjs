@@ -8,6 +8,7 @@ import { startMcpRuntime } from "../src/server/mcp-runtime.ts";
 
 const stub = join(import.meta.dirname, "stub-mcp.mjs");
 const staleStub = join(import.meta.dirname, "stale-mcp.mjs");
+const recoveringStub = join(import.meta.dirname, "recovering-mcp.mjs");
 const secret = "super-secret-token-9f3c";
 
 function writeConfig(servers) {
@@ -182,4 +183,50 @@ try {
   assert.match(dead?.error ?? "", /Method not found/);
 } finally {
   await staleRuntime.close();
+}
+
+// A failed boot probe must not keep a server unavailable after its events
+// protocol connects; that connection is a live probe of the same definition.
+const recoveryDir = mkdtempSync(join(tmpdir(), "pi-ui-mcp-recovery-"));
+const recoveryMarker = join(recoveryDir, "spawned");
+writeFileSync(
+  join(recoveryDir, "mcp.json"),
+  JSON.stringify(
+    {
+      mcpServers: {
+        recovering: {
+          command: process.execPath,
+          args: [recoveringStub],
+          env: { RECOVERING_MCP_MARKER: recoveryMarker },
+        },
+      },
+    },
+    null,
+    2,
+  ),
+);
+process.env.PI_CODING_AGENT_DIR = recoveryDir;
+const recoveryRuntime = await startMcpRuntime();
+try {
+  assert.ok(
+    recoveryRuntime.failedServers.some((server) => server.name === "recovering"),
+    "the failed boot probe was not reported",
+  );
+  assert.deepEqual(recoveryRuntime.status.unavailable, ["recovering"]);
+
+  const recoveryEvents = recoveryRuntime.tools.find((tool) => tool.name === "mcp_events");
+  assert.ok(recoveryEvents, "mcp_events was not installed for the recovering server");
+  const catalog = await execute(recoveryEvents, { action: "catalog", server: "recovering" });
+  assert.equal(catalog.isError, undefined, JSON.stringify(catalog));
+  assert.match(JSON.stringify(catalog.output), /stub-event/);
+  assert.ok(
+    !recoveryRuntime.failedServers.some((server) => server.name === "recovering"),
+    "a successful protocol connection did not clear the boot failure",
+  );
+  const recovered = recoveryRuntime.status.servers.find((server) => server.name === "recovering");
+  assert.equal(recovered?.available, true);
+  assert.equal(recovered?.authRejected, false);
+  assert.deepEqual(recoveryRuntime.status.unavailable, []);
+} finally {
+  await recoveryRuntime.close();
 }
