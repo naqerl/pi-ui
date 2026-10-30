@@ -1,9 +1,10 @@
 # Documentation that runs: the host paths below are the complete runtime state.
 # The image itself contains no credentials and no extensions. It is stateless
 # apart from these three mutable, host-backed paths: data/ (the durable
-# conversation), PI_CODING_AGENT_DIR (pi credentials and model catalog), and
-# billion-context (compression fold state). The zeroshot config mount is
-# read-only and supplies the hub token the MCP Authorization header reads.
+# conversation and the memory tree), PI_CODING_AGENT_DIR (pi credentials and
+# model catalog), and billion-context (compression fold state). One further
+# read-only file mount supplies the hub bearer token; the container never sees
+# the rest of the zeroshot configuration.
 services:
   pi-ui:
     image: ghcr.io/naqerl/pi-ui:${PI_UI_TAG:-latest}
@@ -34,9 +35,9 @@ services:
       # uid 1000 and persist across container replacement, or fold history is lost.
       # Create it first on the host: mkdir -p ~/.local/share/billion-context
       - "${BILI_DATA_DIR:-$HOME/.local/share/billion-context}:/home/pi/.local/share/billion-context"
-      # Read-only: mcp.json fetches the hub token with an `!`-prefixed header
-      # command, `!echo Bearer $(cat /home/user/.config/zeroshot/hub/api-token)`.
-      # That command runs inside the container, so the token file must exist at
-      # the same absolute path here.
-      - "${ZEROSHOT_CONFIG_DIR:-$HOME/.config/zeroshot}:/home/user/.config/zeroshot:ro"
+      # Read-only, one file: the hub bearer token. mcp.json reads it with
+      #   "bearerToken": "!cat /run/secrets/zeroshot-hub-token"
+      # so nothing else from the hub's configuration (its Hetzner token, its
+      # gateway key, its GitHub token) is reachable from inside this container.
+      - "${ZEROSHOT_HUB_TOKEN_FILE:-$HOME/.config/zeroshot/hub/api-token}:/run/secrets/zeroshot-hub-token:ro"
     restart: unless-stopped

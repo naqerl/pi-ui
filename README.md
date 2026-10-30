@@ -2,7 +2,7 @@
 
 A minimal, single-conversation web UI for the [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) coding agent, with one durable conversation and no session management. It installs as a PWA and accepts text, titles, and URLs from the native share sheet on platforms that support Web Share Target.
 
-It ships as `ghcr.io/naqerl/pi-ui`. The container has no credentials baked in: your real pi agent directory is bind-mounted at runtime, so the UI uses your `auth.json` and the model catalog configured there. The conversation is stored in SQLite by `@earendil-works/pi-durable`; the workspace host directory holds pi's working tree together with that database and a small durable run marker, so a whole session survives container replacement and a process restart mid-run. Context compression runs in-process through `billion-context`; its fold state lives in a third host directory, `~/.local/share/billion-context`, which must also be writable and persistent. Those three host paths are the only mutable state; the image is otherwise stateless. A fourth, read-only mount of `${ZEROSHOT_CONFIG_DIR:-$HOME/.config/zeroshot}` supplies the hub token that the MCP `Authorization` header reads.
+It ships as `ghcr.io/naqerl/pi-ui`. The container has no credentials baked in: your real pi agent directory is bind-mounted at runtime, so the UI uses your `auth.json` and the model catalog configured there. The conversation is stored in SQLite by `@earendil-works/pi-durable`; the workspace host directory holds pi's working tree together with that database and a small durable run marker, so a whole session survives container replacement and a process restart mid-run. Context compression runs in-process through `billion-context`; its fold state lives in a third host directory, `~/.local/share/billion-context`, which must also be writable and persistent. Those three host paths are the only mutable state; the image is otherwise stateless. A fourth, read-only mount supplies one file — the zeroshot hub bearer token at `/run/secrets/zeroshot-hub-token` — which the `mcp.json` `bearerToken` command reads. Nothing else from the hub's configuration directory enters the container.
 
 ## Quick start (local)
 
@@ -24,11 +24,11 @@ docker run -d --name pi-ui --restart unless-stopped \
   -v "${PI_WORK_DIR:-$HOME/pi-work}:/workspace" \
   -v "${PI_AGENT_DIR:-$HOME/.pi/agent}:/home/pi/.pi/agent" \
   -v "${BILI_DATA_DIR:-$HOME/.local/share/billion-context}:/home/pi/.local/share/billion-context" \
-  -v "${ZEROSHOT_CONFIG_DIR:-$HOME/.config/zeroshot}:/home/user/.config/zeroshot:ro" \
+  -v "${ZEROSHOT_HUB_TOKEN_FILE:-$HOME/.config/zeroshot/hub/api-token}:/run/secrets/zeroshot-hub-token:ro" \
   ghcr.io/naqerl/pi-ui:v1.4.1
 ```
 
-Open <http://localhost:8787>. The host working directory defaults to `~/pi-work`; create it first if `$HOME/pi-work` does not exist. The agent directory defaults to `~/.pi/agent`, which is the directory pi already uses on the host. Create the compression-state directory before the first run too: `mkdir -p ~/.local/share/billion-context`. Host networking and the read-only config mount are required for the hub MCP server; see [Why host networking](#why-host-networking).
+Open <http://localhost:8787>. The host working directory defaults to `~/pi-work`; create it first if `$HOME/pi-work` does not exist. The agent directory defaults to `~/.pi/agent`, which is the directory pi already uses on the host. Create the compression-state directory before the first run too: `mkdir -p ~/.local/share/billion-context`. Host networking and the read-only token mount are required for the hub MCP server; see [Why host networking](#why-host-networking).
 
 The compose file is the same setup with the paths and comments in one place. It uses `network_mode: host` and has no `ports:` mapping:
 
@@ -46,20 +46,31 @@ PI_WORK_DIR=$HOME/pi-session PI_AGENT_DIR=$HOME/.pi/agent PORT=9000 docker compo
 
 ### What comes from the mounts
 
-| Host mount                                             | Container path                          | What lives there                                                                                                                                                                                                                                                                                                                                                      |
-| ------------------------------------------------------ | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `${PI_WORK_DIR:-./work}`                               | `/workspace`                            | pi's working tree, everything a session creates, and the durable conversation in `data/` (`pi.sqlite3` plus `current.json`). This is the single directory that backs a whole session.                                                                                                                                                                                 |
-| `${PI_AGENT_DIR:-$HOME/.pi/agent}`                     | `/home/pi/.pi/agent`                    | Your real pi state (`PI_CODING_AGENT_DIR`): `auth.json`, `web-search.json`, `models-store.json`, `settings.json`, optional `mcp.json`, model overrides, installed pi packages, and pi's own history/state. Mounted read-write because pi writes here. This mount supplies the provider credentials for both pi and billion-context, and is trusted MCP configuration. |
-| `${BILI_DATA_DIR:-$HOME/.local/share/billion-context}` | `/home/pi/.local/share/billion-context` | billion-context's in-process fold state: session files, `index.db`, and logs. Must be writable by uid 1000 and persistent.                                                                                                                                                                                                                                            |
-| `${ZEROSHOT_CONFIG_DIR:-$HOME/.config/zeroshot}`       | `/home/user/.config/zeroshot`           | Read-only zeroshot configuration. The hub token at `hub/api-token` is read by the `!`-prefixed `Authorization` command in `mcp.json`; without this mount the header cannot be produced and the hub server disappears.                                                                                                                                                 |
+| Host mount                                                         | Container path                          | What lives there                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------ | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `${PI_WORK_DIR:-./work}`                                           | `/workspace`                            | pi's working tree, everything a session creates, and the durable conversation in `data/` (`pi.sqlite3` plus `current.json`). This is the single directory that backs a whole session.                                                                                                                                                                                 |
+| `${PI_AGENT_DIR:-$HOME/.pi/agent}`                                 | `/home/pi/.pi/agent`                    | Your real pi state (`PI_CODING_AGENT_DIR`): `auth.json`, `web-search.json`, `models-store.json`, `settings.json`, optional `mcp.json`, model overrides, installed pi packages, and pi's own history/state. Mounted read-write because pi writes here. This mount supplies the provider credentials for both pi and billion-context, and is trusted MCP configuration. |
+| `${BILI_DATA_DIR:-$HOME/.local/share/billion-context}`             | `/home/pi/.local/share/billion-context` | billion-context's in-process fold state: session files, `index.db`, and logs. Must be writable by uid 1000 and persistent.                                                                                                                                                                                                                                            |
+| `${ZEROSHOT_HUB_TOKEN_FILE:-$HOME/.config/zeroshot/hub/api-token}` | `/run/secrets/zeroshot-hub-token`       | One read-only file: the hub bearer token. `mcp.json` reads it with `"bearerToken": "!cat /run/secrets/zeroshot-hub-token"`, which the loader prefixes with `Bearer ` itself. The rest of `~/.config/zeroshot` (the Hetzner token, the gateway key in `hub-daemon.env`, the GitHub token) stays on the host.                                                           |
 
-`data/` is not a separate mount: it lives inside the workspace mount, so replacing the container keeps both the files pi worked on and the conversation that produced them. The compose file sets `DATA_DIR=/workspace/data` explicitly for the same reason.
+`data/` is not a separate mount: it lives inside the workspace mount, so replacing the container keeps both the files pi worked on and the conversation that produced them. The memory tree lives there too (`data/memory/` — `MEMORY.md`, `topics/`, `daily/`, `SCRATCHPAD.md`), which is why memory survives a container restart without a mount of its own. The compose file sets `DATA_DIR=/workspace/data` explicitly for the same reason.
 
-These three are the only mutable paths, and the image is otherwise stateless. The zeroshot config mount is read-only. The image contains no `auth.json`, no `web-search.json`, no `models-store.json`, and no API keys; that state reaches the process only through the agent-directory mount. The workspace and billion-context mounts hold session data, not credentials.
+These three are the only mutable paths, and the image is otherwise stateless. The token mount is read-only and holds a single secret. The image contains no `auth.json`, no `web-search.json`, no `models-store.json`, and no API keys; that state reaches the process only through the agent-directory mount. The workspace and billion-context mounts hold session data, not credentials.
 
 ### Why host networking
 
-The hub MCP server listens on the host's loopback interface only, and `mcp.json` addresses it as `http://127.0.0.1:7383/mcp`. Under Docker's default bridge network, `127.0.0.1` inside the container is the container itself, so the hub is unreachable even when it is healthy on the host. The same `mcp.json` produces its bearer header with an `!`-prefixed command, `!echo Bearer $(cat /home/user/.config/zeroshot/hub/api-token)`; that command runs inside the container at boot, so `${ZEROSHOT_CONFIG_DIR:-$HOME/.config/zeroshot}` must be mounted at the same absolute path.
+The hub MCP server listens on the host's loopback interface only, and `mcp.json` addresses it as `http://127.0.0.1:7383/mcp`. Under Docker's default bridge network, `127.0.0.1` inside the container is the container itself, so the hub is unreachable even when it is healthy on the host.
+
+The bearer header is produced by a command that runs inside the container at boot, so the token file has to exist there. Point it at the single-file secret mount rather than at the hub's configuration directory:
+
+```json
+"zeroshot": {
+  "url": "http://127.0.0.1:7383/mcp",
+  "bearerToken": "!cat /run/secrets/zeroshot-hub-token"
+}
+```
+
+The loader adds the `Bearer ` prefix itself, so no `echo` wrapper is needed; `bearerTokenEnv: "ZEROSHOT_HUB_TOKEN"` works as well if you prefer an environment variable (that form puts the token in `docker inspect` and `/proc/1/environ`, which the file form avoids).
 
 Neither failure is fatal, which is why it degrades silently. The tell is two boot lines: per-server unavailability, then a smaller tool count.
 
