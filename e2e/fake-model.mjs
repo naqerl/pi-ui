@@ -135,8 +135,54 @@ function readBody(req) {
   });
 }
 
+/** Bearer token the fake Hetzner API accepts; e2e/server.mjs exports it as HCLOUD_TOKEN. */
+export const FAKE_HCLOUD_TOKEN = "e2e-hcloud-token-not-secret";
+let hetznerHits = 0;
+
+/** A tiny stand-in for `GET https://api.hetzner.cloud/v1/servers`. */
+function hetznerServers(req, res) {
+  if (req.headers.authorization !== `Bearer ${FAKE_HCLOUD_TOKEN}`) {
+    res.writeHead(401, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: { code: "unauthorized", message: "unable to authenticate" } }));
+    return;
+  }
+  hetznerHits += 1;
+  const server = (id, name, status, type, gross) => ({
+    id,
+    name,
+    status,
+    public_net: { ipv4: { ip: `203.0.113.${id % 250}` } },
+    server_type: {
+      name: type,
+      prices: [{ location: "fsn1", price_monthly: { net: gross, gross } }],
+    },
+    datacenter: { location: { name: "fsn1" } },
+  });
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(
+    JSON.stringify({
+      servers: [
+        server(101, "web-1", "running", "cx22", "4.5900"),
+        server(102, "db-1", "running", "cx32", "7.4900"),
+        server(103, "worker-1", "off", "cx22", "4.5900"),
+      ],
+      meta: { pagination: { page: 1, per_page: 25, total_entries: 3 }, hits: hetznerHits },
+    }),
+  );
+}
+
 export function startFakeModelServer() {
+  let origin = "";
   const server = createServer(async (req, res) => {
+    if (req.method === "GET" && req.url?.startsWith("/hetzner/v1/servers")) {
+      hetznerServers(req, res);
+      return;
+    }
+    if (req.method === "GET" && req.url === "/hetzner/hits") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ hits: hetznerHits }));
+      return;
+    }
     if (req.method !== "POST" || !req.url?.endsWith("/chat/completions")) {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: { message: "not found" } }));
@@ -163,6 +209,37 @@ export function startFakeModelServer() {
     const last = messages.at(-1);
     // "JOBSTART <command>" calls job_start once; the tool result is then read back.
     const jobCommand = prompt.match(/^JOBSTART (.+)$/m)?.[1];
+    // "TOOLCALLS [{"name":…,"arguments":{…}}, …]" makes those calls in one turn.
+    // {{FAKE_HTTP}} in the JSON becomes this server's origin.
+    const toolCalls = prompt.match(/^TOOLCALLS (.+)$/ms)?.[1];
+    if (last?.role === "user" && toolCalls) {
+      const calls = JSON.parse(toolCalls.replaceAll("{{FAKE_HTTP}}", origin));
+      writeEvent(res, {
+        id: "chatcmpl-e2e",
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: "e2e-model",
+        choices: [
+          {
+            index: 0,
+            delta: {
+              role: "assistant",
+              tool_calls: calls.map((call, index) => ({
+                index,
+                id: `call_${Date.now()}_${index}`,
+                type: "function",
+                function: { name: call.name, arguments: JSON.stringify(call.arguments ?? {}) },
+              })),
+            },
+            finish_reason: null,
+          },
+        ],
+      });
+      writeEvent(res, chunkFor("", "tool_calls"));
+      res.write("data: [DONE]\n\n");
+      res.end();
+      return;
+    }
     if (last?.role === "user" && jobCommand) {
       writeEvent(res, {
         id: "chatcmpl-e2e",
@@ -248,6 +325,7 @@ export function startFakeModelServer() {
         reject(new Error("fake model server has no TCP address"));
         return;
       }
+      origin = `http://127.0.0.1:${address.port}`;
       resolve({ server, port: address.port });
     });
   });

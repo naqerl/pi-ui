@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startFakeModelServer } from "./fake-model.mjs";
+import { FAKE_HCLOUD_TOKEN, startFakeModelServer } from "./fake-model.mjs";
 
 const dataDir = process.env.PI_E2E_DATA_DIR ?? mkdtempSync(join(tmpdir(), "pi-ui-e2e-data-"));
 const agentDir = mkdtempSync(join(tmpdir(), "pi-ui-e2e-agent-"));
@@ -73,6 +73,9 @@ if (!live) {
   process.env.PI_CODING_AGENT_DIR = agentDir;
   process.env.PI_MODEL = "e2e/e2e-model";
   process.env.PI_OFFLINE = "1";
+  // Dashboard polls hit the fake Hetzner API on the fake model server, fast.
+  process.env.HCLOUD_TOKEN = FAKE_HCLOUD_TOKEN;
+  process.env.PI_DASHBOARD_MIN_INTERVAL_MS = "500";
 }
 
 process.env.DATA_DIR = dataDir;
