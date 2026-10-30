@@ -110,10 +110,12 @@ test("shows exactly one configured but unreachable MCP server", async ({
     expect(stub?.available).toBe(true);
     expect(stub?.tools).toContain("stub__echo");
 
-    // The header no longer carries MCP text; the MCP widget on Stats does.
+    // The composer chrome does not carry MCP text; the MCP widget on Stats does.
     await expect(screen.getByRole("textbox", "Message")).toBeVisible();
     expect(
-      await browser.evaluate(() => document.querySelector("header")?.textContent ?? ""),
+      await browser.evaluate(
+        () => document.querySelector('[data-testid="composer-dock"]')?.textContent ?? "",
+      ),
     ).not.toMatch(/unreachable|unavailable/);
     await screen.getByRole("tab", "Stats").tap();
     await expect(screen.getByTestId("stat-mcp-unreachable")).toBeVisible();

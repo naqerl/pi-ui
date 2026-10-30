@@ -202,7 +202,7 @@ test("marks stats the server cannot report as unavailable", async ({ app, browse
   });
 });
 
-test("hides the composer on the stats page and slides it back on chat and tasks", async ({
+test("collapses the composer on the stats page and restores it on chat and tasks", async ({
   app,
   browser,
   screen,
@@ -210,22 +210,28 @@ test("hides the composer on the stats page and slides it back on chat and tasks"
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/");
   const dock = screen.getByTestId("composer-dock");
+  const body = screen.getByTestId("composer-body");
+  const dots = screen.getByTestId("page-dots");
   await expect(dock).toBeVisible();
-  expect(await dock.getAttribute("data-hidden")).toBe("false");
+  await expect(body).toBeVisible();
+  expect(await body.getAttribute("data-hidden")).toBe("false");
   expect(
     await browser.evaluate(() => {
-      const element = document.querySelector('[data-testid="composer-dock"]');
+      const element = document.querySelector('[data-testid="composer-body"]');
       return element === null ? "" : getComputedStyle(element).transitionProperty;
     }),
-  ).toContain("transform");
+  ).toContain("grid-template-rows");
 
   await screen.getByRole("tab", "Stats").tap();
-  await expect(dock).toBeHidden();
-  expect(await dock.getAttribute("data-hidden")).toBe("true");
-  expect(await dock.getAttribute("aria-hidden")).toBe("true");
+  await expect(screen.getByTestId("stats-page")).toBeVisible();
+  await expect(dock).toBeVisible();
+  await expect(body).toBeHidden();
+  await expect(dots).toBeVisible();
+  expect(await body.getAttribute("data-hidden")).toBe("true");
+  expect(await body.getAttribute("aria-hidden")).toBe("true");
   expect(
     await browser.evaluate(() => {
-      const element = document.querySelector('[data-testid="composer-dock"]');
+      const element = document.querySelector('[data-testid="composer-body"]');
       if (element === null || !element.hasAttribute("inert")) return null;
       return getComputedStyle(element).visibility;
     }),
@@ -233,33 +239,39 @@ test("hides the composer on the stats page and slides it back on chat and tasks"
 
   await screen.getByRole("tab", "Chat").tap();
   await expect(dock).toBeVisible();
-  expect(await dock.getAttribute("data-hidden")).toBe("false");
+  await expect(body).toBeVisible();
+  expect(await body.getAttribute("data-hidden")).toBe("false");
 
   await screen.getByRole("tab", "Tasks").tap();
   await expect(dock).toBeVisible();
+  await expect(body).toBeVisible();
   await expect(screen.getByRole("textbox", "New task")).toBeVisible();
 });
 
-test("keeps the composer dock still under reduced motion", async ({ app, browser, screen }) => {
+test("keeps the composer body still under reduced motion", async ({ app, browser, screen }) => {
   await browser.emulateMedia({ reducedMotion: "reduce" });
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/");
   const dock = screen.getByTestId("composer-dock");
-  const transition = () =>
-    browser.evaluate(() => {
-      const element = document.querySelector('[data-testid="composer-dock"]');
+  const body = screen.getByTestId("composer-body");
+  const transition = (testId: string) =>
+    browser.evaluate((id) => {
+      const element = document.querySelector(`[data-testid="${id}"]`);
       return element === null ? null : getComputedStyle(element).transitionProperty;
-    });
+    }, testId);
   await expect(dock).toBeVisible();
-  expect(await transition()).toBe("none");
+  await expect(body).toBeVisible();
+  expect(await transition("composer-dock")).toBe("none");
+  expect(await transition("composer-body")).toBe("none");
 
   await screen.getByRole("tab", "Stats").tap();
-  await expect(dock).toBeHidden();
-  expect(await transition()).toBe("none");
+  await expect(dock).toBeVisible();
+  await expect(body).toBeHidden();
+  expect(await transition("composer-body")).toBe("none");
 
   await screen.getByRole("tab", "Chat").tap();
-  await expect(dock).toBeVisible();
-  expect(await transition()).toBe("none");
+  await expect(body).toBeVisible();
+  expect(await transition("composer-body")).toBe("none");
 });
 
 test("swipes right from chat to stats", async ({ app, browser }) => {
@@ -299,7 +311,7 @@ test("swipes right from chat to stats", async ({ app, browser }) => {
   expect(page).toBe("stats");
 });
 
-test("lists MCP events newest first in the default widget, not the header", async ({
+test("lists MCP events newest first in the default widget, not the composer chrome", async ({
   app,
   browser,
   screen,
@@ -337,7 +349,9 @@ test("lists MCP events newest first in the default widget, not the header", asyn
   await app.open("/");
   await expect(screen.getByRole("textbox", "Message")).toBeVisible();
   expect(
-    await browser.evaluate(() => document.querySelector("header")?.textContent ?? ""),
+    await browser.evaluate(
+      () => document.querySelector('[data-testid="composer-dock"]')?.textContent ?? "",
+    ),
   ).not.toMatch(/web|linear|unavailable|new event/);
 
   await screen.getByRole("tab", "Stats").tap();

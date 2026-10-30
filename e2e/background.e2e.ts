@@ -7,7 +7,7 @@ test("rebuilds the dither after the browser drops its WebGL context", async ({
   screen,
 }) => {
   await app.open("/");
-  await expect(screen.getByRole("button", "pi")).toBeVisible();
+  await expect(screen.getByRole("button", "Settings")).toBeVisible();
   await expect
     .poll(() =>
       browser.evaluate(() => document.querySelector('[data-testid="shader-bg"] canvas') !== null),

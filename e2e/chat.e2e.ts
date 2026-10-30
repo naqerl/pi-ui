@@ -292,27 +292,32 @@ test("shows one Stop while the field is empty, then one Steer while it has text"
   await expect(screen.getByTestId("working-status")).toHaveAttribute("data-open", "true");
   const status = await browser.evaluate(() => {
     const header = document.querySelector("header");
-    const footer = document.querySelector("textarea")?.closest("form")?.parentElement ?? null;
+    const dock = document.querySelector("[data-testid=composer-dock]");
     const working = document.querySelector("[data-testid=working-status]");
-    if (header === null || footer === null || working === null) return null;
-    const slide = working.querySelector(".working-strip-slide");
+    const dots = document.querySelector("[data-testid=page-dots]");
+    const gear = document.querySelector("[data-pi-menu]");
+    if (
+      !(dock instanceof HTMLElement) ||
+      !(working instanceof HTMLElement) ||
+      !(dots instanceof HTMLElement) ||
+      !(gear instanceof HTMLElement)
+    ) {
+      return null;
+    }
     return {
-      inHeader: header.contains(working),
-      inFooter: footer.contains(working),
-      firstInFooter: footer.firstElementChild === working,
-      headerWidth: header.getBoundingClientRect().width,
-      footerWidth: footer.getBoundingClientRect().width,
-      transition: getComputedStyle(working).transitionProperty,
-      slide: slide === null ? "" : getComputedStyle(slide).transform,
+      noHeader: header === null,
+      inDock: dock.contains(working) && dock.contains(dots) && dock.contains(gear),
+      statusLeftOfDots: working.getBoundingClientRect().right <= dots.getBoundingClientRect().left,
+      gearRightOfDots: gear.getBoundingClientRect().left >= dots.getBoundingClientRect().right,
+      gearLabel: gear.getAttribute("aria-label"),
     };
   });
   expect(status).not.toBeNull();
-  expect(status?.inHeader).toBe(false);
-  expect(status?.inFooter).toBe(true);
-  expect(status?.firstInFooter).toBe(true);
-  expect(status?.headerWidth ?? 0).toBeCloseTo(status?.footerWidth ?? -1, 0);
-  expect(status?.transition ?? "").toContain("grid-template-rows");
-  expect(status?.slide ?? "").not.toBe("none");
+  expect(status?.noHeader).toBe(true);
+  expect(status?.inDock).toBe(true);
+  expect(status?.statusLeftOfDots).toBe(true);
+  expect(status?.gearRightOfDots).toBe(true);
+  expect(status?.gearLabel).toBe("Settings");
 
   await composer.fill("typed while running");
   await expect(screen.getByRole("button", "Stop")).toHaveCount(0);
@@ -327,6 +332,7 @@ test("shows one Stop while the field is empty, then one Steer while it has text"
   await expect(screen.getByRole("button", "Stop")).toHaveCount(0);
   await expect(screen.getByRole("button", "Send")).toHaveCount(1);
   await expect(screen.getByTestId("working-status")).toHaveAttribute("data-open", "false");
+  await expect(screen.getByTestId("working-status")).toHaveText("idle");
 });
 
 test("steers a running turn from the button and from Enter", async ({ app, screen }) => {
@@ -414,28 +420,19 @@ test("keeps the composer height and bottom edge when the viewport height changes
     const element = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
     if (element === null) return null;
     const box = element.getBoundingClientRect();
-    const header = document.querySelector("header")?.getBoundingClientRect();
-    const footer = element.closest("form")?.parentElement?.getBoundingClientRect();
+    const footer = document.querySelector('[data-testid="composer-dock"]')?.getBoundingClientRect();
     return {
       height: box.height,
       bottom: box.bottom,
       viewportHeight: window.innerHeight,
       viewportWidth: window.innerWidth,
-      headerLeft: header?.left ?? null,
-      headerRight: header?.right ?? null,
       footerLeft: footer?.left ?? null,
       footerRight: footer?.right ?? null,
       endTop: (() => {
         const main = document.querySelector("main");
         const content = main?.firstElementChild;
-        const headerBox = document.querySelector("header")?.getBoundingClientRect();
-        if (main == null || content == null || headerBox == null || footer == null) {
-          return null;
-        }
-        const mainBox = main.getBoundingClientRect();
-        return (
-          Number.parseFloat(getComputedStyle(content).paddingTop) - (headerBox.bottom - mainBox.top)
-        );
+        if (main == null || content == null) return null;
+        return Number.parseFloat(getComputedStyle(content).paddingTop);
       })(),
       endBottom: (() => {
         const main = document.querySelector("main");
@@ -452,10 +449,6 @@ test("keeps the composer height and bottom edge when the viewport height changes
   expect(geometry).not.toBeNull();
   expect(geometry?.height ?? 0).toBeCloseTo(before?.height ?? 0, 0);
   expect(geometry?.bottom ?? 0).toBeLessThanOrEqual((geometry?.viewportHeight ?? 0) + 1);
-  expect(Math.abs(geometry?.headerLeft ?? 1)).toBeLessThanOrEqual(1);
-  expect(
-    Math.abs((geometry?.headerRight ?? 0) - (geometry?.viewportWidth ?? 0)),
-  ).toBeLessThanOrEqual(1);
   expect(Math.abs(geometry?.footerLeft ?? 1)).toBeLessThanOrEqual(1);
   expect(
     Math.abs((geometry?.footerRight ?? 0) - (geometry?.viewportWidth ?? 0)),
@@ -498,14 +491,14 @@ const activitySnapshot = {
   context: { tokens: 0, window: null, percent: null },
 };
 
-test("removes the header Activity link and leaves the events page alone", async ({
+test("removes the Activity link from the settings chrome and leaves the events page alone", async ({
   app,
   browser,
   screen,
 }) => {
   await app.open("/");
   await expect(screen.getByRole("link", "Activity")).toHaveCount(0);
-  await screen.getByRole("button", "pi").tap();
+  await screen.getByRole("button", "Settings").tap();
   await expect(screen.getByRole("menuitem", { name: /^Theme/ })).toBeVisible();
   const menuEdge = await browser.evaluate(() => {
     const menu = document.querySelector('[role="menu"]');
@@ -523,7 +516,7 @@ test("removes the header Activity link and leaves the events page alone", async 
   await app.open("/events");
   await expect(screen.getByRole("heading", { name: "MCP subscriptions", level: 1 })).toBeVisible();
   await expect(screen.getByRole("link", "Back to chat")).toBeVisible();
-  await expect(screen.getByRole("button", "pi")).toBeVisible();
+  await expect(screen.getByRole("button", "Settings")).toBeVisible();
   await expect(screen.getByTestId("activity-dialog")).toHaveCount(0);
 });
 
@@ -680,7 +673,7 @@ test("switches the model from the pi menu", async ({ app, browser, screen }) => 
   expect(before.current?.id).toBe("e2e-model");
   expect(before.models.map((item) => item.id).sort()).toEqual(["e2e-model", "e2e-other"]);
 
-  await screen.getByRole("button", "pi").tap();
+  await screen.getByRole("button", "Settings").tap();
   await expect(screen.getByRole("menuitem", { name: /^Model/ })).toBeVisible();
   await screen.getByRole("menuitem", { name: /^Model/ }).tap();
   await expect(screen.getByRole("menuitemradio", { name: /E2E Other/ })).toBeVisible();
@@ -706,7 +699,7 @@ test("switches the model from the pi menu", async ({ app, browser, screen }) => 
   expect(contextWindow).toBe(8192);
 
   await app.open("/");
-  await screen.getByRole("button", "pi").tap();
+  await screen.getByRole("button", "Settings").tap();
   await expect(screen.getByRole("menuitem", { name: /e2e-other/ })).toBeVisible();
 
   const restored = await browser.evaluate(async () => {

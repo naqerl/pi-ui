@@ -1,18 +1,17 @@
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
-/** Where the start of the last reply (or the run info row above it) sits under the header. */
+/** Where the start of the last reply (or the run info row above it) sits in the transcript. */
 function replyPosition() {
   const bubbles = [...document.querySelectorAll<HTMLElement>('[data-role="assistant"]')];
   const bubble = bubbles.at(-1);
-  const header = document.querySelector("header");
   const main = document.querySelector<HTMLElement>("main");
-  if (bubble === undefined || header === null || main === null) return null;
+  if (bubble === undefined || main === null) return null;
   const previous = bubble.previousElementSibling;
   const target =
     previous instanceof HTMLElement && previous.dataset.testid === "run-info" ? previous : bubble;
   return {
-    gap: Math.round(target.getBoundingClientRect().top - header.getBoundingClientRect().bottom),
+    gap: Math.round(target.getBoundingClientRect().top - main.getBoundingClientRect().top),
     atEnd: main.scrollHeight - main.scrollTop - main.clientHeight < 4,
     latest: [...document.querySelectorAll("button")].some(
       (button) => button.textContent?.trim() === "↓ latest",
@@ -37,7 +36,7 @@ for (const width of [390, 1280]) {
     await new Promise((resolve) => setTimeout(resolve, 400));
     const position = await browser.evaluate(replyPosition);
     expect(position).not.toBeNull();
-    // 16px below the header, like the first message in a fresh transcript.
+    // 16px below the top of the transcript, like the first message in a fresh transcript.
     expect(Math.abs((position?.gap ?? 0) - 16)).toBeLessThanOrEqual(2);
     expect(position?.atEnd).toBe(false);
     expect(position?.latest).toBe(true);

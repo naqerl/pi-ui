@@ -80,7 +80,11 @@ export function PiMenu() {
   const [models, setModels] = useState<ModelOption[]>([]);
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [model, setModel] = useState<ModelOption | null>(null);
-  const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
+  const [anchor, setAnchor] = useState<{
+    top: number;
+    left: number;
+    above: boolean;
+  } | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuId = useId();
 
@@ -162,7 +166,11 @@ export function PiMenu() {
     const place = () => {
       const rect = buttonRef.current?.getBoundingClientRect();
       if (rect === undefined) return;
-      setAnchor({ top: rect.bottom + 4, left: rect.left });
+      // The gear lives in the bottom dock, so the menu opens upward when there is no room below.
+      const gap = 4;
+      const above = rect.top > window.innerHeight - rect.bottom;
+      const left = Math.max(8, Math.min(rect.left, window.innerWidth - 296));
+      setAnchor({ top: above ? rect.top - gap : rect.bottom + gap, left, above });
     };
     place();
     window.addEventListener("resize", place);
@@ -222,16 +230,29 @@ export function PiMenu() {
         ref={buttonRef}
         type="button"
         data-pi-menu=""
+        aria-label="Settings"
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={menuId}
-        className="shrink-0 text-sm font-medium text-foreground"
+        className="grid size-7 shrink-0 place-items-center border border-foreground/30 bg-surface text-foreground theme-radius hover:bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground"
         onClick={() => {
           setSection("menu");
           setOpen((current) => !current);
         }}
       >
-        pi
+        <svg
+          viewBox="0 0 24 24"
+          aria-hidden="true"
+          className="size-4"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z" />
+          <circle cx="12" cy="12" r="3" />
+        </svg>
       </button>
       {open &&
         anchor !== null &&
@@ -244,7 +265,11 @@ export function PiMenu() {
                 ? "ink-line theme-radius fixed z-40 w-72 border bg-surface text-foreground"
                 : "ink-line theme-radius fixed z-40 w-56 border bg-surface text-foreground"
             }
-            style={{ top: anchor.top, left: anchor.left }}
+            style={{
+              top: anchor.top,
+              left: anchor.left,
+              transform: anchor.above ? "translateY(-100%)" : undefined,
+            }}
           >
             {section === "menu" ? (
               <div>

@@ -104,10 +104,9 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  /* Floating chrome. On a wide screen the bars are a little wider than the
+  /* Floating chrome. On a wide screen the dock is a little wider than the
      transcript column. On a narrow screen that cap is the full width.
      The composer fills solid while the field is focused. */
-  .float-header,
   .float-footer {
     left: 50%;
     width: min(100%, calc(72ch + 2rem));
@@ -117,36 +116,13 @@
     backdrop-filter: blur(18px);
     border-left: 1px solid color-mix(in srgb, var(--foreground) 28%, transparent);
     border-right: 1px solid color-mix(in srgb, var(--foreground) 28%, transparent);
-  }
-
-  .float-header {
-    top: 0;
-    padding-top: env(safe-area-inset-top);
-    border-bottom: 1px solid color-mix(in srgb, var(--foreground) 28%, transparent);
-  }
-
-  .float-footer {
     bottom: 0;
     padding-bottom: env(safe-area-inset-bottom);
     border-top: 1px solid color-mix(in srgb, var(--foreground) 28%, transparent);
     transition:
       background-color 280ms ease,
       backdrop-filter 280ms ease,
-      -webkit-backdrop-filter 280ms ease,
-      transform 280ms ease;
-  }
-
-  /* The stats page has no composer, so the dock slides down off the bottom edge
-     and comes back up on the chat and tasks pages. */
-  .float-footer[data-hidden="true"] {
-    transform: translateX(-50%) translateY(100%);
-    visibility: hidden;
-    transition:
-      background-color 280ms ease,
-      backdrop-filter 280ms ease,
-      -webkit-backdrop-filter 280ms ease,
-      transform 280ms ease,
-      visibility 0s linear 280ms;
+      -webkit-backdrop-filter 280ms ease;
   }
 
   .float-footer:focus-within {
@@ -157,42 +133,31 @@
     padding-bottom: 0;
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    .float-footer,
-    .float-footer[data-hidden="true"] {
-      transition: none;
-    }
-  }
-
-  /* The working line stays mounted so it can slide up out of the composer
-     and back down. 0fr keeps it out of the layout while idle. */
-  .working-strip {
+  /* The stats page keeps the dock chrome but collapses the composer body.
+     0fr keeps it out of the layout while the field is hidden and inert. */
+  .composer-body {
     display: grid;
-    grid-template-rows: 0fr;
+    grid-template-rows: 1fr;
     transition: grid-template-rows 220ms ease;
   }
 
-  .working-strip[data-open="true"] {
-    grid-template-rows: 1fr;
+  .composer-body[data-hidden="true"] {
+    grid-template-rows: 0fr;
+    visibility: hidden;
+    transition:
+      grid-template-rows 220ms ease,
+      visibility 0s linear 220ms;
   }
 
-  .working-strip-clip {
+  .composer-body-clip {
     min-height: 0;
     overflow: hidden;
   }
 
-  .working-strip-slide {
-    transform: translateY(100%);
-    transition: transform 220ms ease;
-  }
-
-  .working-strip[data-open="true"] .working-strip-slide {
-    transform: translateY(0);
-  }
-
   @media (prefers-reduced-motion: reduce) {
-    .working-strip,
-    .working-strip-slide {
+    .float-footer,
+    .composer-body,
+    .composer-body[data-hidden="true"] {
       transition: none;
     }
   }

@@ -440,14 +440,12 @@ export function StatsView({
   stats,
   ready,
   active,
-  headerClearance,
   footerClearance,
 }: {
   stats: ChatStats;
   ready: boolean;
   /** True while the dashboard is the current page. */
   active: boolean;
-  headerClearance: number;
   footerClearance: number;
 }) {
   const dashboard = useSyncExternalStore(subscribeDashboard, getDashboard, getDashboard);
@@ -488,7 +486,7 @@ export function StatsView({
     <div className="h-full overflow-x-hidden overflow-y-auto" data-testid="stats-page">
       <div
         className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-4"
-        style={{ paddingTop: headerClearance + 16, paddingBottom: footerClearance + 16 }}
+        style={{ paddingTop: 16, paddingBottom: footerClearance + 16 }}
       >
         {!ready || dashboard === null ? (
           <p className="font-mono text-xs text-muted-foreground">Loading…</p>

@@ -1031,9 +1031,7 @@ export function ChatView({
       }),
     [timeline],
   );
-  const headerRef = useRef<HTMLElement | null>(null);
   const footerRef = useRef<HTMLDivElement | null>(null);
-  const [headerClearance, setHeaderClearance] = useState(0);
   const [footerClearance, setFooterClearance] = useState(0);
 
   useEffect(() => {
@@ -1044,36 +1042,28 @@ export function ChatView({
   }, [statsPage]);
 
   useLayoutEffect(() => {
-    const header = headerRef.current;
     const footer = footerRef.current;
     const container = footer?.parentElement;
-    if (header === null || footer === null || container == null) return;
+    if (footer === null || container == null) return;
     const measure = () => {
-      const containerBox = container.getBoundingClientRect();
-      const headerBox = header.getBoundingClientRect();
       const footerBox = footer.getBoundingClientRect();
-      const nextHeader = headerBox.bottom - containerBox.top;
-      // The dock slides below the viewport on the stats page, but the chat still reserves
-      // its height so the transcript's bottom edge does not move when the dock comes back.
+      // The composer body collapses on the stats page, but the dock chrome stays and the
+      // transcript still reserves the whole dock so its bottom edge does not move.
       const nextFooter = footerBox.height;
-      setHeaderClearance((current) =>
-        Math.abs(current - nextHeader) < 0.5 ? current : nextHeader,
-      );
       setFooterClearance((current) =>
         Math.abs(current - nextFooter) < 0.5 ? current : nextFooter,
       );
     };
     measure();
     const observer = new ResizeObserver(measure);
-    observer.observe(header);
     observer.observe(footer);
     observer.observe(container);
     return () => observer.disconnect();
   }, []);
 
-  // Re-run the stick sync when the transcript or either floating bar changes height.
-  // A run slides a status line out of the composer, and the composer grows with the draft.
-  const stick = useStickToBottom(`${timeline.length}:${footerClearance}:${headerClearance}`);
+  // Re-run the stick sync when the transcript or the composer dock changes height.
+  // The composer grows with the draft, and the body collapses on the stats page.
+  const stick = useStickToBottom(`${timeline.length}:${footerClearance}`);
 
   // When a reply finishes, show it from its start (with the run info row above it) instead of
   // leaving the reader at its last line. Only when the reader is still following the end:
@@ -1116,11 +1106,11 @@ export function ChatView({
         previous instanceof HTMLElement && previous.dataset.testid === "run-info"
           ? previous
           : bubble;
-      revealTop(target, headerClearance + TRANSCRIPT_END_GAP);
+      revealTop(target, TRANSCRIPT_END_GAP);
     });
-  }, [revealAfter, timeline, revealTop, headerClearance]);
+  }, [revealAfter, timeline, revealTop]);
 
-  // A late summary grows the reply above its text. Keep the reply start under the header
+  // A late summary grows the reply above its text. Keep the reply start inside the top gap
   // instead of letting that insertion move the reader away from what just arrived.
   useEffect(() => {
     const revealed = revealedReply.current;
@@ -1143,9 +1133,9 @@ export function ChatView({
         previous instanceof HTMLElement && previous.dataset.testid === "run-info"
           ? previous
           : bubble;
-      revealTop(target, headerClearance + TRANSCRIPT_END_GAP);
+      revealTop(target, TRANSCRIPT_END_GAP);
     });
-  }, [revealedReplyId, timeline, revealTop, headerClearance]);
+  }, [revealedReplyId, timeline, revealTop]);
 
   const liveActivityGroupKey = useMemo(() => {
     if (!running) return undefined;
@@ -1251,7 +1241,6 @@ export function ChatView({
                   stats={stats}
                   ready={ready}
                   active={statsPage}
-                  headerClearance={headerClearance}
                   footerClearance={footerClearance}
                 />
               </Suspense>
@@ -1266,7 +1255,7 @@ export function ChatView({
                   ref={stick.contentRef}
                   className="mx-auto flex w-full max-w-[72ch] flex-col gap-4 px-4"
                   style={{
-                    paddingTop: headerClearance + TRANSCRIPT_END_GAP,
+                    paddingTop: TRANSCRIPT_END_GAP,
                     paddingBottom: footerClearance + TRANSCRIPT_END_GAP,
                   }}
                 >
@@ -1317,7 +1306,6 @@ export function ChatView({
                 <TasksView
                   tasks={tasks}
                   ready={ready}
-                  headerClearance={headerClearance}
                   footerClearance={footerClearance}
                   armedParentId={armed?.id ?? null}
                   onArmParent={setArmedParentId}
@@ -1327,16 +1315,32 @@ export function ChatView({
             </section>
           </div>
         </div>
-        <header ref={headerRef} className="float-header absolute z-10 flex flex-col theme-radius">
-          <div className="grid w-full grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center px-[18px] py-1.5">
-            <div className="justify-self-start">
-              <PiMenu />
+        <div
+          ref={footerRef}
+          data-testid="composer-dock"
+          className="float-footer absolute z-20 theme-radius"
+        >
+          <div className="ink-line flex items-center gap-3 border-b px-[18px] py-1.5">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              <div
+                data-testid="working-status"
+                data-open={running ? "true" : "false"}
+                aria-live="polite"
+                className="min-w-0 flex-1 truncate font-mono text-[11px] leading-4 text-muted-foreground"
+              >
+                {running ? (
+                  <WorkingIndicator running={running} clock={runClock} />
+                ) : (
+                  <span>idle</span>
+                )}
+              </div>
+              {tasksPage && <SubtaskProgress tasks={tasks} />}
             </div>
             <div
               role="tablist"
               aria-label="Pages"
               data-testid="page-dots"
-              className="flex items-center justify-center"
+              className="flex shrink-0 items-center justify-center"
             >
               {PAGES.map((item, index) => (
                 <button
@@ -1358,11 +1362,45 @@ export function ChatView({
                 </button>
               ))}
             </div>
-            <div className="flex min-w-0 max-w-full items-center justify-end gap-3 justify-self-end overflow-hidden empty:hidden">
-              {tasksPage && <SubtaskProgress tasks={tasks} />}
+            <PiMenu />
+          </div>
+          {tasksPage && armed !== null && (
+            <div className="flex items-center gap-2 px-3 font-mono text-[10px] text-muted-foreground">
+              <span className="min-w-0 truncate">
+                subtask of <LazyInlineMarkdown text={armed.title} />
+              </span>
+              <button
+                type="button"
+                className="shrink-0 hover:text-foreground"
+                aria-label="New top-level task"
+                onClick={() => setArmedParentId(null)}
+              >
+                top level
+              </button>
+            </div>
+          )}
+          <div
+            data-testid="composer-body"
+            data-hidden={statsPage ? "true" : "false"}
+            aria-hidden={statsPage ? true : undefined}
+            inert={statsPage ? true : undefined}
+            className="composer-body"
+          >
+            <div className="composer-body-clip">
+              <Composer
+                tasksPage={tasksPage}
+                parentTitle={tasksPage && armed !== null ? lazyPlainInline(armed.title) : null}
+                running={running}
+                send={handleSend}
+                stop={stop}
+                unsendSteer={!tasksPage && pendingSteers > 0 ? unsendSteer : undefined}
+                addTask={addTask}
+                error={composerError}
+                onDismissError={() => setComposerError(null)}
+              />
             </div>
           </div>
-        </header>
+        </div>
         {ready && groups.length === 0 && pager.page === CHAT_PAGE && (
           <p
             className="pointer-events-none absolute inset-x-0 z-10 -translate-y-1/2 px-4 text-center font-mono text-xs text-muted-foreground"
@@ -1385,57 +1423,6 @@ export function ChatView({
             </button>
           </div>
         )}
-
-        <div
-          ref={footerRef}
-          data-testid="composer-dock"
-          data-hidden={statsPage ? "true" : "false"}
-          aria-hidden={statsPage ? true : undefined}
-          inert={statsPage ? true : undefined}
-          className="float-footer absolute z-20 theme-radius"
-        >
-          <div
-            data-testid="working-status"
-            data-open={running ? "true" : "false"}
-            aria-hidden={running ? undefined : true}
-            className="working-strip"
-          >
-            <div className="working-strip-clip">
-              <div
-                aria-live="polite"
-                className="working-strip-slide ink-line flex w-full min-w-0 items-center border-b px-[18px] py-1.5 font-mono text-[11px] leading-4 text-muted-foreground"
-              >
-                <WorkingIndicator running={running} clock={runClock} />
-              </div>
-            </div>
-          </div>
-          {tasksPage && armed !== null && (
-            <div className="flex items-center gap-2 px-3 font-mono text-[10px] text-muted-foreground">
-              <span className="min-w-0 truncate">
-                subtask of <LazyInlineMarkdown text={armed.title} />
-              </span>
-              <button
-                type="button"
-                className="shrink-0 hover:text-foreground"
-                aria-label="New top-level task"
-                onClick={() => setArmedParentId(null)}
-              >
-                top level
-              </button>
-            </div>
-          )}
-          <Composer
-            tasksPage={tasksPage}
-            parentTitle={tasksPage && armed !== null ? lazyPlainInline(armed.title) : null}
-            running={running}
-            send={handleSend}
-            stop={stop}
-            unsendSteer={!tasksPage && pendingSteers > 0 ? unsendSteer : undefined}
-            addTask={addTask}
-            error={composerError}
-            onDismissError={() => setComposerError(null)}
-          />
-        </div>
       </div>
       {activityRun !== undefined && (
         <Suspense fallback={null}>
