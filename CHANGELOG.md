@@ -4,6 +4,10 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.1 - 2026-10-30
+
+- Memory is a set of files the agent can keep, search and consolidate: `data/memory/MEMORY.md` is a short index, one nested file per topic holds the body, `find` scores topics by term overlap instead of loading everything, and a consolidation pass turns dated journal entries into topic text at checkpoints, so the injected block stays byte-stable between them and the prompt cache keeps hitting. Markdown files, no database, and every write is a rename; the tools are `memory_write`, `memory_read`, `memory_find`, `memory_dream` and `memory_status`.
+- The image can now be checked instead of assumed: `scripts/verify-image-topology.sh` measures what a job box actually provides — the chromium revision and whether it matches the `playwright-core` that the repo resolves, whether `/opt/playwright` is writable, a real screenshot whose PNG width and height are read from the bytes, the runtimes, the pi launcher and its extension list, cgroups and free disk — and `docs/image-topology.md` records the readings and what each one rules out.
 - Events from an MCP subscription reach the chat notice, `/api/state`, the `MCP events` widget and the MCP widget again. `pi-mcp-events` dropped every event with a numeric id or timestamp, or a kind other than the stream name (such as `hub.job` on a `hub` stream), without a word, while heartbeats kept moving the cursor; pi-ui now repairs those events on the way in and logs each repair once per server (`[mcp] zeroshot: events/event numeric eventId; repaired`). Every extension notice is logged as one line, a failing notice handler is logged instead of lost in a timer, and each subscription shows its last cursor on `/events`, in the `MCP events` widget data and in `mcpEvents.subscriptions`.
 
 ## 1.6.0 - 2026-10-30
