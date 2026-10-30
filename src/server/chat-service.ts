@@ -12,6 +12,11 @@ import {
 } from "@earendil-works/pi-durable";
 import { parseNotice } from "../shared/notices.js";
 import {
+  QUIET_AFTER_MS as DEFAULT_QUIET_AFTER_MS,
+  type DurableRunFacts,
+  reconcileRunState,
+} from "../shared/run-health.js";
+import {
   type ChatMessage,
   type McpEventsState,
   type McpStatus,
@@ -72,6 +77,16 @@ interface SubmitOptions {
   attachments?: string[];
 }
 
+/** `PI_UI_QUIET_AFTER_MS` shortens the quiet threshold for tests. */
+export const QUIET_AFTER_MS = positiveEnv("PI_UI_QUIET_AFTER_MS") ?? DEFAULT_QUIET_AFTER_MS;
+const WATCHDOG_INTERVAL_MS = Math.min(10_000, QUIET_AFTER_MS);
+const STREAM_RETRY_MS = 1_000;
+
+function positiveEnv(name: string): number | undefined {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
 const CONTINUATION_TEXT =
   "Continue from where the previous response was interrupted. Do not repeat what is already complete.";
 
@@ -94,6 +109,13 @@ export class ChatService {
   private stream: AgentEventStream | undefined;
   private closed = false;
   private runStartedAt: string | undefined;
+  /** When the agent's event stream last delivered anything; see `QUIET_AFTER_MS`. */
+  private lastEventAt = Date.now();
+  /** Submissions sent to durable that it has not recorded yet. */
+  private submitting = 0;
+  private watchdog: ReturnType<typeof setInterval> | undefined;
+  private checkingRun = false;
+  private quietLogged = false;
   private readonly queued = new Map<string, QueuedRun>();
   private readonly steerSubmissions = new Set<string>();
   private marker: RunMarker | undefined;
@@ -139,16 +161,112 @@ export class ChatService {
   private readonly mediaRef = (data: string, mimeType: string) => this.media.refFor(data, mimeType);
 
   async start(): Promise<void> {
-    this.stream = await watchEvents(this.harness, this.conversation.id, SESSION_CONTEXT);
-    this.applySnapshot(this.stream.snapshot);
-    this.stream.start((events) => this.handleEvents(events));
+    const stream = await watchEvents(this.harness, this.conversation.id, SESSION_CONTEXT);
+    this.stream = stream;
+    this.applySnapshot(stream.snapshot);
+    stream.start((events) => this.handleEvents(events));
+    this.watchStreamEnd(stream);
+    this.watchdog = setInterval(() => void this.checkQuietRun(), WATCHDOG_INTERVAL_MS);
+    this.watchdog.unref?.();
     await this.autoContinueInterruptedRun();
     await this.restorePersistedQueue();
   }
 
   async close(): Promise<void> {
     this.closed = true;
+    if (this.watchdog !== undefined) clearInterval(this.watchdog);
     await this.stream?.stop();
+  }
+
+  /**
+   * The event stream is the only thing that ends a run in this server. When durable ends it
+   * (a failed Session, a listener error), attach a new one; its snapshot settles the run state.
+   */
+  private watchStreamEnd(stream: AgentEventStream): void {
+    void stream.closed.then((end) => {
+      if (this.closed || stream !== this.stream) return;
+      console.error(
+        `[pi] agent event stream ended (${end.reason}); reattaching`,
+        "error" in end ? end.error : "",
+      );
+      void this.reattachStream();
+    });
+  }
+
+  private async reattachStream(): Promise<void> {
+    while (!this.closed) {
+      await new Promise((resolve) => setTimeout(resolve, STREAM_RETRY_MS));
+      if (this.closed) return;
+      try {
+        const stream = await watchEvents(this.harness, this.conversation.id, SESSION_CONTEXT);
+        this.stream = stream;
+        await this.handleEvent(stream.snapshot);
+        stream.start((events) => this.handleEvents(events));
+        this.watchStreamEnd(stream);
+        console.log("[pi] agent event stream reattached");
+        return;
+      } catch (error) {
+        console.error("[pi] could not reattach the agent event stream", error);
+      }
+    }
+  }
+
+  /**
+   * A run that has been quiet for `QUIET_AFTER_MS` is checked against durable's live state, so a
+   * lost end event cannot leave the chat working forever. A run durable still has stays running.
+   */
+  private async checkQuietRun(): Promise<void> {
+    if (this.closed || this.checkingRun || this.runState !== "running") {
+      this.quietLogged = false;
+      return;
+    }
+    const quietMs = Date.now() - this.lastEventAt;
+    if (quietMs < QUIET_AFTER_MS) {
+      this.quietLogged = false;
+      return;
+    }
+    this.checkingRun = true;
+    try {
+      const facts = await this.durableRunFacts();
+      if (!this.quietLogged) {
+        this.quietLogged = true;
+        console.warn(
+          `[pi] no agent events for ${Math.round(quietMs / 1_000)}s while running ` +
+            `(durable run: ${facts.run ? "live" : "none"}, inbox: ${facts.inbox}, submitting: ${facts.submitting})`,
+        );
+      }
+      this.reconcileRun(facts);
+    } catch (error) {
+      console.error("[pi] could not check the run state", error);
+    } finally {
+      this.checkingRun = false;
+    }
+  }
+
+  private async durableRunFacts(): Promise<DurableRunFacts> {
+    const state = await this.conversation.viewState(SESSION_CONTEXT);
+    try {
+      const live = state.value.docs["pi.live"] as { run?: unknown } | undefined;
+      const inbox = state.value.docs["pi.inbox"] as { items?: unknown[] } | undefined;
+      return {
+        run: live?.run !== undefined && live.run !== null,
+        inbox: inbox?.items?.length ?? 0,
+        submitting: this.submitting,
+      };
+    } finally {
+      state.dispose();
+    }
+  }
+
+  private reconcileRun(facts: DurableRunFacts): void {
+    // Our own queue still waits on durable, so it keeps the run alive too.
+    const next = reconcileRunState(this.runState, {
+      ...facts,
+      inbox: facts.inbox + this.queued.size,
+    });
+    if (next === this.runState) return;
+    console.warn(`[pi] run state reconciled with durable: ${this.runState} -> ${next}`);
+    this.setRunState(next);
   }
 
   /** Keep the run marker on disk while the process winds down. */
@@ -172,6 +290,7 @@ export class ChatService {
     return {
       state: this.runState,
       startedAt: this.runStartedAt ?? null,
+      lastEventAt: new Date(this.lastEventAt).toISOString(),
       queue: this.queueItems(),
     };
   }
@@ -252,6 +371,8 @@ export class ChatService {
       hasEarlier: transcript.hasEarlier,
       run: this.runState,
       ...(this.runStartedAt === undefined ? {} : { runStartedAt: this.runStartedAt }),
+      runLastEventAt: new Date(this.lastEventAt).toISOString(),
+      quietAfterMs: QUIET_AFTER_MS,
       queue: this.queueItems(),
       usage: summarizeUsage(usage),
       context: contextUsage(context.entries, this.modelWindow),
@@ -383,6 +504,7 @@ export class ChatService {
     }
 
     let submission: Submission;
+    this.submitting += 1;
     try {
       submission = await this.conversation.submit(
         {
@@ -397,6 +519,8 @@ export class ChatService {
     } catch (error) {
       if (startsRun) this.setRunState(this.marker === undefined ? "idle" : "interrupted");
       throw error;
+    } finally {
+      this.submitting -= 1;
     }
 
     const id = String(submission.id);
@@ -675,6 +799,7 @@ export class ChatService {
   }
 
   private async handleEvents(events: readonly AgentEvent[]): Promise<void> {
+    this.lastEventAt = Date.now();
     for (const event of events) {
       if (this.closed) return;
       try {
@@ -689,6 +814,12 @@ export class ChatService {
     switch (event.type) {
       case "snapshot": {
         this.applySnapshot(event);
+        // A snapshot replaces events durable dropped, a run's end among them.
+        this.reconcileRun({
+          run: event.run !== undefined,
+          inbox: event.inbox.length,
+          submitting: this.submitting,
+        });
         const revision = this.bumpDraft();
         this.hub.broadcast([
           {
@@ -965,6 +1096,7 @@ export class ChatService {
     }
     this.runState = state;
     if (state === "running") {
+      this.lastEventAt = Date.now();
       this.runStartedAt = startedAt ?? new Date().toISOString();
     } else {
       if (state === "idle") this.runStartedAt = undefined;

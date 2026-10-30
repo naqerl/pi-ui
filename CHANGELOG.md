@@ -6,6 +6,8 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 - MCP status and events moved from the chat header to the stats page: the MCP widget shows each server's live subscriptions, and a new default `MCP events` widget lists the latest 20 events, newest first. Existing dashboards get it once.
 - Background job results and MCP events show in the chat as a one-line notice where they happened, such as `job build finished ✓ 12s` or `MCP github: push event`, instead of a full message bubble. Tapping one opens its details: the job's command, status, exit code, duration and last output, or each MCP event's server, name and pretty-printed payload. Cancelled jobs and jobs started with `notify: false` also get a notice, which the agent never sees. Notices are kept with the chat history.
+- A run can no longer stay "working" forever after the server lost its end: when the agent's event stream ends (a failed session, a listener error) the server reattaches it, a snapshot that replaces dropped events settles the run state, and a run quiet for 30s is checked against the agent's live state and cleared when nothing is running. The server logs each of these (`[pi] agent event stream ended`, `[pi] no agent events for …`, `[pi] run state reconciled …`).
+- The working strip shows how long the run has gone (`working · 1m 05s`) and, after 30s without any output from the agent, how long it has been quiet (`· no output for 45s`), so a stalled model stream is visible instead of a still "working".
 
 ## 1.5.1 - 2026-10-29
 

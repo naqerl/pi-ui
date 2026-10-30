@@ -76,6 +76,8 @@ if (!live) {
   // Dashboard polls hit the fake Hetzner API on the fake model server, fast.
   process.env.HCLOUD_TOKEN = FAKE_HCLOUD_TOKEN;
   process.env.PI_DASHBOARD_MIN_INTERVAL_MS = "500";
+  // A short quiet threshold, so the stalled-run watchdog and its strip run within a test.
+  process.env.PI_UI_QUIET_AFTER_MS ??= "3000";
 }
 
 process.env.DATA_DIR = dataDir;

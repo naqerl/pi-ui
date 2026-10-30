@@ -91,6 +91,8 @@ export function useChat(options: UseChatOptions = {}) {
   const [draftThinking, setDraftThinking] = useState("");
   const [runState, setRunState] = useState<RunState>("idle");
   const [runStartedAt, setRunStartedAt] = useState<string | null>(null);
+  const [lastEventAt, setLastEventAt] = useState<string | null>(null);
+  const [quietAfterMs, setQuietAfterMs] = useState<number | undefined>(undefined);
   const [queue, setQueue] = useState<QueuedMessage[]>([]);
   const [mcp, setMcp] = useState<McpStatus>({ servers: [], unavailable: [] });
   const [usage, setUsage] = useState<UsageSummary | null>(null);
@@ -169,6 +171,8 @@ export function useChat(options: UseChatOptions = {}) {
       }
       setRunState(snapshot.run);
       setRunStartedAt(snapshot.runStartedAt ?? null);
+      setLastEventAt(snapshot.runLastEventAt ?? null);
+      if (snapshot.quietAfterMs !== undefined) setQuietAfterMs(snapshot.quietAfterMs);
       setQueue(snapshot.queue);
       setMcp(snapshot.mcp ?? { servers: [], unavailable: [] });
       setUsage(snapshot.usage ?? null);
@@ -252,6 +256,7 @@ export function useChat(options: UseChatOptions = {}) {
       if (!data) return;
       setRunState(data.state);
       setRunStartedAt(data.startedAt ?? null);
+      if (data.lastEventAt !== undefined) setLastEventAt(data.lastEventAt);
       if (data.queue !== undefined) setQueue(data.queue);
       if (data.state !== "running") {
         setDraftText("");
@@ -522,6 +527,8 @@ export function useChat(options: UseChatOptions = {}) {
     running: runState === "running",
     interrupted: runState === "interrupted",
     runStartedAt,
+    lastEventAt,
+    quietAfterMs,
     queue,
     mcp,
     usage,
