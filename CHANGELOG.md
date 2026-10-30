@@ -4,6 +4,11 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.13 - 2026-10-30
+
+- The interrupted-run note is a warning chip like the MCP and job notices, in amber, and it states whether the run was interrupted or stopped.
+- The settings button in the composer dock has no border or background and lines up with the send button.
+- The working row says `thinking` while the model is thinking and `working` otherwise, so a thinking spell no longer looks like a running command.
 ## 1.6.12 - 2026-10-30
 
 - `propose_task` lets the agent write down a task it thinks is worth doing without pretending it is one: a proposal is stored as `proposed`, stays out of `task_list` (which reports only `proposals: N waiting for approval`), and `task_proposals` lists it with its rationale. A human approves it into an open task from the Proposed section of the tasks page, or dismisses it.
