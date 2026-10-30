@@ -331,9 +331,14 @@ export function useChat(options: UseChatOptions = {}) {
         const { messages, activity: jobActivity } = separateJobResults([data.message]);
         const message = messages[0];
         if (message !== undefined) {
-          setMessages((current) =>
-            current.some((item) => item.id === message.id) ? current : [...current, message],
-          );
+          setMessages((current) => {
+            const index = current.findIndex((item) => item.id === message.id);
+            if (index === -1) return [...current, message];
+            if (message.summary === undefined) return current;
+            const next = [...current];
+            next[index] = { ...next[index], summary: message.summary };
+            return next;
+          });
         }
         if (jobActivity.length > 0) setActivity((current) => addJobActivity(current, jobActivity));
         setDraftText("");

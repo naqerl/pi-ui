@@ -478,6 +478,11 @@ app.get("/api/media/:id", async (c) => {
   }
 });
 
+app.post("/api/messages/:id/summary", async (c) => {
+  const summary = await chat.getSummary(c.req.param("id"));
+  return c.json({ summary });
+});
+
 app.post("/api/queue/:id", async (c) => {
   const id = c.req.param("id");
   let body: unknown;
