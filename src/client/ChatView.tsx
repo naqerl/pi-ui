@@ -17,6 +17,7 @@ import type {
   TaskLedger,
   TokenSpend,
 } from "../shared/types";
+import { SUMMARY_MIN_CHARACTERS } from "../shared/types";
 import { groupSummaryParts } from "./activity-format";
 import { Button } from "./components/ui/button";
 import { Textarea } from "./components/ui/textarea";
@@ -143,7 +144,105 @@ function isVersionUpdate(message: ChatMessage): boolean {
   );
 }
 
-function MessageBubble({ message }: { message: ChatMessage }) {
+function isSummarizableReply(message: ChatMessage): boolean {
+  return (
+    message.role === "assistant" &&
+    message.isError !== true &&
+    message.text.trim().length >= SUMMARY_MIN_CHARACTERS
+  );
+}
+
+/** Summary above the reply and a keyboard-operable reveal for the full Markdown. */
+function AssistantReply({
+  message,
+  summariesEnabled,
+}: {
+  message: ChatMessage;
+  summariesEnabled: boolean;
+}) {
+  const [summary, setSummary] = useState<string | undefined>(message.summary);
+  const [expanded, setExpanded] = useState(false);
+  const long = isSummarizableReply(message);
+  const canSummarise =
+    summariesEnabled && long && summary === undefined && message.id !== "draft-assistant";
+  const bodyId = `message-body-${message.id}`;
+
+  useEffect(() => {
+    if (message.summary !== undefined) setSummary(message.summary);
+  }, [message.summary]);
+
+  useEffect(() => {
+    if (!canSummarise) return;
+    let cancelled = false;
+    // The automatic pass may still be running; the endpoint shares its cache and pending call.
+    const timer = window.setTimeout(() => {
+      void fetch(`/api/messages/${encodeURIComponent(message.id)}/summary`, { method: "POST" })
+        .then((response) => (response.ok ? response.json() : null))
+        .then((data: { summary?: unknown } | null) => {
+          if (!cancelled && typeof data?.summary === "string") setSummary(data.summary);
+        })
+        .catch(() => undefined);
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [canSummarise, message.id]);
+
+  const body = (
+    <div
+      id={bodyId}
+      data-testid="message-body"
+      data-expanded={expanded ? "true" : "false"}
+      className={cn(
+        "relative min-w-0 max-w-full [overflow-wrap:anywhere]",
+        summary !== undefined && long && !expanded && "max-h-40 overflow-hidden",
+      )}
+    >
+      <DeferredMarkdown text={message.text} />
+      {summary !== undefined && long && !expanded && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-surface to-transparent"
+        />
+      )}
+    </div>
+  );
+
+  return (
+    <>
+      {summary !== undefined && (
+        <div
+          data-testid="message-summary"
+          className="theme-radius mb-1.5 border border-border/70 bg-muted/60 px-2 py-1 text-xs leading-5 text-muted-foreground"
+        >
+          <span className="line-clamp-2 [overflow-wrap:anywhere]">{summary}</span>
+        </div>
+      )}
+      {body}
+      {summary !== undefined && long && (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={bodyId}
+          data-testid="summary-toggle"
+          onClick={() => setExpanded((current) => !current)}
+          className="mt-1 inline-flex min-h-9 items-center font-mono text-[11px] leading-4 text-muted-foreground hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground sm:min-h-0 sm:py-0.5"
+        >
+          {expanded ? "Show less" : "Show full message"}
+        </button>
+      )}
+    </>
+  );
+}
+
+function MessageBubble({
+  message,
+  summariesEnabled,
+}: {
+  message: ChatMessage;
+  summariesEnabled: boolean;
+}) {
   if (message.notice !== undefined) {
     return <NoticeLine message={message} notice={message.notice} />;
   }
@@ -223,7 +322,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           <div className="whitespace-pre-wrap [overflow-wrap:anywhere]">{message.text}</div>
         )
       ) : (
-        <DeferredMarkdown text={message.text} />
+        <AssistantReply message={message} summariesEnabled={summariesEnabled} />
       )}
       <MessageTime timestamp={message.timestamp} />
     </div>
@@ -981,6 +1080,10 @@ export function ChatView({
   // someone who scrolled away during the run stays where they are.
   const wasRunningRef = useRef(running);
   const [revealAfter, setRevealAfter] = useState<number | null>(null);
+  const revealedReply = useRef<{ id: string; summary: string | undefined; at: number } | null>(
+    null,
+  );
+  const [revealedReplyId, setRevealedReplyId] = useState<string | null>(null);
   useEffect(() => {
     const was = wasRunningRef.current;
     wasRunningRef.current = running;
@@ -1003,6 +1106,8 @@ export function ChatView({
     }
     const id = reply.id;
     setRevealAfter(null);
+    revealedReply.current = { id, summary: reply.summary, at: Date.now() };
+    setRevealedReplyId(id);
     requestAnimationFrame(() => {
       const bubble = document.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`);
       if (bubble === null) return;
@@ -1014,6 +1119,33 @@ export function ChatView({
       revealTop(target, headerClearance + TRANSCRIPT_END_GAP);
     });
   }, [revealAfter, timeline, revealTop, headerClearance]);
+
+  // A late summary grows the reply above its text. Keep the reply start under the header
+  // instead of letting that insertion move the reader away from what just arrived.
+  useEffect(() => {
+    const revealed = revealedReply.current;
+    if (revealed === null || revealed.id !== revealedReplyId) return;
+    if (Date.now() - revealed.at > 5_000) return;
+    let reply: ChatMessage | undefined;
+    for (const item of timeline) {
+      if (item.kind === "message" && item.message.id === revealedReplyId) reply = item.message;
+    }
+    if (reply === undefined || reply.summary === undefined || reply.summary === revealed.summary) {
+      return;
+    }
+    revealed.summary = reply.summary;
+    const id = reply.id;
+    requestAnimationFrame(() => {
+      const bubble = document.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`);
+      if (bubble === null) return;
+      const previous = bubble.previousElementSibling;
+      const target =
+        previous instanceof HTMLElement && previous.dataset.testid === "run-info"
+          ? previous
+          : bubble;
+      revealTop(target, headerClearance + TRANSCRIPT_END_GAP);
+    });
+  }, [revealedReplyId, timeline, revealTop, headerClearance]);
 
   const liveActivityGroupKey = useMemo(() => {
     if (!running) return undefined;
@@ -1148,7 +1280,13 @@ export function ChatView({
                   )}
                   {groups.map((group, index) => {
                     if (group.kind === "message") {
-                      return <MessageBubble key={group.key} message={group.message} />;
+                      return (
+                        <MessageBubble
+                          key={group.key}
+                          message={group.message}
+                          summariesEnabled={!running}
+                        />
+                      );
                     }
                     const next = groups[index + 1];
                     const usage =

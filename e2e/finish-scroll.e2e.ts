@@ -25,9 +25,12 @@ for (const width of [390, 1280]) {
     await browser.setViewport({ width, height: 844 });
     await app.open("/");
     const composer = screen.getByRole("textbox", "Message");
-    await composer.fill(`LONG answer please ${width}`);
+    await composer.fill(`LONG answer please ${width} NOSUMMARY`);
     await screen.getByRole("button", "Send").tap();
-    await expect(screen.getByText("Paragraph 40 of a long answer", { exact: false })).toBeVisible({
+    const latestReply = browser.locator('[data-role="assistant"]').last();
+    await expect(
+      latestReply.getByText("Paragraph 40 of a long answer", { exact: false }),
+    ).toBeVisible({
       timeout: 15_000,
     });
     await expect(screen.getByRole("button", "Send")).toBeVisible({ timeout: 15_000 });
@@ -54,16 +57,18 @@ test("leaves the scroll alone when the reader scrolled away during the run", asy
   await app.open("/");
   // Enough history above to scroll into.
   const composer = screen.getByRole("textbox", "Message");
-  await composer.fill("LONG warm up");
+  await composer.fill("LONG warm up NOSUMMARY");
   await screen.getByRole("button", "Send").tap();
   await expect(screen.getByRole("button", "Send")).toBeVisible({ timeout: 15_000 });
   await new Promise((resolve) => setTimeout(resolve, 400));
   await screen.getByRole("button", "↓ latest").tap();
 
-  await composer.fill("LONGDRIP reply while I read");
+  await composer.fill("LONGDRIP reply while I read NOSUMMARY");
   await screen.getByRole("button", "Send").tap();
   // Wait until the slow reply is streaming.
-  await expect(screen.getByText("LONGDRIP reply while I read", { exact: true })).toBeVisible();
+  await expect(
+    screen.getByText("LONGDRIP reply while I read NOSUMMARY", { exact: true }),
+  ).toBeVisible();
   await new Promise((resolve) => setTimeout(resolve, 800));
   expect(
     await browser.evaluate(

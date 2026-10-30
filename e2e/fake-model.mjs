@@ -76,11 +76,14 @@ function responseFor(prompt, body = {}) {
   if (prompt.includes("WHATVERSION")) return `Update notice: ${updateNotice(body)}`;
   if (prompt.includes("BULK")) return bulkAnswer(prompt);
   if (prompt.includes("LONG")) {
-    return Array.from(
-      { length: 40 },
-      (_, index) =>
-        `Paragraph ${index + 1} of a long answer. It keeps going so the reply is taller than the screen.`,
-    ).join("\n\n");
+    return [
+      ...Array.from(
+        { length: 40 },
+        (_, index) =>
+          `Paragraph ${index + 1} of a long answer. It keeps going so the reply is taller than the screen.`,
+      ),
+      ...(prompt.includes("NOSUMMARY") ? ["", "Summary disabled."] : []),
+    ].join("\n\n");
   }
   if (prompt.includes("MARKDOWN")) {
     return [
@@ -291,6 +294,32 @@ export function startFakeModelServer() {
       };
       req.on("close", stop);
       setTimeout(stop, SLOW_HOLD_MS).unref();
+      return;
+    }
+
+    const summaryRequest = messages.some(
+      (message) =>
+        message?.role === "system" &&
+        textOf(message.content).includes("Summarise this assistant reply"),
+    );
+    if (summaryRequest) {
+      const summary = prompt.includes("Summary disabled.")
+        ? "skip"
+        : "Summary: the assistant answered the request in detail.";
+      for (const piece of summary.match(/.{1,18}/gs) ?? []) {
+        writeEvent(res, chunkFor(piece));
+      }
+      writeEvent(res, chunkFor("", "stop"));
+      writeEvent(res, {
+        id: "chatcmpl-e2e",
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: "e2e-model",
+        choices: [],
+        usage: { prompt_tokens: 12, completion_tokens: 12, total_tokens: 24 },
+      });
+      res.write("data: [DONE]\n\n");
+      res.end();
       return;
     }
 
