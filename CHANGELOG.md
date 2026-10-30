@@ -4,6 +4,12 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.4 - 2026-10-30
+
+- The image ships `openssh-client` (`ssh`, `scp`, `sftp`, `ssh-keygen`, `ssh-keyscan`) and creates `/home/pi/.ssh` at mode 700, so the agent's bash tool can reach other machines instead of only this one. No identity is baked in.
+- `docker-compose.yml` and the README's `docker run` example mount one file read-only: the SSH private key at `/home/pi/.ssh/id_ed25519`, the name `ssh` uses by default. `SSH_KEY_FILE` overrides the source path. The mount is optional — without it the container simply has no identity — and read-only stops the container rewriting or rotating the key, not using it.
+- The README explains the parts the mount does not cover: `known_hosts` and `config` are not mounted, so an unknown host prompts and a non-interactive session fails until `-o StrictHostKeyChecking=accept-new` (or a `known_hosts` inside the workspace mount) is supplied, and `Host` aliases have to be spelled out on the command line. The source key must stay `0600` because the container uid (1000) matches a normal host uid, which is when OpenSSH enforces the mode.
+
 ## 1.6.3 - 2026-10-30
 
 - A finished turn carries a short summary of the agent's final answer, written by the fast model: it reuses the configured `ModelRuntime`, is bounded by a 20 s timeout and roughly 120 tokens, is cached per message, and stays out of the way when it fails or when the turn is skipped. The chat shows it under the answer with an **expand** control that reveals the original message.
