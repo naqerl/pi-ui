@@ -40,4 +40,11 @@ services:
       # so nothing else from the hub's configuration (its Hetzner token, its
       # gateway key, its GitHub token) is reachable from inside this container.
       - "${ZEROSHOT_HUB_TOKEN_FILE:-$HOME/.config/zeroshot/hub/api-token}:/run/secrets/zeroshot-hub-token:ro"
+      # Read-only, one file: your SSH identity (private half only; ssh derives the
+      # public half when a host asks for it). The container can authenticate as you
+      # to anything that trusts this key — read-only stops it rewriting or rotating
+      # the key, not using it. Keep the source at 0600: the running uid is 1000, the
+      # same as a normal host user, so ssh enforces the mode. Override with
+      # SSH_KEY_FILE when the key lives elsewhere (e.g. an agent-specific identity).
+      - "${SSH_KEY_FILE:-$HOME/.ssh/id_ed25519}:/home/pi/.ssh/id_ed25519:ro"
     restart: unless-stopped
