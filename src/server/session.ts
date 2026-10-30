@@ -22,6 +22,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { parseNotice } from "../shared/notices.js";
 import { steerKeyFromEntryData } from "../shared/steers.js";
+import { toIsoTimestamp } from "../shared/time.js";
 import {
   type ActivityItem,
   type ChatMessage,
@@ -526,10 +527,7 @@ export function buildTranscript(
         kind: "job",
         id: `j-${entry.id}`,
         notice,
-        timestamp:
-          typeof entry.data.createdAt === "string"
-            ? entry.data.createdAt
-            : new Date().toISOString(),
+        timestamp: entryTimestamp(entry.data),
         order: entry.id * 10_000,
       });
       continue;
@@ -540,10 +538,7 @@ export function buildTranscript(
         id: `m-${entry.id}`,
         role: "system",
         text: entry.data.note,
-        timestamp:
-          typeof entry.data.createdAt === "string"
-            ? entry.data.createdAt
-            : new Date().toISOString(),
+        timestamp: entryTimestamp(entry.data),
         order: entry.id * 10_000,
       });
       continue;
@@ -554,10 +549,7 @@ export function buildTranscript(
         id: `m-${entry.id}`,
         role: "system",
         text: entry.data.note,
-        timestamp:
-          typeof entry.data.createdAt === "string"
-            ? entry.data.createdAt
-            : new Date().toISOString(),
+        timestamp: entryTimestamp(entry.data),
         order: entry.id * 10_000,
         version: {
           from: typeof entry.data.from === "string" ? entry.data.from : null,
@@ -844,9 +836,20 @@ function userImages(content: unknown, media: MediaResolver): MediaRef[] {
   return refs;
 }
 
+function entryTimestamp(data: unknown): string {
+  const createdAt = isRecord(data) && typeof data.createdAt === "string" ? data.createdAt : null;
+  return toIsoTimestamp(createdAt) ?? new Date().toISOString();
+}
+
 function timestampOf(message: Record<string, unknown>): string {
   const timestamp = message.timestamp;
-  return new Date(typeof timestamp === "number" ? timestamp : Date.now()).toISOString();
+  const parsed =
+    typeof timestamp === "number"
+      ? timestamp
+      : typeof timestamp === "string"
+        ? Date.parse(timestamp)
+        : Number.NaN;
+  return new Date(Number.isFinite(parsed) ? parsed : Date.now()).toISOString();
 }
 
 function contentBlocks(content: unknown): Record<string, unknown>[] {

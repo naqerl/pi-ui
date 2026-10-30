@@ -551,18 +551,17 @@ export interface BuiltinInputs {
   session: BuiltinSession;
 }
 
+/** Client-only display hooks; the server deliberately leaves these values untouched. */
+export interface BuiltinRenderOptions {
+  /** Formats an event's UTC timestamp in the browser's timezone. */
+  formatTime?: (timestamp: string) => string;
+}
+
 /** Kept for compatibility with code and tests that size the MCP event feed. */
 export const MCP_EVENT_LIMIT = 20;
 /** Recent MCP events the `mcp_events` builtin lists, newest first. */
 export const MCP_EVENT_WIDGET_LIMIT = 3;
 const LIVE_SUBSCRIPTION = new Set(["opening", "active", "reconnecting"]);
-
-function clockTime(timestamp: string): string {
-  const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) return timestamp;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-}
 
 function subscriptionState(status: string): StatusState {
   if (LIVE_SUBSCRIPTION.has(status)) return status === "active" ? "ok" : "warn";
@@ -602,7 +601,11 @@ function jobState(job: BuiltinJob): StatusState {
 }
 
 /** Live data pi-ui already has, as plain JSON a widget mapping can read. */
-export function builtinData(name: BuiltinName, inputs: BuiltinInputs): unknown {
+export function builtinData(
+  name: BuiltinName,
+  inputs: BuiltinInputs,
+  options: BuiltinRenderOptions = {},
+): unknown {
   const { usage, context, mcp } = inputs;
   switch (name) {
     case "tokens": {
@@ -707,20 +710,26 @@ export function builtinData(name: BuiltinName, inputs: BuiltinInputs): unknown {
           ),
         ],
         latest: recent[0] === undefined ? null : `new event from ${recent[0].server}`,
-        events: recent.map((event) => ({
-          key: `mcp-event-${event.id}`,
-          id: event.id,
-          server: event.server,
-          name: event.name,
-          timestamp: event.timestamp,
-          time: clockTime(event.timestamp),
-          summary: event.summary,
-          label: `${event.server} · ${event.name}`,
-          value:
-            event.summary.length > 0
-              ? `${clockTime(event.timestamp)} · ${event.summary}`
-              : clockTime(event.timestamp),
-        })),
+        events: recent.map((event) => {
+          const formatted = options.formatTime?.(event.timestamp);
+          const clock = formatted === undefined || formatted === "" ? null : formatted;
+          return {
+            key: `mcp-event-${event.id}`,
+            id: event.id,
+            server: event.server,
+            name: event.name,
+            timestamp: event.timestamp,
+            time: clock ?? event.timestamp,
+            summary: event.summary,
+            label: `${event.server} · ${event.name}`,
+            value:
+              clock === null
+                ? event.summary
+                : event.summary.length > 0
+                  ? `${clock} · ${event.summary}`
+                  : clock,
+          };
+        }),
         subscriptions: subscriptions.map((item) => ({
           key: `mcp-sub-${item.id}`,
           id: item.id,

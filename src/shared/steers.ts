@@ -1,3 +1,4 @@
+import { toIsoTimestamp } from "./time.js";
 import type { ChatMessage, QueuedMessage } from "./types.js";
 
 /** Pending steers sort after everything the run is still doing, oldest first. */
@@ -138,13 +139,14 @@ export function steerFromInboxItem(
   if (item.mode !== "steer" || item.id === undefined) return undefined;
   const data = item.entry?.data;
   const key = steerKeyFromEntryData(data);
-  const createdAt =
+  const storedCreatedAt =
     typeof data === "object" &&
     data !== null &&
     "createdAt" in data &&
     typeof (data as { createdAt: unknown }).createdAt === "string"
       ? (data as { createdAt: string }).createdAt
-      : now.toISOString();
+      : null;
+  const createdAt = toIsoTimestamp(storedCreatedAt) ?? now.toISOString();
   return {
     id: String(item.id),
     text: contentText(item.content),

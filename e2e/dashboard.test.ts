@@ -21,6 +21,7 @@ import {
   validateMapping,
   type Widget,
 } from "../src/shared/dashboard.js";
+import { formatTime } from "../src/shared/time.js";
 
 const dirs: string[] = [];
 let http: Server;
@@ -228,7 +229,9 @@ test("MCP builtins list recent events newest first and subscriptions per server"
     jobs: [],
     session: { conversationId: "c", model: null, run: "idle" },
   } as unknown as Parameters<typeof builtinData>[1];
-  const feed = builtinData("mcp_events", inputs) as {
+  const feed = builtinData("mcp_events", inputs, {
+    formatTime: (timestamp) => formatTime(timestamp, { seconds: true }),
+  }) as {
     total: number;
     live: string[];
     events: { id: string; label: string; value: string }[];

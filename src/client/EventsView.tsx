@@ -1,17 +1,8 @@
+import { formatTime } from "../shared/time";
 import type { McpEventsState, McpSubscriptionView } from "../shared/types";
 import { PiMenu } from "./PiMenu";
 
 const LIVE_STATUS = new Set(["opening", "active", "reconnecting"]);
-
-function formatTime(timestamp: string): string {
-  const parsed = Date.parse(timestamp);
-  if (!Number.isFinite(parsed)) return timestamp;
-  return new Date(parsed).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
 
 function SubscriptionRow({ subscription }: { subscription: McpSubscriptionView }) {
   const live = LIVE_STATUS.has(subscription.status);
@@ -84,7 +75,7 @@ export function EventsView({ events, ready }: { events: McpEventsState; ready: b
             {[...events.events].reverse().map((event) => (
               <article key={event.id} className="theme-radius border border-border px-3 py-2">
                 <div className="font-mono text-[11px] text-muted-foreground">
-                  {formatTime(event.timestamp)} · new event from {event.server}
+                  {formatTime(event.timestamp, { seconds: true })} · new event from {event.server}
                 </div>
                 <div className="mt-1 font-mono text-xs">{event.name}</div>
                 {event.summary.length > 0 && (

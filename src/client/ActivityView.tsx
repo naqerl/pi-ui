@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { formatTime } from "../shared/time";
 import type { ActivityItem } from "../shared/types";
 import { activitySummary } from "./activity-format";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
@@ -89,10 +90,7 @@ function JobField({ label, value }: { label: string; value: string }) {
 function JobActivityRow({ activity }: { activity: Extract<ActivityItem, { kind: "job" }> }) {
   const { notice } = activity;
   const failed = notice.status === "failed" || notice.status === "lost";
-  const time = new Date(activity.timestamp);
-  const clock = Number.isNaN(time.getTime())
-    ? ""
-    : `${String(time.getHours()).padStart(2, "0")}:${String(time.getMinutes()).padStart(2, "0")}`;
+  const clock = formatTime(activity.timestamp);
   return (
     <Collapsible>
       <CollapsibleTrigger

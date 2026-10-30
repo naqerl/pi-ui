@@ -1,3 +1,4 @@
+import { toIsoTimestamp } from "../shared/time.js";
 import type { McpEventsState, McpEventView, McpSubscriptionView } from "../shared/types.js";
 
 export interface ExtensionNotice {
@@ -81,7 +82,7 @@ export class McpEventFeed {
           ? event.data.kind
           : streamName;
       const timestamp =
-        typeof event.timestamp === "string" ? event.timestamp : new Date().toISOString();
+        toIsoTimestamp(event.timestamp as string | number | Date) ?? new Date().toISOString();
       const id =
         typeof event.eventId === "string"
           ? event.eventId
