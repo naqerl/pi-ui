@@ -6,6 +6,7 @@ import {
   type AgentEventStream,
   type Conversation,
   type Harness,
+  type InputEntry,
   type SnapshotEvent,
   type Submission,
   type SubmissionId,
@@ -29,9 +30,9 @@ import {
   type RunState,
   type Snapshot,
   STEER_ENTRY_KIND,
+  type StreamActivity,
   type StreamDraftSync,
   type StreamMessageDone,
-  type StreamNotice,
   type StreamRunState,
   type StreamTextDelta,
   type StreamToolEnd,
@@ -51,6 +52,7 @@ import {
   assistantMessageFromEntry,
   buildTranscript,
   contextUsage,
+  JOB_NOTICE_ENTRY_KIND,
   SESSION_CONTEXT,
   summarizeUsage,
   toolActivityFromEntry,
@@ -77,6 +79,8 @@ interface SubmitOptions {
   resume?: boolean;
   /** Media ids sent as images after the text. */
   attachments?: string[];
+  /** Place an input as this application entry instead of a normal user entry. */
+  entry?: InputEntry;
 }
 
 /** `PI_UI_QUIET_AFTER_MS` shortens the quiet threshold for tests. */
@@ -519,7 +523,11 @@ export class ChatService {
           content,
           whenBusy: steer ? "steer" : "followUp",
           ...(options.requestId === undefined ? {} : { requestId: options.requestId }),
-          ...(steer ? { entry: { kind: STEER_ENTRY_KIND } } : {}),
+          ...(steer
+            ? { entry: { kind: STEER_ENTRY_KIND } }
+            : options.entry === undefined
+              ? {}
+              : { entry: options.entry }),
         },
         SESSION_CONTEXT,
       );
@@ -810,14 +818,24 @@ export class ChatService {
     }
   }
 
+  /** Sends a job result to the agent without placing a user message in the chat. */
+  async submitJobNotice(text: string): Promise<void> {
+    await this.submit(text, "queue", {
+      entry: {
+        kind: JOB_NOTICE_ENTRY_KIND,
+        data: { text, createdAt: new Date().toISOString() },
+      },
+    });
+  }
+
   /**
-   * Records a chat-only notice (a job the agent is not told about) and shows it to
-   * open clients. The agent never sees it.
+   * Records a job result the agent is not told about and shows it to open clients.
+   * It belongs to the activity page, so this never touches the chat draft.
    */
   async recordNotice(text: string): Promise<void> {
-    const message = await appendJobNotice(this.conversation, text);
-    if (message === undefined) return;
-    this.hub.broadcast({ event: "notice", data: { message } satisfies StreamNotice });
+    const activity = await appendJobNotice(this.conversation, text);
+    if (activity === undefined) return;
+    this.hub.broadcast({ event: "activity", data: { activity } satisfies StreamActivity });
   }
 
   private async appendNoModelMessage(): Promise<void> {
@@ -1025,6 +1043,16 @@ export class ChatService {
         return;
 
       case "entry_appended":
+        if (event.entry.kind === JOB_NOTICE_ENTRY_KIND) {
+          const activity = buildTranscript([event.entry]).activity[0];
+          if (activity !== undefined) {
+            this.hub.broadcast({
+              event: "activity",
+              data: { activity } satisfies StreamActivity,
+            });
+          }
+          return;
+        }
         if (event.entry.kind === STEER_ENTRY_KIND) {
           this.hub.broadcast({
             event: "message.done",

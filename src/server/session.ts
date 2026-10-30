@@ -59,13 +59,17 @@ const VersionUpdateEntry = defineEntry<{
 }>("ui.version-update");
 
 /**
- * A background job the agent is not told about (cancelled, or started with
- * `notify: false`). It has no `model` part, so it only shows in the chat.
+ * A background job result. The agent-visible result is placed as this entry through an input, so
+ * its model message is unchanged; a cancelled or `notify: false` result has no `model` part and is
+ * only recorded for the activity page.
  */
 const JobNoticeEntry = defineEntry<{
   text: string;
   createdAt: string;
 }>("ui.job-notice");
+
+/** The entry kind a job result is placed as; the chat never renders it as a user message. */
+export const JOB_NOTICE_ENTRY_KIND = JobNoticeEntry.kind;
 
 export interface DurableSessionOptions {
   readonly cwd: string;
@@ -499,11 +503,10 @@ export function buildTranscript(
     if (kind === JobNoticeEntry.kind) {
       if (!isRecord(entry.data) || typeof entry.data.text !== "string") continue;
       const notice = parseNotice(entry.data.text);
-      if (notice === null) continue;
-      messages.push({
-        id: `m-${entry.id}`,
-        role: "system",
-        text: entry.data.text,
+      if (notice === null || notice.kind !== "job") continue;
+      activity.push({
+        kind: "job",
+        id: `j-${entry.id}`,
         notice,
         timestamp:
           typeof entry.data.createdAt === "string"
@@ -559,6 +562,18 @@ export function buildTranscript(
       const attachments = media === undefined ? [] : userImages(message.content, media);
       if (text.length > 0 || attachments.length > 0) {
         const notice = parseNotice(text);
+        // Older conversations stored a job result as a normal user entry. Keep it out of the chat
+        // too, and show it where every other result of that run is shown.
+        if (notice?.kind === "job") {
+          activity.push({
+            kind: "job",
+            id: `j-${entry.id}`,
+            notice,
+            timestamp: timestampOf(message),
+            order: entry.id * 10_000,
+          });
+          continue;
+        }
         messages.push({
           id: `m-${entry.id}`,
           role: "user",
@@ -693,11 +708,11 @@ export function assistantMessageFromEntry(entry: EntryRecord): ChatMessage | nul
   };
 }
 
-/** Records a chat-only job notice and returns it as a transcript message. */
+/** Records a job result the agent is not told about and returns its activity item. */
 export async function appendJobNotice(
   conversation: Conversation,
   text: string,
-): Promise<ChatMessage | undefined> {
+): Promise<ActivityItem | undefined> {
   const createdAt = new Date().toISOString();
   await conversation.commit(
     (tx) => tx.appendEntry(JobNoticeEntry, conversation.id, { data: { text, createdAt } }),
@@ -713,7 +728,7 @@ export async function appendJobNotice(
         candidate.data.createdAt === createdAt &&
         candidate.data.text === text,
     );
-  return entry === undefined ? undefined : buildTranscript([entry]).messages[0];
+  return entry === undefined ? undefined : buildTranscript([entry]).activity[0];
 }
 
 export async function appendAssistantError(

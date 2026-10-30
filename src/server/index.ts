@@ -176,7 +176,7 @@ dashboard.setHost({
 });
 jobs.onChange(() => dashboard.broadcast());
 jobs.setNotifier((job, tail) => {
-  void chat.submit(jobNotice(job, tail), "queue").catch((error: unknown) => {
+  void chat.submitJobNotice(jobNotice(job, tail)).catch((error: unknown) => {
     console.error(`[pi] background job ${job.id} message failed`, error);
   });
 });

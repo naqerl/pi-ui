@@ -1,7 +1,8 @@
 /**
- * Background job results and MCP events reach the chat as messages the agent
- * already reads. These helpers recognise them so the chat can show a one-line
- * notice instead of a bubble; the text itself is unchanged.
+ * Background job results and MCP events reach the transcript as messages the agent
+ * already reads. These helpers recognise them: the activity page shows job results,
+ * and the chat shows MCP events as a one-line notice instead of a bubble. The text
+ * sent to the model is unchanged.
  */
 
 export interface JobNoticeDetails {

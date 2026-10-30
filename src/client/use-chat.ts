@@ -12,6 +12,7 @@ import type {
   QueuedMessage,
   RunState,
   Snapshot,
+  StreamActivity,
   StreamDraftSync,
   StreamMessageDone,
   StreamNotice,
@@ -48,6 +49,39 @@ function parseEvent<T>(event: MessageEvent<string>): T | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Job results belong on the activity page. Older servers still send them as user messages, so
+ * move those out of the chat before the transcript reaches the view.
+ */
+function separateJobResults(messages: ChatMessage[]): {
+  messages: ChatMessage[];
+  activity: ActivityItem[];
+} {
+  const kept: ChatMessage[] = [];
+  const activity: ActivityItem[] = [];
+  for (const message of messages) {
+    const notice = message.notice;
+    if (notice?.kind === "job") {
+      activity.push({
+        kind: "job",
+        id: `j-${message.id}`,
+        notice,
+        timestamp: message.timestamp,
+        order: message.order,
+      });
+    } else {
+      kept.push(message);
+    }
+  }
+  return { messages: kept, activity };
+}
+
+function addJobActivity(current: ActivityItem[], extra: ActivityItem[]): ActivityItem[] {
+  if (extra.length === 0) return current;
+  const held = new Set(current.map((item) => item.id));
+  return [...current, ...extra.filter((item) => !held.has(item.id))];
 }
 
 /** Messages fetched per scroll-up page. */
@@ -138,12 +172,16 @@ export function useChat(options: UseChatOptions = {}) {
         hasEarlierRef.current = snapshot.hasEarlier === true;
         setHasEarlier(hasEarlierRef.current);
       }
+      const fresh = separateJobResults(snapshot.messages);
+      const freshActivity = [...snapshot.activity, ...fresh.activity].sort(
+        (a, b) => a.order - b.order,
+      );
       if (sameConversation) {
-        setMessages((current) => mergeWindow(current, snapshotFrom, snapshot.messages));
-        setActivity((current) => mergeWindow(current, snapshotFrom, snapshot.activity));
+        setMessages((current) => mergeWindow(current, snapshotFrom, fresh.messages));
+        setActivity((current) => mergeWindow(current, snapshotFrom, freshActivity));
       } else {
-        setMessages(snapshot.messages);
-        setActivity(snapshot.activity);
+        setMessages(fresh.messages);
+        setActivity(freshActivity);
       }
       const persistedActivityIds = new Set(snapshot.activity.map((item) => item.id));
       const toolsAreCurrent =
@@ -188,8 +226,14 @@ export function useChat(options: UseChatOptions = {}) {
       if (windowFrom.current !== before) return;
       windowFrom.current = page.from;
       hasEarlierRef.current = page.hasEarlier;
-      setMessages((current) => prependPage(current, page.messages));
-      setActivity((current) => prependPage(current, page.activity));
+      const older = separateJobResults(page.messages);
+      setMessages((current) => prependPage(current, older.messages));
+      setActivity((current) =>
+        prependPage(
+          current,
+          [...page.activity, ...older.activity].sort((a, b) => a.order - b.order),
+        ),
+      );
       setHasEarlier(page.hasEarlier);
     } catch {
       // A later scroll tries again.
@@ -279,23 +323,37 @@ export function useChat(options: UseChatOptions = {}) {
     source.addEventListener("message.done", (event) => {
       const data = parseEvent<StreamMessageDone>(event as MessageEvent<string>);
       if (data?.message) {
-        const message = data.message;
-        setMessages((current) =>
-          current.some((item) => item.id === message.id) ? current : [...current, message],
-        );
+        const { messages, activity: jobActivity } = separateJobResults([data.message]);
+        const message = messages[0];
+        if (message !== undefined) {
+          setMessages((current) =>
+            current.some((item) => item.id === message.id) ? current : [...current, message],
+          );
+        }
+        if (jobActivity.length > 0) setActivity((current) => addJobActivity(current, jobActivity));
+        setDraftText("");
+        setDraftThinking("");
       }
-      setDraftText("");
-      setDraftThinking("");
       void refreshState();
     });
 
     source.addEventListener("notice", (event) => {
       const data = parseEvent<StreamNotice>(event as MessageEvent<string>);
       if (!data) return;
-      const message = data.message;
-      setMessages((current) =>
-        current.some((item) => item.id === message.id) ? current : [...current, message],
-      );
+      const { messages, activity: jobActivity } = separateJobResults([data.message]);
+      const message = messages[0];
+      if (message !== undefined) {
+        setMessages((current) =>
+          current.some((item) => item.id === message.id) ? current : [...current, message],
+        );
+      }
+      if (jobActivity.length > 0) setActivity((current) => addJobActivity(current, jobActivity));
+    });
+
+    source.addEventListener("activity", (event) => {
+      const data = parseEvent<StreamActivity>(event as MessageEvent<string>);
+      if (data?.activity.kind !== "job") return;
+      setActivity((current) => addJobActivity(current, [data.activity]));
     });
 
     source.addEventListener("tool.start", (event) => {
@@ -441,11 +499,16 @@ export function useChat(options: UseChatOptions = {}) {
           setLiveTools([]);
         }
         if (!data.queued && data.placed) {
-          setMessages((current) =>
-            current.some((item) => item.id === data.message.id)
-              ? current
-              : [...current, data.message],
-          );
+          const { messages, activity: jobActivity } = separateJobResults([data.message]);
+          const message = messages[0];
+          if (message !== undefined) {
+            setMessages((current) =>
+              current.some((item) => item.id === message.id) ? current : [...current, message],
+            );
+          }
+          if (jobActivity.length > 0) {
+            setActivity((current) => addJobActivity(current, jobActivity));
+          }
         }
         return { ok: true };
       } catch {

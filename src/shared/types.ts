@@ -1,4 +1,4 @@
-import type { ChatNotice } from "./notices.js";
+import type { ChatNotice, JobNoticeDetails } from "./notices.js";
 export type RunState = "idle" | "running" | "interrupted";
 
 /** Entry kind used for a steered user message, so the transcript can mark it. */
@@ -26,7 +26,7 @@ export interface ChatMessage {
   steer?: boolean;
   /** A steer still waiting for the run's next turn boundary; it can be taken back. */
   pendingSteer?: boolean;
-  /** Set when the message is a background job result or MCP event; the chat shows a one-line notice. */
+  /** Set when the message is an MCP event; the chat shows a one-line notice. */
   notice?: ChatNotice;
   /** Set on the pi-ui version-update note, so the chat can paint it with the theme accent. */
   version?: { from: string | null; to: string };
@@ -80,7 +80,16 @@ export interface ThinkingActivity {
   usage?: TokenSpend;
 }
 
-export type ActivityItem = ToolActivity | ThinkingActivity;
+/** A background job result. It belongs on the activity page, not in the chat. */
+export interface JobActivity {
+  kind: "job";
+  id: string;
+  notice: JobNoticeDetails;
+  timestamp: string;
+  order: number;
+}
+
+export type ActivityItem = ToolActivity | ThinkingActivity | JobActivity;
 
 export interface UsageSummary {
   input: number;
@@ -261,9 +270,14 @@ export interface HealthResponse {
   ok: true;
 }
 
-/** A chat-only notice appended outside a run; clients add it without touching the draft. */
+/** A one-line chat notice appended outside a run; clients add it without touching the draft. */
 export interface StreamNotice {
   message: ChatMessage;
+}
+
+/** An activity item appended outside a run, such as a finished background job. */
+export interface StreamActivity {
+  activity: ActivityItem;
 }
 
 export interface StreamMessageDone {

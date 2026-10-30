@@ -14,6 +14,14 @@ const notices = (browser: Page) =>
     })),
   );
 
+/** The job rows on the activity page, oldest first. */
+const jobRows = (browser: Page) =>
+  browser.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>('[data-testid="activity-job-summary"]')].map(
+      (node) => node.textContent ?? "",
+    ),
+  );
+
 const dialogText = (browser: Page) =>
   browser.evaluate(() => {
     const dialog = document.querySelector<HTMLDialogElement>('[data-testid="notice-dialog"]');
@@ -31,7 +39,15 @@ const rawBubbles = (browser: Page) =>
       ).length,
   );
 
-test("a finished job shows as a one-line notice that opens its details", async ({
+const jobNotice = (browser: Page) =>
+  browser.evaluate(
+    () => document.querySelector('[data-testid="chat-notice"][data-notice-kind="job"]') !== null,
+  );
+
+const chatRunInfo = (browser: Page) =>
+  browser.evaluate(() => document.querySelectorAll('[data-testid="run-info"]').length);
+
+test("a finished job shows only on the activity page with its details", async ({
   app,
   browser,
   screen,
@@ -41,75 +57,46 @@ test("a finished job shows as a one-line notice that opens its details", async (
   const marker = `notice-output-${Date.now()}`;
   await screen.getByRole("textbox", "Message").fill(`JOBSTART sleep 1; echo ${marker}; exit 4`);
   await screen.getByRole("button", "Send").tap();
+
+  await app.open("/activity");
   await expect
     .poll(
       async () =>
-        (await notices(browser)).some(
-          (item) =>
-            item.kind === "job" &&
-            item.summary.includes(marker) &&
-            item.summary.includes("failed ✗ exit 4"),
+        (await jobRows(browser)).some(
+          (summary) => summary.includes(marker) && summary.includes("failed ✗ exit 4"),
         ),
       { timeout: 25_000 },
     )
     .toBe(true);
+
+  // The result never becomes a chat notice or a user message.
+  await app.open("/");
+  await expect.poll(() => jobNotice(browser), { timeout: 10_000 }).toBe(false);
   expect(await rawBubbles(browser)).toBe(0);
 
-  // One line: the pill is short and centred, not a bubble.
-  const box = await browser.evaluate((text) => {
-    const pill = [...document.querySelectorAll<HTMLElement>('[data-testid="chat-notice"]')].find(
-      (node) => node.textContent?.includes(text),
-    );
-    if (pill === undefined) return null;
-    const rect = pill.getBoundingClientRect();
-    const page = document.documentElement.clientWidth;
-    return {
-      oneLine: rect.height < 30,
-      centred: Math.abs(rect.left + rect.width / 2 - page / 2) < 4,
-      inside: rect.left >= 0 && rect.right <= page,
-    };
+  await app.open("/activity");
+  await expect
+    .poll(async () => (await jobRows(browser)).some((summary) => summary.includes(marker)), {
+      timeout: 10_000,
+    })
+    .toBe(true);
+  await browser.evaluate((text) => {
+    [...document.querySelectorAll<HTMLElement>('[data-testid="activity-job"]')]
+      .find((node) => node.textContent?.includes(text))
+      ?.click();
+    return null;
   }, marker);
-  expect(box).toEqual({ oneLine: true, centred: true, inside: true });
-
-  const open = () =>
-    browser.evaluate((text) => {
-      [...document.querySelectorAll<HTMLElement>('[data-testid="chat-notice"]')]
-        .find((node) => node.textContent?.includes(text))
-        ?.click();
-      return null;
-    }, marker);
-  await open();
-  await expect(screen.getByRole("dialog")).toBeVisible();
-  const details = (await dialogText(browser)) ?? "";
-  expect(details).toMatch(/Background job/);
+  const details = await browser.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>('[data-testid="activity-card"]')]
+      .map((node) => node.textContent ?? "")
+      .join("\n"),
+  );
   expect(details).toMatch(/Exit code\s*4/);
   expect(details).toMatch(new RegExp(`Command\\s*sleep 1; echo ${marker}; exit 4`));
-  expect(details).toMatch(new RegExp(`Last output[\\s\\S]*${marker}`));
-
-  // Esc closes it.
-  await screen.getByRole("button", "Close").press("Escape");
-  await expect.poll(() => dialogText(browser)).toBe(null);
-
-  // A tap on the backdrop closes it; a tap inside does not.
-  await open();
-  await expect(screen.getByRole("dialog")).toBeVisible();
-  await screen.getByText("Last output", { exact: true }).tap();
-  expect(await dialogText(browser)).not.toBe(null);
-  await browser.evaluate(() => {
-    document
-      .querySelector('[data-testid="notice-dialog"]')
-      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    return null;
-  });
-  await expect.poll(() => dialogText(browser)).toBe(null);
-
-  // So does the close button.
-  await open();
-  await screen.getByRole("button", "Close").tap();
-  await expect.poll(() => dialogText(browser)).toBe(null);
+  expect(details).toMatch(new RegExp(`last output[\\s\\S]*${marker}`));
 });
 
-test("a quiet job shows only in the chat and survives a reload", async ({
+test("a quiet job shows only on the activity page and survives a reload", async ({
   app,
   browser,
   screen,
@@ -121,12 +108,14 @@ test("a quiet job shows only in the chat and survives a reload", async ({
   await screen.getByRole("textbox", "Message").fill(`TOOLCALLS ${JSON.stringify(calls)}`);
   await screen.getByRole("button", "Send").tap();
   const quiet = async () =>
-    (await notices(browser)).filter((item) => item.summary.startsWith(`job ${name} finished ✓`));
+    (await jobRows(browser)).filter((summary) => summary.startsWith(`job ${name} finished ✓`));
+  await app.open("/activity");
   await expect.poll(async () => (await quiet()).length, { timeout: 20_000 }).toBe(1);
-  // It is a chat-only notice, not a message the agent was given.
-  expect((await quiet())[0]?.role).toBe("system");
-
+  // It is a job result the agent was not given, so it is not a chat notice either.
   await app.open("/");
+  expect(await jobNotice(browser)).toBe(false);
+
+  await app.open("/activity");
   await expect.poll(async () => (await quiet()).length, { timeout: 10_000 }).toBe(1);
 });
 
@@ -159,7 +148,6 @@ const jobText = [
   "```",
   "Read more with job_output id=j12.",
 ].join("\n");
-
 const message = (id: string, role: string, text: string, second: number, order: number) => {
   const notice = parseNotice(text);
   return {
@@ -201,11 +189,11 @@ test("an MCP event notice shows the server, event and payload", async ({
   await app.open("/");
   await expect
     .poll(() => notices(browser))
-    .toEqual([
-      { kind: "job", role: "user", summary: "job build finished ✓ 12s" },
-      { kind: "mcp", role: "user", summary: "MCP github: pull_request event" },
-    ]);
+    .toEqual([{ kind: "mcp", role: "user", summary: "MCP github: pull_request event" }]);
   expect(await rawBubbles(browser)).toBe(0);
+  // The mocked transcript has a job result but no tool activity, so a job-only run-info row
+  // here would mean the job leaked into the chat.
+  expect(await chatRunInfo(browser)).toBe(0);
   await app.screenshot("notices-mobile");
 
   await browser.evaluate(() => {
@@ -243,13 +231,4 @@ test("an MCP event notice shows the server, event and payload", async ({
 
   await screen.getByRole("button", "Close").tap();
   await expect.poll(() => dialogText(browser)).toBe(null);
-  await browser.evaluate(() => {
-    document
-      .querySelector<HTMLElement>('[data-testid="chat-notice"][data-notice-kind="job"]')
-      ?.click();
-    return null;
-  });
-  await expect(screen.getByRole("dialog")).toBeVisible();
-  await app.screenshot("notice-job-modal-mobile");
-  await screen.getByRole("button", "Close").tap();
 });

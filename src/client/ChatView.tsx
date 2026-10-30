@@ -32,7 +32,7 @@ import { NoticeLine } from "./NoticeView";
 import { PiMenu } from "./PiMenu";
 import type { ChatStats } from "./StatsView";
 import { createTask } from "./task-client";
-import { groupTimeline } from "./timeline-groups";
+import { groupTimeline, type TimelineGroup } from "./timeline-groups";
 import type { SendOutcome, TimelineItem } from "./use-chat";
 import { usePager } from "./use-pager";
 import { useStickToBottom } from "./use-stick-to-bottom";
@@ -905,7 +905,15 @@ export function ChatView({
     }, 300);
     return () => window.clearTimeout(timer);
   }, []);
-  const groups = useMemo(() => groupTimeline(timeline), [timeline]);
+  const groups = useMemo<TimelineGroup[]>(
+    () =>
+      groupTimeline(timeline).flatMap((group): TimelineGroup[] => {
+        if (group.kind !== "activity") return [group];
+        const items = group.items.filter((item) => item.kind !== "job");
+        return items.length === 0 ? [] : [{ ...group, items }];
+      }),
+    [timeline],
+  );
   const headerRef = useRef<HTMLElement | null>(null);
   const footerRef = useRef<HTMLDivElement | null>(null);
   const [headerClearance, setHeaderClearance] = useState(0);
