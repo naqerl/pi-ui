@@ -60,11 +60,15 @@ function isTask(value: unknown): value is Task {
     task.id.length > 0 &&
     task.id.length <= 16 &&
     typeof task.title === "string" &&
-    (task.status === "open" || task.status === "done") &&
+    (task.status === "open" || task.status === "done" || task.status === "proposed") &&
     (task.parentId === null || typeof task.parentId === "string") &&
     Array.isArray(task.blockedBy) &&
     task.blockedBy.every((id) => typeof id === "string") &&
     typeof task.createdAt === "string" &&
+    (task.proposedAt === undefined ||
+      task.proposedAt === null ||
+      typeof task.proposedAt === "string") &&
+    (task.rationale === undefined || typeof task.rationale === "string") &&
     (task.attachments === undefined ||
       (Array.isArray(task.attachments) &&
         task.attachments.every((id) => typeof id === "string"))) &&
@@ -77,11 +81,20 @@ function isTask(value: unknown): value is Task {
 
 function sanitize(tasks: Task[]): Task[] {
   const ids = new Set(tasks.map((task) => task.id));
-  return tasks.map((task) => ({
-    ...task,
-    parentId: task.parentId !== null && ids.has(task.parentId) ? task.parentId : null,
-    blockedBy: [...new Set(task.blockedBy.filter((id) => id !== task.id && ids.has(id)))],
-  }));
+  return tasks.map((task) => {
+    const proposed = task.status === "proposed";
+    return {
+      ...task,
+      parentId: proposed
+        ? null
+        : task.parentId !== null && ids.has(task.parentId)
+          ? task.parentId
+          : null,
+      blockedBy: proposed
+        ? []
+        : [...new Set(task.blockedBy.filter((id) => id !== task.id && ids.has(id)))],
+    };
+  });
 }
 
 /** Durable todo ledger at `DATA_DIR/tasks.json`. One list, shared by every client. */
@@ -128,6 +141,9 @@ export class TaskStore {
         const parent = tasks.find((task) => task.id === parentId);
         if (parent === undefined) throw new TaskError("Unknown task", 404);
         if (parent.status === "done") throw new TaskError("Task is done", 409);
+        if (parent.status === "proposed") {
+          throw new TaskError("Task is not open; a proposal must be approved first", 409);
+        }
       }
       const task: Task = {
         id: newId(new Set(tasks.map((item) => item.id))),
@@ -136,6 +152,43 @@ export class TaskStore {
         parentId,
         blockedBy: [],
         createdAt: new Date().toISOString(),
+        completedAt: null,
+        completion: null,
+        ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
+      };
+      return [...tasks, task];
+    });
+  }
+
+  /** Record a task idea for human approval. It is not open work until approved. */
+  propose(
+    title: string,
+    rationale: string,
+    attachments: readonly string[] = [],
+  ): Promise<TaskLedger> {
+    const text = title.trim();
+    if (text.length === 0) return Promise.reject(new TaskError("Task title is required", 400));
+    const reason = typeof rationale === "string" ? rationale.trim() : "";
+    if (reason.length < 20) {
+      return Promise.reject(
+        new TaskError(
+          "A proposal needs a rationale of at least 20 characters so a human can judge why it is worth doing",
+          400,
+        ),
+      );
+    }
+    return this.commit((tasks) => {
+      if (tasks.length >= TASK_LIMIT) throw new TaskError("Task list is full", 400);
+      const now = new Date().toISOString();
+      const task: Task = {
+        id: newId(new Set(tasks.map((item) => item.id))),
+        title: text,
+        status: "proposed",
+        parentId: null,
+        blockedBy: [],
+        createdAt: now,
+        proposedAt: now,
+        rationale: reason,
         completedAt: null,
         completion: null,
         ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
@@ -187,8 +240,14 @@ export class TaskStore {
       if (current === undefined) throw new TaskError("Unknown task", 404);
       let next = current;
       if (patch.status !== undefined) {
-        if (patch.status !== "open" && patch.status !== "done") {
-          throw new TaskError('Status must be "open" or "done"', 400);
+        if (patch.status !== "open" && patch.status !== "done" && patch.status !== "proposed") {
+          throw new TaskError('Status must be "open", "done" or "proposed"', 400);
+        }
+        if (patch.status === "proposed" && current.status !== "proposed") {
+          throw new TaskError("Only a proposal can be moved to proposed", 409);
+        }
+        if (patch.status === "done" && current.status === "proposed") {
+          throw new TaskError("Task is not open; a proposal must be approved first", 409);
         }
         // A parent stays open until every subtask is done, same as kata's close rule.
         if (patch.status === "done" && hasOpenDescendant(tasks, id)) {
@@ -207,8 +266,24 @@ export class TaskStore {
                 : new Date().toISOString(),
             completion: { ...patch.completion },
           };
+        } else if (patch.status === "proposed") {
+          next = {
+            ...next,
+            status: "proposed",
+            parentId: null,
+            blockedBy: [],
+            proposedAt: current.proposedAt ?? new Date().toISOString(),
+            completedAt: null,
+            completion: null,
+          };
         } else {
-          next = { ...next, status: "open", completedAt: null, completion: null };
+          next = {
+            ...next,
+            status: "open",
+            completedAt: null,
+            completion: null,
+            ...(current.status === "proposed" ? { proposedAt: null } : {}),
+          };
         }
       }
       if (patch.blockedBy !== undefined) {
@@ -271,13 +346,16 @@ function normalizeBlockers(
   id: string,
   blockedBy: readonly unknown[],
 ): string[] {
-  const ids = new Set(tasks.map((task) => task.id));
+  const byId = new Map(tasks.map((task) => [task.id, task]));
   const next: string[] = [];
   for (const entry of blockedBy) {
     if (typeof entry !== "string" || entry.length === 0) {
       throw new TaskError("Blockers must be task ids", 400);
     }
-    if (!ids.has(entry)) throw new TaskError("Unknown blocker", 400);
+    const blocker = byId.get(entry);
+    if (blocker === undefined) throw new TaskError("Unknown blocker", 400);
+    // A proposal is not work, so it can never gate another task.
+    if (blocker.status === "proposed") continue;
     if (next.includes(entry)) continue;
     if (blockerClosesCycle(tasks, id, entry)) throw new TaskError("Blockers would cycle", 409);
     next.push(entry);

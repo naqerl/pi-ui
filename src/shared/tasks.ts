@@ -67,9 +67,10 @@ export function blockerClosesCycle(
   return false;
 }
 
-/** Ready work first, then blocked, then done. Ties follow creation order. */
+/** Ready work first, then blocked, then done, then proposals. Ties follow creation order. */
 export function compareTasks(tasks: readonly Task[], a: Task, b: Task): number {
   const rank = (task: Task) => {
+    if (task.status === "proposed") return 3;
     if (task.status === "done") return 2;
     if (liveBlockerIds(tasks, task).length > 0) return 1;
     return 0;

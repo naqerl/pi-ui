@@ -49,7 +49,7 @@ test("task tools list, mark done, and create a blocker", async () => {
   published = [];
   assert.deepEqual(
     createTaskTools(bridge).map((tool) => tool.name),
-    ["task_list", "task_view", "task_done", "task_block"],
+    ["task_list", "task_proposals", "task_view", "task_done", "propose_task", "task_block"],
   );
 
   const parent = (await bridge.store.create("Write the ledger", null)).tasks.find(

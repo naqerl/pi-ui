@@ -29,6 +29,19 @@ function manualCompletion(task: Task) {
   };
 }
 
+function proposedAgo(value: string): string {
+  const proposed = Date.parse(value);
+  if (!Number.isFinite(proposed)) return "at an unknown time";
+  const seconds = Math.max(0, Math.floor((Date.now() - proposed) / 1_000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
 interface TasksViewProps {
   tasks: Task[];
   ready: boolean;
@@ -49,11 +62,20 @@ export function TasksView({
   const [pickerId, setPickerId] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [problem, setProblem] = useState<{ id: string; message: string } | null>(null);
+  const [proposalsOpen, setProposalsOpen] = useState(false);
   const ignoreNextCardClick = useRef(false);
-  const ids = new Set(tasks.map((task) => task.id));
-  const roots = tasks
+  const activeTasks = tasks.filter((task) => task.status !== "proposed");
+  const proposedTasks = tasks
+    .filter((task) => task.status === "proposed")
+    .sort((a, b) => {
+      const left = a.proposedAt ?? a.createdAt;
+      const right = b.proposedAt ?? b.createdAt;
+      return left === right ? (a.id < b.id ? -1 : 1) : left < right ? -1 : 1;
+    });
+  const ids = new Set(activeTasks.map((task) => task.id));
+  const roots = activeTasks
     .filter((task) => task.parentId === null || !ids.has(task.parentId))
-    .sort((a, b) => compareTasks(tasks, a, b));
+    .sort((a, b) => compareTasks(activeTasks, a, b));
 
   const apply = async (id: string, outcome: Promise<TaskOutcome>) => {
     const next = await outcome;
@@ -65,7 +87,7 @@ export function TasksView({
     onLedger(next.ledger);
   };
 
-  const menuTask = menu === null ? undefined : tasks.find((task) => task.id === menu.id);
+  const menuTask = menu === null ? undefined : activeTasks.find((task) => task.id === menu.id);
 
   useEffect(() => {
     if (menu === null) return;
@@ -120,7 +142,7 @@ export function TasksView({
             <TaskBranch
               key={task.id}
               task={task}
-              tasks={tasks}
+              tasks={activeTasks}
               armedParentId={armedParentId}
               ignoreNextCardClick={ignoreNextCardClick}
               problem={problem}
@@ -141,13 +163,43 @@ export function TasksView({
             />
           ))}
         </ul>
+        {proposedTasks.length > 0 && (
+          <section className="mt-2 flex flex-col gap-3" data-testid="task-proposals">
+            <button
+              type="button"
+              aria-label={`Proposed (${proposedTasks.length})`}
+              aria-expanded={proposalsOpen}
+              aria-controls="proposed-tasks"
+              className="flex w-full items-center justify-between gap-2 theme-radius bg-surface px-3 py-2 text-left font-mono text-[11px]"
+              onClick={() => setProposalsOpen((current) => !current)}
+            >
+              <span>Proposed ({proposedTasks.length})</span>
+              <span aria-hidden="true" className="text-muted-foreground">
+                {proposalsOpen ? "−" : "+"}
+              </span>
+            </button>
+            {proposalsOpen && (
+              <ul id="proposed-tasks" className="flex flex-col gap-3">
+                {proposedTasks.map((task) => (
+                  <ProposedTask
+                    key={task.id}
+                    task={task}
+                    notice={problem?.id === task.id ? problem.message : null}
+                    onApprove={() => void apply(task.id, updateTask(task.id, { status: "open" }))}
+                    onDismiss={() => void apply(task.id, removeTask(task.id))}
+                  />
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
       </div>
       {menu !== null &&
         menuTask !== undefined &&
         createPortal(
           <TaskMenu
             task={menuTask}
-            tasks={tasks}
+            tasks={activeTasks}
             point={menu}
             pickerOpen={pickerId === menuTask.id}
             onArm={() => {
@@ -172,6 +224,74 @@ export function TasksView({
           document.body,
         )}
     </div>
+  );
+}
+
+function ProposedTask({
+  task,
+  notice,
+  onApprove,
+  onDismiss,
+}: {
+  task: Task;
+  notice: string | null;
+  onApprove: () => void;
+  onDismiss: () => void;
+}) {
+  const proposedAt = task.proposedAt ?? task.createdAt;
+  return (
+    <li
+      data-testid={`proposal-${task.id}`}
+      className="theme-radius bg-surface px-3 py-2 ring-1 ring-inset ring-foreground/10"
+    >
+      <div className="flex items-start gap-2 text-muted-foreground">
+        <span className="min-w-0 flex-1 whitespace-pre-wrap text-sm [overflow-wrap:anywhere]">
+          <InlineMarkdown text={task.title} />
+        </span>
+        <span className="shrink-0 font-mono text-[10px]">{task.id}</span>
+      </div>
+      {task.rationale !== undefined && task.rationale.length > 0 && (
+        <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground [overflow-wrap:anywhere]">
+          {task.rationale}
+        </p>
+      )}
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+        <time
+          dateTime={proposedAt}
+          title={formatDateTime(proposedAt)}
+          className="font-mono text-[10px] text-muted-foreground"
+        >
+          proposed {proposedAgo(proposedAt)}
+        </time>
+        <span className="flex gap-1.5">
+          <button
+            type="button"
+            aria-label={`Approve ${plainInline(task.title)}`}
+            className="theme-radius bg-foreground px-2 py-1 font-mono text-[10px] text-background"
+            onClick={onApprove}
+          >
+            Approve
+          </button>
+          <button
+            type="button"
+            aria-label={`Dismiss ${plainInline(task.title)}`}
+            className="theme-radius border border-foreground/20 bg-surface px-2 py-1 font-mono text-[10px] text-foreground"
+            onClick={onDismiss}
+          >
+            Dismiss
+          </button>
+        </span>
+      </div>
+      {notice !== null && (
+        <p
+          role="alert"
+          data-testid="task-error"
+          className="mt-1 font-mono text-[11px] leading-4 text-destructive"
+        >
+          {notice}
+        </p>
+      )}
+    </li>
   );
 }
 

@@ -85,7 +85,7 @@ const memorySnapshot = new SnapshotCache();
 const memoryBlock = await memorySnapshot.get(memory, "first_turn");
 const baseInstructions = `${await buildPiSystemPrompt(cwd, catalog.runtime)}
 
-Tasks are a shared todo ledger on the tasks page. You can list them with task_list, mark one done with task_done, and create a blocker for one with task_block. A done blocker does not block. A task with an open subtask cannot be marked done. You cannot add a task that blocks nothing, reopen a task, or delete one.
+Tasks are a shared todo ledger on the tasks page. You can list them with task_list, mark one done with task_done, and create a blocker for one with task_block. Every task needs human approval: write down work you think is worth doing with propose_task, and a human can approve it from the tasks page. A proposal is not a task and does not appear in task_list; use task_proposals to read the waiting proposals. A done blocker does not block. A task with an open subtask cannot be marked done. You cannot add a task that blocks nothing, reopen a task, or delete one.
 
 Draw a diagram into the chat with draw_diagram (Mermaid source) and revise it later with replace_diagram and the id from the first result. The drawing is part of your reply; do not repeat its source in your text.
 
@@ -379,6 +379,15 @@ app.post("/api/tasks", async (c) => {
     typeof body === "object" && body !== null && "parentId" in body ? body.parentId : null;
   if (parentId !== null && typeof parentId !== "string")
     return c.text("parentId must be a string", 400);
+  const proposed =
+    typeof body === "object" && body !== null && "propose" in body && body.propose === true;
+  const rationale =
+    typeof body === "object" &&
+    body !== null &&
+    "rationale" in body &&
+    typeof body.rationale === "string"
+      ? body.rationale
+      : "";
   try {
     const attachments = parseAttachmentIds(
       media,
@@ -387,6 +396,9 @@ app.post("/api/tasks", async (c) => {
         : undefined,
     );
     for (const id of attachments) await media.read(id);
+    if (proposed) {
+      return c.json(publishTasks(await taskStore.propose(title, rationale, attachments)), 201);
+    }
     return c.json(publishTasks(await taskStore.create(title, parentId, attachments)), 201);
   } catch (error) {
     return taskFailure(c, error);
@@ -403,8 +415,8 @@ app.patch("/api/tasks/:id", async (c) => {
   if (typeof body !== "object" || body === null) return c.text("Expected a JSON body", 400);
   const patch: { status?: TaskStatus; blockedBy?: string[]; completion?: TaskCompletion } = {};
   if ("status" in body) {
-    if (body.status !== "open" && body.status !== "done") {
-      return c.text('Status must be "open" or "done"', 400);
+    if (body.status !== "open" && body.status !== "done" && body.status !== "proposed") {
+      return c.text('Status must be "open", "done" or "proposed"', 400);
     }
     patch.status = body.status;
   }

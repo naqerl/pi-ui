@@ -231,7 +231,7 @@ export interface DraftSync {
   revision: number;
 }
 
-export type TaskStatus = "open" | "done";
+export type TaskStatus = "open" | "done" | "proposed";
 
 /** What closing a task cost, and where a reviewer can check the work. */
 export interface TaskCompletion {
@@ -250,6 +250,10 @@ export interface Task {
   /** Other task ids. A done blocker no longer keeps this task blocked. */
   blockedBy: string[];
   createdAt: string;
+  /** When this task was proposed, or null once a human approved it. */
+  proposedAt?: string | null;
+  /** Why the proposer thinks this task is worth doing. Kept after approval. */
+  rationale?: string;
   /** Media ids attached when the task was created. */
   attachments?: string[];
   /** When the task was closed, or null while it is open. */

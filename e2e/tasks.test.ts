@@ -5,8 +5,13 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createTaskTools, type TaskBridge } from "../src/server/task-tools.js";
 import { TaskStore } from "../src/server/tasks.js";
-import { formatTokenCount, parseTimeSpentMinutes } from "../src/shared/tasks.js";
-import type { TaskLedger } from "../src/shared/types.js";
+import {
+  formatTokenCount,
+  hasOpenDescendant,
+  liveBlockerIds,
+  parseTimeSpentMinutes,
+} from "../src/shared/tasks.js";
+import type { Task, TaskLedger } from "../src/shared/types.js";
 
 function tools(bridge: TaskBridge) {
   return new Map(createTaskTools(bridge).map((tool) => [tool.name, tool]));
@@ -142,6 +147,153 @@ test("task_done stores the report and both views show it", async () => {
     );
     assert.equal(zeroDone.isError, false);
     assert.equal(store.ledger().tasks.find((item) => item.id === zero.id)?.completion?.tokens, 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("propose_task requires a reason and keeps proposals out of task_list", async () => {
+  const { directory, store, bridge } = await temporaryStore();
+  try {
+    const short = text(
+      await call(bridge, "propose_task", {
+        title: "Tidy the ledger",
+        rationale: "It would be nice.",
+      }),
+    );
+    assert.equal(short.isError, true);
+    assert.match(short.text, /rationale|reason/i);
+    assert.equal(store.ledger().tasks.length, 0);
+
+    const rationale = "This removes repeated work and makes the ledger easier to review.";
+    const proposed = text(
+      await call(bridge, "propose_task", { title: "Tidy the ledger", rationale }),
+    );
+    assert.equal(proposed.isError, false);
+    assert.doesNotMatch(proposed.text, /Tidy the ledger/);
+    assert.match(proposed.text, /^proposals: 1 waiting for approval$/m);
+
+    const task = store.ledger().tasks.find((item) => item.title === "Tidy the ledger");
+    assert.ok(task);
+    assert.equal(task.status, "proposed");
+    assert.equal(task.parentId, null);
+    assert.deepEqual(task.blockedBy, []);
+    assert.equal(task.rationale, rationale);
+    assert.match(task.proposedAt ?? "", /^\d{4}-\d{2}-\d{2}T/);
+
+    const listed = text(await call(bridge, "task_list", {}));
+    assert.doesNotMatch(listed.text, /Tidy the ledger/);
+    assert.equal(listed.text.split("\n").at(-1), "proposals: 1 waiting for approval");
+
+    await store.create("A real task", null);
+    const withWork = text(await call(bridge, "task_list", {}));
+    assert.match(withWork.text, /A real task/);
+    assert.equal(withWork.text.split("\n").at(-1), "proposals: 1 waiting for approval");
+
+    await store.remove(task.id);
+    const withoutProposals = text(await call(bridge, "task_list", {}));
+    assert.doesNotMatch(withoutProposals.text, /proposals:/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("task_proposals lists proposals and task_done refuses them", async () => {
+  const { directory, store, bridge } = await temporaryStore();
+  try {
+    const rationale = "Reviewing this now avoids a larger migration later.";
+    await call(bridge, "propose_task", { title: "Plan the migration", rationale });
+    const proposal = store.ledger().tasks[0];
+    assert.ok(proposal);
+
+    const listed = text(await call(bridge, "task_proposals", {}));
+    assert.equal(listed.isError, false);
+    assert.match(listed.text, new RegExp(proposal.id));
+    assert.match(listed.text, /Plan the migration/);
+    assert.match(listed.text, new RegExp(rationale));
+    assert.match(listed.text, new RegExp(proposal.proposedAt ?? proposal.createdAt));
+
+    const refused = text(
+      await call(bridge, "task_done", {
+        id: proposal.id,
+        timeSpent: "5m",
+        tokens: 10,
+        evidence: "e2e/tasks.test.ts",
+      }),
+    );
+    assert.equal(refused.isError, true);
+    assert.match(refused.text, /proposal must be approved first/i);
+    assert.equal(store.ledger().tasks[0]?.status, "proposed");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("approving a proposal keeps its rationale and makes it normal work", async () => {
+  const { directory, store, bridge } = await temporaryStore();
+  try {
+    const rationale = "The old importer fails on files bigger than a gigabyte.";
+    await store.propose("Replace the importer", rationale);
+    const proposal = store.ledger().tasks[0];
+    assert.ok(proposal);
+
+    const approved = await store.update(proposal.id, { status: "open" });
+    const task = approved.tasks.find((item) => item.id === proposal.id);
+    assert.equal(task?.status, "open");
+    assert.equal(task?.proposedAt, null);
+    assert.equal(task?.rationale, rationale);
+    assert.equal(task?.completedAt, null);
+    assert.equal(task?.completion, null);
+
+    const listed = text(await call(bridge, "task_list", {}));
+    assert.match(listed.text, new RegExp(`${proposal.id} open Replace the importer`));
+    assert.doesNotMatch(listed.text, /proposals:/);
+
+    await assert.rejects(store.update(proposal.id, { status: "proposed" }), /only a proposal/i);
+    await store.remove(proposal.id);
+    assert.equal(store.ledger().tasks.length, 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("proposed tasks cannot block and do not keep a parent open", async () => {
+  const { directory, store, bridge } = await temporaryStore();
+  try {
+    await store.propose(
+      "Maybe add a cache",
+      "The slow path repeats the same fetch on every request.",
+    );
+    const proposal = store.ledger().tasks[0];
+    assert.ok(proposal);
+    const target = (await store.create("Do the work", null)).tasks.find(
+      (task) => task.title === "Do the work",
+    );
+    assert.ok(target);
+
+    const updated = await store.update(target.id, { blockedBy: [proposal.id] });
+    const after = updated.tasks.find((task) => task.id === target.id);
+    assert.deepEqual(after?.blockedBy, []);
+    assert.deepEqual(liveBlockerIds(updated.tasks, after as Task), []);
+    assert.doesNotMatch(text(await call(bridge, "task_list", {})).text, /blocked-by=/);
+
+    const parent: Task = {
+      ...target,
+      id: "parent",
+      title: "Parent",
+      status: "open",
+      parentId: null,
+      blockedBy: [],
+    };
+    const child: Task = {
+      ...proposal,
+      id: "child",
+      title: "Proposed child",
+      status: "proposed",
+      parentId: parent.id,
+      blockedBy: [],
+    };
+    assert.equal(hasOpenDescendant([parent, child], parent.id), false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
