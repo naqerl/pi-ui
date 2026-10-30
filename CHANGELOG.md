@@ -4,6 +4,10 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.8 - 2026-10-30
+
+- Timestamps are UTC on the wire and local on screen through one helper, so an MCP event shows the same clock in the chat notice and in the `MCP events` widget instead of two.
+
 ## 1.6.7 - 2026-10-30
 
 - MCP event subscriptions survive a restart: the registry is persisted under `data/mcp-subscriptions.json`, restored at boot **from its stored cursor**, and events at or below that cursor are dropped instead of replayed. A pure replay no longer changes the feed or wakes a turn; a mixed delivery reports `replayed N event(s) … skipped`.
