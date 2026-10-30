@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DashboardState } from "../shared/dashboard";
-import { pendingSteerMessage } from "../shared/steers";
+import {
+  consumeSteer,
+  consumeSteersInMessages,
+  droppedSteerMessage,
+  dropSteer,
+  mergeLiveSteers,
+  type PendingSteer,
+  pendingSteerMessage,
+  rebuildSteersFromSnapshot,
+} from "../shared/steers";
 import type {
   ActivityItem,
   ChatMessage,
@@ -17,6 +26,7 @@ import type {
   StreamMessageDone,
   StreamNotice,
   StreamRunState,
+  StreamSteerDropped,
   StreamTextDelta,
   StreamTheme,
   StreamToolEnd,
@@ -119,7 +129,7 @@ export function useChat(options: UseChatOptions = {}) {
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [context, setContext] = useState<ContextUsage | null>(null);
   const [mcpEvents, setMcpEvents] = useState<McpEventsState>(EMPTY_EVENTS);
-  const [steers, setSteers] = useState<QueuedMessage[]>([]);
+  const [steers, setSteers] = useState<PendingSteer[]>([]);
   const [ready, setReady] = useState(false);
   const [hasEarlier, setHasEarlier] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
@@ -198,7 +208,12 @@ export function useChat(options: UseChatOptions = {}) {
       setLastEventAt(snapshot.runLastEventAt ?? null);
       if (snapshot.quietAfterMs !== undefined) setQuietAfterMs(snapshot.quietAfterMs);
       setQueue(snapshot.queue);
-      setSteers(snapshot.steers ?? []);
+      setSteers((current) =>
+        rebuildSteersFromSnapshot(
+          consumeSteersInMessages(current, snapshot.messages),
+          snapshot.steers ?? [],
+        ),
+      );
       setMcp(snapshot.mcp ?? { servers: [], unavailable: [] });
       setUsage(snapshot.usage ?? null);
       setContext(snapshot.context ?? null);
@@ -246,8 +261,32 @@ export function useChat(options: UseChatOptions = {}) {
   useEffect(() => {
     void refreshState();
     const source = new EventSource("/api/stream");
+    let offlineTimer: ReturnType<typeof setTimeout> | undefined;
+    const reportOfflineSteers = () => {
+      const reason = "The connection to the server closed before the steer was delivered.";
+      setSteers((current) => {
+        let next = current;
+        for (const steer of current) {
+          if (steer.dropped === undefined) next = dropSteer(next, steer.id, reason);
+        }
+        return next;
+      });
+    };
     source.onopen = () => {
+      if (offlineTimer !== undefined) clearTimeout(offlineTimer);
+      offlineTimer = undefined;
       void refreshState();
+    };
+    source.onerror = () => {
+      if (source.readyState === EventSource.CLOSED) {
+        reportOfflineSteers();
+        return;
+      }
+      if (offlineTimer !== undefined) return;
+      offlineTimer = setTimeout(() => {
+        offlineTimer = undefined;
+        reportOfflineSteers();
+      }, 3_000);
     };
 
     source.addEventListener("theme", (event) => {
@@ -294,13 +333,21 @@ export function useChat(options: UseChatOptions = {}) {
       setRunStartedAt(data.startedAt ?? null);
       if (data.lastEventAt !== undefined) setLastEventAt(data.lastEventAt);
       if (data.queue !== undefined) setQueue(data.queue);
-      if (data.steers !== undefined) setSteers(data.steers);
+      if (data.steers !== undefined) {
+        setSteers((current) => mergeLiveSteers(current, data.steers ?? []));
+      }
       if (data.state !== "running") {
         setDraftText("");
         setDraftThinking("");
         setLiveTools([]);
         void refreshState();
       }
+    });
+
+    source.addEventListener("steer.dropped", (event) => {
+      const data = parseEvent<StreamSteerDropped>(event as MessageEvent<string>);
+      if (!data) return;
+      setSteers((current) => dropSteer(current, data.id, data.reason));
     });
 
     source.addEventListener("message.delta", (event) => {
@@ -339,6 +386,9 @@ export function useChat(options: UseChatOptions = {}) {
             next[index] = { ...next[index], summary: message.summary };
             return next;
           });
+          if (message.steerKey !== undefined) {
+            setSteers((current) => consumeSteer(current, message.steerKey));
+          }
         }
         if (jobActivity.length > 0) setActivity((current) => addJobActivity(current, jobActivity));
         setDraftText("");
@@ -399,7 +449,10 @@ export function useChat(options: UseChatOptions = {}) {
       void refreshState();
     });
 
-    return () => source.close();
+    return () => {
+      if (offlineTimer !== undefined) clearTimeout(offlineTimer);
+      source.close();
+    };
   }, [applyDraft, applyEvents, applyTasks, refreshState]);
 
   useEffect(() => {
@@ -464,7 +517,10 @@ export function useChat(options: UseChatOptions = {}) {
     // Steers the run has not reached go below everything it is still doing; once delivered, the
     // snapshot has them where they entered the conversation.
     for (const steer of steers) {
-      const message = pendingSteerMessage(steer);
+      const message =
+        steer.dropped === undefined
+          ? pendingSteerMessage(steer)
+          : droppedSteerMessage(steer, steer.dropped);
       items.push({ kind: "message", order: message.order, message });
     }
 
@@ -500,7 +556,6 @@ export function useChat(options: UseChatOptions = {}) {
         }
         const data = (await response.json()) as SubmitMessageResponse;
         setQueue(data.queue);
-        if (data.steers !== undefined) setSteers(data.steers);
         if (!data.queued && !(runState === "running")) {
           setRunState("running");
           setRunStartedAt(new Date().toISOString());
@@ -519,6 +574,12 @@ export function useChat(options: UseChatOptions = {}) {
           if (jobActivity.length > 0) {
             setActivity((current) => addJobActivity(current, jobActivity));
           }
+          if (message !== undefined && message.steerKey !== undefined) {
+            setSteers((current) => consumeSteer(current, message.steerKey));
+          }
+        }
+        if (data.steers !== undefined) {
+          setSteers((current) => rebuildSteersFromSnapshot(current, data.steers ?? []));
         }
         return { ok: true };
       } catch {
@@ -546,7 +607,14 @@ export function useChat(options: UseChatOptions = {}) {
 
   /** Takes back the newest steer the run has not reached; null when there is none left to take. */
   const unsendSteer = useCallback(async (): Promise<QueuedMessage | null> => {
-    const latest = steers.at(-1);
+    let latest: PendingSteer | undefined;
+    for (let index = steers.length - 1; index >= 0; index -= 1) {
+      const candidate = steers[index];
+      if (candidate !== undefined && candidate.dropped === undefined) {
+        latest = candidate;
+        break;
+      }
+    }
     if (latest === undefined) return null;
     try {
       const response = await fetch(`/api/steer/${encodeURIComponent(latest.id)}`, {
@@ -559,7 +627,7 @@ export function useChat(options: UseChatOptions = {}) {
         return null;
       }
       const data = (await response.json()) as { steer: QueuedMessage; steers: QueuedMessage[] };
-      setSteers(data.steers);
+      setSteers((current) => rebuildSteersFromSnapshot(current, data.steers));
       return data.steer;
     } catch {
       return null;

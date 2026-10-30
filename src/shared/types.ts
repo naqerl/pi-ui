@@ -33,6 +33,10 @@ export interface ChatMessage {
   steer?: boolean;
   /** A steer still waiting for the run's next turn boundary; it can be taken back. */
   pendingSteer?: boolean;
+  /** Stable key shared by a pending steer and the transcript entry that consumed it. */
+  steerKey?: string;
+  /** Why a pending steer never reached the transcript. */
+  steerError?: string;
   /** Set when the message is an MCP event; the chat shows a one-line notice. */
   notice?: ChatNotice;
   /** Set on the pi-ui version-update note, so the chat can paint it with the theme accent. */
@@ -56,6 +60,8 @@ export interface QueuedMessage {
   createdAt: string;
   /** Media ids sent with the message. */
   attachments?: string[];
+  /** Stable key the transcript entry carries once this steer is placed. */
+  key?: string;
 }
 
 export interface ToolActivity {
@@ -335,4 +341,10 @@ export interface StreamRunState {
   lastEventAt?: string | null;
   queue?: QueuedMessage[];
   steers?: QueuedMessage[];
+}
+
+/** A pending steer the server could not deliver; it leaves the queue with a reason. */
+export interface StreamSteerDropped {
+  id: string;
+  reason: string;
 }
