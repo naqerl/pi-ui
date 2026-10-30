@@ -14,6 +14,7 @@ import type {
   ActivityItem,
   ChatMessage,
   ContextUsage,
+  DiagramRef,
   McpEventsState,
   McpStatus,
   MessageMode,
@@ -318,6 +319,27 @@ export function useChat(options: UseChatOptions = {}) {
     source.addEventListener("tasks", (event) => {
       const data = parseEvent<TaskLedger>(event as MessageEvent<string>);
       if (data) applyTasks(data);
+    });
+
+    source.addEventListener("diagram", (event) => {
+      const data = parseEvent<DiagramRef>(event as MessageEvent<string>);
+      if (!data || typeof data.id !== "string" || !Number.isSafeInteger(data.revision)) return;
+      setMessages((current) =>
+        current.map((message) => {
+          if (message.parts === undefined) return message;
+          let changed = false;
+          const parts = message.parts.map((part) => {
+            if (part.kind !== "diagram" || part.diagram.id !== data.id) return part;
+            if (part.diagram.revision === data.revision) return part;
+            changed = true;
+            return {
+              kind: "diagram" as const,
+              diagram: { id: part.diagram.id, revision: data.revision },
+            };
+          });
+          return changed ? { ...message, parts } : message;
+        }),
+      );
     });
 
     source.addEventListener("run.state", (event) => {

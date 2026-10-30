@@ -11,6 +11,8 @@ import type { TaskLedger, TaskStatus } from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
 import { ChatService } from "./chat-service.js";
 import { DashboardManager } from "./dashboard.js";
+import type { DiagramBridge } from "./diagram-tools.js";
+import { DiagramStore } from "./diagrams.js";
 import { JobManager, jobNotice } from "./jobs.js";
 import { McpEventFeed } from "./mcp-events.js";
 import { MAX_MEDIA_BYTES, MediaError, MediaStore, parseAttachmentIds } from "./media.js";
@@ -38,10 +40,16 @@ const dataDir = resolve(cwd, process.env.DATA_DIR?.trim() || "data");
 const themeFile = resolve(dataDir, "theme.json");
 const taskStore = new TaskStore(resolve(dataDir, "tasks.json"));
 const media = new MediaStore(resolve(dataDir, "media"));
+const diagrams = new DiagramStore(resolve(dataDir, "diagrams"));
 await taskStore.load();
+await diagrams.load();
 const taskBridge: TaskBridge = {
   store: taskStore,
   media,
+  publish() {},
+};
+const diagramBridge: DiagramBridge = {
+  store: diagrams,
   publish() {},
 };
 if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
@@ -78,6 +86,8 @@ const baseInstructions = `${await buildPiSystemPrompt(cwd, catalog.runtime)}
 
 Tasks are a shared todo ledger on the tasks page. You can list them with task_list, mark one done with task_done, and create a blocker for one with task_block. A done blocker does not block. A task with an open subtask cannot be marked done. You cannot add a task that blocks nothing, reopen a task, or delete one.
 
+Draw a diagram into the chat with draw_diagram (Mermaid source) and revise it later with replace_diagram and the id from the first result. The drawing is part of your reply; do not repeat its source in your text.
+
 Long-running shell commands (builds, test suites, servers) can run in the background with job_start; list them with job_list, read their output with job_output, and stop one with job_cancel. When a job ends on its own you receive a message with its exit status and last output, so you do not need to poll.
 
 The dashboard page (the Stats tab, left of chat) is yours to arrange for the user: dashboard_get shows it, dashboard_upsert adds or changes a widget (built-in pi-ui stats, a poll script that fetches JSON, or data you push with dashboard_push), dashboard_remove deletes one and dashboard_layout places them. Widgets only display data. Poll scripts read secrets from env; never put a token in a widget.`;
@@ -96,6 +106,7 @@ const boot = await openDurableSession({
   jobs,
   dashboard,
   memory: { store: memory, snapshot: memorySnapshot },
+  diagrams: diagramBridge,
 });
 const activeModel =
   boot.model === undefined
@@ -130,6 +141,9 @@ const hub = new StreamHub();
 taskBridge.publish = (ledger) => {
   hub.broadcast({ event: "tasks", data: ledger });
 };
+diagramBridge.publish = (diagram) => {
+  hub.broadcast({ event: "diagram", data: { id: diagram.id, revision: diagram.revision } });
+};
 const chat = new ChatService(
   boot.harness,
   boot.conversation,
@@ -146,6 +160,7 @@ const chat = new ChatService(
   async (reason) => {
     await memoryCheckpoints.refresh(reason);
   },
+  (id) => diagrams.ref(id)?.revision,
 );
 const events = new McpEventFeed(boot.mcp.subscriptionRegistry);
 chat.setEventFeed(events);
@@ -469,6 +484,12 @@ app.post("/api/media", async (c) => {
   }
 });
 
+app.get("/api/diagrams/:id", (c) => {
+  const diagram = diagrams.get(c.req.param("id"));
+  if (diagram === undefined) return c.notFound();
+  return c.json(diagram, 200, { "Cache-Control": "no-store" });
+});
+
 app.get("/api/media/:id", async (c) => {
   try {
     const { bytes, mimeType } = await media.read(c.req.param("id"));
@@ -703,6 +724,7 @@ const server = serve({ fetch: app.fetch, port }, (info) => {
     ...boot.jobTools,
     ...boot.dashboardTools,
     ...boot.memoryTools,
+    ...boot.diagramTools,
   ];
   if (boot.mcp.toolNames.length > 0) {
     toolParts.push(`${boot.mcp.toolNames.length} MCP tools (${boot.mcp.serverNames.join(", ")})`);

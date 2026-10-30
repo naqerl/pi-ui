@@ -10,6 +10,7 @@ import { createBiliTools } from "./bili-tools.js";
 import type { BillionContextInline } from "./billion-context.js";
 import type { DashboardManager } from "./dashboard.js";
 import { createDashboardTools } from "./dashboard-tools.js";
+import { createDiagramTools, type DiagramBridge } from "./diagram-tools.js";
 import { createJobTools } from "./job-tools.js";
 import type { JobManager } from "./jobs.js";
 import { type McpRuntime, startMcpRuntime } from "./mcp-runtime.js";
@@ -26,6 +27,7 @@ export interface AppRegistryBoot {
   readonly jobTools: readonly string[];
   readonly dashboardTools: readonly string[];
   readonly memoryTools: readonly string[];
+  readonly diagramTools: readonly string[];
 }
 
 export interface AppRegistryOptions {
@@ -38,6 +40,8 @@ export interface AppRegistryOptions {
   readonly dashboard?: DashboardManager;
   /** The layered memory tree and its injected-snapshot cache. */
   readonly memory?: { readonly store: MemoryStore; readonly snapshot?: SnapshotCache };
+  /** Diagrams the agent draws into the chat. Without it, the diagram tools are not offered. */
+  readonly diagrams?: DiagramBridge;
 }
 
 /**
@@ -79,6 +83,11 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
     registry.install(defineExtension({ name: "pi-ui-memory-tools", tools: memoryTools }));
   }
 
+  const diagramTools = options.diagrams === undefined ? [] : createDiagramTools(options.diagrams);
+  if (diagramTools.length > 0) {
+    registry.install(defineExtension({ name: "pi-ui-diagram-tools", tools: diagramTools }));
+  }
+
   const mcp = await startMcpRuntime(
     options.dataDir === undefined ? {} : { dataDir: options.dataDir },
   );
@@ -105,5 +114,6 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
     jobTools: jobTools.map((tool) => tool.name),
     dashboardTools: dashboardTools.map((tool) => tool.name),
     memoryTools: memoryTools.map((tool) => tool.name),
+    diagramTools: diagramTools.map((tool) => tool.name),
   };
 }

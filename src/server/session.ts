@@ -20,6 +20,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { diagramPartFromDetails, parseDiagramDetails } from "../shared/diagrams.js";
 import { parseNotice } from "../shared/notices.js";
 import { steerKeyFromEntryData } from "../shared/steers.js";
 import { toIsoTimestamp } from "../shared/time.js";
@@ -36,6 +37,7 @@ import {
 import { createAppRegistry } from "./app-registry.js";
 import type { BillionContextInline } from "./billion-context.js";
 import type { DashboardManager } from "./dashboard.js";
+import type { DiagramBridge } from "./diagram-tools.js";
 import type { JobManager } from "./jobs.js";
 import type { McpRuntime } from "./mcp-runtime.js";
 import type { SnapshotCache } from "./memory/snapshot.js";
@@ -87,6 +89,8 @@ export interface DurableSessionOptions {
   readonly jobs?: JobManager;
   readonly dashboard?: DashboardManager;
   readonly memory?: { readonly store: MemoryStore; readonly snapshot?: SnapshotCache };
+  /** Diagrams the agent draws into the chat. */
+  readonly diagrams?: DiagramBridge;
 }
 
 export interface DurableSessionBoot {
@@ -105,6 +109,7 @@ export interface DurableSessionBoot {
   readonly jobTools: readonly string[];
   readonly dashboardTools: readonly string[];
   readonly memoryTools: readonly string[];
+  readonly diagramTools: readonly string[];
   /** Model stored on the conversation after boot. A menu choice wins over `PI_MODEL`. */
   readonly model: ModelRef | undefined;
   /** pi-ui's own version from package.json. */
@@ -120,15 +125,24 @@ export async function openDurableSession(
   await mkdir(dataDir, { recursive: true });
 
   const storage = await openNodeSqliteStorage(databasePath);
-  const { registry, mcp, biliTools, taskTools, jobTools, dashboardTools, memoryTools } =
-    await createAppRegistry({
-      dataDir,
-      bili: options.bili,
-      tasks: options.tasks,
-      ...(options.jobs === undefined ? {} : { jobs: options.jobs }),
-      ...(options.dashboard === undefined ? {} : { dashboard: options.dashboard }),
-      ...(options.memory === undefined ? {} : { memory: options.memory }),
-    });
+  const {
+    registry,
+    mcp,
+    biliTools,
+    taskTools,
+    jobTools,
+    dashboardTools,
+    memoryTools,
+    diagramTools,
+  } = await createAppRegistry({
+    dataDir,
+    bili: options.bili,
+    tasks: options.tasks,
+    ...(options.jobs === undefined ? {} : { jobs: options.jobs }),
+    ...(options.dashboard === undefined ? {} : { dashboard: options.dashboard }),
+    ...(options.memory === undefined ? {} : { memory: options.memory }),
+    ...(options.diagrams === undefined ? {} : { diagrams: options.diagrams }),
+  });
 
   const harness = await HarnessImpl.open(
     storage,
@@ -217,6 +231,7 @@ export async function openDurableSession(
     jobTools,
     dashboardTools,
     memoryTools,
+    diagramTools,
     model,
     version,
   };
@@ -482,9 +497,13 @@ async function appendInterruptionNote(
 /** Maps an image block in a user entry to its served media id. */
 export type MediaResolver = (data: string, mimeType: string) => MediaRef | undefined;
 
+/** Reads a diagram's current revision, so a replaced drawing updates without a new entry. */
+export type DiagramRevisionResolver = (id: string) => number | undefined;
+
 export function buildTranscript(
   entries: readonly EntryRecord[],
   media?: MediaResolver,
+  diagramRevision?: DiagramRevisionResolver,
 ): {
   messages: ChatMessage[];
   activity: ActivityItem[];
@@ -664,6 +683,20 @@ export function buildTranscript(
         const usage = pendingToolSpend.get(toolCallId);
         if (usage !== undefined) pendingToolSpend.delete(toolCallId);
         activity.push(usage === undefined ? tool : { ...tool, usage });
+      }
+      // A drawing owns one message; a replace only raises that message's revision, so the
+      // transcript is not rewritten with another bubble for the same diagram.
+      const diagram = parseDiagramDetails(message.details);
+      const part = diagramPartFromDetails(message.details, diagramRevision);
+      if (diagram !== undefined && part !== undefined && call?.name !== "replace_diagram") {
+        messages.push({
+          id: `m-${entry.id}`,
+          role: "assistant",
+          text: diagram.title ?? "",
+          timestamp: timestampOf(message),
+          order: entry.id * 10_000 + 5_000,
+          parts: [part],
+        });
       }
     }
   }

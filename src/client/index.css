@@ -66,6 +66,27 @@
     background: color-mix(in oklch, var(--foreground) 22%, transparent);
   }
 
+  /* Pele reads these variables, so a drawing follows the active theme and its fonts. */
+  .diagram-svg {
+    --pele-bg: var(--background);
+    --pele-fg: var(--foreground);
+    --pele-muted: var(--muted-foreground);
+    --pele-line: var(--foreground);
+    --pele-surface: var(--surface);
+    --pele-surface-alt: var(--muted);
+    --pele-border: var(--border);
+    --pele-accent: var(--accent);
+    --pele-font: var(--font-sans);
+    --pele-font-mono: var(--font-mono);
+    --pele-radius: var(--radius);
+  }
+
+  .diagram-svg svg {
+    display: block;
+    max-width: 100%;
+    height: auto;
+  }
+
   /* Every scroll area, vertical or horizontal, uses the transcript's thin scrollbar
      instead of the browser default. The track stays transparent over whatever surface
      the element carries. */

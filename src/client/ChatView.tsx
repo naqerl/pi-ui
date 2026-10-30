@@ -22,6 +22,7 @@ import { SUMMARY_MIN_CHARACTERS } from "../shared/types";
 import { groupSummaryParts } from "./activity-format";
 import { Button } from "./components/ui/button";
 import { Textarea } from "./components/ui/textarea";
+import { DiagramPart } from "./DiagramPart";
 import {
   DeferredMarkdown,
   LazyInlineMarkdown,
@@ -226,6 +227,24 @@ function AssistantReply({
   );
 }
 
+/** Non-text message parts, such as diagrams drawn by a tool. */
+function MessageParts({ parts }: { parts: ChatMessage["parts"] }) {
+  if (parts === undefined || parts.length === 0) return null;
+  return (
+    <div data-testid="message-parts" className="mt-1.5 flex min-w-0 flex-col gap-1.5">
+      {parts.map((part) =>
+        part.kind === "diagram" ? (
+          <DiagramPart
+            key={part.diagram.id}
+            id={part.diagram.id}
+            revision={part.diagram.revision}
+          />
+        ) : null,
+      )}
+    </div>
+  );
+}
+
 function MessageBubble({
   message,
   summariesEnabled,
@@ -317,13 +336,14 @@ function MessageBubble({
           ))}
         </div>
       )}
-      {mine ? (
-        message.text.length > 0 && (
-          <div className="whitespace-pre-wrap [overflow-wrap:anywhere]">{message.text}</div>
-        )
-      ) : (
-        <AssistantReply message={message} summariesEnabled={summariesEnabled} />
-      )}
+      {mine
+        ? message.text.length > 0 && (
+            <div className="whitespace-pre-wrap [overflow-wrap:anywhere]">{message.text}</div>
+          )
+        : message.text.length > 0 && (
+            <AssistantReply message={message} summariesEnabled={summariesEnabled} />
+          )}
+      <MessageParts parts={message.parts} />
       <MessageTime timestamp={message.timestamp} />
     </div>
   );

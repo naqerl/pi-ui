@@ -55,6 +55,7 @@ import {
   assistantMessageFromEntry,
   buildTranscript,
   contextUsage,
+  type DiagramRevisionResolver,
   JOB_NOTICE_ENTRY_KIND,
   SESSION_CONTEXT,
   summarizeUsage,
@@ -154,6 +155,8 @@ export class ChatService {
     private readonly media: MediaStore,
     /** Refresh the injected memory block at a turn/compaction checkpoint. */
     private readonly beforeTurn: (reason?: string) => Promise<void> = async () => undefined,
+    /** Reads a stored diagram's current revision for the transcript's message part. */
+    private readonly diagramRevision: DiagramRevisionResolver = () => undefined,
   ) {
     this.mcpStatus = typeof mcpStatus === "function" ? mcpStatus : () => mcpStatus;
     this.runState = interrupted ? "interrupted" : "idle";
@@ -363,7 +366,7 @@ export class ChatService {
   /** One page of older transcript, ending just below `request.before`. */
   async getHistory(request: WindowRequest): Promise<TranscriptHistory> {
     const context = await this.conversation.context(SESSION_CONTEXT);
-    const transcript = buildTranscript(context.entries, this.mediaRef);
+    const transcript = buildTranscript(context.entries, this.mediaRef, this.diagramRevision);
     return windowTranscript(
       { ...transcript, messages: this.withSummaries(transcript.messages) },
       request,
@@ -385,7 +388,7 @@ export class ChatService {
   async getSnapshot(request: WindowRequest = {}): Promise<Snapshot> {
     const context = await this.conversation.context(SESSION_CONTEXT);
     const usage = await this.harness.usage(SESSION_CONTEXT);
-    const built = buildTranscript(context.entries, this.mediaRef);
+    const built = buildTranscript(context.entries, this.mediaRef, this.diagramRevision);
     const transcript = windowTranscript(
       { ...built, messages: this.withSummaries(built.messages) },
       request.before === undefined ? request : {},
@@ -432,9 +435,11 @@ export class ChatService {
     const cached = cachedSummary(messageId);
     if (cached !== undefined) return cached;
     const context = await this.conversation.context(SESSION_CONTEXT);
-    const message = buildTranscript(context.entries, this.mediaRef).messages.find(
-      (candidate) => candidate.id === messageId,
-    );
+    const message = buildTranscript(
+      context.entries,
+      this.mediaRef,
+      this.diagramRevision,
+    ).messages.find((candidate) => candidate.id === messageId);
     if (message === undefined || message.role !== "assistant" || message.isError === true) {
       return null;
     }
@@ -807,7 +812,7 @@ export class ChatService {
       const context = await this.conversation.context(SESSION_CONTEXT);
       const entry = context.entries.find((candidate) => candidate.id === entryId);
       if (entry) {
-        const message = buildTranscript([entry], this.mediaRef).messages[0];
+        const message = buildTranscript([entry], this.mediaRef, this.diagramRevision).messages[0];
         if (message) {
           return {
             message: steer ? { ...message, steer: true } : message,
@@ -888,7 +893,7 @@ export class ChatService {
 
   /** Removes the pending steer an entry consumed and shows the entry in the same update. */
   private consumeSteerEntryRecord(entry: EntryRecord, submissionId?: string): boolean {
-    const message = buildTranscript([entry], this.mediaRef).messages[0];
+    const message = buildTranscript([entry], this.mediaRef, this.diagramRevision).messages[0];
     if (message === undefined) return false;
     if (!this.takeTrackedSteer(message, submissionId)) return false;
     this.hub.broadcast([
@@ -930,7 +935,7 @@ export class ChatService {
     const consumed: ChatMessage[] = [];
     for (const entry of entries) {
       if (entry.kind !== STEER_ENTRY_KIND) continue;
-      const message = buildTranscript([entry], this.mediaRef).messages[0];
+      const message = buildTranscript([entry], this.mediaRef, this.diagramRevision).messages[0];
       if (message !== undefined && this.takeTrackedSteer(message)) consumed.push(message);
     }
     return consumed;
@@ -1100,7 +1105,8 @@ export class ChatService {
         this.currentThinking = "";
         const revision = this.bumpDraft();
         if (event.entry.kind === STEER_ENTRY_KIND) {
-          const steerMessage = buildTranscript([event.entry], this.mediaRef).messages[0];
+          const steerMessage = buildTranscript([event.entry], this.mediaRef, this.diagramRevision)
+            .messages[0];
           if (steerMessage !== undefined) this.takeTrackedSteer(steerMessage);
           this.hub.broadcast([
             {

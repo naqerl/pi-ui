@@ -17,6 +17,18 @@ export interface MediaRef {
   mimeType: string;
 }
 
+/**
+ * A pointer to a stored diagram, served at `/api/diagrams/<id>`. Only the revision travels in a
+ * snapshot; the source is fetched by the client, so a replace re-renders in place.
+ */
+export interface DiagramRef {
+  id: string;
+  revision: number;
+}
+
+/** A non-text part of a message. It never carries the source, only where to read it. */
+export type MessagePart = { kind: "diagram"; diagram: DiagramRef };
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
@@ -25,6 +37,8 @@ export interface ChatMessage {
   summary?: string;
   /** Images sent with a user message. */
   attachments?: MediaRef[];
+  /** Richer parts, such as a diagram drawn by a tool. */
+  parts?: MessagePart[];
   timestamp: string;
   /** Monotonic ordering key used to interleave messages and activity. */
   order: number;
