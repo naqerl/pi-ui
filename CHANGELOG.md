@@ -4,6 +4,9 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.12 - 2026-10-30
+
+- `propose_task` lets the agent write down a task it thinks is worth doing without pretending it is one: a proposal is stored as `proposed`, stays out of `task_list` (which reports only `proposals: N waiting for approval`), and `task_proposals` lists it with its rationale. A human approves it into an open task from the Proposed section of the tasks page, or dismisses it.
 ## 1.6.11 - 2026-10-30
 
 - `task_done` now requires a completion report — time spent, tokens spent and evidence a reviewer can check (a commit, a path, or a sentence) — and the ledger shows the completion time plus `· ~25m · 120k tok` on a done card and in `task_view`. `PATCH /api/tasks/:id` enforces the same contract.
