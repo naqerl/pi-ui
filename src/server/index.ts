@@ -147,17 +147,22 @@ const chat = new ChatService(
     await memoryCheckpoints.refresh(reason);
   },
 );
-const events = new McpEventFeed();
+const events = new McpEventFeed(boot.mcp.subscriptionRegistry);
 chat.setEventFeed(events);
-await chat.start();
 boot.mcp.setObserver((notice) => {
   const changed = events.ingest(notice);
   // A protocol connection can clear a boot failure, so keep the live status
   // in every tab instead of leaving the snapshot from startup on screen.
   hub.broadcast({ event: "mcp.status", data: boot.mcp.status });
-  if (!changed) return;
+  if (!changed) {
+    // A pure replay changes nothing. Do not submit its extension message, or
+    // it would wake the model for history that was already announced.
+    return notice.customType === "mcp-events" ? false : undefined;
+  }
   hub.broadcast({ event: "mcp.events", data: events.state });
+  return undefined;
 });
+await chat.start();
 function builtinJobs() {
   return jobs.list().map((job) => ({
     id: job.id,

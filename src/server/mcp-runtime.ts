@@ -21,6 +21,12 @@ import {
   type DurableExtensionTool,
 } from "./durable-extensions.js";
 import { checkEventNotifications } from "./mcp-event-check.js";
+import type { ExtensionNotice } from "./mcp-events.js";
+import {
+  type McpSubscriptionRecord,
+  McpSubscriptionRegistry,
+  recordKey,
+} from "./mcp-subscriptions.js";
 
 const require = createRequire(import.meta.url);
 const ADAPTER_ENTRY = pathToFileURL(require.resolve("@realmikekelly/pi-mcp-adapter")).href;
@@ -566,6 +572,14 @@ function sameProtocolDefinition(a: McpProtocolDefinition, b: McpProtocolDefiniti
 
 export interface McpRuntimeOptions {
   readonly submit?: DurableExtensionSink;
+  /** Data directory for the durable subscription registry. */
+  readonly dataDir?: string;
+  /** Share one registry with the event feed instead of creating it from `dataDir`. */
+  readonly subscriptions?: McpSubscriptionRegistry;
+}
+
+export interface RestoredMcpSubscription extends McpSubscriptionRecord {
+  readonly id: string;
 }
 
 /**
@@ -581,6 +595,14 @@ export class McpRuntime {
   private readonly servers: Record<string, HostManagedMcpServer>;
   private readonly adapters: HostManagedMcpAdapter[] = [];
   private readonly protocolConnections = new Set<ProtocolConnection>();
+  private readonly subscriptionStore: McpSubscriptionRegistry | undefined;
+  /** New subscription id → the persisted entry it was restored from. */
+  private readonly restored = new Map<string, McpSubscriptionRecord>();
+  /** Entries whose server was not available yet; kept until a later connection. */
+  private readonly pendingRestore = new Map<string, McpSubscriptionRecord>();
+  private readonly restoring = new Set<string>();
+  private readonly pendingNotices: ExtensionNotice[] = [];
+  private observer: ((notice: ExtensionNotice) => unknown) | undefined;
   private closed = false;
 
   private constructor(
@@ -589,17 +611,22 @@ export class McpRuntime {
     serverNames: readonly string[],
     failedServers: ServerFailure[],
     protocol: McpProtocol,
+    subscriptionStore: McpSubscriptionRegistry | undefined,
   ) {
     this.shim = shim;
     this.servers = servers;
     this.serverNames = serverNames;
     this.failedServers = [...failedServers];
     this.protocol = protocol;
+    this.subscriptionStore = subscriptionStore;
   }
 
   static async start(options: McpRuntimeOptions = {}): Promise<McpRuntime> {
     const shim = new DurableExtensionShim();
     shim.setMessageSink(options.submit);
+    const subscriptionStore =
+      options.subscriptions ??
+      (options.dataDir === undefined ? undefined : new McpSubscriptionRegistry(options.dataDir));
     const { servers, timeouts, configuredNames, failures } = await readServers();
 
     shim.events.on(adapterModule.MCP_TOOL_APPROVAL_REQUEST_EVENT, (request: unknown) => {
@@ -652,7 +679,14 @@ export class McpRuntime {
       return resolveProtocol(name);
     });
     protocol = adapterModule.registerMcpProtocol(shim, eventsProtocolModule.EVENTS_PROTOCOL);
-    const runtime = new McpRuntime(shim, servers, configuredNames, failures, protocol);
+    const runtime = new McpRuntime(
+      shim,
+      servers,
+      configuredNames,
+      failures,
+      protocol,
+      subscriptionStore,
+    );
     resolveProtocol = (name) => runtime.protocolConnection(name);
     eventsModule.default(shim);
     await shim.dispatch("session_start");
@@ -689,7 +723,18 @@ export class McpRuntime {
       }),
     );
 
+    await runtime.restoreSubscriptions();
     return runtime;
+  }
+
+  /** The shared durable registry, or undefined when this runtime was started without a data dir. */
+  get subscriptionRegistry(): McpSubscriptionRegistry | undefined {
+    return this.subscriptionStore;
+  }
+
+  /** Subscriptions opened at boot, with the id pi-mcp-events assigned this process. */
+  get restoredSubscriptions(): RestoredMcpSubscription[] {
+    return [...this.restored].map(([id, record]) => ({ id, ...record }));
   }
 
   get tools(): readonly ToolRegistration[] {
@@ -727,7 +772,126 @@ export class McpRuntime {
 
   /** Observes MCP event batches and mcp_events tool results. Never includes secrets. */
   setObserver(observer: Parameters<DurableExtensionShim["setObserver"]>[0]): void {
+    this.observer = observer;
     this.shim.setObserver(observer);
+    if (observer === undefined) return;
+    // Restore runs before the feed exists. Replay its subscribe results now so
+    // /api/state has the real subscription ids and stored cursors immediately.
+    for (const notice of this.pendingNotices.splice(0)) {
+      try {
+        observer(notice);
+      } catch (error) {
+        console.error("[mcp] restored subscription notice failed", error);
+      }
+    }
+  }
+
+  /**
+   * Subscribe again to every persisted active/reconnecting entry with its
+   * stored cursor. pi-mcp-events resolves its own subscription id; the
+   * mapping is kept so a cursor advance still targets the persisted entry.
+   * Failures stay in `pendingRestore` and are retried when the server answers.
+   */
+  async restoreSubscriptions(): Promise<RestoredMcpSubscription[]> {
+    if (this.subscriptionStore === undefined) return [];
+    const records = await this.subscriptionStore.read();
+    const already = new Set([...this.restored.values()].map((record) => recordKey(record)));
+    for (const record of records) {
+      if (record.status !== "active" && record.status !== "reconnecting") continue;
+      const key = recordKey(record);
+      if (already.has(key)) continue;
+      this.pendingRestore.set(key, record);
+    }
+    await Promise.all(
+      [...this.pendingRestore.values()].map((record) => this.restoreSubscription(record)),
+    );
+    return this.restoredSubscriptions;
+  }
+
+  private deliverNotice(notice: ExtensionNotice): void {
+    if (this.observer === undefined) {
+      this.pendingNotices.push(notice);
+      return;
+    }
+    try {
+      this.observer(notice);
+    } catch (error) {
+      console.error("[mcp] subscription notice failed", error);
+    }
+  }
+
+  private async restoreSubscription(record: McpSubscriptionRecord): Promise<boolean> {
+    const key = recordKey(record);
+    if (this.restoring.has(key)) return false;
+    this.restoring.add(key);
+    try {
+      const result = await this.shim.callTool("mcp_events", {
+        action: "subscribe",
+        server: record.server,
+        name: record.name,
+        arguments: record.arguments,
+        cursor: record.cursor,
+      });
+      const details = isRecord(result.details) ? result.details : undefined;
+      if (result.isError === true) {
+        throw new Error(
+          details !== undefined && typeof details.error === "string"
+            ? details.error
+            : "subscription failed",
+        );
+      }
+      const raw =
+        details !== undefined && isRecord(details.subscription) ? details.subscription : undefined;
+      if (raw === undefined || typeof raw.id !== "string") {
+        throw new Error("subscription result has no id");
+      }
+      const subscription = {
+        id: raw.id,
+        server: typeof raw.server === "string" ? raw.server : record.server,
+        name: typeof raw.name === "string" ? raw.name : record.name,
+        status: typeof raw.status === "string" ? raw.status : record.status,
+        arguments: isRecord(raw.arguments) ? raw.arguments : record.arguments,
+        cursor: typeof raw.cursor === "string" ? raw.cursor : record.cursor,
+      };
+      const restored: McpSubscriptionRecord = {
+        ...record,
+        cursor: subscription.cursor,
+        status: subscription.status,
+        updatedAt: new Date().toISOString(),
+      };
+      this.restored.set(subscription.id, restored);
+      this.pendingRestore.delete(key);
+      console.log(
+        `mcp: restored subscription ${record.server}/${record.name} at ${subscription.cursor ?? "null"}`,
+      );
+      this.deliverNotice({
+        customType: "mcp-events-tool",
+        details: {
+          args: {
+            action: "subscribe",
+            server: record.server,
+            name: record.name,
+            arguments: record.arguments,
+            cursor: record.cursor,
+          },
+          result: { subscription },
+        },
+      });
+      void this.subscriptionStore?.record(restored).catch(() => {});
+      return true;
+    } catch {
+      // Keep the entry. A protocol connection for this server retries it.
+      return false;
+    } finally {
+      this.restoring.delete(key);
+    }
+  }
+
+  private async restorePendingFor(server: string): Promise<void> {
+    for (const record of [...this.pendingRestore.values()]) {
+      if (record.server !== server) continue;
+      await this.restoreSubscription(record);
+    }
   }
 
   install(registry: Parameters<DurableExtensionShim["install"]>[0]): void {
@@ -764,6 +928,11 @@ export class McpRuntime {
     // boot failure instead of reporting it for the rest of the process.
     const failure = this.failedServers.findIndex((entry) => entry.name === name);
     if (failure !== -1) this.failedServers.splice(failure, 1);
+    // A server that was unavailable during the boot probe can now restore its
+    // deferred subscriptions. The delay keeps the current subscribe first.
+    setTimeout(() => {
+      void this.restorePendingFor(name);
+    }, 0).unref?.();
     const entry = { client, transport, controller };
     this.protocolConnections.add(entry);
     const watched = watchStaleSession(transport, () => {
@@ -797,6 +966,7 @@ export class McpRuntime {
     );
     this.protocolConnections.clear();
     await Promise.allSettled(this.adapters.map((adapter) => adapter.close()));
+    await this.subscriptionStore?.close().catch(() => {});
     this.shim.close();
   }
 }

@@ -29,6 +29,7 @@ export interface AppRegistryBoot {
 }
 
 export interface AppRegistryOptions {
+  readonly dataDir?: string;
   readonly bili?: BillionContextInline;
   readonly tasks: TaskBridge;
   /** Background shell jobs. Without it, the job tools are not offered. */
@@ -78,7 +79,9 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
     registry.install(defineExtension({ name: "pi-ui-memory-tools", tools: memoryTools }));
   }
 
-  const mcp = await startMcpRuntime();
+  const mcp = await startMcpRuntime(
+    options.dataDir === undefined ? {} : { dataDir: options.dataDir },
+  );
   if (mcp.toolNames.length > 0) {
     mcp.install(registry);
     registry.install(createToolSearchExtension());
