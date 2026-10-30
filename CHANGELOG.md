@@ -4,6 +4,11 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+_nothing yet_
+
+## 1.6.0 - 2026-10-30
+
+- The stats page is a dashboard of widgets the agent can build and edit: each widget declares its own data and polling interval, an isolated poll runner fetches only the widgets on screen, and a live Hetzner servers example ships with the docs.
 - The composer is hidden on the stats page: the dock slides down out of view there and back up on the chat and tasks pages.
 - A turn interrupted by a server restart is now resumed by pi-durable from its last checkpoint instead of sending the agent a synthetic continuation message. The transcript no longer gains that extra user turn; queued messages are still restored.
 - MCP status and events moved from the chat header to the stats page: the MCP widget shows each server's live subscriptions, and a new default `MCP events` widget lists the latest 20 events, newest first. Existing dashboards get it once.
