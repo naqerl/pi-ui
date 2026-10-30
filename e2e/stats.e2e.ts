@@ -192,6 +192,66 @@ test("marks stats the server cannot report as unavailable", async ({ app, browse
   });
 });
 
+test("hides the composer on the stats page and slides it back on chat and tasks", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/");
+  const dock = screen.getByTestId("composer-dock");
+  await expect(dock).toBeVisible();
+  expect(await dock.getAttribute("data-hidden")).toBe("false");
+  expect(
+    await browser.evaluate(() => {
+      const element = document.querySelector('[data-testid="composer-dock"]');
+      return element === null ? "" : getComputedStyle(element).transitionProperty;
+    }),
+  ).toContain("transform");
+
+  await screen.getByRole("tab", "Stats").tap();
+  await expect(dock).toBeHidden();
+  expect(await dock.getAttribute("data-hidden")).toBe("true");
+  expect(await dock.getAttribute("aria-hidden")).toBe("true");
+  expect(
+    await browser.evaluate(() => {
+      const element = document.querySelector('[data-testid="composer-dock"]');
+      if (element === null || !element.hasAttribute("inert")) return null;
+      return getComputedStyle(element).visibility;
+    }),
+  ).toBe("hidden");
+
+  await screen.getByRole("tab", "Chat").tap();
+  await expect(dock).toBeVisible();
+  expect(await dock.getAttribute("data-hidden")).toBe("false");
+
+  await screen.getByRole("tab", "Tasks").tap();
+  await expect(dock).toBeVisible();
+  await expect(screen.getByRole("textbox", "New task")).toBeVisible();
+});
+
+test("keeps the composer dock still under reduced motion", async ({ app, browser, screen }) => {
+  await browser.emulateMedia({ reducedMotion: "reduce" });
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/");
+  const dock = screen.getByTestId("composer-dock");
+  const transition = () =>
+    browser.evaluate(() => {
+      const element = document.querySelector('[data-testid="composer-dock"]');
+      return element === null ? null : getComputedStyle(element).transitionProperty;
+    });
+  await expect(dock).toBeVisible();
+  expect(await transition()).toBe("none");
+
+  await screen.getByRole("tab", "Stats").tap();
+  await expect(dock).toBeHidden();
+  expect(await transition()).toBe("none");
+
+  await screen.getByRole("tab", "Chat").tap();
+  await expect(dock).toBeVisible();
+  expect(await transition()).toBe("none");
+});
+
 test("swipes right from chat to stats", async ({ app, browser }) => {
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/");

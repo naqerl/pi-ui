@@ -126,7 +126,21 @@
     transition:
       background-color 280ms ease,
       backdrop-filter 280ms ease,
-      -webkit-backdrop-filter 280ms ease;
+      -webkit-backdrop-filter 280ms ease,
+      transform 280ms ease;
+  }
+
+  /* The stats page has no composer, so the dock slides down off the bottom edge
+     and comes back up on the chat and tasks pages. */
+  .float-footer[data-hidden="true"] {
+    transform: translateX(-50%) translateY(100%);
+    visibility: hidden;
+    transition:
+      background-color 280ms ease,
+      backdrop-filter 280ms ease,
+      -webkit-backdrop-filter 280ms ease,
+      transform 280ms ease,
+      visibility 0s linear 280ms;
   }
 
   .float-footer:focus-within {
@@ -138,7 +152,8 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .float-footer {
+    .float-footer,
+    .float-footer[data-hidden="true"] {
       transition: none;
     }
   }
