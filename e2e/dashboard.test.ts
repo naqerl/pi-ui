@@ -242,7 +242,7 @@ test("MCP builtins list recent events newest first and subscriptions per server"
   const status = builtinData("mcp", inputs) as { servers: { name: string; detail: string }[] };
   assert.deepEqual(
     status.servers.map((server) => server.detail),
-    ["connected · 1 tool · subscribed: ticks", "unavailable"],
+    ["1 tool · subscribed: ticks", "unavailable · server unreachable"],
   );
   const widget = defaultDashboard().widgets.find((item) => item.id === "mcp-events");
   assert.ok(widget);
@@ -673,4 +673,54 @@ test("the tools return the first render so the agent can iterate", async () => {
   assert.equal((await call("dashboard_remove", { id: "ghost" })).isError, true);
   dashboard.dispose();
   await dashboard.flush();
+});
+
+test("MCP details show tool counts and never the connected label", () => {
+  const inputs = {
+    usage: null,
+    context: null,
+    mcp: {
+      unavailable: ["down"],
+      servers: [
+        { name: "three", available: true, authRejected: false, tools: ["a", "b", "c"] },
+        { name: "single", available: true, authRejected: false, tools: ["a"] },
+        { name: "empty", available: true, authRejected: false, tools: [] },
+        { name: "rejected", available: false, authRejected: true, tools: [] },
+        { name: "down", available: false, authRejected: false, tools: [] },
+      ],
+    },
+    mcpEvents: { subscriptions: [], events: [], notice: null, revision: 0 },
+    jobs: [],
+    session: { conversationId: "c", model: null, run: "idle" },
+  } as unknown as Parameters<typeof builtinData>[1];
+  const data = builtinData("mcp", inputs) as {
+    servers: {
+      name: string;
+      available: boolean;
+      authRejected: boolean;
+      tools: number;
+      state: string;
+      detail: string;
+    }[];
+  };
+  assert.deepEqual(
+    data.servers.map((server) => server.detail),
+    ["3 tools", "1 tool", "no tools", "auth rejected", "unavailable · server unreachable"],
+  );
+  assert.deepEqual(
+    data.servers.map((server) => server.state),
+    ["ok", "ok", "ok", "warn", "error"],
+  );
+  assert.deepEqual(
+    data.servers.map((server) => [server.available, server.authRejected, server.tools]),
+    [
+      [true, false, 3],
+      [true, false, 1],
+      [true, false, 0],
+      [false, true, 0],
+      [false, false, 0],
+    ],
+  );
+  for (const server of data.servers) assert.doesNotMatch(server.detail, /connected/);
+  assert.ok(data.servers.at(-1)?.detail.startsWith("unavailable · "));
 });

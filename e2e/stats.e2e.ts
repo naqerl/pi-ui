@@ -95,7 +95,7 @@ for (const width of [390, 1280]) {
       output: "4,700",
       hit: "75%",
       cost: "$0.4213",
-      web: expect.stringContaining("connected · 2 tools"),
+      web: expect.stringContaining("2 tools"),
       linear: expect.stringContaining("auth rejected"),
       long: expect.stringContaining("unavailable"),
       overflow: false,
@@ -109,6 +109,57 @@ for (const width of [390, 1280]) {
     );
   });
 }
+
+test("MCP rows show only tool counts and keep unavailable styling", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({
+      json: snapshot({
+        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0 },
+        context: { tokens: 2, window: 200_000, percent: 0 },
+        servers: [
+          { name: "three", available: true, authRejected: false, tools: ["a", "b", "c"] },
+          { name: "empty", available: true, authRejected: false, tools: [] },
+          { name: "rejected", available: false, authRejected: true, tools: [] },
+          { name: "down", available: false, authRejected: false, tools: [] },
+        ],
+      }),
+    });
+  });
+  await app.open("/?page=stats");
+  await expect(screen.getByText("three", { exact: true })).toBeVisible();
+  const read = await browser.evaluate(() => {
+    const row = (name: string) => {
+      const item = document.querySelector(`[data-testid="stat-mcp-${name}"]`);
+      const detail = item?.querySelectorAll(":scope > span")[1] ?? null;
+      return {
+        detail: detail?.textContent ?? null,
+        unavailable: detail?.querySelector("[data-unavailable]") !== null,
+        state: item?.getAttribute("data-state") ?? null,
+      };
+    };
+    return {
+      three: row("three"),
+      empty: row("empty"),
+      rejected: row("rejected"),
+      down: row("down"),
+      mcp: document.querySelector('[data-testid="widget-mcp"]')?.textContent ?? "",
+    };
+  });
+  expect(read.three).toEqual({ detail: "3 tools", unavailable: false, state: "ok" });
+  expect(read.empty).toEqual({ detail: "no tools", unavailable: false, state: "ok" });
+  expect(read.rejected).toEqual({ detail: "auth rejected", unavailable: false, state: "warn" });
+  expect(read.down).toEqual({
+    detail: "unavailable · server unreachable",
+    unavailable: true,
+    state: "error",
+  });
+  expect(read.mcp).not.toMatch(/connected/i);
+});
 
 test("marks stats the server cannot report as unavailable", async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 390, height: 844 });
@@ -230,7 +281,7 @@ test("lists MCP events newest first in the default widget, not the header", asyn
   expect(read.last).toBe("stat-mcp-event-e5");
   expect(read.label).toBe("web · alerts");
   expect(read.value ?? "").toMatch(/^\d\d:\d\d:\d\d · alert 24$/);
-  expect(read.web).toBe("webconnected · 2 tools · subscribed: alerts");
+  expect(read.web).toBe("web2 tools · subscribed: alerts");
   await app.screenshot("mcp-events-widget");
   await screen.getByRole("tab", "Chat").tap();
 });

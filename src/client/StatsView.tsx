@@ -224,7 +224,7 @@ function ViewBody({ id, view }: { id: string; view: WidgetView }) {
               </span>
               {item.detail === undefined ? null : (
                 <span className="min-w-0 text-muted-foreground [overflow-wrap:anywhere]">
-                  {item.detail}
+                  <Value text={item.detail} />
                 </span>
               )}
             </li>

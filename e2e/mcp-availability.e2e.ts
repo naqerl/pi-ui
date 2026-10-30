@@ -127,8 +127,8 @@ test("shows exactly one configured but unreachable MCP server", async ({
           .filter((row) => /^stat-mcp-(stub|unreachable):/.test(row)),
       ),
     ).toEqual([
-      "stat-mcp-stub:ok:stubconnected · 1 tool",
-      "stat-mcp-unreachable:error:unreachableunavailable",
+      "stat-mcp-stub:ok:stub1 tool",
+      "stat-mcp-unreachable:error:unreachableunavailable · server unreachable",
     ]);
     await expect(screen.getByTestId("widget-mcp-events")).toBeVisible();
 

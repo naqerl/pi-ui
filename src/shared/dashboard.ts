@@ -672,10 +672,12 @@ export function builtinData(name: BuiltinName, inputs: BuiltinInputs): unknown {
             .filter((item) => item.server === server.name)
             .map((item) => item.name);
           const base = server.available
-            ? `connected · ${server.tools.length} tool${server.tools.length === 1 ? "" : "s"}`
+            ? server.tools.length === 0
+              ? "no tools"
+              : `${server.tools.length} tool${server.tools.length === 1 ? "" : "s"}`
             : server.authRejected
               ? "auth rejected"
-              : "unavailable";
+              : unavailable("server unreachable");
           return {
             key: `mcp-${server.name}`,
             name: server.name,
@@ -729,6 +731,7 @@ export function builtinData(name: BuiltinName, inputs: BuiltinInputs): unknown {
         })),
       };
     }
+
     case "jobs": {
       const jobs = [...inputs.jobs].reverse();
       return {
