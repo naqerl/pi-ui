@@ -1,12 +1,22 @@
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import type { ChatNotice, JobNoticeDetails, McpNoticeDetails } from "../shared/notices";
+import { formatDateTime, formatTime } from "../shared/time";
 import type { ChatMessage } from "../shared/types";
 import { cn } from "./lib/utils";
 
-function clock(timestamp: string): string {
-  const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) return "";
-  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+/** The instant a notice is about: the newest MCP event, or when the notice was recorded. */
+function noticeTimestamp(message: ChatMessage, notice: ChatNotice): string {
+  if (notice.kind === "mcp") {
+    for (let index = notice.events.length - 1; index >= 0; index--) {
+      const timestamp = notice.events[index]?.timestamp;
+      if (timestamp !== null && timestamp !== undefined) return timestamp;
+    }
+  }
+  return message.timestamp;
+}
+
+function noticeClock(message: ChatMessage, notice: ChatNotice): string {
+  return formatTime(noticeTimestamp(message, notice), { seconds: notice.kind === "mcp" });
 }
 
 function failed(notice: ChatNotice): boolean {
@@ -16,7 +26,8 @@ function failed(notice: ChatNotice): boolean {
 /** A background job result or MCP event, shown as one centred line. Tapping it opens the details. */
 export function NoticeLine({ message, notice }: { message: ChatMessage; notice: ChatNotice }) {
   const [open, setOpen] = useState(false);
-  const time = clock(message.timestamp);
+  const timestamp = noticeTimestamp(message, notice);
+  const time = noticeClock(message, notice);
   return (
     <div
       data-message-id={message.id}
@@ -41,7 +52,11 @@ export function NoticeLine({ message, notice }: { message: ChatMessage; notice: 
         <span className="min-w-0 truncate" data-testid="chat-notice-summary">
           {notice.summary}
         </span>
-        {time !== "" && <span className="shrink-0 tabular-nums opacity-60">{time}</span>}
+        {time !== "" && (
+          <time dateTime={timestamp} className="shrink-0 tabular-nums opacity-60">
+            {time}
+          </time>
+        )}
       </button>
       {open && <NoticeDialog message={message} notice={notice} onClose={() => setOpen(false)} />}
     </div>
@@ -59,6 +74,8 @@ function NoticeDialog({
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
+  const timestamp = noticeTimestamp(message, notice);
+  const dateTime = formatDateTime(timestamp);
   useEffect(() => {
     const dialog = ref.current;
     if (dialog !== null && !dialog.open) dialog.showModal();
@@ -85,8 +102,7 @@ function NoticeDialog({
           <div className="min-w-0 flex-1">
             <div className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
               {notice.kind === "job" ? "Background job" : "MCP event"}
-              {clock(message.timestamp) !== "" &&
-                ` · ${new Date(message.timestamp).toLocaleString()}`}
+              {dateTime !== "" && ` · ${dateTime}`}
             </div>
             <h2 id={titleId} className="mt-0.5 font-mono text-sm [overflow-wrap:anywhere]">
               {notice.summary}
@@ -194,7 +210,7 @@ function McpDetails({ notice }: { notice: McpNoticeDetails }) {
                 ? [["Server", event.server] as [string, ReactNode]]
                 : []),
               ...(event.timestamp !== null
-                ? [["Time", event.timestamp] as [string, ReactNode]]
+                ? [["Time", formatDateTime(event.timestamp)] as [string, ReactNode]]
                 : []),
               ...(event.id !== null ? [["Id", event.id] as [string, ReactNode]] : []),
             ]}

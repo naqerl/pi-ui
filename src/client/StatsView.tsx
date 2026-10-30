@@ -10,6 +10,7 @@ import {
   type WidgetValue,
   type WidgetView,
 } from "../shared/dashboard";
+import { formatDateTime, formatTime } from "../shared/time";
 import type { ContextUsage, McpEventsState, McpStatus, UsageSummary } from "../shared/types";
 import { getDashboard, setDashboard, subscribeDashboard } from "./dashboard-store";
 import { Markdown } from "./markdown";
@@ -361,7 +362,7 @@ function WidgetCard({
           title={
             value?.updatedAt === undefined
               ? undefined
-              : `updated ${new Date(value.updatedAt).toLocaleString()}`
+              : `updated ${formatDateTime(value.updatedAt)}`
           }
         >
           {widget.title}
@@ -429,7 +430,14 @@ function WidgetCard({
 function builtinView(widget: Widget, inputs: BuiltinInputs): { view?: WidgetView; error?: string } {
   if (widget.source.type !== "builtin") return {};
   try {
-    return { view: renderWidget(widget, builtinData(widget.source.name, inputs)) };
+    return {
+      view: renderWidget(
+        widget,
+        builtinData(widget.source.name, inputs, {
+          formatTime: (timestamp) => formatTime(timestamp, { seconds: true }),
+        }),
+      ),
+    };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
   }

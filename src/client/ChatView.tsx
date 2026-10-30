@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { formatDateTime, formatTime } from "../shared/time";
 import type {
   ActivityItem,
   ChatMessage,
@@ -115,21 +116,12 @@ function activityRunFromLocation(): string | null | undefined {
   return new URLSearchParams(window.location.search).get("run");
 }
 
-/** Local wall-clock `hh:mm` for a message, or null when the timestamp does not parse. */
-function clockTime(timestamp: string): string | null {
-  const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) return null;
-  const hours = String(date.getHours()).padStart(2, "0");
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-  return `${hours}:${minutes}`;
-}
-
 function MessageTime({ timestamp }: { timestamp: string }) {
-  const time = clockTime(timestamp);
-  if (time === null) return null;
+  const time = formatTime(timestamp);
+  if (time === "") return null;
   return (
     <div className="-mb-0.5 mt-1 text-right font-mono text-[10px] leading-none text-muted-foreground tabular-nums">
-      <time dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>
+      <time dateTime={timestamp} title={formatDateTime(timestamp)}>
         {time}
       </time>
     </div>

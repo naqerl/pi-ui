@@ -5,6 +5,8 @@
  * sent to the model is unchanged.
  */
 
+import { toIsoTimestamp } from "./time.js";
+
 export interface JobNoticeDetails {
   kind: "job";
   id: string;
@@ -128,11 +130,12 @@ function parseMcp(body: string, status: boolean): McpNoticeDetails | null {
       if (!isRecord(item) || typeof item.server !== "string") continue;
       const event = isRecord(item.event) ? item.event : {};
       addServer(item.server);
+      const timestamp = text(event.timestamp);
       events.push({
         server: item.server,
         // A multiplexed stream carries the kind in data.kind (`hub.job` on a `hub` stream).
         name: (isRecord(event.data) ? text(event.data.kind) : null) || text(event.name) || "event",
-        timestamp: text(event.timestamp),
+        timestamp: timestamp === null ? null : toIsoTimestamp(timestamp),
         id: text(event.eventId),
         subscriptionId: text(item.subscription_id),
         data: event.data,
