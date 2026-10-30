@@ -63,7 +63,10 @@
     background: color-mix(in oklch, var(--foreground) 22%, transparent);
   }
 
-  main {
+  /* Every scroll area, vertical or horizontal, uses the transcript's thin scrollbar
+     instead of the browser default. The track stays transparent over whatever surface
+     the element carries. */
+  * {
     scrollbar-width: thin;
     scrollbar-color: color-mix(in oklch, var(--foreground) 28%, transparent) transparent;
   }
