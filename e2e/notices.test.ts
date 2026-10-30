@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AssistantEntry, type EntryRecord } from "@earendil-works/pi-durable";
+import { AssistantEntry, type Conversation, type EntryRecord } from "@earendil-works/pi-durable";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { NoticeLine } from "../src/client/NoticeView.js";
 import { type JobRecord, jobNotice } from "../src/server/jobs.js";
-import { buildTranscript } from "../src/server/session.js";
+import type { RunMarker } from "../src/server/run-marker.js";
+import { appendInterruptionNote, buildTranscript } from "../src/server/session.js";
 import { type ChatNotice, parseNotice } from "../src/shared/notices.js";
 import type { ChatMessage } from "../src/shared/types.js";
 
@@ -213,4 +214,111 @@ test("ordinary messages and broken payloads are not notices", () => {
   assert.equal(parseNotice("[background job j1 started]"), null);
   assert.equal(parseNotice(`${EVENTS}{not json`), null);
   assert.equal(parseNotice(`${EVENTS}${JSON.stringify({ events: [] })}`), null);
+});
+
+const stoppedNote =
+  "The previous run was stopped before the server restarted. The last response may be partial.";
+const resumedNote =
+  "The previous run was interrupted by a server restart. The last response is partial; pi is resuming the run.";
+
+function runMarker(overrides: Partial<RunMarker> = {}): RunMarker {
+  return {
+    version: 1,
+    userMessage: "do the work",
+    startedAt: "2026-10-30T10:00:00.000Z",
+    mode: "queue",
+    stopRequested: false,
+    idempotencyKey: "run-1",
+    queue: [],
+    partialEntryId: null,
+    updatedAt: "2026-10-30T10:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function recordingConversation(): { conversation: Conversation; entries: EntryRecord[] } {
+  const entries: EntryRecord[] = [];
+  let nextId = 1;
+  const conversation = {
+    id: 1,
+    context: async () => ({ entries }),
+    commit: async (write: (tx: unknown) => Promise<unknown>) => {
+      const tx = {
+        appendEntry: async (
+          definition: { kind: string },
+          _conversationId: number,
+          payload: { data?: unknown },
+        ) => {
+          const entry = { id: nextId++, kind: definition.kind, ...payload };
+          entries.push(entry as unknown as EntryRecord);
+          return entry;
+        },
+      };
+      return write(tx);
+    },
+  } as unknown as Conversation;
+  return { conversation, entries };
+}
+
+test("a run that left no partial reply and was not stopped records no note", async () => {
+  const { conversation, entries } = recordingConversation();
+  await appendInterruptionNote(conversation, runMarker());
+
+  assert.equal(entries.length, 0);
+  assert.equal(buildTranscript(entries).messages.length, 0);
+});
+
+test("a stopped run with no partial reply still records the stopped note", async () => {
+  const { conversation, entries } = recordingConversation();
+  await appendInterruptionNote(conversation, runMarker({ stopRequested: true }));
+
+  assert.equal(entries.length, 1);
+  const message = buildTranscript(entries).messages[0];
+  assert.equal(message?.text, stoppedNote);
+  assert.deepEqual(message?.notice, { kind: "interrupted", note: stoppedNote, stopped: true });
+});
+
+test("only a partial run that will resume promises a resume", async () => {
+  const resumed = recordingConversation();
+  await appendInterruptionNote(
+    resumed.conversation,
+    runMarker({ partialEntryId: 7, idempotencyKey: "run-resumed" }),
+  );
+  const resumedMessage = buildTranscript(resumed.entries).messages[0];
+  assert.equal(resumedMessage?.text, resumedNote);
+  assert.deepEqual(resumedMessage?.notice, {
+    kind: "interrupted",
+    note: resumedNote,
+    stopped: false,
+  });
+
+  const stopped = recordingConversation();
+  await appendInterruptionNote(
+    stopped.conversation,
+    runMarker({ partialEntryId: 7, stopRequested: true, idempotencyKey: "run-stopped" }),
+  );
+  const stoppedMessage = buildTranscript(stopped.entries).messages[0];
+  assert.equal(stoppedMessage?.text, stoppedNote);
+  assert.doesNotMatch(stoppedMessage?.text ?? "", /resuming/);
+  assert.deepEqual(stoppedMessage?.notice, {
+    kind: "interrupted",
+    note: stoppedNote,
+    stopped: true,
+  });
+});
+
+test("restarting twice with the same marker records exactly one note", async () => {
+  const { conversation, entries } = recordingConversation();
+  const marker = runMarker({ partialEntryId: 7, idempotencyKey: "run-twice" });
+
+  await appendInterruptionNote(conversation, marker);
+  await appendInterruptionNote(conversation, marker);
+  await appendInterruptionNote(conversation, { ...marker, updatedAt: "2026-10-30T11:00:00.000Z" });
+
+  assert.equal(entries.length, 1);
+  const messages = buildTranscript(entries).messages.filter(
+    (message) => message.notice?.kind === "interrupted",
+  );
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0]?.text, resumedNote);
 });
