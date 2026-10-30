@@ -13,6 +13,7 @@ import type {
   Snapshot,
   StreamDraftSync,
   StreamMessageDone,
+  StreamNotice,
   StreamRunState,
   StreamTextDelta,
   StreamTheme,
@@ -294,6 +295,15 @@ export function useChat(options: UseChatOptions = {}) {
       setDraftText("");
       setDraftThinking("");
       void refreshState();
+    });
+
+    source.addEventListener("notice", (event) => {
+      const data = parseEvent<StreamNotice>(event as MessageEvent<string>);
+      if (!data) return;
+      const message = data.message;
+      setMessages((current) =>
+        current.some((item) => item.id === message.id) ? current : [...current, message],
+      );
     });
 
     source.addEventListener("tool.start", (event) => {

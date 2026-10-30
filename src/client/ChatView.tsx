@@ -27,6 +27,7 @@ import {
 } from "./lazy-markdown";
 import { cn } from "./lib/utils";
 import { ATTACH_ACCEPT, mediaUrl, uploadMedia } from "./media-client";
+import { NoticeLine } from "./NoticeView";
 import { PiMenu } from "./PiMenu";
 import type { ChatStats } from "./StatsView";
 import { createTask } from "./task-client";
@@ -118,6 +119,9 @@ function MessageTime({ timestamp }: { timestamp: string }) {
 }
 
 function MessageBubble({ message }: { message: ChatMessage }) {
+  if (message.notice !== undefined) {
+    return <NoticeLine message={message} notice={message.notice} />;
+  }
   if (message.role === "system") {
     return (
       <div className="px-2 py-1 text-center font-mono text-[11px] text-muted-foreground">

@@ -5,6 +5,7 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 ## Unreleased
 
 - MCP status and events moved from the chat header to the stats page: the MCP widget shows each server's live subscriptions, and a new default `MCP events` widget lists the latest 20 events, newest first. Existing dashboards get it once.
+- Background job results and MCP events show in the chat as a one-line notice where they happened, such as `job build finished ✓ 12s` or `MCP github: push event`, instead of a full message bubble. Tapping one opens its details: the job's command, status, exit code, duration and last output, or each MCP event's server, name and pretty-printed payload. Cancelled jobs and jobs started with `notify: false` also get a notice, which the agent never sees. Notices are kept with the chat history.
 
 ## 1.5.1 - 2026-10-29
 
