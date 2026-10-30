@@ -119,7 +119,6 @@ export class ChatService {
   private readonly activeTools = new Map<string, ActiveTool>();
   private stream: AgentEventStream | undefined;
   private closed = false;
-  private runStartedAt: string | undefined;
   /** When the agent's event stream last delivered anything; see `QUIET_AFTER_MS`. */
   private lastEventAt = Date.now();
   /** Submissions sent to durable that it has not recorded yet. */
@@ -162,9 +161,6 @@ export class ChatService {
     this.selected = initialModel === undefined ? null : modelOption(initialModel);
     setSummaryModel(this.catalog, initialModel);
     this.marker = initialMarker;
-    if (interrupted) {
-      this.runStartedAt = initialMarker?.startedAt;
-    }
   }
 
   /**
@@ -185,7 +181,7 @@ export class ChatService {
     this.stream = stream;
     this.applySnapshot(stream.snapshot);
     if (stream.snapshot.run !== undefined) {
-      this.setRunState("running", this.runStartedAt);
+      this.setRunState("running");
     }
     stream.start((events) => this.handleEvents(events));
     this.watchStreamEnd(stream);
@@ -315,8 +311,6 @@ export class ChatService {
   getRunStatus(): StreamRunState {
     return {
       state: this.runState,
-      startedAt: this.runStartedAt ?? null,
-      lastEventAt: new Date(this.lastEventAt).toISOString(),
       queue: this.queueItems(),
       steers: this.steerItems(),
     };
@@ -403,9 +397,6 @@ export class ChatService {
       from: transcript.from,
       hasEarlier: transcript.hasEarlier,
       run: this.runState,
-      ...(this.runStartedAt === undefined ? {} : { runStartedAt: this.runStartedAt }),
-      runLastEventAt: new Date(this.lastEventAt).toISOString(),
-      quietAfterMs: QUIET_AFTER_MS,
       queue: this.queueItems(),
       steers: this.steerItems(),
       usage: summarizeUsage(usage),
@@ -582,7 +573,7 @@ export class ChatService {
       };
       this.marker = marker;
       await this.writeMarker(marker);
-      this.setRunState("running", startedAt);
+      this.setRunState("running");
     }
 
     let submission: Submission;
@@ -1374,7 +1365,7 @@ export class ChatService {
     }
   }
 
-  private setRunState(state: RunState, startedAt?: string): void {
+  private setRunState(state: RunState): void {
     const wasRunning = this.runState === "running";
     if (this.runState === state) {
       this.maybeClearMarker();
@@ -1383,9 +1374,7 @@ export class ChatService {
     this.runState = state;
     if (state === "running") {
       this.lastEventAt = Date.now();
-      this.runStartedAt = startedAt ?? new Date().toISOString();
     } else {
-      if (state === "idle") this.runStartedAt = undefined;
       this.currentText = "";
       this.currentThinking = "";
       if (this.activeTools.size > 0) {

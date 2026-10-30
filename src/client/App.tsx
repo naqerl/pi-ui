@@ -24,11 +24,6 @@ export function App() {
       timeline={chat.timeline}
       running={chat.running}
       interrupted={chat.interrupted}
-      runClock={{
-        startedAt: chat.runStartedAt,
-        lastEventAt: chat.lastEventAt,
-        quietAfterMs: chat.quietAfterMs,
-      }}
       ready={chat.ready}
       tasks={chat.tasks}
       send={chat.send}

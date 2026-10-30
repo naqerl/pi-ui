@@ -121,9 +121,6 @@ export function useChat(options: UseChatOptions = {}) {
   const [draftText, setDraftText] = useState("");
   const [draftThinking, setDraftThinking] = useState("");
   const [runState, setRunState] = useState<RunState>("idle");
-  const [runStartedAt, setRunStartedAt] = useState<string | null>(null);
-  const [lastEventAt, setLastEventAt] = useState<string | null>(null);
-  const [quietAfterMs, setQuietAfterMs] = useState<number | undefined>(undefined);
   const [queue, setQueue] = useState<QueuedMessage[]>([]);
   const [mcp, setMcp] = useState<McpStatus>({ servers: [], unavailable: [] });
   const [usage, setUsage] = useState<UsageSummary | null>(null);
@@ -204,9 +201,6 @@ export function useChat(options: UseChatOptions = {}) {
         setLiveTools((current) => current.filter((item) => !persistedActivityIds.has(item.id)));
       }
       setRunState(snapshot.run);
-      setRunStartedAt(snapshot.runStartedAt ?? null);
-      setLastEventAt(snapshot.runLastEventAt ?? null);
-      if (snapshot.quietAfterMs !== undefined) setQuietAfterMs(snapshot.quietAfterMs);
       setQueue(snapshot.queue);
       setSteers((current) =>
         rebuildSteersFromSnapshot(
@@ -330,8 +324,6 @@ export function useChat(options: UseChatOptions = {}) {
       const data = parseEvent<StreamRunState>(event as MessageEvent<string>);
       if (!data) return;
       setRunState(data.state);
-      setRunStartedAt(data.startedAt ?? null);
-      if (data.lastEventAt !== undefined) setLastEventAt(data.lastEventAt);
       if (data.queue !== undefined) setQueue(data.queue);
       if (data.steers !== undefined) {
         setSteers((current) => mergeLiveSteers(current, data.steers ?? []));
@@ -558,7 +550,6 @@ export function useChat(options: UseChatOptions = {}) {
         setQueue(data.queue);
         if (!data.queued && !(runState === "running")) {
           setRunState("running");
-          setRunStartedAt(new Date().toISOString());
           setDraftText("");
           setDraftThinking("");
           setLiveTools([]);
@@ -671,9 +662,6 @@ export function useChat(options: UseChatOptions = {}) {
     timeline,
     running: runState === "running",
     interrupted: runState === "interrupted",
-    runStartedAt,
-    lastEventAt,
-    quietAfterMs,
     queue,
     mcp,
     usage,

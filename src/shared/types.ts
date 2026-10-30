@@ -247,11 +247,6 @@ export interface Snapshot {
   /** True when the transcript has messages older than `from`. */
   hasEarlier?: boolean;
   run: RunState;
-  runStartedAt?: string;
-  /** When the agent's event stream last delivered anything. */
-  runLastEventAt?: string;
-  /** Quiet time after which the working strip says the agent has gone quiet. */
-  quietAfterMs?: number;
   queue: QueuedMessage[];
   /** Steers waiting for the run's next turn boundary, oldest first. */
   steers?: QueuedMessage[];
@@ -337,8 +332,6 @@ export interface StreamDraftSync {
 
 export interface StreamRunState {
   state: RunState;
-  startedAt?: string | null;
-  lastEventAt?: string | null;
   queue?: QueuedMessage[];
   steers?: QueuedMessage[];
 }
