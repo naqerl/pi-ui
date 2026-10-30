@@ -18,7 +18,6 @@ const LONG_PRESS_MS = 500;
 interface TasksViewProps {
   tasks: Task[];
   ready: boolean;
-  headerClearance: number;
   footerClearance: number;
   armedParentId: string | null;
   onArmParent: (id: string | null) => void;
@@ -28,7 +27,6 @@ interface TasksViewProps {
 export function TasksView({
   tasks,
   ready,
-  headerClearance,
   footerClearance,
   armedParentId,
   onArmParent,
@@ -91,7 +89,7 @@ export function TasksView({
       <div
         className="mx-auto flex w-full max-w-[72ch] flex-col gap-4 px-4"
         style={{
-          paddingTop: headerClearance + 16,
+          paddingTop: 16,
           paddingBottom: footerClearance + 16,
         }}
       >

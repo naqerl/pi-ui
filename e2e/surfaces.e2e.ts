@@ -75,7 +75,7 @@ function alphaOf(color: string): number {
   return parts.length === 4 ? Number(parts[3]) : 1;
 }
 
-test("paints the header, composer bar and latest button apart from the page", async ({
+test("paints the composer dock and latest button apart from the page", async ({
   app,
   browser,
   screen,
@@ -95,14 +95,13 @@ test("paints the header, composer bar and latest button apart from the page", as
       if (element === null) return "";
       return getComputedStyle(element).backgroundColor;
     };
-    const textarea = document.querySelector('textarea[aria-label="Message"]');
+    const dock = document.querySelector('[data-testid="composer-dock"]');
     const latest = Array.from(document.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("↓ latest"),
     );
     return {
       page: getComputedStyle(document.body).backgroundColor,
-      header: read(document.querySelector("header")),
-      composer: read(textarea?.closest("form")?.parentElement ?? null),
+      dock: read(dock),
       latest: read(latest ?? null),
       assistant: read(
         Array.from(document.querySelectorAll("main div")).find(
@@ -114,71 +113,67 @@ test("paints the header, composer bar and latest button apart from the page", as
     };
   });
 
-  for (const surface of [styles.header, styles.composer, styles.latest, styles.assistant]) {
+  for (const surface of [styles.dock, styles.latest, styles.assistant]) {
     expect(surface).not.toBe("");
     expect(surface).not.toBe(styles.page);
   }
-  expect(alphaOf(styles.header)).toBeGreaterThan(0);
-  expect(alphaOf(styles.header)).toBeLessThan(1);
-  expect(alphaOf(styles.composer)).toBeGreaterThan(0);
-  expect(alphaOf(styles.composer)).toBeLessThan(1);
+  expect(alphaOf(styles.dock)).toBeGreaterThan(0);
+  expect(alphaOf(styles.dock)).toBeLessThan(1);
   expect(alphaOf(styles.latest)).toBe(1);
   expect(alphaOf(styles.assistant)).toBe(1);
 
   const glass = await browser.evaluate(async () => {
-    const header = document.querySelector("header");
+    const dock = document.querySelector<HTMLElement>('[data-testid="composer-dock"]');
     const field = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
-    const footer = field?.closest("form")?.parentElement ?? null;
-    if (header === null || field === null || footer === null) return null;
-    const transition = getComputedStyle(footer).transitionProperty;
-    const headerBlur = getComputedStyle(header).backdropFilter;
-    footer.style.transition = "none";
+    if (dock === null || field === null) return null;
+    const transition = getComputedStyle(dock).transitionProperty;
+    dock.style.transition = "none";
     field.blur();
-    const idle = getComputedStyle(footer).backgroundColor;
-    const idleBlur = getComputedStyle(footer).backdropFilter;
+    const idle = getComputedStyle(dock).backgroundColor;
+    const idleBlur = getComputedStyle(dock).backdropFilter;
     field.focus();
-    const focusedBackground = getComputedStyle(footer).backgroundColor;
-    const footerBlur = getComputedStyle(footer).backdropFilter;
-    footer.style.transition = "";
+    const focusedBackground = getComputedStyle(dock).backgroundColor;
+    const focusedBlur = getComputedStyle(dock).backdropFilter;
+    dock.style.transition = "";
     return {
-      headerBlur,
       idleBlur,
-      footerBlur,
+      focusedBlur,
       idle,
       focused: focusedBackground,
       transition,
     };
   });
   expect(glass).not.toBeNull();
-  expect(glass?.headerBlur ?? "").toContain("blur");
   expect(glass?.idleBlur ?? "").toContain("blur");
-  expect(glass?.footerBlur ?? "none").toBe("none");
+  expect(glass?.focusedBlur ?? "none").toBe("none");
   expect(glass?.transition ?? "").toContain("background-color");
   expect(alphaOf(glass?.idle ?? "")).toBeGreaterThan(0);
   expect(alphaOf(glass?.idle ?? "")).toBeLessThan(1);
   expect(alphaOf(glass?.focused ?? "")).toBe(1);
 
   const widths = await browser.evaluate(() => {
-    const header = document.querySelector("header");
+    const dock = document.querySelector('[data-testid="composer-dock"]');
     const footer = document.querySelector("textarea")?.closest("form")?.parentElement ?? null;
-    const headerRow = header?.firstElementChild ?? null;
+    const chromeRow = dock?.firstElementChild ?? null;
     const footerRow = document.querySelector("textarea")?.parentElement ?? null;
-    if (header === null || footer === null || headerRow === null || footerRow === null) return null;
-    const headerStyle = getComputedStyle(headerRow);
+    if (dock === null || footer === null || chromeRow === null || footerRow === null) return null;
+    const chromeStyle = getComputedStyle(chromeRow);
     const footerStyle = getComputedStyle(footerRow);
     return {
-      header: header.getBoundingClientRect().width,
-      footer: footer.getBoundingClientRect().width,
-      headerPad: `${headerStyle.paddingTop} ${headerStyle.paddingLeft}`,
+      dock: dock.getBoundingClientRect().width,
+      chrome: chromeRow.getBoundingClientRect().width,
+      composerRow: footerRow.getBoundingClientRect().width,
+      chromePad: `${chromeStyle.paddingTop} ${chromeStyle.paddingLeft}`,
       footerPad: `${footerStyle.paddingTop} ${footerStyle.paddingLeft}`,
       fieldPadLeft: getComputedStyle(document.querySelector("textarea") ?? document.body)
         .paddingLeft,
     };
   });
   expect(widths).not.toBeNull();
-  expect(widths?.header ?? 0).toBeCloseTo(widths?.footer ?? -1, 0);
-  expect(widths?.headerPad.split(" ")[0]).toBe(widths?.footerPad.split(" ")[0]);
-  expect(Number.parseFloat(widths?.headerPad.split(" ")[1] ?? "")).toBeCloseTo(
+  expect(Math.abs((widths?.chrome ?? 0) - (widths?.dock ?? 0))).toBeLessThanOrEqual(2);
+  expect(Math.abs((widths?.composerRow ?? 0) - (widths?.dock ?? 0))).toBeLessThanOrEqual(2);
+  expect(widths?.chromePad.split(" ")[0]).toBe(widths?.footerPad.split(" ")[0]);
+  expect(Number.parseFloat(widths?.chromePad.split(" ")[1] ?? "")).toBeCloseTo(
     Number.parseFloat(widths?.footerPad.split(" ")[1] ?? "") +
       Number.parseFloat(widths?.fieldPadLeft ?? ""),
     0,
@@ -217,8 +212,7 @@ test("overlays the transcript with the blurred footer", async ({ app, browser, s
         requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
       });
     const main = document.querySelector("main");
-    const textarea = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
-    const footer = textarea?.closest("form")?.parentElement ?? null;
+    const footer = document.querySelector<HTMLElement>('[data-testid="composer-dock"]');
     if (main === null || footer === null) return null;
 
     main.scrollTop = Math.floor((main.scrollHeight - main.clientHeight) / 2);
@@ -278,12 +272,7 @@ test("overlays the transcript with the blurred footer", async ({ app, browser, s
       columnRight: main.lastElementChild?.getBoundingClientRect().right ?? null,
       contentPaddingTop: getComputedStyle(main.lastElementChild ?? main).paddingTop,
       contentPaddingBottom: getComputedStyle(main.lastElementChild ?? main).paddingBottom,
-      headerBottom: document.querySelector("header")?.getBoundingClientRect().bottom ?? null,
       footerHeight: footerAfter.height,
-      headerBorderBottom: getComputedStyle(document.querySelector("header") ?? document.body)
-        .borderBottomWidth,
-      headerBorderLeft: getComputedStyle(document.querySelector("header") ?? document.body)
-        .borderLeftWidth,
       footerBorderTop: getComputedStyle(footer).borderTopWidth,
       footerBorderRight: getComputedStyle(footer).borderRightWidth,
     };
@@ -319,10 +308,7 @@ test("overlays the transcript with the blurred footer", async ({ app, browser, s
   const clearance = (geometry?.mainBottom ?? 0) - (geometry?.footerTopAtBottom ?? 0);
   expect(padding).toBeCloseTo(clearance + endGap, 0);
   const paddingTop = Number.parseFloat(geometry?.contentPaddingTop ?? "");
-  const headerClearance = (geometry?.headerBottom ?? 0) - (geometry?.mainTop ?? 0);
-  expect(paddingTop).toBeCloseTo(headerClearance + endGap, 0);
-  expect(geometry?.headerBorderBottom).toBe("1px");
-  expect(geometry?.headerBorderLeft).toBe("1px");
+  expect(paddingTop).toBeCloseTo(endGap, 0);
   expect(geometry?.footerBorderTop).toBe("1px");
   expect(geometry?.footerBorderRight).toBe("1px");
 });
@@ -349,7 +335,7 @@ test("returns the composer to one line after sending over the overlay footer", a
 
   const state = await browser.evaluate(() => {
     const element = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
-    const footer = element?.closest("form")?.parentElement ?? null;
+    const footer = document.querySelector<HTMLElement>('[data-testid="composer-dock"]');
     if (element === null) return null;
     if (footer !== null) footer.style.transition = "none";
     return {
@@ -397,7 +383,7 @@ test("keeps the interrupted-run warning visible outside the scroll container", a
   expect(geometry?.bannerBottom ?? 0).toBeLessThanOrEqual(geometry?.mainTop ?? 0);
 });
 
-test("scrolls message content under the sticky header", async ({ app, browser, screen }) => {
+test("scrolls message content without a sticky header", async ({ app, browser, screen }) => {
   await openSeeded(app, browser);
   await expect(screen.getByText("Seed message 59", { exact: false })).toBeVisible();
 
@@ -407,66 +393,33 @@ test("scrolls message content under the sticky header", async ({ app, browser, s
         requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
       });
     const main = document.querySelector("main");
-    const header = document.querySelector("header");
-    if (main === null || header === null) return null;
+    const content = main?.firstElementChild;
+    const dock = document.querySelector('[data-testid="composer-dock"]');
+    if (main === null || content === null || content === undefined || dock === null) return null;
     main.scrollTop = Math.floor((main.scrollHeight - main.clientHeight) / 2);
     await frames();
 
-    const bubbles = Array.from(main.querySelectorAll("div")).filter((element) =>
-      element.className.includes("max-w-[85%]"),
-    );
-    const headerNow = header.getBoundingClientRect();
-    const wide =
-      bubbles.find((element) => element.getBoundingClientRect().width > headerNow.width) ??
-      bubbles[0];
-    if (wide !== undefined) {
-      main.scrollTop += wide.getBoundingClientRect().top - headerNow.top;
-      await frames();
-    }
-
     const mainBox = main.getBoundingClientRect();
-    const headerBox = header.getBoundingClientRect();
-    const behind = bubbles.find((element) => {
-      const box = element.getBoundingClientRect();
-      return (
-        box.top < headerBox.bottom &&
-        box.bottom > headerBox.top &&
-        box.left < headerBox.right &&
-        box.right > headerBox.left
-      );
-    });
-    const hit = document.elementFromPoint(
-      headerBox.left + 8,
-      headerBox.top + Math.min(20, headerBox.height / 2),
-    );
+    const dockBox = dock.getBoundingClientRect();
+    const topHit = document.elementFromPoint(mainBox.left + 8, mainBox.top + 8);
     return {
+      noHeader: document.querySelector("header") === null,
+      scrollTop: main.scrollTop,
       mainTop: mainBox.top,
       mainLeft: mainBox.left,
       mainRight: mainBox.right,
-      mainWidth: mainBox.width,
-      headerTop: headerBox.top,
-      headerLeft: headerBox.left,
-      headerRight: headerBox.right,
-      headerWidth: headerBox.width,
-      columnLeft: main.firstElementChild?.getBoundingClientRect().left ?? 0,
-      columnRight: main.firstElementChild?.getBoundingClientRect().right ?? 0,
-      hitInsideHeader: hit !== null && header.contains(hit),
-      behindText: behind?.textContent ?? "",
+      dockTop: dockBox.top,
+      topPadding: getComputedStyle(content).paddingTop,
+      topEdgeInsideMain: topHit !== null && main.contains(topHit),
     };
   });
 
   expect(geometry).not.toBeNull();
-  expect((geometry?.headerTop ?? 0) - (geometry?.mainTop ?? 0)).toBeLessThanOrEqual(1);
-  expect(geometry?.headerLeft ?? 0).toBeGreaterThan((geometry?.mainLeft ?? 0) + 4);
-  expect(geometry?.headerRight ?? 0).toBeLessThan((geometry?.mainRight ?? 0) - 4);
-  expect(geometry?.headerLeft ?? 0).toBeLessThan((geometry?.columnLeft ?? 0) - 4);
-  expect(geometry?.headerRight ?? 0).toBeGreaterThan((geometry?.columnRight ?? 0) + 4);
-  expect((geometry?.headerLeft ?? 0) - (geometry?.mainLeft ?? 0)).toBeCloseTo(
-    (geometry?.mainRight ?? 0) - (geometry?.headerRight ?? 0),
-    0,
-  );
-  expect(geometry?.hitInsideHeader).toBe(true);
-  expect(geometry?.behindText ?? "").toContain("Seed message");
+  expect(geometry?.noHeader).toBe(true);
+  expect(geometry?.scrollTop ?? 0).toBeGreaterThan(0);
+  expect(Number.parseFloat(geometry?.topPadding ?? "")).toBeCloseTo(16, 0);
+  expect(geometry?.topEdgeInsideMain).toBe(true);
+  expect(geometry?.dockTop ?? 0).toBeGreaterThan(geometry?.mainTop ?? Number.MAX_VALUE);
 });
 
 test("keeps the latest button still across an extra scroll event", async ({
@@ -516,7 +469,7 @@ test("uses one action-button height and a stable composer bar height", async ({
       const textarea = document.querySelector<HTMLTextAreaElement>(
         'textarea[aria-label="Message"]',
       );
-      const bar = textarea?.closest("form")?.parentElement ?? null;
+      const bar = document.querySelector('[data-testid="composer-dock"]');
       const row = textarea?.parentElement ?? null;
       // The action button sits last in the row, after the attach button.
       const button = [...(row?.querySelectorAll("button") ?? [])].at(-1) ?? null;
@@ -591,7 +544,7 @@ test("uses one action-button height and a stable composer bar height", async ({
     expect(state?.right ?? 0).toBeCloseTo(send?.right ?? -1, 0);
     expect(state?.textareaRight ?? 0).toBeCloseTo(send?.textareaRight ?? -1, 0);
   }
-  expect(stop?.barHeight ?? 0).toBeGreaterThan(send?.barHeight ?? 0);
+  expect(stop?.barHeight ?? 0).toBeCloseTo(send?.barHeight ?? -1, 0);
   expect(steer?.barHeight ?? 0).toBeCloseTo(stop?.barHeight ?? -1, 0);
   expect(queue.height ?? 0).toBeCloseTo(send?.height ?? -1, 0);
   expect(queue.right ?? 0).toBeCloseTo(queue.rowRight ?? -1, 0);
@@ -661,7 +614,7 @@ test("follows the theme color and corner radius on the chrome", async ({
     return response.ok;
   });
   if (posted) await app.open("/");
-  await expect(screen.getByRole("button", "pi")).toBeVisible();
+  await expect(screen.getByRole("button", "Settings")).toBeVisible();
   await expect
     .poll(() =>
       browser.evaluate(() =>
@@ -671,11 +624,13 @@ test("follows the theme color and corner radius on the chrome", async ({
     .toBe("6px");
 
   const solitude = await browser.evaluate(() => {
-    const header = document.querySelector("header");
+    const dock = document.querySelector('[data-testid="composer-dock"]');
+    const gear = document.querySelector("[data-pi-menu]");
     const send = Array.from(document.querySelectorAll("button")).find(
       (button) => button.getAttribute("aria-label") === "Send",
     );
-    const headerStyle = header === null ? null : getComputedStyle(header);
+    const dockStyle = dock === null ? null : getComputedStyle(dock);
+    const gearStyle = gear === null ? null : getComputedStyle(gear);
     return {
       radius: getComputedStyle(document.documentElement).getPropertyValue("--radius").trim(),
       background: getComputedStyle(document.documentElement)
@@ -683,20 +638,22 @@ test("follows the theme color and corner radius on the chrome", async ({
         .trim(),
       surface: getComputedStyle(document.documentElement).getPropertyValue("--surface").trim(),
       page: getComputedStyle(document.body).backgroundColor,
-      headerBackground: headerStyle?.backgroundColor ?? "",
+      dockBackground: dockStyle?.backgroundColor ?? "",
+      gearBackground: gearStyle?.backgroundColor ?? "",
       buttonRadius: send === undefined ? "" : getComputedStyle(send).borderRadius,
     };
   });
   expect(solitude.radius).toBe("6px");
   expect(solitude.background.toLowerCase()).toBe("#101315");
   expect(solitude.surface.toLowerCase()).toBe("#0c0e10");
-  expect(alphaOf(solitude.headerBackground)).toBeGreaterThan(0);
-  expect(alphaOf(solitude.headerBackground)).toBeLessThan(1);
-  expect(solitude.headerBackground).not.toBe(solitude.page);
+  expect(alphaOf(solitude.dockBackground)).toBeGreaterThan(0);
+  expect(alphaOf(solitude.dockBackground)).toBeLessThan(1);
+  expect(solitude.dockBackground).not.toBe(solitude.page);
+  expect(alphaOf(solitude.gearBackground)).toBe(1);
   expect(solitude.buttonRadius).toBe("6px");
   await expect.poll(() => shaderFollowsTheme(browser)).toBe(true);
 
-  await screen.getByRole("button", "pi").tap();
+  await screen.getByRole("button", "Settings").tap();
   await screen.getByRole("menuitem", { name: /^Theme/ }).tap();
   await screen.getByRole("menuitemradio", { name: "Vantablack" }).tap();
 
@@ -806,7 +763,7 @@ test("paints the pi-ui update note with the theme accent", async ({ app, browser
 
 test("paints the app manifest with the active theme", async ({ app, browser, screen }) => {
   await app.open("/");
-  await expect(screen.getByRole("button", "pi")).toBeVisible();
+  await expect(screen.getByRole("button", "Settings")).toBeVisible();
   const painted = await browser.evaluate(async () => {
     const catalog = (await (await fetch("/api/themes", { cache: "no-store" })).json()) as {
       themes: Array<{ slug: string; colors: { background: string } }>;
@@ -857,7 +814,7 @@ test("paints the app manifest with the active theme", async ({ app, browser, scr
 
 test("embeds the saved theme in the first document", async ({ app, browser, screen }) => {
   await app.open("/");
-  await expect(screen.getByRole("button", "pi")).toBeVisible();
+  await expect(screen.getByRole("button", "Settings")).toBeVisible();
   const saved = await browser.evaluate(async () => {
     const catalog = (await (await fetch("/api/themes", { cache: "no-store" })).json()) as {
       themes: Array<{

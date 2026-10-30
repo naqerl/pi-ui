@@ -93,17 +93,15 @@ test("keeps a todo with subtasks and blockers on the tasks page", async ({
   await expect(screen.getByText("0/1", { exact: true })).toBeVisible();
   const progress = await browser.evaluate(() => {
     const node = document.querySelector("[data-testid=subtask-progress]");
-    const row = document.querySelector("header")?.firstElementChild;
-    if (!(node instanceof HTMLElement) || !(row instanceof HTMLElement)) return null;
+    const dock = document.querySelector("[data-testid=composer-dock]");
+    if (!(node instanceof HTMLElement) || !(dock instanceof HTMLElement)) return null;
     return {
-      inHeader: row.contains(node),
-      atEnd: row.lastElementChild?.lastElementChild === node,
+      inDock: dock.contains(node),
       label: node.getAttribute("aria-label"),
     };
   });
   expect(progress).toEqual({
-    inHeader: true,
-    atEnd: true,
+    inDock: true,
     label: "0/1 completed subtasks",
   });
 
@@ -248,26 +246,29 @@ test("switches to tasks with a horizontal swipe and back again", async ({
   const chrome = await browser.evaluate(() => {
     const dots = document.querySelector("[data-testid=page-dots]");
     const header = document.querySelector("header");
-    const row = header?.firstElementChild ?? null;
-    const pi = document.querySelector("[data-pi-menu]");
-    const footer = document.querySelector("textarea")?.closest("form")?.parentElement ?? null;
-    if (dots === null || row === null || pi === null) return null;
+    const dock = document.querySelector("[data-testid=composer-dock]");
+    const row = dock?.firstElementChild ?? null;
+    const gear = document.querySelector("[data-pi-menu]");
+    if (dots === null || dock === null || row === null || gear === null) return null;
     const dotsBox = dots.getBoundingClientRect();
-    const piBox = pi.getBoundingClientRect();
-    const rowBox = row.getBoundingClientRect();
+    const gearBox = gear.getBoundingClientRect();
     return {
-      inRow: row.contains(dots),
-      outsideFooter: footer === null || !footer.contains(dots),
+      noHeader: header === null,
+      inRow: row.contains(dots) && row.contains(gear),
+      inDock: dock.contains(row),
+      gearRightOfDots: gearBox.left >= dotsBox.right,
+      gearLast: row.lastElementChild === gear,
       arrows:
         document.querySelector("[aria-label='Show chat'], [aria-label='Show tasks']") !== null,
-      centered: Math.abs(dotsBox.left + dotsBox.width / 2 - (rowBox.left + rowBox.width / 2)),
-      inline: Math.abs(dotsBox.top + dotsBox.height / 2 - (piBox.top + piBox.height / 2)),
+      inline: Math.abs(dotsBox.top + dotsBox.height / 2 - (gearBox.top + gearBox.height / 2)),
     };
   });
+  expect(chrome?.noHeader).toBe(true);
   expect(chrome?.inRow).toBe(true);
-  expect(chrome?.outsideFooter).toBe(true);
+  expect(chrome?.inDock).toBe(true);
+  expect(chrome?.gearRightOfDots).toBe(true);
+  expect(chrome?.gearLast).toBe(true);
   expect(chrome?.arrows).toBe(false);
-  expect(chrome?.centered ?? 99).toBeLessThanOrEqual(1);
   expect(chrome?.inline ?? 99).toBeLessThanOrEqual(1);
 
   const swipe = async (direction: "forward" | "back" | "cancel-back") =>
