@@ -891,6 +891,13 @@ export function ChatView({
   const [headerClearance, setHeaderClearance] = useState(0);
   const [footerClearance, setFooterClearance] = useState(0);
 
+  useEffect(() => {
+    if (!statsPage) return;
+    const footer = footerRef.current;
+    const active = document.activeElement;
+    if (footer !== null && active instanceof HTMLElement && footer.contains(active)) active.blur();
+  }, [statsPage]);
+
   useLayoutEffect(() => {
     const header = headerRef.current;
     const footer = footerRef.current;
@@ -901,7 +908,9 @@ export function ChatView({
       const headerBox = header.getBoundingClientRect();
       const footerBox = footer.getBoundingClientRect();
       const nextHeader = headerBox.bottom - containerBox.top;
-      const nextFooter = containerBox.bottom - footerBox.top;
+      // The dock slides below the viewport on the stats page, but the chat still reserves
+      // its height so the transcript's bottom edge does not move when the dock comes back.
+      const nextFooter = footerBox.height;
       setHeaderClearance((current) =>
         Math.abs(current - nextHeader) < 0.5 ? current : nextHeader,
       );
@@ -1167,7 +1176,14 @@ export function ChatView({
           </div>
         )}
 
-        <div ref={footerRef} className="float-footer absolute z-20 theme-radius">
+        <div
+          ref={footerRef}
+          data-testid="composer-dock"
+          data-hidden={statsPage ? "true" : "false"}
+          aria-hidden={statsPage ? true : undefined}
+          inert={statsPage ? true : undefined}
+          className="float-footer absolute z-20 theme-radius"
+        >
           <div
             data-testid="working-status"
             data-open={running ? "true" : "false"}
