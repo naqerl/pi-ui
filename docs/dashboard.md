@@ -42,7 +42,7 @@ at the page.
   - `tokens`: `input`, `output`, `cacheRead`, `cacheWrite`, `totalTokens`, `cost`, `costText`, `rows[]` (`key`, `label`, `value`)
   - `cache`: `read`, `write`, `hitRate`, `hitPercent`, `text`
   - `mcp`: `count`, `unavailable`, `servers[]` (`key`, `name`, `available`, `authRejected`, `tools`, `subscriptions` (live subscription names), `state`, `detail`). An available server's `detail` is its tool count (`no tools`, `1 tool`, `4 tools`); other rows are `auth rejected` or `unavailable · <reason>`. A live subscription is appended as ` · subscribed: <names>`.
-  - `mcp_events`: `total`, `live` (servers with a live subscription), `latest`, `events[]` (the last 20, newest first: `key`, `id`, `server`, `name`, `timestamp`, `time`, `summary`, `label`, `value`), `subscriptions[]` (`key`, `id`, `server`, `name`, `status`, `label`, `state`, `detail`)
+  - `mcp_events`: `total`, `live` (servers with a live subscription), `latest`, `events[]` (the last 3, newest first: `key`, `id`, `server`, `name`, `timestamp`, `time`, `summary`, `label`, `value`), `subscriptions[]` (`key`, `id`, `server`, `name`, `status`, `label`, `state`, `detail`)
   - `jobs`: `total`, `running`, `jobs[]` (`id`, `name`, `status`, `exitCode`, `label`, `state`, `detail`, …)
   - `session`: `conversationId`, `model`, `run`, `rows[]`
 - `{"type": "poll", "script": "…", "intervalSec": 60, "timeoutSec": 10}`: the

@@ -353,9 +353,9 @@ test("lists MCP events newest first in the default widget, not the header", asyn
       web: document.querySelector('[data-testid="stat-mcp-web"]')?.textContent ?? null,
     };
   });
-  expect(read.count).toBe(20);
+  expect(read.count).toBe(3);
   expect(read.first).toBe("stat-mcp-event-e24");
-  expect(read.last).toBe("stat-mcp-event-e5");
+  expect(read.last).toBe("stat-mcp-event-e22");
   expect(read.label).toBe("web · alerts");
   expect(read.value ?? "").toMatch(/^\d\d:\d\d:\d\d · alert 24$/);
   expect(read.web).toBe("web2 tools · subscribed: alerts");

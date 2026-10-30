@@ -551,8 +551,10 @@ export interface BuiltinInputs {
   session: BuiltinSession;
 }
 
-/** Recent MCP events the `mcp_events` builtin lists, newest first. */
+/** Kept for compatibility with code and tests that size the MCP event feed. */
 export const MCP_EVENT_LIMIT = 20;
+/** Recent MCP events the `mcp_events` builtin lists, newest first. */
+export const MCP_EVENT_WIDGET_LIMIT = 3;
 const LIVE_SUBSCRIPTION = new Set(["opening", "active", "reconnecting"]);
 
 function clockTime(timestamp: string): string {
@@ -694,7 +696,7 @@ export function builtinData(name: BuiltinName, inputs: BuiltinInputs): unknown {
     }
     case "mcp_events": {
       const { events, subscriptions } = inputs.mcpEvents;
-      const recent = events.slice(-MCP_EVENT_LIMIT).reverse();
+      const recent = events.slice(-MCP_EVENT_WIDGET_LIMIT).reverse();
       return {
         total: events.length,
         live: [
