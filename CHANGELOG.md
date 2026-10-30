@@ -5,6 +5,7 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 ## Unreleased
 
 - pi-ui no longer rewrites MCP events: the repairs added in 1.6.1 (numeric ids and timestamps, missing `data`, renaming an event to its stream and keeping its kind in `data.eventName`, routing a frame without a subscription id) are gone now that the zeroshot hub names each event after its stream (naqerl/zeroshot#8). Events `pi-mcp-events` would drop are still logged once per server and reason (`[mcp] zeroshot: events/event is named "hub.job", not its stream "hub"; pi-mcp-events drops it`), and the chat notice and both MCP widgets show an event's `data.kind` when it has one.
+- The container no longer mounts the zeroshot configuration directory. It mounts one read-only file instead, `hub/api-token`, at `/run/secrets/zeroshot-hub-token`, and `mcp.json` reads it with `"bearerToken": "!cat /run/secrets/zeroshot-hub-token"`. Before this, the `!echo Bearer $(cat /home/user/.config/zeroshot/hub/api-token)` header forced the whole directory to be mounted, which put the hub's Hetzner token, its gateway key and its GitHub token inside the chat process just to reach one bearer token. Existing installs must change that header to the `bearerToken` form and replace `ZEROSHOT_CONFIG_DIR` with `ZEROSHOT_HUB_TOKEN_FILE`; a stale header now fails loudly at boot as an unreadable file rather than silently taking the whole directory with it.
 
 ## 1.6.1 - 2026-10-30
 
