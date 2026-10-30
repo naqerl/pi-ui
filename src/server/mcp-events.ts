@@ -27,13 +27,6 @@ function summarize(data: unknown): string {
   }
 }
 
-/** `eventName` is shown as the event's name already; keep it out of the one-line summary. */
-function withoutEventName(data: unknown): unknown {
-  if (!isRecord(data) || typeof data.eventName !== "string") return data;
-  const { eventName: _name, ...rest } = data;
-  return rest;
-}
-
 function subscriptionFrom(value: unknown): McpSubscriptionView | null {
   if (!isRecord(value)) return null;
   if (typeof value.id !== "string" || typeof value.server !== "string") return null;
@@ -81,11 +74,11 @@ export class McpEventFeed {
       if (!isRecord(item) || typeof item.server !== "string" || !isRecord(item.event)) continue;
       const event = item.event;
       const streamName = typeof event.name === "string" ? event.name : "event";
-      // pi-ui renames an event to its stream so pi-mcp-events keeps it, and
-      // keeps the server's own kind (`hub.job` on a `hub` stream) here.
+      // A multiplexed stream names every event after itself and carries the
+      // kind in `data.kind` (`hub.job` on a `hub` stream).
       const name =
-        isRecord(event.data) && typeof event.data.eventName === "string"
-          ? event.data.eventName
+        isRecord(event.data) && typeof event.data.kind === "string" && event.data.kind !== ""
+          ? event.data.kind
           : streamName;
       const timestamp =
         typeof event.timestamp === "string" ? event.timestamp : new Date().toISOString();
@@ -102,7 +95,7 @@ export class McpEventFeed {
           server: item.server,
           name,
           timestamp,
-          summary: summarize(withoutEventName(event.data)),
+          summary: summarize(event.data),
         },
       ].slice(-EVENT_LIMIT);
       this.notice = `new event from ${item.server}`;

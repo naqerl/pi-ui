@@ -21,8 +21,8 @@ const hubSubscription = async (browser: Page) =>
 // Regression for #3: events from a live subscription, not only `mcp_events`
 // tool results, must reach the feed behind /api/state, the inline notice, the
 // `MCP events` widget and the mcp widget. The stub's `stub-hub` stream sends
-// what a real hub sends: a numeric id and timestamp and a `stub-hub.job` kind,
-// all of which pi-mcp-events used to drop in silence.
+// what a hub sends: events named after the stream with a `stub-hub.job` kind
+// in data.kind, which the notice and widgets show.
 test("a subscription's events reach the feed, the chat notice and both MCP widgets", async ({
   app,
   browser,

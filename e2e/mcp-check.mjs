@@ -100,8 +100,8 @@ try {
     "stub-cursor-1",
   );
 
-  // A hub-shaped stream: numeric eventId and timestamp, and a kind that is not
-  // the stream name. pi-mcp-events alone drops every such event in silence.
+  // A hub-shaped stream: every event is named after the stream and carries its
+  // kind in data.kind, which the feed shows as the event's name.
   const hub = await execute(events, { action: "subscribe", server: "stub", name: "stub-hub" });
   assert.equal(hub.isError, undefined, JSON.stringify(hub));
   await waitForFeed(

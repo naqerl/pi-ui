@@ -4,6 +4,8 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+- pi-ui no longer rewrites MCP events: the repairs added in 1.6.1 (numeric ids and timestamps, missing `data`, renaming an event to its stream and keeping its kind in `data.eventName`, routing a frame without a subscription id) are gone now that the zeroshot hub names each event after its stream (naqerl/zeroshot#8). Events `pi-mcp-events` would drop are still logged once per server and reason (`[mcp] zeroshot: events/event is named "hub.job", not its stream "hub"; pi-mcp-events drops it`), and the chat notice and both MCP widgets show an event's `data.kind` when it has one.
+
 ## 1.6.1 - 2026-10-30
 
 - Memory is a set of files the agent can keep, search and consolidate: `data/memory/MEMORY.md` is a short index, one nested file per topic holds the body, `find` scores topics by term overlap instead of loading everything, and a consolidation pass turns dated journal entries into topic text at checkpoints, so the injected block stays byte-stable between them and the prompt cache keeps hitting. Markdown files, no database, and every write is a rename; the tools are `memory_write`, `memory_read`, `memory_find`, `memory_dream` and `memory_status`.

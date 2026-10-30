@@ -46,7 +46,7 @@ server.setRequestHandler(
         name: "stub-hub",
         delivery: ["push"],
         description:
-          "Hub-shaped events: numeric ids and timestamps, and a `stub-hub.job` kind on the `stub-hub` stream.",
+          "Hub-shaped events: every event is named `stub-hub` and carries its kind in `data.kind`.",
       },
     ],
   }),
@@ -73,14 +73,15 @@ server.setRequestHandler(
       void notify("notifications/events/active", { cursor: null });
     }, 10);
     if (params.name === "stub-hub") {
-      // pi-mcp-events drops all of these as sent; pi-ui must repair them.
+      // A multiplexed stream, as a hub sends it: named after the stream, with
+      // the event's own kind in data.kind.
       setTimeout(() => {
         void notify("notifications/events/event", {
-          eventId: 510,
-          name: "stub-hub.job",
-          timestamp: Date.now(),
+          eventId: "510",
+          name: "stub-hub",
+          timestamp: new Date().toISOString(),
           cursor: "hub:510",
-          data: { kind: "hub.job", id: "job-1", state: "cancelled" },
+          data: { kind: "stub-hub.job", id: "job-1", state: "cancelled" },
         });
         void notify("notifications/events/heartbeat", { cursor: "hub:510" });
       }, 100);

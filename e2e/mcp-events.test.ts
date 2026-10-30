@@ -2,60 +2,32 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { JSONRPCMessage, Transport } from "@modelcontextprotocol/client";
 import { DurableExtensionShim } from "../src/server/durable-extensions.js";
-import { guardEventNotifications, repairEventParams } from "../src/server/mcp-event-guard.js";
+import { checkEventNotifications, eventRejection } from "../src/server/mcp-event-check.js";
 import { type ExtensionNotice, McpEventFeed } from "../src/server/mcp-events.js";
 
 const SUBSCRIPTION_META = "io.modelcontextprotocol/subscriptionId";
 
-test("a spec-shaped event passes the guard untouched", () => {
+test("a spec-shaped event raises no rejection", () => {
   const params = {
-    eventId: "e-1",
-    name: "ticks",
+    eventId: "hub:510",
+    name: "hub",
     timestamp: "2026-10-30T12:00:00.000Z",
-    cursor: "c-1",
-    data: { n: 1 },
+    data: { kind: "hub.job", id: "j" },
   };
-  const repaired = repairEventParams(params, "ticks");
-  assert.deepEqual(repaired, { kind: "kept", params, repairs: [] });
+  assert.equal(eventRejection(params, "hub"), null);
 });
 
-test("a hub-shaped event is repaired into one pi-mcp-events accepts", () => {
-  const repaired = repairEventParams(
-    {
-      eventId: 512,
-      name: "hub.job",
-      timestamp: 1_793_620_800_000,
-      cursor: "hub:512",
-      data: { id: "j" },
-    },
-    "hub",
+test("each reason pi-mcp-events drops an event for is named", () => {
+  const good = { eventId: "1", name: "hub", timestamp: "t", data: null };
+  assert.equal(eventRejection(good, undefined), "has no known subscription id");
+  assert.equal(eventRejection({ ...good, eventId: 1 }, "hub"), "has a number eventId");
+  assert.equal(eventRejection({ ...good, timestamp: 1 }, "hub"), "has a number timestamp");
+  const { data: _data, ...noData } = good;
+  assert.equal(eventRejection(noData, "hub"), "has no data");
+  assert.equal(
+    eventRejection({ ...good, name: "hub.job" }, "hub"),
+    'is named "hub.job", not its stream "hub"',
   );
-  assert.equal(repaired.kind, "kept");
-  if (repaired.kind !== "kept") return;
-  assert.equal(repaired.params.eventId, "512");
-  assert.equal(repaired.params.name, "hub");
-  assert.equal(repaired.params.timestamp, new Date(1_793_620_800_000).toISOString());
-  assert.deepEqual(repaired.params.data, { id: "j", eventName: "hub.job" });
-  assert.equal(repaired.repairs.length, 3);
-});
-
-test("epoch seconds, a missing id with a cursor and missing data are repaired", () => {
-  const repaired = repairEventParams(
-    { name: "hub", timestamp: 1_793_620_800, cursor: "hub:7" },
-    "hub",
-  );
-  assert.equal(repaired.kind, "kept");
-  if (repaired.kind !== "kept") return;
-  assert.equal(repaired.params.eventId, "hub:7");
-  assert.equal(repaired.params.timestamp, new Date(1_793_620_800_000).toISOString());
-  assert.equal(repaired.params.data, null);
-});
-
-test("an event with neither id nor cursor is dropped with a reason", () => {
-  assert.deepEqual(repairEventParams({ name: "hub", timestamp: "t", data: 1 }, "hub"), {
-    kind: "dropped",
-    reason: "no eventId",
-  });
 });
 
 function fakeTransport() {
@@ -71,14 +43,14 @@ function fakeTransport() {
   return { transport: transport as unknown as Transport, raw: transport, sent };
 }
 
-test("the transport guard repairs events for the stream they belong to and logs once", async () => {
+test("the event check logs each rejection once and passes every frame on unchanged", async () => {
   const { transport, raw, sent } = fakeTransport();
   const lines: string[] = [];
-  const guarded = guardEventNotifications(transport, "zeroshot", (line) => lines.push(line));
+  const checked = checkEventNotifications(transport, "zeroshot", (line) => lines.push(line));
   const received: unknown[] = [];
-  guarded.onmessage = (message) => received.push(message);
+  checked.onmessage = (message) => received.push(message);
 
-  await guarded.send({
+  await checked.send({
     jsonrpc: "2.0",
     id: "sub-1",
     method: "events/stream",
@@ -86,52 +58,28 @@ test("the transport guard repairs events for the stream they belong to and logs 
   });
   assert.equal(sent.length, 1, "send still reaches the wrapped transport");
 
-  const event = (eventId: number) => ({
+  const event = (eventId: string, name: string) => ({
     jsonrpc: "2.0" as const,
     method: "notifications/events/event",
     params: {
       _meta: { [SUBSCRIPTION_META]: "sub-1" },
       eventId,
-      name: "hub.job",
+      name,
       timestamp: "2026-10-30T12:00:00.000Z",
-      data: { id: eventId },
+      data: { kind: "hub.job" },
     },
   });
-  raw.onmessage?.(event(1));
-  raw.onmessage?.(event(2));
-  raw.onmessage?.({ jsonrpc: "2.0", id: 9, result: {} });
+  const frames = [event("hub:1", "hub.job"), event("hub:2", "hub.job"), event("hub:3", "hub")];
+  for (const frame of frames) raw.onmessage?.(frame);
+  raw.onmessage?.({ jsonrpc: "2.0", id: "sub-1", result: {} });
+  raw.onmessage?.(event("hub:4", "hub"));
 
-  assert.equal(received.length, 3);
-  const first = received[0] as { params: Record<string, unknown> };
-  assert.equal(first.params.eventId, "1");
-  assert.equal(first.params.name, "hub");
-  assert.deepEqual(first.params._meta, { [SUBSCRIPTION_META]: "sub-1" });
-  assert.deepEqual(received[2], { jsonrpc: "2.0", id: 9, result: {} });
+  assert.equal(received.length, 5);
+  assert.deepEqual(received.slice(0, 3), frames, "frames are never rewritten");
   assert.deepEqual(lines, [
-    "[mcp] zeroshot: events/event numeric eventId; repaired",
-    '[mcp] zeroshot: events/event event name "hub.job" is not the stream name "hub"; repaired',
+    '[mcp] zeroshot: events/event is named "hub.job", not its stream "hub"; pi-mcp-events drops it',
+    "[mcp] zeroshot: events/event has no known subscription id; pi-mcp-events drops it",
   ]);
-});
-
-test("a frame without a subscription id goes to the only open stream", async () => {
-  const { transport, raw } = fakeTransport();
-  const lines: string[] = [];
-  const guarded = guardEventNotifications(transport, "zeroshot", (line) => lines.push(line));
-  const received: Array<{ params: Record<string, unknown> }> = [];
-  guarded.onmessage = (message) => received.push(message as never);
-  await guarded.send({
-    jsonrpc: "2.0",
-    id: "sub-1",
-    method: "events/stream",
-    params: { name: "hub" },
-  });
-  raw.onmessage?.({
-    jsonrpc: "2.0",
-    method: "notifications/events/heartbeat",
-    params: { cursor: "hub:3" },
-  });
-  assert.deepEqual(received[0]?.params._meta, { [SUBSCRIPTION_META]: "sub-1" });
-  assert.equal(lines.length, 1);
 });
 
 test("the shim's sendMessage is bound and survives a throwing observer", () => {
@@ -161,7 +109,7 @@ test("the shim's sendMessage is bound and survives a throwing observer", () => {
   assert.deepEqual(submitted, ["event", "event"]);
 });
 
-test("the feed keeps the server's event kind and each subscription's cursor", () => {
+test("the feed shows data.kind as the event name and keeps each subscription's cursor", () => {
   const feed = new McpEventFeed();
   feed.ingest({
     customType: "mcp-events-tool",
@@ -191,7 +139,7 @@ test("the feed keeps the server's event kind and each subscription's cursor", ()
             name: "hub",
             timestamp: "2026-10-30T12:00:00.000Z",
             cursor: "hub:510",
-            data: { id: "job-1", eventName: "hub.job" },
+            data: { kind: "hub.job", id: "job-1" },
           },
         },
         {
