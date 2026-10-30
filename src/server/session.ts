@@ -165,7 +165,11 @@ export async function openDurableSession(
 
   const runMarkerStore = new RunMarkerStore(dataDir);
   const storedMarker = await runMarkerStore.read();
-  const recovery = await recoverInterruptedRun(harness, conversation);
+  const recovery = await recoverInterruptedRun(
+    harness,
+    conversation,
+    storedMarker?.stopRequested === true,
+  );
   let runMarker = storedMarker;
   if (runMarker !== undefined && runMarker.partialEntryId === null) {
     const context = await conversation.context(SESSION_CONTEXT);
@@ -323,14 +327,15 @@ async function writeCurrentConversationId(
 }
 
 /**
- * A process that died mid-turn reopens with live durable work. Abort it once,
- * which settles the in-flight generation and keeps its partial answer without
- * replaying tokens. The run marker then decides whether the turn is continued
- * once or left stopped.
+ * A process that died mid-turn reopens with live durable work. pi-durable owns
+ * resuming that work from its last checkpoint, so leave it pending. A stop
+ * requested before the restart is the exception: settle it once and keep the
+ * partial answer instead of replaying the request.
  */
 async function recoverInterruptedRun(
   harness: Harness,
   conversation: Conversation,
+  stopRequested: boolean,
 ): Promise<{ recovered: boolean; partial: AssistantMessage | undefined }> {
   const inspection = await harness.inspect(SESSION_CONTEXT);
   const unfinished =
@@ -340,10 +345,17 @@ async function recoverInterruptedRun(
     );
   if (!unfinished) return { recovered: false, partial: undefined };
 
+  if (!stopRequested) {
+    console.warn(
+      `[pi] conversation ${conversation.id} has unfinished work from the previous process; resuming it with pi-durable`,
+    );
+    return { recovered: true, partial: undefined };
+  }
+
   const live = await harness.snapshot(LiveDoc, conversation.id, SESSION_CONTEXT);
   const captured = live?.generation?.message;
   console.warn(
-    `[pi] conversation ${conversation.id} has unfinished work from the previous process; marking it interrupted`,
+    `[pi] conversation ${conversation.id} has unfinished work from the previous process; its stop was requested, settling it`,
   );
   try {
     await conversation.abort(SESSION_CONTEXT);
@@ -435,8 +447,8 @@ async function appendInterruptionNote(
   if (alreadyRecorded) return;
 
   const note = marker.stopRequested
-    ? "The previous run was stopped before the server restarted. The last response may be partial; it was not continued automatically."
-    : "The previous run was interrupted by a server restart. The last response is partial; pi is continuing automatically.";
+    ? "The previous run was stopped before the server restarted. The last response may be partial."
+    : "The previous run was interrupted by a server restart. The last response is partial; pi is resuming the run.";
   try {
     await conversation.commit(
       (tx) =>

@@ -4,6 +4,7 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+- A turn interrupted by a server restart is now resumed by pi-durable from its last checkpoint instead of sending the agent a synthetic continuation message. The transcript no longer gains that extra user turn; queued messages are still restored.
 - MCP status and events moved from the chat header to the stats page: the MCP widget shows each server's live subscriptions, and a new default `MCP events` widget lists the latest 20 events, newest first. Existing dashboards get it once.
 - Background job results and MCP events show in the chat as a one-line notice where they happened, such as `job build finished ✓ 12s` or `MCP github: push event`, instead of a full message bubble. Tapping one opens its details: the job's command, status, exit code, duration and last output, or each MCP event's server, name and pretty-printed payload. Cancelled jobs and jobs started with `notify: false` also get a notice, which the agent never sees. Notices are kept with the chat history.
 - A run can no longer stay "working" forever after the server lost its end: when the agent's event stream ends (a failed session, a listener error) the server reattaches it, a snapshot that replaces dropped events settles the run state, and a run quiet for 30s is checked against the agent's live state and cleared when nothing is running. The server logs each of these (`[pi] agent event stream ended`, `[pi] no agent events for …`, `[pi] run state reconciled …`).
