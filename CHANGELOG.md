@@ -4,6 +4,10 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.9 - 2026-10-30
+
+- The composer's run status is the animation plus the word `working`: the elapsed timer and the `no output for …` text are gone, along with the interval that re-rendered the dock every second.
+
 ## 1.6.8 - 2026-10-30
 
 - Timestamps are UTC on the wire and local on screen through one helper, so an MCP event shows the same clock in the chat notice and in the `MCP events` widget instead of two.
