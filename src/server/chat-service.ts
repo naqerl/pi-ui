@@ -5,8 +5,10 @@ import {
   type AgentEvent,
   type AgentEventStream,
   type Conversation,
+  type EntryRecord,
   type Harness,
   type InputEntry,
+  type SettledSubmissionRecord,
   type SnapshotEvent,
   type Submission,
   type SubmissionId,
@@ -18,7 +20,7 @@ import {
   type DurableRunFacts,
   reconcileRunState,
 } from "../shared/run-health.js";
-import { contentText, settledSteerIds } from "../shared/steers.js";
+import { steerDropReason, steerFromInboxItem } from "../shared/steers.js";
 import {
   type ChatMessage,
   type McpEventsState,
@@ -34,6 +36,7 @@ import {
   type StreamDraftSync,
   type StreamMessageDone,
   type StreamRunState,
+  type StreamSteerDropped,
   type StreamTextDelta,
   type StreamToolEnd,
   type StreamToolStart,
@@ -563,6 +566,7 @@ export class ChatService {
     await this.beforeTurn();
     const startsRun = this.runState !== "running" && this.queued.size === 0;
     const startedAt = new Date().toISOString();
+    const steerKey = steer ? randomUUID() : undefined;
     if (startsRun) {
       this.summaryCandidate = undefined;
       const marker: RunMarker = {
@@ -591,7 +595,15 @@ export class ChatService {
           whenBusy: steer ? "steer" : "followUp",
           ...(options.requestId === undefined ? {} : { requestId: options.requestId }),
           ...(steer
-            ? { entry: { kind: STEER_ENTRY_KIND } }
+            ? {
+                entry: {
+                  kind: STEER_ENTRY_KIND,
+                  data: {
+                    ...(steerKey === undefined ? {} : { key: steerKey }),
+                    createdAt: startedAt,
+                  },
+                },
+              }
             : options.entry === undefined
               ? {}
               : { entry: options.entry }),
@@ -626,12 +638,21 @@ export class ChatService {
         id,
         text,
         createdAt: new Date().toISOString(),
+        ...(steerKey === undefined ? {} : { key: steerKey }),
         ...(attachments.length > 0 ? { attachments } : {}),
       });
     }
 
-    const { message, placed } = await this.submittedMessage(submission, text, steer, attachments);
-    if (steer && (placed || startsRun)) this.steers.delete(id);
+    const { message, placed } = await this.submittedMessage(
+      submission,
+      text,
+      steer,
+      attachments,
+      steerKey,
+    );
+    // An idle steer is already in the transcript; the response carries it, so no pending bubble
+    // is left behind. A queued steer stays tracked until its entry is actually appended.
+    if (steer && placed) this.steers.delete(id);
     if (steer) this.broadcastQueue();
     const queued = queueMode && !placed;
     if (queued && !queuedInitially) {
@@ -724,7 +745,8 @@ export class ChatService {
       console.error("[pi] abort failed", error);
     } finally {
       this.queued.clear();
-      this.steers.clear();
+      // Pending steers stay until their submissions settle, so each one can be reported as
+      // dropped with the reason instead of vanishing when the run stops.
       if (wasRunning) {
         this.setRunState("idle");
       } else {
@@ -785,6 +807,7 @@ export class ChatService {
     text: string,
     steer: boolean,
     attachments: string[] = [],
+    steerKey?: string,
   ): Promise<{ message: ChatMessage; placed: boolean }> {
     const record = await submission.status(SESSION_CONTEXT);
     const entryId = "entry" in record ? record.entry : undefined;
@@ -823,6 +846,7 @@ export class ChatService {
         timestamp: new Date().toISOString(),
         order: entryId ?? Number.MAX_SAFE_INTEGER,
         ...(steer ? { steer: true } : {}),
+        ...(steerKey === undefined ? {} : { steerKey }),
       },
       placed,
     };
@@ -833,8 +857,11 @@ export class ChatService {
     startsRun: boolean,
     queuedId: string | undefined,
   ): Promise<void> {
+    const steerId = String(submission.id);
+    let final: SettledSubmissionRecord | undefined;
     try {
       const settled = await submission.wait(SESSION_CONTEXT);
+      final = settled;
       if (settled.status === "unanswered") {
         console.warn(
           `[pi] run ${submission.id} ended without an answer: ${settled.reason}` +
@@ -847,7 +874,18 @@ export class ChatService {
     } catch (error) {
       console.error("[pi] submission wait failed", error);
     } finally {
-      if (this.steers.delete(String(submission.id))) this.broadcastQueue();
+      if (this.steers.has(steerId)) {
+        if (final?.status === "unanswered") {
+          this.dropSteer(steerId, steerDropReason(final.reason, final.detail));
+        } else if (final?.status === "done") {
+          await this.consumeSteerEntry(final.entry, steerId);
+          if (this.steers.has(steerId)) {
+            this.dropSteer(steerId, "The run ended before the steer was delivered.");
+          }
+        } else {
+          this.dropSteer(steerId, "The server lost track of the steer before it was delivered.");
+        }
+      }
       if (queuedId !== undefined && this.queued.delete(queuedId)) {
         await this.persistMarkerState();
         this.broadcastQueue();
@@ -855,6 +893,72 @@ export class ChatService {
       if (startsRun && this.queued.size === 0) this.setRunState("idle");
       else this.maybeClearMarker();
     }
+  }
+
+  /** Removes the pending steer an entry consumed and shows the entry in the same update. */
+  private consumeSteerEntryRecord(entry: EntryRecord, submissionId?: string): boolean {
+    const message = buildTranscript([entry], this.mediaRef).messages[0];
+    if (message === undefined) return false;
+    if (!this.takeTrackedSteer(message, submissionId)) return false;
+    this.hub.broadcast([
+      {
+        event: "message.done",
+        data: { message } satisfies StreamMessageDone,
+      },
+      {
+        event: "run.state",
+        data: this.getRunStatus() satisfies StreamRunState,
+      },
+    ]);
+    return true;
+  }
+
+  /** Reads an entry by id and consumes its pending steer, for events that arrived out of order. */
+  private async consumeSteerEntry(entryId: number, submissionId?: string): Promise<boolean> {
+    const context = await this.conversation.context(SESSION_CONTEXT);
+    const entry = context.entries.find((candidate) => candidate.id === entryId);
+    return entry === undefined ? false : this.consumeSteerEntryRecord(entry, submissionId);
+  }
+
+  /** Takes a tracked steer off the queue when its transcript entry carries the same key. */
+  private takeTrackedSteer(message: ChatMessage, submissionId?: string): boolean {
+    let removed = false;
+    if (submissionId !== undefined && this.steers.delete(submissionId)) removed = true;
+    if (message.steerKey !== undefined) {
+      for (const [id, steer] of this.steers) {
+        if (steer.key !== message.steerKey) continue;
+        this.steers.delete(id);
+        removed = true;
+      }
+    }
+    return removed;
+  }
+
+  /** Consumes every pending steer already present in a snapshot's entries. */
+  private consumeSteersInEntries(entries: readonly EntryRecord[]): ChatMessage[] {
+    const consumed: ChatMessage[] = [];
+    for (const entry of entries) {
+      if (entry.kind !== STEER_ENTRY_KIND) continue;
+      const message = buildTranscript([entry], this.mediaRef).messages[0];
+      if (message !== undefined && this.takeTrackedSteer(message)) consumed.push(message);
+    }
+    return consumed;
+  }
+
+  /** A pending steer durable dropped is reported as failed, never silently removed. */
+  private dropSteer(id: string, reason: string): boolean {
+    if (!this.steers.delete(id)) return false;
+    this.hub.broadcast([
+      {
+        event: "steer.dropped",
+        data: { id, reason } satisfies StreamSteerDropped,
+      },
+      {
+        event: "run.state",
+        data: this.getRunStatus() satisfies StreamRunState,
+      },
+    ]);
+    return true;
   }
 
   /** Sends a job result to the agent without placing a user message in the chat. */
@@ -908,7 +1012,7 @@ export class ChatService {
     switch (event.type) {
       case "snapshot": {
         this.applySnapshot(event);
-        this.dropDeliveredSteers(event.inbox);
+        const consumed = this.consumeSteersInEntries(event.entries);
         // A snapshot replaces events durable dropped, a run's end among them.
         this.reconcileRun({
           run: event.run !== undefined,
@@ -916,11 +1020,17 @@ export class ChatService {
           submitting: this.submitting,
         });
         const revision = this.bumpDraft();
-        this.hub.broadcast([
-          {
+        const frames: SseFrame[] = consumed.map((message) => ({
+          event: "message.done",
+          data: { message } satisfies StreamMessageDone,
+        }));
+        if (frames.length === 0) {
+          frames.push({
             event: "message.done",
             data: { message: null } satisfies StreamMessageDone,
-          },
+          });
+        }
+        frames.push(
           {
             event: "draft.sync",
             data: {
@@ -933,7 +1043,8 @@ export class ChatService {
             event: "run.state",
             data: this.getRunStatus() satisfies StreamRunState,
           },
-        ]);
+        );
+        this.hub.broadcast(frames);
         return;
       }
 
@@ -997,6 +1108,25 @@ export class ChatService {
         this.currentText = "";
         this.currentThinking = "";
         const revision = this.bumpDraft();
+        if (event.entry.kind === STEER_ENTRY_KIND) {
+          const steerMessage = buildTranscript([event.entry], this.mediaRef).messages[0];
+          if (steerMessage !== undefined) this.takeTrackedSteer(steerMessage);
+          this.hub.broadcast([
+            {
+              event: "draft.sync",
+              data: { text: "", thinking: "", revision } satisfies StreamDraftSync,
+            },
+            {
+              event: "message.done",
+              data: { message: steerMessage ?? null } satisfies StreamMessageDone,
+            },
+            {
+              event: "run.state",
+              data: this.getRunStatus() satisfies StreamRunState,
+            },
+          ]);
+          return;
+        }
         this.hub.broadcast([
           {
             event: "draft.sync",
@@ -1061,27 +1191,38 @@ export class ChatService {
         if (event.record.type !== "input") return;
         if (event.record.status === "placed") {
           const wasQueued = this.queued.delete(id);
-          const wasSteered = this.steers.delete(id);
-          if (wasQueued || wasSteered) {
-            if (wasQueued) await this.persistMarkerState();
+          if (wasQueued) {
+            await this.persistMarkerState();
             this.broadcastQueue();
             this.hub.broadcast({
               event: "message.done",
               data: { message: null } satisfies StreamMessageDone,
             });
           }
-        } else if (event.record.status === "done" || event.record.status === "unanswered") {
+          // The entry event normally consumes the steer first. If it did not, read the entry
+          // now: the pending bubble must stay until the transcript message can replace it.
+          if (this.steers.has(id)) await this.consumeSteerEntry(event.record.entry, id);
+        } else if (event.record.status === "done") {
           if (this.queued.delete(id)) {
             await this.persistMarkerState();
             this.broadcastQueue();
           }
-          if (this.steers.delete(id)) this.broadcastQueue();
+          if (this.steers.has(id) && !(await this.consumeSteerEntry(event.record.entry, id))) {
+            this.dropSteer(id, "The run ended before the steer was delivered.");
+          }
+        } else if (event.record.status === "unanswered") {
+          if (this.queued.delete(id)) {
+            await this.persistMarkerState();
+            this.broadcastQueue();
+          }
+          this.dropSteer(id, steerDropReason(event.record.reason, event.record.detail));
         }
         return;
       }
 
       case "inbox_update":
-        this.dropDeliveredSteers(event.items);
+        // The inbox only says which steers are still waiting. Placement and settlement events
+        // retire them once their transcript entry exists, so a disappearance here is not enough.
         return;
 
       case "entry_appended":
@@ -1096,6 +1237,7 @@ export class ChatService {
           return;
         }
         if (event.entry.kind === STEER_ENTRY_KIND) {
+          if (this.consumeSteerEntryRecord(event.entry)) return;
           this.hub.broadcast({
             event: "message.done",
             data: { message: null } satisfies StreamMessageDone,
@@ -1191,30 +1333,25 @@ export class ChatService {
     return [...this.steers.values()];
   }
 
-  /** Durable's inbox is the truth for pending steers; any it no longer holds was placed or withdrawn. */
-  private dropDeliveredSteers(inbox: readonly { id: SubmissionId; mode: string }[]): void {
-    const settled = settledSteerIds(this.steers.keys(), inbox);
-    for (const id of settled) this.steers.delete(id);
-    if (settled.length > 0) this.broadcastQueue();
-  }
-
   /** After a restart, steers still in durable's inbox are listed again, so they can be taken back. */
   private async restorePendingSteers(): Promise<void> {
     try {
       const state = await this.conversation.viewState(SESSION_CONTEXT);
       try {
         const inbox = state.value.docs["pi.inbox"] as
-          | { items?: { id?: unknown; mode?: unknown; content?: unknown }[] }
+          | {
+              items?: {
+                id?: unknown;
+                mode?: unknown;
+                content?: unknown;
+                entry?: { data?: unknown };
+              }[];
+            }
           | undefined;
         for (const item of inbox?.items ?? []) {
-          if (item.mode !== "steer" || item.id === undefined) continue;
-          const id = String(item.id);
-          if (this.steers.has(id)) continue;
-          this.steers.set(id, {
-            id,
-            text: contentText(item.content),
-            createdAt: new Date().toISOString(),
-          });
+          const steer = steerFromInboxItem(item);
+          if (steer === undefined || this.steers.has(steer.id)) continue;
+          this.steers.set(steer.id, steer);
         }
       } finally {
         state.dispose();

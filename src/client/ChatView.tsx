@@ -273,6 +273,7 @@ function MessageBubble({
       data-message-id={message.id}
       data-role={message.role}
       data-pending-steer={message.pendingSteer ? "true" : undefined}
+      data-steer-error={message.steerError === undefined ? undefined : "true"}
       className={cn(
         "theme-radius w-fit min-w-0 max-w-[85%] bg-surface px-3 py-2 text-sm leading-relaxed [overflow-wrap:anywhere]",
         mine ? "ml-auto" : "mr-auto",
@@ -286,8 +287,17 @@ function MessageBubble({
     >
       {message.steer && (
         <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-          {message.pendingSteer ? "steer · pending" : "steer"}
+          {message.pendingSteer
+            ? "steer · pending"
+            : message.steerError
+              ? "steer · dropped"
+              : "steer"}
         </div>
+      )}
+      {message.steerError && (
+        <p className="mb-1 font-mono text-[11px] leading-4 text-destructive">
+          {message.steerError}
+        </p>
       )}
       {message.partial && (
         <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">

@@ -1,3 +1,6 @@
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
@@ -364,6 +367,96 @@ test("steers a running turn from the button and from Enter", async ({ app, scree
     const stop = screen.getByRole("button", "Stop");
     if ((await stop.count()) > 0) await stop.tap();
   }
+});
+
+test("keeps an accepted steer visible until its transcript entry arrives", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await app.open("/");
+  const tag = Date.now();
+  const release = join(tmpdir(), `pi-ui-chat-steer-${tag}`);
+  const wait = `for i in $(seq 600); do [ -e '${release}' ] && break; sleep 0.1; done; echo released`;
+  const calls = [{ name: "bash", arguments: { command: wait } }];
+  const composer = screen.getByRole("textbox", "Message");
+  await composer.fill(`TOOLCALLS ${JSON.stringify(calls)}`);
+  await screen.getByRole("button", "Send").tap();
+  await expect(screen.getByRole("button", "Stop")).toBeVisible();
+
+  const text = `chat steer ${tag}`;
+  await composer.fill(text);
+  await composer.press("Enter");
+  const pending = browser.locator('[data-pending-steer="true"]').filter({ hasText: text });
+  await expect(pending).toBeVisible();
+  const pendingText = await browser.evaluate((needle) => {
+    const element = [...document.querySelectorAll<HTMLElement>('[data-pending-steer="true"]')].find(
+      (bubble) => (bubble.textContent ?? "").includes(needle),
+    );
+    return (element?.textContent ?? "").toLowerCase();
+  }, text);
+  expect(pendingText.includes("steer · pending")).toBe(true);
+
+  // The tool waits for the release file, so the steer cannot be consumed yet.
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  await expect(pending).toBeVisible();
+
+  // Watch the DOM across the handoff: there must be no moment where neither the pending
+  // bubble nor the delivered steer bubble carries the message.
+  await browser.evaluate((needle) => {
+    const watch = { gap: false };
+    const target = window as unknown as {
+      __steerWatch?: { gap: boolean };
+      __steerObserver?: MutationObserver;
+    };
+    target.__steerWatch = watch;
+    const check = () => {
+      const bubbles = [...document.querySelectorAll<HTMLElement>("[data-message-id]")];
+      const visible = (isPending: boolean) =>
+        bubbles.some(
+          (element) =>
+            (element.dataset.pendingSteer === "true") === isPending &&
+            element.dataset.steerError !== "true" &&
+            (element.textContent ?? "").includes(needle),
+        );
+      if (!visible(true) && !visible(false)) watch.gap = true;
+    };
+    const observer = new MutationObserver(check);
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    target.__steerObserver = observer;
+    check();
+    return true;
+  }, text);
+
+  writeFileSync(release, "");
+  await expect(screen.getByText(`Echo: ${text}`, { exact: false })).toBeVisible({
+    timeout: 20_000,
+  });
+  await expect(screen.getByRole("button", "Send")).toBeVisible({ timeout: 15_000 });
+  await expect(pending).toHaveCount(0);
+
+  const delivered = browser.locator('[data-role="user"]').filter({ hasText: text });
+  await expect(delivered).toBeVisible();
+  const deliveredText = await browser.evaluate((needle) => {
+    const element = [...document.querySelectorAll<HTMLElement>('[data-role="user"]')].find(
+      (bubble) =>
+        bubble.dataset.pendingSteer !== "true" && (bubble.textContent ?? "").includes(needle),
+    );
+    return (element?.textContent ?? "").toLowerCase();
+  }, text);
+  expect(deliveredText.includes("steer")).toBe(true);
+  expect(deliveredText.includes("pending")).toBe(false);
+  expect(deliveredText.includes("dropped")).toBe(false);
+
+  const gap = await browser.evaluate(() => {
+    const target = window as unknown as {
+      __steerWatch?: { gap: boolean };
+      __steerObserver?: MutationObserver;
+    };
+    target.__steerObserver?.disconnect();
+    return target.__steerWatch?.gap ?? false;
+  });
+  expect(gap).toBe(false);
 });
 
 test("blurs the composer after send on a coarse-pointer mobile viewport", async ({

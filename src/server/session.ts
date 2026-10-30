@@ -21,6 +21,7 @@ import {
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { parseNotice } from "../shared/notices.js";
+import { steerKeyFromEntryData } from "../shared/steers.js";
 import {
   type ActivityItem,
   type ChatMessage,
@@ -577,6 +578,7 @@ export function buildTranscript(
     if (kind === UserEntry.kind || kind === STEER_ENTRY_KIND) {
       const text = extractText(message.content);
       const attachments = media === undefined ? [] : userImages(message.content, media);
+      const steerKey = kind === STEER_ENTRY_KIND ? steerKeyFromEntryData(entry.data) : undefined;
       if (text.length > 0 || attachments.length > 0) {
         const notice = parseNotice(text);
         // Older conversations stored a job result as a normal user entry. Keep it out of the chat
@@ -599,6 +601,7 @@ export function buildTranscript(
           timestamp: timestampOf(message),
           order: entry.id * 10_000,
           ...(kind === STEER_ENTRY_KIND ? { steer: true } : {}),
+          ...(steerKey === undefined ? {} : { steerKey }),
           ...(notice === null ? {} : { notice }),
         });
       }
