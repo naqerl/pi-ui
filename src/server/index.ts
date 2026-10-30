@@ -7,7 +7,8 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import type { TaskLedger, TaskStatus } from "../shared/types.js";
+import { parseCompletion } from "../shared/tasks.js";
+import type { TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
 import { ChatService } from "./chat-service.js";
 import { DashboardManager } from "./dashboard.js";
@@ -400,12 +401,20 @@ app.patch("/api/tasks/:id", async (c) => {
     return c.text("Expected a JSON body", 400);
   }
   if (typeof body !== "object" || body === null) return c.text("Expected a JSON body", 400);
-  const patch: { status?: TaskStatus; blockedBy?: string[] } = {};
+  const patch: { status?: TaskStatus; blockedBy?: string[]; completion?: TaskCompletion } = {};
   if ("status" in body) {
     if (body.status !== "open" && body.status !== "done") {
       return c.text('Status must be "open" or "done"', 400);
     }
     patch.status = body.status;
+  }
+  if ("completion" in body) {
+    if (patch.status !== "done") return c.text('completion requires status "done"', 400);
+    const parsed = parseCompletion(body.completion);
+    if (!parsed.ok) return c.text(parsed.error, 400);
+    patch.completion = parsed.completion;
+  } else if (patch.status === "done") {
+    return c.text("completion is required when status is done", 400);
   }
   if ("blockedBy" in body) {
     if (!Array.isArray(body.blockedBy)) return c.text("blockedBy must be a list of task ids", 400);

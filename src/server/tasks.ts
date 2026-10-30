@@ -2,7 +2,7 @@ import { randomInt } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { blockerClosesCycle, descendantIds, hasOpenDescendant } from "../shared/tasks.js";
-import type { Task, TaskLedger, TaskStatus } from "../shared/types.js";
+import type { Task, TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
 
 const ALPHABET = "abcdefghijkmnopqrstuvwxyz23456789";
 const TASK_LIMIT = 500;
@@ -17,11 +17,27 @@ export class TaskError extends Error {
   }
 }
 
+function isCompletion(value: unknown): value is TaskCompletion {
+  if (typeof value !== "object" || value === null) return false;
+  const completion = value as Record<string, unknown>;
+  return (
+    typeof completion.timeSpentMinutes === "number" &&
+    Number.isFinite(completion.timeSpentMinutes) &&
+    typeof completion.timeSpentText === "string" &&
+    typeof completion.tokens === "number" &&
+    Number.isInteger(completion.tokens) &&
+    completion.tokens >= 0 &&
+    typeof completion.evidence === "string"
+  );
+}
+
 function cloneTask(task: Task): Task {
   return {
     ...task,
     blockedBy: [...task.blockedBy],
     ...(task.attachments === undefined ? {} : { attachments: [...task.attachments] }),
+    completedAt: typeof task.completedAt === "string" ? task.completedAt : null,
+    completion: isCompletion(task.completion) ? { ...task.completion } : null,
   };
 }
 
@@ -50,7 +66,12 @@ function isTask(value: unknown): value is Task {
     task.blockedBy.every((id) => typeof id === "string") &&
     typeof task.createdAt === "string" &&
     (task.attachments === undefined ||
-      (Array.isArray(task.attachments) && task.attachments.every((id) => typeof id === "string")))
+      (Array.isArray(task.attachments) &&
+        task.attachments.every((id) => typeof id === "string"))) &&
+    (task.completedAt === undefined ||
+      task.completedAt === null ||
+      typeof task.completedAt === "string") &&
+    (task.completion === undefined || task.completion === null || isCompletion(task.completion))
   );
 }
 
@@ -115,6 +136,8 @@ export class TaskStore {
         parentId,
         blockedBy: [],
         createdAt: new Date().toISOString(),
+        completedAt: null,
+        completion: null,
         ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
       };
       return [...tasks, task];
@@ -137,6 +160,8 @@ export class TaskStore {
         parentId: null,
         blockedBy: [],
         createdAt: new Date().toISOString(),
+        completedAt: null,
+        completion: null,
       };
       const withBlocker = [...tasks, blocker];
       const next = {
@@ -149,7 +174,10 @@ export class TaskStore {
     });
   }
 
-  update(id: string, patch: { status?: TaskStatus; blockedBy?: string[] }): Promise<TaskLedger> {
+  update(
+    id: string,
+    patch: { status?: TaskStatus; blockedBy?: string[]; completion?: TaskCompletion },
+  ): Promise<TaskLedger> {
     if (patch.status === undefined && patch.blockedBy === undefined) {
       return Promise.reject(new TaskError("Nothing to update", 400));
     }
@@ -166,7 +194,22 @@ export class TaskStore {
         if (patch.status === "done" && hasOpenDescendant(tasks, id)) {
           throw new TaskError("Open subtasks", 409);
         }
-        next = { ...next, status: patch.status };
+        if (patch.status === "done") {
+          if (patch.completion === undefined) {
+            throw new TaskError("completion is required when marking a task done", 400);
+          }
+          next = {
+            ...next,
+            status: "done",
+            completedAt:
+              current.status === "done" && current.completedAt !== null
+                ? current.completedAt
+                : new Date().toISOString(),
+            completion: { ...patch.completion },
+          };
+        } else {
+          next = { ...next, status: "open", completedAt: null, completion: null };
+        }
       }
       if (patch.blockedBy !== undefined) {
         next = { ...next, blockedBy: normalizeBlockers(tasks, id, patch.blockedBy) };

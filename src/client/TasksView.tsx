@@ -5,15 +5,29 @@ import {
   blockerClosesCycle,
   compareTasks,
   descendantIds,
+  formatTokenCount,
   hasOpenDescendant,
   liveBlockerIds,
 } from "../shared/tasks";
+import { formatDateTime, formatTime } from "../shared/time";
 import type { Task, TaskLedger } from "../shared/types";
 import { InlineMarkdown, plainInline } from "./markdown";
 import { mediaUrl } from "./media-client";
 import { removeTask, type TaskOutcome, updateTask } from "./task-client";
 
 const LONG_PRESS_MS = 500;
+
+function manualCompletion(task: Task) {
+  const created = Date.parse(task.createdAt);
+  const minutes = Number.isFinite(created)
+    ? Math.max(1, Math.round((Date.now() - created) / 60_000))
+    : 1;
+  return {
+    timeSpent: `${minutes}m`,
+    tokens: 0,
+    evidence: `Closed from the tasks page (${task.id})`,
+  };
+}
 
 interface TasksViewProps {
   tasks: Task[];
@@ -115,7 +129,15 @@ export function TasksView({
                 setPickerId(null);
                 setMenu({ id, x, y });
               }}
-              onStatus={(id, status) => void apply(id, updateTask(id, { status }))}
+              onStatus={(task, status) =>
+                void apply(
+                  task.id,
+                  updateTask(
+                    task.id,
+                    status === "done" ? { status, completion: manualCompletion(task) } : { status },
+                  ),
+                )
+              }
             />
           ))}
         </ul>
@@ -170,12 +192,13 @@ function TaskBranch({
   problem: { id: string; message: string } | null;
   menuTaskId: string | null;
   onOpenMenu: (id: string, x: number, y: number) => void;
-  onStatus: (id: string, status: Task["status"]) => void;
+  onStatus: (task: Task, status: Task["status"]) => void;
 }) {
   const children = tasks
     .filter((item) => item.parentId === task.id)
     .sort((a, b) => compareTasks(tasks, a, b));
   const done = task.status === "done";
+  const completion = done && task.completion != null ? task.completion : null;
   const openChildren = !done && hasOpenDescendant(tasks, task.id);
   const blocked = liveBlockerIds(tasks, task)
     .map((id) => {
@@ -258,7 +281,7 @@ function TaskBranch({
           }
           if (Date.now() - openedAt.current < 700) return;
           if (openChildren) return;
-          onStatus(task.id, done ? "open" : "done");
+          onStatus(task, done ? "open" : "done");
         }}
       >
         <span className="flex items-center gap-2">
@@ -283,6 +306,21 @@ function TaskBranch({
           </span>
           <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{task.id}</span>
         </span>
+        {completion !== null && (
+          <span
+            data-testid="task-completion"
+            className="mt-1 flex flex-wrap items-center gap-x-1 pl-6 font-mono text-[10px] text-muted-foreground"
+          >
+            {typeof task.completedAt === "string" && (
+              <time dateTime={task.completedAt} title={formatDateTime(task.completedAt)}>
+                completed {formatTime(task.completedAt)}
+              </time>
+            )}
+            <span>
+              · {completion.timeSpentText} · {formatTokenCount(completion.tokens)} tok
+            </span>
+          </span>
+        )}
         {task.attachments !== undefined && task.attachments.length > 0 && (
           <span className="mt-2 flex flex-wrap gap-1.5 pl-6" data-testid="task-attachments">
             {task.attachments.map((id, index) => (

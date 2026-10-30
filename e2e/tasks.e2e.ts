@@ -403,7 +403,17 @@ test("rejects an empty title, a cycle, and a subtask of a done task", async ({ a
       left !== undefined && right !== undefined
         ? await patch(right.id, { blockedBy: [left.id] })
         : 0;
-    const closed = left !== undefined ? await patch(left.id, { status: "done" }) : 0;
+    const closed =
+      left !== undefined
+        ? await patch(left.id, {
+            status: "done",
+            completion: {
+              timeSpent: "2m",
+              tokens: 12,
+              evidence: "e2e/tasks.e2e.ts",
+            },
+          })
+        : 0;
     const child = left !== undefined ? await post("too late", left.id) : { status: 0 };
     const longTitle = "L".repeat(450);
     const long = await post(longTitle);

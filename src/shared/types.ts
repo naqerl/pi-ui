@@ -233,6 +233,14 @@ export interface DraftSync {
 
 export type TaskStatus = "open" | "done";
 
+/** What closing a task cost, and where a reviewer can check the work. */
+export interface TaskCompletion {
+  timeSpentMinutes: number;
+  timeSpentText: string;
+  tokens: number;
+  evidence: string;
+}
+
 /** One todo. Subtasks point at a parent. `blockedBy` names tasks that gate this one. */
 export interface Task {
   id: string;
@@ -244,6 +252,10 @@ export interface Task {
   createdAt: string;
   /** Media ids attached when the task was created. */
   attachments?: string[];
+  /** When the task was closed, or null while it is open. */
+  completedAt: string | null;
+  /** The report recorded when the task was closed, or null while it is open. */
+  completion: TaskCompletion | null;
 }
 
 export interface TaskLedger {

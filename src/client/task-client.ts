@@ -33,7 +33,11 @@ export function createTask(
 
 export function updateTask(
   id: string,
-  patch: { status?: TaskStatus; blockedBy?: string[] },
+  patch: {
+    status?: TaskStatus;
+    blockedBy?: string[];
+    completion?: { timeSpent: string | number; tokens: number; evidence: string };
+  },
 ): Promise<TaskOutcome> {
   return requestTask(`/api/tasks/${encodeURIComponent(id)}`, {
     method: "PATCH",
