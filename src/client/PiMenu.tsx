@@ -21,6 +21,7 @@ function applyTheme(colors: ThemeColors): void {
     ["--muted", colors.muted],
     ["--muted-foreground", colors.mutedForeground],
     ["--border", colors.border],
+    ["--accent", colors.accent],
     ["--destructive", colors.destructive],
   ];
   for (const [name, value] of pairs) root.style.setProperty(name, value);

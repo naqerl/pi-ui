@@ -8,6 +8,7 @@
   --muted: oklch(0.97 0 0);
   --muted-foreground: oklch(0.556 0 0);
   --border: oklch(0.922 0 0);
+  --accent: oklch(0.145 0 0);
   --destructive: oklch(0.577 0.245 27.325);
   color-scheme: light;
 }
@@ -20,6 +21,7 @@
     --muted: oklch(0.269 0 0);
     --muted-foreground: oklch(0.708 0 0);
     --border: oklch(0.269 0 0);
+    --accent: oklch(0.985 0 0);
     --destructive: oklch(0.704 0.191 22.216);
     color-scheme: dark;
   }
@@ -32,6 +34,7 @@
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
   --color-border: var(--border);
+  --color-accent: var(--accent);
   --color-destructive: var(--destructive);
   --radius-sm: var(--radius);
   --radius-md: var(--radius);

@@ -734,6 +734,76 @@ test("follows the theme color and corner radius on the chrome", async ({
   expect(scheme).toEqual(["dark"]);
 });
 
+test("paints the pi-ui update note with the theme accent", async ({ app, browser, screen }) => {
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({
+      json: {
+        ...snapshot,
+        conversationId: "version-update-e2e",
+        messages: [
+          ...messages.slice(0, 2),
+          {
+            id: "version-update",
+            role: "system",
+            text: "Updated pi-ui from 1.4.3 to 1.6.0. The agent has the changelog.",
+            timestamp: "2026-01-01T00:00:03.000Z",
+            order: 99,
+          },
+        ],
+      },
+    });
+  });
+  await browser.route("**/api/themes", async (route) => {
+    await route.fulfill({
+      json: {
+        current: "vantablack",
+        selected: "vantablack",
+        themes: [
+          {
+            slug: "vantablack",
+            name: "Vantablack",
+            colors: {
+              mode: "dark",
+              background: "#000000",
+              foreground: "#ffffff",
+              surface: "#1a1a1a",
+              muted: "#090909",
+              mutedForeground: "#7a7a7a",
+              border: "#1a1a1a",
+              accent: "#8d8d8d",
+              destructive: "#a4a4a4",
+              selection: "#1a1a1a",
+              radius: 0,
+            },
+          },
+        ],
+      },
+    });
+  });
+  await app.open("/");
+  await expect(
+    screen.getByText("Updated pi-ui from 1.4.3 to 1.6.0. The agent has the changelog.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      browser.evaluate(() => {
+        const note = document.querySelector<HTMLElement>('[data-testid="version-update"]');
+        return note === null
+          ? null
+          : {
+              background: getComputedStyle(note).backgroundColor,
+              accent: getComputedStyle(document.documentElement)
+                .getPropertyValue("--accent")
+                .trim(),
+              warning: note.textContent?.includes("⚠") ?? false,
+            };
+      }),
+    )
+    .toEqual({ background: "rgb(141, 141, 141)", accent: "#8d8d8d", warning: false });
+});
+
 test("paints the app manifest with the active theme", async ({ app, browser, screen }) => {
   await app.open("/");
   await expect(screen.getByRole("button", "pi")).toBeVisible();
@@ -792,7 +862,13 @@ test("embeds the saved theme in the first document", async ({ app, browser, scre
     const catalog = (await (await fetch("/api/themes", { cache: "no-store" })).json()) as {
       themes: Array<{
         slug: string;
-        colors: { background: string; surface: string; radius: number; mode: string };
+        colors: {
+          background: string;
+          surface: string;
+          accent: string;
+          radius: number;
+          mode: string;
+        };
       }>;
     };
     const theme = catalog.themes.find((item) => item.slug === "solitude") ?? catalog.themes[0];
@@ -803,6 +879,7 @@ test("embeds the saved theme in the first document", async ({ app, browser, scre
         slug: "",
         background: "",
         surface: "",
+        accent: "",
         radius: "",
         mode: "",
         selected: "",
@@ -829,6 +906,7 @@ test("embeds the saved theme in the first document", async ({ app, browser, scre
       slug: theme.slug,
       background: theme.colors.background,
       surface: theme.colors.surface,
+      accent: theme.colors.accent,
       radius: String(theme.colors.radius),
       mode: theme.colors.mode,
       selected: listed.selected ?? "",
@@ -841,6 +919,7 @@ test("embeds the saved theme in the first document", async ({ app, browser, scre
   expect(saved.selected).toBe(saved.slug);
   expect(saved.tag).toContain(`--background:${saved.background}`);
   expect(saved.tag).toContain(`--surface:${saved.surface}`);
+  expect(saved.tag).toContain(`--accent:${saved.accent}`);
   expect(saved.tag).toContain(`--radius:${saved.radius}px`);
   expect(saved.tag).toContain(`color-scheme:${saved.mode}`);
   expect(saved.tag).toContain(`background-color:${saved.background}`);

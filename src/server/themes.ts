@@ -199,6 +199,7 @@ export function themeStyle(colors: ThemeColors): string | null {
     ["--muted", colors.muted],
     ["--muted-foreground", colors.mutedForeground],
     ["--border", colors.border],
+    ["--accent", colors.accent],
     ["--destructive", colors.destructive],
     ["--radius", `${colors.radius}px`],
     ["color-scheme", colors.mode],
