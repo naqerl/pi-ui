@@ -1,11 +1,6 @@
 import type { ChatNotice, JobNoticeDetails } from "./notices.js";
 export type RunState = "idle" | "running" | "interrupted";
 
-/** Replies at least this long get a fast-model summary and an expand control. */
-export const SUMMARY_MIN_CHARACTERS = 600;
-/** Replies longer than this are not summarised. */
-export const SUMMARY_MAX_CHARACTERS = 40_000;
-
 /** Entry kind used for a steered user message, so the transcript can mark it. */
 export const STEER_ENTRY_KIND = "ui.steer";
 
@@ -33,8 +28,6 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
   text: string;
-  /** A short fast-model summary of an assistant reply, when one was generated. */
-  summary?: string;
   /** Images sent with a user message. */
   attachments?: MediaRef[];
   /** Richer parts, such as a diagram drawn by a tool. */

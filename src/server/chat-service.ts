@@ -63,12 +63,6 @@ import {
 } from "./session.js";
 import type { SseFrame } from "./sse.js";
 import type { StreamHub } from "./stream-hub.js";
-import {
-  cachedSummary,
-  isSummarizableText,
-  setSummaryModel,
-  summaryForMessage,
-} from "./summary.js";
 import { type WindowRequest, windowTranscript } from "./transcript-window.js";
 
 interface ActiveTool {
@@ -135,8 +129,6 @@ export class ChatService {
   private shuttingDown = false;
   private modelWindow: number | undefined;
   private selected: ModelOption | null;
-  /** The last completed assistant reply this turn, summarised once the run goes idle. */
-  private summaryCandidate: ChatMessage | undefined;
   /** Read on every snapshot, so a server may recover after its boot probe fails. */
   private readonly mcpStatus: () => McpStatus;
 
@@ -162,7 +154,6 @@ export class ChatService {
     this.runState = interrupted ? "interrupted" : "idle";
     this.modelWindow = modelWindow;
     this.selected = initialModel === undefined ? null : modelOption(initialModel);
-    setSummaryModel(this.catalog, initialModel);
     this.marker = initialMarker;
   }
 
@@ -351,7 +342,6 @@ export class ChatService {
       );
       this.modelWindow = model.contextWindow;
       this.selected = choice;
-      setSummaryModel(this.catalog, model);
       this.bili.setModelMetadata({
         model: model.id,
         contextWindow: model.contextWindow,
@@ -367,10 +357,7 @@ export class ChatService {
   async getHistory(request: WindowRequest): Promise<TranscriptHistory> {
     const context = await this.conversation.context(SESSION_CONTEXT);
     const transcript = buildTranscript(context.entries, this.mediaRef, this.diagramRevision);
-    return windowTranscript(
-      { ...transcript, messages: this.withSummaries(transcript.messages) },
-      request,
-    );
+    return windowTranscript(transcript, request);
   }
 
   /** Usage, context and MCP status without building the transcript window. */
@@ -389,10 +376,7 @@ export class ChatService {
     const context = await this.conversation.context(SESSION_CONTEXT);
     const usage = await this.harness.usage(SESSION_CONTEXT);
     const built = buildTranscript(context.entries, this.mediaRef, this.diagramRevision);
-    const transcript = windowTranscript(
-      { ...built, messages: this.withSummaries(built.messages) },
-      request.before === undefined ? request : {},
-    );
+    const transcript = windowTranscript(built, request.before === undefined ? request : {});
     return {
       conversationId: String(this.conversation.id),
       messages: transcript.messages,
@@ -419,52 +403,6 @@ export class ChatService {
   private bumpDraft(): number {
     this.draftRevision += 1;
     return this.draftRevision;
-  }
-
-  private withSummary(message: ChatMessage): ChatMessage {
-    const summary = cachedSummary(message.id);
-    return typeof summary === "string" ? { ...message, summary } : message;
-  }
-
-  private withSummaries(messages: ChatMessage[]): ChatMessage[] {
-    return messages.map((message) => this.withSummary(message));
-  }
-
-  /** Lazily fills a summary from the client when the automatic pass has not done it yet. */
-  async getSummary(messageId: string): Promise<string | null> {
-    const cached = cachedSummary(messageId);
-    if (cached !== undefined) return cached;
-    const context = await this.conversation.context(SESSION_CONTEXT);
-    const message = buildTranscript(
-      context.entries,
-      this.mediaRef,
-      this.diagramRevision,
-    ).messages.find((candidate) => candidate.id === messageId);
-    if (message === undefined || message.role !== "assistant" || message.isError === true) {
-      return null;
-    }
-    return summaryForMessage(message.id, message.text);
-  }
-
-  /** Fire-and-forget after the run: a slow or missing model just leaves the summary out. */
-  private summarizeCompletedTurn(): void {
-    const message = this.summaryCandidate;
-    this.summaryCandidate = undefined;
-    if (
-      message === undefined ||
-      message.isError === true ||
-      !isSummarizableText(message.text) ||
-      cachedSummary(message.id) !== undefined
-    ) {
-      return;
-    }
-    void summaryForMessage(message.id, message.text).then((summary) => {
-      if (summary === null) return;
-      this.hub.broadcast({
-        event: "message.done",
-        data: { message: { ...message, summary } } satisfies StreamMessageDone,
-      });
-    });
   }
 
   private broadcastText(): void {
@@ -564,7 +502,6 @@ export class ChatService {
     const startedAt = new Date().toISOString();
     const steerKey = steer ? randomUUID() : undefined;
     if (startsRun) {
-      this.summaryCandidate = undefined;
       const marker: RunMarker = {
         version: 1,
         userMessage: text,
@@ -1100,7 +1037,6 @@ export class ChatService {
 
       case "message_end": {
         const message = assistantMessageFromEntry(event.entry);
-        if (message !== null) this.summaryCandidate = message;
         this.currentText = "";
         this.currentThinking = "";
         const revision = this.bumpDraft();
@@ -1131,9 +1067,7 @@ export class ChatService {
           },
           {
             event: "message.done",
-            data: {
-              message: message === null ? null : this.withSummary(message),
-            } satisfies StreamMessageDone,
+            data: { message } satisfies StreamMessageDone,
           },
         ]);
         return;
@@ -1372,7 +1306,6 @@ export class ChatService {
   }
 
   private setRunState(state: RunState): void {
-    const wasRunning = this.runState === "running";
     if (this.runState === state) {
       this.maybeClearMarker();
       return;
@@ -1393,6 +1326,5 @@ export class ChatService {
       event: "run.state",
       data: this.getRunStatus(),
     });
-    if (state === "idle" && wasRunning) this.summarizeCompletedTurn();
   }
 }
