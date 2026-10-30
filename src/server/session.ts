@@ -36,6 +36,8 @@ import type { BillionContextInline } from "./billion-context.js";
 import type { DashboardManager } from "./dashboard.js";
 import type { JobManager } from "./jobs.js";
 import type { McpRuntime } from "./mcp-runtime.js";
+import type { SnapshotCache } from "./memory/snapshot.js";
+import type { MemoryStore } from "./memory/store.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
 import { type RunMarker, RunMarkerStore } from "./run-marker.js";
 import type { TaskBridge } from "./task-tools.js";
@@ -82,6 +84,7 @@ export interface DurableSessionOptions {
   readonly tasks: TaskBridge;
   readonly jobs?: JobManager;
   readonly dashboard?: DashboardManager;
+  readonly memory?: { readonly store: MemoryStore; readonly snapshot?: SnapshotCache };
 }
 
 export interface DurableSessionBoot {
@@ -99,6 +102,7 @@ export interface DurableSessionBoot {
   readonly taskTools: readonly string[];
   readonly jobTools: readonly string[];
   readonly dashboardTools: readonly string[];
+  readonly memoryTools: readonly string[];
   /** Model stored on the conversation after boot. A menu choice wins over `PI_MODEL`. */
   readonly model: ModelRef | undefined;
   /** pi-ui's own version from package.json. */
@@ -114,14 +118,14 @@ export async function openDurableSession(
   await mkdir(dataDir, { recursive: true });
 
   const storage = await openNodeSqliteStorage(databasePath);
-  const { registry, mcp, biliTools, taskTools, jobTools, dashboardTools } = await createAppRegistry(
-    {
+  const { registry, mcp, biliTools, taskTools, jobTools, dashboardTools, memoryTools } =
+    await createAppRegistry({
       bili: options.bili,
       tasks: options.tasks,
       ...(options.jobs === undefined ? {} : { jobs: options.jobs }),
       ...(options.dashboard === undefined ? {} : { dashboard: options.dashboard }),
-    },
-  );
+      ...(options.memory === undefined ? {} : { memory: options.memory }),
+    });
 
   const harness = await HarnessImpl.open(
     storage,
@@ -209,6 +213,7 @@ export async function openDurableSession(
     taskTools,
     jobTools,
     dashboardTools,
+    memoryTools,
     model,
     version,
   };

@@ -1,5 +1,12 @@
+import { existsSync } from "node:fs";
 import { web } from "@e2e-dev/web";
 import type { E2EConfig } from "e2e";
+
+// The image keeps its Playwright cache under /opt/playwright. Setting this here
+// keeps a bare `npm run e2e` from trying to install into an unwritable HOME.
+if (process.env.PLAYWRIGHT_BROWSERS_PATH === undefined && existsSync("/opt/playwright")) {
+  process.env.PLAYWRIGHT_BROWSERS_PATH = "/opt/playwright";
+}
 
 export default {
   tests: ["e2e/**/*.e2e.ts"],

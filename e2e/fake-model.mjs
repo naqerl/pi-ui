@@ -135,18 +135,18 @@ function readBody(req) {
   });
 }
 
-/** Bearer token the fake Hetzner API accepts; e2e/server.mjs exports it as HCLOUD_TOKEN. */
+/** Bearer token the fake ExampleCloud API accepts; e2e/server.mjs exports it as HCLOUD_TOKEN. */
 export const FAKE_HCLOUD_TOKEN = "e2e-hcloud-token-not-secret";
-let hetznerHits = 0;
+let cloudHits = 0;
 
-/** A tiny stand-in for `GET https://api.hetzner.cloud/v1/servers`. */
-function hetznerServers(req, res) {
+/** A tiny stand-in for `GET https://api.example-cloud.cloud/v1/servers`. */
+function cloudServers(req, res) {
   if (req.headers.authorization !== `Bearer ${FAKE_HCLOUD_TOKEN}`) {
     res.writeHead(401, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: { code: "unauthorized", message: "unable to authenticate" } }));
     return;
   }
-  hetznerHits += 1;
+  cloudHits += 1;
   const server = (id, name, status, type, gross) => ({
     id,
     name,
@@ -166,7 +166,7 @@ function hetznerServers(req, res) {
         server(102, "db-1", "running", "cx32", "7.4900"),
         server(103, "worker-1", "off", "cx22", "4.5900"),
       ],
-      meta: { pagination: { page: 1, per_page: 25, total_entries: 3 }, hits: hetznerHits },
+      meta: { pagination: { page: 1, per_page: 25, total_entries: 3 }, hits: cloudHits },
     }),
   );
 }
@@ -174,13 +174,13 @@ function hetznerServers(req, res) {
 export function startFakeModelServer() {
   let origin = "";
   const server = createServer(async (req, res) => {
-    if (req.method === "GET" && req.url?.startsWith("/hetzner/v1/servers")) {
-      hetznerServers(req, res);
+    if (req.method === "GET" && req.url?.startsWith("/example-cloud/v1/servers")) {
+      cloudServers(req, res);
       return;
     }
-    if (req.method === "GET" && req.url === "/hetzner/hits") {
+    if (req.method === "GET" && req.url === "/example-cloud/hits") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ hits: hetznerHits }));
+      res.end(JSON.stringify({ hits: cloudHits }));
       return;
     }
     if (req.method !== "POST" || !req.url?.endsWith("/chat/completions")) {

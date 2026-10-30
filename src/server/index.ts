@@ -14,6 +14,8 @@ import { DashboardManager } from "./dashboard.js";
 import { JobManager, jobNotice } from "./jobs.js";
 import { McpEventFeed } from "./mcp-events.js";
 import { MAX_MEDIA_BYTES, MediaError, MediaStore, parseAttachmentIds } from "./media.js";
+import { composeInstructions, SnapshotCache, SnapshotController } from "./memory/snapshot.js";
+import { MemoryStore } from "./memory/store.js";
 import { createModelCatalog } from "./models.js";
 import { buildPiSystemPrompt } from "./pi.js";
 import { type DurableSessionOptions, openDurableSession, SESSION_CONTEXT } from "./session.js";
@@ -68,13 +70,18 @@ const bili = await installBillionContextInline({
 });
 
 const catalog = await createModelCatalog();
-const instructions = `${await buildPiSystemPrompt(cwd, catalog.runtime)}
+const memory = new MemoryStore(resolve(dataDir, "memory"));
+await memory.ensure();
+const memorySnapshot = new SnapshotCache();
+const memoryBlock = await memorySnapshot.get(memory, "first_turn");
+const baseInstructions = `${await buildPiSystemPrompt(cwd, catalog.runtime)}
 
 Tasks are a shared todo ledger on the tasks page. You can list them with task_list, mark one done with task_done, and create a blocker for one with task_block. A done blocker does not block. A task with an open subtask cannot be marked done. You cannot add a task that blocks nothing, reopen a task, or delete one.
 
 Long-running shell commands (builds, test suites, servers) can run in the background with job_start; list them with job_list, read their output with job_output, and stop one with job_cancel. When a job ends on its own you receive a message with its exit status and last output, so you do not need to poll.
 
 The dashboard page (the Stats tab, left of chat) is yours to arrange for the user: dashboard_get shows it, dashboard_upsert adds or changes a widget (built-in pi-ui stats, a poll script that fetches JSON, or data you push with dashboard_push), dashboard_remove deletes one and dashboard_layout places them. Widgets only display data. Poll scripts read secrets from env; never put a token in a widget.`;
+const instructions = composeInstructions(baseInstructions, memoryBlock);
 const boot = await openDurableSession({
   cwd,
   models: catalog.runtime as unknown as DurableSessionOptions["models"],
@@ -88,6 +95,7 @@ const boot = await openDurableSession({
   tasks: taskBridge,
   jobs,
   dashboard,
+  memory: { store: memory, snapshot: memorySnapshot },
 });
 const activeModel =
   boot.model === undefined
@@ -109,6 +117,15 @@ if (activeModel !== undefined) {
     );
   }
 }
+const memoryCheckpoints = new SnapshotController(
+  memory,
+  baseInstructions,
+  async (next) => {
+    await boot.conversation.configure({ instructions: next }, SESSION_CONTEXT);
+  },
+  memorySnapshot,
+  instructions,
+);
 const hub = new StreamHub();
 taskBridge.publish = (ledger) => {
   hub.broadcast({ event: "tasks", data: ledger });
@@ -126,6 +143,9 @@ const chat = new ChatService(
   activeModel,
   bili,
   media,
+  async (reason) => {
+    await memoryCheckpoints.refresh(reason);
+  },
 );
 const events = new McpEventFeed();
 chat.setEventFeed(events);
@@ -672,6 +692,7 @@ const server = serve({ fetch: app.fetch, port }, (info) => {
     ...boot.taskTools,
     ...boot.jobTools,
     ...boot.dashboardTools,
+    ...boot.memoryTools,
   ];
   if (boot.mcp.toolNames.length > 0) {
     toolParts.push(`${boot.mcp.toolNames.length} MCP tools (${boot.mcp.serverNames.join(", ")})`);

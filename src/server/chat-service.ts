@@ -142,6 +142,8 @@ export class ChatService {
     initialModel: Model<Api> | undefined,
     private readonly bili: BillionContextInline,
     private readonly media: MediaStore,
+    /** Refresh the injected memory block at a turn/compaction checkpoint. */
+    private readonly beforeTurn: (reason?: string) => Promise<void> = async () => undefined,
   ) {
     this.mcpStatus = typeof mcpStatus === "function" ? mcpStatus : () => mcpStatus;
     this.runState = interrupted ? "interrupted" : "idle";
@@ -496,6 +498,10 @@ export class ChatService {
       images.length === 0
         ? text
         : [...(text.length > 0 ? [{ type: "text" as const, text }] : []), ...images];
+    // The memory snapshot is keyed on a stable prefix. Refresh it at the turn
+    // boundary: a day rollover or long-term write reconfigures instructions;
+    // daily and scratchpad writes leave the cached block untouched.
+    await this.beforeTurn();
     const startsRun = this.runState !== "running" && this.queued.size === 0;
     const startedAt = new Date().toISOString();
     if (startsRun) {
@@ -1039,6 +1045,7 @@ export class ChatService {
         return;
 
       case "compaction_start":
+        await this.beforeTurn("compaction");
         console.log(`[pi] compaction started (${event.reason})`);
         return;
 
