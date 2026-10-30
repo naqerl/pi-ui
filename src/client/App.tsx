@@ -3,9 +3,6 @@ import { ChatView } from "./ChatView";
 import { useChat } from "./use-chat";
 
 // Everything off the chat's first paint loads in its own chunk.
-const ActivityView = lazy(() =>
-  import("./ActivityView").then((m) => ({ default: m.ActivityView })),
-);
 const EventsView = lazy(() => import("./EventsView").then((m) => ({ default: m.EventsView })));
 const ShaderBackground = lazy(() =>
   import("./ShaderBackground").then((m) => ({ default: m.ShaderBackground })),
@@ -54,9 +51,7 @@ export function App() {
     />
   );
 
-  if (path === "/activity") {
-    view = <ActivityView timeline={chat.timeline} ready={chat.ready} />;
-  } else if (path === "/events") {
+  if (path === "/events") {
     view = <EventsView events={chat.mcpEvents} ready={chat.ready} />;
   }
 
