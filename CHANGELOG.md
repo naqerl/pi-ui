@@ -4,6 +4,10 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.6 - 2026-10-30
+
+- The mobile PWA paints the home-indicator row in the app theme, in light and dark: the manifest colours and the `theme-color` meta follow the theme, and a themed blocker sits behind the dock so the platform never draws its own white band.
+
 ## 1.6.5 - 2026-10-30
 
 - A steer stays visible from the moment the server accepts it until the turn that consumed it produced a real message: it renders as a pending bubble, turns into the transcript entry atomically, and reports a drop instead of disappearing.
