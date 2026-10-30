@@ -72,6 +72,30 @@ const emptyContext: DurableExtensionContext = {
   },
 };
 
+/** ` : 2 events from stub` style detail for the one-line notice log. */
+function noticeSummary(details: unknown): string {
+  if (typeof details !== "object" || details === null) return "";
+  const record = details as Record<string, unknown>;
+  if (Array.isArray(record.events)) {
+    const servers = [
+      ...new Set(
+        record.events.flatMap((item) =>
+          typeof item === "object" && item !== null && typeof item.server === "string"
+            ? [item.server as string]
+            : [],
+        ),
+      ),
+    ];
+    const count = record.events.length;
+    return `: ${count} event${count === 1 ? "" : "s"}${servers.length > 0 ? ` from ${servers.join(", ")}` : ""}`;
+  }
+  if (Array.isArray(record.subscriptions)) {
+    const count = record.subscriptions.length;
+    return `: ${count} subscription status${count === 1 ? "" : "es"}`;
+  }
+  return "";
+}
+
 function messageText(message: DurableExtensionMessage): string {
   if (typeof message.content === "string") return message.content;
   return message.content
@@ -141,13 +165,39 @@ export class DurableExtensionShim implements DurableExtensionApi {
     this.handlers.set(event, handlers);
   }
 
-  sendMessage(message: DurableExtensionMessage, options: DurableSendOptions = {}): void {
-    if (this.closed) return;
-    this.observer?.({ customType: message.customType, details: message.details });
+  /**
+   * Bound, so an extension that keeps `pi.sendMessage` apart from `pi`, or
+   * gets an `Object.create(shim)` view, still reaches this observer and sink.
+   * Extensions call this from timers (pi-mcp-events batches for 500ms), where
+   * a throw would vanish, so every failure is logged here instead.
+   */
+  readonly sendMessage = (
+    message: DurableExtensionMessage,
+    options: DurableSendOptions = {},
+  ): void => {
+    const kind = message.customType ?? "message";
+    if (this.closed) {
+      console.warn(`[mcp] ${kind} notice dropped: extension API is closed`);
+      return;
+    }
+    console.log(`[mcp] ${kind} notice${noticeSummary(message.details)}`);
+    try {
+      this.observer?.({ customType: message.customType, details: message.details });
+    } catch (error) {
+      console.error(`[mcp] ${kind} notice observer failed`, error);
+    }
     const text = messageText(message);
     if (text.length === 0) return;
-    this.sink?.(text, options);
-  }
+    if (this.sink === undefined) {
+      console.warn(`[mcp] ${kind} notice not submitted: no message sink`);
+      return;
+    }
+    try {
+      this.sink(text, options);
+    } catch (error) {
+      console.error(`[mcp] ${kind} notice submit failed`, error);
+    }
+  };
 
   install(registry: Registry<ToolRegistration>): void {
     if (this.installed.length === 0) return;

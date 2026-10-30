@@ -20,6 +20,7 @@ import {
   type DurableExtensionSink,
   type DurableExtensionTool,
 } from "./durable-extensions.js";
+import { guardEventNotifications } from "./mcp-event-guard.js";
 
 const require = createRequire(import.meta.url);
 const ADAPTER_ENTRY = pathToFileURL(require.resolve("@realmikekelly/pi-mcp-adapter")).href;
@@ -773,7 +774,7 @@ export class McpRuntime {
     });
     const connection: ProtocolServerConnection = {
       status: "connected",
-      transport: watched,
+      transport: guardEventNotifications(watched, name),
       client,
       activeProtocolOperations: 0,
       lastUsedAt: Date.now(),

@@ -217,7 +217,7 @@ test("MCP builtins list recent events newest first and subscriptions per server"
     },
     mcpEvents: {
       subscriptions: [
-        { id: "s1", server: "stub", name: "ticks", status: "active", arguments: {} },
+        { id: "s1", server: "stub", name: "ticks", status: "active", arguments: {}, cursor: null },
         { id: "s2", server: "down", name: "feed", status: "failed", arguments: {} },
       ],
       events,

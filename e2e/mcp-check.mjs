@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { McpEventFeed } from "../src/server/mcp-events.ts";
 import { startMcpRuntime } from "../src/server/mcp-runtime.ts";
 
 const stub = join(import.meta.dirname, "stub-mcp.mjs");
@@ -30,6 +31,18 @@ process.env.PI_CODING_AGENT_DIR = writeConfig({
 const runtime = await startMcpRuntime({
   submit: (text) => messages.push(text),
 });
+// Wired as the server does: the feed behind /api/state, the MCP events widget
+// and the mcp widget must see subscription events, not only tool results (#3).
+const feed = new McpEventFeed();
+runtime.setObserver((notice) => feed.ingest(notice));
+
+async function waitForFeed(check, what, ms = 5_000) {
+  const deadline = Date.now() + ms;
+  while (!check() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.ok(check(), `${what}; feed: ${JSON.stringify(feed.state)}`);
+}
 try {
   assert.ok(runtime.toolNames.includes("stub__echo"), `echo tool missing: ${runtime.toolNames}`);
   assert.ok(runtime.toolNames.includes("mcp_events"), "mcp_events missing");
@@ -73,6 +86,38 @@ try {
     messages.some((text) => text.includes("stub-event")),
     "no event follow-up was submitted",
   );
+  await waitForFeed(
+    () => feed.state.events.some((event) => event.id === "stub-event-1"),
+    "the subscription event did not reach the event feed",
+  );
+  const delivered = feed.state.events.find((event) => event.id === "stub-event-1");
+  assert.equal(delivered.server, "stub");
+  assert.equal(delivered.name, "stub-event");
+  assert.match(delivered.summary, /from-stub/);
+  assert.equal(feed.state.notice, "new event from stub");
+  assert.equal(
+    feed.state.subscriptions.find((item) => item.id === subscription.subscription.id)?.cursor,
+    "stub-cursor-1",
+  );
+
+  // A hub-shaped stream: numeric eventId and timestamp, and a kind that is not
+  // the stream name. pi-mcp-events alone drops every such event in silence.
+  const hub = await execute(events, { action: "subscribe", server: "stub", name: "stub-hub" });
+  assert.equal(hub.isError, undefined, JSON.stringify(hub));
+  await waitForFeed(
+    () => feed.state.events.some((event) => event.id === "510"),
+    "the hub-shaped event did not reach the event feed",
+  );
+  const job = feed.state.events.find((event) => event.id === "510");
+  assert.equal(job.name, "stub-hub.job");
+  assert.match(job.timestamp, /^\d{4}-\d\d-\d\dT/);
+  assert.match(job.summary, /job-1/);
+  await waitForFeed(
+    () => messages.some((text) => text.includes("job-1")),
+    "the hub-shaped event follow-up was not submitted",
+  );
+  const hubId = JSON.parse(hub.output[0].text).subscription.id;
+  assert.equal(feed.state.subscriptions.find((item) => item.id === hubId)?.cursor, "hub:510");
 } finally {
   await runtime.close();
 }

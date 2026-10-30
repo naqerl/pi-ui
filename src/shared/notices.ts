@@ -130,7 +130,9 @@ function parseMcp(body: string, status: boolean): McpNoticeDetails | null {
       addServer(item.server);
       events.push({
         server: item.server,
-        name: text(event.name) ?? "event",
+        // pi-ui renames an off-stream kind to its stream and keeps it in data.eventName.
+        name:
+          (isRecord(event.data) ? text(event.data.eventName) : null) ?? text(event.name) ?? "event",
         timestamp: text(event.timestamp),
         id: text(event.eventId),
         subscriptionId: text(item.subscription_id),

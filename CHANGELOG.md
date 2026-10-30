@@ -4,7 +4,7 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
-_nothing yet_
+- Events from an MCP subscription reach the chat notice, `/api/state`, the `MCP events` widget and the MCP widget again. `pi-mcp-events` dropped every event with a numeric id or timestamp, or a kind other than the stream name (such as `hub.job` on a `hub` stream), without a word, while heartbeats kept moving the cursor; pi-ui now repairs those events on the way in and logs each repair once per server (`[mcp] zeroshot: events/event numeric eventId; repaired`). Every extension notice is logged as one line, a failing notice handler is logged instead of lost in a timer, and each subscription shows its last cursor on `/events`, in the `MCP events` widget data and in `mcpEvents.subscriptions`.
 
 ## 1.6.0 - 2026-10-30
 

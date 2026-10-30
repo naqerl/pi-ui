@@ -725,9 +725,11 @@ export function builtinData(name: BuiltinName, inputs: BuiltinInputs): unknown {
           server: item.server,
           name: item.name,
           status: item.status,
+          cursor: item.cursor ?? null,
           label: `${item.server} · ${item.name}`,
           state: subscriptionState(item.status),
-          detail: item.status,
+          detail:
+            (item.cursor ?? null) === null ? item.status : `${item.status} · cursor ${item.cursor}`,
         })),
       };
     }

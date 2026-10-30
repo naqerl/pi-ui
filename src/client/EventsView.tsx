@@ -21,6 +21,15 @@ function SubscriptionRow({ subscription }: { subscription: McpSubscriptionView }
         {subscription.server}
       </span>
       <span className="min-w-0 flex-1 truncate text-muted-foreground">{subscription.name}</span>
+      {subscription.cursor !== null && (
+        <span
+          className="max-w-[16ch] shrink-0 truncate text-muted-foreground"
+          title={`cursor ${subscription.cursor}`}
+          data-testid="subscription-cursor"
+        >
+          {subscription.cursor}
+        </span>
+      )}
       <span className="shrink-0 text-muted-foreground">{subscription.status}</span>
     </div>
   );

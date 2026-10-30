@@ -126,6 +126,12 @@ export interface McpSubscriptionView {
   name: string;
   status: string;
   arguments: Record<string, unknown>;
+  /**
+   * Last replay cursor the stream reported, null before the first one. A
+   * cursor that moves while `events` stays empty means events are arriving
+   * but being dropped; a still one means the subscription is just quiet.
+   */
+  cursor: string | null;
 }
 
 export interface McpEventView {

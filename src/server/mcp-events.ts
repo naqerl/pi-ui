@@ -27,13 +27,21 @@ function summarize(data: unknown): string {
   }
 }
 
+/** `eventName` is shown as the event's name already; keep it out of the one-line summary. */
+function withoutEventName(data: unknown): unknown {
+  if (!isRecord(data) || typeof data.eventName !== "string") return data;
+  const { eventName: _name, ...rest } = data;
+  return rest;
+}
+
 function subscriptionFrom(value: unknown): McpSubscriptionView | null {
   if (!isRecord(value)) return null;
   if (typeof value.id !== "string" || typeof value.server !== "string") return null;
   const name = typeof value.name === "string" ? value.name : "event";
   const status = typeof value.status === "string" ? value.status : "active";
   const args = isRecord(value.arguments) ? value.arguments : {};
-  return { id: value.id, server: value.server, name, status, arguments: args };
+  const cursor = typeof value.cursor === "string" ? value.cursor : null;
+  return { id: value.id, server: value.server, name, status, arguments: args, cursor };
 }
 
 /**
@@ -72,23 +80,57 @@ export class McpEventFeed {
     for (const item of details.events) {
       if (!isRecord(item) || typeof item.server !== "string" || !isRecord(item.event)) continue;
       const event = item.event;
-      const name = typeof event.name === "string" ? event.name : "event";
+      const streamName = typeof event.name === "string" ? event.name : "event";
+      // pi-ui renames an event to its stream so pi-mcp-events keeps it, and
+      // keeps the server's own kind (`hub.job` on a `hub` stream) here.
+      const name =
+        isRecord(event.data) && typeof event.data.eventName === "string"
+          ? event.data.eventName
+          : streamName;
       const timestamp =
         typeof event.timestamp === "string" ? event.timestamp : new Date().toISOString();
       const id =
         typeof event.eventId === "string"
           ? event.eventId
           : `${item.server}:${name}:${timestamp}:${this.events.length}`;
+      if (this.trackCursor(item, streamName)) changed = true;
       if (this.events.some((entry) => entry.id === id)) continue;
       this.events = [
         ...this.events,
-        { id, server: item.server, name, timestamp, summary: summarize(event.data) },
+        {
+          id,
+          server: item.server,
+          name,
+          timestamp,
+          summary: summarize(withoutEventName(event.data)),
+        },
       ].slice(-EVENT_LIMIT);
       this.notice = `new event from ${item.server}`;
       changed = true;
     }
     if (!changed) return false;
     this.touch();
+    return true;
+  }
+
+  /** Move the subscription's cursor to the event's, registering a subscription seen only through events. */
+  private trackCursor(item: Record<string, unknown>, streamName: string): boolean {
+    if (typeof item.subscription_id !== "string" || !isRecord(item.event)) return false;
+    const cursor = typeof item.event.cursor === "string" ? item.event.cursor : null;
+    const current = this.subscriptions.get(item.subscription_id);
+    if (current === undefined) {
+      this.subscriptions.set(item.subscription_id, {
+        id: item.subscription_id,
+        server: typeof item.server === "string" ? item.server : "unknown",
+        name: streamName,
+        status: "active",
+        arguments: {},
+        cursor,
+      });
+      return true;
+    }
+    if (cursor === null || cursor === current.cursor) return false;
+    this.subscriptions.set(item.subscription_id, { ...current, cursor });
     return true;
   }
 

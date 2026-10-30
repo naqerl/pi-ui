@@ -318,7 +318,14 @@ test("lists MCP events newest first in the default widget, not the header", asyn
         ...busy,
         mcpEvents: {
           subscriptions: [
-            { id: "s1", server: "web", name: "alerts", status: "active", arguments: {} },
+            {
+              id: "s1",
+              server: "web",
+              name: "alerts",
+              status: "active",
+              arguments: {},
+              cursor: null,
+            },
           ],
           events,
           notice: "new event from web",
