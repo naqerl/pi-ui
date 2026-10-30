@@ -1,14 +1,19 @@
 # Dashboard
 
 The page left of the chat (`?page=stats`) is a dashboard the agent can edit. It
-starts with the old stats cards (context, tokens, MCP) and the agent adds, moves
-and removes widgets with five tools. Widgets only show data: the page never
+starts with the old stats cards (context, tokens, MCP servers) plus an MCP events
+list, and the agent adds, moves and removes widgets with five tools. The chat
+header shows no MCP status; these two widgets replace it. Widgets only show data: the page never
 renders HTML or JS from a widget and there are no action buttons.
 
 ## Files
 
 - `DATA_DIR/dashboard.json`: widgets and layout. It holds scripts, never tokens.
-  Missing or invalid JSON falls back to the default stats widgets.
+  Missing or invalid JSON falls back to the default stats widgets. `seeded`
+  records which set of default widgets the file has been given (currently `2`).
+  A file from an older pi-ui gets the defaults added since then once, on load:
+  seed 2 adds `mcp-events` after the `mcp` widget. A default removed after that
+  stays removed, because `seeded` already covers it.
 - `DATA_DIR/dashboard-state.json`: the last value, error and history of each
   poll and static widget, so the page shows something right after a restart.
 
@@ -36,7 +41,8 @@ at the page.
   - `context`: `tokens`, `window`, `percent`, `text`
   - `tokens`: `input`, `output`, `cacheRead`, `cacheWrite`, `totalTokens`, `cost`, `costText`, `rows[]` (`key`, `label`, `value`)
   - `cache`: `read`, `write`, `hitRate`, `hitPercent`, `text`
-  - `mcp`: `count`, `unavailable`, `servers[]` (`key`, `name`, `available`, `authRejected`, `tools`, `state`, `detail`)
+  - `mcp`: `count`, `unavailable`, `servers[]` (`key`, `name`, `available`, `authRejected`, `tools`, `subscriptions` (live subscription names), `state`, `detail`)
+  - `mcp_events`: `total`, `live` (servers with a live subscription), `latest`, `events[]` (the last 20, newest first: `key`, `id`, `server`, `name`, `timestamp`, `time`, `summary`, `label`, `value`), `subscriptions[]` (`key`, `id`, `server`, `name`, `status`, `label`, `state`, `detail`)
   - `jobs`: `total`, `running`, `jobs[]` (`id`, `name`, `status`, `exitCode`, `label`, `state`, `detail`, …)
   - `session`: `conversationId`, `model`, `run`, `rows[]`
 - `{"type": "poll", "script": "…", "intervalSec": 60, "timeoutSec": 10}`: the
