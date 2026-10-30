@@ -4,6 +4,14 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.3 - 2026-10-30
+
+- A finished turn carries a short summary of the agent's final answer, written by the fast model: it reuses the configured `ModelRuntime`, is bounded by a 20 s timeout and roughly 120 tokens, is cached per message, and stays out of the way when it fails or when the turn is skipped. The chat shows it under the answer with an **expand** control that reveals the original message.
+- The run activity opens as a modal over the chat instead of replacing the page, so the conversation stays mounted and keeps its scroll and draft while you look at what the agent did.
+- Code blocks keep their copy button until the block is hovered or focused: it hides behind `@media (hover: hover) and (pointer: fine)`, so a phone keeps a visible control, `focus-visible` and the keyboard reveal it, and the copied/failed feedback survives the pointer leaving.
+- The `MCP events` and background-job chips are blurred panels over the content instead of flat fills, matching the floating cards above the composer.
+- The `MCP events` widget keeps the last three events instead of the last twenty, so it fits the stats page without scrolling.
+
 ## 1.6.2 - 2026-10-30
 
 - Events from an MCP subscription now pass through untouched. The hub names every occurrence after its subscription and carries the kind in `data.kind`, so the repairs added in 1.6.1 (numeric `eventId`/`timestamp` coercion, `data` → `null`, renaming to the stream name with `data.eventName`, the single-open-stream fallback) are gone; the transport hook logs, once per server and reason, an `events/event` frame `pi-mcp-events` would reject, and the notice and widgets show `data.kind` when present, else the name.
