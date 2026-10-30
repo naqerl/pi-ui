@@ -111,12 +111,13 @@ function messageText(message: DurableExtensionMessage): string {
 export class DurableExtensionShim implements DurableExtensionApi {
   readonly events = new EventEmitter();
   private readonly installed: ToolRegistration[] = [];
+  private readonly extensionTools = new Map<string, DurableExtensionTool>();
   private readonly handlers = new Map<string, DurableExtensionHandler[]>();
   private sink: DurableExtensionSink | undefined;
-  private observer: ((notice: ExtensionNotice) => void) | undefined;
+  private observer: ((notice: ExtensionNotice) => unknown) | undefined;
   private closed = false;
 
-  setObserver(observer: ((notice: ExtensionNotice) => void) | undefined): void {
+  setObserver(observer: ((notice: ExtensionNotice) => unknown) | undefined): void {
     this.observer = observer;
   }
 
@@ -157,6 +158,19 @@ export class DurableExtensionShim implements DurableExtensionApi {
       },
     });
     this.installed.push(registration);
+    this.extensionTools.set(tool.name, tool);
+  }
+
+  /**
+   * Invoke an extension tool directly. pi-mcp-events registers `mcp_events`
+   * this way, so boot-time restoration can subscribe with a stored cursor
+   * without going through the model or the durable tool registry.
+   */
+  async callTool(name: string, params: unknown, signal?: AbortSignal): Promise<AgentToolResult> {
+    if (this.closed) throw new Error("Extension API is closed");
+    const tool = this.extensionTools.get(name);
+    if (tool === undefined) throw new Error(`Unknown extension tool: ${name}`);
+    return tool.execute(`ext-${name}-${Date.now()}`, params, signal);
   }
 
   on(event: string, handler: DurableExtensionHandler): void {
@@ -181,10 +195,16 @@ export class DurableExtensionShim implements DurableExtensionApi {
       return;
     }
     console.log(`[mcp] ${kind} notice${noticeSummary(message.details)}`);
+    let deliver = true;
     try {
-      this.observer?.({ customType: message.customType, details: message.details });
+      deliver =
+        this.observer?.({ customType: message.customType, details: message.details }) !== false;
     } catch (error) {
       console.error(`[mcp] ${kind} notice observer failed`, error);
+    }
+    if (!deliver) {
+      console.log(`[mcp] ${kind} notice skipped: no new data`);
+      return;
     }
     const text = messageText(message);
     if (text.length === 0) return;

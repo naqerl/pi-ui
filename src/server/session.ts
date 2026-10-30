@@ -121,6 +121,7 @@ export async function openDurableSession(
   const storage = await openNodeSqliteStorage(databasePath);
   const { registry, mcp, biliTools, taskTools, jobTools, dashboardTools, memoryTools } =
     await createAppRegistry({
+      dataDir,
       bili: options.bili,
       tasks: options.tasks,
       ...(options.jobs === undefined ? {} : { jobs: options.jobs }),

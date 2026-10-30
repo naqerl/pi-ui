@@ -1,4 +1,5 @@
 import type { McpEventsState, McpEventView, McpSubscriptionView } from "../shared/types.js";
+import type { McpSubscriptionRecord, McpSubscriptionRegistry } from "./mcp-subscriptions.js";
 
 export interface ExtensionNotice {
   customType?: string;
@@ -27,6 +28,41 @@ function summarize(data: unknown): string {
   }
 }
 
+/**
+ * The comparable high-water mark of a cursor. Hub event cursors are
+ * `hub:<n>`; anything else, including `hub:snapshot:a:b`, is opaque and can
+ * only be stored, never compared.
+ */
+export function cursorHighWater(cursor: string | null | undefined): number | null {
+  if (typeof cursor !== "string") return null;
+  const match = /^hub:(\d+)$/.exec(cursor);
+  if (match === null) return null;
+  const value = Number(match[1]);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+/** Alias used by callers that describe the value rather than the mark. */
+export const comparableCursor = cursorHighWater;
+
+/** The real position rides in `event.data.cursor`; the envelope cursor is often null. */
+export function eventCursor(event: Record<string, unknown>): string | null {
+  if (isRecord(event.data) && typeof event.data.cursor === "string") return event.data.cursor;
+  return typeof event.cursor === "string" ? event.cursor : null;
+}
+
+function newerCursor(current: string | null, incoming: string | null): string | null {
+  if (incoming === null) return current;
+  if (current === null) return incoming;
+  const currentMark = cursorHighWater(current);
+  const incomingMark = cursorHighWater(incoming);
+  if (currentMark !== null && incomingMark !== null && incomingMark < currentMark) return current;
+  return incoming;
+}
+
+function sameArguments(first: Record<string, unknown>, second: Record<string, unknown>): boolean {
+  return JSON.stringify(first) === JSON.stringify(second);
+}
+
 function subscriptionFrom(value: unknown): McpSubscriptionView | null {
   if (!isRecord(value)) return null;
   if (typeof value.id !== "string" || typeof value.server !== "string") return null;
@@ -43,9 +79,13 @@ function subscriptionFrom(value: unknown): McpSubscriptionView | null {
  */
 export class McpEventFeed {
   private readonly subscriptions = new Map<string, McpSubscriptionView>();
+  /** Numeric cursor high-water per subscription, independent of opaque snapshots. */
+  private readonly highWater = new Map<string, number>();
   private events: McpEventView[] = [];
   private notice: string | null = null;
   private revision = 0;
+
+  constructor(private readonly registry?: McpSubscriptionRegistry) {}
 
   get state(): McpEventsState {
     return {
@@ -67,9 +107,40 @@ export class McpEventFeed {
     this.revision += 1;
   }
 
+  private noteHighWater(id: string, mark: number | null): void {
+    if (mark === null) return;
+    const current = this.highWater.get(id);
+    if (current === undefined || mark > current) this.highWater.set(id, mark);
+  }
+
+  private observeCursor(id: string, cursor: string | null): void {
+    this.noteHighWater(id, cursorHighWater(cursor));
+  }
+
+  private persist(subscription: McpSubscriptionView): void {
+    if (this.registry === undefined) return;
+    const record: McpSubscriptionRecord = {
+      server: subscription.server,
+      name: subscription.name,
+      arguments: subscription.arguments,
+      cursor: subscription.cursor,
+      status: subscription.status,
+      updatedAt: new Date().toISOString(),
+    };
+    void this.registry.record(record).catch((error: unknown) => {
+      console.warn(
+        `mcp: could not persist subscription ${subscription.server}/${subscription.name}`,
+        error,
+      );
+    });
+  }
+
   private ingestEvents(details: unknown): boolean {
     if (!isRecord(details) || !Array.isArray(details.events)) return false;
     let changed = false;
+    let skipped = 0;
+    let stored = 0;
+    const skippedServers: string[] = [];
     for (const item of details.events) {
       if (!isRecord(item) || typeof item.server !== "string" || !isRecord(item.event)) continue;
       const event = item.event;
@@ -86,7 +157,17 @@ export class McpEventFeed {
         typeof event.eventId === "string"
           ? event.eventId
           : `${item.server}:${name}:${timestamp}:${this.events.length}`;
-      if (this.trackCursor(item, streamName)) changed = true;
+      const cursor = eventCursor(event);
+      const subscriptionId =
+        typeof item.subscription_id === "string" ? item.subscription_id : undefined;
+      const mark = cursorHighWater(cursor);
+      const high = subscriptionId === undefined ? undefined : this.highWater.get(subscriptionId);
+      if (mark !== null && high !== undefined && mark <= high) {
+        skipped += 1;
+        if (!skippedServers.includes(item.server)) skippedServers.push(item.server);
+        continue;
+      }
+      if (this.trackCursor(item, streamName, cursor)) changed = true;
       if (this.events.some((entry) => entry.id === id)) continue;
       this.events = [
         ...this.events,
@@ -100,6 +181,11 @@ export class McpEventFeed {
       ].slice(-EVENT_LIMIT);
       this.notice = `new event from ${item.server}`;
       changed = true;
+      stored += 1;
+    }
+    if (skipped > 0 && stored > 0) {
+      const server = skippedServers[0] ?? "unknown";
+      this.notice = `replayed ${skipped} event(s) from ${server}, skipped`;
     }
     if (!changed) return false;
     this.touch();
@@ -107,23 +193,33 @@ export class McpEventFeed {
   }
 
   /** Move the subscription's cursor to the event's, registering a subscription seen only through events. */
-  private trackCursor(item: Record<string, unknown>, streamName: string): boolean {
+  private trackCursor(
+    item: Record<string, unknown>,
+    streamName: string,
+    cursor: string | null,
+  ): boolean {
     if (typeof item.subscription_id !== "string" || !isRecord(item.event)) return false;
-    const cursor = typeof item.event.cursor === "string" ? item.event.cursor : null;
     const current = this.subscriptions.get(item.subscription_id);
     if (current === undefined) {
-      this.subscriptions.set(item.subscription_id, {
+      const subscription: McpSubscriptionView = {
         id: item.subscription_id,
         server: typeof item.server === "string" ? item.server : "unknown",
         name: streamName,
         status: "active",
         arguments: {},
         cursor,
-      });
+      };
+      this.subscriptions.set(item.subscription_id, subscription);
+      this.observeCursor(subscription.id, cursor);
+      this.persist(subscription);
       return true;
     }
-    if (cursor === null || cursor === current.cursor) return false;
-    this.subscriptions.set(item.subscription_id, { ...current, cursor });
+    const nextCursor = newerCursor(current.cursor, cursor);
+    this.observeCursor(current.id, nextCursor);
+    if (nextCursor === current.cursor) return false;
+    const next = { ...current, cursor: nextCursor };
+    this.subscriptions.set(item.subscription_id, next);
+    this.persist(next);
     return true;
   }
 
@@ -131,9 +227,32 @@ export class McpEventFeed {
     if (!isRecord(details) || !Array.isArray(details.subscriptions)) return false;
     let changed = false;
     for (const item of details.subscriptions) {
-      const subscription = subscriptionFrom(item);
-      if (subscription === null) continue;
+      const incoming = subscriptionFrom(item);
+      if (incoming === null) continue;
+      const current = this.subscriptions.get(incoming.id);
+      const subscription =
+        current === undefined
+          ? incoming
+          : {
+              ...incoming,
+              cursor: newerCursor(current.cursor, incoming.cursor),
+              arguments:
+                Object.keys(incoming.arguments).length === 0 &&
+                Object.keys(current.arguments).length > 0
+                  ? current.arguments
+                  : incoming.arguments,
+            };
+      this.observeCursor(subscription.id, current?.cursor ?? null);
+      this.observeCursor(subscription.id, subscription.cursor);
+      const unchanged =
+        current !== undefined &&
+        current.name === subscription.name &&
+        current.status === subscription.status &&
+        current.cursor === subscription.cursor &&
+        sameArguments(current.arguments, subscription.arguments);
       this.subscriptions.set(subscription.id, subscription);
+      if (unchanged) continue;
+      this.persist(subscription);
       changed = true;
     }
     if (!changed) return false;
@@ -149,19 +268,45 @@ export class McpEventFeed {
     const action = typeof args.action === "string" ? args.action : "";
 
     if (action === "list" && Array.isArray(result.subscriptions)) {
+      const previous = new Map(this.subscriptions);
+      const previousHighWater = new Map(this.highWater);
       this.subscriptions.clear();
+      this.highWater.clear();
       for (const item of result.subscriptions) {
-        const subscription = subscriptionFrom(item);
-        if (subscription !== null) this.subscriptions.set(subscription.id, subscription);
+        const incoming = subscriptionFrom(item);
+        if (incoming === null) continue;
+        const current = previous.get(incoming.id);
+        const subscription: McpSubscriptionView = {
+          ...incoming,
+          cursor: newerCursor(current?.cursor ?? null, incoming.cursor),
+        };
+        this.subscriptions.set(subscription.id, subscription);
+        this.noteHighWater(subscription.id, previousHighWater.get(subscription.id) ?? null);
+        this.observeCursor(subscription.id, subscription.cursor);
+        this.persist(subscription);
       }
       this.touch();
       return true;
     }
 
     if (action === "subscribe") {
-      const subscription = subscriptionFrom(result.subscription);
-      if (subscription === null) return false;
+      const incoming = subscriptionFrom(result.subscription);
+      if (incoming === null) return false;
+      const current = this.subscriptions.get(incoming.id);
+      const subscription: McpSubscriptionView = {
+        ...incoming,
+        cursor: newerCursor(current?.cursor ?? null, incoming.cursor),
+        arguments:
+          Object.keys(incoming.arguments).length === 0 &&
+          current !== undefined &&
+          Object.keys(current.arguments).length > 0
+            ? current.arguments
+            : incoming.arguments,
+      };
       this.subscriptions.set(subscription.id, subscription);
+      this.observeCursor(subscription.id, current?.cursor ?? null);
+      this.observeCursor(subscription.id, subscription.cursor);
+      this.persist(subscription);
       this.touch();
       return true;
     }
@@ -170,7 +315,9 @@ export class McpEventFeed {
       const id = typeof args.subscription_id === "string" ? args.subscription_id : "";
       const current = id.length > 0 ? this.subscriptions.get(id) : undefined;
       if (current === undefined) return false;
-      this.subscriptions.set(id, { ...current, status: "stopped" });
+      const subscription = { ...current, status: "stopped" };
+      this.subscriptions.set(id, subscription);
+      this.persist(subscription);
       this.touch();
       return true;
     }
