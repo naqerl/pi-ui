@@ -758,6 +758,11 @@ export class McpRuntime {
       await transport.close().catch(() => {});
       throw protocolError(name, error);
     }
+    // A server that was down during the boot probe can come back later. The
+    // protocol connection is a live probe of the same definition, so clear the
+    // boot failure instead of reporting it for the rest of the process.
+    const failure = this.failedServers.findIndex((entry) => entry.name === name);
+    if (failure !== -1) this.failedServers.splice(failure, 1);
     const entry = { client, transport, controller };
     this.protocolConnections.add(entry);
     const watched = watchStaleSession(transport, () => {

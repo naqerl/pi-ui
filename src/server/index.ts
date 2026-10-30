@@ -121,7 +121,7 @@ const chat = new ChatService(
   boot.interrupted,
   boot.runMarkerStore,
   boot.runMarker,
-  boot.mcp.status,
+  () => boot.mcp.status,
   catalog.runtime,
   activeModel,
   bili,
@@ -131,7 +131,11 @@ const events = new McpEventFeed();
 chat.setEventFeed(events);
 await chat.start();
 boot.mcp.setObserver((notice) => {
-  if (!events.ingest(notice)) return;
+  const changed = events.ingest(notice);
+  // A protocol connection can clear a boot failure, so keep the live status
+  // in every tab instead of leaving the snapshot from startup on screen.
+  hub.broadcast({ event: "mcp.status", data: boot.mcp.status });
+  if (!changed) return;
   hub.broadcast({ event: "mcp.events", data: events.state });
 });
 function builtinJobs() {

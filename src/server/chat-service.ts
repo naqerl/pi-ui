@@ -127,6 +127,8 @@ export class ChatService {
   private shuttingDown = false;
   private modelWindow: number | undefined;
   private selected: ModelOption | null;
+  /** Read on every snapshot, so a server may recover after its boot probe fails. */
+  private readonly mcpStatus: () => McpStatus;
 
   constructor(
     private readonly harness: Harness,
@@ -136,12 +138,13 @@ export class ChatService {
     interrupted: boolean,
     private readonly markerStore: RunMarkerStore,
     initialMarker: RunMarker | undefined,
-    private readonly mcp: McpStatus,
+    mcpStatus: McpStatus | (() => McpStatus),
     private readonly catalog: ModelRuntime,
     initialModel: Model<Api> | undefined,
     private readonly bili: BillionContextInline,
     private readonly media: MediaStore,
   ) {
+    this.mcpStatus = typeof mcpStatus === "function" ? mcpStatus : () => mcpStatus;
     this.runState = interrupted ? "interrupted" : "idle";
     this.modelWindow = modelWindow;
     this.selected = initialModel === undefined ? null : modelOption(initialModel);
@@ -358,7 +361,7 @@ export class ChatService {
       conversationId: String(this.conversation.id),
       usage: summarizeUsage(usage),
       context: contextUsage(context.entries, this.modelWindow),
-      mcp: this.mcp,
+      mcp: this.mcpStatus(),
     };
   }
 
@@ -383,7 +386,7 @@ export class ChatService {
       steers: this.steerItems(),
       usage: summarizeUsage(usage),
       context: contextUsage(context.entries, this.modelWindow),
-      mcp: this.mcp,
+      mcp: this.mcpStatus(),
       mcpEvents: this.mcpEventsState(),
       draft: {
         text: this.currentText,
