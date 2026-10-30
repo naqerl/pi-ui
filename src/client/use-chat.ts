@@ -39,6 +39,7 @@ import type {
   UsageSummary,
 } from "../shared/types";
 import { setDashboard } from "./dashboard-store";
+import { isThinking } from "./working-state";
 
 const EMPTY_EVENTS: McpEventsState = {
   subscriptions: [],
@@ -683,6 +684,7 @@ export function useChat(options: UseChatOptions = {}) {
   return {
     timeline,
     running: runState === "running",
+    thinking: runState === "running" && isThinking(draftThinking, draftText),
     interrupted: runState === "interrupted",
     queue,
     mcp,

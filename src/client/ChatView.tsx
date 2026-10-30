@@ -44,6 +44,7 @@ import { WorkingIndicator } from "./WorkingIndicator";
 interface ChatViewProps {
   timeline: TimelineItem[];
   running: boolean;
+  thinking: boolean;
   interrupted: boolean;
   ready: boolean;
   tasks: Task[];
@@ -980,6 +981,7 @@ function lastUserMessageOrder(timeline: TimelineItem[]): number {
 export function ChatView({
   timeline,
   running,
+  thinking,
   interrupted,
   ready,
   tasks,
@@ -1347,7 +1349,11 @@ export function ChatView({
                 aria-live="polite"
                 className="min-w-0 flex-1 truncate font-mono text-[11px] leading-4 text-muted-foreground"
               >
-                {running ? <WorkingIndicator running={running} /> : <span>idle</span>}
+                {running ? (
+                  <WorkingIndicator running={running} thinking={thinking} />
+                ) : (
+                  <span>idle</span>
+                )}
               </div>
               {tasksPage && <SubtaskProgress tasks={tasks} />}
             </div>
