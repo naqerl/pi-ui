@@ -685,7 +685,7 @@ function rowNote(
   }
 }
 
-function TaskRow({
+export function TaskRow({
   task,
   tasks,
   activity,
@@ -840,7 +840,7 @@ function TaskRow({
             onStatus(task, done ? "open" : "done");
           }}
         />
-        <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
+        <span className="flex min-w-0 flex-1 flex-col justify-start gap-0.5 self-stretch">
           <span
             className={cn(
               "line-clamp-2 text-sm leading-5 [overflow-wrap:anywhere]",
@@ -855,11 +855,16 @@ function TaskRow({
             </span>
           )}
         </span>
-        {badge !== null && (
-          <Badge variant={current === "working" || current === "failed" ? "default" : "outline"}>
-            {badge}
-          </Badge>
-        )}
+        <span className="flex min-h-9 shrink-0 flex-col items-end justify-between self-stretch">
+          {badge !== null ? (
+            <Badge variant={current === "working" || current === "failed" ? "default" : "outline"}>
+              {badge}
+            </Badge>
+          ) : (
+            <span aria-hidden className="h-5 shrink-0" />
+          )}
+          <TaskCardTimes task={task} />
+        </span>
       </div>
       {notice !== null && (
         <ErrorText id={`task-error-${task.id}`} className="mt-1">
@@ -931,7 +936,7 @@ function ProposedTask({
           onOpen();
         }}
       >
-        <span className="flex min-w-0 flex-1 basis-40 flex-col gap-0.5">
+        <span className="flex min-w-0 flex-1 basis-40 flex-col justify-start gap-0.5 self-stretch">
           <span className="line-clamp-2 text-sm leading-5 [overflow-wrap:anywhere]">
             <InlineMarkdown text={task.title} />
           </span>
@@ -941,31 +946,34 @@ function ProposedTask({
             </span>
           )}
         </span>
-        <span className="ml-auto flex shrink-0 items-center gap-2">
-          <Badge variant="outline">Proposed</Badge>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 shrink-0 rounded-md px-2"
-            aria-label={`Dismiss ${plainInline(task.title)}`}
-            onClick={(event) => {
-              stop(event);
-              onDismiss();
-            }}
-          >
-            Dismiss
-          </Button>
-          <Button
-            size="sm"
-            className="h-7 shrink-0 rounded-md px-3"
-            aria-label={`Approve ${plainInline(task.title)}`}
-            onClick={(event) => {
-              stop(event);
-              onApprove();
-            }}
-          >
-            Approve
-          </Button>
+        <span className="ml-auto flex shrink-0 flex-col items-end justify-between gap-1 self-stretch">
+          <span className="flex items-center gap-2">
+            <Badge variant="outline">Proposed</Badge>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 shrink-0 rounded-md px-2"
+              aria-label={`Dismiss ${plainInline(task.title)}`}
+              onClick={(event) => {
+                stop(event);
+                onDismiss();
+              }}
+            >
+              Dismiss
+            </Button>
+            <Button
+              size="sm"
+              className="h-7 shrink-0 rounded-md px-3"
+              aria-label={`Approve ${plainInline(task.title)}`}
+              onClick={(event) => {
+                stop(event);
+                onApprove();
+              }}
+            >
+              Approve
+            </Button>
+          </span>
+          <TaskCardTimes task={task} />
         </span>
       </div>
       {notice !== null && (
@@ -974,6 +982,29 @@ function ProposedTask({
         </div>
       )}
     </li>
+  );
+}
+
+/** The compact created/closed clock on a task card; the detail keeps the long form. */
+export function TaskCardTimes({ task }: { task: Task }) {
+  const created = formatTime(task.createdAt);
+  const closedAt =
+    task.status === "done" && typeof task.completedAt === "string" ? task.completedAt : null;
+  const closed = closedAt === null ? "" : formatTime(closedAt);
+  return (
+    <span
+      data-testid="task-card-times"
+      className="flex flex-wrap items-end justify-end gap-x-2 text-xs leading-4 text-muted-foreground"
+    >
+      <time dateTime={task.createdAt} title={formatDateTime(task.createdAt)}>
+        Created {created}
+      </time>
+      {closedAt !== null && (
+        <time dateTime={closedAt} title={formatDateTime(closedAt)}>
+          Closed {closed}
+        </time>
+      )}
+    </span>
   );
 }
 

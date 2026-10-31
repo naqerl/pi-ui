@@ -5,6 +5,7 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 ## 1.6.33 - 2026-10-31
 
 - Chips and timestamp rows show `hh:mm` only. The `seconds` option is gone from `formatTime`, so the MCP-event chip, the events page and the notifications row agree with message bubbles.
+- Task cards show when they were created at the bottom right, and when a done task was closed; the detail header keeps the long form.
 
 ## 1.6.32 - 2026-10-31
 

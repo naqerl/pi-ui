@@ -43,7 +43,7 @@ test("the idle window defaults to twenty minutes and zero disables it", () => {
   assert.equal(idleNudgeMs({ PI_IDLE_NUDGE_MS: "soon" }), DEFAULT_IDLE_NUDGE_MS);
   assert.equal(idleNudgeMs({ PI_IDLE_NUDGE_MS: "-1" }), DEFAULT_IDLE_NUDGE_MS);
 
-  const disabled = new IdleNudge(0, 0);
+  const disabled = new IdleNudge(0, 0, "");
   assert.equal(disabled.enabled, false);
   assert.equal(disabled.maybeNudge({ ...nothing, openTaskIds: ["a"] }, 10_000_000), null);
 });
@@ -74,7 +74,7 @@ test("a task blocked by an open task is not nudged", () => {
   assert.deepEqual(openTaskIds(tasks), ["simy"]);
   assert.deepEqual(waitingOn(tasks), { fvte: ["simy"] });
 
-  const nudge = new IdleNudge(1_000, 0);
+  const nudge = new IdleNudge(1_000, 0, "");
   const text = nudge.maybeNudge({ ...nothing, openTaskIds: openTaskIds(tasks) }, 1_000);
   assert.match(text ?? "", /open: simy\./);
   assert.doesNotMatch(text ?? "", /fvte/);
@@ -85,7 +85,7 @@ test("a task whose blocker is done is nudged", () => {
   assert.deepEqual(openTaskIds(tasks), ["fvte"]);
   assert.deepEqual(waitingOn(tasks), {});
 
-  const nudge = new IdleNudge(1_000, 0);
+  const nudge = new IdleNudge(1_000, 0, "");
   assert.equal(
     nudge.maybeNudge({ ...nothing, openTaskIds: openTaskIds(tasks) }, 1_000),
     "You have been idle for 20 minutes and 1 task(s) are open: fvte. Pick the next one and implement it.",
@@ -97,7 +97,7 @@ test("all blocked keeps the nudge quiet and armed", () => {
   assert.deepEqual(openTaskIds(tasks), []);
   assert.deepEqual(waitingOn(tasks), { a: ["b"], b: ["a"] });
 
-  const nudge = new IdleNudge(1_000, 0);
+  const nudge = new IdleNudge(1_000, 0, "");
   assert.equal(nudge.maybeNudge({ ...nothing, openTaskIds: openTaskIds(tasks) }, 5_000), null);
   assert.equal(nudge.armed, true);
 
@@ -123,7 +123,7 @@ test("an unknown blocker id does not block", () => {
 });
 
 test("the same task set nudges only once", () => {
-  const nudge = new IdleNudge(1_000, 0);
+  const nudge = new IdleNudge(1_000, 0, "");
   const work = { ...nothing, openTaskIds: ["a1"] };
   assert.ok(nudge.maybeNudge(work, 1_000));
   nudge.noteActivity(2_000);
@@ -131,7 +131,7 @@ test("the same task set nudges only once", () => {
 });
 
 test("a new task nudges again", () => {
-  const nudge = new IdleNudge(1_000, 0);
+  const nudge = new IdleNudge(1_000, 0, "");
   assert.ok(nudge.maybeNudge({ ...nothing, openTaskIds: ["a1"] }, 1_000));
   nudge.noteActivity(2_000);
   assert.ok(
@@ -195,7 +195,7 @@ test("a missing or corrupt record is tolerated", async () => {
 });
 
 test("it fires once after the window, then waits for fresh activity and a new task set", () => {
-  const nudge = new IdleNudge(1_000, 0);
+  const nudge = new IdleNudge(1_000, 0, "");
   const work = { ...nothing, openTaskIds: ["a1"] };
   assert.equal(nudge.maybeNudge(work, 999), null);
   assert.equal(
@@ -214,7 +214,7 @@ test("it fires once after the window, then waits for fresh activity and a new ta
 });
 
 test("it never fires while running, queued, or with no open task", () => {
-  const nudge = new IdleNudge(1_000, 0);
+  const nudge = new IdleNudge(1_000, 0, "");
   const work = { ...nothing, openTaskIds: ["a1"] };
   assert.equal(nudge.maybeNudge({ ...work, active: true }, 5_000), null);
   assert.equal(nudge.maybeNudge({ ...work, queued: 1 }, 5_000), null);
@@ -326,6 +326,7 @@ test("a failed nudge submission retries the same task set", async () => {
 test("the nudge's own run re-arms, so a new task set fires again", async () => {
   const previous = process.env.PI_IDLE_NUDGE_MS;
   process.env.PI_IDLE_NUDGE_MS = "1000";
+  const directory = await temporaryDataDir();
   try {
     const tasks = ["a1"];
     const chat = new ChatService(
@@ -344,6 +345,7 @@ test("the nudge's own run re-arms, so a new task set fires again", async () => {
       async () => undefined,
       () => undefined,
       () => tasks,
+      directory,
     );
     const driven = chat as unknown as {
       idleNudge: IdleNudge;
@@ -379,5 +381,6 @@ test("the nudge's own run re-arms, so a new task set fires again", async () => {
   } finally {
     if (previous === undefined) delete process.env.PI_IDLE_NUDGE_MS;
     else process.env.PI_IDLE_NUDGE_MS = previous;
+    await rm(directory, { recursive: true, force: true });
   }
 });

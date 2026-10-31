@@ -556,3 +556,94 @@ test("shows a failed task action beside the control and keeps a long title", asy
   await expect(screen.getByText(longTitle, { exact: true })).toBeVisible();
   await expect(screen.getByTestId("composer-error")).toHaveCount(0);
 });
+
+test("shows created and closed times at the bottom right of a task card", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  const at = (agoMs: number) => new Date(Date.now() - agoMs).toISOString();
+  await browser.setViewport({ width: 1280, height: 800 });
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({
+      json: {
+        conversationId: "task-card-times-e2e",
+        messages: [],
+        activity: [],
+        run: "idle",
+        queue: [],
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 },
+        context: { tokens: 0, window: null, percent: null },
+        tasks: {
+          revision: 1_000_000,
+          tasks: [
+            {
+              id: "open-card",
+              title: "Keep the ledger open",
+              status: "open",
+              parentId: null,
+              blockedBy: [],
+              createdAt: at(3_600_000),
+              proposedAt: null,
+              completedAt: null,
+              completion: null,
+            },
+            {
+              id: "done-card",
+              title: "Close the ledger",
+              status: "done",
+              parentId: null,
+              blockedBy: [],
+              createdAt: at(7_200_000),
+              proposedAt: null,
+              completedAt: at(600_000),
+              completion: { evidence: "e2e/tasks.e2e.ts" },
+            },
+          ],
+        },
+      },
+    });
+  });
+  await app.open("/?page=tasks");
+  await expect(screen.getByTestId("task-open-card")).toBeVisible();
+  await expect(screen.getByTestId("task-done-card")).toBeVisible();
+
+  const layout = await browser.evaluate(() => {
+    const measure = (id: string) => {
+      const card = document.querySelector(`[data-testid="task-${id}"] [data-task-card]`);
+      if (!(card instanceof HTMLElement)) return null;
+      const times = card.querySelector('[data-testid="task-card-times"]');
+      const title = card.querySelector(".line-clamp-2");
+      if (!(times instanceof HTMLElement) || !(title instanceof HTMLElement)) return null;
+      const cardBox = card.getBoundingClientRect();
+      const timesBox = times.getBoundingClientRect();
+      const titleBox = title.getBoundingClientRect();
+      const lineHeight = Number.parseFloat(getComputedStyle(title).lineHeight) || titleBox.height;
+      return {
+        created: times.textContent?.includes("Created") ?? false,
+        closed: times.textContent?.includes("Closed") ?? false,
+        rightInside: timesBox.right <= cardBox.right + 0.5,
+        leftInside: timesBox.left >= cardBox.left - 0.5,
+        belowTitle: timesBox.top >= titleBox.top + lineHeight - 0.5,
+        noOverflow: card.scrollWidth <= card.clientWidth,
+      };
+    };
+    return { open: measure("open-card"), done: measure("done-card") };
+  });
+  expect(layout?.open).toEqual({
+    created: true,
+    closed: false,
+    rightInside: true,
+    leftInside: true,
+    belowTitle: true,
+    noOverflow: true,
+  });
+  expect(layout?.done).toEqual({
+    created: true,
+    closed: true,
+    rightInside: true,
+    leftInside: true,
+    belowTitle: true,
+    noOverflow: true,
+  });
+});

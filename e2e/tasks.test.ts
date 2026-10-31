@@ -10,6 +10,7 @@ import {
   groupByDay,
   groupByProject,
   TaskDetail,
+  TaskRow,
   TaskTimes,
 } from "../src/client/TasksView.js";
 import { createTaskTools, type TaskBridge } from "../src/server/task-tools.js";
@@ -22,7 +23,7 @@ import {
   hasOpenDescendant,
   liveBlockerIds,
 } from "../src/shared/tasks.js";
-import { formatDateTime } from "../src/shared/time.js";
+import { formatDateTime, formatTime } from "../src/shared/time.js";
 import type { Task, TaskLedger } from "../src/shared/types.js";
 
 function tools(bridge: TaskBridge) {
@@ -50,6 +51,27 @@ async function temporaryStore() {
   await store.load();
   const bridge: TaskBridge = { store, publish() {} };
   return { directory, file, store, bridge };
+}
+
+function renderTaskCard(task: Task) {
+  return renderToStaticMarkup(
+    createElement(TaskRow, {
+      task,
+      tasks: [task],
+      activity: undefined,
+      state: (item: Task) =>
+        item.status === "done" ? "done" : item.status === "proposed" ? "proposed" : "ready",
+      depth: 0,
+      selectedId: null,
+      armedParentId: null,
+      ignoreNextCardClick: { current: false },
+      problem: null,
+      menuTaskId: null,
+      onOpenMenu: () => {},
+      onOpen: () => {},
+      onStatus: () => {},
+    }),
+  );
 }
 
 test("task ordering puts proposals first, then ready, blocked and done deterministically", () => {
@@ -246,6 +268,65 @@ test("task cards show created and closed times in the browser's local zone", () 
   assert.match(markup, new RegExp(`Closed ${closed.replaceAll(".", "\\.")}`));
   assert.notEqual(created, utc);
   assert.doesNotMatch(markup, new RegExp(`Created ${utc.replaceAll(".", "\\.")}`));
+});
+
+test("a task card shows only the created time while the task is open", () => {
+  const task: Task = {
+    id: "card-open",
+    title: "Keep the ledger open",
+    status: "open",
+    parentId: null,
+    blockedBy: [],
+    createdAt: "2026-01-01T12:00:00.000Z",
+    completedAt: null,
+    completion: null,
+  };
+  const markup = inZone("Asia/Tokyo", () => renderTaskCard(task));
+  const created = inZone("Asia/Tokyo", () => formatTime(task.createdAt));
+
+  assert.match(markup, /data-testid="task-card-times"/);
+  assert.match(markup, new RegExp(`dateTime="${task.createdAt}"`));
+  assert.match(markup, new RegExp(`Created ${created}`));
+  assert.doesNotMatch(markup, /Closed/);
+});
+
+test("a done task card shows the created and closed times", () => {
+  const task: Task = {
+    id: "card-done",
+    title: "Close the ledger",
+    status: "done",
+    parentId: null,
+    blockedBy: [],
+    createdAt: "2026-01-01T12:00:00.000Z",
+    completedAt: "2026-01-01T12:25:00.000Z",
+    completion: { evidence: "e2e/tasks.test.ts" },
+  };
+  const markup = inZone("Asia/Tokyo", () => renderTaskCard(task));
+  const created = inZone("Asia/Tokyo", () => formatTime(task.createdAt));
+  const closed = inZone("Asia/Tokyo", () => formatTime(task.completedAt ?? ""));
+
+  assert.match(markup, new RegExp(`dateTime="${task.createdAt}"`));
+  assert.match(markup, new RegExp(`dateTime="${task.completedAt}"`));
+  assert.match(markup, new RegExp(`Created ${created}`));
+  assert.match(markup, new RegExp(`Closed ${closed}`));
+});
+
+test("a done task card without completedAt falls back to the created time", () => {
+  const task: Task = {
+    id: "card-done-legacy",
+    title: "Legacy card without a closing instant",
+    status: "done",
+    parentId: null,
+    blockedBy: [],
+    createdAt: "2026-01-01T12:00:00.000Z",
+    completedAt: null,
+    completion: null,
+  };
+  const markup = inZone("UTC", () => renderTaskCard(task));
+  const created = inZone("UTC", () => formatTime(task.createdAt));
+
+  assert.match(markup, new RegExp(`Created ${created}`));
+  assert.doesNotMatch(markup, /Closed/);
 });
 
 test("formats measured tokens, time and cost", () => {
