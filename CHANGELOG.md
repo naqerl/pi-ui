@@ -2,6 +2,11 @@
 
 Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
 
+## 1.6.25 - 2026-10-31
+
+- The idle nudge now ignores work that cannot legally be picked: a task whose `blockedBy` names an open task no longer counts, and the notice names the blockers instead of demanding a pick.
+- Nudges fire once per task set. The set of unblocked open task ids is hashed and recorded in `data/idle-nudge.json`, so the same backlog cannot nudge twice, not even across a restart; a new task or a task becoming unblocked earns exactly one nudge. A corrupt record is ignored rather than breaking startup, and the hash is only written after the nudge was actually submitted.
+
 ## Unreleased
 
 ## 1.6.24 - 2026-10-31
