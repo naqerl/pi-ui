@@ -5,8 +5,10 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { taskFilterCounts } from "../src/client/TaskFilters.js";
 import {
   dayLabel,
+  doneDayLabel,
   groupByDay,
   groupByProject,
   TaskDetail,
@@ -868,10 +870,88 @@ test("done tasks group by local day: today, yesterday, then short dates", () => 
         ["2026-10-29", ["b"]],
       ],
     );
+    assert.deepEqual(
+      days.map(([key]) => doneDayLabel(key, now)),
+      ["Done today", "Done yesterday", "Done Oct 29"],
+    );
     assert.equal(dayLabel("2026-10-31", now), "Today");
     assert.equal(dayLabel("2026-10-30", now), "Yesterday");
     assert.notEqual(dayLabel("2026-10-29", now), "Yesterday");
     assert.match(dayLabel("2026-10-29", now), /29/);
+  });
+});
+
+test("a task completed today and one yesterday land in their named done days", () => {
+  inZone("Europe/Belgrade", () => {
+    const now = new Date(2026, 9, 31, 13, 0);
+    const tasks = [
+      { id: "today", completedAt: new Date(2026, 9, 31, 9, 0).toISOString() },
+      { id: "yesterday", completedAt: new Date(2026, 9, 30, 9, 0).toISOString() },
+    ];
+    const days = groupByDay(tasks, (task) => task.completedAt);
+    assert.deepEqual(
+      days.map(([key, group]) => [doneDayLabel(key, now), group.map((task) => task.id)]),
+      [
+        ["Done today", ["today"]],
+        ["Done yesterday", ["yesterday"]],
+      ],
+    );
+  });
+});
+
+test("the task filter counts mirror the list: active includes blocked, proposed apart", () => {
+  const base: Omit<Task, "id" | "title" | "status" | "blockedBy" | "createdAt"> = {
+    parentId: null,
+    completedAt: null,
+    completion: null,
+  };
+  const tasks: Task[] = [
+    {
+      ...base,
+      id: "ready",
+      title: "Ready",
+      status: "open",
+      blockedBy: [],
+      createdAt: "2026-01-01T00:00:00.000Z",
+    },
+    {
+      ...base,
+      id: "blocked",
+      title: "Blocked",
+      status: "open",
+      blockedBy: ["ready"],
+      createdAt: "2026-01-01T00:00:01.000Z",
+    },
+    {
+      ...base,
+      id: "waiting",
+      title: "Waiting",
+      status: "open",
+      blockedBy: ["blocked"],
+      createdAt: "2026-01-01T00:00:02.000Z",
+    },
+    {
+      ...base,
+      id: "proposal",
+      title: "Proposal",
+      status: "proposed",
+      blockedBy: [],
+      createdAt: "2026-01-01T00:00:03.000Z",
+    },
+    {
+      ...base,
+      id: "done",
+      title: "Done",
+      status: "done",
+      blockedBy: [],
+      createdAt: "2026-01-01T00:00:04.000Z",
+      completedAt: "2026-01-01T01:00:00.000Z",
+    },
+  ];
+  assert.deepEqual(taskFilterCounts(tasks, undefined), {
+    active: 3,
+    blocked: 2,
+    proposed: 1,
   });
 });
 

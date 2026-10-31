@@ -36,6 +36,7 @@ import { NoticeLine } from "./NoticeView";
 import { PiMenu } from "./PiMenu";
 import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
 import type { ChatStats } from "./StatsView";
+import { type TaskFilter, TaskFilters } from "./TaskFilters";
 import { createTask } from "./task-client";
 import { groupTimeline, type TimelineGroup } from "./timeline-groups";
 import type { SendOutcome, TimelineItem } from "./use-chat";
@@ -1003,6 +1004,7 @@ export function ChatView({
   useViewportHeight();
   const pager = usePager(PAGES.length, pageFromLocation());
   const [armedParentId, setArmedParentId] = useState<string | null>(null);
+  const [taskFilter, setTaskFilter] = useState<TaskFilter>("active");
   const [composerError, setComposerError] = useState<string | null>(null);
   const [activityRun, setActivityRun] = useState<string | null | undefined>(
     activityRunFromLocation,
@@ -1312,6 +1314,7 @@ export function ChatView({
                   ready={ready}
                   footerClearance={footerClearance}
                   armedParentId={armed?.id ?? null}
+                  filter={taskFilter}
                   onArmParent={setArmedParentId}
                   onLedger={applyTasks}
                 />
@@ -1325,7 +1328,16 @@ export function ChatView({
           className="float-footer absolute z-20 theme-radius"
         >
           <div className="ink-line flex items-center gap-3 border-b py-1.5 pr-1.5 pl-[18px]">
-            <div className="flex min-w-0 flex-1 items-center gap-2">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+              {tasksPage && (
+                <TaskFilters
+                  tasks={tasks}
+                  activity={taskActivity}
+                  filter={taskFilter}
+                  onChange={setTaskFilter}
+                  className="shrink-0"
+                />
+              )}
               <div
                 data-testid="working-status"
                 data-open={running ? "true" : "false"}

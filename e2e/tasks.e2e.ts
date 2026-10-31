@@ -647,3 +647,170 @@ test("shows created and closed times at the bottom right of a task card", async 
     noOverflow: true,
   });
 });
+
+test("puts the task filters in the composer header and groups done work by day", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  const now = new Date();
+  const today = new Date(now);
+  today.setHours(12, 0, 0, 0);
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  const key = (date: Date) =>
+    `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+      date.getDate(),
+    ).padStart(2, "0")}`;
+  const at = (date: Date) => date.toISOString();
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({
+      json: {
+        conversationId: "task-filters-e2e",
+        messages: [],
+        activity: [],
+        run: "idle",
+        queue: [],
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 },
+        context: { tokens: 0, window: null, percent: null },
+        tasks: {
+          revision: 1_000_000,
+          tasks: [
+            {
+              id: "done-today",
+              title: "Finished today",
+              status: "done",
+              parentId: null,
+              blockedBy: [],
+              createdAt: at(today),
+              proposedAt: null,
+              completedAt: at(today),
+              completion: { evidence: "e2e/tasks.e2e.ts" },
+            },
+            {
+              id: "done-yesterday",
+              title: "Finished yesterday",
+              status: "done",
+              parentId: null,
+              blockedBy: [],
+              createdAt: at(yesterday),
+              proposedAt: null,
+              completedAt: at(yesterday),
+              completion: { evidence: "e2e/tasks.e2e.ts" },
+            },
+            {
+              id: "open-task",
+              title: "Still open",
+              status: "open",
+              parentId: null,
+              blockedBy: [],
+              createdAt: at(yesterday),
+              proposedAt: null,
+              completedAt: null,
+              completion: null,
+            },
+            {
+              id: "proposal",
+              title: "A proposal",
+              status: "proposed",
+              parentId: null,
+              blockedBy: [],
+              createdAt: at(today),
+              proposedAt: at(today),
+              rationale: "Try this next.",
+              completedAt: null,
+              completion: null,
+            },
+          ],
+        },
+      },
+    });
+  });
+  await app.open("/?page=tasks");
+  await expect(screen.getByTestId("task-filters")).toBeVisible();
+
+  const place = await browser.evaluate(() => {
+    const filters = document.querySelector<HTMLElement>('[data-testid="task-filters"]');
+    const row = document.querySelector<HTMLElement>(
+      '[data-testid="composer-dock"]',
+    )?.firstElementChild;
+    const dots = document.querySelector<HTMLElement>('[data-testid="page-dots"]');
+    const status = document.querySelector<HTMLElement>('[data-testid="working-status"]');
+    if (filters === null || row == null || dots === null || status === null) return null;
+    const filtersBox = filters.getBoundingClientRect();
+    const dotsBox = dots.getBoundingClientRect();
+    const statusBox = status.getBoundingClientRect();
+    return {
+      inRow: row.contains(filters) && row.contains(dots) && row.contains(status),
+      leftOfDots: filtersBox.right <= dotsBox.left + 1,
+      leftOfStatus: filtersBox.left < statusBox.left,
+    };
+  });
+  expect(place).toEqual({ inRow: true, leftOfDots: true, leftOfStatus: true });
+
+  const selected = await browser.evaluate(() => {
+    const tab = document.querySelector<HTMLElement>('[data-testid="task-filter-active"]');
+    const open = document.querySelector<HTMLElement>(
+      '[data-testid="task-section-active"] [data-slot="collapsible-trigger"]',
+    );
+    const tabCount = tab?.querySelector<HTMLElement>("span:last-child");
+    const openCount = open?.querySelectorAll<HTMLElement>("span")[1];
+    if (tab === null || tab === undefined || open == null) return null;
+    if (tabCount === null || tabCount === undefined || openCount == null) return null;
+    const tabBox = tab.getBoundingClientRect();
+    const openBox = open.getBoundingClientRect();
+    return {
+      sameBackground:
+        getComputedStyle(tab).backgroundColor === getComputedStyle(open).backgroundColor,
+      tabCountRight: tabCount.getBoundingClientRect().right > tabBox.left + tabBox.width / 2,
+      openCountRight: openCount.getBoundingClientRect().right > openBox.left + openBox.width / 2,
+      openChevron: open.querySelector("svg") !== null,
+    };
+  });
+  expect(selected).toEqual({
+    sameBackground: true,
+    tabCountRight: true,
+    openCountRight: true,
+    openChevron: true,
+  });
+
+  await screen.getByTestId("task-filter-proposed").tap();
+  await expect(screen.getByTestId("proposal-proposal")).toBeVisible();
+  await expect(screen.getByTestId("task-done-today")).toHaveCount(0);
+  await expect(screen.getByTestId("task-open-task")).toHaveCount(0);
+
+  await screen.getByTestId("task-filter-active").tap();
+  const todayGroup = screen.getByTestId(`task-day-${key(today)}`);
+  await expect(todayGroup).toContainText("Done today");
+  await expect(todayGroup).toContainText("Finished today");
+  await expect(todayGroup).toContainText("1");
+  const yesterdayGroup = screen.getByTestId(`task-day-${key(yesterday)}`);
+  await expect(yesterdayGroup).toContainText("Done yesterday");
+  await expect(yesterdayGroup).toHaveAttribute("data-open", "false");
+  await expect(screen.getByTestId("task-done-yesterday")).toHaveCount(0);
+
+  await screen.getByRole("button", { name: /Done yesterday/ }).tap();
+  await expect(yesterdayGroup).toHaveAttribute("data-open", "true");
+  await expect(screen.getByTestId("task-done-yesterday")).toBeVisible();
+
+  const header = await browser.evaluate(() => {
+    const group = document.querySelector<HTMLElement>('[data-testid^="task-day-"]');
+    const trigger = group?.querySelector<HTMLElement>('[data-slot="collapsible-trigger"]');
+    if (group === null || trigger == null) return null;
+    const label = trigger.firstElementChild;
+    const chevron = trigger.querySelector("svg");
+    const count = trigger.lastElementChild;
+    if (!(label instanceof HTMLElement) || !(chevron instanceof SVGElement) || count === null) {
+      return null;
+    }
+    const labelBox = label.getBoundingClientRect();
+    const chevronBox = chevron.getBoundingClientRect();
+    const countBox = count.getBoundingClientRect();
+    return {
+      dark: getComputedStyle(trigger).backgroundColor === getComputedStyle(document.body).color,
+      labelLeft: labelBox.right <= chevronBox.left + 1,
+      chevronLeftOfCount: chevronBox.right <= countBox.left + 1,
+    };
+  });
+  expect(header).toEqual({ dark: true, labelLeft: true, chevronLeftOfCount: true });
+});
