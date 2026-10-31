@@ -2,6 +2,11 @@
 
 Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
 
+## 1.6.39 - 2026-10-31
+
+- A queued MCP event is now a machine chip, not a bubble: the events that arrive while a turn is running are submitted as notices, so their raw payload never appears in the chat as something you said.
+- The queued chip is readable and matches the chip it becomes — same glyph, same mono label, transparent background instead of faded text — and a burst of notices is one chip showing how many are queued, whose cancel button removes them all.
+- The cancel test in e2e/jobs.test.ts waits for the job events instead of guessing at timings, so the suite no longer fails at random.
 ## 1.6.38 - 2026-10-31
 
 - An MCP event subscription that died after a restart no longer reads as "active" forever: a stalled stream is reopened (or replaced) instead of silently delivering nothing, and a subscription that never delivers is reported as dead rather than healthy.
