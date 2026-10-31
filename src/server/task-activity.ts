@@ -30,6 +30,8 @@ export interface ModelCall {
 interface RunSpan {
   firstAt: number;
   lastAt: number;
+  /** Tagged calls still running; a long build is active time, not silence. */
+  open: number;
 }
 
 interface Persisted {
@@ -153,11 +155,15 @@ export class TaskActivityTracker {
 
   view(): TaskActivity {
     const traces: Record<string, TaskTrace> = {};
+    const now = this.clock();
     for (const [id, trace] of this.traces) {
       const span = this.spans.get(id);
-      const live = span === undefined ? 0 : Math.max(0, span.lastAt - span.firstAt);
+      const live = span === undefined ? 0 : Math.max(0, this.spanEnd(span, now) - span.firstAt);
       traces[id] = {
         ...trace,
+        // A call still in flight is activity right now, however long the tool takes.
+        lastActivityAt:
+          span !== undefined && span.open > 0 ? new Date(now).toISOString() : trace.lastActivityAt,
         lastRun: trace.lastRun === null ? null : { ...trace.lastRun },
         // The live run's time so far counts before it ends.
         measured: { ...trace.measured, activeMs: trace.measured.activeMs + live },
@@ -201,9 +207,10 @@ export class TaskActivityTracker {
       const trace = this.traces.get(id);
       if (trace === undefined || trace.lastRun?.id !== this.runId) continue;
       trace.lastRun = { id: this.runId, outcome, at, ...(reason === undefined ? {} : { reason }) };
-      trace.measured.activeMs += Math.max(0, span.lastAt - span.firstAt);
+      const spent = Math.max(0, this.spanEnd(span, this.clock()) - span.firstAt);
+      trace.measured.activeMs += spent;
       if (outcome === "ok") {
-        this.push(trace, at, "run-end", `Run ended · ${duration(span.lastAt - span.firstAt)}`);
+        this.push(trace, at, "run-end", `Run ended · ${duration(spent)}`);
       } else {
         this.push(
           trace,
@@ -218,6 +225,10 @@ export class TaskActivityTracker {
     this.untracked = null;
     this.failure = null;
     this.changed();
+  }
+
+  private spanEnd(span: RunSpan, now: number): number {
+    return span.open > 0 ? Math.max(span.lastAt, now) : span.lastAt;
   }
 
   /** A top-level tool call started. Its `piuiTaskId`, if any, says which task it serves. */
@@ -239,12 +250,13 @@ export class TaskActivityTracker {
     const trace = this.trace(taskId);
     const span = this.spans.get(taskId);
     if (span === undefined || trace.lastRun?.id !== runId) {
-      this.spans.set(taskId, { firstAt: now, lastAt: now });
+      this.spans.set(taskId, { firstAt: now, lastAt: now, open: 1 });
       trace.measured.runs += 1;
       trace.lastRun = { id: runId, outcome: "running", at: new Date(now).toISOString() };
       this.push(trace, new Date(now).toISOString(), "run-start", "Run started");
     } else {
       span.lastAt = now;
+      span.open += 1;
     }
     trace.measured.calls += 1;
     trace.lastActivityAt = new Date(now).toISOString();
@@ -260,6 +272,7 @@ export class TaskActivityTracker {
     if (span === undefined || trace === undefined) return;
     const now = this.clock();
     span.lastAt = now;
+    span.open = Math.max(0, span.open - 1);
     trace.lastActivityAt = new Date(now).toISOString();
     this.changed();
   }

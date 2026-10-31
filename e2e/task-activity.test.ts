@@ -11,6 +11,7 @@ import {
   taggedTaskId,
   withTaskParam,
 } from "../src/server/task-attribution.js";
+import { taskState } from "../src/shared/task-status.js";
 import type { Task } from "../src/shared/types.js";
 
 function fakeTool(seen: unknown[], extra: Partial<ToolRegistration> = {}): ToolRegistration {
@@ -128,6 +129,24 @@ test("tagged calls make a task's run, untagged ones count as untracked", () => {
     view.traces.a?.history.map((event) => event.kind),
     ["created", "run-start", "run-end"],
   );
+});
+
+test("a long tagged call keeps its task working and counts its time while it runs", () => {
+  let now = Date.parse("2026-10-31T12:00:00.000Z");
+  const tracker = new TaskActivityTracker(undefined, () => now);
+  const tasks = [task("a")];
+  tracker.observeLedger(tasks);
+  tracker.runStarted();
+  tracker.toolStarted("bash", { command: "npm run build", [TASK_ID_PARAM]: "a" });
+  now += 25 * 60_000;
+  let view = tracker.view();
+  assert.equal(taskState(tasks, tasks[0] as Task, view), "working", "still inside a call");
+  assert.equal(view.traces.a?.measured.activeMs, 25 * 60_000);
+  tracker.toolEnded({ [TASK_ID_PARAM]: "a" });
+  now += 15 * 60_000;
+  view = tracker.view();
+  assert.equal(taskState(tasks, tasks[0] as Task, view), "ready", "quiet past the window");
+  assert.equal(view.traces.a?.measured.activeMs, 25 * 60_000, "silence after the call is not work");
 });
 
 test("a failed run marks the tasks it touched, and the ledger adds status history", () => {
