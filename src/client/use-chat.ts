@@ -2,6 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DashboardState } from "../shared/dashboard";
 import { pendingQueuedMessage } from "../shared/queue";
 import {
+  acceptDeltaRevision,
+  adoptSnapshotRevision,
+  resetStreamRevisions,
+} from "../shared/revisions";
+import {
   consumeSteer,
   consumeSteersInMessages,
   droppedSteerMessage,
@@ -152,9 +157,11 @@ export function useChat(options: UseChatOptions = {}) {
     setTaskLedger(ledger);
   }, []);
 
-  const applyDraft = useCallback((draft: StreamDraftSync) => {
-    if (draft.revision < draftRevision.current) return;
-    draftRevision.current = draft.revision;
+  const applyDraft = useCallback((draft: StreamDraftSync, adoptLower = false) => {
+    if (!adoptLower && draft.revision < draftRevision.current) return;
+    draftRevision.current = adoptLower
+      ? adoptSnapshotRevision(draftRevision.current, draft.revision)
+      : draft.revision;
     setDraftText(draft.text);
     setDraftThinking(draft.thinking);
   }, []);
@@ -194,11 +201,14 @@ export function useChat(options: UseChatOptions = {}) {
         setActivity(freshActivity);
       }
       const persistedActivityIds = new Set(snapshot.activity.map((item) => item.id));
-      const toolsAreCurrent =
-        snapshot.activeTools !== undefined &&
-        (snapshot.toolsRevision === undefined || snapshot.toolsRevision >= toolsRevision.current);
-      if (toolsAreCurrent && snapshot.activeTools !== undefined) {
-        if (snapshot.toolsRevision !== undefined) toolsRevision.current = snapshot.toolsRevision;
+      // A restarted server counts from 1 again; its snapshot replaces our stale counter.
+      if (snapshot.toolsRevision !== undefined) {
+        toolsRevision.current = adoptSnapshotRevision(
+          toolsRevision.current,
+          snapshot.toolsRevision,
+        );
+      }
+      if (snapshot.activeTools !== undefined) {
         setLiveTools(snapshot.activeTools.filter((item) => !persistedActivityIds.has(item.id)));
       } else {
         setLiveTools((current) => current.filter((item) => !persistedActivityIds.has(item.id)));
@@ -214,7 +224,7 @@ export function useChat(options: UseChatOptions = {}) {
       setMcp(snapshot.mcp ?? { servers: [], unavailable: [] });
       setUsage(snapshot.usage ?? null);
       setContext(snapshot.context ?? null);
-      if (snapshot.draft !== undefined) applyDraft(snapshot.draft);
+      if (snapshot.draft !== undefined) applyDraft(snapshot.draft, true);
       if (snapshot.mcpEvents !== undefined) applyEvents(snapshot.mcpEvents);
       if (snapshot.tasks !== undefined) applyTasks(snapshot.tasks);
       setReady(true);
@@ -272,6 +282,10 @@ export function useChat(options: UseChatOptions = {}) {
     source.onopen = () => {
       if (offlineTimer !== undefined) clearTimeout(offlineTimer);
       offlineTimer = undefined;
+      // A new process counts its stream revisions from 1 again.
+      const revisions = resetStreamRevisions();
+      draftRevision.current = revisions.draft;
+      toolsRevision.current = revisions.tools;
       void refreshState();
     };
     source.onerror = () => {
@@ -369,10 +383,9 @@ export function useChat(options: UseChatOptions = {}) {
     source.addEventListener("message.delta", (event) => {
       const data = parseEvent<StreamTextDelta>(event as MessageEvent<string>);
       if (!data) return;
-      if (data.revision !== undefined) {
-        if (data.revision < draftRevision.current) return;
-        draftRevision.current = data.revision;
-      }
+      const revision = acceptDeltaRevision(draftRevision.current, data.revision);
+      if (revision === null) return;
+      draftRevision.current = revision;
       if (typeof data.full === "string") setDraftText(data.full);
       else setDraftText((current) => current + data.text);
     });
@@ -380,10 +393,9 @@ export function useChat(options: UseChatOptions = {}) {
     source.addEventListener("thinking.delta", (event) => {
       const data = parseEvent<StreamTextDelta>(event as MessageEvent<string>);
       if (!data) return;
-      if (data.revision !== undefined) {
-        if (data.revision < draftRevision.current) return;
-        draftRevision.current = data.revision;
-      }
+      const revision = acceptDeltaRevision(draftRevision.current, data.revision);
+      if (revision === null) return;
+      draftRevision.current = revision;
       if (typeof data.full === "string") setDraftThinking(data.full);
       else setDraftThinking((current) => current + data.text);
     });
