@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { render } from "pele";
 import { DIAGRAM_FORMAT, DIAGRAM_ID_PATTERN } from "../shared/diagrams.js";
 import type { DiagramRef } from "../shared/types.js";
 
@@ -113,6 +114,46 @@ function asDiagram(value: unknown): Diagram | undefined {
   };
 }
 
+function decodeXmlEntities(value: string): string {
+  return value
+    .replace(/&#x([0-9a-f]+);?/gi, (_, hex: string) => {
+      const code = Number.parseInt(hex, 16);
+      return code <= 0x10ffff ? String.fromCodePoint(code) : "";
+    })
+    .replace(/&#(\d+);?/g, (_, decimal: string) => {
+      const code = Number.parseInt(decimal, 10);
+      return code <= 0x10ffff ? String.fromCodePoint(code) : "";
+    })
+    .replace(/&colon;/gi, ":")
+    .replace(/&(?:tab|newline);/gi, "")
+    .replace(/&amp;/gi, "&");
+}
+
+const UNSAFE_SVG_ELEMENT =
+  /<\s*(?:script|iframe|object|embed|applet|link|meta|base|form|input|button|textarea|select|option|video|audio|source|track|template|handler|listener|discard|set|animate(?:motion|transform)?)\b/i;
+const EVENT_HANDLER = /(?:^|[\s"'<>/])on[a-z0-9_-]+\s*=/i;
+
+/** Stored SVG is only served after rejecting active content, event handlers and unsafe URLs. */
+export function safeSvgDocument(source: string): string | undefined {
+  const trimmed = source.trim();
+  if (!/^<svg(?:\s|>|\/)/i.test(trimmed)) return undefined;
+  const decoded = decodeXmlEntities(trimmed);
+  const normalized = decoded.toLowerCase();
+  if (UNSAFE_SVG_ELEMENT.test(normalized)) return undefined;
+  if (EVENT_HANDLER.test(normalized)) return undefined;
+  if (/(?:javascript|vbscript)\s*:/i.test(normalized)) return undefined;
+  if (/(?:expression\s*\(|@import|behavior\s*:)/i.test(normalized)) return undefined;
+  if (/url\s*\(\s*['"]?\s*(?!#)/i.test(normalized)) return undefined;
+  if (/\bsrcdoc\s*=/i.test(normalized)) return undefined;
+  const compact = normalized.replace(/\s+/g, "");
+  if (
+    /(?:href|src|poster|formaction|data|srcset)=["']?(?:javascript|vbscript|data):/i.test(compact)
+  ) {
+    return undefined;
+  }
+  return trimmed;
+}
+
 function clone(diagram: Diagram): Diagram {
   return { ...diagram };
 }
@@ -183,7 +224,7 @@ export class DiagramStore {
   async replace(id: string, source: unknown, format?: unknown): Promise<Diagram> {
     const text = validateDiagramSource(source);
     const value = format === undefined ? undefined : validateFormat(format);
-    return this.commit(() => {
+    const replaced = await this.commit(() => {
       const current = this.get(id);
       if (current === undefined) throw new DiagramError(`Unknown diagram: ${id}`, 404);
       return {
@@ -194,6 +235,62 @@ export class DiagramStore {
         revision: current.revision + 1,
       };
     });
+    await this.removeSvg(replaced.id, replaced.revision - 1);
+    return replaced;
+  }
+
+  /**
+   * The drawing as SVG. The bundled renderer runs once on the server and the result is cached
+   * beside the diagram, keyed by revision; a replace therefore never serves the old drawing.
+   */
+  async svg(diagram: Diagram): Promise<string | undefined> {
+    // A trusted SVG file is still checked for active content before the client sees it.
+    if (diagram.format === "svg") return safeSvgDocument(diagram.source);
+    if (diagram.format !== DIAGRAM_FORMAT) return undefined;
+
+    const path = this.svgPath(diagram.id, diagram.revision);
+    try {
+      const cached = await readFile(path, "utf8");
+      const safe = safeSvgDocument(cached);
+      if (safe !== undefined) return safe;
+    } catch (error) {
+      const code = typeof error === "object" && error !== null && "code" in error ? error.code : "";
+      if (code !== "ENOENT") {
+        console.warn(`[pi] could not read diagram svg ${diagram.id}: ${String(error)}`);
+      }
+    }
+
+    let svg: string;
+    try {
+      svg = render(diagram.source).svg;
+    } catch (error) {
+      console.warn(`[pi] could not render diagram ${diagram.id}: ${String(error)}`);
+      return undefined;
+    }
+    const safe = safeSvgDocument(svg);
+    if (safe === undefined) return undefined;
+    try {
+      await this.saveSvg(diagram.id, diagram.revision, safe);
+    } catch (error) {
+      console.warn(`[pi] could not cache diagram svg ${diagram.id}: ${String(error)}`);
+    }
+    return safe;
+  }
+
+  private svgPath(id: string, revision: number): string {
+    return join(this.dir, `${id}.r${revision}.svg`);
+  }
+
+  private async saveSvg(id: string, revision: number, svg: string): Promise<void> {
+    await mkdir(this.dir, { recursive: true });
+    const path = this.svgPath(id, revision);
+    const temporary = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+    await writeFile(temporary, svg, "utf8");
+    await rename(temporary, path);
+  }
+
+  private async removeSvg(id: string, revision: number): Promise<void> {
+    await rm(this.svgPath(id, revision), { force: true });
   }
 
   /** Serialises writes so two replaces cannot both read the same revision. */
