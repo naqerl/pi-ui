@@ -260,9 +260,7 @@ export function PiMenu() {
                     {model?.id ?? "None"}
                   </span>
                 </button>
-                <div className="p-2">
-                  <PushSettings />
-                </div>
+                <PushSettings />
               </div>
             ) : section === "theme" ? (
               <div>

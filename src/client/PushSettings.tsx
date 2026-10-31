@@ -23,70 +23,78 @@ export interface PushSettingsRowProps {
   readonly onDisable?: () => void;
 }
 
-function description(state: PushRowState): string {
+function status(state: PushRowState, busy: boolean): string {
+  if (busy) return "Busy — updating notification settings…";
   switch (state) {
     case "unsupported":
-      return "Push needs a secure context (HTTPS or localhost).";
+      return "Unsupported — push needs HTTPS or localhost";
     case "checking":
-      return "Checking notification support…";
+      return "Busy — checking notification support…";
     case "granted":
-      return "Notifications on";
+      return "On — notifications are enabled";
     case "denied":
-      return "Notifications blocked in the browser";
+      return "Denied — notifications are blocked in the browser";
     case "default":
-      return "Get a system notification when pi needs you.";
+      return "Off — get notified when pi needs you";
   }
 }
 
-/** One card-styled row, so its height does not jump when the state changes. */
+/**
+ * One compact menu row: the same title, type scale and padding as Theme and
+ * Model, with the switch on the right and a single status line underneath.
+ * The row itself carries no card because its menu neighbours do not.
+ */
 export function PushSettingsRow({
   state,
   busy = false,
   onEnable,
   onDisable,
 }: PushSettingsRowProps) {
-  const canEnable = state === "default" && onEnable !== undefined;
-  const canDisable = state === "granted" && onDisable !== undefined;
+  const on = state === "granted";
+  const action = on ? onDisable : onEnable;
+  const disabled = busy || state === "checking" || state === "unsupported" || state === "denied";
   return (
     <div
       data-testid="push-settings-row"
       data-state={state}
-      className="ink-line theme-radius flex min-h-[64px] items-center gap-3 border bg-surface px-3 py-2"
+      className="flex w-full min-w-0 items-center gap-3 px-3 py-2"
     >
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm">Notifications</p>
-        <p className="line-clamp-2 min-h-[2.4em] text-[11px] leading-snug text-muted-foreground">
-          {description(state)}
+        <p
+          data-testid="push-status"
+          className="truncate text-[11px] leading-4 text-muted-foreground"
+        >
+          {status(state, busy)}
         </p>
       </div>
-      <div className="flex w-[8.5rem] shrink-0 justify-end">
-        {canEnable && (
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onEnable}
-            className="theme-radius border border-border bg-foreground px-2.5 py-1 text-xs font-medium text-background transition-colors hover:bg-foreground/90 disabled:opacity-50"
-          >
-            {busy ? "Enabling…" : "Enable notifications"}
-          </button>
-        )}
-        {canDisable && (
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onDisable}
-            className="theme-radius border border-border bg-background px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
-          >
-            {busy ? "Turning off…" : "Turn off"}
-          </button>
-        )}
-        {!canEnable && !canDisable && (
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label="Notifications"
+        data-testid="push-toggle"
+        disabled={disabled}
+        onClick={action}
+        className="group grid size-11 shrink-0 place-items-center transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <span
+          aria-hidden="true"
+          className={cn(
+            "relative block h-5 w-9 rounded-full border transition-colors",
+            on
+              ? "border-foreground bg-foreground"
+              : "border-foreground/40 bg-transparent group-hover:border-foreground",
+          )}
+        >
           <span
-            aria-hidden="true"
-            className={cn("block h-7 w-full", state === "granted" ? "bg-transparent" : "")}
+            className={cn(
+              "absolute top-0.5 left-0.5 size-4 rounded-full transition-transform",
+              on ? "translate-x-4 bg-background" : "bg-foreground/60 group-hover:bg-foreground",
+            )}
           />
-        )}
-      </div>
+        </span>
+      </button>
     </div>
   );
 }
