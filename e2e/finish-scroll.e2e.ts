@@ -81,11 +81,11 @@ test("leaves the scroll alone when the reader scrolled away during the run", asy
     return main.scrollTop;
   });
   expect(scrolled).toBe(200);
-  // Images from earlier tests load lazily once scrolled near, and the transcript keeps what is
-  // read in place while they grow, so measure from where the scroll settles.
+  // Earlier messages and lazily loaded images can land above the reader; the transcript keeps
+  // what is read in place while they do, so check the row in view, not the raw scroll offset.
   const reading = await browser.evaluate(async () => {
     const main = document.querySelector<HTMLElement>("main");
-    if (main === null) return -1;
+    if (main === null) return null;
     await Promise.all(
       [...main.querySelectorAll("img")].map((img) =>
         img.complete
@@ -94,13 +94,25 @@ test("leaves the scroll alone when the reader scrolled away during the run", asy
       ),
     );
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    return main.scrollTop;
+    const top = main.getBoundingClientRect().top;
+    const rows = [...(main.firstElementChild?.children ?? [])] as HTMLElement[];
+    const row = rows.find((item) => item.getBoundingClientRect().top >= top - 1);
+    if (row === undefined) return null;
+    row.dataset.reading = "";
+    return {
+      offset: Math.round(row.getBoundingClientRect().top - top),
+      atEnd: main.scrollHeight - main.scrollTop - main.clientHeight < 4,
+    };
   });
-  expect(reading).toBeGreaterThan(100);
+  expect(reading?.atEnd).toBe(false);
   await expect(screen.getByRole("button", "Send")).toBeVisible({ timeout: 20_000 });
   await new Promise((resolve) => setTimeout(resolve, 400));
-  const top = await browser.evaluate(
-    () => document.querySelector<HTMLElement>("main")?.scrollTop ?? -1,
-  );
-  expect(Math.abs(top - reading)).toBeLessThanOrEqual(2);
+  const after = await browser.evaluate(() => {
+    const main = document.querySelector<HTMLElement>("main");
+    const row = document.querySelector<HTMLElement>("[data-reading]");
+    if (main === null || row === null) return null;
+    return Math.round(row.getBoundingClientRect().top - main.getBoundingClientRect().top);
+  });
+  expect(after).not.toBeNull();
+  expect(Math.abs((after ?? 0) - (reading?.offset ?? 0))).toBeLessThanOrEqual(2);
 });
