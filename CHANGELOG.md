@@ -4,6 +4,9 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.15 - 2026-10-30
+
+- Web push notifications: enable them from the settings row and the PWA shows a system notification when an MCP event, a background job or an interrupted run lands while the app is not in the foreground. The worker stays silent when a window is focused, the server keeps subscriptions in `DATA_DIR/push-subscriptions.json` with a VAPID key pair in `DATA_DIR/push-vapid.json` (mode 0600), and a `404`/`410` from the push service drops the dead endpoint instead of retrying forever.
 ## 1.6.14 - 2026-10-30
 
 - The interrupted-run note only appears when the run actually left something behind: nothing is written for a run that produced no partial reply and was not stopped, and the chip promises a resume only when one will happen.
