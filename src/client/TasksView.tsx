@@ -567,8 +567,17 @@ function RowMeta({
         </span>
       );
     case "blocked": {
-      const ids = liveBlockerIds(tasks, task);
-      return <span className={base}>blocked ← {ids.join(", ")}</span>;
+      const names = liveBlockerIds(tasks, task).map((id) => {
+        const blocker = tasks.find((item) => item.id === id);
+        return blocker === undefined ? id : plainInline(blocker.title);
+      });
+      const more = names.length > 1 ? ` +${names.length - 1}` : "";
+      return (
+        <span className={`${base} min-w-0 max-w-[45%] truncate`} title={names.join(", ")}>
+          blocked ← {names[0]}
+          {more}
+        </span>
+      );
     }
     case "partial": {
       const count = subtaskCount(tasks, task.id);
@@ -580,7 +589,10 @@ function RowMeta({
     }
     case "done": {
       const summary = measuredSummary(trace);
-      return <span className={base}>{summary === "" ? "—" : summary}</span>;
+      const children = subtaskCount(tasks, task.id);
+      const text =
+        summary !== "" ? summary : children.total > 0 ? `${children.done}/${children.total}` : "—";
+      return <span className={base}>{text}</span>;
     }
     default: {
       const children = subtaskCount(tasks, task.id);
