@@ -1,6 +1,6 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { sameProject } from "../shared/project";
+import { projectsOf, sameProject } from "../shared/project";
 import { subtaskCount, taskState } from "../shared/task-status";
 import {
   ancestorIds,
@@ -12,6 +12,7 @@ import {
   formatTokenCount,
   hasOpenDescendant,
   liveBlockerIds,
+  TASK_BODY_MAX_LENGTH,
 } from "../shared/tasks";
 import { formatDateTime, formatDay, formatTime } from "../shared/time";
 import type {
@@ -30,8 +31,9 @@ import { Checkbox } from "./components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
 import { Separator } from "./components/ui/separator";
 import { cn } from "./lib/utils";
-import { InlineMarkdown, plainInline } from "./markdown";
+import { InlineMarkdown, Markdown, plainInline } from "./markdown";
 import { mediaUrl } from "./media-client";
+import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
 import { removeTask, type TaskOutcome, updateTask } from "./task-client";
 
 const LONG_PRESS_MS = 500;
@@ -501,6 +503,10 @@ export function TasksView({
         onRemove={() => {
           if (armedParentId === openTask.id) onArmParent(null);
           void apply(openTask.id, removeTask(openTask.id));
+        }}
+        onLedger={(ledger) => {
+          setProblem((current) => (current?.id === openTask.id ? null : current));
+          onLedger(ledger);
         }}
       />
     );
@@ -1053,6 +1059,7 @@ export function TaskDetail({
   onApprove,
   onDismiss,
   onRemove,
+  onLedger,
 }: {
   task: Task;
   tasks: Task[];
@@ -1071,7 +1078,172 @@ export function TaskDetail({
   onApprove: () => void;
   onDismiss: () => void;
   onRemove: () => void;
+  /** Called after an inline edit saves, so the tasks page takes the new ledger. */
+  onLedger?: (ledger: TaskLedger) => void;
 }) {
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(task.title);
+  const [titleError, setTitleError] = useState<string | null>(null);
+  const titleRef = useRef<HTMLInputElement>(null);
+  const titleIgnoreBlur = useRef(false);
+  const titleBusy = useRef(false);
+
+  const [editingBody, setEditingBody] = useState(false);
+  const [bodyDraft, setBodyDraft] = useState(task.body ?? "");
+  const [bodyError, setBodyError] = useState<string | null>(null);
+  const bodyRef = useRef<HTMLTextAreaElement>(null);
+  const bodyBusy = useRef(false);
+
+  const [projectDraft, setProjectDraft] = useState(task.project ?? "");
+  const [projectError, setProjectError] = useState<string | null>(null);
+  const [projectOpen, setProjectOpen] = useState(false);
+  const [projectActive, setProjectActive] = useState(0);
+  const projectAnchor = useRef<HTMLDivElement>(null);
+  const projectBusy = useRef(false);
+  const projects = projectsOf(tasks);
+  const projectQuery = projectDraft.trim().replace(/^@/, "");
+  const projectMatches =
+    projectOpen && projectQuery.length > 0 ? projectSuggestions(projects, projectQuery) : [];
+  const activeProject = Math.min(projectActive, Math.max(0, projectMatches.length - 1));
+
+  // A different task starts with a clean editor; a saved edit refreshes its draft.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset only when the open task changes
+  useEffect(() => {
+    setEditingTitle(false);
+    setTitleDraft(task.title);
+    setTitleError(null);
+    setEditingBody(false);
+    setBodyDraft(task.body ?? "");
+    setBodyError(null);
+    setProjectDraft(task.project ?? "");
+    setProjectError(null);
+    setProjectOpen(false);
+  }, [task.id]);
+
+  useEffect(() => {
+    if (!editingTitle) setTitleDraft(task.title);
+  }, [task.title, editingTitle]);
+
+  useEffect(() => {
+    if (!editingBody) setBodyDraft(task.body ?? "");
+  }, [task.body, editingBody]);
+
+  useEffect(() => {
+    if (!projectBusy.current) setProjectDraft(task.project ?? "");
+  }, [task.project]);
+
+  useEffect(() => {
+    if (editingTitle) titleRef.current?.focus();
+  }, [editingTitle]);
+
+  useEffect(() => {
+    if (!editingBody) return;
+    const element = bodyRef.current;
+    if (element === null) return;
+    element.focus({ preventScroll: true });
+    element.setSelectionRange(element.value.length, element.value.length);
+  }, [editingBody]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: bodyDraft changes the scroll height being measured
+  useLayoutEffect(() => {
+    if (!editingBody) return;
+    const element = bodyRef.current;
+    if (element === null) return;
+    element.style.height = "0px";
+    element.style.height = `${Math.min(element.scrollHeight, 240)}px`;
+  }, [editingBody, bodyDraft]);
+
+  const saveTitle = async () => {
+    if (titleBusy.current) return;
+    const next = titleDraft.trim();
+    if (next.length === 0) {
+      setTitleError("Title must not be empty");
+      setTitleDraft(task.title);
+      titleIgnoreBlur.current = true;
+      setEditingTitle(false);
+      return;
+    }
+    if (next === task.title) {
+      setTitleDraft(task.title);
+      setTitleError(null);
+      titleIgnoreBlur.current = true;
+      setEditingTitle(false);
+      return;
+    }
+    titleBusy.current = true;
+    const outcome = await updateTask(task.id, { title: next });
+    titleBusy.current = false;
+    if (!outcome.ok) {
+      setTitleError(outcome.error);
+      setTitleDraft(task.title);
+      titleIgnoreBlur.current = true;
+      setEditingTitle(false);
+      return;
+    }
+    setTitleError(null);
+    setTitleDraft(next);
+    titleIgnoreBlur.current = true;
+    setEditingTitle(false);
+    onLedger?.(outcome.ledger);
+  };
+
+  const saveBody = async () => {
+    if (bodyBusy.current) return;
+    const next = bodyDraft.trim();
+    if (next.length > TASK_BODY_MAX_LENGTH) {
+      setBodyError(`Body must be at most ${TASK_BODY_MAX_LENGTH} characters`);
+      return;
+    }
+    if (next === (task.body ?? "")) {
+      setBodyError(null);
+      setEditingBody(false);
+      return;
+    }
+    bodyBusy.current = true;
+    const outcome = await updateTask(task.id, { body: next });
+    bodyBusy.current = false;
+    if (!outcome.ok) {
+      setBodyError(outcome.error);
+      return;
+    }
+    setBodyError(null);
+    setBodyDraft(next);
+    setEditingBody(false);
+    onLedger?.(outcome.ledger);
+  };
+
+  const saveProject = async (value = projectDraft) => {
+    if (projectBusy.current) return;
+    const typed = value.trim().replace(/^@/, "");
+    const next = typed.length === 0 ? null : typed;
+    const unchanged = next === null ? task.project === undefined : sameProject(next, task.project);
+    if (unchanged) {
+      setProjectDraft(task.project ?? "");
+      setProjectError(null);
+      setProjectOpen(false);
+      return;
+    }
+    projectBusy.current = true;
+    const outcome = await updateTask(task.id, { project: next });
+    projectBusy.current = false;
+    if (!outcome.ok) {
+      setProjectError(outcome.error);
+      setProjectOpen(false);
+      return;
+    }
+    setProjectError(null);
+    setProjectDraft(outcome.ledger.tasks.find((item) => item.id === task.id)?.project ?? "");
+    setProjectOpen(false);
+    onLedger?.(outcome.ledger);
+  };
+
+  const acceptProject = (name: string) => {
+    setProjectDraft(name);
+    setProjectActive(0);
+    setProjectOpen(false);
+    setProjectError(null);
+    void saveProject(name);
+  };
   const done = task.status === "done";
   const proposed = task.status === "proposed";
   const openChildren = !done && hasOpenDescendant(tasks, task.id);
@@ -1146,9 +1318,73 @@ export function TaskDetail({
           )}
         </div>
         <div className="flex items-start gap-3">
-          <h2 className="min-w-0 flex-1 text-lg font-semibold leading-7 [overflow-wrap:anywhere]">
-            <InlineMarkdown text={task.title} />
-          </h2>
+          <div className="min-w-0 flex-1">
+            {editingTitle ? (
+              <form
+                className="flex min-w-0 flex-col gap-1"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void saveTitle();
+                }}
+              >
+                <input
+                  ref={titleRef}
+                  type="text"
+                  aria-label="Task title"
+                  aria-invalid={titleError !== null ? true : undefined}
+                  data-testid="task-title-input"
+                  value={titleDraft}
+                  onChange={(event) => {
+                    setTitleDraft(event.target.value);
+                    setTitleError(null);
+                  }}
+                  onBlur={() => {
+                    if (titleIgnoreBlur.current) {
+                      titleIgnoreBlur.current = false;
+                      return;
+                    }
+                    void saveTitle();
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      titleIgnoreBlur.current = true;
+                      setTitleDraft(task.title);
+                      setTitleError(null);
+                      setEditingTitle(false);
+                    } else if (event.key === "Enter") {
+                      event.preventDefault();
+                      void saveTitle();
+                    }
+                  }}
+                  className="h-9 w-full min-w-0 rounded-md border border-border bg-background px-2 text-lg font-semibold leading-7 text-foreground outline-none focus-visible:ring-1 focus-visible:ring-foreground"
+                />
+                {titleError !== null && <ErrorText>{titleError}</ErrorText>}
+              </form>
+            ) : (
+              <button
+                type="button"
+                data-testid="task-title-edit"
+                aria-label={`Edit title ${title}`}
+                className="group flex w-full min-w-0 items-start gap-2 text-left"
+                onClick={() => {
+                  titleIgnoreBlur.current = false;
+                  setTitleDraft(task.title);
+                  setTitleError(null);
+                  setEditingTitle(true);
+                }}
+              >
+                <h2 className="min-w-0 flex-1 text-lg font-semibold leading-7 [overflow-wrap:anywhere]">
+                  <InlineMarkdown text={task.title} />
+                </h2>
+                <span className="mt-1 shrink-0 text-xs font-normal leading-4 text-muted-foreground group-hover:text-foreground">
+                  Edit
+                </span>
+              </button>
+            )}
+            {!editingTitle && titleError !== null && <ErrorText>{titleError}</ErrorText>}
+          </div>
           <Badge
             data-testid="task-state"
             className="mt-1"
@@ -1156,6 +1392,84 @@ export function TaskDetail({
           >
             {badge}
           </Badge>
+        </div>
+        <div data-testid="task-body-section" className="flex min-w-0 flex-col gap-1">
+          {editingBody ? (
+            <div className="flex min-w-0 flex-col gap-2">
+              <textarea
+                ref={bodyRef}
+                aria-label="Task body"
+                data-testid="task-body-input"
+                rows={4}
+                maxLength={TASK_BODY_MAX_LENGTH}
+                value={bodyDraft}
+                placeholder="Write markdown…"
+                onChange={(event) => {
+                  setBodyDraft(event.target.value);
+                  setBodyError(null);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setBodyDraft(task.body ?? "");
+                    setBodyError(null);
+                    setEditingBody(false);
+                  } else if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    void saveBody();
+                  }
+                }}
+                className="max-h-60 min-h-24 w-full min-w-0 resize-none overflow-y-auto rounded-md border border-border bg-background px-3 py-2 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-foreground"
+              />
+              <div className="flex flex-wrap items-center gap-2">
+                <Button size="sm" className="h-7 rounded-md px-3" onClick={() => void saveBody()}>
+                  Save body
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 rounded-md px-3"
+                  onClick={() => {
+                    setBodyDraft(task.body ?? "");
+                    setBodyError(null);
+                    setEditingBody(false);
+                  }}
+                >
+                  Cancel
+                </Button>
+                <span className="ml-auto text-xs leading-4 text-muted-foreground tabular-nums">
+                  {bodyDraft.length} / {TASK_BODY_MAX_LENGTH}
+                </span>
+              </div>
+              {bodyError !== null && <ErrorText>{bodyError}</ErrorText>}
+            </div>
+          ) : (
+            <>
+              {task.body !== undefined && task.body.length > 0 && (
+                <div data-testid="task-body" className="min-w-0 text-sm leading-5">
+                  <Markdown text={task.body} />
+                </div>
+              )}
+              <div className="flex">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  data-testid="task-body-edit"
+                  aria-label={task.body === undefined ? "Add body" : "Edit body"}
+                  className="h-7 rounded-md px-2 text-xs text-muted-foreground"
+                  onClick={() => {
+                    setBodyDraft(task.body ?? "");
+                    setBodyError(null);
+                    setEditingBody(true);
+                  }}
+                >
+                  {task.body === undefined ? "Add body" : "Edit body"}
+                </Button>
+              </div>
+            </>
+          )}
         </div>
         <TaskTimes task={task} />
         {reason !== null && (
@@ -1170,14 +1484,82 @@ export function TaskDetail({
         )}
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        {task.project !== undefined && (
-          <p data-testid="task-project-line" className="flex min-w-0 items-baseline gap-3">
-            <span className="text-xs leading-4 text-muted-foreground">Project</span>
-            <span className="min-w-0 text-sm leading-5 [overflow-wrap:anywhere]">
-              {task.project}
-            </span>
-          </p>
-        )}
+        <div className="flex min-w-0 flex-col gap-1" data-testid="task-project-line">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="shrink-0 text-xs leading-4 text-muted-foreground">Project</span>
+            <div ref={projectAnchor} className="min-w-0 flex-1">
+              {projectMatches.length > 0 && (
+                <ProjectSuggestions
+                  anchor={projectAnchor}
+                  items={projectMatches}
+                  active={activeProject}
+                  onHover={setProjectActive}
+                  onAccept={(item) => acceptProject(item.name)}
+                />
+              )}
+              <input
+                type="text"
+                aria-label="Task project"
+                data-testid="task-project-input"
+                value={projectDraft}
+                placeholder="No project"
+                aria-autocomplete="list"
+                aria-controls={projectMatches.length > 0 ? "project-suggestions" : undefined}
+                aria-activedescendant={
+                  projectMatches.length > 0 ? `project-suggestion-${activeProject}` : undefined
+                }
+                onChange={(event) => {
+                  setProjectDraft(event.target.value);
+                  setProjectError(null);
+                  setProjectActive(0);
+                  setProjectOpen(true);
+                }}
+                onFocus={() => setProjectActive(0)}
+                onBlur={() => {
+                  setProjectOpen(false);
+                  void saveProject();
+                }}
+                onKeyDown={(event) => {
+                  if (projectMatches.length > 0) {
+                    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                      event.preventDefault();
+                      const count = projectMatches.length;
+                      setProjectActive(
+                        (activeProject + (event.key === "ArrowDown" ? 1 : count - 1)) % count,
+                      );
+                      return;
+                    }
+                    if (event.key === "Enter" || event.key === "Tab") {
+                      event.preventDefault();
+                      const item = projectMatches[activeProject];
+                      if (item !== undefined) acceptProject(item.name);
+                      return;
+                    }
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setProjectOpen(false);
+                      return;
+                    }
+                  }
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    setProjectOpen(false);
+                    void saveProject();
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setProjectDraft(task.project ?? "");
+                    setProjectError(null);
+                    setProjectOpen(false);
+                  }
+                }}
+                className="h-8 w-full min-w-0 rounded-md border border-border bg-background px-2 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-foreground"
+              />
+            </div>
+          </div>
+          {projectError !== null && <ErrorText>{projectError}</ErrorText>}
+        </div>
         {!proposed && (
           <dl
             data-testid="task-stats"

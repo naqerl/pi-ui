@@ -4,7 +4,12 @@ import {
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
-import { compareTasks, liveBlockerIds, parseCompletion } from "../shared/tasks.js";
+import {
+  compareTasks,
+  liveBlockerIds,
+  parseCompletion,
+  TASK_BODY_MAX_LENGTH,
+} from "../shared/tasks.js";
 import { formatDateTime } from "../shared/time.js";
 import type { Task, TaskLedger } from "../shared/types.js";
 import type { MediaStore } from "./media.js";
@@ -29,9 +34,16 @@ const projectSchema = Type.Optional(
   }),
 );
 
+const bodySchema = Type.Optional(
+  Type.String({
+    description: `Free markdown description shown under the title, up to ${TASK_BODY_MAX_LENGTH} characters. Separate from a proposal's rationale.`,
+  }),
+);
+
 const blockSchema = Type.Object({
   id: Type.String({ description: "Task id that this blocker gates." }),
   title: Type.String({ description: "Title of the new blocker task." }),
+  body: bodySchema,
   project: Type.Optional(
     Type.String({
       description:
@@ -46,10 +58,22 @@ const proposeSchema = Type.Object({
     description:
       "Why this task is worth doing, in one or two sentences. At least 20 characters; a human uses it to decide.",
   }),
+  body: bodySchema,
   attachments: Type.Optional(
     Type.Array(Type.String({ description: "Media id to attach to the proposal." })),
   ),
   project: projectSchema,
+});
+
+const editSchema = Type.Object({
+  id: Type.String({ description: "Task id from task_list." }),
+  title: Type.Optional(Type.String({ description: "New title; it must not be empty." })),
+  body: bodySchema,
+  project: Type.Optional(
+    Type.Union([Type.String(), Type.Null()], {
+      description: "New project name, or null to clear it.",
+    }),
+  ),
 });
 
 const doneSchema = Type.Object({
@@ -161,6 +185,7 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
           task.blockedBy.length > 0 ? `blocked-by=${task.blockedBy.join(",")}` : "",
           task.project === undefined ? "" : `project=${task.project}`,
           task.title,
+          ...(task.body === undefined ? [] : [task.body]),
           ids.length > 0
             ? `${ids.length} attached image${ids.length === 1 ? "" : "s"} follow.`
             : "",
@@ -207,13 +232,32 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
       },
     }),
     defineTool({
+      name: "task_edit",
+      description:
+        "Edit an existing task's title, body or project. The body is free markdown shown under the title in the tasks page; pass an empty string to clear it. A title cannot be empty.",
+      parameters: editSchema,
+      async execute(args) {
+        const patch: { title?: string; body?: string; project?: string | null } = {};
+        if (args.title !== undefined) patch.title = args.title;
+        if (args.body !== undefined) patch.body = args.body;
+        if (args.project !== undefined) patch.project = args.project;
+        return changed(bridge, () => bridge.store.update(args.id, patch));
+      },
+    }),
+    defineTool({
       name: "propose_task",
       description:
         "Propose a task for human approval. A proposal is not a task: it does not appear in task_list and cannot be worked on until a human approves it.",
       parameters: proposeSchema,
       async execute(args) {
         return changed(bridge, () =>
-          bridge.store.propose(args.title, args.rationale, args.attachments ?? [], args.project),
+          bridge.store.propose(
+            args.title,
+            args.rationale,
+            args.attachments ?? [],
+            args.project,
+            args.body,
+          ),
         );
       },
     }),
@@ -223,7 +267,9 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
         "Create a new open task and make it a blocker for the given task. Existing blockers stay. A done blocker no longer blocks. This cannot create a task that does not block something.",
       parameters: blockSchema,
       async execute(args) {
-        return changed(bridge, () => bridge.store.addBlocker(args.id, args.title, args.project));
+        return changed(bridge, () =>
+          bridge.store.addBlocker(args.id, args.title, args.project, args.body),
+        );
       },
     }),
   ];

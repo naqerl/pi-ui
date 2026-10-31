@@ -258,6 +258,8 @@ export interface Task {
   proposedAt?: string | null;
   /** Why the proposer thinks this task is worth doing. Kept after approval. */
   rationale?: string;
+  /** Free markdown shown under the title. Not the proposer's rationale. */
+  body?: string;
   /** Media ids attached when the task was created. */
   attachments?: string[];
   /** Short project name such as `pi-ui`. Absent means no project. */

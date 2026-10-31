@@ -1,5 +1,8 @@
 import type { Task, TaskCompletion } from "./types.js";
 
+/** The longest task body the ledger and the API accept, in characters. */
+export const TASK_BODY_MAX_LENGTH = 20_000;
+
 export function descendantIds(tasks: readonly Task[], id: string): Set<string> {
   const children = new Map<string, string[]>();
   for (const task of tasks) {

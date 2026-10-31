@@ -36,6 +36,8 @@ export function createTask(
 export function updateTask(
   id: string,
   patch: {
+    title?: string;
+    body?: string;
     status?: TaskStatus;
     blockedBy?: string[];
     completion?: { evidence: string };

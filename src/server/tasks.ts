@@ -3,7 +3,12 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { OperatorNoticeRecord } from "../shared/notices.js";
 import { normalizeProject, PROJECT_MAX_LENGTH, sameProject } from "../shared/project.js";
-import { blockerClosesCycle, descendantIds, hasOpenDescendant } from "../shared/tasks.js";
+import {
+  blockerClosesCycle,
+  descendantIds,
+  hasOpenDescendant,
+  TASK_BODY_MAX_LENGTH,
+} from "../shared/tasks.js";
 import type { Task, TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
 import { clampPushText, MAX_BODY_CHARS, notify, type PushNotification } from "./push.js";
 
@@ -71,6 +76,29 @@ function withProject(task: Task, project: string | undefined): Task {
   return project === undefined ? rest : { ...rest, project };
 }
 
+function withBody(task: Task, body: string | undefined): Task {
+  const { body: _drop, ...rest } = task;
+  return body === undefined ? rest : { ...rest, body };
+}
+
+/** A title the ledger can store, or a 400 that names the field. */
+function normalizeTitle(value: unknown): string {
+  if (typeof value !== "string") throw new TaskError("title must be a string", 400);
+  const title = value.trim();
+  if (title.length === 0) throw new TaskError("title must not be empty", 400);
+  return title;
+}
+
+/** A trimmed body, or undefined for an empty one, with the length cap enforced. */
+function normalizeBody(value: unknown): string | undefined {
+  if (typeof value !== "string") throw new TaskError("body must be a string", 400);
+  const body = value.trim();
+  if (body.length > TASK_BODY_MAX_LENGTH) {
+    throw new TaskError(`body must be at most ${TASK_BODY_MAX_LENGTH} characters`, 400);
+  }
+  return body.length === 0 ? undefined : body;
+}
+
 function newId(taken: Set<string>): string {
   for (let length = 4; length <= 8; length++) {
     for (let attempt = 0; attempt < 8; attempt++) {
@@ -99,6 +127,7 @@ function isTask(value: unknown): value is Task {
       task.proposedAt === null ||
       typeof task.proposedAt === "string") &&
     (task.rationale === undefined || typeof task.rationale === "string") &&
+    (task.body === undefined || typeof task.body === "string") &&
     (task.project === undefined || typeof task.project === "string") &&
     (task.attachments === undefined ||
       (Array.isArray(task.attachments) &&
@@ -117,17 +146,21 @@ function sanitize(tasks: Task[]): Task[] {
   return tasks.map((task) => {
     const proposed = task.status === "proposed";
     const project = normalizeProject(task.project) ?? undefined;
-    return {
-      ...withProject(task, project),
-      parentId: proposed
-        ? null
-        : task.parentId !== null && ids.has(task.parentId)
-          ? task.parentId
-          : null,
-      blockedBy: proposed
-        ? []
-        : [...new Set(task.blockedBy.filter((id) => id !== task.id && ids.has(id)))],
-    };
+    const body = typeof task.body === "string" ? task.body.trim() : "";
+    return withBody(
+      {
+        ...withProject(task, project),
+        parentId: proposed
+          ? null
+          : task.parentId !== null && ids.has(task.parentId)
+            ? task.parentId
+            : null,
+        blockedBy: proposed
+          ? []
+          : [...new Set(task.blockedBy.filter((id) => id !== task.id && ids.has(id)))],
+      },
+      body.length > 0 && body.length <= TASK_BODY_MAX_LENGTH ? body : undefined,
+    );
   });
 }
 
@@ -234,9 +267,16 @@ export class TaskStore {
     parentId: string | null,
     attachments: readonly string[] = [],
     project?: string | null,
+    body?: string | null,
   ): Promise<TaskLedger> {
     const text = title.trim();
     if (text.length === 0) return Promise.reject(new TaskError("Task title is required", 400));
+    let content: string | undefined;
+    try {
+      content = body === undefined || body === null ? undefined : normalizeBody(body);
+    } catch (error) {
+      return Promise.reject(error);
+    }
     return this.commit((tasks) => {
       if (tasks.length >= TASK_LIMIT) throw new TaskError("Task list is full", 400);
       if (parentId !== null) {
@@ -260,6 +300,7 @@ export class TaskStore {
         completion: null,
         ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
         ...(name === undefined ? {} : { project: name }),
+        ...(content === undefined ? {} : { body: content }),
       };
       return [...tasks, task];
     });
@@ -271,10 +312,17 @@ export class TaskStore {
     rationale: string,
     attachments: readonly string[] = [],
     project?: string | null,
+    body?: string | null,
   ): Promise<TaskLedger> {
     const text = title.trim();
     if (text.length === 0) return Promise.reject(new TaskError("Task title is required", 400));
     const reason = typeof rationale === "string" ? rationale.trim() : "";
+    let content: string | undefined;
+    try {
+      content = body === undefined || body === null ? undefined : normalizeBody(body);
+    } catch (error) {
+      return Promise.reject(error);
+    }
     if (reason.length < 20) {
       return Promise.reject(
         new TaskError(
@@ -300,15 +348,27 @@ export class TaskStore {
         completion: null,
         ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
         ...(name === undefined ? {} : { project: name }),
+        ...(content === undefined ? {} : { body: content }),
       };
       return [...tasks, task];
     });
   }
 
   /** Create a new open task and append it to `id`'s blockers. */
-  addBlocker(id: string, title: string, project?: string | null): Promise<TaskLedger> {
+  addBlocker(
+    id: string,
+    title: string,
+    project?: string | null,
+    body?: string | null,
+  ): Promise<TaskLedger> {
     const text = title.trim();
     if (text.length === 0) return Promise.reject(new TaskError("Task title is required", 400));
+    let content: string | undefined;
+    try {
+      content = body === undefined || body === null ? undefined : normalizeBody(body);
+    } catch (error) {
+      return Promise.reject(error);
+    }
     return this.commit((tasks) => {
       const index = tasks.findIndex((task) => task.id === id);
       const current = tasks[index];
@@ -325,6 +385,7 @@ export class TaskStore {
         completedAt: null,
         completion: null,
         ...(name === undefined ? {} : { project: name }),
+        ...(content === undefined ? {} : { body: content }),
       };
       const withBlocker = [...tasks, blocker];
       const next = {
@@ -340,6 +401,10 @@ export class TaskStore {
   update(
     id: string,
     patch: {
+      /** A new title; trimmed and refused when empty. */
+      title?: string;
+      /** Free markdown, or an empty string to clear it. */
+      body?: string;
       status?: TaskStatus;
       blockedBy?: string[];
       completion?: TaskCompletion;
@@ -348,6 +413,8 @@ export class TaskStore {
     },
   ): Promise<TaskLedger> {
     if (
+      patch.title === undefined &&
+      patch.body === undefined &&
       patch.status === undefined &&
       patch.blockedBy === undefined &&
       patch.project === undefined
@@ -359,6 +426,12 @@ export class TaskStore {
       const current = tasks[index];
       if (current === undefined) throw new TaskError("Unknown task", 404);
       let next = current;
+      if (patch.title !== undefined) {
+        next = { ...next, title: normalizeTitle(patch.title) };
+      }
+      if (patch.body !== undefined) {
+        next = withBody(next, normalizeBody(patch.body));
+      }
       if (patch.status !== undefined) {
         if (patch.status !== "open" && patch.status !== "done" && patch.status !== "proposed") {
           throw new TaskError('Status must be "open", "done" or "proposed"', 400);

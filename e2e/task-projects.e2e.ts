@@ -95,7 +95,7 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
   await removeTasks(browser, ["Diff the maps", "Loose end", "Fix the login", "Write the docs"]);
 });
 
-test("subtasks take their parent's project and the detail shows it as text", async ({
+test("subtasks take their parent's project and the detail edits it in place", async ({
   app,
   browser,
   screen,
@@ -124,8 +124,8 @@ test("subtasks take their parent's project and the detail shows it as text", asy
   await expect(screen.getByText("Water the plants", { exact: true })).toBeVisible();
 
   await screen.getByRole("button", { name: "Open Diff the tram routes" }).click();
-  const line = screen.getByTestId("task-project-line");
-  await expect(line).toContainText("citydiff");
+  await expect(screen.getByTestId("task-project-line")).toBeVisible();
+  await expect(screen.getByRole("textbox", "Task project")).toHaveValue("citydiff");
   await expect(screen.getByTestId("task-project")).toHaveCount(0);
 
   await screen.getByRole("button", { name: "Subtask" }).click();
@@ -135,10 +135,15 @@ test("subtasks take their parent's project and the detail shows it as text", asy
     screen.getByTestId("task-project-citydiff").getByText("Map the stops", { exact: true }),
   ).toBeVisible();
   await screen.getByRole("button", { name: "Open Map the stops" }).click();
-  await expect(screen.getByTestId("task-project-line")).toContainText("citydiff");
+  await expect(screen.getByRole("textbox", "Task project")).toHaveValue("citydiff");
 
   await screen.getByRole("button", { name: "Open Water the plants" }).click();
-  await expect(screen.getByTestId("task-project-line")).toHaveCount(0);
+  await expect(screen.getByTestId("task-project-line")).toBeVisible();
+  await expect(screen.getByRole("textbox", "Task project")).toHaveValue("");
+  await expect(screen.getByRole("textbox", "Task project")).toHaveAttribute(
+    "placeholder",
+    "No project",
+  );
 
   await removeTasks(browser, [
     "Map the stops",
