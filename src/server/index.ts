@@ -60,7 +60,12 @@ if (testModeDataDirError !== null) {
 }
 configurePush(dataDir);
 const themeFile = resolve(dataDir, "theme.json");
-const taskStore = new TaskStore(resolve(dataDir, "tasks.json"));
+const operatorNotices: {
+  current?: (record: OperatorNoticeRecord) => void | Promise<void>;
+} = {};
+const taskStore = new TaskStore(resolve(dataDir, "tasks.json"), {
+  notice: (record) => operatorNotices.current?.(record),
+});
 const media = new MediaStore(resolve(dataDir, "media"));
 const diagrams = new DiagramStore(resolve(dataDir, "diagrams"));
 await taskStore.load();
@@ -77,9 +82,6 @@ const taskBridge: TaskBridge = {
   media,
   publish() {},
 };
-const operatorNotices: {
-  current?: (record: OperatorNoticeRecord) => void | Promise<void>;
-} = {};
 const operatorBridge: OperatorBridge = {
   notify: (notification) => notify(notification),
   recordNotice: (record) => operatorNotices.current?.(record),
