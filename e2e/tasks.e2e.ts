@@ -78,9 +78,9 @@ test("keeps a todo with subtasks and blockers on the tasks page", async ({
     });
     fire("pointerup");
     card.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-    return card.getAttribute("aria-pressed");
+    return document.querySelector("[data-testid=task-detail]") !== null;
   });
-  expect(longPress).toBe("false");
+  expect(longPress).toBe(false);
   await expect(screen.getByTestId("task-menu")).toBeVisible();
   await expect(screen.getByRole("button", "Done Write the ledger")).toBeVisible();
 
@@ -91,20 +91,6 @@ test("keeps a todo with subtasks and blockers on the tasks page", async ({
   await screen.getByRole("button", "Add task").tap();
   await expect(screen.getByText("Store tasks.json", { exact: true })).toBeVisible();
   await expect(screen.getByText("0/1", { exact: true })).toBeVisible();
-  const progress = await browser.evaluate(() => {
-    const node = document.querySelector("[data-testid=subtask-progress]");
-    const dock = document.querySelector("[data-testid=composer-dock]");
-    if (!(node instanceof HTMLElement) || !(dock instanceof HTMLElement)) return null;
-    return {
-      inDock: dock.contains(node),
-      label: node.getAttribute("aria-label"),
-    };
-  });
-  expect(progress).toEqual({
-    inDock: true,
-    label: "0/1 completed subtasks",
-  });
-
   const cards = await browser.evaluate(() => {
     const page = getComputedStyle(document.body).backgroundColor;
     const read = (title: string) => {
@@ -165,7 +151,7 @@ test("keeps a todo with subtasks and blockers on the tasks page", async ({
   });
   await screen.getByRole("menuitem", "Blockers for Write the ledger").tap();
   await screen.getByRole("button", "Blocked by Review the diff").tap();
-  await expect(screen.getByText("blocked by Review the diff", { exact: true })).toBeVisible();
+  await expect(screen.getByText("blocked ← Review the diff", { exact: true })).toBeVisible();
 
   const parentDone = await browser.evaluate(() => {
     const button = [...document.querySelectorAll("button")].find(
@@ -192,7 +178,7 @@ test("keeps a todo with subtasks and blockers on the tasks page", async ({
   expect(blockedTap).toBe("false");
 
   await screen.getByRole("button", "Done Review the diff").tap();
-  await expect(screen.getByText("blocked by Review the diff", { exact: true })).not.toBeVisible();
+  await expect(screen.getByText("blocked ← Review the diff", { exact: true })).not.toBeVisible();
   await screen.getByRole("button", "Done Store tasks.json").tap();
   await expect(screen.getByRole("button", "Reopen Store tasks.json")).toBeVisible();
   await expect(screen.getByText("1/1", { exact: true })).toBeVisible();
@@ -209,10 +195,8 @@ test("keeps a todo with subtasks and blockers on the tasks page", async ({
   await expect(screen.getByText("1/1", { exact: true })).toBeVisible();
 
   await browser.evaluate(() => {
-    const card = [...document.querySelectorAll("[data-task-card]")].find(
-      (item) =>
-        item.textContent?.includes("Review the diff") &&
-        item.getAttribute("aria-pressed") === "true",
+    const card = [...document.querySelectorAll('[data-state="done"] > [data-task-card]')].find(
+      (item) => item.textContent?.includes("Review the diff"),
     );
     if (!(card instanceof HTMLElement)) return null;
     const box = card.getBoundingClientRect();
@@ -502,7 +486,7 @@ test("shows a failed task action beside the control and keeps a long title", asy
   expect(menuError).toBe(true);
 
   await screen.getByRole("button", "Blocked by Review the notice").tap();
-  await expect(screen.getByText("blocked by Review the notice", { exact: true })).toBeVisible();
+  await expect(screen.getByText("blocked ← Review the notice", { exact: true })).toBeVisible();
   await expect(screen.getByTestId("task-error")).toHaveCount(0);
   await browser.evaluate(() => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));

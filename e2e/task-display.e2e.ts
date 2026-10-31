@@ -123,7 +123,7 @@ test("renders inline markdown in task titles", async ({ app, browser, screen }) 
     anchors: 0,
     link: true,
     raw: false,
-    blockedBy: expect.stringContaining("blocked by Ship bold and soft npm run build old see docs"),
+    blockedBy: expect.stringContaining("blocked ← Ship bold and soft npm run build old see docs"),
     emBlocked: "the build",
     overflow: false,
   });

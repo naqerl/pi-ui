@@ -159,6 +159,9 @@ test("attaches an image to a new task", async ({ app, browser, screen }) => {
   await expect(
     screen.getByText("Fix the layout in this screenshot", { exact: true }),
   ).toBeVisible();
+  // Rows stay slim; the attachment shows in the task's detail.
+  await screen.getByRole("button", "Open Fix the layout in this screenshot").tap();
+  await expect(screen.getByTestId("task-attachments")).toBeVisible();
 
   const task = await browser.evaluate(async () => {
     const ledger = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
