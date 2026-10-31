@@ -2,6 +2,10 @@
 
 Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
 
+## 1.6.26 - 2026-10-31
+
+- A message sent while a run is active now shows up immediately as a queued bubble with its own cancel control, instead of appearing out of nowhere when the turn ends: the pending list comes from the server queue, so it also survives a reload, and a placed message keeps its id instead of being replaced. A page left open across a server restart no longer goes silent — `onopen` resets the stream revisions and a snapshot with a lower counter is adopted, so deltas are applied again while out-of-order ones are still dropped.
+
 ## 1.6.25 - 2026-10-31
 
 - The idle nudge now ignores work that cannot legally be picked: a task whose `blockedBy` names an open task no longer counts, and the notice names the blockers instead of demanding a pick.
