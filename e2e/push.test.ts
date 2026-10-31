@@ -144,6 +144,90 @@ test("another delivery failure is logged once, swallowed, and keeps the subscrip
   await service.close();
 });
 
+function withTestMode(
+  t: { after: (fn: () => void) => void },
+  overrides: Record<string, string> = {},
+): void {
+  const keys = ["NODE_ENV", "PI_E2E_ALLOW_REAL_PUSH"];
+  const previous = new Map(keys.map((key) => [key, process.env[key]]));
+  process.env.NODE_ENV = "test";
+  delete process.env.PI_E2E_ALLOW_REAL_PUSH;
+  for (const [key, value] of Object.entries(overrides)) process.env[key] = value;
+  t.after(() => {
+    for (const key of keys) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+}
+
+test("a test-mode push service refuses a real endpoint", async (t) => {
+  withTestMode(t);
+  const dir = await tempDir(t);
+  const lines: string[] = [];
+  const sent: string[] = [];
+  const service = createPushService({
+    dataDir: dir,
+    throttleMs: 0,
+    log: (line) => lines.push(line),
+    send: async (_target, payload) => {
+      sent.push(payload);
+      return { statusCode: 201 };
+    },
+  });
+  await service.subscribe(subscription("https://fcm.googleapis.com/fcm/send/abc"));
+
+  await assert.rejects(
+    () => service.notify({ title: "Tidy the ledger", body: "never leaves the process" }),
+    /fcm\.googleapis\.com/,
+  );
+  assert.deepEqual(sent, []);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0] ?? "", /fcm\.googleapis\.com/);
+  await service.close();
+});
+
+test("a test-mode push service still delivers to an allowlisted host", async (t) => {
+  withTestMode(t);
+  const dir = await tempDir(t);
+  const sent: string[] = [];
+  const service = createPushService({
+    dataDir: dir,
+    throttleMs: 0,
+    send: async (_target, payload) => {
+      sent.push(payload);
+      return { statusCode: 201 };
+    },
+  });
+  await service.subscribe(subscription("https://push.example/one"));
+
+  const delivered = await service.notify({ title: "Tidy the ledger", body: "fixture only" });
+  assert.equal(delivered, 1);
+  assert.equal(sent.length, 1);
+  await service.close();
+});
+
+test("PI_E2E_ALLOW_REAL_PUSH=1 lifts the guard", async (t) => {
+  withTestMode(t, { PI_E2E_ALLOW_REAL_PUSH: "1" });
+  const dir = await tempDir(t);
+  const sent: string[] = [];
+  const service = createPushService({
+    dataDir: dir,
+    throttleMs: 0,
+    send: async (_target, payload) => {
+      sent.push(payload);
+      return { statusCode: 201 };
+    },
+  });
+  await service.subscribe(subscription("https://fcm.googleapis.com/fcm/send/abc"));
+
+  const delivered = await service.notify({ title: "Tidy the ledger", body: "attempted" });
+  assert.equal(delivered, 1);
+  assert.equal(sent.length, 1);
+  await service.close();
+});
+
 test("creating a proposal sends one push with its title, id and tasks url", async (t) => {
   const dir = await tempDir(t);
   const sent: string[] = [];
