@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import { acceptMention, mentionAt, parseProjectToken, projectsOf } from "../shared/project";
+import { isQueuedNotice } from "../shared/queue";
 import { formatDateTime, formatTime } from "../shared/time";
 import type {
   ActivityItem,
@@ -155,7 +156,44 @@ function MessageParts({ parts }: { parts: ChatMessage["parts"] }) {
   );
 }
 
-function MessageBubble({
+/** A queued machine notice, shown as the transparent version of its future notice chip. */
+function QueuedNoticeChip({
+  message,
+  notice,
+  onCancelQueued,
+}: {
+  message: ChatMessage;
+  notice: { label: string };
+  onCancelQueued?: (id: string) => void;
+}) {
+  const queueId = message.queueId;
+  return (
+    <div
+      data-message-id={message.id}
+      data-role={message.role}
+      data-pending-queue="true"
+      data-testid="queued-notice-chip"
+      className="flex justify-center px-2 py-0.5 opacity-60"
+    >
+      <div className="flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-md border border-border/60 px-2 py-1 font-mono text-[11px] leading-5 text-muted-foreground">
+        <span className="min-w-0 truncate">{notice.label} · queued</span>
+        {queueId !== undefined && onCancelQueued !== undefined && (
+          <button
+            type="button"
+            title="Remove this queued message"
+            aria-label="cancel"
+            className="shrink-0 font-mono text-[11px] leading-none text-foreground hover:text-destructive"
+            onClick={() => onCancelQueued(queueId)}
+          >
+            ×
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function MessageBubble({
   message,
   onSteer,
   onCancelQueued,
@@ -164,7 +202,16 @@ function MessageBubble({
   onSteer?: (text: string) => void;
   onCancelQueued?: (id: string) => void;
 }) {
-  if (message.notice !== undefined) {
+  if (message.pendingQueue === true && isQueuedNotice(message.notice)) {
+    return (
+      <QueuedNoticeChip
+        message={message}
+        notice={message.notice}
+        {...(onCancelQueued === undefined ? {} : { onCancelQueued })}
+      />
+    );
+  }
+  if (message.notice !== undefined && !isQueuedNotice(message.notice)) {
     return <NoticeLine message={message} notice={message.notice} onSteer={onSteer} />;
   }
   if (message.role === "system") {

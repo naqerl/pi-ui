@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DashboardState } from "../shared/dashboard";
-import { pendingQueuedMessage } from "../shared/queue";
+import { isQueuedNotice, pendingQueuedMessage } from "../shared/queue";
 import {
   acceptDeltaRevision,
   adoptSnapshotRevision,
@@ -81,7 +81,7 @@ function separateJobResults(messages: ChatMessage[]): {
   const activity: ActivityItem[] = [];
   for (const message of messages) {
     const notice = message.notice;
-    if (notice?.kind === "job") {
+    if (notice !== undefined && !isQueuedNotice(notice) && notice.kind === "job") {
       activity.push({
         kind: "job",
         id: `j-${message.id}`,

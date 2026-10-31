@@ -102,7 +102,7 @@ interface SubmitOptions {
   /** Media ids sent as images after the text. */
   attachments?: string[];
   /** Place an input as this application entry instead of a normal user entry. */
-  entry?: InputEntry;
+  entry?: InputEntry & { label?: string };
   /** Stable key to reuse when restoring a queued message after a restart. */
   queueKey?: string;
 }
@@ -152,6 +152,26 @@ export function mcpEventText(envelope: McpEventEnvelope, items: readonly unknown
 function positiveEnv(name: string): number | undefined {
   const value = Number(process.env[name]);
   return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+/** The queued application entry, carrying a stable key so its chip and placed notice share an id. */
+function entryWithQueueKey(entry: InputEntry, key: string | undefined): InputEntry {
+  if (key === undefined) return entry;
+  const data = isRecord(entry.data) ? entry.data : {};
+  return { kind: entry.kind, data: { ...data, queueKey: key } as InputEntry["data"] };
+}
+
+/** The short chip text for a queued application entry. */
+function entryNoticeLabel(kind: string, label?: string): string {
+  if (label !== undefined && label.trim().length > 0) return label.trim();
+  if (kind === MCP_NOTICE_ENTRY_KIND) return "MCP events";
+  if (kind === JOB_NOTICE_ENTRY_KIND) return "Background job";
+  if (kind === IDLE_NUDGE_ENTRY_KIND) return "Idle nudge";
+  const readable = kind
+    .replace(/^ui[.-]/, "")
+    .replace(/[-_.]+/g, " ")
+    .trim();
+  return readable.length === 0 ? "Notice" : readable.charAt(0).toUpperCase() + readable.slice(1);
 }
 
 export interface SubmittedMessage {
@@ -322,6 +342,7 @@ export class ChatService {
       await this.submit(text, "queue", {
         entry: {
           kind: IDLE_NUDGE_ENTRY_KIND,
+          label: "Idle nudge",
           data: { text, taskIds: [...taskIds], createdAt },
         },
       });
@@ -655,6 +676,18 @@ export class ChatService {
       !steer && !startsRun && options.entry === undefined
         ? (options.queueKey ?? randomUUID())
         : undefined;
+    const entryKey =
+      !steer && !startsRun && options.entry !== undefined
+        ? (options.queueKey ?? randomUUID())
+        : undefined;
+    const pendingKey = queueKey ?? entryKey;
+    const notice =
+      options.entry === undefined
+        ? undefined
+        : {
+            kind: options.entry.kind,
+            label: entryNoticeLabel(options.entry.kind, options.entry.label),
+          };
     if (startsRun) {
       const marker: RunMarker = {
         version: 1,
@@ -700,7 +733,7 @@ export class ChatService {
                 }
               : options.entry === undefined
                 ? {}
-                : { entry: options.entry }),
+                : { entry: entryWithQueueKey(options.entry, entryKey) }),
         },
         SESSION_CONTEXT,
       );
@@ -720,7 +753,8 @@ export class ChatService {
           id,
           text,
           createdAt: new Date().toISOString(),
-          ...(queueKey === undefined ? {} : { key: queueKey }),
+          ...(pendingKey === undefined ? {} : { key: pendingKey }),
+          ...(notice === undefined ? {} : { notice }),
           ...(attachments.length > 0 ? { attachments } : {}),
         },
         submission,
@@ -734,6 +768,7 @@ export class ChatService {
         text,
         createdAt: new Date().toISOString(),
         ...(steerKey === undefined ? {} : { key: steerKey }),
+        ...(notice === undefined ? {} : { notice }),
         ...(attachments.length > 0 ? { attachments } : {}),
       });
     }
@@ -756,7 +791,8 @@ export class ChatService {
           id,
           text,
           createdAt: new Date().toISOString(),
-          ...(queueKey === undefined ? {} : { key: queueKey }),
+          ...(pendingKey === undefined ? {} : { key: pendingKey }),
+          ...(notice === undefined ? {} : { notice }),
           ...(attachments.length > 0 ? { attachments } : {}),
         },
         submission,
@@ -1121,6 +1157,7 @@ export class ChatService {
         await this.submit(latest, "queue", {
           entry: {
             kind: MCP_NOTICE_ENTRY_KIND,
+            label: "MCP events",
             data: {
               noticeId,
               key: notice.key,
@@ -1151,6 +1188,7 @@ export class ChatService {
     await this.submit(text, "queue", {
       entry: {
         kind: JOB_NOTICE_ENTRY_KIND,
+        label: "Background job",
         data: { text, createdAt: new Date().toISOString() },
       },
     });
@@ -1307,7 +1345,11 @@ export class ChatService {
         this.currentText = "";
         this.currentThinking = "";
         const revision = this.bumpDraft();
-        if (event.entry.kind === STEER_ENTRY_KIND || event.entry.kind === QUEUE_ENTRY_KIND) {
+        if (
+          event.entry.kind === STEER_ENTRY_KIND ||
+          event.entry.kind === QUEUE_ENTRY_KIND ||
+          event.entry.kind === MCP_NOTICE_ENTRY_KIND
+        ) {
           // Send the placed entry before the queue update retires its pending bubble, so the
           // same message id hands over without a frame where neither copy is on screen.
           const placedMessage = buildTranscript([event.entry], this.mediaRef, this.diagramRevision)

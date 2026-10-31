@@ -663,7 +663,7 @@ export function buildTranscript(
       if (notice === null) continue;
       const at = group.latest.data.at;
       messages.push({
-        id: `m-${entry.id}`,
+        id: entryMessageId(entry),
         role: "user",
         text,
         timestamp:
@@ -680,7 +680,7 @@ export function buildTranscript(
       const notice = parseNotice(entry.data.text);
       if (notice === null || notice.kind !== "idle") continue;
       messages.push({
-        id: `m-${entry.id}`,
+        id: entryMessageId(entry),
         role: "system",
         text: entry.data.text,
         timestamp: entryTimestamp(entry.data),
@@ -981,7 +981,7 @@ export async function appendMcpNotice(
   );
   if (first === undefined) return undefined;
   return buildTranscript(context.entries).messages.find(
-    (message) => message.id === `m-${first.id}`,
+    (message) => message.id === entryMessageId(first),
   );
 }
 
@@ -1152,6 +1152,13 @@ function userImages(content: unknown, media: MediaResolver): MediaRef[] {
     if (ref !== undefined) refs.push(ref);
   }
   return refs;
+}
+
+/** The id a machine notice's chat message keeps across its queued and placed forms. */
+function entryMessageId(entry: EntryRecord): string {
+  const queueKey =
+    isRecord(entry.data) && typeof entry.data.queueKey === "string" ? entry.data.queueKey : null;
+  return queueKey === null ? `m-${entry.id}` : `m-${queueKey}`;
 }
 
 function mcpNoticeGroupId(entry: EntryRecord): string | null {

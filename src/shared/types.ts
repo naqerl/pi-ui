@@ -24,6 +24,13 @@ export interface DiagramRef {
 /** A non-text part of a message. It never carries the source, only where to read it. */
 export type MessagePart = { kind: "diagram"; diagram: DiagramRef };
 
+/** The short chip a queued machine notice shows before its transcript entry exists. */
+export interface QueuedNotice {
+  kind: string;
+  /** Short chip text, such as `MCP events`; never the full notice body. */
+  label: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
@@ -48,8 +55,11 @@ export interface ChatMessage {
   steerKey?: string;
   /** Why a pending steer never reached the transcript. */
   steerError?: string;
-  /** Set when the message is an MCP event; the chat shows a one-line notice. */
-  notice?: ChatNotice;
+  /**
+   * Set when the message is an MCP event; the chat shows a one-line notice. A queued machine
+   * notice carries its short chip marker here until the transcript entry replaces it.
+   */
+  notice?: ChatNotice | QueuedNotice;
   /** Set on the pi-ui version-update note, so the chat can paint it with the theme accent. */
   version?: { from: string | null; to: string };
   /** True when a server restart cut off this assistant response. */
@@ -73,6 +83,8 @@ export interface QueuedMessage {
   attachments?: string[];
   /** Stable key the transcript entry carries once this steer is placed. */
   key?: string;
+  /** A machine notice queued as a chip instead of a user bubble. */
+  notice?: QueuedNotice;
 }
 
 export interface ToolActivity {
