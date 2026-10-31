@@ -142,6 +142,8 @@ self.addEventListener("push", (event) => {
         body,
         data: { ...extra, url },
         tag,
+        // A replacement with the same tag is silent unless it re-notifies.
+        ...(tag ? { renotify: true } : {}),
         icon: "/icons/icon-192.png",
         badge: "/icons/icon-192.png",
       });

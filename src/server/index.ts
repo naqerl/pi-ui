@@ -901,6 +901,7 @@ async function shutdown(): Promise<void> {
   dashboard.dispose();
   try {
     await dashboard.flush();
+    await taskStore.close();
     await chat.close();
     await boot.mcp.close();
     await boot.harness.close(SESSION_CONTEXT);
