@@ -11,6 +11,7 @@ import {
   type McpSubscriptionRecord,
   McpSubscriptionRegistry,
 } from "../src/server/mcp-subscriptions.js";
+import { McpSubscriptionWatchdog } from "../src/server/mcp-subscriptions-watchdog.js";
 
 async function tempDir(t: { after: (fn: () => Promise<void>) => void }): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "pi-mcp-subs-"));
@@ -32,9 +33,14 @@ function subscription(overrides: Partial<McpSubscriptionRecord> = {}): McpSubscr
   };
 }
 
-function eventItem(cursor: string | null, payloadCursor?: string | null, eventId = cursor ?? "e") {
+function eventItem(
+  cursor: string | null,
+  payloadCursor?: string | null,
+  eventId = cursor ?? "e",
+  subscriptionId = "s1",
+) {
   return {
-    subscription_id: "s1",
+    subscription_id: subscriptionId,
     server: "hub",
     event: {
       eventId,
@@ -308,7 +314,7 @@ test("marks an id delivered before a restart as replayed and still notifies a ne
     subscription({
       stableId,
       id: "old-adapter-id",
-      cursor: "hub:1",
+      cursor: "hub:2",
       status: "active",
       deliveredEventIds: ["event-1"],
     }),
@@ -318,14 +324,14 @@ test("marks an id delivered before a restart as replayed and still notifies a ne
   feed.ingest({
     customType: "mcp-events-tool",
     details: {
-      args: { action: "subscribe", server: "hub", name: "hub", cursor: "hub:1" },
+      args: { action: "subscribe", server: "hub", name: "hub", cursor: "hub:2" },
       result: {
         subscription: {
           id: "s2",
           server: "hub",
           name: "hub",
           status: "active",
-          cursor: "hub:1",
+          cursor: "hub:2",
           stableId,
         },
       },
@@ -336,7 +342,7 @@ test("marks an id delivered before a restart as replayed and still notifies a ne
   assert.equal(
     feed.ingest({
       customType: "mcp-events",
-      details: { events: [eventItem("hub:1", null, "event-1")] },
+      details: { events: [eventItem("hub:1", null, "event-1", "s2")] },
     }),
     false,
   );
@@ -347,7 +353,7 @@ test("marks an id delivered before a restart as replayed and still notifies a ne
   assert.equal(
     feed.ingest({
       customType: "mcp-events",
-      details: { events: [eventItem("hub:2", null, "event-2")] },
+      details: { events: [eventItem("hub:3", null, "event-2", "s2")] },
     }),
     true,
   );
@@ -412,7 +418,7 @@ test("persists delivered ids so the next process can recognise the replay", asyn
   assert.equal(
     nextFeed.ingest({
       customType: "mcp-events",
-      details: { events: [eventItem("hub:7", null, "event-7")] },
+      details: { events: [eventItem("hub:6", null, "event-7", "second")] },
     }),
     false,
   );
@@ -659,4 +665,437 @@ test("keeps an entry whose server was unavailable at boot", async (t) => {
   assert.equal(kept?.server, "offline");
   assert.equal(kept?.cursor, "hub:12");
   assert.equal(kept?.status, "reconnecting");
+});
+
+test("a subscription whose cursor is behind the hub is reopened exactly once", async (t) => {
+  const dir = await tempDir(t);
+  const stableId = deriveStableId("hub", "hub", {});
+  const registry = new McpSubscriptionRegistry(dir);
+  await registry.record(
+    subscription({ stableId, id: "dead-stream", cursor: "hub:10", status: "active" }),
+  );
+  await registry.flush();
+
+  let now = Date.now();
+  let hubCursor = "hub:20";
+  const reopened: Array<{ id: string; cursor: string }> = [];
+  const lines: string[] = [];
+  const watchdog = new McpSubscriptionWatchdog({
+    registry,
+    now: () => now,
+    intervalMs: 60_000,
+    log: (line) => lines.push(line),
+    poll: async () => ({ events: [{ event: { cursor: hubCursor } }] }),
+    reopen: async (record, cursor) => {
+      reopened.push({ id: record.id ?? "", cursor });
+      return { id: "live-stream", cursor, status: "active" };
+    },
+  });
+
+  try {
+    await watchdog.tick();
+    assert.deepEqual(reopened, [{ id: "dead-stream", cursor: "hub:20" }]);
+    assert.deepEqual(lines, ["mcp subscription hub/hub reopened: stored hub:10, hub hub:20"]);
+    const [saved] = await registry.read();
+    assert.equal(saved?.id, "live-stream");
+    assert.equal(saved?.cursor, "hub:20");
+    assert.equal(saved?.reconnects, 1);
+    assert.match(saved?.lastReconnectReason ?? "", /stored hub:10, hub hub:20/);
+
+    // Still ahead within the same minute: no second re-open.
+    hubCursor = "hub:30";
+    now += 30_000;
+    await watchdog.tick();
+    assert.equal(reopened.length, 1);
+
+    // A new tick after the minute may act again, but only because the cursor
+    // is still demonstrably ahead of the durable one.
+    now += 30_000;
+    await watchdog.tick();
+    assert.deepEqual(reopened.at(-1), { id: "live-stream", cursor: "hub:30" });
+    assert.equal(reopened.length, 2);
+    const [advanced] = await registry.read();
+    assert.equal(advanced?.cursor, "hub:30");
+    assert.equal(advanced?.reconnects, 2);
+  } finally {
+    await watchdog.close();
+    await registry.close();
+  }
+});
+
+test("a healthy subscription is left alone", async (t) => {
+  const dir = await tempDir(t);
+  const stableId = deriveStableId("hub", "hub", {});
+  const registry = new McpSubscriptionRegistry(dir);
+  await registry.record(
+    subscription({ stableId, id: "healthy", cursor: "hub:20", status: "active" }),
+  );
+  await registry.flush();
+
+  let polls = 0;
+  const reopened: string[] = [];
+  const watchdog = new McpSubscriptionWatchdog({
+    registry,
+    intervalMs: 60_000,
+    poll: async () => {
+      polls += 1;
+      return { events: [{ event: { cursor: "hub:20" } }] };
+    },
+    reopen: async (record) => {
+      reopened.push(record.id ?? "");
+      return null;
+    },
+  });
+
+  try {
+    await watchdog.tick();
+    assert.equal(polls, 1);
+    assert.deepEqual(reopened, []);
+    const [saved] = await registry.read();
+    assert.equal(saved?.id, "healthy");
+    assert.equal(saved?.cursor, "hub:20");
+    assert.equal(saved?.reconnects, undefined);
+  } finally {
+    await watchdog.close();
+    await registry.close();
+  }
+});
+
+test("a live frame clears a restored replay mark and produces one notice", async (t) => {
+  const dir = await tempDir(t);
+  const stableId = deriveStableId("hub", "hub", {});
+  const registry = new McpSubscriptionRegistry(dir);
+  await registry.record(
+    subscription({
+      stableId,
+      id: "old-adapter-id",
+      cursor: "hub:4",
+      status: "active",
+      deliveredEventIds: ["event-5"],
+    }),
+  );
+  const feed = new McpEventFeed(registry);
+  await feed.hydrate();
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe", server: "hub", name: "hub", cursor: "hub:4", restored: true },
+      result: {
+        subscription: {
+          id: "s2",
+          server: "hub",
+          name: "hub",
+          status: "active",
+          cursor: "hub:4",
+          stableId,
+        },
+      },
+    },
+  });
+
+  // A restored replay may still be marked historical at an older cursor.
+  feed.ingest({
+    customType: "mcp-events",
+    details: { events: [eventItem("hub:3", null, "event-5", "s2")] },
+  });
+  assert.equal(feed.state.events.find((event) => event.id === "event-5")?.replayed, true);
+
+  // The same id arriving at the restored cursor is live even though the
+  // cursor does not advance: it clears the mark and produces exactly one
+  // notice, then its duplicate is dropped.
+  assert.equal(
+    feed.ingest({
+      customType: "mcp-events",
+      details: { events: [eventItem("hub:4", null, "event-5", "s2")] },
+    }),
+    true,
+  );
+  assert.equal(feed.state.notice, "new event from hub");
+  assert.equal(feed.state.events.find((event) => event.id === "event-5")?.replayed, undefined);
+  assert.equal(
+    feed.ingest({
+      customType: "mcp-events",
+      details: { events: [eventItem("hub:4", null, "event-5", "s2")] },
+    }),
+    false,
+  );
+  assert.equal(feed.state.events.filter((event) => event.id === "event-5").length, 1);
+  await registry.close();
+});
+
+test("a live historical id with a null cursor is not suppressed", async (t) => {
+  const dir = await tempDir(t);
+  const stableId = deriveStableId("hub", "hub", {});
+  const registry = new McpSubscriptionRegistry(dir);
+  await registry.record(
+    subscription({
+      stableId,
+      id: "old-adapter-id",
+      cursor: "hub:8",
+      status: "active",
+      deliveredEventIds: ["event-8"],
+    }),
+  );
+  const feed = new McpEventFeed(registry);
+  await feed.hydrate();
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe", server: "hub", name: "hub", cursor: "hub:8", restored: true },
+      result: {
+        subscription: {
+          id: "s2",
+          server: "hub",
+          name: "hub",
+          status: "active",
+          cursor: "hub:8",
+          stableId,
+        },
+      },
+    },
+  });
+
+  assert.equal(
+    feed.ingest({
+      customType: "mcp-events",
+      details: { events: [eventItem(null, null, "event-8", "s2")] },
+    }),
+    true,
+  );
+  assert.equal(feed.state.notice, "new event from hub");
+  assert.equal(feed.state.events.find((event) => event.id === "event-8")?.replayed, undefined);
+  await registry.close();
+});
+
+test("a cancellation during an in-flight poll stays cancelled", async (t) => {
+  const dir = await tempDir(t);
+  const stableId = deriveStableId("hub", "hub", {});
+  const registry = new McpSubscriptionRegistry(dir);
+  await registry.record(
+    subscription({ stableId, id: "dead-stream", cursor: "hub:10", status: "active" }),
+  );
+  await registry.flush();
+
+  let resolvePoll!: (value: unknown) => void;
+  let pollStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    pollStarted = resolve;
+  });
+  const reopened: string[] = [];
+  const lines: string[] = [];
+  const watchdog = new McpSubscriptionWatchdog({
+    registry,
+    intervalMs: 60_000,
+    log: (line) => lines.push(line),
+    poll: async () => {
+      pollStarted();
+      return new Promise((resolve) => {
+        resolvePoll = resolve;
+      });
+    },
+    reopen: async (_record, cursor) => {
+      reopened.push(cursor);
+      return { id: "replacement", cursor, status: "active" };
+    },
+  });
+
+  try {
+    const ticking = watchdog.tick();
+    await started;
+    await registry.cancel(stableId);
+    resolvePoll({ events: [{ event: { cursor: "hub:20" } }] });
+    await ticking;
+
+    assert.deepEqual(reopened, []);
+    assert.deepEqual(lines, []);
+    const [saved] = await registry.read();
+    assert.equal(saved?.status, "cancelled");
+    assert.equal(saved?.enabled, false);
+    assert.equal(saved?.id, "dead-stream");
+  } finally {
+    await watchdog.close();
+    await registry.close();
+  }
+});
+
+test("a cancellation during an in-flight reopen is undone", async (t) => {
+  const dir = await tempDir(t);
+  const stableId = deriveStableId("hub", "hub", {});
+  const registry = new McpSubscriptionRegistry(dir);
+  await registry.record(
+    subscription({ stableId, id: "dead-stream", cursor: "hub:10", status: "active" }),
+  );
+  await registry.flush();
+
+  let resolveReopen!: (value: unknown) => void;
+  let reopenStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    reopenStarted = resolve;
+  });
+  const cancelled: Array<{ stableId: string; liveIds: string | readonly string[] | undefined }> =
+    [];
+  const published: string[] = [];
+  const lines: string[] = [];
+  const watchdog = new McpSubscriptionWatchdog({
+    registry,
+    runtime: {
+      cancelSubscription: async (id, liveIds) => {
+        cancelled.push({ stableId: id, liveIds });
+        return null;
+      },
+    },
+    intervalMs: 60_000,
+    log: (line) => lines.push(line),
+    poll: async () => ({ events: [{ event: { cursor: "hub:20" } }] }),
+    reopen: async () => {
+      reopenStarted();
+      return new Promise((resolve) => {
+        resolveReopen = resolve;
+      });
+    },
+    onReopened: (record) => published.push(record.status),
+  });
+
+  try {
+    const ticking = watchdog.tick();
+    await started;
+    await registry.cancel(stableId);
+    resolveReopen({ id: "replacement", cursor: "hub:20", status: "active" });
+    await ticking;
+
+    assert.deepEqual(cancelled, [{ stableId, liveIds: ["replacement"] }]);
+    assert.deepEqual(lines, []);
+    assert.deepEqual(published, ["cancelled"]);
+    const [saved] = await registry.read();
+    assert.equal(saved?.status, "cancelled");
+    assert.equal(saved?.enabled, false);
+    assert.equal(saved?.id, "dead-stream");
+  } finally {
+    await watchdog.close();
+    await registry.close();
+  }
+});
+
+test("the watchdog stops when the feed closes", async (t) => {
+  const dir = await tempDir(t);
+  const stableId = deriveStableId("hub", "hub", {});
+  const registry = new McpSubscriptionRegistry(dir);
+  await registry.record(
+    subscription({ stableId, id: "dead-stream", cursor: "hub:10", status: "active" }),
+  );
+  await registry.flush();
+
+  let polls = 0;
+  const watchdog = new McpSubscriptionWatchdog({
+    registry,
+    intervalMs: 5,
+    poll: async () => {
+      polls += 1;
+      return { events: [{ event: { cursor: "hub:20" } }] };
+    },
+    reopen: async () => ({ id: "unexpected", cursor: "hub:20", status: "active" }),
+  });
+
+  watchdog.start();
+  await watchdog.close();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await watchdog.tick();
+  assert.equal(polls, 0);
+  await registry.close();
+});
+
+test("a failed subscription after retry exhaustion is reopened", async (t) => {
+  const dir = await tempDir(t);
+  const stableId = deriveStableId("hub", "hub", {});
+  const registry = new McpSubscriptionRegistry(dir);
+  await registry.record(
+    subscription({
+      stableId,
+      id: "exhausted",
+      cursor: "hub:10",
+      status: "failed",
+      enabled: false,
+      endReason: "error",
+    }),
+  );
+  await registry.flush();
+
+  const reopened: string[] = [];
+  const watchdog = new McpSubscriptionWatchdog({
+    registry,
+    intervalMs: 60_000,
+    poll: async () => ({ events: [{ event: { cursor: "hub:11" } }] }),
+    reopen: async (_record, cursor) => {
+      reopened.push(cursor);
+      return { id: "replacement", cursor, status: "active" };
+    },
+  });
+
+  try {
+    await watchdog.tick();
+    assert.deepEqual(reopened, ["hub:11"]);
+    const [saved] = await registry.read();
+    assert.equal(saved?.status, "active");
+    assert.equal(saved?.enabled, true);
+    assert.equal(saved?.endReason, undefined);
+    assert.equal(saved?.reconnects, 1);
+  } finally {
+    await watchdog.close();
+    await registry.close();
+  }
+});
+
+test("repeated watchdog ticks reuse one adapter session per server", async (t) => {
+  const dataDir = await tempDir(t);
+  await withAgentConfig(t, {
+    mcpServers: {},
+    web: { command: process.execPath, disabled: true },
+  });
+  const registry = new McpSubscriptionRegistry(dataDir);
+  const stableId = deriveStableId("hub", "hub", {});
+  await registry.record(
+    subscription({ stableId, id: "dead-stream", cursor: "hub:10", status: "active" }),
+  );
+  await registry.flush();
+
+  const runtime = await startMcpRuntime({ dataDir });
+  let connects = 0;
+  let requests = 0;
+  let closes = 0;
+  const controller = new AbortController();
+  const session = {
+    signal: controller.signal,
+    request: async () => {
+      requests += 1;
+      return { events: [{ event: { cursor: "hub:20" } }] };
+    },
+    close: () => {
+      closes += 1;
+    },
+  };
+  (runtime as unknown as { protocol: unknown }).protocol = {
+    connect: async () => {
+      connects += 1;
+      return session;
+    },
+    dispose: () => {},
+  };
+  const watchdog = new McpSubscriptionWatchdog({
+    registry,
+    runtime,
+    intervalMs: 60_000,
+    reopen: async (_record, cursor) => ({ id: "replacement", cursor, status: "active" }),
+  });
+
+  try {
+    await watchdog.tick();
+    await watchdog.tick();
+    assert.equal(requests, 2);
+    assert.equal(connects, 1);
+  } finally {
+    await watchdog.close();
+    await runtime.close();
+    await registry.close();
+  }
+  assert.equal(closes, 1);
 });

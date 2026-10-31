@@ -161,6 +161,14 @@ export interface McpSubscriptionView {
    * but being dropped; a still one means the subscription is just quiet.
    */
   cursor: string | null;
+  /** ISO time of the last event delivered to this subscription. */
+  lastEventAt?: string;
+  /** Watchdog re-opens since the subscription was last healthy. */
+  reconnects?: number;
+  /** Why the last watchdog re-open happened. */
+  lastReconnectReason?: string;
+  /** Adapter end reason once the stream has stopped. */
+  endReason?: string;
 }
 
 export interface McpEventView {

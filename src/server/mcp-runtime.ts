@@ -44,6 +44,9 @@ const EVENTS_ENTRY = pathToFileURL(
 const EVENTS_PROTOCOL_ENTRY = pathToFileURL(
   require.resolve("@realmikekelly/pi-mcp-events/dist/protocol.js"),
 ).href;
+const EVENTS_STREAM_ENTRY = pathToFileURL(
+  require.resolve("@realmikekelly/pi-mcp-events/dist/stream.js"),
+).href;
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const HEADER_COMMAND_TIMEOUT_MS = 10_000;
@@ -95,9 +98,49 @@ interface McpProtocolDefinition {
   readonly notifications: readonly string[];
 }
 
+interface ProtocolSession {
+  readonly signal: AbortSignal;
+  request(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  close(): void;
+}
+
 interface McpProtocol {
-  connect(server: string): Promise<unknown>;
+  connect(server: string): Promise<ProtocolSession>;
   dispose(): void;
+}
+
+interface EventsStreamSubscription {
+  readonly id: string;
+  readonly cursor: string | null;
+  readonly status: string;
+}
+
+interface EventsStreamConnection {
+  subscribe(
+    name: string,
+    args: Record<string, unknown>,
+    cursor?: string | null,
+  ): Promise<EventsStreamSubscription>;
+  cancel(id: string): Promise<void>;
+  close(error?: string): void;
+}
+
+interface EventsStreamModule {
+  readonly EventConnection: new (
+    server: string,
+    session: ProtocolSession,
+    onEvent: (subscription: EventsStreamSubscription, event: Record<string, unknown>) => void,
+    onStatus: (
+      subscription: EventsStreamSubscription & { endReason?: string },
+      unexpected: boolean,
+    ) => void,
+    onGap: (subscription: EventsStreamSubscription) => void,
+    timeoutMs: number,
+    options: {
+      reconnect?: () => Promise<ProtocolSession>;
+      onClose?: () => void;
+    },
+  ) => EventsStreamConnection;
 }
 
 interface AdapterModule {
@@ -154,6 +197,7 @@ const hostManagedModule = (await import(ADAPTER_HOST_MANAGED)) as HostManagedMod
 const protocolModule = (await import(ADAPTER_PROTOCOL)) as ProtocolModule;
 const eventsModule = (await import(EVENTS_ENTRY)) as EventsModule;
 const eventsProtocolModule = (await import(EVENTS_PROTOCOL_ENTRY)) as EventsProtocolModule;
+const eventsStreamModule = (await import(EVENTS_STREAM_ENTRY)) as EventsStreamModule;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -563,10 +607,9 @@ function watchStaleSession(transport: Transport, retire: () => void): Transport 
 function sameProtocolDefinition(a: McpProtocolDefinition, b: McpProtocolDefinition): boolean {
   return (
     a.namespace === b.namespace &&
-    a.requests.length === b.requests.length &&
     a.streams.length === b.streams.length &&
     a.notifications.length === b.notifications.length &&
-    a.requests.every((value, index) => value === b.requests[index]) &&
+    b.requests.every((value) => a.requests.includes(value)) &&
     a.streams.every((value, index) => value === b.streams[index]) &&
     a.notifications.every((value, index) => value === b.notifications[index])
   );
@@ -603,6 +646,10 @@ export class McpRuntime {
   /** Entries whose server was not available yet; kept until a later connection. */
   private readonly pendingRestore = new Map<string, McpSubscriptionRecord>();
   private readonly restoring = new Set<string>();
+  /** Direct fallback streams, used only when the mcp_events tool is not registered. */
+  private readonly directSubscriptions = new Map<string, EventsStreamConnection>();
+  /** One reusable poll session per server; a new one per tick would leak transports. */
+  private readonly pollSessions = new Map<string, ProtocolSession>();
   private readonly pendingNotices: ExtensionNotice[] = [];
   private observer: ((notice: ExtensionNotice) => unknown) | undefined;
   private closed = false;
@@ -680,7 +727,12 @@ export class McpRuntime {
       if (resolveProtocol === undefined) throw new Error("MCP protocol is not ready");
       return resolveProtocol(name);
     });
-    protocol = adapterModule.registerMcpProtocol(shim, eventsProtocolModule.EVENTS_PROTOCOL);
+    // The watchdog needs events/poll on the same mediated connection the
+    // events extension uses. It is intentionally not sent to the extension.
+    protocol = adapterModule.registerMcpProtocol(shim, {
+      ...eventsProtocolModule.EVENTS_PROTOCOL,
+      requests: [...eventsProtocolModule.EVENTS_PROTOCOL.requests, "events/poll"],
+    });
     const runtime = new McpRuntime(
       shim,
       servers,
@@ -690,6 +742,10 @@ export class McpRuntime {
       subscriptionStore,
     );
     resolveProtocol = (name) => runtime.protocolConnection(name);
+    // pi-mcp-events constructs EventConnection with only reconnect/onClose
+    // (dist/index.js:68), so maxRetries/retryBaseMs/heartbeatTimeoutMs cannot
+    // be supplied here. dist/stream.js:300 stops after five retries; the
+    // subscription watchdog reopens a stream that stays dead after that.
     eventsModule.default(shim);
     await shim.dispatch("session_start");
 
@@ -732,6 +788,134 @@ export class McpRuntime {
   /** The shared durable registry, or undefined when this runtime was started without a data dir. */
   get subscriptionRegistry(): McpSubscriptionRegistry | undefined {
     return this.subscriptionStore;
+  }
+
+  /**
+   * Ask the hub whether a subscription's cursor is really current. This uses
+   * the same adapter protocol connection as mcp_events, never a second client.
+   */
+  async pollEvents(
+    server: string,
+    name: string,
+    cursor: string | null,
+    maxEvents = 1,
+  ): Promise<unknown> {
+    let session = this.pollSessions.get(server);
+    if (session === undefined || session.signal.aborted) {
+      session?.close();
+      session = await this.protocol.connect(server);
+      this.pollSessions.set(server, session);
+    }
+    try {
+      return await session.request("events/poll", { name, cursor, maxEvents });
+    } catch (error) {
+      if (session.signal.aborted) {
+        session.close();
+        if (this.pollSessions.get(server) === session) this.pollSessions.delete(server);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Stop the dead adapter stream and subscribe again at the hub cursor. The
+   * normal path is the mcp_events tool, so the extension keeps owning the
+   * replacement stream. A direct protocol session is used only when that tool
+   * is not registered.
+   */
+  async reopenSubscription(
+    record: McpSubscriptionRecord,
+    cursor: string,
+  ): Promise<{ id?: string; cursor: string; status: string; endReason?: string }> {
+    if (this.toolNames.includes("mcp_events")) {
+      if (record.id !== null && record.id !== undefined && record.id.length > 0) {
+        await this.shim
+          .callTool("mcp_events", { action: "unsubscribe", subscription_id: record.id })
+          .catch(() => {});
+      }
+      const result = await this.shim.callTool("mcp_events", {
+        action: "subscribe",
+        server: record.server,
+        name: record.name,
+        arguments: record.arguments,
+        cursor,
+      });
+      const details = isRecord(result.details) ? result.details : undefined;
+      if (result.isError === true) {
+        throw new Error(
+          details !== undefined && typeof details.error === "string"
+            ? details.error
+            : "subscription failed",
+        );
+      }
+      const raw =
+        details !== undefined && isRecord(details.subscription) ? details.subscription : {};
+      return {
+        ...(typeof raw.id === "string" ? { id: raw.id } : {}),
+        cursor: typeof raw.cursor === "string" ? raw.cursor : cursor,
+        status: typeof raw.status === "string" ? raw.status : "active",
+        ...(typeof raw.endReason === "string" ? { endReason: raw.endReason } : {}),
+      };
+    }
+    return this.reopenDirect(record, cursor);
+  }
+
+  private async reopenDirect(
+    record: McpSubscriptionRecord,
+    cursor: string,
+  ): Promise<{ id: string; cursor: string; status: string; endReason?: string }> {
+    if (record.id !== null && record.id !== undefined) {
+      const previous = this.directSubscriptions.get(record.id);
+      if (previous !== undefined) {
+        await previous.cancel(record.id).catch(() => {});
+        previous.close();
+        this.directSubscriptions.delete(record.id);
+      }
+    }
+    const session = await this.protocol.connect(record.server);
+    let connection!: EventsStreamConnection;
+    const options = {
+      reconnect: () => this.protocol.connect(record.server),
+      onClose: () => {
+        for (const [id, item] of this.directSubscriptions) {
+          if (item === connection) this.directSubscriptions.delete(id);
+        }
+      },
+    };
+    connection = new eventsStreamModule.EventConnection(
+      record.server,
+      session,
+      (subscription, event) => {
+        this.deliverNotice({
+          customType: "mcp-events",
+          details: {
+            events: [{ subscription_id: subscription.id, server: record.server, event }],
+          },
+        });
+      },
+      (subscription, unexpected) => {
+        if (!unexpected) return;
+        this.deliverNotice({
+          customType: "mcp-events-status",
+          details: { subscriptions: [{ ...subscription, server: record.server }] },
+        });
+      },
+      () => {},
+      15_000,
+      options,
+    );
+    try {
+      const subscription = await connection.subscribe(record.name, record.arguments, cursor);
+      this.directSubscriptions.set(subscription.id, connection);
+      return {
+        id: subscription.id,
+        cursor: subscription.cursor ?? cursor,
+        status: subscription.status,
+      };
+    } catch (error) {
+      connection.close();
+      throw error;
+    }
   }
 
   /** Subscriptions opened at boot, with the id pi-mcp-events assigned this process. */
@@ -957,7 +1141,7 @@ export class McpRuntime {
     this.shim.install(registry);
   }
 
-  private async protocolConnection(name: string): Promise<{
+  async protocolConnection(name: string): Promise<{
     connection: ProtocolServerConnection;
     signal: AbortSignal;
   }> {
@@ -1015,6 +1199,8 @@ export class McpRuntime {
     if (this.closed) return;
     this.closed = true;
     await this.shim.dispatch("session_shutdown").catch(() => {});
+    for (const session of this.pollSessions.values()) session.close();
+    this.pollSessions.clear();
     this.protocol.dispose();
     await Promise.allSettled(
       [...this.protocolConnections].map(async ({ client, transport, controller }) => {
@@ -1024,6 +1210,8 @@ export class McpRuntime {
       }),
     );
     this.protocolConnections.clear();
+    for (const connection of new Set(this.directSubscriptions.values())) connection.close();
+    this.directSubscriptions.clear();
     await Promise.allSettled(this.adapters.map((adapter) => adapter.close()));
     await this.subscriptionStore?.close().catch(() => {});
     this.shim.close();

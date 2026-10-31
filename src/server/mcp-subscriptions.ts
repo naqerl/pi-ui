@@ -32,6 +32,14 @@ export interface McpSubscriptionRecord {
   readonly enabled?: boolean;
   /** Most recent event ids delivered for this stable id, oldest first. */
   readonly deliveredEventIds?: readonly string[];
+  /** ISO time of the last event delivered to this subscription. */
+  readonly lastEventAt?: string;
+  /** Watchdog re-opens since the subscription was last healthy. */
+  readonly reconnects?: number;
+  /** Why the last watchdog re-open happened. */
+  readonly lastReconnectReason?: string;
+  /** Adapter end reason for a stream that has stopped. */
+  readonly endReason?: string;
   readonly updatedAt: string;
 }
 
@@ -146,6 +154,20 @@ function normalizeRecord(value: unknown): McpSubscriptionRecord | null {
     status,
     enabled: typeof value.enabled === "boolean" ? value.enabled : subscriptionEnabled(status),
     deliveredEventIds: normalizeEventIds(value.deliveredEventIds),
+    ...(typeof value.lastEventAt === "string" && value.lastEventAt.length > 0
+      ? { lastEventAt: value.lastEventAt }
+      : {}),
+    ...(typeof value.reconnects === "number" &&
+    Number.isSafeInteger(value.reconnects) &&
+    value.reconnects >= 0
+      ? { reconnects: value.reconnects }
+      : {}),
+    ...(typeof value.lastReconnectReason === "string" && value.lastReconnectReason.length > 0
+      ? { lastReconnectReason: value.lastReconnectReason }
+      : {}),
+    ...(typeof value.endReason === "string" && value.endReason.length > 0
+      ? { endReason: value.endReason }
+      : {}),
     updatedAt:
       typeof value.updatedAt === "string" && value.updatedAt.length > 0
         ? value.updatedAt
@@ -239,6 +261,14 @@ function mergeRecord(
       latest === incoming
         ? mergedEventIds(existing.deliveredEventIds, incoming.deliveredEventIds)
         : mergedEventIds(incoming.deliveredEventIds, existing.deliveredEventIds),
+    lastEventAt: latest.lastEventAt ?? existing.lastEventAt ?? incoming.lastEventAt,
+    reconnects: latest.reconnects ?? existing.reconnects ?? incoming.reconnects,
+    lastReconnectReason:
+      latest.lastReconnectReason ?? existing.lastReconnectReason ?? incoming.lastReconnectReason,
+    endReason:
+      latest.status === "active"
+        ? undefined
+        : (latest.endReason ?? existing.endReason ?? incoming.endReason),
     cursor,
   };
 }
