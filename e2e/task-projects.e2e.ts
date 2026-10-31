@@ -1,5 +1,23 @@
-import { test } from "@e2e-dev/web";
+import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
+
+// The e2e server and its task store are shared by every test file: leave no projects behind.
+async function removeTasks(browser: Browser, titles: readonly string[]) {
+  const removed = await browser.evaluate(async (names) => {
+    let count = 0;
+    const ledger = await (await fetch("/api/tasks")).json();
+    for (const task of ledger.tasks as Array<{ id: string; title: string }>) {
+      if (names.includes(task.title)) {
+        const response = await fetch(`/api/tasks/${encodeURIComponent(task.id)}`, {
+          method: "DELETE",
+        });
+        if (response.ok) count += 1;
+      }
+    }
+    return count;
+  }, titles);
+  expect(removed).toBe(titles.length);
+}
 
 test("tags new tasks with a project from the chip or an @ autocomplete and groups them", async ({
   app,
@@ -84,6 +102,8 @@ test("tags new tasks with a project from the chip or an @ autocomplete and group
   await expect(detailProject).toHaveValue("");
   await detailProject.selectOption({ value: "zero" });
   await expect(detailProject).toHaveValue("zero");
+
+  await removeTasks(browser, ["Diff the maps", "Loose end", "Fix the login", "Write the docs"]);
 });
 
 test("the project filter narrows the list and sets the composer's default", async ({
@@ -134,4 +154,11 @@ test("the project filter narrows the list and sets the composer's default", asyn
   await expect(
     screen.getByTestId("task-project-pi-ui").getByText("Tighten the spacing", { exact: true }),
   ).toBeVisible();
+
+  await removeTasks(browser, [
+    "Ship the panel",
+    "Diff the maps",
+    "Water the plants",
+    "Tighten the spacing",
+  ]);
 });
