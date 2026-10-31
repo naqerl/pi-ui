@@ -4,6 +4,11 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.19 - 2026-10-31
+
+- compact notifications row with the toggle on the right
+
+
 ## 1.6.18 - 2026-10-31
 
 - Durable MCP subscription ids that survive a restart: the registry keeps the subscription id and cursor, so a restarted server resumes the same stream instead of opening a new one.
