@@ -269,6 +269,87 @@ export interface Task {
 export interface TaskLedger {
   tasks: Task[];
   revision: number;
+  /** What the agent's runs did for each task. Absent from older servers and plain store reads. */
+  activity?: TaskActivity;
+}
+
+/** A task's state as the UI shows it, derived from the ledger plus measured run activity. */
+export type TaskState =
+  | "proposed"
+  | "ready"
+  | "working"
+  | "blocked"
+  | "failed"
+  | "done"
+  | "partial";
+
+/** How the run that last touched a task ended. `running` while it is still live. */
+export type TaskRunOutcome = "running" | "ok" | "error" | "interrupted";
+
+/** Totals from the runs whose tool calls were tagged with the task. */
+export interface TaskMeasured {
+  /** Runs that touched the task. Zero means nothing was measured. */
+  runs: number;
+  /** Tagged tool calls. */
+  calls: number;
+  /** Wall time from a run's first to last tagged call, summed over runs. */
+  activeMs: number;
+  /** Input plus output tokens of the model calls that made tagged tool calls. */
+  tokens: number;
+  /** Provider-reported cost of those model calls, in USD. */
+  cost: number;
+}
+
+export type TaskHistoryKind =
+  | "created"
+  | "approved"
+  | "blocked"
+  | "unblocked"
+  | "done"
+  | "reopened"
+  | "run-start"
+  | "run-end"
+  | "failed";
+
+/** One line of a task's short history: status changes and runs, never individual tool calls. */
+export interface TaskHistoryEvent {
+  at: string;
+  kind: TaskHistoryKind;
+  text: string;
+}
+
+export interface TaskTrace {
+  /** Last tagged tool call, start or end. */
+  lastActivityAt: string | null;
+  lastRun: {
+    id: string;
+    outcome: TaskRunOutcome;
+    /** Why the run failed, when it did. */
+    reason?: string;
+    /** When the outcome was last set. */
+    at: string;
+  } | null;
+  measured: TaskMeasured;
+  /** Newest last, capped. */
+  history: TaskHistoryEvent[];
+}
+
+/** Activity in the live run that no task claimed. */
+export interface UntrackedActivity {
+  calls: number;
+  lastAt: string;
+  lastTool: string;
+}
+
+export interface TaskActivity {
+  /** The server's clock when this view was built, so recency does not depend on the browser's. */
+  now: string;
+  running: boolean;
+  /** The live run, or null between runs. */
+  runId: string | null;
+  traces: Record<string, TaskTrace>;
+  /** Untagged tool calls in the live run; null when there were none. */
+  untracked: UntrackedActivity | null;
 }
 
 export interface Snapshot {
