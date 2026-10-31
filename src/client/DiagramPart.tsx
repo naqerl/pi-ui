@@ -1,6 +1,7 @@
 import { lazy, type ReactNode, Suspense, useEffect, useState } from "react";
 import { DIAGRAM_FORMAT } from "../shared/diagrams";
 import type { DiagramRef } from "../shared/types";
+import { DiagramViewer } from "./DiagramViewer";
 
 const DiagramSvg = lazy(() => import("./lazy-diagram").then((m) => ({ default: m.DiagramSvg })));
 
@@ -9,6 +10,8 @@ interface DiagramFile {
   id: string;
   format: string;
   source: string;
+  /** Rendered once by the server and cached beside the diagram; SVG stays sharp at any zoom. */
+  svg?: string;
   createdAt: string;
   updatedAt: string;
   revision: number;
@@ -31,7 +34,7 @@ function Card({ id, revision, children }: { id: string; revision: number; childr
         <span>diagram</span>
         <span>rev {revision}</span>
       </div>
-      <div className="max-h-[60vh] overflow-auto p-2">{children}</div>
+      {children}
     </figure>
   );
 }
@@ -39,7 +42,7 @@ function Card({ id, revision, children }: { id: string; revision: number; childr
 /** A format this bundle cannot draw is shown as its source, never as a blank card. */
 function RawFallback({ diagram }: { diagram: DiagramFile }) {
   return (
-    <div data-testid="diagram-raw" className="space-y-1">
+    <div data-testid="diagram-raw" className="space-y-1 p-2">
       <p className="font-mono text-[11px] leading-4 text-muted-foreground">
         format “{diagram.format}” is not supported here; showing the source
       </p>
@@ -50,16 +53,21 @@ function RawFallback({ diagram }: { diagram: DiagramFile }) {
   );
 }
 
+const DRAWING_CLASS = "max-h-[260px] overflow-hidden sm:max-h-[420px]";
+
 /**
  * One diagram part of a message. It stores only `{id, revision}`; the source is fetched here, so
  * a replace changes the revision and redraws the same message without touching the transcript.
  */
 export function DiagramPart({ id, revision }: DiagramRef) {
   const [load, setLoad] = useState<Load>({ status: "loading" });
+  const [renderedSvg, setRenderedSvg] = useState<string | null>(null);
+  const [viewerOpen, setViewerOpen] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
     setLoad({ status: "loading" });
+    setRenderedSvg(null);
     fetch(`/api/diagrams/${encodeURIComponent(id)}?rev=${revision}`, {
       cache: "no-store",
       signal: controller.signal,
@@ -90,36 +98,70 @@ export function DiagramPart({ id, revision }: DiagramRef) {
     return () => controller.abort();
   }, [id, revision]);
 
-  return (
-    <Card id={id} revision={revision}>
-      {load.status === "loading" && (
+  const ready = load.status === "ready" ? load.diagram : null;
+  const supported = ready !== null && (ready.format === DIAGRAM_FORMAT || ready.svg !== undefined);
+  const svg = ready?.svg ?? renderedSvg ?? null;
+  const canOpen = ready !== null && supported && svg !== null;
+  const drawing = ready !== null && supported && (
+    <Suspense
+      fallback={
         <p className="font-mono text-[11px] leading-5 text-muted-foreground" role="status">
           Drawing…
         </p>
-      )}
-      {load.status === "error" && (
-        <p
-          role="alert"
-          data-testid="diagram-error"
-          className="theme-radius border border-destructive/60 bg-background px-2 py-1.5 font-mono text-[11px] leading-4 text-destructive"
-        >
-          {load.message}
-        </p>
-      )}
-      {load.status === "ready" &&
-        (load.diagram.format === DIAGRAM_FORMAT ? (
-          <Suspense
-            fallback={
-              <p className="font-mono text-[11px] leading-5 text-muted-foreground" role="status">
-                Drawing…
-              </p>
-            }
+      }
+    >
+      <DiagramSvg source={ready.source} svg={ready.svg} onSvg={setRenderedSvg} />
+    </Suspense>
+  );
+
+  return (
+    <>
+      <Card id={id} revision={revision}>
+        {load.status === "loading" && (
+          <p className="p-2 font-mono text-[11px] leading-5 text-muted-foreground" role="status">
+            Drawing…
+          </p>
+        )}
+        {load.status === "error" && (
+          <p
+            role="alert"
+            data-testid="diagram-error"
+            className="theme-radius m-2 border border-destructive/60 bg-background px-2 py-1.5 font-mono text-[11px] leading-4 text-destructive"
           >
-            <DiagramSvg source={load.diagram.source} />
-          </Suspense>
-        ) : (
-          <RawFallback diagram={load.diagram} />
-        ))}
-    </Card>
+            {load.message}
+          </p>
+        )}
+        {ready !== null &&
+          (supported ? (
+            canOpen ? (
+              <button
+                type="button"
+                data-testid="diagram-open"
+                aria-label="Open diagram full screen"
+                aria-haspopup="dialog"
+                onClick={() => setViewerOpen(true)}
+                className="block w-full min-w-0 overflow-hidden bg-background p-2 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-foreground/40"
+              >
+                <div className={DRAWING_CLASS}>{drawing}</div>
+              </button>
+            ) : (
+              <div className="p-2">
+                <div className={DRAWING_CLASS}>{drawing}</div>
+              </div>
+            )
+          ) : (
+            <RawFallback diagram={ready} />
+          ))}
+      </Card>
+      {viewerOpen && canOpen && ready !== null && svg !== null && (
+        <DiagramViewer
+          id={ready.id}
+          revision={ready.revision}
+          source={ready.source}
+          svg={svg}
+          onClose={() => setViewerOpen(false)}
+        />
+      )}
+    </>
   );
 }

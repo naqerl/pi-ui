@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -13,6 +13,7 @@ import {
   isDiagramId,
   MAX_DIAGRAM_BYTES,
   newDiagramId,
+  safeSvgDocument,
 } from "../src/server/diagrams.js";
 import { buildTranscript } from "../src/server/session.js";
 import { windowTranscript } from "../src/server/transcript-window.js";
@@ -115,6 +116,48 @@ test("the bundled Mermaid renderer draws SVG and explains bad source", () => {
   const invalid = renderDiagram("this is not a diagram");
   assert.equal(invalid.ok, false);
   if (!invalid.ok) assert.match(invalid.message, /No diagram type detected/i);
+});
+
+test("an SVG-looking Mermaid source is never returned verbatim", async () => {
+  const malicious =
+    '<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><img src="x" onerror="document.title=\'pwned\'"></foreignObject></svg>';
+  const diagram = await store.create(malicious);
+  assert.equal(await store.svg(diagram), undefined);
+
+  const safe = '<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>';
+  assert.equal(safeSvgDocument(safe), safe);
+  assert.equal(safeSvgDocument(malicious), undefined);
+  assert.equal(safeSvgDocument("<svg><script>alert(1)</script></svg>"), undefined);
+  assert.equal(safeSvgDocument('<svg><image href="javascript:alert(1)"/></svg>'), undefined);
+  assert.equal(safeSvgDocument('<svg><a href="&#106;avascript:alert(1)">x</a></svg>'), undefined);
+  assert.equal(safeSvgDocument('<svg><g onload="alert(1)"/></svg>'), undefined);
+
+  const stored = await store.create(safe, "svg");
+  assert.equal(await store.svg(stored), safe);
+});
+
+test("the server renders an SVG once and caches it beside the diagram", async () => {
+  const diagram = await store.create("flowchart LR\n  A[Cached] --> B[Next]");
+  const first = await store.svg(diagram);
+  assert.equal(typeof first, "string");
+  if (first === undefined) return;
+  assert.match(first, /^<svg/);
+  assert.match(first, /Cached/);
+
+  const cacheName = (await readdir(diagramDir())).find(
+    (name) => name.startsWith(`${diagram.id}.r1`) && name.endsWith(".svg"),
+  );
+  assert.ok(cacheName);
+  assert.equal(await readFile(join(diagramDir(), cacheName), "utf8"), first);
+  assert.equal(await store.svg(diagram), first);
+
+  const replaced = await store.replace(diagram.id, "flowchart LR\n  A[Fresh] --> B[Next]");
+  const next = await store.svg(replaced);
+  assert.equal(typeof next, "string");
+  if (next === undefined) return;
+  assert.match(next, /Fresh/);
+  assert.notEqual(next, first);
+  assert.equal((await readdir(diagramDir())).includes(cacheName), false);
 });
 
 test("diagram tools draw, replace, and fail readably", async () => {

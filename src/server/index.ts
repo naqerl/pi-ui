@@ -627,10 +627,13 @@ app.post("/api/media", async (c) => {
   }
 });
 
-app.get("/api/diagrams/:id", (c) => {
+app.get("/api/diagrams/:id", async (c) => {
   const diagram = diagrams.get(c.req.param("id"));
   if (diagram === undefined) return c.notFound();
-  return c.json(diagram, 200, { "Cache-Control": "no-store" });
+  const svg = await diagrams.svg(diagram);
+  return c.json({ ...diagram, ...(svg === undefined ? {} : { svg }) }, 200, {
+    "Cache-Control": "no-store",
+  });
 });
 
 app.get("/api/media/:id", async (c) => {
