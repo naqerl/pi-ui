@@ -9,13 +9,14 @@ import {
   useState,
 } from "react";
 import { acceptMention, mentionAt, parseProjectToken, projectsOf } from "../shared/project";
-import { isQueuedNotice } from "../shared/queue";
+import { isQueuedNotice, queuedMessageIds, queuedNoticeGlyph } from "../shared/queue";
 import { formatDateTime, formatTime } from "../shared/time";
 import type {
   ActivityItem,
   ChatMessage,
   MessageMode,
   QueuedMessage,
+  QueuedNotice,
   Task,
   TaskActivity,
   TaskLedger,
@@ -163,27 +164,37 @@ function QueuedNoticeChip({
   onCancelQueued,
 }: {
   message: ChatMessage;
-  notice: { label: string };
-  onCancelQueued?: (id: string) => void;
+  notice: QueuedNotice;
+  onCancelQueued?: (id: string) => unknown;
 }) {
-  const queueId = message.queueId;
+  const queueIds = queuedMessageIds(message);
+  const count = message.queueCount ?? 1;
+  const glyph = notice.glyph ?? queuedNoticeGlyph(notice.kind);
+  const cancelAll = async () => {
+    if (onCancelQueued === undefined) return;
+    for (const id of queueIds) await onCancelQueued(id);
+  };
   return (
     <div
       data-message-id={message.id}
       data-role={message.role}
       data-pending-queue="true"
       data-testid="queued-notice-chip"
-      className="flex justify-center px-2 py-0.5 opacity-60"
+      className="flex justify-center px-2 py-0.5"
     >
-      <div className="flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-md border border-border/60 px-2 py-1 font-mono text-[11px] leading-5 text-muted-foreground">
-        <span className="min-w-0 truncate">{notice.label} · queued</span>
-        {queueId !== undefined && onCancelQueued !== undefined && (
+      <div className="flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border border-foreground/10 bg-transparent px-2.5 py-0.5 font-mono text-[11px] leading-5 text-muted-foreground">
+        <span aria-hidden="true" className="shrink-0">
+          {glyph}
+        </span>
+        <span className="min-w-0 truncate">{notice.label}</span>
+        <span className="shrink-0 tabular-nums">{count} queued</span>
+        {queueIds.length > 0 && onCancelQueued !== undefined && (
           <button
             type="button"
             title="Remove this queued message"
             aria-label="cancel"
             className="shrink-0 font-mono text-[11px] leading-none text-foreground hover:text-destructive"
-            onClick={() => onCancelQueued(queueId)}
+            onClick={() => cancelAll()}
           >
             ×
           </button>
@@ -200,7 +211,7 @@ export function MessageBubble({
 }: {
   message: ChatMessage;
   onSteer?: (text: string) => void;
-  onCancelQueued?: (id: string) => void;
+  onCancelQueued?: (id: string) => unknown;
 }) {
   if (message.pendingQueue === true && isQueuedNotice(message.notice)) {
     return (
@@ -1323,9 +1334,7 @@ export function ChatView({
                           key={group.key}
                           message={group.message}
                           onSteer={(text) => void handleSend(text, "steer")}
-                          onCancelQueued={
-                            cancelQueued === undefined ? undefined : (id) => void cancelQueued(id)
-                          }
+                          onCancelQueued={cancelQueued}
                         />
                       );
                     }

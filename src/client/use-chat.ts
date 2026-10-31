@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DashboardState } from "../shared/dashboard";
-import { isQueuedNotice, pendingQueuedMessage } from "../shared/queue";
+import {
+  groupQueuedMessages,
+  isQueuedNotice,
+  pendingQueuedMessage,
+  queuedMessageId,
+} from "../shared/queue";
 import {
   acceptDeltaRevision,
   adoptSnapshotRevision,
@@ -552,9 +557,11 @@ export function useChat(options: UseChatOptions = {}) {
     // Follow-ups wait for the whole turn, so they sit below the live draft and pending steers.
     // A placed message already in `messages` owns the id; only its pending copy is dropped.
     const heldIds = new Set(messages.map((message) => message.id));
-    for (const queued of queue) {
-      const message = pendingQueuedMessage(queued);
-      if (heldIds.has(message.id)) continue;
+    // Drop any queued copy already placed before grouping, so a burst whose first
+    // notice just landed does not hide the notices still waiting behind it.
+    const pending = queue.filter((item) => !heldIds.has(queuedMessageId(item)));
+    for (const group of groupQueuedMessages(pending)) {
+      const message = pendingQueuedMessage(group.item, group);
       items.push({ kind: "message", order: message.order, message });
     }
 

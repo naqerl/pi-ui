@@ -6,6 +6,17 @@ export const QUEUE_ENTRY_KIND = "ui.queue";
 /** Pending queued messages sort after the running turn and its pending steers, oldest first. */
 export const PENDING_QUEUE_ORDER = Number.MAX_SAFE_INTEGER;
 
+/** The glyph a machine notice of this entry kind shows, in the queue and once placed. */
+export function queuedNoticeGlyph(kind: string): string {
+  const name = kind.toLowerCase().replace(/^ui[.-]/, "");
+  if (name.startsWith("mcp")) return "↯";
+  if (name.startsWith("job")) return "⚙";
+  if (name.startsWith("idle")) return "◷";
+  if (name.startsWith("memory")) return "✎";
+  if (name.startsWith("operator")) return "✉";
+  return "⚠";
+}
+
 /** The stable key of a queued message. Older snapshots may not carry one. */
 export function queuedKey(item: QueuedMessage): string {
   return item.key ?? `q-${item.id}`;
@@ -33,8 +44,40 @@ export function isQueuedNotice(notice: ChatMessage["notice"]): notice is QueuedN
   );
 }
 
+/** One pending chip, with the ids it removes together when it stands for a burst. */
+export interface QueuedMessageGroup {
+  item: QueuedMessage;
+  count: number;
+  ids: string[];
+}
+
+/**
+ * Collapses consecutive queued machine notices of the same kind into one chip. A human
+ * queued message breaks the run, and different notice kinds never share a chip.
+ */
+export function groupQueuedMessages(items: readonly QueuedMessage[]): QueuedMessageGroup[] {
+  const groups: QueuedMessageGroup[] = [];
+  for (const item of items) {
+    const previous = groups[groups.length - 1];
+    const kind = item.notice?.kind;
+    if (kind !== undefined && previous !== undefined && previous.item.notice?.kind === kind) {
+      previous.count += 1;
+      previous.ids.push(item.id);
+      continue;
+    }
+    groups.push({ item, count: 1, ids: [item.id] });
+  }
+  return groups;
+}
+
+/** The queued submission ids a pending chip's cancel button removes. */
+export function queuedMessageIds(message: ChatMessage): string[] {
+  if (message.queueIds !== undefined && message.queueIds.length > 0) return message.queueIds;
+  return message.queueId === undefined ? [] : [message.queueId];
+}
+
 /** The chat bubble for a follow-up the server holds until the running turn ends. */
-export function pendingQueuedMessage(item: QueuedMessage): ChatMessage {
+export function pendingQueuedMessage(item: QueuedMessage, group?: QueuedMessageGroup): ChatMessage {
   return {
     id: queuedMessageId(item),
     role: "user",
@@ -43,6 +86,9 @@ export function pendingQueuedMessage(item: QueuedMessage): ChatMessage {
     order: PENDING_QUEUE_ORDER,
     pendingQueue: true,
     queueId: item.id,
+    ...(group === undefined || group.count <= 1
+      ? {}
+      : { queueCount: group.count, queueIds: [...group.ids] }),
     ...(item.notice === undefined ? {} : { notice: item.notice }),
     ...(item.attachments === undefined || item.attachments.length === 0
       ? {}

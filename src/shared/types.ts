@@ -29,6 +29,8 @@ export interface QueuedNotice {
   kind: string;
   /** Short chip text, such as `MCP events`; never the full notice body. */
   label: string;
+  /** The kind's glyph, so a pending chip matches the notice it becomes. */
+  glyph: string;
 }
 
 export interface ChatMessage {
@@ -51,6 +53,10 @@ export interface ChatMessage {
   pendingQueue?: boolean;
   /** Submission id of a pending queued message, so its bubble can cancel it. */
   queueId?: string;
+  /** How many consecutive queued notices this pending chip stands for. */
+  queueCount?: number;
+  /** Every submission id a grouped pending chip removes with one cancel. */
+  queueIds?: string[];
   /** Stable key shared by a pending steer and the transcript entry that consumed it. */
   steerKey?: string;
   /** Why a pending steer never reached the transcript. */

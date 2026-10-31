@@ -16,7 +16,7 @@ import {
   watchEvents,
 } from "@earendil-works/pi-durable";
 import { MCP_EVENTS_HEAD, type OperatorNoticeRecord, parseNotice } from "../shared/notices.js";
-import { QUEUE_ENTRY_KIND } from "../shared/queue.js";
+import { QUEUE_ENTRY_KIND, queuedNoticeGlyph } from "../shared/queue.js";
 import {
   QUIET_AFTER_MS as DEFAULT_QUIET_AFTER_MS,
   type DurableRunFacts,
@@ -687,6 +687,7 @@ export class ChatService {
         : {
             kind: options.entry.kind,
             label: entryNoticeLabel(options.entry.kind, options.entry.label),
+            glyph: queuedNoticeGlyph(options.entry.kind),
           };
     if (startsRun) {
       const marker: RunMarker = {
@@ -1179,7 +1180,22 @@ export class ChatService {
     }
 
     if (immediate.length > 0) {
-      await this.submit(mcpEventText(envelope, immediate), "queue");
+      const text = mcpEventText(envelope, immediate);
+      const at = new Date().toISOString();
+      await this.submit(text, "queue", {
+        entry: {
+          kind: MCP_NOTICE_ENTRY_KIND,
+          label: "MCP events",
+          data: {
+            // An immediate event is a new notice, never an update of an earlier window.
+            noticeId: `mcp/immediate#${randomUUID()}`,
+            key: "mcp/immediate",
+            text,
+            at,
+            createdAt: at,
+          },
+        },
+      });
     }
   }
 
