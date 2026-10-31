@@ -29,19 +29,6 @@ function manualCompletion(task: Task) {
   };
 }
 
-function proposedAgo(value: string): string {
-  const proposed = Date.parse(value);
-  if (!Number.isFinite(proposed)) return "at an unknown time";
-  const seconds = Math.max(0, Math.floor((Date.now() - proposed) / 1_000));
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
-
 interface TasksViewProps {
   tasks: Task[];
   ready: boolean;
@@ -62,7 +49,6 @@ export function TasksView({
   const [pickerId, setPickerId] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [problem, setProblem] = useState<{ id: string; message: string } | null>(null);
-  const [proposalsOpen, setProposalsOpen] = useState(false);
   const ignoreNextCardClick = useRef(false);
   const activeTasks = tasks.filter((task) => task.status !== "proposed");
   const proposedTasks = tasks
@@ -137,6 +123,24 @@ export function TasksView({
             </span>
           </p>
         )}
+        {proposedTasks.length > 0 && (
+          <section className="flex flex-col gap-3" data-testid="task-proposals">
+            <h2 className="theme-radius bg-surface px-3 py-2 font-mono text-[11px] uppercase tracking-wide text-muted-foreground">
+              Proposed ({proposedTasks.length})
+            </h2>
+            <ul id="proposed-tasks" className="flex flex-col gap-3">
+              {proposedTasks.map((task) => (
+                <ProposedTask
+                  key={task.id}
+                  task={task}
+                  notice={problem?.id === task.id ? problem.message : null}
+                  onApprove={() => void apply(task.id, updateTask(task.id, { status: "open" }))}
+                  onDismiss={() => void apply(task.id, removeTask(task.id))}
+                />
+              ))}
+            </ul>
+          </section>
+        )}
         <ul className="flex flex-col gap-4">
           {roots.map((task) => (
             <TaskBranch
@@ -163,36 +167,6 @@ export function TasksView({
             />
           ))}
         </ul>
-        {proposedTasks.length > 0 && (
-          <section className="mt-2 flex flex-col gap-3" data-testid="task-proposals">
-            <button
-              type="button"
-              aria-label={`Proposed (${proposedTasks.length})`}
-              aria-expanded={proposalsOpen}
-              aria-controls="proposed-tasks"
-              className="flex w-full items-center justify-between gap-2 theme-radius bg-surface px-3 py-2 text-left font-mono text-[11px]"
-              onClick={() => setProposalsOpen((current) => !current)}
-            >
-              <span>Proposed ({proposedTasks.length})</span>
-              <span aria-hidden="true" className="text-muted-foreground">
-                {proposalsOpen ? "−" : "+"}
-              </span>
-            </button>
-            {proposalsOpen && (
-              <ul id="proposed-tasks" className="flex flex-col gap-3">
-                {proposedTasks.map((task) => (
-                  <ProposedTask
-                    key={task.id}
-                    task={task}
-                    notice={problem?.id === task.id ? problem.message : null}
-                    onApprove={() => void apply(task.id, updateTask(task.id, { status: "open" }))}
-                    onDismiss={() => void apply(task.id, removeTask(task.id))}
-                  />
-                ))}
-              </ul>
-            )}
-          </section>
-        )}
       </div>
       {menu !== null &&
         menuTask !== undefined &&
@@ -238,7 +212,6 @@ function ProposedTask({
   onApprove: () => void;
   onDismiss: () => void;
 }) {
-  const proposedAt = task.proposedAt ?? task.createdAt;
   return (
     <li
       data-testid={`proposal-${task.id}`}
@@ -251,17 +224,17 @@ function ProposedTask({
         <span className="shrink-0 font-mono text-[10px]">{task.id}</span>
       </div>
       {task.rationale !== undefined && task.rationale.length > 0 && (
-        <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground [overflow-wrap:anywhere]">
+        <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-xs text-muted-foreground [overflow-wrap:anywhere]">
           {task.rationale}
         </p>
       )}
       <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
         <time
-          dateTime={proposedAt}
-          title={formatDateTime(proposedAt)}
+          dateTime={task.createdAt}
+          title={formatDateTime(task.createdAt)}
           className="font-mono text-[10px] text-muted-foreground"
         >
-          proposed {proposedAgo(proposedAt)}
+          created {formatDateTime(task.createdAt)}
         </time>
         <span className="flex gap-1.5">
           <button

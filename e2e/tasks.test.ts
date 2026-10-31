@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { createTaskTools, type TaskBridge } from "../src/server/task-tools.js";
 import { TaskStore } from "../src/server/tasks.js";
 import {
+  compareTasks,
   formatTokenCount,
   hasOpenDescendant,
   liveBlockerIds,
@@ -39,6 +40,63 @@ async function temporaryStore() {
   const bridge: TaskBridge = { store, publish() {} };
   return { directory, file, store, bridge };
 }
+
+test("task ordering puts proposals first, then ready, blocked and done deterministically", () => {
+  const base: Omit<Task, "id" | "title" | "status" | "blockedBy" | "createdAt"> = {
+    parentId: null,
+    completedAt: null,
+    completion: null,
+  };
+  const tasks: Task[] = [
+    {
+      ...base,
+      id: "done",
+      title: "Done",
+      status: "done",
+      blockedBy: [],
+      createdAt: "2026-01-01T00:00:01.000Z",
+    },
+    {
+      ...base,
+      id: "blocked",
+      title: "Blocked",
+      status: "open",
+      blockedBy: ["ready"],
+      createdAt: "2026-01-01T00:00:02.000Z",
+    },
+    {
+      ...base,
+      id: "ready",
+      title: "Ready",
+      status: "open",
+      blockedBy: [],
+      createdAt: "2026-01-01T00:00:03.000Z",
+    },
+    {
+      ...base,
+      id: "proposed-b",
+      title: "Proposed B",
+      status: "proposed",
+      blockedBy: [],
+      createdAt: "2026-01-01T00:00:04.000Z",
+    },
+    {
+      ...base,
+      id: "proposed-a",
+      title: "Proposed A",
+      status: "proposed",
+      blockedBy: [],
+      createdAt: "2026-01-01T00:00:04.000Z",
+    },
+  ];
+  assert.deepEqual(
+    tasks
+      .slice()
+      .sort((a, b) => compareTasks(tasks, a, b))
+      .map((task) => task.id),
+    ["proposed-a", "proposed-b", "ready", "blocked", "done"],
+  );
+});
 
 test("parses the accepted time-spent forms", () => {
   const accepted: Array<[unknown, number]> = [
