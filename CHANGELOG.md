@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6.30 - 2026-10-31
+
+- Ledger notifications coalesce: a burst of proposals and completions arrives as one push ("3 tasks updated") instead of one per task, a repeat of the same task inside the burst is mentioned once with its final status, tagged notifications now pass `renotify: true` so a replacement actually alerts, and a pending burst is flushed on shutdown instead of being dropped.
+
 Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
 
 ## 1.6.29 - 2026-10-31
