@@ -15,7 +15,7 @@ import {
   watchEvents,
 } from "@earendil-works/pi-durable";
 import { type IdleNudge, IdleNudge as IdleNudgeImpl, idleNudgeMs } from "../shared/idle-nudge.js";
-import { parseNotice } from "../shared/notices.js";
+import { MCP_EVENTS_HEAD, parseNotice } from "../shared/notices.js";
 import {
   QUIET_AFTER_MS as DEFAULT_QUIET_AFTER_MS,
   type DurableRunFacts,
@@ -46,6 +46,7 @@ import {
   type TranscriptHistory,
 } from "../shared/types.js";
 import type { BillionContextInline } from "./billion-context.js";
+import { NoticeCoalescer } from "./mcp-event-policy.js";
 import type { McpEventFeed } from "./mcp-events.js";
 import { MEDIA_TYPES, MediaError, type MediaStore } from "./media.js";
 import { listAvailableModels, modelOption } from "./models.js";
@@ -55,6 +56,7 @@ import type { RunMarker, RunMarkerStore } from "./run-marker.js";
 import {
   appendAssistantError,
   appendJobNotice,
+  appendMcpNotice,
   appendMemoryWriteNotice,
   assistantMessageFromEntry,
   buildTranscript,
@@ -62,6 +64,7 @@ import {
   type DiagramRevisionResolver,
   IDLE_NUDGE_ENTRY_KIND,
   JOB_NOTICE_ENTRY_KIND,
+  MCP_NOTICE_ENTRY_KIND,
   SESSION_CONTEXT,
   summarizeUsage,
   toolActivityFromEntry,
@@ -94,6 +97,43 @@ interface SubmitOptions {
 export const QUIET_AFTER_MS = positiveEnv("PI_UI_QUIET_AFTER_MS") ?? DEFAULT_QUIET_AFTER_MS;
 const WATCHDOG_INTERVAL_MS = Math.min(10_000, QUIET_AFTER_MS);
 const STREAM_RETRY_MS = 1_000;
+const MCP_EVENT_HEAD = MCP_EVENTS_HEAD;
+
+export interface McpEventEnvelope {
+  /** The extension's full safety preamble, preserved verbatim. */
+  readonly head: string;
+  readonly items: unknown[];
+  readonly dropped: number;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The envelope around an MCP event notice, or null for another kind of message. */
+export function mcpEventEnvelope(text: string): McpEventEnvelope | null {
+  if (!text.startsWith(MCP_EVENT_HEAD)) return null;
+  const newline = text.indexOf("\n");
+  if (newline < 0) return null;
+  try {
+    const payload: unknown = JSON.parse(text.slice(newline + 1));
+    if (!isRecord(payload) || !Array.isArray(payload.events)) return null;
+    return {
+      head: text.slice(0, newline),
+      items: payload.events,
+      dropped: typeof payload.dropped_events === "number" ? payload.dropped_events : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function mcpEventText(envelope: McpEventEnvelope, items: readonly unknown[]): string {
+  return `${envelope.head}\n${JSON.stringify({
+    events: items,
+    dropped_events: envelope.dropped,
+  })}`;
+}
 
 function positiveEnv(name: string): number | undefined {
   const value = Number(process.env[name]);
@@ -116,6 +156,9 @@ export class ChatService {
   private draftRevision = 0;
   private toolsRevision = 0;
   private eventFeed: McpEventFeed | undefined;
+  private readonly mcpNotices = new NoticeCoalescer();
+  /** Events shown by each open notice window, so an update carries the full text. */
+  private readonly mcpNoticeEvents = new Map<string, unknown[]>();
   private readonly activeTools = new Map<string, ActiveTool>();
   private stream: AgentEventStream | undefined;
   private closed = false;
@@ -954,6 +997,93 @@ export class ChatService {
       },
     ]);
     return true;
+  }
+
+  /**
+   * Applies the MCP event policy to one event notice. The first event of a key
+   * starts a normal notice/turn; later events in its window replace that
+   * notice's text without appending a turn; redundant events are dropped.
+   */
+  async submitMcpEventNotice(
+    text: string,
+    deliverAs?: "steer" | "followUp" | "nextTurn",
+  ): Promise<void> {
+    const envelope = mcpEventEnvelope(text);
+    if (envelope === null) {
+      await this.submit(text, deliverAs === "steer" ? "steer" : "queue");
+      return;
+    }
+
+    const byNotice = new Map<string, { key: string; events: unknown[] }>();
+    const firstNotices = new Set<string>();
+    const immediate: unknown[] = [];
+    for (const item of envelope.items) {
+      const decision = this.mcpNotices.observe(item);
+      if (decision.mode === "immediate") {
+        immediate.push(item);
+        for (const noticeId of this.mcpNoticeEvents.keys()) {
+          if (noticeId === decision.key || noticeId.startsWith(`${decision.key}#`)) {
+            this.mcpNoticeEvents.delete(noticeId);
+          }
+        }
+        continue;
+      }
+      if (decision.mode === "drop" && !decision.fold) continue;
+      const noticeId = decision.noticeId;
+      if (noticeId === null) continue;
+      const fresh = decision.action === "deliver" && decision.first;
+      if (fresh) {
+        for (const previousId of this.mcpNoticeEvents.keys()) {
+          if (
+            previousId !== noticeId &&
+            (previousId === decision.key || previousId.startsWith(`${decision.key}#`))
+          ) {
+            this.mcpNoticeEvents.delete(previousId);
+          }
+        }
+      }
+      const current = fresh
+        ? { key: decision.key, events: [] }
+        : (byNotice.get(noticeId) ??
+          (this.mcpNoticeEvents.has(noticeId)
+            ? { key: decision.key, events: this.mcpNoticeEvents.get(noticeId) ?? [] }
+            : { key: decision.key, events: [] }));
+      const next = [...current.events, item];
+      byNotice.set(noticeId, { key: current.key, events: next });
+      if (fresh) firstNotices.add(noticeId);
+    }
+
+    for (const [noticeId, notice] of byNotice) {
+      this.mcpNoticeEvents.set(noticeId, notice.events);
+      const at = new Date().toISOString();
+      const latest = mcpEventText(envelope, notice.events);
+      if (firstNotices.has(noticeId)) {
+        await this.submit(latest, "queue", {
+          entry: {
+            kind: MCP_NOTICE_ENTRY_KIND,
+            data: {
+              noticeId,
+              key: notice.key,
+              text: latest,
+              at,
+              createdAt: at,
+            },
+          },
+        });
+      } else {
+        const message = await appendMcpNotice(this.conversation, {
+          noticeId,
+          key: notice.key,
+          text: latest,
+          at,
+        });
+        if (message !== undefined) this.hub.broadcast({ event: "notice", data: { message } });
+      }
+    }
+
+    if (immediate.length > 0) {
+      await this.submit(mcpEventText(envelope, immediate), "queue");
+    }
   }
 
   /** Sends a job result to the agent without placing a user message in the chat. */

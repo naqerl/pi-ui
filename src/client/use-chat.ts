@@ -414,7 +414,9 @@ export function useChat(options: UseChatOptions = {}) {
       const message = messages[0];
       if (message !== undefined) {
         setMessages((current) =>
-          current.some((item) => item.id === message.id) ? current : [...current, message],
+          current.some((item) => item.id === message.id)
+            ? current.map((item) => (item.id === message.id ? message : item))
+            : [...current, message],
         );
       }
       if (jobActivity.length > 0) setActivity((current) => addJobActivity(current, jobActivity));

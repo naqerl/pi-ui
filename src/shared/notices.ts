@@ -86,7 +86,7 @@ export type ChatNotice =
   | IdleNoticeDetails;
 
 const JOB_HEAD = /^\[background job (\S+) finished\] (\S+) (.+?): (.*)$/;
-const MCP_EVENTS_HEAD = "MCP event data follows.";
+export const MCP_EVENTS_HEAD = "MCP event data follows.";
 const MCP_STATUS_HEAD = "MCP subscription status follows.";
 const IDLE_HEAD =
   /^You have been idle for \d+ minutes and (\d+) task\(s\) are open: (.+)\. Pick the next one and implement it\.$/;
