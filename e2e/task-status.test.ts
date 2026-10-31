@@ -30,7 +30,7 @@ function trace(patch: Partial<TaskTrace> = {}): TaskTrace {
 }
 
 function activity(patch: Partial<TaskActivity> = {}): TaskActivity {
-  return { now: NOW, running: false, runId: null, traces: {}, untracked: null, ...patch };
+  return { now: NOW, running: false, runId: null, traces: {}, ...patch };
 }
 
 test("ledger facts: proposed and done win over anything measured", () => {

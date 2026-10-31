@@ -93,7 +93,7 @@ test("a registry installs every extension's tools with the tag", () => {
   assert.equal(TASK_ID_PARAM in props, true);
 });
 
-test("tagged calls make a task's run, untagged ones count as untracked", () => {
+test("tagged calls make a task's run, untagged ones are not attributed", () => {
   let now = Date.parse("2026-10-31T12:00:00.000Z");
   const tracker = new TaskActivityTracker(undefined, () => now);
   tracker.observeLedger([task("a"), task("b")]);
@@ -113,15 +113,10 @@ test("tagged calls make a task's run, untagged ones count as untracked", () => {
   assert.equal(view.traces.a?.measured.activeMs, 60_000, "the live run counts already");
   assert.equal(view.traces.a?.measured.tokens, 500);
   assert.equal(view.traces.b?.measured.cost, 0.01);
-  assert.deepEqual(view.untracked, {
-    calls: 1,
-    lastAt: "2026-10-31T12:01:00.000Z",
-    lastTool: "read",
-  });
+  assert.deepEqual(Object.keys(view.traces).sort(), ["a", "b"]);
   tracker.runEnded();
   view = tracker.view();
   assert.equal(view.running, false);
-  assert.equal(view.untracked, null);
   assert.equal(view.traces.a?.lastRun?.outcome, "ok");
   assert.equal(view.traces.a?.measured.runs, 1);
   assert.equal(view.traces.a?.measured.calls, 1);

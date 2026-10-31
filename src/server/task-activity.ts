@@ -10,7 +10,6 @@ import type {
   TaskMeasured,
   TaskRunOutcome,
   TaskTrace,
-  UntrackedActivity,
 } from "../shared/types.js";
 import { taggedTaskId } from "./task-attribution.js";
 
@@ -93,7 +92,7 @@ function readTrace(value: unknown): TaskTrace | null {
  * What the agent's runs did per task, measured from tool calls tagged with `piuiTaskId`.
  * It never trusts the agent to report progress: a task is working because a live run is
  * calling tools for it, failed because that run errored, and its time, tokens and cost are
- * the sums of those runs. Calls without a tag in the live run count as untracked work.
+ * the sums of those runs. Calls without a tag are not attributed.
  */
 export class TaskActivityTracker {
   private traces = new Map<string, TaskTrace>();
@@ -101,7 +100,6 @@ export class TaskActivityTracker {
   private runId: string | null = null;
   /** Tasks the live run touched, with their first and last tagged call. */
   private spans = new Map<string, RunSpan>();
-  private untracked: UntrackedActivity | null = null;
   /** A failure seen during the run, reported when it ends. */
   private failure: { outcome: "error" | "interrupted"; reason: string } | null = null;
   private listeners = new Set<() => void>();
@@ -175,7 +173,6 @@ export class TaskActivityTracker {
       running: this.runId !== null,
       runId: this.runId,
       traces,
-      untracked: this.untracked === null ? null : { ...this.untracked },
     };
   }
 
@@ -184,7 +181,6 @@ export class TaskActivityTracker {
     if (this.runId !== null) return;
     this.runId = randomUUID();
     this.spans.clear();
-    this.untracked = null;
     this.failure = null;
     this.changed();
   }
@@ -222,7 +218,6 @@ export class TaskActivityTracker {
     }
     this.runId = null;
     this.spans.clear();
-    this.untracked = null;
     this.failure = null;
     this.changed();
   }
@@ -232,21 +227,13 @@ export class TaskActivityTracker {
   }
 
   /** A top-level tool call started. Its `piuiTaskId`, if any, says which task it serves. */
-  toolStarted(name: string, args: unknown): void {
+  toolStarted(_name: string, args: unknown): void {
     // Some tool calls arrive without a run_start we saw, e.g. right after a restart.
     if (this.runId === null) this.runStarted();
     const runId = this.runId as string;
     const now = this.clock();
     const taskId = taggedTaskId(args);
-    if (taskId === undefined) {
-      this.untracked = {
-        calls: (this.untracked?.calls ?? 0) + 1,
-        lastAt: new Date(now).toISOString(),
-        lastTool: name,
-      };
-      this.changed();
-      return;
-    }
+    if (taskId === undefined) return;
     const trace = this.trace(taskId);
     const span = this.spans.get(taskId);
     if (span === undefined || trace.lastRun?.id !== runId) {

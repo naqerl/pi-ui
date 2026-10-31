@@ -441,7 +441,7 @@ const GLYPH_BASE =
   "grid h-4 w-4 shrink-0 place-items-center theme-radius font-mono text-[10px] leading-none";
 
 /** A monochrome-safe status mark: shape and fill carry the state, never color alone. */
-export function StatusGlyph({ state }: { state: TaskState | "untracked" | "idle" }) {
+export function StatusGlyph({ state }: { state: TaskState | "idle" }) {
   switch (state) {
     case "working":
       return (
@@ -494,15 +494,6 @@ export function StatusGlyph({ state }: { state: TaskState | "untracked" | "idle"
           aria-hidden
           className={`${GLYPH_BASE} border border-foreground/40 bg-[linear-gradient(90deg,var(--color-foreground)_50%,transparent_50%)] bg-clip-content p-0.5`}
         />
-      );
-    case "untracked":
-      return (
-        <span
-          aria-hidden
-          className={`${GLYPH_BASE} border border-dashed border-foreground/60 text-foreground`}
-        >
-          ~
-        </span>
       );
     default:
       return <span aria-hidden className={`${GLYPH_BASE} border border-foreground/40`} />;
@@ -894,7 +885,6 @@ function NowCard({
 }) {
   const running = activity?.running === true;
   const working = tasks.filter((task) => state(task) === "working");
-  const untracked = running ? (activity?.untracked ?? null) : null;
   const parentTitle = (task: Task) => {
     const parent =
       task.parentId === null ? undefined : tasks.find((item) => item.id === task.parentId);
@@ -927,7 +917,7 @@ function NowCard({
           <div className={line2}>{idleSummary === "" ? "no open tasks" : idleSummary}</div>
         </div>
       )}
-      {running && working.length === 0 && untracked === null && (
+      {running && working.length === 0 && (
         <div>
           <div className="flex items-center gap-2.5 text-sm">
             <StatusGlyph state="working" />
@@ -961,18 +951,6 @@ function NowCard({
           </button>
         );
       })}
-      {untracked !== null && (
-        <div data-testid="now-untracked">
-          <div className="flex items-center gap-2.5 text-sm">
-            <StatusGlyph state="untracked" />
-            <span className="font-bold">Untracked</span>
-            <span className="truncate text-foreground/70">· work not tagged with a task</span>
-          </div>
-          <div className={line2}>
-            {untracked.calls} {untracked.calls === 1 ? "call" : "calls"} · last {untracked.lastTool}
-          </div>
-        </div>
-      )}
     </section>
   );
 }

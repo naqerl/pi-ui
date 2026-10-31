@@ -5,8 +5,8 @@ import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
 // A task is working because a live run calls tools tagged with its id, never because the agent
-// said so; calls without a tag still show, as untracked work.
-test("tagged tool calls show a task as working, untagged ones as untracked work", async ({
+// said so; calls without a tag are not attributed to any task.
+test("tagged tool calls show a task as working, untagged ones touch no task", async ({
   app,
   browser,
   screen,
@@ -50,12 +50,10 @@ test("tagged tool calls show a task as working, untagged ones as untracked work"
   await expect(screen.getByTestId(`task-${id}`)).toHaveAttribute("data-state", "working");
   await expect(screen.getByTestId(`now-task-${id}`)).toBeVisible();
   await expect(screen.getByTestId("now-card")).toHaveAttribute("data-running", "true");
-  await expect(screen.getByTestId("now-untracked")).toContainText("1 call · last bash");
 
   writeFileSync(release, "");
   await expect(screen.getByTestId("now-card")).toHaveAttribute("data-running", "false");
   await expect(screen.getByTestId(`task-${id}`)).toHaveAttribute("data-state", "ready");
-  await expect(screen.getByTestId("now-untracked")).toHaveCount(0);
 
   await screen.getByRole("button", { name: `Open ${title}` }).tap();
   await expect(screen.getByTestId("task-history")).toContainText("Run started");

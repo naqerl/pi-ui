@@ -334,13 +334,6 @@ export interface TaskTrace {
   history: TaskHistoryEvent[];
 }
 
-/** Activity in the live run that no task claimed. */
-export interface UntrackedActivity {
-  calls: number;
-  lastAt: string;
-  lastTool: string;
-}
-
 export interface TaskActivity {
   /** The server's clock when this view was built, so recency does not depend on the browser's. */
   now: string;
@@ -348,8 +341,6 @@ export interface TaskActivity {
   /** The live run, or null between runs. */
   runId: string | null;
   traces: Record<string, TaskTrace>;
-  /** Untagged tool calls in the live run; null when there were none. */
-  untracked: UntrackedActivity | null;
 }
 
 export interface Snapshot {
