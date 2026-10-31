@@ -2,6 +2,10 @@
 
 Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
 
+## 1.6.33 - 2026-10-31
+
+- Task cards show when they were created at the bottom right, and when a done task was closed; the detail header keeps the long form.
+
 ## 1.6.32 - 2026-10-31
 
 - The Tasks page drops the "Working on …" line; a running task shows its Working badge in the list.
