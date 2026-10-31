@@ -1,5 +1,20 @@
-import { test } from "@e2e-dev/web";
+import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
+
+// The e2e server and its task store are shared by every test file: leave no tasks behind.
+async function removeTasks(browser: Browser, titles: readonly string[]) {
+  const left = await browser.evaluate(async (names) => {
+    const matching = async () =>
+      (
+        (await (await fetch("/api/tasks")).json()).tasks as Array<{ id: string; title: string }>
+      ).filter((task) => names.includes(task.title));
+    for (const task of await matching()) {
+      await fetch(`/api/tasks/${encodeURIComponent(task.id)}`, { method: "DELETE" });
+    }
+    return (await matching()).length;
+  }, titles);
+  expect(left).toBe(0);
+}
 
 test("keeps a todo with subtasks and blockers on the tasks page", async ({
   app,
@@ -813,4 +828,239 @@ test("puts the task filters in the composer header and groups done work by day",
     };
   });
   expect(header).toEqual({ dark: true, labelLeft: true, chevronLeftOfCount: true });
+});
+
+test("edits a task title in the detail view and refuses an empty one", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 1280, height: 800 });
+  await app.open("/?page=tasks");
+  const id = await browser.evaluate(async () => {
+    const response = await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Draft title", parentId: null }),
+    });
+    const ledger = (await response.json()) as { tasks: Array<{ id: string; title: string }> };
+    return ledger.tasks.find((task) => task.title === "Draft title")?.id ?? "";
+  });
+  await screen.getByRole("button", { name: "Open Draft title" }).click();
+  await screen.getByRole("button", { name: "Edit title Draft title" }).click();
+  const title = screen.getByRole("textbox", "Task title");
+  await title.fill("Corrected title");
+  await title.press("Enter");
+  await expect(screen.getByRole("button", { name: "Edit title Corrected title" })).toBeVisible();
+  await expect(screen.getByRole("button", { name: "Open Corrected title" })).toBeVisible();
+  await expect
+    .poll(() =>
+      browser.evaluate(async (taskId) => {
+        const ledger = (await (await fetch("/api/tasks")).json()) as {
+          tasks: Array<{ id: string; title: string }>;
+        };
+        return ledger.tasks.find((task) => task.id === taskId)?.title ?? null;
+      }, id),
+    )
+    .toBe("Corrected title");
+
+  await app.open("/?page=tasks");
+  await expect(screen.getByRole("button", { name: "Open Corrected title" })).toBeVisible();
+  await screen.getByRole("button", { name: "Open Corrected title" }).click();
+  await screen.getByRole("button", { name: "Edit title Corrected title" }).click();
+  const again = screen.getByRole("textbox", "Task title");
+  await again.fill("   ");
+  await again.press("Enter");
+  await expect(screen.getByText("Title must not be empty")).toBeVisible();
+  await expect(screen.getByRole("button", { name: "Edit title Corrected title" })).toBeVisible();
+  await expect
+    .poll(() =>
+      browser.evaluate(async (taskId) => {
+        const ledger = (await (await fetch("/api/tasks")).json()) as {
+          tasks: Array<{ id: string; title: string }>;
+        };
+        return ledger.tasks.find((task) => task.id === taskId)?.title ?? null;
+      }, id),
+    )
+    .toBe("Corrected title");
+
+  await removeTasks(browser, ["Corrected title"]);
+});
+
+test("sets, edits and clears a task body that renders as markdown", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 1280, height: 800 });
+  await app.open("/?page=tasks");
+  const rationale = "The rationale belongs to the proposer and must survive a body edit.";
+  const id = await browser.evaluate(async (why) => {
+    const response = await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Body draft", rationale: why, propose: true }),
+    });
+    const ledger = (await response.json()) as { tasks: Array<{ id: string; title: string }> };
+    const task = ledger.tasks.find((item) => item.title === "Body draft");
+    if (task === undefined) return "";
+    await fetch(`/api/tasks/${encodeURIComponent(task.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "open" }),
+    });
+    return task.id;
+  }, rationale);
+  await app.open("/?page=tasks");
+  await screen.getByRole("button", { name: "Open Body draft" }).click();
+  await screen.getByRole("button", { name: "Add body" }).click();
+  const body = screen.getByRole("textbox", "Task body");
+  await body.fill("# Route plan\n\nUse **tram 4**.");
+  await body.press("Control+Enter");
+  await expect(
+    screen.getByTestId("task-body").getByRole("heading", { name: "Route plan" }),
+  ).toBeVisible();
+  await expect(screen.getByTestId("task-body").getByText("tram 4")).toBeVisible();
+  await expect(screen.getByText(rationale)).toBeVisible();
+
+  await app.open("/?page=tasks");
+  await screen.getByRole("button", { name: "Open Body draft" }).click();
+  await expect(
+    screen.getByTestId("task-body").getByRole("heading", { name: "Route plan" }),
+  ).toBeVisible();
+  await screen.getByRole("button", { name: "Edit body" }).click();
+  const edited = screen.getByRole("textbox", "Task body");
+  await edited.fill("## Later plan\n\nWalk instead.");
+  await edited.press("Control+Enter");
+  await expect(
+    screen.getByTestId("task-body").getByRole("heading", { name: "Later plan" }),
+  ).toBeVisible();
+  await expect(screen.getByText(rationale)).toBeVisible();
+
+  await screen.getByRole("button", { name: "Edit body" }).click();
+  const cleared = screen.getByRole("textbox", "Task body");
+  await cleared.fill("");
+  await cleared.press("Control+Enter");
+  await expect(screen.getByTestId("task-body")).toHaveCount(0);
+  await expect
+    .poll(() =>
+      browser.evaluate(async (taskId) => {
+        const ledger = (await (await fetch("/api/tasks")).json()) as {
+          tasks: Array<{ id: string; body?: string; rationale?: string }>;
+        };
+        const task = ledger.tasks.find((item) => item.id === taskId);
+        return { body: task?.body ?? null, rationale: task?.rationale ?? null };
+      }, id),
+    )
+    .toEqual({ body: null, rationale });
+
+  await app.open("/?page=tasks");
+  await screen.getByRole("button", { name: "Open Body draft" }).click();
+  await expect(screen.getByTestId("task-body")).toHaveCount(0);
+  await expect(screen.getByText(rationale)).toBeVisible();
+
+  await removeTasks(browser, ["Body draft"]);
+});
+
+test("sets an existing or new project and clears it to No project", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 1280, height: 800 });
+  await app.open("/?page=tasks");
+  const created = await browser.evaluate(async () => {
+    const post = async (body: unknown) => {
+      const response = await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return ((await response.json()) as { tasks: Array<{ id: string; title: string }> }).tasks;
+    };
+    await post({ title: "Project anchor", parentId: null, project: "alpha" });
+    const tasks = await post({ title: "Project target", parentId: null });
+    return tasks.find((task) => task.title === "Project target")?.id ?? "";
+  });
+  await app.open("/?page=tasks");
+  await screen.getByRole("button", { name: "Open Project target" }).click();
+  const project = screen.getByRole("textbox", "Task project");
+  await expect(project).toHaveValue("");
+  await project.fill("alpha");
+  await project.press("Enter");
+  await expect(
+    screen.getByTestId("task-project-alpha").getByText("Project target", { exact: true }),
+  ).toBeVisible();
+
+  await project.fill("beta");
+  await project.press("Enter");
+  await expect(
+    screen.getByTestId("task-project-beta").getByText("Project target", { exact: true }),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      browser.evaluate(async (taskId) => {
+        const ledger = (await (await fetch("/api/tasks")).json()) as {
+          tasks: Array<{ id: string; project?: string }>;
+        };
+        return ledger.tasks.find((task) => task.id === taskId)?.project ?? null;
+      }, created),
+    )
+    .toBe("beta");
+
+  await app.open("/?page=tasks");
+  await screen.getByRole("button", { name: "Open Project target" }).click();
+  await expect(screen.getByRole("textbox", "Task project")).toHaveValue("beta");
+  const cleared = screen.getByRole("textbox", "Task project");
+  await cleared.fill("");
+  await cleared.press("Enter");
+  await expect(
+    screen.getByTestId("task-project-none").getByText("Project target", { exact: true }),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      browser.evaluate(async (taskId) => {
+        const ledger = (await (await fetch("/api/tasks")).json()) as {
+          tasks: Array<{ id: string; project?: string }>;
+        };
+        return ledger.tasks.find((task) => task.id === taskId)?.project ?? null;
+      }, created),
+    )
+    .toBeNull();
+
+  await removeTasks(browser, ["Project target", "Project anchor"]);
+});
+
+test("PATCH rejects a non-string, overlong or empty field with a 400", async ({ app, browser }) => {
+  await app.open("/");
+  const result = await browser.evaluate(async () => {
+    const create = await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Validation target", parentId: null }),
+    });
+    const ledger = (await create.json()) as { tasks: Array<{ id: string; title: string }> };
+    const id = ledger.tasks.find((task) => task.title === "Validation target")?.id ?? "";
+    const patch = async (body: unknown) => {
+      const response = await fetch(`/api/tasks/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return { status: response.status, text: await response.text() };
+    };
+    const notString = await patch({ body: 42 });
+    const tooLong = await patch({ body: "x".repeat(20_001) });
+    const emptyTitle = await patch({ title: "   " });
+    const blankBody = await patch({ body: "   " });
+    await fetch(`/api/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
+    return { notString, tooLong, emptyTitle, blankBody };
+  });
+  expect(result?.notString.status).toBe(400);
+  expect(result?.notString.text).toContain("body");
+  expect(result?.tooLong.status).toBe(400);
+  expect(result?.tooLong.text).toContain("body");
+  expect(result?.emptyTitle.status).toBe(400);
+  expect(result?.emptyTitle.text).toContain("title");
+  expect(result?.blankBody.status).toBe(200);
 });

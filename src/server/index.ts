@@ -9,7 +9,7 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { OperatorNoticeRecord } from "../shared/notices.js";
 import { MCP_EVENTS_HEAD } from "../shared/notices.js";
-import { parseCompletion } from "../shared/tasks.js";
+import { parseCompletion, TASK_BODY_MAX_LENGTH } from "../shared/tasks.js";
 import type { TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
 import { ChatService } from "./chat-service.js";
@@ -123,7 +123,7 @@ const memoryWrites: { current?: (record: MemoryWriteRecord) => void } = {};
 const memoryBlock = await memorySnapshot.get(memory, "first_turn");
 const baseInstructions = `${await buildPiSystemPrompt(cwd, catalog.runtime)}
 
-Tasks are a shared todo ledger on the tasks page. You can list them with task_list, mark one done with task_done (with evidence a reviewer can check), and create a blocker for one with task_block. Every task needs human approval: write down work you think is worth doing with propose_task, and a human can approve it from the tasks page. A proposal is not a task and does not appear in task_list; use task_proposals to read the waiting proposals. A done blocker does not block. A task with an open subtask cannot be marked done. You cannot add a task that blocks nothing, reopen a task, or delete one. Every tool takes an optional piuiTaskId argument: when a call works on a task, set it to that task's id so the tasks page shows the task as being worked on and measures its time and cost; leave it out for work that is not part of a task.
+Tasks are a shared todo ledger on the tasks page. You can list them with task_list, mark one done with task_done (with evidence a reviewer can check), edit a title, body or project with task_edit, and create a blocker for one with task_block. Every task needs human approval: write down work you think is worth doing with propose_task, and a human can approve it from the tasks page. A proposal is not a task and does not appear in task_list; use task_proposals to read the waiting proposals. A done blocker does not block. A task with an open subtask cannot be marked done. You cannot add a task that blocks nothing, reopen a task, or delete one. Every tool takes an optional piuiTaskId argument: when a call works on a task, set it to that task's id so the tasks page shows the task as being worked on and measures its time and cost; leave it out for work that is not part of a task.
 
 Draw a diagram into the chat with draw_diagram (Mermaid source) and revise it later with replace_diagram and the id from the first result. The drawing is part of your reply; do not repeat its source in your text.
 
@@ -530,6 +530,14 @@ app.post("/api/tasks", async (c) => {
     typeof body.rationale === "string"
       ? body.rationale
       : "";
+  const taskBody =
+    typeof body === "object" && body !== null && "body" in body ? body.body : undefined;
+  if (taskBody !== undefined) {
+    if (typeof taskBody !== "string") return c.text("body must be a string", 400);
+    if (taskBody.trim().length > TASK_BODY_MAX_LENGTH) {
+      return c.text(`body must be at most ${TASK_BODY_MAX_LENGTH} characters`, 400);
+    }
+  }
   try {
     const attachments = parseAttachmentIds(
       media,
@@ -540,11 +548,14 @@ app.post("/api/tasks", async (c) => {
     for (const id of attachments) await media.read(id);
     if (proposed) {
       return c.json(
-        publishTasks(await taskStore.propose(title, rationale, attachments, project)),
+        publishTasks(await taskStore.propose(title, rationale, attachments, project, taskBody)),
         201,
       );
     }
-    return c.json(publishTasks(await taskStore.create(title, parentId, attachments, project)), 201);
+    return c.json(
+      publishTasks(await taskStore.create(title, parentId, attachments, project, taskBody)),
+      201,
+    );
   } catch (error) {
     return taskFailure(c, error);
   }
@@ -559,11 +570,25 @@ app.patch("/api/tasks/:id", async (c) => {
   }
   if (typeof body !== "object" || body === null) return c.text("Expected a JSON body", 400);
   const patch: {
+    title?: string;
+    body?: string;
     status?: TaskStatus;
     blockedBy?: string[];
     completion?: TaskCompletion;
     project?: string | null;
   } = {};
+  if ("title" in body) {
+    if (typeof body.title !== "string") return c.text("title must be a string", 400);
+    if (body.title.trim().length === 0) return c.text("title must not be empty", 400);
+    patch.title = body.title;
+  }
+  if ("body" in body) {
+    if (typeof body.body !== "string") return c.text("body must be a string", 400);
+    if (body.body.trim().length > TASK_BODY_MAX_LENGTH) {
+      return c.text(`body must be at most ${TASK_BODY_MAX_LENGTH} characters`, 400);
+    }
+    patch.body = body.body;
+  }
   if ("project" in body) {
     if (body.project !== null && typeof body.project !== "string")
       return c.text("project must be a string or null", 400);

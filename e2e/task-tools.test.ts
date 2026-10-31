@@ -49,7 +49,15 @@ test("task tools list, mark done, and create a blocker", async () => {
   published = [];
   assert.deepEqual(
     createTaskTools(bridge).map((tool) => tool.name),
-    ["task_list", "task_proposals", "task_view", "task_done", "propose_task", "task_block"],
+    [
+      "task_list",
+      "task_proposals",
+      "task_view",
+      "task_done",
+      "task_edit",
+      "propose_task",
+      "task_block",
+    ],
   );
 
   const parent = (await bridge.store.create("Write the ledger", null)).tasks.find(
@@ -118,4 +126,34 @@ test("task_view returns a task's images", async () => {
   assert.ok(image && image.type === "image");
   assert.equal(image.mimeType, "image/png");
   assert.equal(image.data, Buffer.from(png).toString("base64"));
+});
+
+test("agent task tools set and edit a body without touching the rationale", async () => {
+  const rationale = "A body keeps the plan next to the task instead of in a chat message.";
+  const proposed = text(
+    await call("propose_task", {
+      title: "Write the plan down",
+      rationale,
+      body: "# Plan\n\nFirst **step**.",
+    }),
+  );
+  assert.equal(proposed.isError, false);
+  const task = bridge.store.ledger().tasks.find((item) => item.title === "Write the plan down");
+  assert.ok(task);
+  assert.equal(task.body, "# Plan\n\nFirst **step**.");
+  assert.equal(task.rationale, rationale);
+  assert.match(text(await call("task_view", { id: task.id })).text, /First \*\*step\*\*/);
+
+  const edited = text(await call("task_edit", { id: task.id, body: "## Later\n\nSecond step." }));
+  assert.equal(edited.isError, false);
+  const changed = bridge.store.ledger().tasks.find((item) => item.id === task.id);
+  assert.equal(changed?.body, "## Later\n\nSecond step.");
+  assert.equal(changed?.rationale, rationale);
+
+  const cleared = text(await call("task_edit", { id: task.id, body: "" }));
+  assert.equal(cleared.isError, false);
+  assert.equal(bridge.store.ledger().tasks.find((item) => item.id === task.id)?.body, undefined);
+  const blankTitle = text(await call("task_edit", { id: task.id, title: "   " }));
+  assert.equal(blankTitle.isError, true);
+  assert.match(blankTitle.text, /title/i);
 });

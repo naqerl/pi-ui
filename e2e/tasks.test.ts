@@ -26,6 +26,7 @@ import {
   formatTokenCount,
   hasOpenDescendant,
   liveBlockerIds,
+  TASK_BODY_MAX_LENGTH,
 } from "../src/shared/tasks.js";
 import { formatDateTime, formatTime } from "../src/shared/time.js";
 import type { Task, TaskLedger } from "../src/shared/types.js";
@@ -975,7 +976,7 @@ test("open tasks group by project A–Z, case-insensitively, with no project las
   assert.deepEqual(groupByProject(loose), [[null, loose]]);
 });
 
-test("the task detail shows the project as plain text, and nothing without one", () => {
+test("the task detail edits its project and shows a body as markdown", () => {
   const task: Task = {
     id: "t3",
     title: "Diff the tram routes",
@@ -983,6 +984,8 @@ test("the task detail shows the project as plain text, and nothing without one",
     parentId: null,
     blockedBy: [],
     createdAt: "2026-01-01T12:00:00.000Z",
+    rationale: "The proposer's reason stays separate.",
+    body: "# Route plan\n\nUse **tram 4**.",
     completedAt: null,
     completion: null,
     project: "citydiff",
@@ -1004,9 +1007,44 @@ test("the task detail shows the project as plain text, and nothing without one",
     onRemove: () => {},
   };
   const markup = renderToStaticMarkup(createElement(TaskDetail, { ...props, task }));
-  assert.match(markup, /data-testid="task-project-line"[\s\S]*>Project<[\s\S]*>citydiff</);
+  assert.match(markup, /data-testid="task-project-line"[\s\S]*>Project<[\s\S]*value="citydiff"/);
   assert.doesNotMatch(markup, /<select/);
+  assert.match(markup, /data-testid="task-body"[\s\S]*<h1[^>]*>Route plan<\/h1>/);
+  assert.match(markup, /<strong[^>]*>tram 4<\/strong>/);
+  assert.match(markup, /The proposer&#x27;s reason stays separate\./);
+  assert.match(markup, /aria-label="Edit title Diff the tram routes"/);
   const { project: _drop, ...loose } = task;
   const bare = renderToStaticMarkup(createElement(TaskDetail, { ...props, task: loose }));
-  assert.doesNotMatch(bare, /task-project-line/);
+  assert.match(bare, /data-testid="task-project-input"[^>]*placeholder="No project"/);
+});
+
+test("the task store rejects an empty title and a body that is not a string or too long", async () => {
+  const { directory, file, store } = await temporaryStore();
+  try {
+    const task = (await store.create("Edit me", null)).tasks[0];
+    assert.ok(task);
+    await assert.rejects(store.update(task.id, { title: "   " }), /title must not be empty/);
+    await assert.rejects(
+      store.update(task.id, { body: 42 as unknown as string }),
+      /body must be a string/,
+    );
+    await assert.rejects(
+      store.update(task.id, { body: "x".repeat(TASK_BODY_MAX_LENGTH + 1) }),
+      /body must be at most 20000 characters/,
+    );
+    const saved = await store.update(task.id, {
+      title: "  Edit me too  ",
+      body: "  # Notes\n\nKeep **this**.  ",
+    });
+    const edited = saved.tasks.find((item) => item.id === task.id);
+    assert.equal(edited?.title, "Edit me too");
+    assert.equal(edited?.body, "# Notes\n\nKeep **this**.");
+    const cleared = await store.update(task.id, { body: "" });
+    assert.equal(cleared.tasks.find((item) => item.id === task.id)?.body, undefined);
+    const reloaded = new TaskStore(file, { notify: () => {} });
+    await reloaded.load();
+    assert.equal(reloaded.ledger().tasks.find((item) => item.id === task.id)?.body, undefined);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
