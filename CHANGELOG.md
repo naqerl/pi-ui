@@ -4,6 +4,10 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.21 - 2026-10-31
+
+- Diagrams open full screen: a viewer over the chat with zoom (wheel, buttons, pinch) and drag-to-pan, keyboard escape to close, and the inline diagram keeps its own scroll container.
+
 ## 1.6.20 - 2026-10-31
 
 - nudge the agent after 20 idle minutes when work is open
