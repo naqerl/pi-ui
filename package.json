@@ -12,7 +12,7 @@
     "lint": "biome check .",
     "e2e": "e2e run",
     "icons": "node scripts/generate-icons.mjs",
-    "test": "node --import tsx --test e2e/*.test.ts"
+    "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "1.3.0",

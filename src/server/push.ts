@@ -9,7 +9,12 @@ export const PUSH_SUBSCRIPTIONS_FILE = "push-subscriptions.json";
 export const PUSH_SUBSCRIPTIONS_VERSION = 1;
 /** Web push requires a contact address in the VAPID subject. */
 export const PUSH_VAPID_SUBJECT = "mailto:pi@localhost";
+/** The only endpoint hosts a test-mode service may deliver to. */
+export const TEST_PUSH_HOSTS = ["push.example", "example.test", "localhost", "127.0.0.1"] as const;
+/** Explicit escape hatch; no test sets it, so the guard is on by default. */
+export const ALLOW_REAL_PUSH_ENV = "PI_E2E_ALLOW_REAL_PUSH";
 
+const TEST_PUSH_HOST_SET = new Set<string>(TEST_PUSH_HOSTS);
 const MAX_TITLE_CHARS = 60;
 export const MAX_BODY_CHARS = 140;
 
@@ -103,6 +108,39 @@ const pendingKeyLoads = new Map<string, Promise<PushVapidKeys>>();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The lower-case host of an endpoint, or null when it is not a usable URL. */
+export function pushEndpointHost(endpoint: string): string | null {
+  try {
+    return new URL(endpoint).hostname.toLowerCase() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Test mode may only reach hosts that can never deliver to a real device.
+ * Returns the refusal message (naming the host) or null when delivery is safe.
+ */
+export function testPushGuardError(
+  endpoint: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  if (env.NODE_ENV !== "test") return null;
+  if (env[ALLOW_REAL_PUSH_ENV] === "1") return null;
+  const host = pushEndpointHost(endpoint);
+  if (host !== null && TEST_PUSH_HOST_SET.has(host)) return null;
+  const named = host ?? endpoint;
+  return `refusing to push to ${named} in test mode; only test hosts are allowed`;
+}
+
+/** Thrown only when the test-mode push guard refuses a real endpoint. */
+export class TestPushGuardError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TestPushGuardError";
+  }
 }
 
 function statePath(pathOrDataDir: string, fileName: string): string {
@@ -555,13 +593,20 @@ export class PushService {
 
   /**
    * Sends one notification to every stored subscription and returns how many
-   * sends succeeded. Never throws.
+   * sends succeeded. Delivery failures are swallowed; only the test-mode guard
+   * throws, so a test can never reach a real push endpoint.
    */
   async notify(input: PushNotification): Promise<number> {
     let sent = 0;
     try {
       const subscriptions = await this.store.read();
       if (subscriptions.length === 0) return 0;
+      for (const subscription of subscriptions) {
+        const refusal = testPushGuardError(subscription.endpoint);
+        if (refusal === null) continue;
+        this.log(`push: ${refusal}`);
+        throw new TestPushGuardError(refusal);
+      }
       const keys = await this.vapidKeys();
       const payload = JSON.stringify(normalizeNotification(input));
       await Promise.all(
@@ -592,6 +637,7 @@ export class PushService {
         }),
       );
     } catch (error) {
+      if (error instanceof TestPushGuardError) throw error;
       this.log(`push: notification skipped: ${errorMessage(error)}`);
     }
     return sent;

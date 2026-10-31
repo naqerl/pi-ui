@@ -38,6 +38,7 @@ import { type DurableSessionOptions, openDurableSession, SESSION_CONTEXT } from 
 import { StreamHub } from "./stream-hub.js";
 import type { TaskBridge } from "./task-tools.js";
 import { TaskError, TaskStore } from "./tasks.js";
+import { liveDataDirInTestError } from "./test-mode.js";
 import { injectTheme, resolveTheme, themeManifest, writeThemeSlug } from "./themes.js";
 import { windowRequestFromQuery } from "./transcript-window.js";
 import { readAppVersion } from "./version-notice.js";
@@ -51,6 +52,11 @@ const clientDir = existsSync(resolve(builtClientDir, "index.html"))
 
 const cwd = resolve(process.env.PI_CWD?.trim() || process.cwd());
 const dataDir = resolve(cwd, process.env.DATA_DIR?.trim() || "data");
+const testModeDataDirError = liveDataDirInTestError(dataDir);
+if (testModeDataDirError !== null) {
+  console.error(`pi-ui: ${testModeDataDirError}`);
+  process.exit(1);
+}
 configurePush(dataDir);
 const themeFile = resolve(dataDir, "theme.json");
 const taskStore = new TaskStore(resolve(dataDir, "tasks.json"));
