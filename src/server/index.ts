@@ -8,6 +8,7 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { openTaskIds } from "../shared/idle-nudge.js";
+import { MCP_EVENTS_HEAD } from "../shared/notices.js";
 import type { OperatorNoticeRecord } from "../shared/notices.js";
 import { parseCompletion } from "../shared/tasks.js";
 import type { TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
@@ -271,11 +272,13 @@ jobs.setQuietNotifier((job, tail) => {
   });
 });
 boot.mcp.setSubmit((text, options) => {
-  void chat
-    .submit(text, options.deliverAs === "steer" ? "steer" : "queue")
-    .catch((error: unknown) => {
-      console.error("[pi] MCP event message failed", error);
-    });
+  const deliverAs = options.deliverAs === "steer" ? "steer" : "queue";
+  const submission = text.startsWith(MCP_EVENTS_HEAD)
+    ? chat.submitMcpEventNotice(text, options.deliverAs)
+    : chat.submit(text, deliverAs);
+  void submission.catch((error: unknown) => {
+    console.error("[pi] MCP event message failed", error);
+  });
 });
 
 void bili

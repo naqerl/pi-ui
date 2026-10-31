@@ -89,6 +89,21 @@ const JobNoticeEntry = defineEntry<{
 /** The entry kind a job result is placed as; the chat never renders it as a user message. */
 export const JOB_NOTICE_ENTRY_KIND = JobNoticeEntry.kind;
 
+/**
+ * An MCP event notice. The first entry of a key carries the model message that
+ * starts the turn; later entries for the same key only update its text and time.
+ * `buildTranscript` keeps one visible message per key.
+ */
+const McpNoticeEntry = defineEntry<{
+  noticeId: string;
+  key: string;
+  text: string;
+  at: string;
+  createdAt: string;
+}>("ui.mcp-notice");
+
+export const MCP_NOTICE_ENTRY_KIND = McpNoticeEntry.kind;
+
 /** A memory_write result. It carries no model message, so it never starts or joins a turn. */
 const MemoryWriteEntry = defineEntry<{
   path: string;
@@ -589,6 +604,19 @@ export function buildTranscript(
     }
   }
 
+  const mcpNotices = new Map<string, { first: EntryRecord; latest: EntryRecord }>();
+  for (const entry of sorted) {
+    const groupId = mcpNoticeGroupId(entry);
+    if (groupId === null) continue;
+    const existing = mcpNotices.get(groupId);
+    if (existing === undefined) {
+      mcpNotices.set(groupId, { first: entry, latest: entry });
+      continue;
+    }
+    if (entry.id < existing.first.id) existing.first = entry;
+    if (mcpNoticeAt(entry) >= mcpNoticeAt(existing.latest)) existing.latest = entry;
+  }
+
   for (const entry of sorted) {
     if (entry.kind !== AssistantEntry.kind) continue;
     const message = asRecord(entry.model?.[0]);
@@ -614,6 +642,29 @@ export function buildTranscript(
         notice,
         timestamp: entryTimestamp(entry.data),
         order: entry.id * 10_000,
+      });
+      continue;
+    }
+    if (kind === McpNoticeEntry.kind) {
+      const groupId = mcpNoticeGroupId(entry);
+      if (groupId === null) continue;
+      const group = mcpNotices.get(groupId);
+      if (group === undefined || group.first.id !== entry.id) continue;
+      if (!isRecord(group.latest.data) || typeof group.latest.data.text !== "string") continue;
+      const text = group.latest.data.text;
+      const notice = parseNotice(text);
+      if (notice === null) continue;
+      const at = group.latest.data.at;
+      messages.push({
+        id: `m-${entry.id}`,
+        role: "user",
+        text,
+        timestamp:
+          typeof at === "string" && Number.isFinite(Date.parse(at))
+            ? new Date(at).toISOString()
+            : entryTimestamp(group.latest.data),
+        order: entry.id * 10_000,
+        notice,
       });
       continue;
     }
@@ -890,6 +941,41 @@ export function assistantMessageFromEntry(entry: EntryRecord): ChatMessage | nul
   };
 }
 
+/**
+ * Appends the newest text for an open MCP notice and returns the one visible
+ * message for its key. Updates carry no model message, so they never start a turn.
+ */
+export async function appendMcpNotice(
+  conversation: Conversation,
+  notice: { noticeId: string; key: string; text: string; at: string },
+): Promise<ChatMessage | undefined> {
+  const createdAt = notice.at;
+  await conversation.commit(
+    (tx) =>
+      tx.appendEntry(McpNoticeEntry, conversation.id, {
+        data: {
+          noticeId: notice.noticeId,
+          key: notice.key,
+          text: notice.text,
+          at: notice.at,
+          createdAt,
+        },
+      }),
+    SESSION_CONTEXT,
+  );
+  const context = await conversation.context(SESSION_CONTEXT);
+  const first = context.entries.find(
+    (candidate) =>
+      candidate.kind === McpNoticeEntry.kind &&
+      isRecord(candidate.data) &&
+      candidate.data.noticeId === notice.noticeId,
+  );
+  if (first === undefined) return undefined;
+  return buildTranscript(context.entries).messages.find(
+    (message) => message.id === `m-${first.id}`,
+  );
+}
+
 /** Records a memory write as a persistent chip the chat can show after a reload. */
 export async function appendMemoryWriteNotice(
   conversation: Conversation,
@@ -1057,6 +1143,19 @@ function userImages(content: unknown, media: MediaResolver): MediaRef[] {
     if (ref !== undefined) refs.push(ref);
   }
   return refs;
+}
+
+function mcpNoticeGroupId(entry: EntryRecord): string | null {
+  if (entry.kind !== McpNoticeEntry.kind || !isRecord(entry.data)) return null;
+  if (typeof entry.data.noticeId === "string") return entry.data.noticeId;
+  // Entries from before per-window ids still group by their logical key.
+  return typeof entry.data.key === "string" ? `legacy:${entry.data.key}` : null;
+}
+
+function mcpNoticeAt(entry: EntryRecord): number {
+  if (!isRecord(entry.data) || typeof entry.data.at !== "string") return entry.id;
+  const parsed = Date.parse(entry.data.at);
+  return Number.isFinite(parsed) ? parsed : entry.id;
 }
 
 function entryTimestamp(data: unknown): string {
