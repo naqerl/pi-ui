@@ -81,10 +81,26 @@ test("leaves the scroll alone when the reader scrolled away during the run", asy
     return main.scrollTop;
   });
   expect(scrolled).toBe(200);
+  // Images from earlier tests load lazily once scrolled near, and the transcript keeps what is
+  // read in place while they grow, so measure from where the scroll settles.
+  const reading = await browser.evaluate(async () => {
+    const main = document.querySelector<HTMLElement>("main");
+    if (main === null) return -1;
+    await Promise.all(
+      [...main.querySelectorAll("img")].map((img) =>
+        img.complete
+          ? null
+          : new Promise((resolve) => img.addEventListener("load", resolve, { once: true })),
+      ),
+    );
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    return main.scrollTop;
+  });
+  expect(reading).toBeGreaterThan(100);
   await expect(screen.getByRole("button", "Send")).toBeVisible({ timeout: 20_000 });
   await new Promise((resolve) => setTimeout(resolve, 400));
   const top = await browser.evaluate(
     () => document.querySelector<HTMLElement>("main")?.scrollTop ?? -1,
   );
-  expect(Math.abs(top - 200)).toBeLessThanOrEqual(2);
+  expect(Math.abs(top - reading)).toBeLessThanOrEqual(2);
 });
