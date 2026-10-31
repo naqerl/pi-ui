@@ -4,6 +4,11 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.23 - 2026-10-31
+
+- delivered
+
+
 ## 1.6.22 - 2026-10-31
 
 - Push notifications go out only when the agent asks for them: the new `notify_operator` tool sends a title, body and reason to the operator devices, and the request shows as a ✉ chip in the chat. Assistant replies no longer push.
