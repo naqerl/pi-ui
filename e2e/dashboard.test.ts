@@ -5,6 +5,9 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { EventsView } from "../src/client/EventsView.js";
 import { type DashboardHost, DashboardManager, parseWidget } from "../src/server/dashboard.js";
 import { type PollOutcome, type PollRun, runPollScript } from "../src/server/dashboard-runner.js";
 import { createDashboardTools } from "../src/server/dashboard-tools.js";
@@ -253,6 +256,68 @@ test("MCP builtins list recent events newest first and subscriptions per server"
   const view = renderWidget(widget, feed) as { kind: string; items: unknown[] };
   assert.equal(view.kind, "list");
   assert.equal(view.items.length, MCP_EVENT_WIDGET_LIMIT);
+});
+
+test("title-less argument subscriptions expose their stable id in both MCP widgets", () => {
+  const stableId = "stub/ticks#a1b2c3d4";
+  const subscription = {
+    id: "s1",
+    stableId,
+    server: "stub",
+    name: "ticks",
+    status: "active",
+    arguments: { channel: "jobs" },
+    cursor: null,
+  };
+  const inputs = {
+    usage: null,
+    context: null,
+    mcp: {
+      unavailable: [],
+      servers: [{ name: "stub", available: true, authRejected: false, tools: [] }],
+    },
+    mcpEvents: {
+      subscriptions: [subscription],
+      events: [],
+      notice: null,
+      revision: 1,
+    },
+    jobs: [],
+    session: { conversationId: "c", model: null, run: "idle" },
+  } as unknown as Parameters<typeof builtinData>[1];
+  const status = builtinData("mcp", inputs) as {
+    servers: { subscriptions: string[]; detail: string }[];
+  };
+  assert.deepEqual(status.servers[0]?.subscriptions, [stableId]);
+  assert.equal(status.servers[0]?.detail, `no tools · subscribed: ${stableId}`);
+  const feed = builtinData("mcp_events", inputs) as {
+    subscriptions: { stableId: string; label: string; title: string | null }[];
+  };
+  assert.equal(feed.subscriptions[0]?.stableId, stableId);
+  assert.equal(feed.subscriptions[0]?.title, null);
+  assert.equal(feed.subscriptions[0]?.label, stableId);
+
+  const markup = renderToStaticMarkup(
+    createElement(EventsView, { events: inputs.mcpEvents, ready: true }),
+  );
+  assert.match(markup, /stub\/ticks#a1b2c3d4/);
+
+  const titled = {
+    ...inputs,
+    mcpEvents: {
+      ...inputs.mcpEvents,
+      subscriptions: [{ ...subscription, title: "Nightly jobs" }],
+    },
+  } as unknown as Parameters<typeof builtinData>[1];
+  const titledFeed = builtinData("mcp_events", titled) as {
+    subscriptions: { label: string }[];
+  };
+  assert.equal(titledFeed.subscriptions[0]?.label, "Nightly jobs");
+  const titledMarkup = renderToStaticMarkup(
+    createElement(EventsView, { events: titled.mcpEvents, ready: true }),
+  );
+  assert.match(titledMarkup, /Nightly jobs/);
+  assert.doesNotMatch(titledMarkup, /stub\/ticks#a1b2c3d4/);
 });
 
 test("the MCP events widget shows the last 3 events and keeps the full total", () => {

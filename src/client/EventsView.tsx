@@ -6,12 +6,21 @@ const LIVE_STATUS = new Set(["opening", "active", "reconnecting"]);
 
 function SubscriptionRow({ subscription }: { subscription: McpSubscriptionView }) {
   const live = LIVE_STATUS.has(subscription.status);
+  // The stable id is the cancellable identity. A title is only a friendlier
+  // label; without one the id itself must be visible here.
+  const label = subscription.title ?? subscription.stableId ?? subscription.name;
   return (
     <div className="flex items-baseline gap-3 border-b border-border py-3 font-mono text-xs">
       <span className={live ? "text-foreground" : "text-muted-foreground"}>
         {subscription.server}
       </span>
-      <span className="min-w-0 flex-1 truncate text-muted-foreground">{subscription.name}</span>
+      <span
+        className="min-w-0 flex-1 truncate text-muted-foreground"
+        data-testid="subscription-title"
+        title={subscription.title === undefined ? subscription.name : undefined}
+      >
+        {label}
+      </span>
       {subscription.cursor !== null && (
         <span
           className="max-w-[16ch] shrink-0 truncate text-muted-foreground"

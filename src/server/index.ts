@@ -185,19 +185,25 @@ memoryWrites.current = (record) => {
   });
 };
 const events = new McpEventFeed(boot.mcp.subscriptionRegistry);
+await events.hydrate();
 chat.setEventFeed(events);
 boot.mcp.setObserver((notice) => {
-  const previousEvent = events.state.events.at(-1);
+  const previous = events.state;
+  const previousEvent = previous.events.at(-1);
   const changed = events.ingest(notice);
   // A protocol connection can clear a boot failure, so keep the live status
   // in every tab instead of leaving the snapshot from startup on screen.
   hub.broadcast({ event: "mcp.status", data: boot.mcp.status });
+  if (events.state.revision !== previous.revision) {
+    // A replay can change the visible log without being news, so broadcast
+    // any state change but only submit a turn when `changed` says it is new.
+    hub.broadcast({ event: "mcp.events", data: events.state });
+  }
   if (!changed) {
-    // A pure replay changes nothing. Do not submit its extension message, or
-    // it would wake the model for history that was already announced.
+    // A pure replay has no chat notice. Do not submit its extension message,
+    // or it would wake the model for history that was already announced.
     return notice.customType === "mcp-events" ? false : undefined;
   }
-  hub.broadcast({ event: "mcp.events", data: events.state });
   if (notice.customType === "mcp-events") {
     const latest = events.state.events.at(-1);
     if (latest !== undefined && latest.id !== previousEvent?.id) {
@@ -394,6 +400,38 @@ app.get("/api/state", async (c) =>
     tasks: taskStore.ledger(),
   }),
 );
+
+const MCP_SUBSCRIPTIONS_PATH = "/api/mcp/subscriptions/";
+
+function stableIdFromPath(path: string): string {
+  const raw = path.startsWith(MCP_SUBSCRIPTIONS_PATH)
+    ? path.slice(MCP_SUBSCRIPTIONS_PATH.length)
+    : "";
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+app.delete("/api/mcp/subscriptions/*", async (c) => {
+  const stableId = stableIdFromPath(c.req.path);
+  if (stableId.length === 0) return c.text("stableId is required", 400);
+  const live = events.findByStableId(stableId);
+  const liveIds = events.adapterIdsForStableId(stableId);
+  const cancelled = await boot.mcp.cancelSubscription(stableId, liveIds);
+  events.cancel(stableId);
+  if (cancelled === null && live === undefined) {
+    return c.text("Unknown subscription", 404);
+  }
+  hub.broadcast({ event: "mcp.events", data: events.state });
+  return c.json({
+    ok: true,
+    stableId,
+    cancelled: true,
+    id: events.findByStableId(stableId)?.id ?? null,
+  });
+});
 
 app.get("/api/history", async (c) => {
   const request = windowRequestFromQuery(c.req.query());

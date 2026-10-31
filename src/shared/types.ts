@@ -141,9 +141,14 @@ export interface McpStatus {
 }
 
 export interface McpSubscriptionView {
+  /** Adapter id minted by pi-mcp-events; it changes on a restart. */
   id: string;
+  /** Durable identity derived from server, name and sorted arguments. */
+  stableId: string;
   server: string;
   name: string;
+  /** Optional human title; when absent clients fall back to `stableId`. */
+  title?: string;
   status: string;
   arguments: Record<string, unknown>;
   /**
@@ -160,6 +165,8 @@ export interface McpEventView {
   name: string;
   timestamp: string;
   summary: string;
+  /** The stable subscription already delivered this event before a restart. */
+  replayed?: boolean;
 }
 
 /** Shared across browsers. `notice` is `new event from <server>` for the latest event. */
