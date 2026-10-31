@@ -22,6 +22,7 @@ import {
   openTaskIds,
 } from "../shared/idle-nudge.js";
 import { MCP_EVENTS_HEAD, type OperatorNoticeRecord, parseNotice } from "../shared/notices.js";
+import { QUEUE_ENTRY_KIND } from "../shared/queue.js";
 import {
   QUIET_AFTER_MS as DEFAULT_QUIET_AFTER_MS,
   type DurableRunFacts,
@@ -100,6 +101,8 @@ interface SubmitOptions {
   attachments?: string[];
   /** Place an input as this application entry instead of a normal user entry. */
   entry?: InputEntry;
+  /** Stable key to reuse when restoring a queued message after a restart. */
+  queueKey?: string;
 }
 
 /** `PI_UI_QUIET_AFTER_MS` shortens the quiet threshold for tests. */
@@ -637,6 +640,12 @@ export class ChatService {
     const startsRun = this.runState !== "running" && this.queued.size === 0;
     const startedAt = new Date().toISOString();
     const steerKey = steer ? randomUUID() : undefined;
+    // A queued follow-up gets an application entry with a stable key, so its pending bubble
+    // and the placed transcript message share one id instead of remounting at the handoff.
+    const queueKey =
+      !steer && !startsRun && options.entry === undefined
+        ? (options.queueKey ?? randomUUID())
+        : undefined;
     if (startsRun) {
       const marker: RunMarker = {
         version: 1,
@@ -673,9 +682,16 @@ export class ChatService {
                   },
                 },
               }
-            : options.entry === undefined
-              ? {}
-              : { entry: options.entry }),
+            : queueKey !== undefined
+              ? {
+                  entry: {
+                    kind: QUEUE_ENTRY_KIND,
+                    data: { key: queueKey, createdAt: startedAt },
+                  },
+                }
+              : options.entry === undefined
+                ? {}
+                : { entry: options.entry }),
         },
         SESSION_CONTEXT,
       );
@@ -695,6 +711,7 @@ export class ChatService {
           id,
           text,
           createdAt: new Date().toISOString(),
+          ...(queueKey === undefined ? {} : { key: queueKey }),
           ...(attachments.length > 0 ? { attachments } : {}),
         },
         submission,
@@ -730,6 +747,7 @@ export class ChatService {
           id,
           text,
           createdAt: new Date().toISOString(),
+          ...(queueKey === undefined ? {} : { key: queueKey }),
           ...(attachments.length > 0 ? { attachments } : {}),
         },
         submission,
@@ -832,6 +850,7 @@ export class ChatService {
       try {
         await this.submit(item.text, "queue", {
           requestId: `run-queue:${marker.idempotencyKey}:${item.id}`,
+          queueKey: item.key ?? `q-${item.id}`,
           ...(item.attachments === undefined ? {} : { attachments: item.attachments }),
         });
       } catch (error) {
@@ -1277,10 +1296,29 @@ export class ChatService {
         this.currentText = "";
         this.currentThinking = "";
         const revision = this.bumpDraft();
-        if (event.entry.kind === STEER_ENTRY_KIND) {
-          const steerMessage = buildTranscript([event.entry], this.mediaRef, this.diagramRevision)
+        if (event.entry.kind === STEER_ENTRY_KIND || event.entry.kind === QUEUE_ENTRY_KIND) {
+          // Send the placed entry before the queue update retires its pending bubble, so the
+          // same message id hands over without a frame where neither copy is on screen.
+          const placedMessage = buildTranscript([event.entry], this.mediaRef, this.diagramRevision)
             .messages[0];
-          if (steerMessage !== undefined) this.takeTrackedSteer(steerMessage);
+          if (event.entry.kind === STEER_ENTRY_KIND) {
+            if (placedMessage !== undefined) this.takeTrackedSteer(placedMessage);
+            this.hub.broadcast([
+              {
+                event: "draft.sync",
+                data: { text: "", thinking: "", revision } satisfies StreamDraftSync,
+              },
+              {
+                event: "message.done",
+                data: { message: placedMessage ?? null } satisfies StreamMessageDone,
+              },
+              {
+                event: "run.state",
+                data: this.getRunStatus() satisfies StreamRunState,
+              },
+            ]);
+            return;
+          }
           this.hub.broadcast([
             {
               event: "draft.sync",
@@ -1288,11 +1326,7 @@ export class ChatService {
             },
             {
               event: "message.done",
-              data: { message: steerMessage ?? null } satisfies StreamMessageDone,
-            },
-            {
-              event: "run.state",
-              data: this.getRunStatus() satisfies StreamRunState,
+              data: { message: placedMessage ?? null } satisfies StreamMessageDone,
             },
           ]);
           return;

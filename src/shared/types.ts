@@ -40,6 +40,10 @@ export interface ChatMessage {
   steer?: boolean;
   /** A steer still waiting for the run's next turn boundary; it can be taken back. */
   pendingSteer?: boolean;
+  /** A follow-up the server holds until the running turn ends. */
+  pendingQueue?: boolean;
+  /** Submission id of a pending queued message, so its bubble can cancel it. */
+  queueId?: string;
   /** Stable key shared by a pending steer and the transcript entry that consumed it. */
   steerKey?: string;
   /** Why a pending steer never reached the transcript. */

@@ -51,6 +51,8 @@ interface ChatViewProps {
   stop: () => Promise<void>;
   /** Takes back the newest steer the run has not reached yet; absent or null when none can be. */
   unsendSteer?: () => Promise<QueuedMessage | null>;
+  /** Withdraws a follow-up that is waiting for the current turn to end. */
+  cancelQueued?: (id: string) => Promise<boolean>;
   /** How many steers are waiting for the run's next turn boundary. */
   pendingSteers?: number;
   applyTasks: (ledger: TaskLedger) => void;
@@ -168,9 +170,11 @@ function MessageParts({ parts }: { parts: ChatMessage["parts"] }) {
 function MessageBubble({
   message,
   onSteer,
+  onCancelQueued,
 }: {
   message: ChatMessage;
   onSteer?: (text: string) => void;
+  onCancelQueued?: (id: string) => void;
 }) {
   if (message.notice !== undefined) {
     return <NoticeLine message={message} notice={message.notice} onSteer={onSteer} />;
@@ -202,18 +206,34 @@ function MessageBubble({
       data-message-id={message.id}
       data-role={message.role}
       data-pending-steer={message.pendingSteer ? "true" : undefined}
+      data-pending-queue={message.pendingQueue ? "true" : undefined}
       data-steer-error={message.steerError === undefined ? undefined : "true"}
       className={cn(
         "theme-radius w-fit min-w-0 max-w-[85%] bg-surface px-3 py-2 text-sm leading-relaxed [overflow-wrap:anywhere]",
         mine ? "ml-auto" : "mr-auto",
         framed && "border",
         mine && "border-foreground/15",
-        message.pendingSteer && "border-dashed opacity-70",
+        (message.pendingSteer || message.pendingQueue) && "border-dashed opacity-70",
         message.isError && "border-destructive text-destructive",
         message.partial && "border-dashed",
         message.partial && !message.isError && "border-muted-foreground/70",
       )}
     >
+      {message.pendingQueue && (
+        <div className="mb-1 flex items-center justify-between gap-3 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+          <span>queued</span>
+          {message.queueId !== undefined && onCancelQueued !== undefined && (
+            <button
+              type="button"
+              title="Remove this queued message"
+              className="shrink-0 font-mono text-[10px] normal-case tracking-normal text-foreground underline decoration-dotted underline-offset-2 hover:text-destructive"
+              onClick={() => onCancelQueued(message.queueId as string)}
+            >
+              cancel
+            </button>
+          )}
+        </div>
+      )}
       {message.steer && (
         <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
           {message.pendingSteer
@@ -887,8 +907,13 @@ function EarlierMessages({
 function lastUserMessageOrder(timeline: TimelineItem[]): number {
   let order = Number.NEGATIVE_INFINITY;
   for (const item of timeline) {
-    // A steer the run has not reached sits below the run's live work and does not start a turn.
-    if (item.kind === "message" && item.message.role === "user" && !item.message.pendingSteer) {
+    // A steer or follow-up the run has not reached does not start a turn of its own.
+    if (
+      item.kind === "message" &&
+      item.message.role === "user" &&
+      !item.message.pendingSteer &&
+      !item.message.pendingQueue
+    ) {
       order = Math.max(order, item.message.order);
     }
   }
@@ -905,6 +930,7 @@ export function ChatView({
   send,
   stop,
   unsendSteer,
+  cancelQueued,
   pendingSteers = 0,
   applyTasks,
   stats,
@@ -1179,6 +1205,9 @@ export function ChatView({
                           key={group.key}
                           message={group.message}
                           onSteer={(text) => void handleSend(text, "steer")}
+                          onCancelQueued={
+                            cancelQueued === undefined ? undefined : (id) => void cancelQueued(id)
+                          }
                         />
                       );
                     }

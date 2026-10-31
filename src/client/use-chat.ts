@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DashboardState } from "../shared/dashboard";
+import { pendingQueuedMessage } from "../shared/queue";
 import {
   consumeSteer,
   consumeSteersInMessages,
@@ -536,8 +537,17 @@ export function useChat(options: UseChatOptions = {}) {
       items.push({ kind: "message", order: message.order, message });
     }
 
+    // Follow-ups wait for the whole turn, so they sit below the live draft and pending steers.
+    // A placed message already in `messages` owns the id; only its pending copy is dropped.
+    const heldIds = new Set(messages.map((message) => message.id));
+    for (const queued of queue) {
+      const message = pendingQueuedMessage(queued);
+      if (heldIds.has(message.id)) continue;
+      items.push({ kind: "message", order: message.order, message });
+    }
+
     return items.sort((a, b) => a.order - b.order);
-  }, [messages, activity, liveTools, draftText, draftThinking, steers]);
+  }, [messages, activity, liveTools, draftText, draftThinking, steers, queue]);
 
   const send = useCallback(
     async (
