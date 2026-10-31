@@ -18,6 +18,7 @@ import type { DiagramBridge } from "./diagram-tools.js";
 import { DiagramStore } from "./diagrams.js";
 import { JobManager, jobNotice } from "./jobs.js";
 import { McpEventFeed } from "./mcp-events.js";
+import { McpSubscriptionWatchdog } from "./mcp-subscriptions-watchdog.js";
 import { MAX_MEDIA_BYTES, MediaError, MediaStore, parseAttachmentIds } from "./media.js";
 import { composeInstructions, SnapshotCache, SnapshotController } from "./memory/snapshot.js";
 import { MemoryStore } from "./memory/store.js";
@@ -229,6 +230,15 @@ const events = new McpEventFeed(boot.mcp.subscriptionRegistry);
 await events.hydrate();
 chat.setEventFeed(events);
 chat.setTaskActivity(taskActivity);
+const subscriptionWatchdog = new McpSubscriptionWatchdog({
+  registry: boot.mcp.subscriptionRegistry,
+  runtime: boot.mcp,
+  onReopened(record) {
+    if (!events.noteReconnect(record)) return;
+    hub.broadcast({ event: "mcp.events", data: events.state });
+  },
+});
+subscriptionWatchdog.start();
 boot.mcp.setObserver((notice) => {
   const previous = events.state;
   const changed = events.ingest(notice);
@@ -922,6 +932,7 @@ async function shutdown(): Promise<void> {
     await dashboard.flush();
     await taskStore.close();
     await chat.close();
+    await subscriptionWatchdog.close();
     await boot.mcp.close();
     await boot.harness.close(SESSION_CONTEXT);
     await closePush();

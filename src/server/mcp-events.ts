@@ -93,6 +93,22 @@ function subscriptionFrom(value: unknown): McpSubscriptionView | null {
     typeof value.title === "string" && value.title.trim().length > 0
       ? value.title.trim()
       : undefined;
+  const lastEventAt =
+    typeof value.lastEventAt === "string" && value.lastEventAt.length > 0
+      ? value.lastEventAt
+      : undefined;
+  const reconnects =
+    typeof value.reconnects === "number" &&
+    Number.isSafeInteger(value.reconnects) &&
+    value.reconnects >= 0
+      ? value.reconnects
+      : undefined;
+  const lastReconnectReason =
+    typeof value.lastReconnectReason === "string" && value.lastReconnectReason.length > 0
+      ? value.lastReconnectReason
+      : undefined;
+  const endReason =
+    typeof value.endReason === "string" && value.endReason.length > 0 ? value.endReason : undefined;
   return {
     id: value.id,
     stableId,
@@ -102,6 +118,10 @@ function subscriptionFrom(value: unknown): McpSubscriptionView | null {
     status,
     arguments: args,
     cursor,
+    ...(lastEventAt === undefined ? {} : { lastEventAt }),
+    ...(reconnects === undefined ? {} : { reconnects }),
+    ...(lastReconnectReason === undefined ? {} : { lastReconnectReason }),
+    ...(endReason === undefined ? {} : { endReason }),
   };
 }
 
@@ -202,6 +222,35 @@ export class McpEventFeed {
     return this.cancel(stableId);
   }
 
+  /** Apply the watchdog's re-open metadata to the visible row. */
+  noteReconnect(record: McpSubscriptionRecord): boolean {
+    const stableId = recordStableId(record);
+    const current = this.findByStableId(stableId);
+    if (current === undefined) return false;
+    const next: McpSubscriptionView = {
+      ...current,
+      ...(typeof record.id === "string" && record.id.length > 0 ? { id: record.id } : {}),
+      cursor: record.cursor,
+      status: record.status,
+      lastEventAt: record.lastEventAt ?? current.lastEventAt,
+      reconnects: record.reconnects,
+      lastReconnectReason: record.lastReconnectReason,
+      endReason: record.endReason,
+    };
+    const changed =
+      current.id !== next.id ||
+      current.cursor !== next.cursor ||
+      current.status !== next.status ||
+      current.lastEventAt !== next.lastEventAt ||
+      current.reconnects !== next.reconnects ||
+      current.lastReconnectReason !== next.lastReconnectReason ||
+      current.endReason !== next.endReason;
+    if (!changed) return false;
+    this.storeView(next);
+    this.touch();
+    return true;
+  }
+
   /** Resolve an adapter id, including one replaced by a newer subscribe, to the current row. */
   private viewForAdapter(adapterId: string): McpSubscriptionView | undefined {
     const direct = this.subscriptions.get(adapterId);
@@ -285,10 +334,13 @@ export class McpEventFeed {
     this.historical.set(stableId, historicalIds);
   }
 
+  private savedRecord(stableId: string): McpSubscriptionRecord | undefined {
+    return this.registry?.list().find((entry) => recordStableId(entry) === stableId);
+  }
+
   /** Seed from a row for a stable id if this feed has not seen the stream yet. */
   private seedFromRegistry(stableId: string): void {
-    if (this.registry === undefined) return;
-    const record = this.registry.list().find((entry) => recordStableId(entry) === stableId);
+    const record = this.savedRecord(stableId);
     if (record === undefined) return;
     this.restored.add(stableId);
     this.seedDelivered(stableId, record.deliveredEventIds ?? [], true);
@@ -307,10 +359,12 @@ export class McpEventFeed {
     }
     if (delivered.has(eventId)) {
       if (historical) ids.add(eventId);
+      else ids.delete(eventId);
       return false;
     }
     delivered.add(eventId);
     if (historical) ids.add(eventId);
+    else ids.delete(eventId);
     while (delivered.size > MAX_DELIVERED_EVENT_IDS) {
       const oldest = delivered.values().next().value;
       if (oldest === undefined) break;
@@ -348,6 +402,12 @@ export class McpEventFeed {
       status: subscription.status,
       enabled: subscriptionEnabled(subscription.status),
       deliveredEventIds: this.deliveredIds(subscription.stableId),
+      ...(subscription.lastEventAt === undefined ? {} : { lastEventAt: subscription.lastEventAt }),
+      ...(subscription.reconnects === undefined ? {} : { reconnects: subscription.reconnects }),
+      ...(subscription.lastReconnectReason === undefined
+        ? {}
+        : { lastReconnectReason: subscription.lastReconnectReason }),
+      ...(subscription.endReason === undefined ? {} : { endReason: subscription.endReason }),
       updatedAt: new Date().toISOString(),
     };
     void this.registry.record(record).catch((error: unknown) => {
@@ -392,7 +452,14 @@ export class McpEventFeed {
       const cursorReplay = mark !== null && high !== undefined && mark <= high;
       const historical = this.isHistorical(stableId, eventId);
       const liveDuplicate = this.isLiveDuplicate(stableId, eventId);
-      const replay = historical || (cursorReplay && !liveDuplicate && this.restored.has(stableId));
+      // A stored id is only a replay when its cursor is demonstrably behind
+      // the stream. A null, non-advancing or uncomparable cursor may be a
+      // genuine live frame, so it must not be swallowed by the restored id set.
+      const historicalReplay = mark !== null && high !== undefined && mark < high;
+      const replay =
+        !liveDuplicate &&
+        this.restored.has(stableId) &&
+        (historical ? historicalReplay : cursorReplay);
 
       if (replay) {
         // A restored stream may redeliver an event whose id we know, or whose
@@ -428,7 +495,8 @@ export class McpEventFeed {
         // exactly one non-replayed event for it.
         const index = this.events.findIndex((entry) => entry.id === id);
         const existing = index === -1 ? undefined : this.events[index];
-        if (existing?.replayed === true) {
+        const promoted = existing?.replayed === true;
+        if (promoted) {
           this.events = this.events.map((entry, at) =>
             at === index ? { ...entry, replayed: undefined } : entry,
           );
@@ -437,22 +505,26 @@ export class McpEventFeed {
           stored += 1;
           stateChanged = true;
         }
-        if (this.trackCursor(item, streamName, cursor)) stateChanged = true;
+        if (this.trackCursor(item, streamName, cursor, promoted ? timestamp : undefined)) {
+          stateChanged = true;
+        }
         const tracked =
           subscriptionId === undefined ? undefined : this.viewForAdapter(subscriptionId);
         if (tracked !== undefined) this.persist(tracked);
         continue;
       }
 
-      if (cursorReplay) {
+      if (cursorReplay && !historical) {
         // A live stream at or below its high-water mark is a duplicate of an
-        // event this process already saw. Drop it as before.
+        // event this process already saw. Drop it as before. A historical id
+        // reaching this point has not been proven to be behind the stream, so
+        // it is delivered as live.
         skipped += 1;
         if (!skippedServers.includes(item.server)) skippedServers.push(item.server);
         continue;
       }
 
-      if (this.trackCursor(item, streamName, cursor)) stateChanged = true;
+      if (this.trackCursor(item, streamName, cursor, timestamp)) stateChanged = true;
       if (eventId !== undefined) this.remember(stableId, eventId, false);
       const index = this.events.findIndex((entry) => entry.id === id);
       const existing = index === -1 ? undefined : this.events[index];
@@ -499,6 +571,7 @@ export class McpEventFeed {
     item: Record<string, unknown>,
     streamName: string,
     cursor: string | null,
+    deliveredAt?: string,
   ): boolean {
     if (typeof item.subscription_id !== "string" || !isRecord(item.event)) return false;
     const current = this.viewForAdapter(item.subscription_id);
@@ -512,6 +585,7 @@ export class McpEventFeed {
         status: "active",
         arguments: {},
         cursor,
+        ...(deliveredAt === undefined ? {} : { lastEventAt: deliveredAt }),
       };
       this.storeView(subscription);
       this.observeCursor(subscription.id, cursor);
@@ -520,8 +594,17 @@ export class McpEventFeed {
     }
     const nextCursor = newerCursor(current.cursor, cursor);
     this.observeCursor(current.id, nextCursor);
-    if (nextCursor === current.cursor) return false;
-    const next = { ...current, cursor: nextCursor };
+    if (
+      nextCursor === current.cursor &&
+      (deliveredAt === undefined || current.lastEventAt === deliveredAt)
+    ) {
+      return false;
+    }
+    const next = {
+      ...current,
+      cursor: nextCursor,
+      ...(deliveredAt === undefined ? {} : { lastEventAt: deliveredAt }),
+    };
     this.storeView(next);
     this.persist(next);
     return true;
@@ -545,9 +628,27 @@ export class McpEventFeed {
       // Once a newer adapter id owns this stable id, a notice for the old id
       // is stale and must not move the visible row back.
       if (current !== undefined && current.id !== incoming.id) continue;
-      const subscription =
+      const saved = this.savedRecord(incoming.stableId);
+      const reconnects =
+        incoming.status === "active"
+          ? 0
+          : (current?.reconnects ?? saved?.reconnects ?? incoming.reconnects);
+      const subscription: McpSubscriptionView =
         current === undefined
-          ? incoming
+          ? {
+              ...incoming,
+              ...(incoming.lastEventAt === undefined && saved?.lastEventAt !== undefined
+                ? { lastEventAt: saved.lastEventAt }
+                : {}),
+              ...(reconnects === undefined ? {} : { reconnects }),
+              ...(incoming.lastReconnectReason === undefined &&
+              saved?.lastReconnectReason !== undefined
+                ? { lastReconnectReason: saved.lastReconnectReason }
+                : {}),
+              ...(incoming.status === "active"
+                ? {}
+                : { endReason: incoming.endReason ?? saved?.endReason }),
+            }
           : {
               ...incoming,
               stableId: current.stableId,
@@ -557,6 +658,16 @@ export class McpEventFeed {
                 Object.keys(current.arguments).length > 0
                   ? current.arguments
                   : incoming.arguments,
+              lastEventAt: current.lastEventAt ?? incoming.lastEventAt ?? saved?.lastEventAt,
+              reconnects,
+              lastReconnectReason:
+                current.lastReconnectReason ??
+                incoming.lastReconnectReason ??
+                saved?.lastReconnectReason,
+              endReason:
+                incoming.status === "active"
+                  ? undefined
+                  : (incoming.endReason ?? current.endReason ?? saved?.endReason),
             };
       this.observeCursor(subscription.id, current?.cursor ?? null);
       this.observeCursor(subscription.id, subscription.cursor);
@@ -642,6 +753,7 @@ export class McpEventFeed {
       }
       if (args.restored === true) this.restored.add(incoming.stableId);
       this.seedFromRegistry(incoming.stableId);
+      const saved = this.savedRecord(incoming.stableId);
       const subscription: McpSubscriptionView = {
         ...incoming,
         stableId: current?.stableId ?? incoming.stableId,
@@ -652,6 +764,19 @@ export class McpEventFeed {
           Object.keys(current.arguments).length > 0
             ? current.arguments
             : incoming.arguments,
+        lastEventAt: current?.lastEventAt ?? incoming.lastEventAt ?? saved?.lastEventAt,
+        reconnects:
+          incoming.status === "active"
+            ? 0
+            : (current?.reconnects ?? saved?.reconnects ?? incoming.reconnects),
+        lastReconnectReason:
+          current?.lastReconnectReason ??
+          incoming.lastReconnectReason ??
+          saved?.lastReconnectReason,
+        endReason:
+          incoming.status === "active"
+            ? undefined
+            : (incoming.endReason ?? current?.endReason ?? saved?.endReason),
       };
       this.storeView(subscription);
       this.observeCursor(subscription.id, current?.cursor ?? null);
