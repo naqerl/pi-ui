@@ -237,7 +237,15 @@ export function startFakeModelServer() {
           },
         ],
       });
-      writeEvent(res, chunkFor("", "tool_calls"));
+      // Usage scales with the calls, so per-task token and cost measurement has numbers to split.
+      writeEvent(
+        res,
+        chunkFor("", "tool_calls", {
+          prompt_tokens: 24_000 * calls.length,
+          completion_tokens: 600 * calls.length,
+          total_tokens: 24_600 * calls.length,
+        }),
+      );
       res.write("data: [DONE]\n\n");
       res.end();
       return;

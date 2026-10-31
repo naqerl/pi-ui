@@ -712,6 +712,7 @@ export function useChat(options: UseChatOptions = {}) {
     refresh: refreshState,
     mcpEvents,
     tasks: taskLedger.tasks,
+    taskActivity: taskLedger.activity,
     ready,
     hasEarlier,
     loadingEarlier,

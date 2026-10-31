@@ -29,6 +29,8 @@ if (!live) {
                 name: "E2E Model",
                 reasoning: false,
                 input: ["text", "image"],
+                // Per million tokens, so measured task cost is a real number in the e2e runs.
+                cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
                 // Large enough that the suite's shared conversation (history seeds
                 // ~50 bulky turns) never triggers preflight compression mid-run.
                 contextWindow: 1_048_576,

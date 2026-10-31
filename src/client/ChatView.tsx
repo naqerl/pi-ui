@@ -15,6 +15,7 @@ import type {
   MessageMode,
   QueuedMessage,
   Task,
+  TaskActivity,
   TaskLedger,
   TokenSpend,
 } from "../shared/types";
@@ -47,6 +48,8 @@ interface ChatViewProps {
   interrupted: boolean;
   ready: boolean;
   tasks: Task[];
+  /** Measured run activity per task, from the ledger view. */
+  taskActivity?: TaskActivity;
   send: (text: string, mode?: MessageMode, attachments?: string[]) => Promise<SendOutcome>;
   stop: () => Promise<void>;
   /** Takes back the newest steer the run has not reached yet; absent or null when none can be. */
@@ -85,24 +88,6 @@ const PAGES = [
 const STATS_PAGE = 0;
 const CHAT_PAGE = 1;
 const TASKS_PAGE = 2;
-
-function SubtaskProgress({ tasks }: { tasks: Task[] }) {
-  const subtasks = tasks.filter((task) => task.parentId !== null);
-  if (subtasks.length === 0) return null;
-  const done = subtasks.filter((task) => task.status === "done").length;
-  const label = `${done}/${subtasks.length} completed subtasks`;
-  return (
-    <span
-      role="status"
-      data-testid="subtask-progress"
-      title={label}
-      aria-label={label}
-      className="shrink-0 font-mono text-[11px] leading-4 text-muted-foreground"
-    >
-      {done}/{subtasks.length}
-    </span>
-  );
-}
 
 function pageFromLocation(): number {
   const name = new URLSearchParams(window.location.search).get("page");
@@ -927,6 +912,7 @@ export function ChatView({
   interrupted,
   ready,
   tasks,
+  taskActivity,
   send,
   stop,
   unsendSteer,
@@ -1239,6 +1225,7 @@ export function ChatView({
               <Suspense fallback={null}>
                 <TasksView
                   tasks={tasks}
+                  activity={taskActivity}
                   ready={ready}
                   footerClearance={footerClearance}
                   armedParentId={armed?.id ?? null}
@@ -1264,11 +1251,10 @@ export function ChatView({
               >
                 {running ? (
                   <WorkingIndicator running={running} thinking={thinking} />
-                ) : (
+                ) : tasksPage ? null : (
                   <span>idle</span>
                 )}
               </div>
-              {tasksPage && <SubtaskProgress tasks={tasks} />}
             </div>
             <div
               role="tablist"

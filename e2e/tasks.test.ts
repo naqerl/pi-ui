@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { TaskModal, TaskTimes } from "../src/client/TasksView.js";
+import { TaskDetail, TaskTimes } from "../src/client/TasksView.js";
 import { createTaskTools, type TaskBridge } from "../src/server/task-tools.js";
 import { TaskStore } from "../src/server/tasks.js";
 import {
@@ -126,21 +126,36 @@ test("the task modal shows the full rationale, blockers and completion record", 
     completion: null,
   };
   const markup = renderToStaticMarkup(
-    createElement(TaskModal, {
+    createElement(TaskDetail, {
       task,
       tasks: [task, blocker],
+      state: "blocked",
+      trace: undefined,
+      wide: true,
+      armed: false,
+      notice: null,
       onClose: () => {},
+      onOpen: () => {},
       onStatus: () => {},
+      onArm: () => {},
+      onBlock: () => {},
+      onApprove: () => {},
+      onDismiss: () => {},
+      onRemove: () => {},
     }),
   );
-  assert.match(markup, /data-testid="task-modal"/);
+  assert.match(markup, /data-testid="task-detail"/);
   assert.match(markup, /Ship the modal/);
   assert.match(markup, /The card hides the rest of this rationale\./);
   assert.match(markup, /A long explanation\./);
   assert.match(markup, /Review the details/);
   assert.match(markup, /done/);
-  assert.match(markup, /Created/);
-  assert.match(markup, /Mark done/);
+  assert.match(markup, /created/);
+  assert.match(markup, /mark done/);
+  assert.match(markup, /data-testid="task-state"[^>]*>blocked</);
+  // Nothing ran yet, so every measured stat is a dash rather than a zero.
+  assert.equal(markup.match(/>—</g)?.length, 4);
+  assert.match(markup, /Nothing recorded yet/);
 });
 
 test("the completed task modal carries the evidence and the closed time", () => {
@@ -155,11 +170,40 @@ test("the completed task modal carries the evidence and the closed time", () => 
     completion: { evidence: "commit 9c58abc" },
   };
   const markup = renderToStaticMarkup(
-    createElement(TaskModal, { task, tasks: [task], onClose: () => {}, onStatus: () => {} }),
+    createElement(TaskDetail, {
+      task,
+      tasks: [task],
+      state: "done",
+      trace: {
+        lastActivityAt: "2026-01-01T12:20:00.000Z",
+        lastRun: { id: "r1", outcome: "ok", at: "2026-01-01T12:21:00.000Z" },
+        measured: { runs: 2, calls: 9, activeMs: 18 * 60_000, tokens: 41_200, cost: 0.42 },
+        history: [
+          { at: "2026-01-01T12:00:00.000Z", kind: "created", text: "created" },
+          { at: "2026-01-01T12:01:00.000Z", kind: "run-start", text: "run started" },
+          { at: "2026-01-01T12:25:00.000Z", kind: "done", text: "marked done" },
+        ],
+      },
+      wide: false,
+      armed: false,
+      notice: null,
+      onClose: () => {},
+      onOpen: () => {},
+      onStatus: () => {},
+      onArm: () => {},
+      onBlock: () => {},
+      onApprove: () => {},
+      onDismiss: () => {},
+      onRemove: () => {},
+    }),
   );
   assert.match(markup, /data-testid="task-modal-completion"/);
   assert.match(markup, /commit 9c58abc/);
-  assert.match(markup, /Closed/);
+  assert.match(markup, /closed/);
+  assert.match(markup, /18m/);
+  assert.match(markup, /\$0\.42/);
+  assert.match(markup, /run started/);
+  assert.match(markup, /data-testid="task-detail-back"/);
 });
 
 function inZone<T>(zone: string, run: () => T): T {

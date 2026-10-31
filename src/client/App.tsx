@@ -27,6 +27,7 @@ export function App() {
       interrupted={chat.interrupted}
       ready={chat.ready}
       tasks={chat.tasks}
+      taskActivity={chat.taskActivity}
       send={chat.send}
       stop={chat.stop}
       unsendSteer={chat.unsendSteer}
