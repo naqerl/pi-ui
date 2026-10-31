@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { TaskModal } from "../src/client/TasksView.js";
+import { TaskModal, TaskTimes } from "../src/client/TasksView.js";
 import { createTaskTools, type TaskBridge } from "../src/server/task-tools.js";
 import { TaskStore } from "../src/server/tasks.js";
 import {
@@ -15,6 +15,7 @@ import {
   liveBlockerIds,
   parseTimeSpentMinutes,
 } from "../src/shared/tasks.js";
+import { formatDateTime } from "../src/shared/time.js";
 import type { Task, TaskLedger } from "../src/shared/types.js";
 
 function tools(bridge: TaskBridge) {
@@ -170,6 +171,47 @@ test("the completed task modal carries time spent, tokens, evidence and the clos
   assert.match(markup, /1\.2k/);
   assert.match(markup, /commit 9c58abc/);
   assert.match(markup, /Closed/);
+});
+
+function inZone<T>(zone: string, run: () => T): T {
+  const previous = process.env.TZ;
+  process.env.TZ = zone;
+  try {
+    return run();
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
+}
+
+test("task cards show created and closed times in the browser's local zone", () => {
+  const task: Task = {
+    id: "t1",
+    title: "Ship the modal",
+    status: "done",
+    parentId: null,
+    blockedBy: [],
+    createdAt: "2026-01-01T12:00:00.000Z",
+    completedAt: "2026-01-01T12:25:00.000Z",
+    completion: {
+      timeSpentMinutes: 25,
+      timeSpentText: "25m",
+      tokens: 0,
+      evidence: "e2e/tasks.test.ts",
+    },
+  };
+  const markup = inZone("Asia/Tokyo", () =>
+    renderToStaticMarkup(createElement(TaskTimes, { task })),
+  );
+  const created = inZone("Asia/Tokyo", () => formatDateTime(task.createdAt));
+  const closed = inZone("Asia/Tokyo", () => formatDateTime(task.completedAt ?? ""));
+  const utc = inZone("UTC", () => formatDateTime(task.createdAt));
+
+  assert.match(markup, /data-testid="task-times"/);
+  assert.match(markup, new RegExp(`created ${created.replaceAll(".", "\\.")}`));
+  assert.match(markup, new RegExp(`closed ${closed.replaceAll(".", "\\.")}`));
+  assert.notEqual(created, utc);
+  assert.doesNotMatch(markup, new RegExp(`created ${utc.replaceAll(".", "\\.")}`));
 });
 
 test("parses the accepted time-spent forms", () => {

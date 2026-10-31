@@ -221,6 +221,30 @@ export function TasksView({
   );
 }
 
+/** Created and closed instants on every task card, in the browser's own zone. */
+export function TaskTimes({ task }: { task: Task }) {
+  const created = formatDateTime(task.createdAt);
+  const closed =
+    task.status === "done" && typeof task.completedAt === "string"
+      ? formatDateTime(task.completedAt)
+      : "";
+  return (
+    <span
+      data-testid="task-times"
+      className="mt-1 flex flex-wrap items-center gap-x-2 pl-6 font-mono text-[10px] text-muted-foreground"
+    >
+      <time dateTime={task.createdAt} title={created}>
+        created {created}
+      </time>
+      {closed !== "" && (
+        <time dateTime={task.completedAt ?? undefined} title={closed}>
+          closed {closed}
+        </time>
+      )}
+    </span>
+  );
+}
+
 function ProposedTask({
   task,
   notice,
@@ -266,13 +290,7 @@ function ProposedTask({
           </p>
         )}
         <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-          <time
-            dateTime={task.createdAt}
-            title={formatDateTime(task.createdAt)}
-            className="font-mono text-[10px] text-muted-foreground"
-          >
-            created {formatDateTime(task.createdAt)}
-          </time>
+          <TaskTimes task={task} />
           <span className="flex gap-1.5">
             <button
               type="button"
@@ -454,6 +472,7 @@ function TaskBranch({
           </span>
           <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{task.id}</span>
         </span>
+        <TaskTimes task={task} />
         <span className="mt-2 flex flex-wrap items-center gap-1.5 pl-6" data-testid="task-actions">
           <button
             type="button"
