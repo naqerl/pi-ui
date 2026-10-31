@@ -4,6 +4,14 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.17 - 2026-10-31
+
+- Proposed tasks come first on the tasks page, above ready work: each proposal shows its title, a clamped rationale, when it was proposed and the approve/dismiss actions.
+- A task opens in a full-screen modal (a rounded card with a margin so the animated background stays visible) with its description, blockers, the completion report and the created/closed times; the card buttons do not open it.
+- Task cards carry `created …` and, once done, `closed …` in the reader's local time zone.
+- Writing a memory shows a chip in the chat; tapping it shows the file and what was written, with an Undo button that sends a steer asking the agent to restore that file.
+- Web push now also fires on a new proposal and on a finished task.
+
 ## 1.6.16 - 2026-10-31
 
 - A failing model no longer holds the chat: the turn gets three attempts in all (two retries, one to five seconds apart instead of durable's default three retries with a minute-long ceiling), and when one turn has spent two and a half minutes retrying it is stopped with a line in the chat and the next queued message starts straight away. Before, a provider that kept failing left every message sent behind it waiting, sometimes for hours. `PI_RETRY_MAX`, `PI_RETRY_BASE_MS`, `PI_RETRY_MAX_DELAY_MS` and `PI_RETRY_BUDGET_MS` override the numbers.
