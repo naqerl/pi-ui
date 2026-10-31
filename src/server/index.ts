@@ -7,6 +7,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
+import type { OperatorNoticeRecord } from "../shared/notices.js";
 import { parseCompletion } from "../shared/tasks.js";
 import type { TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
@@ -14,13 +15,14 @@ import { ChatService } from "./chat-service.js";
 import { DashboardManager } from "./dashboard.js";
 import type { DiagramBridge } from "./diagram-tools.js";
 import { DiagramStore } from "./diagrams.js";
-import { JobManager, type JobRecord, jobNotice } from "./jobs.js";
+import { JobManager, jobNotice } from "./jobs.js";
 import { McpEventFeed } from "./mcp-events.js";
 import { MAX_MEDIA_BYTES, MediaError, MediaStore, parseAttachmentIds } from "./media.js";
 import { composeInstructions, SnapshotCache, SnapshotController } from "./memory/snapshot.js";
 import { MemoryStore } from "./memory/store.js";
 import type { MemoryWriteRecord } from "./memory/tools.js";
 import { createModelCatalog } from "./models.js";
+import type { OperatorBridge } from "./operator-tools.js";
 import { buildPiSystemPrompt } from "./pi.js";
 import {
   closePush,
@@ -59,6 +61,13 @@ const taskBridge: TaskBridge = {
   store: taskStore,
   media,
   publish() {},
+};
+const operatorNotices: {
+  current?: (record: OperatorNoticeRecord) => void | Promise<void>;
+} = {};
+const operatorBridge: OperatorBridge = {
+  notify: (notification) => notify(notification),
+  recordNotice: (record) => operatorNotices.current?.(record),
 };
 const diagramBridge: DiagramBridge = {
   store: diagrams,
@@ -124,6 +133,7 @@ const boot = await openDurableSession({
     onWrite: (record) => memoryWrites.current?.(record),
   },
   diagrams: diagramBridge,
+  operator: operatorBridge,
 });
 const activeModel =
   boot.model === undefined
@@ -179,6 +189,7 @@ const chat = new ChatService(
   },
   (id) => diagrams.ref(id)?.revision,
 );
+operatorNotices.current = (record) => chat.recordOperatorNotice(record);
 memoryWrites.current = (record) => {
   void chat.recordMemoryWrite(record).catch((error: unknown) => {
     console.error("[pi] memory write notice failed", error);
@@ -189,7 +200,6 @@ await events.hydrate();
 chat.setEventFeed(events);
 boot.mcp.setObserver((notice) => {
   const previous = events.state;
-  const previousEvent = previous.events.at(-1);
   const changed = events.ingest(notice);
   // A protocol connection can clear a boot failure, so keep the live status
   // in every tab instead of leaving the snapshot from startup on screen.
@@ -203,17 +213,6 @@ boot.mcp.setObserver((notice) => {
     // A pure replay has no chat notice. Do not submit its extension message,
     // or it would wake the model for history that was already announced.
     return notice.customType === "mcp-events" ? false : undefined;
-  }
-  if (notice.customType === "mcp-events") {
-    const latest = events.state.events.at(-1);
-    if (latest !== undefined && latest.id !== previousEvent?.id) {
-      void notify({
-        title: `MCP ${latest.name}`,
-        body: `${latest.server}: ${latest.summary}`,
-        url: "/activity",
-        tag: "mcp-event",
-      });
-    }
   }
   return undefined;
 });
@@ -259,26 +258,12 @@ dashboard.setHost({
   },
 });
 jobs.onChange(() => dashboard.broadcast());
-function pushJobNotice(job: JobRecord, tail: string) {
-  const lastLine =
-    tail
-      .trim()
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      .at(-1) ?? `exit ${job.exitCode ?? "unknown"}`;
-  const title =
-    job.status === "exited" ? `job ${job.name} finished` : `job ${job.name} ${job.status}`;
-  void notify({ title, body: lastLine, url: "/activity", tag: `job-${job.id}` });
-}
 jobs.setNotifier((job, tail) => {
-  pushJobNotice(job, tail);
   void chat.submitJobNotice(jobNotice(job, tail)).catch((error: unknown) => {
     console.error(`[pi] background job ${job.id} message failed`, error);
   });
 });
 jobs.setQuietNotifier((job, tail) => {
-  pushJobNotice(job, tail);
   void chat.recordNotice(jobNotice(job, tail)).catch((error: unknown) => {
     console.error(`[pi] background job ${job.id} notice failed`, error);
   });
@@ -861,6 +846,7 @@ const server = serve({ fetch: app.fetch, port }, (info) => {
     ...boot.dashboardTools,
     ...boot.memoryTools,
     ...boot.diagramTools,
+    ...boot.operatorTools,
   ];
   if (boot.mcp.toolNames.length > 0) {
     toolParts.push(`${boot.mcp.toolNames.length} MCP tools (${boot.mcp.serverNames.join(", ")})`);

@@ -1,14 +1,19 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { AssistantEntry, type Conversation, type EntryRecord } from "@earendil-works/pi-durable";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { NoticeLine } from "../src/client/NoticeView.js";
 import { type JobRecord, jobNotice } from "../src/server/jobs.js";
+import { configurePush, resetPushServiceForTests } from "../src/server/push.js";
 import type { RunMarker } from "../src/server/run-marker.js";
 import {
   appendInterruptionNote,
   appendMemoryWriteNotice,
+  appendOperatorNotice,
   buildTranscript,
 } from "../src/server/session.js";
 import {
@@ -362,4 +367,60 @@ test("restarting twice with the same marker records exactly one note", async () 
   );
   assert.equal(messages.length, 1);
   assert.equal(messages[0]?.text, resumedNote);
+});
+
+test("a notify_operator call becomes an operator chip with its question and reason", async () => {
+  const { conversation, entries } = recordingConversation();
+  const message = await appendOperatorNotice(conversation, {
+    title: "Deploy or wait?",
+    body: "The release is ready; should I ship it now?",
+    reason: "The release window closes in ten minutes.",
+  });
+
+  assert.equal(entries.length, 1);
+  assert.equal(message?.text, "operator · Deploy or wait?");
+  assert.deepEqual(message?.notice, {
+    kind: "operator",
+    title: "Deploy or wait?",
+    body: "The release is ready; should I ship it now?",
+    reason: "The release window closes in ten minutes.",
+    summary: "operator · Deploy or wait?",
+  });
+  assert.ok(message !== undefined);
+  const html = renderToStaticMarkup(
+    createElement(NoticeLine, { message, notice: message.notice as ChatNotice }),
+  );
+  assert.match(html, /operator · Deploy or wait\?/);
+});
+
+test("recording an interrupted run sends no push", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-notices-"));
+  t.after(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+  const sent: string[] = [];
+  const service = configurePush({
+    dataDir: dir,
+    throttleMs: 0,
+    send: async (_target, payload) => {
+      sent.push(payload);
+      return { statusCode: 201 };
+    },
+  });
+  await service.subscribe({
+    endpoint: "https://push.example/one",
+    keys: { p256dh: "p256dh-key", auth: "auth-secret" },
+  });
+
+  try {
+    const { conversation } = recordingConversation();
+    await appendInterruptionNote(
+      conversation,
+      runMarker({ partialEntryId: 7, idempotencyKey: "run-no-push" }),
+    );
+    assert.deepEqual(sent, []);
+  } finally {
+    await service.close();
+    resetPushServiceForTests();
+  }
 });

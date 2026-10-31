@@ -35,6 +35,8 @@ export interface PushNotification {
   readonly body?: string;
   readonly url?: string;
   readonly tag?: string;
+  /** Extra fields the service worker copies onto the notification's data. */
+  readonly data?: Record<string, unknown>;
 }
 
 export interface PushSubscriptionStoreOptions {
@@ -464,7 +466,14 @@ function normalizeNotification(input: PushNotification): PushNotification {
   const rawUrl = typeof input.url === "string" ? input.url.trim() : "";
   const url = rawUrl.startsWith("/") ? rawUrl : "/";
   const tag = clampPushText(input.tag ?? "", 80);
-  return { title, body, url, ...(tag.length > 0 ? { tag } : {}) };
+  const data = isRecord(input.data) ? input.data : undefined;
+  return {
+    title,
+    body,
+    url,
+    ...(tag.length > 0 ? { tag } : {}),
+    ...(data === undefined ? {} : { data }),
+  };
 }
 
 function errorStatus(error: unknown): number | null {
@@ -544,11 +553,15 @@ export class PushService {
     return { subscriptions: (await this.store.read()).length, enabled: true };
   }
 
-  /** Sends one notification to every stored subscription. Never throws. */
-  async notify(input: PushNotification): Promise<void> {
+  /**
+   * Sends one notification to every stored subscription and returns how many
+   * sends succeeded. Never throws.
+   */
+  async notify(input: PushNotification): Promise<number> {
+    let sent = 0;
     try {
       const subscriptions = await this.store.read();
-      if (subscriptions.length === 0) return;
+      if (subscriptions.length === 0) return 0;
       const keys = await this.vapidKeys();
       const payload = JSON.stringify(normalizeNotification(input));
       await Promise.all(
@@ -562,6 +575,7 @@ export class PushService {
                 privateKey: keys.privateKey,
               },
             });
+            sent += 1;
             this.store.markOk(subscription.endpoint);
           } catch (error) {
             const status = errorStatus(error);
@@ -580,6 +594,7 @@ export class PushService {
     } catch (error) {
       this.log(`push: notification skipped: ${errorMessage(error)}`);
     }
+    return sent;
   }
 
   async close(): Promise<void> {
@@ -634,9 +649,9 @@ export function pushStatus(): Promise<{ subscriptions: number; enabled: true }> 
   return getPushService().status();
 }
 
-/** Best-effort notification used by the three server notice paths. */
-export async function notify(input: PushNotification): Promise<void> {
-  await getPushService().notify(input);
+/** Best-effort notification used by the operator tool and the task ledger. */
+export async function notify(input: PushNotification): Promise<number> {
+  return getPushService().notify(input);
 }
 
 export async function closePush(): Promise<void> {

@@ -58,6 +58,18 @@ export interface MemoryNoticeDetails {
   summary: string;
 }
 
+/** A request the agent pushed to the operator's devices with notify_operator. */
+export interface OperatorNoticeRecord {
+  title: string;
+  body: string;
+  reason: string;
+}
+
+export interface OperatorNoticeDetails extends OperatorNoticeRecord {
+  kind: "operator";
+  summary: string;
+}
+
 /** The restart note recorded for an interrupted run. */
 export interface InterruptedNoticeDetails {
   kind: "interrupted";
@@ -72,7 +84,8 @@ export type ChatNotice =
   | JobNoticeDetails
   | McpNoticeDetails
   | InterruptedNoticeDetails
-  | MemoryNoticeDetails;
+  | MemoryNoticeDetails
+  | OperatorNoticeDetails;
 
 const JOB_HEAD = /^\[background job (\S+) finished\] (\S+) (.+?): (.*)$/;
 const MCP_EVENTS_HEAD = "MCP event data follows.";
@@ -208,6 +221,10 @@ export const MEMORY_NOTICE_TEXT_LIMIT = 2_000;
 
 export function memoryNoticeSummary(path: string): string {
   return `memory · ${path}`;
+}
+
+export function operatorNoticeSummary(title: string): string {
+  return `operator · ${title}`;
 }
 
 /** Caps the text stored with a memory chip, telling the panel when it was cut. */

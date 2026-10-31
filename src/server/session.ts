@@ -25,6 +25,9 @@ import {
   type MemoryNoticeDetails,
   memoryNoticeSummary,
   memoryNoticeText,
+  type OperatorNoticeDetails,
+  type OperatorNoticeRecord,
+  operatorNoticeSummary,
   parseNotice,
 } from "../shared/notices.js";
 import { steerKeyFromEntryData } from "../shared/steers.js";
@@ -48,8 +51,8 @@ import type { McpRuntime } from "./mcp-runtime.js";
 import type { SnapshotCache } from "./memory/snapshot.js";
 import type { MemoryStore } from "./memory/store.js";
 import type { MemoryWriteRecord } from "./memory/tools.js";
+import type { OperatorBridge } from "./operator-tools.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
-import { notify } from "./push.js";
 import { retrySettings } from "./retry.js";
 import { type RunMarker, RunMarkerStore } from "./run-marker.js";
 import type { TaskBridge } from "./task-tools.js";
@@ -96,6 +99,16 @@ const MemoryWriteEntry = defineEntry<{
 
 export const MEMORY_WRITE_ENTRY_KIND = MemoryWriteEntry.kind;
 
+/** A notify_operator call. It carries no model message and shows as a chat chip. */
+const OperatorNoticeEntry = defineEntry<{
+  title: string;
+  body: string;
+  reason: string;
+  createdAt: string;
+}>("ui.operator-notice");
+
+export const OPERATOR_NOTICE_ENTRY_KIND = OperatorNoticeEntry.kind;
+
 export interface DurableSessionOptions {
   readonly cwd: string;
   readonly models: Parameters<typeof HarnessImpl.open>[1]["models"];
@@ -114,6 +127,8 @@ export interface DurableSessionOptions {
   };
   /** Diagrams the agent draws into the chat. */
   readonly diagrams?: DiagramBridge;
+  /** The explicit notify_operator path: web push plus its chat chip. */
+  readonly operator?: OperatorBridge;
 }
 
 export interface DurableSessionBoot {
@@ -133,6 +148,7 @@ export interface DurableSessionBoot {
   readonly dashboardTools: readonly string[];
   readonly memoryTools: readonly string[];
   readonly diagramTools: readonly string[];
+  readonly operatorTools: readonly string[];
   /** Model stored on the conversation after boot. A menu choice wins over `PI_MODEL`. */
   readonly model: ModelRef | undefined;
   /** pi-ui's own version from package.json. */
@@ -157,6 +173,7 @@ export async function openDurableSession(
     dashboardTools,
     memoryTools,
     diagramTools,
+    operatorTools,
   } = await createAppRegistry({
     dataDir,
     bili: options.bili,
@@ -165,6 +182,7 @@ export async function openDurableSession(
     ...(options.dashboard === undefined ? {} : { dashboard: options.dashboard }),
     ...(options.memory === undefined ? {} : { memory: options.memory }),
     ...(options.diagrams === undefined ? {} : { diagrams: options.diagrams }),
+    ...(options.operator === undefined ? {} : { operator: options.operator }),
   });
 
   const harness = await HarnessImpl.open(
@@ -259,6 +277,7 @@ export async function openDurableSession(
     dashboardTools,
     memoryTools,
     diagramTools,
+    operatorTools,
     model,
     version,
   };
@@ -523,12 +542,6 @@ export async function appendInterruptionNote(
         }),
       SESSION_CONTEXT,
     );
-    void notify({
-      title: marker.stopRequested ? "Run stopped" : "Run interrupted",
-      body: note,
-      url: "/",
-      tag: "run-interrupted",
-    });
   } catch (error) {
     console.error("[pi] could not record the interrupted-run note", error);
   }
@@ -638,6 +651,32 @@ export function buildTranscript(
         text: entry.data.text,
         truncated: entry.data.truncated === true,
         summary: memoryNoticeSummary(path),
+      };
+      messages.push({
+        id: `m-${entry.id}`,
+        role: "system",
+        text: notice.summary,
+        timestamp: entryTimestamp(entry.data),
+        order: entry.id * 10_000,
+        notice,
+      });
+      continue;
+    }
+    if (kind === OperatorNoticeEntry.kind) {
+      if (!isRecord(entry.data)) continue;
+      if (
+        typeof entry.data.title !== "string" ||
+        typeof entry.data.body !== "string" ||
+        typeof entry.data.reason !== "string"
+      ) {
+        continue;
+      }
+      const notice: OperatorNoticeDetails = {
+        kind: "operator",
+        title: entry.data.title,
+        body: entry.data.body,
+        reason: entry.data.reason,
+        summary: operatorNoticeSummary(entry.data.title),
       };
       messages.push({
         id: `m-${entry.id}`,
@@ -848,6 +887,32 @@ export async function appendMemoryWriteNotice(
         isRecord(candidate.data) &&
         candidate.data.createdAt === createdAt &&
         candidate.data.path === record.path,
+    );
+  return entry === undefined ? undefined : buildTranscript([entry]).messages[0];
+}
+
+/** Records a notify_operator call as a persistent chat chip. */
+export async function appendOperatorNotice(
+  conversation: Conversation,
+  record: OperatorNoticeRecord,
+): Promise<ChatMessage | undefined> {
+  const createdAt = new Date().toISOString();
+  await conversation.commit(
+    (tx) =>
+      tx.appendEntry(OperatorNoticeEntry, conversation.id, {
+        data: { title: record.title, body: record.body, reason: record.reason, createdAt },
+      }),
+    SESSION_CONTEXT,
+  );
+  const context = await conversation.context(SESSION_CONTEXT);
+  const entry = [...context.entries]
+    .reverse()
+    .find(
+      (candidate) =>
+        candidate.kind === OperatorNoticeEntry.kind &&
+        isRecord(candidate.data) &&
+        candidate.data.createdAt === createdAt &&
+        candidate.data.title === record.title,
     );
   return entry === undefined ? undefined : buildTranscript([entry]).messages[0];
 }

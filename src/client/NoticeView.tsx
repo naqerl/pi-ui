@@ -6,6 +6,7 @@ import {
   type McpNoticeDetails,
   type MemoryNoticeDetails,
   memoryUndoPrompt,
+  type OperatorNoticeDetails,
 } from "../shared/notices";
 import { formatDateTime, formatTime } from "../shared/time";
 import type { ChatMessage } from "../shared/types";
@@ -38,6 +39,7 @@ function noticeGlyph(notice: ChatNotice): string {
   if (notice.kind === "job") return "⚙";
   if (notice.kind === "mcp") return "↯";
   if (notice.kind === "memory") return "✎";
+  if (notice.kind === "operator") return "✉";
   return "⚠";
 }
 
@@ -149,9 +151,11 @@ function NoticeDialog({
                   ? "MCP event"
                   : notice.kind === "memory"
                     ? "Memory write"
-                    : notice.stopped
-                      ? "Run stopped"
-                      : "Run interrupted"}
+                    : notice.kind === "operator"
+                      ? "Operator request"
+                      : notice.stopped
+                        ? "Run stopped"
+                        : "Run interrupted"}
               {dateTime !== "" && ` · ${dateTime}`}
             </div>
             <h2 id={titleId} className="mt-0.5 font-mono text-sm [overflow-wrap:anywhere]">
@@ -175,6 +179,8 @@ function NoticeDialog({
             <McpDetails notice={notice} />
           ) : notice.kind === "memory" ? (
             <MemoryDetails notice={notice} onSteer={onSteer} />
+          ) : notice.kind === "operator" ? (
+            <OperatorDetails notice={notice} />
           ) : (
             <InterruptedDetails notice={notice} />
           )}
@@ -186,6 +192,17 @@ function NoticeDialog({
 
 function InterruptedDetails({ notice }: { notice: InterruptedNoticeDetails }) {
   return <p className="[overflow-wrap:anywhere]">{notice.note}</p>;
+}
+
+function OperatorDetails({ notice }: { notice: OperatorNoticeDetails }) {
+  return (
+    <>
+      <p className="[overflow-wrap:anywhere]">{notice.body}</p>
+      <div className="mt-3">
+        <Fields rows={[["Reason", notice.reason]]} />
+      </div>
+    </>
+  );
 }
 
 function MemoryDetails({

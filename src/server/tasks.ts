@@ -105,7 +105,9 @@ export interface TaskStoreOptions {
   readonly notify?: TaskNotifier;
 }
 
-const defaultTaskNotifier: TaskNotifier = (notification) => notify(notification);
+const defaultTaskNotifier: TaskNotifier = async (notification) => {
+  await notify(notification);
+};
 
 /** Durable todo ledger at `DATA_DIR/tasks.json`. One list, shared by every client. */
 export class TaskStore {
