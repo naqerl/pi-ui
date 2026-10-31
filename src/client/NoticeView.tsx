@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import {
   type ChatNotice,
+  type IdleNoticeDetails,
   type InterruptedNoticeDetails,
   type JobNoticeDetails,
   type McpNoticeDetails,
@@ -38,6 +39,7 @@ function noticeGlyph(notice: ChatNotice): string {
   if (notice.kind === "job") return "⚙";
   if (notice.kind === "mcp") return "↯";
   if (notice.kind === "memory") return "✎";
+  if (notice.kind === "idle") return "◷";
   return "⚠";
 }
 
@@ -149,9 +151,11 @@ function NoticeDialog({
                   ? "MCP event"
                   : notice.kind === "memory"
                     ? "Memory write"
-                    : notice.stopped
-                      ? "Run stopped"
-                      : "Run interrupted"}
+                    : notice.kind === "idle"
+                      ? "Idle nudge"
+                      : notice.stopped
+                        ? "Run stopped"
+                        : "Run interrupted"}
               {dateTime !== "" && ` · ${dateTime}`}
             </div>
             <h2 id={titleId} className="mt-0.5 font-mono text-sm [overflow-wrap:anywhere]">
@@ -175,6 +179,8 @@ function NoticeDialog({
             <McpDetails notice={notice} />
           ) : notice.kind === "memory" ? (
             <MemoryDetails notice={notice} onSteer={onSteer} />
+          ) : notice.kind === "idle" ? (
+            <IdleDetails notice={notice} />
           ) : (
             <InterruptedDetails notice={notice} />
           )}
@@ -186,6 +192,15 @@ function NoticeDialog({
 
 function InterruptedDetails({ notice }: { notice: InterruptedNoticeDetails }) {
   return <p className="[overflow-wrap:anywhere]">{notice.note}</p>;
+}
+
+function IdleDetails({ notice }: { notice: IdleNoticeDetails }) {
+  return (
+    <>
+      <p className="[overflow-wrap:anywhere]">{notice.text}</p>
+      <Fields rows={[["Open tasks", notice.taskIds.join(", ")]]} />
+    </>
+  );
 }
 
 function MemoryDetails({

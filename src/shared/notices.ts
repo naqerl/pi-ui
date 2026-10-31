@@ -5,6 +5,7 @@
  * sent to the model is unchanged.
  */
 
+import { idleNudgeText } from "./idle-nudge.js";
 import { toIsoTimestamp } from "./time.js";
 
 export interface JobNoticeDetails {
@@ -58,6 +59,15 @@ export interface MemoryNoticeDetails {
   summary: string;
 }
 
+/** An automated nudge sent after the agent stayed idle with open work. */
+export interface IdleNoticeDetails {
+  kind: "idle";
+  /** The prompt the agent received, also shown when the chip is opened. */
+  text: string;
+  taskIds: string[];
+  summary: string;
+}
+
 /** The restart note recorded for an interrupted run. */
 export interface InterruptedNoticeDetails {
   kind: "interrupted";
@@ -72,11 +82,14 @@ export type ChatNotice =
   | JobNoticeDetails
   | McpNoticeDetails
   | InterruptedNoticeDetails
-  | MemoryNoticeDetails;
+  | MemoryNoticeDetails
+  | IdleNoticeDetails;
 
 const JOB_HEAD = /^\[background job (\S+) finished\] (\S+) (.+?): (.*)$/;
 const MCP_EVENTS_HEAD = "MCP event data follows.";
 const MCP_STATUS_HEAD = "MCP subscription status follows.";
+const IDLE_HEAD =
+  /^You have been idle for \d+ minutes and (\d+) task\(s\) are open: (.+)\. Pick the next one and implement it\.$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -133,6 +146,22 @@ function parseJob(lines: string[]): JobNoticeDetails | null {
 function mcpSummary(servers: string[], label: string): string {
   if (servers.length === 1) return `MCP ${servers[0]}: ${label}`;
   return `MCP ${servers.join(", ")}: ${label}`;
+}
+
+function parseIdle(body: string): IdleNoticeDetails | null {
+  const match = IDLE_HEAD.exec(body.trim());
+  if (match === null) return null;
+  const taskIds = (match[2] ?? "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0);
+  if (taskIds.length === 0) return null;
+  return {
+    kind: "idle",
+    text: idleNudgeText(taskIds),
+    taskIds,
+    summary: `idle · ${taskIds.length} task(s) open: ${taskIds.join(", ")}`,
+  };
 }
 
 function parseMcp(body: string, status: boolean): McpNoticeDetails | null {
@@ -226,5 +255,6 @@ export function parseNotice(message: string): ChatNotice | null {
   if (message.startsWith("[background job ")) return parseJob(message.split("\n"));
   if (message.startsWith(MCP_EVENTS_HEAD)) return parseMcp(message, false);
   if (message.startsWith(MCP_STATUS_HEAD)) return parseMcp(message, true);
+  if (message.startsWith("You have been idle for ")) return parseIdle(message);
   return null;
 }
