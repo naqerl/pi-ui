@@ -4,6 +4,10 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.22 - 2026-10-31
+
+- Push notifications go out only when the agent asks for them: the new `notify_operator` tool sends a title, body and reason to the operator devices, and the request shows as a ✉ chip in the chat. Assistant replies no longer push.
+
 ## 1.6.21 - 2026-10-31
 
 - Diagrams open full screen: a viewer over the chat with zoom (wheel, buttons, pinch) and drag-to-pan, keyboard escape to close, and the inline diagram keeps its own scroll container.
