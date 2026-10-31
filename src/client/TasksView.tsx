@@ -33,8 +33,8 @@ import { Separator } from "./components/ui/separator";
 import { cn } from "./lib/utils";
 import { InlineMarkdown, Markdown, plainInline } from "./markdown";
 import { mediaUrl } from "./media-client";
-import type { TaskFilter } from "./TaskFilters";
 import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
+import type { TaskFilter } from "./TaskFilters";
 import { removeTask, type TaskOutcome, updateTask } from "./task-client";
 
 const LONG_PRESS_MS = 500;

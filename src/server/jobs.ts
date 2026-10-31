@@ -191,7 +191,9 @@ export class JobManager {
       signalGroup(pid, "SIGTERM");
       const timer = setTimeout(() => {
         this.killTimers.delete(job.id);
-        if (alive(pid)) signalGroup(pid, "SIGKILL");
+        // The group leader can exit while a child ignores SIGTERM, so ask the
+        // group rather than the leader whether anything still needs SIGKILL.
+        if (groupAlive(pid)) signalGroup(pid, "SIGKILL");
       }, KILL_AFTER_MS);
       timer.unref();
       this.killTimers.set(job.id, timer);
@@ -340,6 +342,15 @@ function alive(pid: number | null): boolean {
   if (pid === null) return false;
   try {
     process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function groupAlive(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
     return true;
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM";
