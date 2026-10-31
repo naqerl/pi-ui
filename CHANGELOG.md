@@ -2,6 +2,13 @@
 
 Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
 
+## 1.6.29 - 2026-10-31
+
+- The Tasks page is simplified to plain shadcn-style primitives on theme tokens: each row is a checkbox, the title, an optional status badge (Working, Blocked, Failed, Proposed, Done) and an optional muted one-liner such as "Blocked by …" or "2 of 4 subtasks done". No glyph boxes, mono uppercase labels or dashed/struck-through tricks; rows, badges and buttons are vertically centred and action labels like "Block" never truncate.
+- The Now card is now a single line ("Working on …"), shown only while something is running. The Untracked line and its counting are removed; `piuiTaskId` tagging and measured stats stay.
+- Finished work is grouped by day under Done: Today is expanded, then Yesterday and dates like "Thu, Oct 29" as collapsed sections with a count. A week of days is shown at first, with "Show older days" for more. The separate Done filter is gone.
+- The task detail is a minimal card: title and badge, created/closed time, measured stats as label/value pairs, blockers and subtasks, and a short history grouped by day.
+
 ## 1.6.28 - 2026-10-31
 
 - Tasks show what is actually happening instead of what the agent remembered to mark. Each task gets one derived display state (working, ready, blocked, needs you, failed, done) from the ledger plus measured activity: tool calls tagged with `piuiTaskId` attribute runs to a task, so a task the agent is working on shows as working even if it was never marked in progress, and a long call in flight keeps it working and counts its time.
