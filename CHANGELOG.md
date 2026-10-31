@@ -13,6 +13,10 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.27 - 2026-10-31
+
+- A test run can no longer reach live data or a real push endpoint: `npm test` runs through `scripts/run-tests.mjs`, which puts `DATA_DIR`, `PI_MEMORY_DIR` and the XDG roots inside a temp tree and forces `NODE_ENV=test`; the server refuses to boot with a live data dir in test mode, and the push service throws and logs instead of delivering to a non-allowlisted endpoint. The lockfile also repairs `npm ci --dry-run`.
+
 ## 1.6.24 - 2026-10-31
 
 - MCP event notices are coalesced: a burst of hub events arrives as one chip instead of one notice per event, repeats of an already delivered `eventId` are dropped, and a long run no longer fills the chat with `hub.run` frames.
