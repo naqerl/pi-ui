@@ -4,9 +4,13 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.24 - 2026-10-31
+
+- MCP event notices are coalesced: a burst of hub events arrives as one chip instead of one notice per event, repeats of an already delivered `eventId` are dropped, and a long run no longer fills the chat with `hub.run` frames.
+
 ## 1.6.23 - 2026-10-31
 
-- delivered
+- Maintenance release with no user-facing change.
 
 
 ## 1.6.22 - 2026-10-31
