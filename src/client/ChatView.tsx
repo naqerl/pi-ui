@@ -8,15 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  acceptMention,
-  defaultProject as chooseDefaultProject,
-  mentionAt,
-  type ProjectFilter,
-  parseProjectToken,
-  projectsOf,
-  sameProject,
-} from "../shared/project";
+import { acceptMention, mentionAt, parseProjectToken, projectsOf } from "../shared/project";
 import { formatDateTime, formatTime } from "../shared/time";
 import type {
   ActivityItem,
@@ -42,14 +34,7 @@ import { cn } from "./lib/utils";
 import { ATTACH_ACCEPT, mediaUrl, uploadMedia } from "./media-client";
 import { NoticeLine } from "./NoticeView";
 import { PiMenu } from "./PiMenu";
-import { ProjectSelect } from "./ProjectSelect";
 import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
-import {
-  readLastProject,
-  readProjectFilter,
-  writeLastProject,
-  writeProjectFilter,
-} from "./project-prefs";
 import type { ChatStats } from "./StatsView";
 import { createTask } from "./task-client";
 import { groupTimeline, type TimelineGroup } from "./timeline-groups";
@@ -584,7 +569,6 @@ function Composer({
   unsendSteer,
   addTask,
   projects,
-  defaultProject,
   error,
   onDismissError,
 }: {
@@ -594,26 +578,18 @@ function Composer({
   send: (text: string, mode?: MessageMode, attachments?: string[]) => Promise<boolean>;
   stop: () => Promise<void>;
   unsendSteer?: () => Promise<QueuedMessage | null>;
-  addTask: (text: string, attachments: string[], project: string | null) => Promise<boolean>;
-  /** Known project names, A–Z, for the chip and the `@` autocomplete. */
+  /** Without a project a subtask takes its parent's, and a top-level task gets none. */
+  addTask: (text: string, attachments: string[], project?: string) => Promise<boolean>;
+  /** Known project names, A–Z, for the `@` autocomplete. */
   projects: string[];
-  /** The project a new task gets unless the user picks another. */
-  defaultProject: string | null;
   error: string | null;
   onDismissError: () => void;
 }) {
   const [value, setValue] = useState("");
-  // The chip's pick, kept apart from the default so the default can follow the filter until then.
-  const [picked, setPicked] = useState<{ project: string | null } | null>(null);
   const [caret, setCaret] = useState<number | null>(null);
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const mention = tasksPage && caret !== null ? mentionAt(value, caret) : null;
-  // A token still being typed is a query, not a pick, until it is accepted or the caret leaves it.
-  const settled =
-    mention === null ? value : value.slice(0, mention.start) + value.slice(mention.end);
-  const typedProject = tasksPage ? parseProjectToken(settled, projects).project : null;
-  const project = typedProject ?? (picked === null ? defaultProject : picked.project);
   const suggestions = mention === null ? [] : projectSuggestions(projects, mention.query);
   const suggesting = mention !== null && dismissedAt !== mention.start && suggestions.length > 0;
   const active = suggesting ? Math.min(activeIndex, suggestions.length - 1) : -1;
@@ -709,12 +685,11 @@ function Composer({
     let sent: boolean;
     if (tasksPage) {
       const parsed = parseProjectToken(text, projects);
-      sent = await addTask(parsed.title, ids, parsed.project ?? project);
+      sent = await addTask(parsed.title, ids, parsed.project ?? undefined);
     } else {
       sent = await send(text, mode, ids);
     }
     if (!sent) return;
-    setPicked(null);
     attachments.clear(sentKeys);
     // Keep a draft typed while the request was in flight; only clear the text we sent.
     if (element !== null && element.value !== text) return;
@@ -741,12 +716,6 @@ function Composer({
       element.focus({ preventScroll: true });
       element.setSelectionRange(next.caret, next.caret);
     });
-  };
-
-  const pickProject = (next: string | null) => {
-    setPicked({ project: next });
-    // The chip wins over a typed token, so drop the token rather than leave the two disagreeing.
-    if (typedProject !== null) setValue(parseProjectToken(value, projects).title);
   };
 
   return (
@@ -777,22 +746,6 @@ function Composer({
         </p>
       )}
       <AttachmentStrip items={attachments.items} onRemove={attachments.remove} />
-      {tasksPage && (
-        <div
-          className="flex min-w-0 items-center gap-2 px-2.5 pt-2"
-          data-testid="composer-project-row"
-        >
-          <span className="text-xs leading-4 text-muted-foreground">Project</span>
-          <ProjectSelect
-            label="Project"
-            testId="composer-project"
-            value={project}
-            projects={projects}
-            onChange={pickProject}
-            className="min-w-0 max-w-full"
-          />
-        </div>
-      )}
       <div ref={rowRef} className="flex w-full items-end gap-1 p-1.5">
         <input
           ref={fileRef}
@@ -1061,18 +1014,7 @@ export function ChatView({
   useEffect(() => setComposerError(null), [pager.page]);
   const statsPage = pager.page === STATS_PAGE;
   const armed = tasks.find((task) => task.id === armedParentId) ?? null;
-  const [projectFilter, setProjectFilterState] = useState<ProjectFilter>(readProjectFilter);
-  const [lastProject, setLastProject] = useState<string | null>(readLastProject);
   const projects = useMemo(() => projectsOf(tasks), [tasks]);
-  const setProjectFilter = useCallback((filter: ProjectFilter) => {
-    setProjectFilterState(filter);
-    writeProjectFilter(filter);
-  }, []);
-  const composerProject = chooseDefaultProject({
-    parent: armed,
-    filter: projectFilter,
-    lastUsed: lastProject,
-  });
 
   useEffect(() => {
     if (!tasksPage || (armedParentId !== null && armed === null)) setArmedParentId(null);
@@ -1213,7 +1155,7 @@ export function ChatView({
     return true;
   };
 
-  const addTask = async (text: string, attachments: string[], project: string | null) => {
+  const addTask = async (text: string, attachments: string[], project?: string) => {
     const outcome = await createTask(
       text,
       tasksPage ? (armed?.id ?? null) : null,
@@ -1224,13 +1166,6 @@ export function ChatView({
       setComposerError(outcome.error);
       return false;
     }
-    // The server may reuse an existing spelling; remember the name as stored.
-    const used =
-      project === null
-        ? null
-        : (projectsOf(outcome.ledger.tasks).find((name) => sameProject(name, project)) ?? project);
-    setLastProject(used);
-    writeLastProject(used);
     setComposerError(null);
     applyTasks(outcome.ledger);
     return true;
@@ -1379,8 +1314,6 @@ export function ChatView({
                   armedParentId={armed?.id ?? null}
                   onArmParent={setArmedParentId}
                   onLedger={applyTasks}
-                  projectFilter={projectFilter}
-                  onProjectFilter={setProjectFilter}
                 />
               </Suspense>
             </section>
@@ -1466,7 +1399,6 @@ export function ChatView({
                 unsendSteer={!tasksPage && pendingSteers > 0 ? unsendSteer : undefined}
                 addTask={addTask}
                 projects={projects}
-                defaultProject={composerProject}
                 error={composerError}
                 onDismissError={() => setComposerError(null)}
               />

@@ -48,12 +48,12 @@ test("tagged tool calls show a task as working, untagged ones touch no task", as
   );
 
   await expect(screen.getByTestId(`task-${id}`)).toHaveAttribute("data-state", "working");
-  await expect(screen.getByTestId(`now-task-${id}`)).toBeVisible();
-  await expect(screen.getByTestId("now-line")).toContainText(`Working on ${title}`);
+  await expect(screen.getByTestId(`task-${id}`)).toContainText("Working");
+  // The row's badge says it; there is no separate "Working on …" line.
+  await expect(screen.getByTestId("now-line")).toHaveCount(0);
 
   writeFileSync(release, "");
   await expect(screen.getByTestId(`task-${id}`)).toHaveAttribute("data-state", "ready");
-  await expect(screen.getByTestId("now-line")).toHaveCount(0);
 
   await screen.getByRole("button", { name: `Open ${title}` }).tap();
   await expect(screen.getByTestId("task-history")).toContainText("Run started");

@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { type ProjectFilter, projectsOf, sameProject } from "../shared/project";
+import { sameProject } from "../shared/project";
 import { subtaskCount, taskState } from "../shared/task-status";
 import {
   ancestorIds,
@@ -28,12 +28,10 @@ import { Button } from "./components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader } from "./components/ui/card";
 import { Checkbox } from "./components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
-import { NativeSelect } from "./components/ui/native-select";
 import { Separator } from "./components/ui/separator";
 import { cn } from "./lib/utils";
 import { InlineMarkdown, plainInline } from "./markdown";
 import { mediaUrl } from "./media-client";
-import { ProjectSelect } from "./ProjectSelect";
 import { removeTask, type TaskOutcome, updateTask } from "./task-client";
 
 const LONG_PRESS_MS = 500;
@@ -52,15 +50,6 @@ interface TasksViewProps {
   armedParentId: string | null;
   onArmParent: (id: string | null) => void;
   onLedger: (ledger: TaskLedger) => void;
-  projectFilter: ProjectFilter;
-  onProjectFilter: (filter: ProjectFilter) => void;
-}
-
-/** Whether a task belongs in the list the project filter shows. */
-export function inProject(task: { project?: string }, filter: ProjectFilter): boolean {
-  if (filter.kind === "all") return true;
-  if (filter.kind === "none") return task.project === undefined;
-  return sameProject(task.project, filter.name);
 }
 
 /** Root tasks split into one group per project, A–Z, with "No project" (null) last. */
@@ -81,13 +70,6 @@ export function groupByProject<T extends { project?: string }>(
   }
   const named = [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
   return loose.length > 0 ? [...named, [null, loose]] : named;
-}
-
-const FILTER_ALL = "all";
-const FILTER_NONE = "none";
-
-function filterValue(filter: ProjectFilter): string {
-  return filter.kind === "project" ? `project:${filter.name}` : filter.kind;
 }
 
 function useWide(): boolean {
@@ -220,8 +202,6 @@ export function TasksView({
   armedParentId,
   onArmParent,
   onLedger,
-  projectFilter,
-  onProjectFilter,
 }: TasksViewProps) {
   const wide = useWide();
   const [filter, setFilter] = useState<Filter>("active");
@@ -237,15 +217,10 @@ export function TasksView({
   for (const task of tasks) stateOf.set(task.id, taskState(tasks, task, activity));
   const state = (task: Task): TaskState => stateOf.get(task.id) ?? "ready";
 
-  const projects = projectsOf(tasks);
-  const shown = (task: Task) => inProject(task, projectFilter);
-  // With every project in view, open work is grouped by project, so its rows drop the label.
-  const grouped = projectFilter.kind === "all" && projects.length > 0;
-  const labelled = projectFilter.kind === "all";
   const activeTasks = tasks.filter((task) => task.status !== "proposed");
-  const openTasks = activeTasks.filter((task) => task.status !== "done" && shown(task));
+  const openTasks = activeTasks.filter((task) => task.status !== "done");
   const proposedTasks = tasks
-    .filter((task) => task.status === "proposed" && shown(task))
+    .filter((task) => task.status === "proposed")
     .sort((a, b) => {
       const left = a.proposedAt ?? a.createdAt;
       const right = b.proposedAt ?? b.createdAt;
@@ -253,7 +228,6 @@ export function TasksView({
     });
   const failedTasks = openTasks.filter((task) => state(task) === "failed");
   const blockedTasks = openTasks.filter((task) => state(task) === "blocked");
-  const workingTasks = openTasks.filter((task) => state(task) === "working");
   const ids = new Set(activeTasks.map((task) => task.id));
   const roots = activeTasks
     .filter((task) => task.parentId === null || !ids.has(task.parentId))
@@ -261,13 +235,12 @@ export function TasksView({
   const hasChildren = (task: Task) => activeTasks.some((item) => item.parentId === task.id);
   // A failed leaf already sits under "Needs you"; a failed parent stays in the tree with its subtasks.
   const activeRoots = roots.filter(
-    (task) =>
-      task.status !== "done" && shown(task) && !(state(task) === "failed" && !hasChildren(task)),
+    (task) => task.status !== "done" && !(state(task) === "failed" && !hasChildren(task)),
   );
+  // Open work is grouped by project once any task has one; grouped rows drop the label.
   const projectGroups = groupByProject(activeRoots);
-  const doneRoots = roots
-    .filter((task) => task.status === "done" && shown(task))
-    .sort(byCompletedDesc);
+  const grouped = projectGroups.some(([name]) => name !== null);
+  const doneRoots = roots.filter((task) => task.status === "done").sort(byCompletedDesc);
   const days = groupByDay(doneRoots, (task) => task.completedAt ?? task.createdAt);
   const today = dayKey(now);
   if (days.length > 0 && days[0]?.[0] !== today) days.unshift([today, []]);
@@ -344,14 +317,14 @@ export function TasksView({
     onOpenMenu: openMenu,
     onOpen: setOpenTaskId,
     onStatus: setStatus,
-    showProject: labelled,
+    showProject: true,
   };
 
   const proposal = (task: Task) => (
     <ProposedTask
       key={task.id}
       task={task}
-      showProject={labelled}
+      showProject
       selected={openTaskId === task.id}
       notice={problem?.id === task.id ? problem.message : null}
       onOpen={() => setOpenTaskId(task.id)}
@@ -373,29 +346,6 @@ export function TasksView({
 
   const list = (
     <div className="flex min-w-0 flex-col gap-5" data-testid="task-list">
-      {workingTasks.length > 0 && (
-        <p
-          data-testid="now-line"
-          aria-live="polite"
-          className="px-1 text-sm leading-5 text-muted-foreground"
-        >
-          Working on{" "}
-          {workingTasks.map((task, index) => (
-            <span key={task.id}>
-              {index > 0 && ", "}
-              <button
-                type="button"
-                data-testid={`now-task-${task.id}`}
-                aria-label={`Working on ${plainInline(task.title)}`}
-                onClick={() => setOpenTaskId(task.id)}
-                className="font-medium text-foreground underline-offset-4 hover:underline"
-              >
-                {plainInline(task.title)}
-              </button>
-            </span>
-          ))}
-        </p>
-      )}
       {tasks.length > 0 && (
         <div className="flex flex-wrap items-center gap-2">
           <div
@@ -422,32 +372,6 @@ export function TasksView({
               </button>
             ))}
           </div>
-          {(projects.length > 0 || projectFilter.kind !== "all") && (
-            <NativeSelect
-              aria-label="Project filter"
-              data-testid="task-project-filter"
-              className="h-9 [&>select]:h-9"
-              value={filterValue(projectFilter)}
-              onChange={(event) => {
-                const next = event.target.value;
-                if (next === FILTER_ALL) onProjectFilter({ kind: "all" });
-                else if (next === FILTER_NONE) onProjectFilter({ kind: "none" });
-                else onProjectFilter({ kind: "project", name: next.slice("project:".length) });
-              }}
-            >
-              <option value={FILTER_ALL}>All projects</option>
-              {projects.map((name) => (
-                <option key={name} value={`project:${name}`}>
-                  {name}
-                </option>
-              ))}
-              {projectFilter.kind === "project" &&
-                !projects.some((name) => sameProject(name, projectFilter.name)) && (
-                  <option value={filterValue(projectFilter)}>{projectFilter.name}</option>
-                )}
-              <option value={FILTER_NONE}>No project</option>
-            </NativeSelect>
-          )}
         </div>
       )}
       {filter === "active" && (
@@ -572,8 +496,6 @@ export function TasksView({
         onStatus={setStatus}
         onArm={() => onArmParent(armedParentId === openTask.id ? null : openTask.id)}
         onBlock={(x, y) => openMenu(openTask.id, x, y, true)}
-        projects={projects}
-        onProject={(project) => void apply(openTask.id, updateTask(openTask.id, { project }))}
         onApprove={() => void apply(openTask.id, updateTask(openTask.id, { status: "open" }))}
         onDismiss={() => void apply(openTask.id, removeTask(openTask.id))}
         onRemove={() => {
@@ -1100,8 +1022,6 @@ export function TaskDetail({
   onApprove,
   onDismiss,
   onRemove,
-  projects = [],
-  onProject,
 }: {
   task: Task;
   tasks: Task[];
@@ -1120,9 +1040,6 @@ export function TaskDetail({
   onApprove: () => void;
   onDismiss: () => void;
   onRemove: () => void;
-  projects?: string[];
-  /** Move the task to another project, or null for none. Absent: the project is read-only. */
-  onProject?: (project: string | null) => void;
 }) {
   const done = task.status === "done";
   const proposed = task.status === "proposed";
@@ -1222,24 +1139,14 @@ export function TaskDetail({
         )}
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        <div
-          className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1"
-          data-testid="task-project-line"
-        >
-          <span className="text-xs leading-4 text-muted-foreground">Project</span>
-          {onProject === undefined ? (
-            <span className="text-sm leading-5">{task.project ?? "No project"}</span>
-          ) : (
-            <ProjectSelect
-              label="Project"
-              testId="task-project"
-              value={task.project ?? null}
-              projects={projects}
-              onChange={onProject}
-              className="min-w-0 max-w-full"
-            />
-          )}
-        </div>
+        {task.project !== undefined && (
+          <p data-testid="task-project-line" className="flex min-w-0 items-baseline gap-3">
+            <span className="text-xs leading-4 text-muted-foreground">Project</span>
+            <span className="min-w-0 text-sm leading-5 [overflow-wrap:anywhere]">
+              {task.project}
+            </span>
+          </p>
+        )}
         {!proposed && (
           <dl
             data-testid="task-stats"

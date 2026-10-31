@@ -98,22 +98,3 @@ export function projectsOf(tasks: readonly { project?: string }[]): string[] {
   }
   return [...seen.values()].sort((a, b) => a.localeCompare(b));
 }
-
-/** The project filter: every project, only tasks without one, or one project. */
-export type ProjectFilter = { kind: "all" } | { kind: "none" } | { kind: "project"; name: string };
-
-/**
- * The project a new task gets before anything is typed: the parent's, then the filter in
- * view, then the last one used. Null means no project.
- */
-export function defaultProject(options: {
-  parent?: { project?: string } | null;
-  filter: ProjectFilter;
-  lastUsed?: string | null;
-}): string | null {
-  const { parent, filter, lastUsed } = options;
-  if (parent !== null && parent !== undefined) return parent.project ?? null;
-  if (filter.kind === "project") return filter.name;
-  if (filter.kind === "none") return null;
-  return normalizeProject(lastUsed ?? null);
-}

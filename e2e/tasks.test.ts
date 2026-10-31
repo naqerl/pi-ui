@@ -5,7 +5,13 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { dayLabel, groupByDay, TaskDetail, TaskTimes } from "../src/client/TasksView.js";
+import {
+  dayLabel,
+  groupByDay,
+  groupByProject,
+  TaskDetail,
+  TaskTimes,
+} from "../src/client/TasksView.js";
 import { createTaskTools, type TaskBridge } from "../src/server/task-tools.js";
 import { TaskStore } from "../src/server/tasks.js";
 import {
@@ -574,4 +580,60 @@ test("done tasks group by local day: today, yesterday, then short dates", () => 
     assert.notEqual(dayLabel("2026-10-29", now), "Yesterday");
     assert.match(dayLabel("2026-10-29", now), /29/);
   });
+});
+
+test("open tasks group by project A–Z, case-insensitively, with no project last", () => {
+  const groups = groupByProject([
+    { id: "a" },
+    { id: "b", project: "zeroshot" },
+    { id: "c", project: "citydiff" },
+    { id: "d", project: "CityDiff" },
+    { id: "e" },
+  ]);
+  assert.deepEqual(
+    groups.map(([name, items]) => [name, items.map((item) => item.id)]),
+    [
+      ["citydiff", ["c", "d"]],
+      ["zeroshot", ["b"]],
+      [null, ["a", "e"]],
+    ],
+  );
+  const loose: Array<{ id: string; project?: string }> = [{ id: "a" }];
+  assert.deepEqual(groupByProject(loose), [[null, loose]]);
+});
+
+test("the task detail shows the project as plain text, and nothing without one", () => {
+  const task: Task = {
+    id: "t3",
+    title: "Diff the tram routes",
+    status: "open",
+    parentId: null,
+    blockedBy: [],
+    createdAt: "2026-01-01T12:00:00.000Z",
+    completedAt: null,
+    completion: null,
+    project: "citydiff",
+  };
+  const props = {
+    tasks: [task],
+    state: "ready" as const,
+    trace: undefined,
+    wide: true,
+    armed: false,
+    notice: null,
+    onClose: () => {},
+    onOpen: () => {},
+    onStatus: () => {},
+    onArm: () => {},
+    onBlock: () => {},
+    onApprove: () => {},
+    onDismiss: () => {},
+    onRemove: () => {},
+  };
+  const markup = renderToStaticMarkup(createElement(TaskDetail, { ...props, task }));
+  assert.match(markup, /data-testid="task-project-line"[\s\S]*>Project<[\s\S]*>citydiff</);
+  assert.doesNotMatch(markup, /<select/);
+  const { project: _drop, ...loose } = task;
+  const bare = renderToStaticMarkup(createElement(TaskDetail, { ...props, task: loose }));
+  assert.doesNotMatch(bare, /task-project-line/);
 });

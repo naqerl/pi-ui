@@ -7,7 +7,6 @@ import { createTaskTools } from "../src/server/task-tools.js";
 import { TaskStore } from "../src/server/tasks.js";
 import {
   acceptMention,
-  defaultProject,
   matchProjects,
   mentionAt,
   normalizeProject,
@@ -63,23 +62,6 @@ test("the @ token under the caret drives autocomplete and is replaced on accept"
     "b",
     "pi-ui",
   ]);
-});
-
-test("the default project: parent, then the filter in view, then the last used", () => {
-  const all = { kind: "all" } as const;
-  assert.equal(
-    defaultProject({ parent: { project: "a" }, filter: { kind: "project", name: "b" } }),
-    "a",
-  );
-  assert.equal(
-    defaultProject({ parent: {}, filter: { kind: "project", name: "b" }, lastUsed: "c" }),
-    null,
-  );
-  assert.equal(defaultProject({ filter: { kind: "project", name: "b" }, lastUsed: "c" }), "b");
-  assert.equal(defaultProject({ filter: { kind: "none" }, lastUsed: "c" }), null);
-  assert.equal(defaultProject({ filter: all, lastUsed: "c" }), "c");
-  assert.equal(defaultProject({ filter: all, lastUsed: "bad name" }), null);
-  assert.equal(defaultProject({ filter: all }), null);
 });
 
 test("the store keeps, inherits, edits and validates projects; old data loads", async () => {
