@@ -7,6 +7,7 @@ import type {
   OmarchyThemes,
   StreamTheme,
 } from "../shared/types";
+import { PushSettings } from "./PushSettings";
 import { applyTheme } from "./theme";
 
 /** Earlier builds kept the choice here. One load copies it to the server, then drops it. */
@@ -228,11 +229,7 @@ export function PiMenu() {
           <div
             id={menuId}
             role="menu"
-            className={
-              section === "model"
-                ? "ink-line theme-radius fixed z-40 w-72 border bg-surface text-foreground"
-                : "ink-line theme-radius fixed z-40 w-56 border bg-surface text-foreground"
-            }
+            className="ink-line theme-radius fixed z-40 w-72 border bg-surface text-foreground"
             style={{
               top: anchor.top,
               left: anchor.left,
@@ -263,6 +260,9 @@ export function PiMenu() {
                     {model?.id ?? "None"}
                   </span>
                 </button>
+                <div className="p-2">
+                  <PushSettings />
+                </div>
               </div>
             ) : section === "theme" ? (
               <div>

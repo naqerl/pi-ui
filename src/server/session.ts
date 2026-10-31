@@ -43,6 +43,7 @@ import type { McpRuntime } from "./mcp-runtime.js";
 import type { SnapshotCache } from "./memory/snapshot.js";
 import type { MemoryStore } from "./memory/store.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
+import { notify } from "./push.js";
 import { type RunMarker, RunMarkerStore } from "./run-marker.js";
 import type { TaskBridge } from "./task-tools.js";
 import { pendingVersionNotice, writeLastSeenVersion } from "./version-notice.js";
@@ -497,6 +498,12 @@ export async function appendInterruptionNote(
         }),
       SESSION_CONTEXT,
     );
+    void notify({
+      title: marker.stopRequested ? "Run stopped" : "Run interrupted",
+      body: note,
+      url: "/",
+      tag: "run-interrupted",
+    });
   } catch (error) {
     console.error("[pi] could not record the interrupted-run note", error);
   }

@@ -108,3 +108,71 @@ self.addEventListener("fetch", (event) => {
 
   event.respondWith(cacheFirst(request));
 });
+
+/** A focused app has the user's attention, so a push stays silent. */
+function shouldNotify(clients) {
+  return !Array.isArray(clients) || !clients.some((client) => client && client.focused === true);
+}
+
+function pushPayload(event) {
+  if (event.data === null || event.data === undefined) return {};
+  try {
+    const value = event.data.json();
+    return value !== null && typeof value === "object" ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+self.addEventListener("push", (event) => {
+  event.waitUntil(
+    (async () => {
+      const list = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      if (!shouldNotify(list)) return;
+
+      const payload = pushPayload(event);
+      const title = typeof payload.title === "string" && payload.title ? payload.title : "pi";
+      const body = typeof payload.body === "string" ? payload.body : "";
+      const url =
+        typeof payload.url === "string" && payload.url.startsWith("/") ? payload.url : "/";
+      const tag = typeof payload.tag === "string" && payload.tag ? payload.tag : "pi";
+
+      await self.registration.showNotification(title, {
+        body,
+        data: { url },
+        tag,
+        icon: "/icons/icon-192.png",
+        badge: "/icons/icon-192.png",
+      });
+    })(),
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const data = event.notification.data;
+  const target = data && typeof data.url === "string" && data.url.startsWith("/") ? data.url : "/";
+  event.waitUntil(
+    (async () => {
+      const list = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      for (const client of list) {
+        if (typeof client.focus !== "function") continue;
+        try {
+          await client.focus();
+        } catch {
+          continue;
+        }
+        if (typeof client.navigate === "function") {
+          try {
+            await client.navigate(target);
+            return;
+          } catch {
+            // A client that cannot navigate still got focus, but the target
+            // page is what the notification promised, so open it below.
+          }
+        }
+      }
+      await self.clients.openWindow(target);
+    })(),
+  );
+});

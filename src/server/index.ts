@@ -14,13 +14,22 @@ import { ChatService } from "./chat-service.js";
 import { DashboardManager } from "./dashboard.js";
 import type { DiagramBridge } from "./diagram-tools.js";
 import { DiagramStore } from "./diagrams.js";
-import { JobManager, jobNotice } from "./jobs.js";
+import { JobManager, type JobRecord, jobNotice } from "./jobs.js";
 import { McpEventFeed } from "./mcp-events.js";
 import { MAX_MEDIA_BYTES, MediaError, MediaStore, parseAttachmentIds } from "./media.js";
 import { composeInstructions, SnapshotCache, SnapshotController } from "./memory/snapshot.js";
 import { MemoryStore } from "./memory/store.js";
 import { createModelCatalog } from "./models.js";
 import { buildPiSystemPrompt } from "./pi.js";
+import {
+  closePush,
+  configurePush,
+  notify,
+  pushPublicKey,
+  pushStatus,
+  subscribePush,
+  unsubscribePush,
+} from "./push.js";
 import { type DurableSessionOptions, openDurableSession, SESSION_CONTEXT } from "./session.js";
 import { StreamHub } from "./stream-hub.js";
 import type { TaskBridge } from "./task-tools.js";
@@ -38,6 +47,7 @@ const clientDir = existsSync(resolve(builtClientDir, "index.html"))
 
 const cwd = resolve(process.env.PI_CWD?.trim() || process.cwd());
 const dataDir = resolve(cwd, process.env.DATA_DIR?.trim() || "data");
+configurePush(dataDir);
 const themeFile = resolve(dataDir, "theme.json");
 const taskStore = new TaskStore(resolve(dataDir, "tasks.json"));
 const media = new MediaStore(resolve(dataDir, "media"));
@@ -166,6 +176,7 @@ const chat = new ChatService(
 const events = new McpEventFeed(boot.mcp.subscriptionRegistry);
 chat.setEventFeed(events);
 boot.mcp.setObserver((notice) => {
+  const previousEvent = events.state.events.at(-1);
   const changed = events.ingest(notice);
   // A protocol connection can clear a boot failure, so keep the live status
   // in every tab instead of leaving the snapshot from startup on screen.
@@ -176,6 +187,17 @@ boot.mcp.setObserver((notice) => {
     return notice.customType === "mcp-events" ? false : undefined;
   }
   hub.broadcast({ event: "mcp.events", data: events.state });
+  if (notice.customType === "mcp-events") {
+    const latest = events.state.events.at(-1);
+    if (latest !== undefined && latest.id !== previousEvent?.id) {
+      void notify({
+        title: `MCP ${latest.name}`,
+        body: `${latest.server}: ${latest.summary}`,
+        url: "/activity",
+        tag: "mcp-event",
+      });
+    }
+  }
   return undefined;
 });
 await chat.start();
@@ -220,12 +242,26 @@ dashboard.setHost({
   },
 });
 jobs.onChange(() => dashboard.broadcast());
+function pushJobNotice(job: JobRecord, tail: string) {
+  const lastLine =
+    tail
+      .trim()
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .at(-1) ?? `exit ${job.exitCode ?? "unknown"}`;
+  const title =
+    job.status === "exited" ? `job ${job.name} finished` : `job ${job.name} ${job.status}`;
+  void notify({ title, body: lastLine, url: "/activity", tag: `job-${job.id}` });
+}
 jobs.setNotifier((job, tail) => {
+  pushJobNotice(job, tail);
   void chat.submitJobNotice(jobNotice(job, tail)).catch((error: unknown) => {
     console.error(`[pi] background job ${job.id} message failed`, error);
   });
 });
 jobs.setQuietNotifier((job, tail) => {
+  pushJobNotice(job, tail);
   void chat.recordNotice(jobNotice(job, tail)).catch((error: unknown) => {
     console.error(`[pi] background job ${job.id} notice failed`, error);
   });
@@ -252,6 +288,41 @@ void bili
 const app = new Hono();
 
 app.get("/api/health", async (c) => c.json({ ok: true, version: await readAppVersion() }));
+
+app.get("/api/push/key", async (c) => c.json({ key: await pushPublicKey() }));
+
+app.post("/api/push/subscribe", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.text("Expected a JSON body", 400);
+  }
+  const record = await subscribePush(body);
+  if (record === null) return c.text("endpoint and keys are required", 400);
+  return c.json({ ok: true });
+});
+
+app.delete("/api/push/subscribe", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.text("Expected a JSON body", 400);
+  }
+  const endpoint =
+    typeof body === "object" &&
+    body !== null &&
+    "endpoint" in body &&
+    typeof body.endpoint === "string"
+      ? body.endpoint.trim()
+      : "";
+  if (endpoint.length === 0) return c.text("endpoint is required", 400);
+  await unsubscribePush(endpoint);
+  return c.json({ ok: true });
+});
+
+app.get("/api/push/status", async (c) => c.json(await pushStatus()));
 
 app.get("/api/themes", async (c) => c.json((await resolveTheme(themeFile)).themes));
 
@@ -762,6 +833,7 @@ async function shutdown(): Promise<void> {
     await chat.close();
     await boot.mcp.close();
     await boot.harness.close(SESSION_CONTEXT);
+    await closePush();
   } catch (error) {
     console.error("[pi] shutdown failed", error);
   }
