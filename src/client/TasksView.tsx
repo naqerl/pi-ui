@@ -13,7 +13,7 @@ import {
   hasOpenDescendant,
   liveBlockerIds,
 } from "../shared/tasks";
-import { formatDateTime, formatDay, formatTime } from "../shared/time";
+import { formatDateTime, formatDay, formatMonthDay, formatTime } from "../shared/time";
 import type {
   Task,
   TaskActivity,
@@ -32,6 +32,7 @@ import { Separator } from "./components/ui/separator";
 import { cn } from "./lib/utils";
 import { InlineMarkdown, plainInline } from "./markdown";
 import { mediaUrl } from "./media-client";
+import type { TaskFilter } from "./TaskFilters";
 import { removeTask, type TaskOutcome, updateTask } from "./task-client";
 
 const LONG_PRESS_MS = 500;
@@ -40,14 +41,13 @@ const HISTORY_LIMIT = 12;
 /** Past days of the done list shown at first; "Show older days" adds this many more. */
 const DAY_PAGE = 7;
 
-type Filter = "active" | "blocked" | "proposed";
-
 interface TasksViewProps {
   tasks: Task[];
   activity?: TaskActivity;
   ready: boolean;
   footerClearance: number;
   armedParentId: string | null;
+  filter: TaskFilter;
   onArmParent: (id: string | null) => void;
   onLedger: (ledger: TaskLedger) => void;
 }
@@ -105,6 +105,17 @@ export function dayLabel(key: string, now: Date): string {
   return formatDay(date, now.getFullYear());
 }
 
+/** The heading for one done day: "Done today", "Done yesterday", then "Done <date>". */
+export function doneDayLabel(key: string, now: Date): string {
+  if (key === dayKey(now)) return "Done today";
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (key === dayKey(yesterday)) return "Done yesterday";
+  const [year, month, day] = key.split("-").map(Number);
+  const date = new Date(year ?? 1970, (month ?? 1) - 1, day ?? 1);
+  return `Done ${formatMonthDay(date, now.getFullYear())}`;
+}
+
 /** Items grouped by the local day of `at`, newest day first, keeping each group's order. */
 export function groupByDay<T>(items: T[], at: (item: T) => string): Array<[string, T[]]> {
   const groups = new Map<string, T[]>();
@@ -123,13 +134,36 @@ function byCompletedDesc(a: Task, b: Task): number {
   return left === right ? 0 : left < right ? 1 : -1;
 }
 
-function Heading({ children, count }: { children: ReactNode; count?: number }) {
+function Heading({
+  children,
+  count,
+  dark = false,
+  chevron,
+}: {
+  children: ReactNode;
+  count?: number;
+  dark?: boolean;
+  chevron?: ReactNode;
+}) {
   return (
-    <h2 className="flex items-center gap-2 px-1 text-sm font-medium leading-5 text-foreground">
-      {children}
-      {count !== undefined && (
-        <span className="text-sm font-normal leading-5 text-muted-foreground">{count}</span>
+    <h2
+      className={cn(
+        "flex h-9 items-center gap-2 rounded-md text-sm font-medium leading-5",
+        dark ? "bg-foreground px-3 text-background" : "px-1 text-foreground",
       )}
+    >
+      <span className="min-w-0 flex-1 truncate">{children}</span>
+      {count !== undefined && (
+        <span
+          className={cn(
+            "shrink-0 text-sm font-normal leading-5 tabular-nums",
+            dark ? "text-background/80" : "text-muted-foreground",
+          )}
+        >
+          {count}
+        </span>
+      )}
+      {chevron}
     </h2>
   );
 }
@@ -139,15 +173,54 @@ function Section({
   title,
   count,
   children,
+  dark = false,
+  collapsible = false,
 }: {
   id: string;
   title: string;
   count?: number;
   children: ReactNode;
+  dark?: boolean;
+  collapsible?: boolean;
 }) {
+  const [open, setOpen] = useState(true);
+  if (collapsible) {
+    return (
+      <Collapsible
+        open={open}
+        onOpenChange={setOpen}
+        className="flex flex-col gap-2"
+        data-testid={`task-section-${id}`}
+        data-open={open ? "true" : "false"}
+      >
+        <CollapsibleTrigger
+          className={cn(
+            "flex h-9 w-full items-center gap-2 rounded-md px-3 text-left text-sm font-medium leading-5",
+            dark ? "bg-foreground text-background" : "text-foreground hover:bg-muted",
+          )}
+        >
+          <span className="min-w-0 flex-1 truncate">{title}</span>
+          {count !== undefined && (
+            <span
+              className={cn(
+                "shrink-0 text-sm font-normal leading-5 tabular-nums",
+                dark ? "text-background/80" : "text-muted-foreground",
+              )}
+            >
+              {count}
+            </span>
+          )}
+          <Chevron open={open} className={dark ? "text-background/80" : undefined} />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="pt-1">{children}</CollapsibleContent>
+      </Collapsible>
+    );
+  }
   return (
     <section className="flex flex-col gap-2" data-testid={`task-section-${id}`}>
-      <Heading count={count}>{title}</Heading>
+      <Heading count={count} dark={dark}>
+        {title}
+      </Heading>
       {children}
     </section>
   );
@@ -174,13 +247,14 @@ function ErrorText({
   );
 }
 
-function Chevron({ open }: { open: boolean }) {
+function Chevron({ open, className }: { open: boolean; className?: string }) {
   return (
     <svg
       aria-hidden
       viewBox="0 0 24 24"
       className={cn(
-        "size-4 shrink-0 text-muted-foreground transition-transform",
+        "size-4 shrink-0 transition-transform",
+        className ?? "text-muted-foreground",
         open && "rotate-180",
       )}
       fill="none"
@@ -200,11 +274,11 @@ export function TasksView({
   ready,
   footerClearance,
   armedParentId,
+  filter,
   onArmParent,
   onLedger,
 }: TasksViewProps) {
   const wide = useWide();
-  const [filter, setFilter] = useState<Filter>("active");
   const [pickerId, setPickerId] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [problem, setProblem] = useState<{ id: string; message: string } | null>(null);
@@ -333,47 +407,8 @@ export function TasksView({
     />
   );
 
-  const counts: Record<Filter, number> = {
-    active: openTasks.length,
-    blocked: blockedTasks.length,
-    proposed: proposedTasks.length,
-  };
-  const labels: Record<Filter, string> = {
-    active: "Active",
-    blocked: "Blocked",
-    proposed: "Proposed",
-  };
-
   const list = (
     <div className="flex min-w-0 flex-col gap-5" data-testid="task-list">
-      {tasks.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2">
-          <div
-            role="tablist"
-            aria-label="Task filter"
-            data-testid="task-filters"
-            className="inline-flex h-9 w-fit items-center rounded-md bg-muted p-1 text-muted-foreground"
-          >
-            {(["active", "blocked", "proposed"] as const).map((item) => (
-              <button
-                key={item}
-                type="button"
-                role="tab"
-                aria-selected={filter === item}
-                data-testid={`task-filter-${item}`}
-                onClick={() => setFilter(item)}
-                className={cn(
-                  "inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-sm px-3 text-sm font-medium leading-none",
-                  filter === item && "bg-background text-foreground shadow-sm",
-                )}
-              >
-                {labels[item]}
-                <span className="text-xs leading-none text-muted-foreground">{counts[item]}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
       {filter === "active" && (
         <>
           {(proposedTasks.length > 0 || failedTasks.length > 0) && (
@@ -387,7 +422,13 @@ export function TasksView({
             </Section>
           )}
           {activeRoots.length > 0 && (
-            <Section title="Open" count={openTasks.length - failedTasks.length} id="active">
+            <Section
+              title="Open"
+              count={openTasks.length - failedTasks.length}
+              id="active"
+              dark
+              collapsible
+            >
               {grouped ? (
                 projectGroups.map(([name, items]) => (
                   <Group
@@ -421,14 +462,14 @@ export function TasksView({
           )}
           {days.length > 0 && (
             <section className="flex flex-col gap-2" data-testid="task-section-done">
-              <Heading>Done</Heading>
               {days.slice(0, dayLimit + 1).map(([key, items]) => (
                 <Group
                   key={key}
                   testId={`task-day-${key}`}
-                  label={dayLabel(key, now)}
+                  label={doneDayLabel(key, now)}
                   count={items.length}
                   defaultOpen={key === today}
+                  dark
                 >
                   {items.length === 0 ? (
                     <p className="px-1 text-sm leading-5 text-muted-foreground">
@@ -576,12 +617,14 @@ function Group({
   count,
   defaultOpen,
   children,
+  dark = false,
 }: {
   testId: string;
   label: string;
   count: number;
   defaultOpen: boolean;
   children: ReactNode;
+  dark?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
@@ -591,10 +634,26 @@ function Group({
       data-testid={testId}
       data-open={open ? "true" : "false"}
     >
-      <CollapsibleTrigger className="flex h-9 w-full items-center gap-2 rounded-md px-1 text-left text-sm font-medium leading-5 hover:bg-muted">
+      <CollapsibleTrigger
+        className={cn(
+          "flex h-9 w-full items-center gap-2 rounded-md text-left text-sm font-medium leading-5",
+          dark ? "bg-foreground px-3 text-background" : "px-1 hover:bg-muted",
+        )}
+      >
         <span className="min-w-0 flex-1 truncate">{label}</span>
-        <Badge variant="secondary">{count}</Badge>
-        <Chevron open={open} />
+        {dark ? (
+          <>
+            <Chevron open={open} className="text-background/80" />
+            <span className="shrink-0 text-sm font-normal leading-5 tabular-nums text-background/80">
+              {count}
+            </span>
+          </>
+        ) : (
+          <>
+            <Badge variant="secondary">{count}</Badge>
+            <Chevron open={open} />
+          </>
+        )}
       </CollapsibleTrigger>
       <CollapsibleContent className="pt-1">{children}</CollapsibleContent>
     </Collapsible>

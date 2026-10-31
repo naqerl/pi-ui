@@ -78,7 +78,8 @@ test("on a phone the task detail replaces the list and goes back with its button
   await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
   const detail = screen.getByTestId("task-detail");
   await expect(detail).toBeVisible();
-  await expect(screen.getByTestId("task-filters")).toHaveCount(0);
+  await expect(screen.getByTestId("task-list")).toHaveCount(0);
+  await expect(screen.getByTestId("task-filters")).toBeVisible();
   await expect(
     screen.getByText("The modal keeps the full text readable without widening the card.", {
       exact: false,
@@ -98,7 +99,7 @@ test("on a phone the task detail replaces the list and goes back with its button
 
   await screen.getByTestId("task-detail-back").tap();
   await expect(screen.getByTestId("task-detail")).toHaveCount(0);
-  await expect(screen.getByTestId("task-filters")).toBeVisible();
+  await expect(screen.getByTestId("task-list")).toBeVisible();
 
   await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
   await expect(screen.getByTestId("task-detail")).toBeVisible();
@@ -116,7 +117,7 @@ test("on a desktop the list and the detail sit side by side", async ({ app, brow
   await expect(screen.getByTestId("task-detail")).toBeVisible();
   await expect(screen.getByTestId("task-filters")).toBeVisible();
   const sides = await browser.evaluate(() => {
-    const list = document.querySelector<HTMLElement>('[data-testid="task-filters"]');
+    const list = document.querySelector<HTMLElement>('[data-testid="task-list"]');
     const detail = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
     if (list === null || detail === null) return null;
     return detail.getBoundingClientRect().left > list.getBoundingClientRect().right;
@@ -184,14 +185,19 @@ test("done tasks group by day: today open, past days collapsed with a count", as
   await app.open("/?page=tasks");
   const today = screen.getByTestId("task-section-done");
   await expect(today).toBeVisible();
-  await expect(today).toContainText("Today");
+  expect(
+    await browser.evaluate(() =>
+      [...document.querySelectorAll("h2")].some((item) => item.textContent === "Done"),
+    ),
+  ).toBe(false);
+  await expect(today).toContainText("Done today");
   await expect(today).toContainText("Nothing done yet today.");
   const past = screen.getByTestId("task-day-2026-01-01");
   await expect(past).toHaveAttribute("data-open", "false");
   await expect(past).toContainText("1");
   await expect(screen.getByTestId("task-t2")).toHaveCount(0);
 
-  await screen.getByRole("button", { name: /Jan 1/ }).tap();
+  await screen.getByRole("button", { name: /Done.*Jan 1/ }).tap();
   await expect(past).toHaveAttribute("data-open", "true");
   await expect(screen.getByTestId("task-t2")).toBeVisible();
   await expect(screen.getByTestId("task-t2")).toContainText("Review the details");
