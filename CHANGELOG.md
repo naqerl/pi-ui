@@ -2,6 +2,10 @@
 
 Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
 
+## 1.6.35 - 2026-10-31
+
+- Approving or declining a proposal now reaches the chat and the phone: an approval pushes "Proposal approved" and appends an operator notice, a deleted proposal pushes "Proposal declined", and a decision inside the burst window replaces that task's pending "New proposal" entry instead of adding a second one.
+
 ## 1.6.34 - 2026-10-31
 
 - Task cards show when they were created at the bottom right and when a done task was closed.
