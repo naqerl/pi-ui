@@ -1,6 +1,7 @@
 import { randomInt } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import type { OperatorNoticeRecord } from "../shared/notices.js";
 import { normalizeProject, PROJECT_MAX_LENGTH, sameProject } from "../shared/project.js";
 import { blockerClosesCycle, descendantIds, hasOpenDescendant } from "../shared/tasks.js";
 import type { Task, TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
@@ -132,9 +133,18 @@ function sanitize(tasks: Task[]): Task[] {
 
 export type TaskNotifier = (notification: PushNotification) => Promise<void> | void;
 
+/** Where a proposal decision is recorded as a persistent notice in the chat. */
+export type TaskNoticeRecorder = (record: OperatorNoticeRecord) => Promise<void> | void;
+
 export interface TaskStoreOptions {
   /** Where a status change is announced. Tests replace the web push sender. */
   readonly notify?: TaskNotifier;
+  /** Where a proposal approval or decline is recorded as an operator notice. */
+  readonly notice?: TaskNoticeRecorder;
+  /** Alias for callers that name the chat method. */
+  readonly recordOperatorNotice?: TaskNoticeRecorder;
+  /** Alias for callers that describe the recorded action. */
+  readonly recordNotice?: TaskNoticeRecorder;
   /** How long a burst may keep growing before it is sent. Zero disables coalescing. */
   readonly pushWindowMs?: number;
   /** Alias for callers that describe the window as a burst window. */
@@ -145,9 +155,24 @@ export interface TaskStoreOptions {
   readonly windowMs?: number;
 }
 
+type PendingTaskKind = "proposal" | "done" | "approved" | "declined";
+
 interface PendingTaskChange {
   readonly task: Task;
-  readonly kind: "proposal" | "done";
+  readonly kind: PendingTaskKind;
+}
+
+function pushTitle(kind: PendingTaskKind): string {
+  switch (kind) {
+    case "proposal":
+      return "New proposal";
+    case "done":
+      return "Task done";
+    case "approved":
+      return "Proposal approved";
+    case "declined":
+      return "Proposal declined";
+  }
 }
 
 const defaultTaskNotifier: TaskNotifier = async (notification) => {
@@ -160,6 +185,7 @@ export class TaskStore {
   private revision = 0;
   private chain: Promise<void> = Promise.resolve();
   private readonly notifyTask: TaskNotifier;
+  private readonly recordTaskNotice: TaskNoticeRecorder | undefined;
   private readonly pushWindowMs: number;
   private queuedCommits = 0;
   private pendingChanges = new Map<string, PendingTaskChange>();
@@ -171,6 +197,7 @@ export class TaskStore {
     options: TaskStoreOptions = {},
   ) {
     this.notifyTask = options.notify ?? defaultTaskNotifier;
+    this.recordTaskNotice = options.notice ?? options.recordOperatorNotice ?? options.recordNotice;
     this.pushWindowMs =
       options.pushWindowMs ??
       options.burstWindowMs ??
@@ -436,13 +463,20 @@ export class TaskStore {
     return run;
   }
 
-  /** One push when a proposal appears or a task moves to done; a repeat write stays quiet. */
+  /**
+   * One push when a proposal appears, is decided, or a task moves to done.
+   * A repeat write, or deleting anything that was not a proposal, stays quiet.
+   */
   private async announce(previous: readonly Task[], next: readonly Task[]): Promise<void> {
     const before = new Map(previous.map((task) => [task.id, task]));
+    const present = new Set(next.map((task) => task.id));
     const changes: PendingTaskChange[] = [];
     for (const task of next) {
       const old = before.get(task.id);
-      if (task.status === "proposed" && old?.status !== "proposed") {
+      if (old?.status === "proposed" && task.status !== "proposed") {
+        // Approving makes it open; approving and completing in one step makes it done.
+        changes.push({ task, kind: "approved" });
+      } else if (task.status === "proposed" && old?.status !== "proposed") {
         changes.push({ task, kind: "proposal" });
       } else if (task.status === "done" && old !== undefined && old.status !== "done") {
         changes.push({ task, kind: "done" });
@@ -456,7 +490,16 @@ export class TaskStore {
         this.pendingChanges.delete(task.id);
       }
     }
+    for (const old of previous) {
+      if (old.status !== "proposed" || present.has(old.id)) continue;
+      // Deleting a proposal is how a decline is expressed. Cancel its pending
+      // "New proposal" entry so the burst cannot describe the old state.
+      this.pendingChanges.delete(old.id);
+      changes.push({ task: old, kind: "declined" });
+    }
     if (changes.length === 0) return;
+
+    await Promise.all(changes.map((change) => this.recordDecisionNotice(change)));
 
     // A write that arrives while another write is already queued belongs to a
     // burst. A lone change still goes out with the write that caused it.
@@ -477,6 +520,10 @@ export class TaskStore {
       const change = this.pendingChanges.get(task.id);
       if (change !== undefined) ordered.set(task.id, change);
     }
+    // A declined proposal is no longer in the ledger, so it has no ledger position.
+    for (const [id, change] of this.pendingChanges) {
+      if (change.kind === "declined") ordered.set(id, change);
+    }
     this.pendingChanges = ordered;
 
     if (this.flushTimer !== undefined) return;
@@ -489,11 +536,29 @@ export class TaskStore {
 
   private sendIndividual(change: PendingTaskChange): Promise<void> {
     return this.deliver({
-      title: change.kind === "proposal" ? "New proposal" : "Task done",
+      title: pushTitle(change.kind),
       body: clampPushText(change.task.title, MAX_BODY_CHARS),
       tag: change.task.id,
       url: "/tasks",
     });
+  }
+
+  private async recordDecisionNotice(change: PendingTaskChange): Promise<void> {
+    if (change.kind !== "approved" && change.kind !== "declined") return;
+    if (this.recordTaskNotice === undefined) return;
+    const approved = change.kind === "approved";
+    try {
+      await this.recordTaskNotice({
+        title: pushTitle(change.kind),
+        body: `${pushTitle(change.kind)}: ${change.task.title}`,
+        reason: approved
+          ? "A human approved this proposal on the tasks page."
+          : "A human declined this proposal on the tasks page.",
+      });
+    } catch (error) {
+      // A notice failure must never fail the ledger write that caused it.
+      console.error(`[pi] task notice failed for ${change.task.id}:`, error);
+    }
   }
 
   private async deliver(notification: PushNotification): Promise<void> {
@@ -526,12 +591,7 @@ export class TaskStore {
 
   private sendBurst(changes: readonly PendingTaskChange[]): Promise<void> {
     const body = clampPushText(
-      changes
-        .map(
-          (change) =>
-            `${change.kind === "proposal" ? "New proposal" : "Task done"}: ${change.task.title}`,
-        )
-        .join(" · "),
+      changes.map((change) => `${pushTitle(change.kind)}: ${change.task.title}`).join(" · "),
       MAX_BODY_CHARS,
     );
     return this.deliver({

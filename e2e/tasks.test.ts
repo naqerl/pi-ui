@@ -13,8 +13,10 @@ import {
   TaskRow,
   TaskTimes,
 } from "../src/client/TasksView.js";
+import type { PushNotification } from "../src/server/push.js";
 import { createTaskTools, type TaskBridge } from "../src/server/task-tools.js";
-import { TaskStore } from "../src/server/tasks.js";
+import { TaskStore, type TaskStoreOptions } from "../src/server/tasks.js";
+import type { OperatorNoticeRecord } from "../src/shared/notices.js";
 import {
   compareTasks,
   formatActiveTime,
@@ -44,13 +46,17 @@ function text(result: Awaited<ReturnType<typeof call>>) {
   };
 }
 
-async function temporaryStore() {
+async function temporaryStore(options: TaskStoreOptions = {}) {
   const directory = await mkdtemp(join(tmpdir(), "pi-ui-task-completion-"));
   const file = join(directory, "tasks.json");
-  const store = new TaskStore(file);
+  const store = new TaskStore(file, options);
   await store.load();
   const bridge: TaskBridge = { store, publish() {} };
   return { directory, file, store, bridge };
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function renderTaskCard(task: Task) {
@@ -532,6 +538,212 @@ test("approving a proposal keeps its rationale and makes it normal work", async 
     assert.equal(store.ledger().tasks.length, 0);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("approving a proposal pushes Proposal approved and records one operator notice", async () => {
+  const pushes: PushNotification[] = [];
+  const notices: OperatorNoticeRecord[] = [];
+  const { directory, store } = await temporaryStore({
+    notify: (notification) => {
+      pushes.push(notification);
+    },
+    notice: (record) => {
+      notices.push(record);
+    },
+    pushWindowMs: 0,
+  });
+  try {
+    await store.propose(
+      "Tidy the ledger",
+      "The repeated cleanup costs more than the change and makes reviews noisy.",
+    );
+    const proposal = store.ledger().tasks[0];
+    assert.ok(proposal);
+    pushes.length = 0;
+
+    await store.update(proposal.id, { status: "open" });
+
+    assert.deepEqual(pushes, [
+      {
+        title: "Proposal approved",
+        body: "Tidy the ledger",
+        tag: proposal.id,
+        url: "/tasks",
+      },
+    ]);
+    assert.equal(notices.length, 1);
+    assert.match(notices[0]?.body ?? "", /Tidy the ledger/);
+    assert.match(notices[0]?.body ?? "", /approved/i);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("declining a proposal pushes Proposal declined and records one operator notice", async () => {
+  const pushes: PushNotification[] = [];
+  const notices: OperatorNoticeRecord[] = [];
+  const { directory, store } = await temporaryStore({
+    notify: (notification) => {
+      pushes.push(notification);
+    },
+    notice: (record) => {
+      notices.push(record);
+    },
+    pushWindowMs: 0,
+  });
+  try {
+    await store.propose(
+      "Drop the old importer",
+      "The old importer fails on files bigger than a gigabyte and nothing uses it.",
+    );
+    const proposal = store.ledger().tasks[0];
+    assert.ok(proposal);
+    pushes.length = 0;
+
+    await store.remove(proposal.id);
+
+    assert.deepEqual(pushes, [
+      {
+        title: "Proposal declined",
+        body: "Drop the old importer",
+        tag: proposal.id,
+        url: "/tasks",
+      },
+    ]);
+    assert.equal(notices.length, 1);
+    assert.match(notices[0]?.body ?? "", /Drop the old importer/);
+    assert.match(notices[0]?.body ?? "", /declined/i);
+
+    const open = (await store.create("Keep this task", null)).tasks[0];
+    assert.ok(open);
+    pushes.length = 0;
+    notices.length = 0;
+    await store.remove(open.id);
+    assert.deepEqual(pushes, []);
+    assert.deepEqual(notices, []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("approving in the burst window replaces the pending New proposal push", async () => {
+  const pushes: PushNotification[] = [];
+  const notices: OperatorNoticeRecord[] = [];
+  const { directory, store } = await temporaryStore({
+    notify: (notification) => {
+      pushes.push(notification);
+    },
+    notice: (record) => {
+      notices.push(record);
+    },
+    pushWindowMs: 150,
+  });
+  try {
+    const [alphaLedger] = await Promise.all([
+      store.propose("Alpha", "Alpha is worth doing because it removes repeated manual work."),
+      store.propose("Beta", "Beta is worth doing because it removes repeated manual work."),
+    ]);
+    const alpha = alphaLedger.tasks.find((task) => task.title === "Alpha");
+    assert.ok(alpha);
+
+    await store.update(alpha.id, { status: "open" });
+    await wait(250);
+
+    assert.equal(pushes.length, 1);
+    assert.equal(pushes[0]?.title, "2 tasks updated");
+    const body = pushes[0]?.body ?? "";
+    assert.match(body, /Proposal approved: Alpha/);
+    assert.doesNotMatch(body, /New proposal: Alpha/);
+    assert.match(body, /New proposal: Beta/);
+    assert.equal(notices.length, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("three proposal decisions in one burst push once and record three notices", async () => {
+  const pushes: PushNotification[] = [];
+  const notices: OperatorNoticeRecord[] = [];
+  const { directory, store } = await temporaryStore({
+    notify: (notification) => {
+      pushes.push(notification);
+    },
+    notice: (record) => {
+      notices.push(record);
+    },
+    pushWindowMs: 150,
+  });
+  try {
+    await Promise.all([
+      store.propose("Alpha", "Alpha is worth doing because it removes repeated manual work."),
+      store.propose("Beta", "Beta is worth doing because it removes repeated manual work."),
+      store.propose("Gamma", "Gamma is worth doing because it removes repeated manual work."),
+    ]);
+    const tasks = store.ledger().tasks;
+    const alpha = tasks.find((task) => task.title === "Alpha");
+    const beta = tasks.find((task) => task.title === "Beta");
+    const gamma = tasks.find((task) => task.title === "Gamma");
+    assert.ok(alpha);
+    assert.ok(beta);
+    assert.ok(gamma);
+
+    await Promise.all([
+      store.update(alpha.id, { status: "open" }),
+      store.remove(beta.id),
+      store.remove(gamma.id),
+    ]);
+    await wait(250);
+
+    assert.equal(pushes.length, 1);
+    assert.equal(pushes[0]?.title, "3 tasks updated");
+    const body = pushes[0]?.body ?? "";
+    assert.match(body, /Proposal approved: Alpha/);
+    assert.match(body, /Proposal declined: Beta/);
+    assert.match(body, /Proposal declined: Gamma/);
+    assert.equal(notices.length, 3);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a failing operator notice does not fail a proposal decision", async () => {
+  const errors: unknown[][] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => {
+    errors.push(args);
+  };
+  try {
+    const pushes: PushNotification[] = [];
+    const { directory, store } = await temporaryStore({
+      notify: (notification) => {
+        pushes.push(notification);
+      },
+      notice: () => {
+        throw new Error("chat notice unavailable");
+      },
+      pushWindowMs: 0,
+    });
+    try {
+      await store.propose(
+        "Approve despite the notice",
+        "The decision must be saved even when the chat cannot record its notice.",
+      );
+      const proposal = store.ledger().tasks[0];
+      assert.ok(proposal);
+      pushes.length = 0;
+
+      const ledger = await store.update(proposal.id, { status: "open" });
+      assert.equal(ledger.tasks.find((task) => task.id === proposal.id)?.status, "open");
+      assert.equal(pushes.length, 1);
+      assert.equal(pushes[0]?.title, "Proposal approved");
+      assert.equal(errors.length, 1);
+      assert.match(String(errors[0]?.[0]), /\[pi\] task notice failed for/);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  } finally {
+    console.error = original;
   }
 });
 
