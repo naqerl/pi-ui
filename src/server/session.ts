@@ -44,6 +44,7 @@ import type { SnapshotCache } from "./memory/snapshot.js";
 import type { MemoryStore } from "./memory/store.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
 import { notify } from "./push.js";
+import { retrySettings } from "./retry.js";
 import { type RunMarker, RunMarkerStore } from "./run-marker.js";
 import type { TaskBridge } from "./task-tools.js";
 import { pendingVersionNotice, writeLastSeenVersion } from "./version-notice.js";
@@ -157,6 +158,10 @@ export async function openDurableSession(
         // compaction would remove messages before the bridge sees them, so it
         // stays off; manual compaction remains available.
         compaction: { enabled: false },
+        // Three attempts in all, a short backoff and a cap, instead of durable's default
+        // three retries with a minute-long ceiling: a failing provider must not hold the
+        // chat, and everything sent behind the turn waits with it.
+        retry: retrySettings(),
         // Every steer waiting at a turn boundary goes in at that boundary, in the order sent,
         // instead of one per boundary, which pushed later steers past the run's end.
         steeringMode: "all",

@@ -48,6 +48,7 @@ import type { McpEventFeed } from "./mcp-events.js";
 import { MEDIA_TYPES, MediaError, type MediaStore } from "./media.js";
 import { listAvailableModels, modelOption } from "./models.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
+import { retryBudgetExhausted, retryBudgetMs, retryGiveUpMessage, retrySpentMs } from "./retry.js";
 import type { RunMarker, RunMarkerStore } from "./run-marker.js";
 import {
   appendAssistantError,
@@ -128,6 +129,12 @@ export class ChatService {
   private markerWrites: Promise<void> = Promise.resolve();
   private shuttingDown = false;
   private modelWindow: number | undefined;
+  /** First retry of the current episode; the budget is measured from here. */
+  private retryStartedAt: number | undefined;
+  /** How many retries this episode has already asked for. */
+  private retryAttempts = 0;
+  /** Guards the abort path so a burst of retry events abandons a turn once. */
+  private abandoning = false;
   private selected: ModelOption | null;
   /** Read on every snapshot, so a server may recover after its boot probe fails. */
   private readonly mcpStatus: () => McpStatus;
@@ -1190,10 +1197,23 @@ export class ChatService {
         else console.log(`[pi] compaction finished (${event.reason})`);
         return;
 
-      case "auto_retry_start":
+      case "auto_retry_start": {
+        const now = Date.now();
+        this.retryStartedAt ??= now;
+        this.retryAttempts += 1;
+        const budget = retryBudgetMs();
         console.warn(
           `[pi] retrying the model request (attempt ${event.attempt}): ${event.errorMessage}`,
         );
+        if (retryBudgetExhausted(this.retryStartedAt, now, budget)) {
+          void this.abandonRetryingTurn(retrySpentMs(this.retryStartedAt, now));
+        }
+        return;
+      }
+
+      case "auto_retry_end":
+        // The provider answered again, so the next failure starts a fresh budget.
+        this.resetRetryBudget();
         return;
 
       default:
@@ -1316,6 +1336,7 @@ export class ChatService {
     } else {
       this.currentText = "";
       this.currentThinking = "";
+      this.resetRetryBudget();
       if (this.activeTools.size > 0) {
         this.activeTools.clear();
         this.toolsRevision += 1;
@@ -1326,5 +1347,66 @@ export class ChatService {
       event: "run.state",
       data: this.getRunStatus(),
     });
+  }
+
+  private resetRetryBudget(): void {
+    this.retryStartedAt = undefined;
+    this.retryAttempts = 0;
+  }
+
+  /**
+   * The turn spent its retry budget: stop it instead of waiting out another attempt, say
+   * why in the chat, and hand the queue the turn it was holding. Without this a provider
+   * that keeps failing freezes every message sent behind it.
+   */
+  private async abandonRetryingTurn(spentMs: number): Promise<void> {
+    if (this.abandoning || this.closed) return;
+    this.abandoning = true;
+    const attempts = this.retryAttempts;
+    try {
+      console.error(
+        `[pi] giving up after ${attempts} retries in ${Math.round(spentMs / 1000)}s; stopping the turn`,
+      );
+      await this.conversation.abort(SESSION_CONTEXT);
+      this.hub.broadcast({
+        event: "notice",
+        data: {
+          message: {
+            id: `m-retry-${Date.now()}`,
+            role: "system",
+            text: retryGiveUpMessage(attempts, spentMs),
+            isError: true,
+            timestamp: new Date().toISOString(),
+            order: 0,
+          } satisfies ChatMessage,
+        },
+      });
+      this.resetRetryBudget();
+      this.setRunState("idle");
+      await this.startOldestQueued();
+    } catch (error) {
+      console.error("[pi] could not stop the retrying turn", error);
+    } finally {
+      this.abandoning = false;
+    }
+  }
+
+  /** Runs the oldest queued message once the turn that held it is gone. */
+  private async startOldestQueued(): Promise<void> {
+    const first = this.queued.entries().next();
+    if (first.done === true) return;
+    const [id, queued] = first.value;
+    const settled = await queued.submission.status(SESSION_CONTEXT).catch(() => undefined);
+    this.queued.delete(id);
+    await this.persistMarkerState();
+    this.broadcastQueue();
+    if (settled?.status === "placed" || settled?.status === "done") return;
+    try {
+      await this.submit(queued.item.text, "queue", {
+        ...(queued.item.attachments === undefined ? {} : { attachments: queued.item.attachments }),
+      });
+    } catch (error) {
+      console.error("[pi] could not start the next queued message", error);
+    }
   }
 }
