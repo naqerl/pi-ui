@@ -30,6 +30,7 @@ import {
   operatorNoticeSummary,
   parseNotice,
 } from "../shared/notices.js";
+import { QUEUE_ENTRY_KIND, queueKeyFromEntryData } from "../shared/queue.js";
 import { steerKeyFromEntryData } from "../shared/steers.js";
 import { toIsoTimestamp } from "../shared/time.js";
 import {
@@ -506,7 +507,13 @@ function interruptedAssistantEntryId(
   let boundary: number | null = null;
 
   for (const entry of entries) {
-    if (entry.kind !== UserEntry.kind && entry.kind !== STEER_ENTRY_KIND) continue;
+    if (
+      entry.kind !== UserEntry.kind &&
+      entry.kind !== STEER_ENTRY_KIND &&
+      entry.kind !== QUEUE_ENTRY_KIND
+    ) {
+      continue;
+    }
     const message = asRecord(entry.model?.[0]);
     if (extractText(message.content).trim() !== markerText) continue;
     if (hasStartedAt && !messageAtOrAfter(message, startedAt)) continue;
@@ -768,16 +775,18 @@ export function buildTranscript(
     if (
       kind !== UserEntry.kind &&
       kind !== STEER_ENTRY_KIND &&
+      kind !== QUEUE_ENTRY_KIND &&
       kind !== AssistantEntry.kind &&
       kind !== ToolResultEntry.kind
     ) {
       continue;
     }
     const message = asRecord(entry.model?.[0]);
-    if (kind === UserEntry.kind || kind === STEER_ENTRY_KIND) {
+    if (kind === UserEntry.kind || kind === STEER_ENTRY_KIND || kind === QUEUE_ENTRY_KIND) {
       const text = extractText(message.content);
       const attachments = media === undefined ? [] : userImages(message.content, media);
       const steerKey = kind === STEER_ENTRY_KIND ? steerKeyFromEntryData(entry.data) : undefined;
+      const queueKey = kind === QUEUE_ENTRY_KIND ? queueKeyFromEntryData(entry.data) : undefined;
       if (text.length > 0 || attachments.length > 0) {
         const notice = parseNotice(text);
         // Older conversations stored a job result as a normal user entry. Keep it out of the chat
@@ -793,7 +802,7 @@ export function buildTranscript(
           continue;
         }
         messages.push({
-          id: `m-${entry.id}`,
+          id: queueKey === undefined ? `m-${entry.id}` : `m-${queueKey}`,
           role: "user",
           text,
           ...(attachments.length > 0 ? { attachments } : {}),
