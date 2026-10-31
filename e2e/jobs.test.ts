@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -26,10 +27,54 @@ function nextNotice(jobs: JobManager): Promise<{ job: JobRecord; tail: string }>
   });
 }
 
-async function until(check: () => boolean, ms = 5000): Promise<void> {
-  const end = Date.now() + ms;
+const GROUP_WAIT_MS = 20_000;
+
+function processGroup(pid: number): string[] {
+  const result = spawnSync("ps", ["-A", "-o", "pid=,ppid=,pgid=,stat=,cmd="], {
+    encoding: "utf8",
+  });
+  if (result.error !== undefined) throw result.error;
+  return (result.stdout ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && Number.parseInt(line.split(/\s+/)[2] ?? "", 10) === pid);
+}
+
+function isLiveProcess(line: string): boolean {
+  const state = line.split(/\s+/)[3] ?? "";
+  // Zombies (Z) and dead (X) processes are no longer running. An isolated test
+  // container may not reap them, so they can remain listed in the group forever.
+  return !/^[ZX]/.test(state);
+}
+
+async function waitForGroup(
+  pid: number,
+  ready: (live: string[]) => boolean,
+  what: string,
+): Promise<void> {
+  const started = Date.now();
+  for (;;) {
+    const members = processGroup(pid);
+    const live = members.filter(isLiveProcess);
+    if (ready(live)) return;
+    const elapsed = Date.now() - started;
+    if (elapsed >= GROUP_WAIT_MS) {
+      throw new Error(
+        `${what} did not happen within ${elapsed}ms; process group ${pid} had ${live.length} live process(es)\n` +
+          `ps -A -o pid,ppid,pgid,stat,cmd for PGID ${pid}:\n${members.join("\n") || "(none)"}`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+async function until(check: () => boolean, ms = 5000, what = "condition"): Promise<void> {
+  const started = Date.now();
+  const end = started + ms;
   while (!check()) {
-    if (Date.now() > end) throw new Error("timed out");
+    if (Date.now() > end) {
+      throw new Error(`${what} did not happen within ${Date.now() - started}ms`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 }
@@ -75,22 +120,26 @@ test("cancel stops the job and its children, telling only the chat", async () =>
   jobs.setNotifier((job) => notices.push(job.id));
   jobs.setQuietNotifier((job, tail) => quiet.push({ id: job.id, status: job.status, tail }));
   const job = jobs.start({ command: "sleep 30 & sleep 30; wait" });
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  await until(
+    () => jobs.get(job.id).status === "running" && jobs.get(job.id).pid !== null,
+    30_000,
+    `job ${job.id} to be running with a pid`,
+  );
+  const pid = jobs.get(job.id).pid;
+  assert.ok(pid !== null);
+  await waitForGroup(pid, (live) => live.length >= 2, `job ${job.id}'s children to start`);
   const cancelled = jobs.cancel(job.id);
   assert.equal(cancelled.status, "cancelled");
-  const pid = job.pid ?? 0;
-  await until(() => {
-    try {
-      process.kill(-pid, 0);
-      return false;
-    } catch {
-      return true;
-    }
-  });
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  await until(
+    () => jobs.get(job.id).status === "cancelled",
+    30_000,
+    `job ${job.id} to be marked cancelled`,
+  );
+  await waitForGroup(pid, (live) => live.length === 0, `process group ${pid} to exit`);
+  await until(() => quiet.length > 0, 30_000, `the quiet notice for ${job.id}`);
   assert.deepEqual(notices, []);
   assert.equal(jobs.get(job.id).status, "cancelled");
-  await until(() => quiet.length > 0);
+  assert.equal(quiet.length, 1);
   assert.equal(quiet[0]?.id, job.id);
   assert.equal(quiet[0]?.status, "cancelled");
   assert.match(quiet[0]?.tail ?? "", /\[pi-ui\] cancelled/);
