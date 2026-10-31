@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { blockerClosesCycle, descendantIds, hasOpenDescendant } from "../shared/tasks.js";
 import type { Task, TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
+import { clampPushText, MAX_BODY_CHARS, notify, type PushNotification } from "./push.js";
 
 const ALPHABET = "abcdefghijkmnopqrstuvwxyz23456789";
 const TASK_LIMIT = 500;
@@ -97,13 +98,28 @@ function sanitize(tasks: Task[]): Task[] {
   });
 }
 
+export type TaskNotifier = (notification: PushNotification) => Promise<void> | void;
+
+export interface TaskStoreOptions {
+  /** Where a status change is announced. Tests replace the web push sender. */
+  readonly notify?: TaskNotifier;
+}
+
+const defaultTaskNotifier: TaskNotifier = (notification) => notify(notification);
+
 /** Durable todo ledger at `DATA_DIR/tasks.json`. One list, shared by every client. */
 export class TaskStore {
   private tasks: Task[] = [];
   private revision = 0;
   private chain: Promise<void> = Promise.resolve();
+  private readonly notifyTask: TaskNotifier;
 
-  constructor(private readonly file: string) {}
+  constructor(
+    private readonly file: string,
+    options: TaskStoreOptions = {},
+  ) {
+    this.notifyTask = options.notify ?? defaultTaskNotifier;
+  }
 
   ledger(): TaskLedger {
     return { tasks: this.tasks.map(cloneTask), revision: this.revision };
@@ -323,6 +339,7 @@ export class TaskStore {
         this.revision = previousRevision;
         throw error;
       }
+      await this.announce(previous, this.tasks);
       return this.ledger();
     });
     this.chain = run.then(
@@ -330,6 +347,33 @@ export class TaskStore {
       () => undefined,
     );
     return run;
+  }
+
+  /** One push when a proposal appears. */
+  private async announce(previous: readonly Task[], next: readonly Task[]): Promise<void> {
+    const before = new Map(previous.map((task) => [task.id, task]));
+    const notifications: PushNotification[] = [];
+    for (const task of next) {
+      const old = before.get(task.id);
+      if (task.status === "proposed" && old?.status !== "proposed") {
+        notifications.push({
+          title: "New proposal",
+          body: clampPushText(task.title, MAX_BODY_CHARS),
+          tag: task.id,
+          url: "/tasks",
+        });
+      }
+    }
+    await Promise.all(
+      notifications.map(async (notification) => {
+        try {
+          await this.notifyTask(notification);
+        } catch (error) {
+          // A push failure must never fail the write that caused it.
+          console.error(`[pi] task push failed for ${notification.tag}:`, error);
+        }
+      }),
+    );
   }
 
   private async save(): Promise<void> {

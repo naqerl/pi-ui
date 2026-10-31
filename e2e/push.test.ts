@@ -13,11 +13,15 @@ import {
   PushSettingsRow,
 } from "../src/client/PushSettings.js";
 import {
+  configurePush,
   createPushService,
   loadOrCreateVapidKeys,
+  MAX_BODY_CHARS,
   type PushSubscriptionRecord,
   PushSubscriptionStore,
+  resetPushServiceForTests,
 } from "../src/server/push.js";
+import { TaskStore } from "../src/server/tasks.js";
 
 async function tempDir(t: { after: (fn: () => Promise<void>) => void }): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "pi-push-"));
@@ -25,6 +29,11 @@ async function tempDir(t: { after: (fn: () => Promise<void>) => void }): Promise
     await rm(dir, { recursive: true, force: true });
   });
   return dir;
+}
+
+function clampBody(value: string): string {
+  const oneLine = value.replace(/\s+/g, " ").trim();
+  return oneLine.length <= MAX_BODY_CHARS ? oneLine : `${oneLine.slice(0, MAX_BODY_CHARS - 1)}…`;
 }
 
 function subscription(endpoint = "https://push.example/one"): PushSubscriptionRecord {
@@ -133,6 +142,43 @@ test("another delivery failure is logged once, swallowed, and keeps the subscrip
   assert.match(lines[0] ?? "", /could not notify/);
   assert.equal((await service.status()).subscriptions, 1);
   await service.close();
+});
+
+test("creating a proposal sends one push with its title, id and tasks url", async (t) => {
+  const dir = await tempDir(t);
+  const sent: string[] = [];
+  const service = configurePush({
+    dataDir: dir,
+    throttleMs: 0,
+    send: async (_target, payload) => {
+      sent.push(payload);
+      return { statusCode: 201 };
+    },
+  });
+  await service.subscribe(subscription());
+
+  try {
+    const store = new TaskStore(join(dir, "tasks.json"));
+    await store.load();
+    const title = `Tidy the ledger ${"with a very long explanation ".repeat(8)}`;
+    const ledger = await store.propose(
+      title,
+      "The repeated cleanup costs more than the change and makes reviews noisy.",
+    );
+    const proposal = ledger.tasks[0];
+    assert.ok(proposal);
+
+    assert.equal(sent.length, 1);
+    const payload = JSON.parse(sent[0] ?? "{}") as Record<string, unknown>;
+    assert.equal(payload.title, "New proposal");
+    assert.equal(payload.body, clampBody(title));
+    assert.equal(payload.tag, proposal.id);
+    assert.equal(payload.url, "/tasks");
+    assert.ok(String(payload.body).length <= MAX_BODY_CHARS);
+  } finally {
+    await service.close();
+    resetPushServiceForTests();
+  }
 });
 
 test("the worker stays quiet only while a client is focused", async () => {

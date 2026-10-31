@@ -11,7 +11,7 @@ export const PUSH_SUBSCRIPTIONS_VERSION = 1;
 export const PUSH_VAPID_SUBJECT = "mailto:pi@localhost";
 
 const MAX_TITLE_CHARS = 60;
-const MAX_BODY_CHARS = 140;
+export const MAX_BODY_CHARS = 140;
 
 export interface PushSubscriptionKeys {
   readonly p256dh: string;
