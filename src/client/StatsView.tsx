@@ -434,7 +434,7 @@ function builtinView(widget: Widget, inputs: BuiltinInputs): { view?: WidgetView
       view: renderWidget(
         widget,
         builtinData(widget.source.name, inputs, {
-          formatTime: (timestamp) => formatTime(timestamp, { seconds: true }),
+          formatTime: (timestamp) => formatTime(timestamp),
         }),
       ),
     };

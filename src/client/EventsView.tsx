@@ -84,7 +84,7 @@ export function EventsView({ events, ready }: { events: McpEventsState; ready: b
             {[...events.events].reverse().map((event) => (
               <article key={event.id} className="theme-radius border border-border px-3 py-2">
                 <div className="font-mono text-[11px] text-muted-foreground">
-                  {formatTime(event.timestamp, { seconds: true })} · new event from {event.server}
+                  {formatTime(event.timestamp)} · new event from {event.server}
                 </div>
                 <div className="mt-1 font-mono text-xs">{event.name}</div>
                 {event.summary.length > 0 && (
