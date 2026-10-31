@@ -7,6 +7,10 @@ import { clampPushText, MAX_BODY_CHARS, notify, type PushNotification } from "./
 
 const ALPHABET = "abcdefghijkmnopqrstuvwxyz23456789";
 const TASK_LIMIT = 500;
+/** Changes closer together than this become one push notification. */
+export const TASK_PUSH_WINDOW_MS = 3_000;
+/** A burst replaces the previous burst notification instead of piling up. */
+export const TASK_PUSH_TAG = "ledger";
 
 export class TaskError extends Error {
   constructor(
@@ -98,6 +102,19 @@ export type TaskNotifier = (notification: PushNotification) => Promise<void> | v
 export interface TaskStoreOptions {
   /** Where a status change is announced. Tests replace the web push sender. */
   readonly notify?: TaskNotifier;
+  /** How long a burst may keep growing before it is sent. Zero disables coalescing. */
+  readonly pushWindowMs?: number;
+  /** Alias for callers that describe the window as a burst window. */
+  readonly burstWindowMs?: number;
+  /** Alias for callers that describe the wait as a coalescing window. */
+  readonly coalesceMs?: number;
+  /** Alias for callers that describe the wait as a plain window. */
+  readonly windowMs?: number;
+}
+
+interface PendingTaskChange {
+  readonly task: Task;
+  readonly kind: "proposal" | "done";
 }
 
 const defaultTaskNotifier: TaskNotifier = async (notification) => {
@@ -110,12 +127,23 @@ export class TaskStore {
   private revision = 0;
   private chain: Promise<void> = Promise.resolve();
   private readonly notifyTask: TaskNotifier;
+  private readonly pushWindowMs: number;
+  private queuedCommits = 0;
+  private pendingChanges = new Map<string, PendingTaskChange>();
+  private flushTimer: NodeJS.Timeout | undefined;
+  private flushing: Promise<void> | undefined;
 
   constructor(
     private readonly file: string,
     options: TaskStoreOptions = {},
   ) {
     this.notifyTask = options.notify ?? defaultTaskNotifier;
+    this.pushWindowMs =
+      options.pushWindowMs ??
+      options.burstWindowMs ??
+      options.coalesceMs ??
+      options.windowMs ??
+      TASK_PUSH_WINDOW_MS;
   }
 
   ledger(): TaskLedger {
@@ -326,22 +354,27 @@ export class TaskStore {
   }
 
   private commit(change: (tasks: Task[]) => Task[]): Promise<TaskLedger> {
-    const run = this.chain.then(async () => {
-      const previous = this.tasks;
-      const previousRevision = this.revision;
-      const next = change(previous.map(cloneTask));
-      this.tasks = next;
-      this.revision += 1;
-      try {
-        await this.save();
-      } catch (error) {
-        this.tasks = previous;
-        this.revision = previousRevision;
-        throw error;
-      }
-      await this.announce(previous, this.tasks);
-      return this.ledger();
-    });
+    this.queuedCommits += 1;
+    const run = this.chain
+      .then(async () => {
+        const previous = this.tasks;
+        const previousRevision = this.revision;
+        const next = change(previous.map(cloneTask));
+        this.tasks = next;
+        this.revision += 1;
+        try {
+          await this.save();
+        } catch (error) {
+          this.tasks = previous;
+          this.revision = previousRevision;
+          throw error;
+        }
+        await this.announce(previous, this.tasks);
+        return this.ledger();
+      })
+      .finally(() => {
+        this.queuedCommits -= 1;
+      });
     this.chain = run.then(
       () => undefined,
       () => undefined,
@@ -352,35 +385,122 @@ export class TaskStore {
   /** One push when a proposal appears or a task moves to done; a repeat write stays quiet. */
   private async announce(previous: readonly Task[], next: readonly Task[]): Promise<void> {
     const before = new Map(previous.map((task) => [task.id, task]));
-    const notifications: PushNotification[] = [];
+    const changes: PendingTaskChange[] = [];
     for (const task of next) {
       const old = before.get(task.id);
       if (task.status === "proposed" && old?.status !== "proposed") {
-        notifications.push({
-          title: "New proposal",
-          body: clampPushText(task.title, MAX_BODY_CHARS),
-          tag: task.id,
-          url: "/tasks",
-        });
+        changes.push({ task, kind: "proposal" });
       } else if (task.status === "done" && old !== undefined && old.status !== "done") {
-        notifications.push({
-          title: "Task done",
-          body: clampPushText(task.title, MAX_BODY_CHARS),
-          tag: task.id,
-          url: "/tasks",
-        });
+        changes.push({ task, kind: "done" });
+      } else if (
+        old !== undefined &&
+        old.status !== task.status &&
+        this.pendingChanges.has(task.id)
+      ) {
+        // The task left the state that was queued (for example a proposal was
+        // approved before the burst flushed), so the old summary would be wrong.
+        this.pendingChanges.delete(task.id);
       }
     }
-    await Promise.all(
-      notifications.map(async (notification) => {
-        try {
-          await this.notifyTask(notification);
-        } catch (error) {
-          // A push failure must never fail the write that caused it.
-          console.error(`[pi] task push failed for ${notification.tag}:`, error);
-        }
-      }),
+    if (changes.length === 0) return;
+
+    // A write that arrives while another write is already queued belongs to a
+    // burst. A lone change still goes out with the write that caused it.
+    if (this.pushWindowMs > 0 && (this.pendingChanges.size > 0 || this.queuedCommits > 1)) {
+      this.queueBurst(changes, next);
+      return;
+    }
+
+    await Promise.all(changes.map((change) => this.sendIndividual(change)));
+  }
+
+  private queueBurst(changes: readonly PendingTaskChange[], next: readonly Task[]): void {
+    for (const change of changes) this.pendingChanges.set(change.task.id, change);
+
+    // Ledger order, not arrival order, and one entry per task even if it moved twice.
+    const ordered = new Map<string, PendingTaskChange>();
+    for (const task of next) {
+      const change = this.pendingChanges.get(task.id);
+      if (change !== undefined) ordered.set(task.id, change);
+    }
+    this.pendingChanges = ordered;
+
+    if (this.flushTimer !== undefined) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = undefined;
+      void this.flushBurst();
+    }, this.pushWindowMs);
+    this.flushTimer.unref?.();
+  }
+
+  private sendIndividual(change: PendingTaskChange): Promise<void> {
+    return this.deliver({
+      title: change.kind === "proposal" ? "New proposal" : "Task done",
+      body: clampPushText(change.task.title, MAX_BODY_CHARS),
+      tag: change.task.id,
+      url: "/tasks",
+    });
+  }
+
+  private async deliver(notification: PushNotification): Promise<void> {
+    try {
+      await this.notifyTask(notification);
+    } catch (error) {
+      // A push failure must never fail the write that caused it.
+      console.error(`[pi] task push failed for ${notification.tag}:`, error);
+    }
+  }
+
+  /** Sends the accumulated burst once its window closes. */
+  private flushBurst(): Promise<void> {
+    if (this.flushTimer !== undefined) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = undefined;
+    }
+    const changes = [...this.pendingChanges.values()];
+    this.pendingChanges.clear();
+    if (changes.length === 0) return Promise.resolve();
+    const run =
+      changes.length === 1
+        ? this.sendIndividual(changes[0] as PendingTaskChange)
+        : this.sendBurst(changes);
+    this.flushing = run;
+    return run.finally(() => {
+      if (this.flushing === run) this.flushing = undefined;
+    });
+  }
+
+  private sendBurst(changes: readonly PendingTaskChange[]): Promise<void> {
+    const body = clampPushText(
+      changes
+        .map(
+          (change) =>
+            `${change.kind === "proposal" ? "New proposal" : "Task done"}: ${change.task.title}`,
+        )
+        .join(" · "),
+      MAX_BODY_CHARS,
     );
+    return this.deliver({
+      title: `${changes.length} task${changes.length === 1 ? "" : "s"} updated`,
+      body: body || "Ledger updated",
+      tag: TASK_PUSH_TAG,
+      url: "/tasks",
+    });
+  }
+
+  /** Flushes a pending burst so shutdown does not silently drop it. */
+  async flush(): Promise<void> {
+    await this.flushBurst();
+    await this.flushing;
+  }
+
+  /** Alias with the plural that reads naturally at shutdown call sites. */
+  flushNotifications(): Promise<void> {
+    return this.flush();
+  }
+
+  async close(): Promise<void> {
+    await this.flush();
   }
 
   private async save(): Promise<void> {
