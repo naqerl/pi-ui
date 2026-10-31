@@ -103,6 +103,7 @@ export const MCP_EVENTS_HEAD = "MCP event data follows.";
 const MCP_STATUS_HEAD = "MCP subscription status follows.";
 const IDLE_HEAD =
   /^You have been idle for \d+ minutes and (\d+) task\(s\) are open: (.+)\. Pick the next one and implement it\.$/;
+const IDLE_BLOCKED_HEAD = /^You have been idle for \d+ minutes\. Nothing is unblocked: (.+)\.$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -162,18 +163,36 @@ function mcpSummary(servers: string[], label: string): string {
 }
 
 function parseIdle(body: string): IdleNoticeDetails | null {
-  const match = IDLE_HEAD.exec(body.trim());
-  if (match === null) return null;
-  const taskIds = (match[2] ?? "")
-    .split(",")
-    .map((id) => id.trim())
-    .filter((id) => id.length > 0);
-  if (taskIds.length === 0) return null;
+  const text = body.trim();
+  const match = IDLE_HEAD.exec(text);
+  if (match !== null) {
+    const taskIds = (match[2] ?? "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter((id) => id.length > 0);
+    if (taskIds.length === 0) return null;
+    return {
+      kind: "idle",
+      text: idleNudgeText(taskIds),
+      taskIds,
+      summary: `idle · ${taskIds.length} task(s) open: ${taskIds.join(", ")}`,
+    };
+  }
+  const blocked = IDLE_BLOCKED_HEAD.exec(text);
+  if (blocked === null) return null;
+  const waits = (blocked[1] ?? "")
+    .split(";")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  if (waits.length === 0) return null;
+  const taskIds = waits
+    .map((entry) => /^(\S+) waits on\b/.exec(entry)?.[1])
+    .filter((id): id is string => id !== undefined);
   return {
     kind: "idle",
-    text: idleNudgeText(taskIds),
+    text,
     taskIds,
-    summary: `idle · ${taskIds.length} task(s) open: ${taskIds.join(", ")}`,
+    summary: `idle · nothing unblocked: ${waits.join("; ")}`,
   };
 }
 

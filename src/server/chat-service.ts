@@ -14,7 +14,13 @@ import {
   type SubmissionId,
   watchEvents,
 } from "@earendil-works/pi-durable";
-import { type IdleNudge, IdleNudge as IdleNudgeImpl, idleNudgeMs } from "../shared/idle-nudge.js";
+import {
+  type IdleNudge,
+  IdleNudge as IdleNudgeImpl,
+  type IdleTask,
+  idleNudgeMs,
+  openTaskIds,
+} from "../shared/idle-nudge.js";
 import { MCP_EVENTS_HEAD, type OperatorNoticeRecord, parseNotice } from "../shared/notices.js";
 import {
   QUIET_AFTER_MS as DEFAULT_QUIET_AFTER_MS,
@@ -73,6 +79,8 @@ import {
 import type { SseFrame } from "./sse.js";
 import type { StreamHub } from "./stream-hub.js";
 import { type WindowRequest, windowTranscript } from "./transcript-window.js";
+
+type IdleTaskSource = () => readonly IdleTask[] | readonly string[];
 
 interface ActiveTool {
   name: string;
@@ -170,6 +178,7 @@ export class ChatService {
   private watchdog: ReturnType<typeof setInterval> | undefined;
   private idleNudgeTimer: ReturnType<typeof setInterval> | undefined;
   private readonly idleNudge: IdleNudge;
+  private readonly idleTasks: IdleTaskSource;
   private checkingRun = false;
   private checkingIdleNudge = false;
   private quietLogged = false;
@@ -207,11 +216,28 @@ export class ChatService {
     private readonly beforeTurn: (reason?: string) => Promise<void> = async () => undefined,
     /** Reads a stored diagram's current revision for the transcript's message part. */
     private readonly diagramRevision: DiagramRevisionResolver = () => undefined,
-    /** Ids of open ledger tasks, read when an idle window expires. */
-    private readonly openTaskIds: () => readonly string[] = () => [],
+    /**
+     * The ledger tasks read when an idle window expires. Tests and older callers
+     * may still pass the ready task ids directly instead of the whole task list.
+     */
+    idleTasks: IdleTaskSource = () => [],
+    /** The app data directory, so the nudged task set survives a restart. */
+    idleNudgeDataDirOrTasks?: string | IdleTaskSource,
   ) {
     this.mcpStatus = typeof mcpStatus === "function" ? mcpStatus : () => mcpStatus;
-    this.idleNudge = new IdleNudgeImpl(idleNudgeMs());
+    let idleTasksSource: IdleTaskSource;
+    let idleNudgeDataDir: string | undefined;
+    if (typeof idleTasks === "string") {
+      idleNudgeDataDir = idleTasks;
+      idleTasksSource =
+        typeof idleNudgeDataDirOrTasks === "function" ? idleNudgeDataDirOrTasks : () => [];
+    } else {
+      idleTasksSource = idleTasks;
+      idleNudgeDataDir =
+        typeof idleNudgeDataDirOrTasks === "string" ? idleNudgeDataDirOrTasks : undefined;
+    }
+    this.idleTasks = idleTasksSource;
+    this.idleNudge = new IdleNudgeImpl(idleNudgeMs(), Date.now(), idleNudgeDataDir);
     this.runState = interrupted ? "interrupted" : "idle";
     this.modelWindow = modelWindow;
     this.selected = initialModel === undefined ? null : modelOption(initialModel);
@@ -274,7 +300,10 @@ export class ChatService {
    */
   private async checkIdleNudge(): Promise<void> {
     if (this.closed || this.checkingIdleNudge || !this.idleNudge.enabled) return;
-    const taskIds = this.openTaskIds();
+    const tasks = this.idleTasks();
+    const taskIds = tasks.every((task): task is string => typeof task === "string")
+      ? tasks
+      : openTaskIds(tasks);
     const text = this.idleNudge.maybeNudge({
       active: this.runState === "running" || this.submitting > 0,
       queued: this.queued.size + this.steers.size,
@@ -291,7 +320,8 @@ export class ChatService {
         },
       });
     } catch (error) {
-      // Nothing reached the chat, so let the same idle period try again.
+      // Nothing reached the chat, so let the same task set try again after re-arming.
+      this.idleNudge.forgetNudge();
       this.idleNudge.noteActivity();
       console.error("[pi] could not submit the idle nudge", error);
     } finally {
