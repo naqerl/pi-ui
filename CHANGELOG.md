@@ -2,6 +2,12 @@
 
 Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
 
+## 1.6.32 - 2026-10-31
+
+- The Tasks page drops the "Working on …" line; a running task shows its Working badge in the list.
+- Projects are set only with `@name` in a new task's title (autocomplete as before; the token is removed from the title). The composer's Project select, the "New project…" input, the project filter next to the tabs and the remembered last-used/filter default are gone: without `@` a top-level task has no project, and a subtask takes its parent's.
+- Open tasks are always grouped by project in collapsible sections with a count, A–Z, "No project" last, once any task has a project. The task detail shows the project as plain text.
+
 ## 1.6.31 - 2026-10-31
 
 - Tasks can carry an optional project. It is stored in the ledger, accepted by the API (`project` on create and update, `null` clears it) and by the agent task tools; names are reused case-insensitively and subtasks inherit their parent's project.
