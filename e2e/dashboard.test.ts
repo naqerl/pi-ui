@@ -233,7 +233,7 @@ test("MCP builtins list recent events newest first and subscriptions per server"
     session: { conversationId: "c", model: null, run: "idle" },
   } as unknown as Parameters<typeof builtinData>[1];
   const feed = builtinData("mcp_events", inputs, {
-    formatTime: (timestamp) => formatTime(timestamp, { seconds: true }),
+    formatTime: (timestamp) => formatTime(timestamp),
   }) as {
     total: number;
     live: string[];
@@ -245,7 +245,7 @@ test("MCP builtins list recent events newest first and subscriptions per server"
   assert.equal(feed.events[0]?.id, "e24");
   assert.equal(feed.events.at(-1)?.id, "e22");
   assert.equal(feed.events[0]?.label, "stub · ticks");
-  assert.match(feed.events[0]?.value ?? "", /\d\d:\d\d:\d\d · tick 24$/);
+  assert.match(feed.events[0]?.value ?? "", /\d\d:\d\d · tick 24$/);
   const status = builtinData("mcp", inputs) as { servers: { name: string; detail: string }[] };
   assert.deepEqual(
     status.servers.map((server) => server.detail),

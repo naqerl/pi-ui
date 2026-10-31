@@ -25,7 +25,7 @@ function noticeTimestamp(message: ChatMessage, notice: ChatNotice): string {
 }
 
 function noticeClock(message: ChatMessage, notice: ChatNotice): string {
-  return formatTime(noticeTimestamp(message, notice), { seconds: notice.kind === "mcp" });
+  return formatTime(noticeTimestamp(message, notice));
 }
 
 function failed(notice: ChatNotice): boolean {

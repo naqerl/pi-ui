@@ -6,11 +6,6 @@
 
 export type TimestampValue = string | number | Date;
 
-export interface TimeFormatOptions {
-  /** Include seconds. Event feeds need them; message bubbles use hours and minutes. */
-  seconds?: boolean;
-}
-
 function asDate(value: TimestampValue): Date | null {
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
   if (typeof value === "number") {
@@ -29,18 +24,13 @@ function formatter(options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
   return new Intl.DateTimeFormat(undefined, options);
 }
 
-/** Local `hh:mm`, or `hh:mm:ss` with `seconds`, for any parseable instant. */
-export function formatTime(
-  value: TimestampValue,
-  options: TimeFormatOptions | boolean = {},
-): string {
+/** Local `hh:mm` for any parseable instant. */
+export function formatTime(value: TimestampValue): string {
   const date = asDate(value);
   if (date === null) return "";
-  const seconds = typeof options === "boolean" ? options : options.seconds === true;
   return formatter({
     hour: "2-digit",
     minute: "2-digit",
-    ...(seconds ? { second: "2-digit" } : {}),
     hourCycle: "h23",
   }).format(date);
 }
