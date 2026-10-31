@@ -2,6 +2,17 @@
 
 Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
 
+## 1.6.28 - 2026-10-31
+
+- Tasks show what is actually happening instead of what the agent remembered to mark. Each task gets one derived display state (working, ready, blocked, needs you, failed, done) from the ledger plus measured activity: tool calls tagged with `piuiTaskId` attribute runs to a task, so a task the agent is working on shows as working even if it was never marked in progress, and a long call in flight keeps it working and counts its time.
+- Work without a task is visible too: untagged tool calls are summed into an "Untracked" line on the Now card.
+- Time, tokens and cost per task are measured from its runs (rolled up over subtasks) rather than reported by the agent; completion keeps only the evidence.
+- The Tasks page is reworked: slim rows grouped into Needs you / Active / Done today with filter chips, a Now card listing the tasks being worked on, and a task detail with state, rationale, blockers, attachments, measured stats and a short run history — no tool-call lists. On desktop the detail opens beside the list. Everything uses theme tokens and radii, and states stay distinguishable in monochrome themes.
+
+## 1.6.27 - 2026-10-31
+
+- A test run can no longer reach live data or a real push endpoint: `npm test` runs through `scripts/run-tests.mjs`, which puts `DATA_DIR`, `PI_MEMORY_DIR` and the XDG roots inside a temp tree and forces `NODE_ENV=test`; the server refuses to boot with a live data dir in test mode, and the push service throws and logs instead of delivering to a non-allowlisted endpoint. The lockfile also repairs `npm ci --dry-run`.
+
 ## 1.6.26 - 2026-10-31
 
 - A message sent while a run is active now shows up immediately as a queued bubble with its own cancel control, instead of appearing out of nowhere when the turn ends: the pending list comes from the server queue, so it also survives a reload, and a placed message keeps its id instead of being replaced. A page left open across a server restart no longer goes silent — `onopen` resets the stream revisions and a snapshot with a lower counter is adopted, so deltas are applied again while out-of-order ones are still dropped.
@@ -10,12 +21,6 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 - The idle nudge now ignores work that cannot legally be picked: a task whose `blockedBy` names an open task no longer counts, and the notice names the blockers instead of demanding a pick.
 - Nudges fire once per task set. The set of unblocked open task ids is hashed and recorded in `data/idle-nudge.json`, so the same backlog cannot nudge twice, not even across a restart; a new task or a task becoming unblocked earns exactly one nudge. A corrupt record is ignored rather than breaking startup, and the hash is only written after the nudge was actually submitted.
-
-## Unreleased
-
-## 1.6.27 - 2026-10-31
-
-- A test run can no longer reach live data or a real push endpoint: `npm test` runs through `scripts/run-tests.mjs`, which puts `DATA_DIR`, `PI_MEMORY_DIR` and the XDG roots inside a temp tree and forces `NODE_ENV=test`; the server refuses to boot with a live data dir in test mode, and the push service throws and logs instead of delivering to a non-allowlisted endpoint. The lockfile also repairs `npm ci --dry-run`.
 
 ## 1.6.24 - 2026-10-31
 
