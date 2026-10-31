@@ -3,6 +3,9 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { TaskModal } from "../src/client/TasksView.js";
 import { createTaskTools, type TaskBridge } from "../src/server/task-tools.js";
 import { TaskStore } from "../src/server/tasks.js";
 import {
@@ -96,6 +99,77 @@ test("task ordering puts proposals first, then ready, blocked and done determini
       .map((task) => task.id),
     ["proposed-a", "proposed-b", "ready", "blocked", "done"],
   );
+});
+
+test("the task modal shows the full rationale, blockers and completion record", () => {
+  const blocker: Task = {
+    id: "b1",
+    title: "Review the details",
+    status: "done",
+    parentId: null,
+    blockedBy: [],
+    createdAt: "2026-01-01T12:00:00.000Z",
+    completedAt: "2026-01-01T12:20:00.000Z",
+    completion: {
+      timeSpentMinutes: 25,
+      timeSpentText: "25m",
+      tokens: 1200,
+      evidence: "commit 9c58abc",
+    },
+  };
+  const task: Task = {
+    id: "t1",
+    title: "Ship the modal",
+    status: "open",
+    parentId: null,
+    blockedBy: [blocker.id],
+    createdAt: "2026-01-01T12:00:01.000Z",
+    rationale: `The card hides the rest of this rationale.\n\n${"A long explanation. ".repeat(20)}`,
+    completedAt: null,
+    completion: null,
+  };
+  const markup = renderToStaticMarkup(
+    createElement(TaskModal, {
+      task,
+      tasks: [task, blocker],
+      onClose: () => {},
+      onStatus: () => {},
+    }),
+  );
+  assert.match(markup, /data-testid="task-modal"/);
+  assert.match(markup, /Ship the modal/);
+  assert.match(markup, /The card hides the rest of this rationale\./);
+  assert.match(markup, /A long explanation\./);
+  assert.match(markup, /Review the details/);
+  assert.match(markup, /done/);
+  assert.match(markup, /Created/);
+  assert.match(markup, /Mark done/);
+});
+
+test("the completed task modal carries time spent, tokens, evidence and the closed time", () => {
+  const task: Task = {
+    id: "t2",
+    title: "Ship the modal",
+    status: "done",
+    parentId: null,
+    blockedBy: [],
+    createdAt: "2026-01-01T12:00:00.000Z",
+    completedAt: "2026-01-01T12:25:00.000Z",
+    completion: {
+      timeSpentMinutes: 25,
+      timeSpentText: "25m",
+      tokens: 1200,
+      evidence: "commit 9c58abc",
+    },
+  };
+  const markup = renderToStaticMarkup(
+    createElement(TaskModal, { task, tasks: [task], onClose: () => {}, onStatus: () => {} }),
+  );
+  assert.match(markup, /data-testid="task-modal-completion"/);
+  assert.match(markup, /25m \(25 min\)/);
+  assert.match(markup, /1\.2k/);
+  assert.match(markup, /commit 9c58abc/);
+  assert.match(markup, /Closed/);
 });
 
 test("parses the accepted time-spent forms", () => {

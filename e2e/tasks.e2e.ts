@@ -134,9 +134,11 @@ test("keeps a todo with subtasks and blockers on the tasks page", async ({
     );
     const box = card?.querySelector("[data-task-check]");
     if (!(card instanceof HTMLElement) || !(box instanceof HTMLElement)) return null;
-    const cardBox = card.getBoundingClientRect();
+    const title = box.nextElementSibling;
+    if (!(title instanceof HTMLElement)) return null;
+    const titleBox = title.getBoundingClientRect();
     const check = box.getBoundingClientRect();
-    return Math.abs(check.top + check.height / 2 - (cardBox.top + cardBox.height / 2));
+    return Math.abs(check.top + check.height / 2 - (titleBox.top + titleBox.height / 2));
   });
   expect(checkbox ?? 99).toBeLessThanOrEqual(1);
 
