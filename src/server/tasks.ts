@@ -349,7 +349,7 @@ export class TaskStore {
     return run;
   }
 
-  /** One push when a proposal appears. */
+  /** One push when a proposal appears or a task moves to done; a repeat write stays quiet. */
   private async announce(previous: readonly Task[], next: readonly Task[]): Promise<void> {
     const before = new Map(previous.map((task) => [task.id, task]));
     const notifications: PushNotification[] = [];
@@ -358,6 +358,13 @@ export class TaskStore {
       if (task.status === "proposed" && old?.status !== "proposed") {
         notifications.push({
           title: "New proposal",
+          body: clampPushText(task.title, MAX_BODY_CHARS),
+          tag: task.id,
+          url: "/tasks",
+        });
+      } else if (task.status === "done" && old !== undefined && old.status !== "done") {
+        notifications.push({
+          title: "Task done",
           body: clampPushText(task.title, MAX_BODY_CHARS),
           tag: task.id,
           url: "/tasks",
