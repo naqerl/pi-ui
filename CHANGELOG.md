@@ -2,6 +2,10 @@
 
 Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
 
+## 1.6.36 - 2026-10-31
+
+- The Active / Blocked / Proposed filters moved onto the composer's top line, the selected filter and the Open header share one dark pill with the count on the right, the Done header is gone and closed tasks are grouped into "Done today", "Done yesterday" and per-date sections with their own counts and chevrons.
+
 ## 1.6.35 - 2026-10-31
 
 - Approving or declining a proposal now reaches the chat and the phone: an approval pushes "Proposal approved" and appends an operator notice, a deleted proposal pushes "Proposal declined", and a decision inside the burst window replaces that task's pending "New proposal" entry instead of adding a second one.
