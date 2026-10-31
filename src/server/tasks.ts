@@ -1,6 +1,7 @@
 import { randomInt } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { normalizeProject, PROJECT_MAX_LENGTH, sameProject } from "../shared/project.js";
 import { blockerClosesCycle, descendantIds, hasOpenDescendant } from "../shared/tasks.js";
 import type { Task, TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
 import { clampPushText, MAX_BODY_CHARS, notify, type PushNotification } from "./push.js";
@@ -39,6 +40,36 @@ function cloneTask(task: Task): Task {
   };
 }
 
+/**
+ * The project a task gets: `undefined` falls back to `inherited`, null clears it, and a
+ * string must be a valid project name.
+ */
+function chooseProject(
+  value: string | null | undefined,
+  tasks: readonly Task[],
+  inherited?: string,
+): string | undefined {
+  if (value === undefined) return inherited;
+  if (value === null) return undefined;
+  const name = normalizeProject(value);
+  if (name === null) {
+    throw new TaskError(
+      `Project must be a short name (letters, digits, . _ -, up to ${PROJECT_MAX_LENGTH} characters)`,
+      400,
+    );
+  }
+  // Reuse an existing spelling so `PI-UI` and `pi-ui` stay one project.
+  return (
+    tasks.find((task) => task.project !== undefined && sameProject(task.project, name))?.project ??
+    name
+  );
+}
+
+function withProject(task: Task, project: string | undefined): Task {
+  const { project: _drop, ...rest } = task;
+  return project === undefined ? rest : { ...rest, project };
+}
+
 function newId(taken: Set<string>): string {
   for (let length = 4; length <= 8; length++) {
     for (let attempt = 0; attempt < 8; attempt++) {
@@ -67,6 +98,7 @@ function isTask(value: unknown): value is Task {
       task.proposedAt === null ||
       typeof task.proposedAt === "string") &&
     (task.rationale === undefined || typeof task.rationale === "string") &&
+    (task.project === undefined || typeof task.project === "string") &&
     (task.attachments === undefined ||
       (Array.isArray(task.attachments) &&
         task.attachments.every((id) => typeof id === "string"))) &&
@@ -83,8 +115,9 @@ function sanitize(tasks: Task[]): Task[] {
   const ids = new Set(tasks.map((task) => task.id));
   return tasks.map((task) => {
     const proposed = task.status === "proposed";
+    const project = normalizeProject(task.project) ?? undefined;
     return {
-      ...task,
+      ...withProject(task, project),
       parentId: proposed
         ? null
         : task.parentId !== null && ids.has(task.parentId)
@@ -173,6 +206,7 @@ export class TaskStore {
     title: string,
     parentId: string | null,
     attachments: readonly string[] = [],
+    project?: string | null,
   ): Promise<TaskLedger> {
     const text = title.trim();
     if (text.length === 0) return Promise.reject(new TaskError("Task title is required", 400));
@@ -186,6 +220,8 @@ export class TaskStore {
           throw new TaskError("Task is not open; a proposal must be approved first", 409);
         }
       }
+      const parent = parentId === null ? undefined : tasks.find((item) => item.id === parentId);
+      const name = chooseProject(project, tasks, parent?.project);
       const task: Task = {
         id: newId(new Set(tasks.map((item) => item.id))),
         title: text,
@@ -196,6 +232,7 @@ export class TaskStore {
         completedAt: null,
         completion: null,
         ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
+        ...(name === undefined ? {} : { project: name }),
       };
       return [...tasks, task];
     });
@@ -206,6 +243,7 @@ export class TaskStore {
     title: string,
     rationale: string,
     attachments: readonly string[] = [],
+    project?: string | null,
   ): Promise<TaskLedger> {
     const text = title.trim();
     if (text.length === 0) return Promise.reject(new TaskError("Task title is required", 400));
@@ -221,6 +259,7 @@ export class TaskStore {
     return this.commit((tasks) => {
       if (tasks.length >= TASK_LIMIT) throw new TaskError("Task list is full", 400);
       const now = new Date().toISOString();
+      const name = chooseProject(project, tasks);
       const task: Task = {
         id: newId(new Set(tasks.map((item) => item.id))),
         title: text,
@@ -233,13 +272,14 @@ export class TaskStore {
         completedAt: null,
         completion: null,
         ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
+        ...(name === undefined ? {} : { project: name }),
       };
       return [...tasks, task];
     });
   }
 
   /** Create a new open task and append it to `id`'s blockers. */
-  addBlocker(id: string, title: string): Promise<TaskLedger> {
+  addBlocker(id: string, title: string, project?: string | null): Promise<TaskLedger> {
     const text = title.trim();
     if (text.length === 0) return Promise.reject(new TaskError("Task title is required", 400));
     return this.commit((tasks) => {
@@ -247,6 +287,7 @@ export class TaskStore {
       const current = tasks[index];
       if (current === undefined) throw new TaskError("Unknown task", 404);
       if (tasks.length >= TASK_LIMIT) throw new TaskError("Task list is full", 400);
+      const name = chooseProject(project, tasks, current.project);
       const blocker: Task = {
         id: newId(new Set(tasks.map((item) => item.id))),
         title: text,
@@ -256,6 +297,7 @@ export class TaskStore {
         createdAt: new Date().toISOString(),
         completedAt: null,
         completion: null,
+        ...(name === undefined ? {} : { project: name }),
       };
       const withBlocker = [...tasks, blocker];
       const next = {
@@ -270,9 +312,19 @@ export class TaskStore {
 
   update(
     id: string,
-    patch: { status?: TaskStatus; blockedBy?: string[]; completion?: TaskCompletion },
+    patch: {
+      status?: TaskStatus;
+      blockedBy?: string[];
+      completion?: TaskCompletion;
+      /** A new project name, or null to clear it. */
+      project?: string | null;
+    },
   ): Promise<TaskLedger> {
-    if (patch.status === undefined && patch.blockedBy === undefined) {
+    if (
+      patch.status === undefined &&
+      patch.blockedBy === undefined &&
+      patch.project === undefined
+    ) {
       return Promise.reject(new TaskError("Nothing to update", 400));
     }
     return this.commit((tasks) => {
@@ -333,6 +385,8 @@ export class TaskStore {
       if (patch.blockedBy !== undefined) {
         next = { ...next, blockedBy: normalizeBlockers(tasks, id, patch.blockedBy) };
       }
+      if (patch.project !== undefined)
+        next = withProject(next, chooseProject(patch.project, tasks));
       const copy = tasks.slice();
       copy[index] = next;
       return copy;

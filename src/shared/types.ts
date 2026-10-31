@@ -260,6 +260,8 @@ export interface Task {
   rationale?: string;
   /** Media ids attached when the task was created. */
   attachments?: string[];
+  /** Short project name such as `pi-ui`. Absent means no project. */
+  project?: string;
   /** When the task was closed, or null while it is open. */
   completedAt: string | null;
   /** The report recorded when the task was closed, or null while it is open. */

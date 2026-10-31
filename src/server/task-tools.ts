@@ -22,9 +22,22 @@ const idSchema = Type.Object({
   id: Type.String({ description: "Task id from task_list." }),
 });
 
+const projectSchema = Type.Optional(
+  Type.String({
+    description:
+      "Short project name such as pi-ui (letters, digits, . _ -). Use one already in task_list when it fits.",
+  }),
+);
+
 const blockSchema = Type.Object({
   id: Type.String({ description: "Task id that this blocker gates." }),
   title: Type.String({ description: "Title of the new blocker task." }),
+  project: Type.Optional(
+    Type.String({
+      description:
+        "Project of the new blocker. Defaults to the gated task's project; pass it only when the blocker belongs elsewhere.",
+    }),
+  ),
 });
 
 const proposeSchema = Type.Object({
@@ -36,6 +49,7 @@ const proposeSchema = Type.Object({
   attachments: Type.Optional(
     Type.Array(Type.String({ description: "Media id to attach to the proposal." })),
   ),
+  project: projectSchema,
 });
 
 const doneSchema = Type.Object({
@@ -55,7 +69,10 @@ function formatLedger(ledger: TaskLedger): string {
     const title = task.title.replace(/\s+/g, " ").trim();
     const count = task.attachments?.length ?? 0;
     const images = count > 0 ? ` images=${count}` : "";
-    lines.push(`${"  ".repeat(depth)}${task.id} ${task.status}${blocked}${images} ${title}`);
+    const project = task.project === undefined ? "" : ` @${task.project}`;
+    lines.push(
+      `${"  ".repeat(depth)}${task.id} ${task.status}${blocked}${images}${project} ${title}`,
+    );
     const children = active
       .filter((item) => item.parentId === task.id)
       .sort((a, b) => compareTasks(active, a, b));
@@ -82,7 +99,8 @@ function formatProposals(ledger: TaskLedger): string {
     .map((task) => {
       const proposedAt = task.proposedAt ?? task.createdAt;
       const title = task.title.replace(/\s+/g, " ").trim();
-      return `${task.id} ${title}\n  proposed ${proposedAt} (${formatDateTime(proposedAt)})\n  rationale: ${task.rationale ?? ""}`;
+      const project = task.project === undefined ? "" : ` @${task.project}`;
+      return `${task.id}${project} ${title}\n  proposed ${proposedAt} (${formatDateTime(proposedAt)})\n  rationale: ${task.rationale ?? ""}`;
     })
     .join("\n");
 }
@@ -113,7 +131,7 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
     defineTool({
       name: "task_list",
       description:
-        "List the shared todo ledger: id, status, live blockers, attached image count, and title. Ready tasks come first, then blocked, then done. A done blocker is omitted. Proposals are not work and appear only as a waiting count; use task_proposals to read them. Use task_view to see a task's images.",
+        "List the shared todo ledger: id, status, live blockers, attached image count, @project when set, and title. Ready tasks come first, then blocked, then done. A done blocker is omitted. Proposals are not work and appear only as a waiting count; use task_proposals to read them. Use task_view to see a task's images.",
       parameters: Type.Object({}),
       async execute() {
         return { output: [{ type: "text", text: formatLedger(bridge.store.ledger()) }] };
@@ -131,7 +149,7 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
     defineTool({
       name: "task_view",
       description:
-        "Show one task in full: its title, status, blockers, and the images attached to it when it was created.",
+        "Show one task in full: its title, status, blockers, project, and the images attached to it when it was created.",
       parameters: idSchema,
       async execute(args) {
         const task = bridge.store.ledger().tasks.find((item) => item.id === args.id);
@@ -141,6 +159,7 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
         const header = [
           `${task.id} ${task.status}${task.parentId === null ? "" : ` parent=${task.parentId}`}`,
           task.blockedBy.length > 0 ? `blocked-by=${task.blockedBy.join(",")}` : "",
+          task.project === undefined ? "" : `project=${task.project}`,
           task.title,
           ids.length > 0
             ? `${ids.length} attached image${ids.length === 1 ? "" : "s"} follow.`
@@ -194,7 +213,7 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
       parameters: proposeSchema,
       async execute(args) {
         return changed(bridge, () =>
-          bridge.store.propose(args.title, args.rationale, args.attachments ?? []),
+          bridge.store.propose(args.title, args.rationale, args.attachments ?? [], args.project),
         );
       },
     }),
@@ -204,7 +223,7 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
         "Create a new open task and make it a blocker for the given task. Existing blockers stay. A done blocker no longer blocks. This cannot create a task that does not block something.",
       parameters: blockSchema,
       async execute(args) {
-        return changed(bridge, () => bridge.store.addBlocker(args.id, args.title));
+        return changed(bridge, () => bridge.store.addBlocker(args.id, args.title, args.project));
       },
     }),
   ];

@@ -517,6 +517,10 @@ app.post("/api/tasks", async (c) => {
     return c.text("parentId must be a string", 400);
   const proposed =
     typeof body === "object" && body !== null && "propose" in body && body.propose === true;
+  const project =
+    typeof body === "object" && body !== null && "project" in body ? body.project : undefined;
+  if (project !== undefined && project !== null && typeof project !== "string")
+    return c.text("project must be a string or null", 400);
   const rationale =
     typeof body === "object" &&
     body !== null &&
@@ -533,9 +537,12 @@ app.post("/api/tasks", async (c) => {
     );
     for (const id of attachments) await media.read(id);
     if (proposed) {
-      return c.json(publishTasks(await taskStore.propose(title, rationale, attachments)), 201);
+      return c.json(
+        publishTasks(await taskStore.propose(title, rationale, attachments, project)),
+        201,
+      );
     }
-    return c.json(publishTasks(await taskStore.create(title, parentId, attachments)), 201);
+    return c.json(publishTasks(await taskStore.create(title, parentId, attachments, project)), 201);
   } catch (error) {
     return taskFailure(c, error);
   }
@@ -549,7 +556,17 @@ app.patch("/api/tasks/:id", async (c) => {
     return c.text("Expected a JSON body", 400);
   }
   if (typeof body !== "object" || body === null) return c.text("Expected a JSON body", 400);
-  const patch: { status?: TaskStatus; blockedBy?: string[]; completion?: TaskCompletion } = {};
+  const patch: {
+    status?: TaskStatus;
+    blockedBy?: string[];
+    completion?: TaskCompletion;
+    project?: string | null;
+  } = {};
+  if ("project" in body) {
+    if (body.project !== null && typeof body.project !== "string")
+      return c.text("project must be a string or null", 400);
+    patch.project = body.project;
+  }
   if ("status" in body) {
     if (body.status !== "open" && body.status !== "done" && body.status !== "proposed") {
       return c.text('Status must be "open", "done" or "proposed"', 400);
