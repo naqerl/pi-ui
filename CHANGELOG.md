@@ -4,6 +4,11 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.18 - 2026-10-31
+
+- Durable MCP subscription ids that survive a restart: the registry keeps the subscription id and cursor, so a restarted server resumes the same stream instead of opening a new one.
+
+
 ## 1.6.17 - 2026-10-31
 
 - Proposed tasks come first on the tasks page, above ready work: each proposal shows its title, a clamped rationale, when it was proposed and the approve/dismiss actions.
