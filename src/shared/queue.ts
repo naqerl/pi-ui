@@ -1,4 +1,4 @@
-import type { ChatMessage, QueuedMessage } from "./types.js";
+import type { ChatMessage, QueuedMessage, QueuedNotice } from "./types.js";
 
 /** The entry kind a queued follow-up is placed as, so its pending bubble can share its id. */
 export const QUEUE_ENTRY_KIND = "ui.queue";
@@ -23,6 +23,16 @@ export function queueKeyFromEntryData(data: unknown): string | undefined {
   return typeof key === "string" && key.length > 0 ? key : undefined;
 }
 
+/** True for a queued notice marker, which has a short label instead of a full notice. */
+export function isQueuedNotice(notice: ChatMessage["notice"]): notice is QueuedNotice {
+  return (
+    typeof notice === "object" &&
+    notice !== null &&
+    "label" in notice &&
+    typeof notice.label === "string"
+  );
+}
+
 /** The chat bubble for a follow-up the server holds until the running turn ends. */
 export function pendingQueuedMessage(item: QueuedMessage): ChatMessage {
   return {
@@ -33,6 +43,7 @@ export function pendingQueuedMessage(item: QueuedMessage): ChatMessage {
     order: PENDING_QUEUE_ORDER,
     pendingQueue: true,
     queueId: item.id,
+    ...(item.notice === undefined ? {} : { notice: item.notice }),
     ...(item.attachments === undefined || item.attachments.length === 0
       ? {}
       : { attachments: item.attachments.map((id) => ({ id, mimeType: "image/*" })) }),

@@ -22,6 +22,7 @@ import {
   memoryUndoPrompt,
   parseNotice,
 } from "../src/shared/notices.js";
+import { isQueuedNotice } from "../src/shared/queue.js";
 import type { ChatMessage } from "../src/shared/types.js";
 
 function job(overrides: Partial<JobRecord>): JobRecord {
@@ -205,11 +206,10 @@ test("an interrupted run becomes one warning chip after the partial reply", () =
   assert.equal(message?.role, "system");
   assert.equal(message?.text, note);
   assert.deepEqual(message?.notice, { kind: "interrupted", note, stopped: false });
-  assert.ok(message?.notice !== undefined);
+  const notice = message?.notice;
+  assert.ok(notice !== undefined && !isQueuedNotice(notice));
 
-  const markup = renderToStaticMarkup(
-    createElement(NoticeLine, { message, notice: message.notice }),
-  );
+  const markup = renderToStaticMarkup(createElement(NoticeLine, { message, notice }));
   assert.match(markup, /data-notice-kind="interrupted"/);
   assert.match(markup, /⚠/);
   assert.match(markup, /class="[^"]*\bbackdrop-blur-md\b/);
@@ -228,11 +228,13 @@ test("a memory write becomes a persistent chip with an undo steer", async () => 
   const path = "topics/projects/widget-cache.md";
   const text = `# Widget cache\n\n${"the cache keeps 200 responses. ".repeat(120)}`;
   const message = await appendMemoryWriteNotice(conversation, { path, text });
-  assert.ok(message?.notice?.kind === "memory");
-  assert.equal(message.notice.path, path);
-  assert.equal(message.notice.summary, `memory · ${path}`);
-  assert.equal(message.notice.truncated, true);
-  assert.equal(message.notice.text.length, MEMORY_NOTICE_TEXT_LIMIT);
+  assert.ok(message !== undefined);
+  const written = message.notice;
+  assert.ok(written !== undefined && !isQueuedNotice(written) && written.kind === "memory");
+  assert.equal(written.path, path);
+  assert.equal(written.summary, `memory · ${path}`);
+  assert.equal(written.truncated, true);
+  assert.equal(written.text.length, MEMORY_NOTICE_TEXT_LIMIT);
   assert.equal(message.role, "system");
   assert.notEqual(entries[0]?.kind, "user");
 
@@ -240,7 +242,7 @@ test("a memory write becomes a persistent chip with an undo steer", async () => 
   const reloaded = buildTranscript(entries).messages[0];
   assert.deepEqual(reloaded?.notice, message.notice);
   const notice = reloaded?.notice;
-  assert.ok(notice !== undefined);
+  assert.ok(notice !== undefined && !isQueuedNotice(notice));
   const markup = renderToStaticMarkup(
     createElement(NoticeLine, { message: reloaded, notice, onSteer: () => {} }),
   );

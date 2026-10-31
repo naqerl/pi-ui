@@ -21,6 +21,7 @@ import {
 } from "../src/server/idle-nudge.js";
 import { buildTranscript, IDLE_NUDGE_ENTRY_KIND } from "../src/server/session.js";
 import { parseNotice } from "../src/shared/notices.js";
+import { isQueuedNotice } from "../src/shared/queue.js";
 import type { TaskStatus } from "../src/shared/types.js";
 
 const nothing = { active: false, queued: 0, openTaskIds: [] as string[] };
@@ -245,10 +246,9 @@ test("the nudge is a notice chip with a distinct transcript kind", () => {
   assert.deepEqual(message?.notice, parseNotice(text));
   assert.notEqual(entries[0]?.kind, "user");
 
-  assert.ok(message?.notice !== undefined);
-  const markup = renderToStaticMarkup(
-    createElement(NoticeLine, { message, notice: message.notice }),
-  );
+  const notice = message?.notice;
+  assert.ok(notice !== undefined && !isQueuedNotice(notice));
+  const markup = renderToStaticMarkup(createElement(NoticeLine, { message, notice }));
   assert.match(markup, /data-notice-kind="idle"/);
   assert.match(markup, /idle · 2 task\(s\) open: a1, b2/);
   assert.match(markup, /◷/);

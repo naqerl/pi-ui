@@ -9,6 +9,7 @@ import {
 } from "../src/server/mcp-event-policy.js";
 import { buildTranscript, MCP_NOTICE_ENTRY_KIND } from "../src/server/session.js";
 import { MCP_EVENTS_HEAD } from "../src/shared/notices.js";
+import { isQueuedNotice } from "../src/shared/queue.js";
 
 const START = Date.parse("2026-10-30T12:00:00.000Z");
 
@@ -520,10 +521,10 @@ test("an MCP update keeps one transcript entry with the new text and time", () =
   assert.equal(transcript.messages[0]?.id, "m-1");
   assert.equal(transcript.messages[0]?.text, secondText);
   assert.equal(transcript.messages[0]?.timestamp, later);
-  assert.equal(transcript.messages[0]?.notice?.kind, "mcp");
-  if (transcript.messages[0]?.notice?.kind === "mcp") {
-    assert.equal(transcript.messages[0].notice.events.length, 2);
-  }
+  const notice = transcript.messages[0]?.notice;
+  assert.ok(notice !== undefined && !isQueuedNotice(notice));
+  assert.equal(notice.kind, "mcp");
+  if (notice.kind === "mcp") assert.equal(notice.events.length, 2);
 });
 
 test("two windows of one key keep two transcript notices", () => {
