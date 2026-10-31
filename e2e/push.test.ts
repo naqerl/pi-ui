@@ -239,26 +239,72 @@ test("the worker stays quiet only while a client is focused", async () => {
   assert.equal(shouldNotify?.([]), true);
 });
 
-function render(state: PushRowState): string {
+function render(state: PushRowState, busy = false): string {
   return renderToStaticMarkup(
     createElement(PushSettingsRow, {
       state,
+      busy,
       onEnable: () => {},
       onDisable: () => {},
     }),
   );
 }
 
-test("the settings row renders all five states from props alone", () => {
+function assertSwitch(
+  markup: string,
+  expected: { checked: string; disabled: boolean; status: string },
+): void {
+  assert.match(markup, /role="switch"/);
+  assert.match(markup, /aria-label="Notifications"/);
+  assert.match(markup, new RegExp(`aria-checked="${expected.checked}"`));
+  assert.equal(markup.includes('disabled=""'), expected.disabled);
+  assert.match(markup, new RegExp(expected.status));
+}
+
+test("off: the labelled switch can turn notifications on", () => {
   assert.equal(PUSH_ROW_STATES.length, 5);
-  const markup = new Map(PUSH_ROW_STATES.map((state) => [state, render(state)]));
-  assert.match(markup.get("unsupported") ?? "", /secure context \(HTTPS or localhost\)/);
-  assert.match(markup.get("checking") ?? "", /Checking notification support/);
-  assert.match(markup.get("default") ?? "", /Enable notifications/);
-  assert.match(markup.get("granted") ?? "", /Notifications on/);
-  assert.match(markup.get("granted") ?? "", /Turn off/);
-  assert.match(markup.get("denied") ?? "", /Notifications blocked in the browser/);
-  assert.doesNotMatch(markup.get("denied") ?? "", /Enable notifications/);
+  assertSwitch(render("default"), {
+    checked: "false",
+    disabled: false,
+    status: "Off — get notified when pi needs you",
+  });
+});
+
+test("on: the labelled switch can turn notifications off", () => {
+  assertSwitch(render("granted"), {
+    checked: "true",
+    disabled: false,
+    status: "On — notifications are enabled",
+  });
+});
+
+test("busy: the labelled switch stays disabled while the change is pending", () => {
+  assertSwitch(render("default", true), {
+    checked: "false",
+    disabled: true,
+    status: "Busy — updating notification settings",
+  });
+  assertSwitch(render("checking"), {
+    checked: "false",
+    disabled: true,
+    status: "Busy — checking notification support",
+  });
+});
+
+test("denied: the labelled switch is disabled and the status says why", () => {
+  assertSwitch(render("denied"), {
+    checked: "false",
+    disabled: true,
+    status: "Denied — notifications are blocked in the browser",
+  });
+});
+
+test("unsupported: the labelled switch is disabled until push is available", () => {
+  assertSwitch(render("unsupported"), {
+    checked: "false",
+    disabled: true,
+    status: "Unsupported — push needs HTTPS or localhost",
+  });
 });
 
 test("the VAPID base64url key becomes the bytes pushManager expects", () => {
