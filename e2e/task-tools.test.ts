@@ -85,11 +85,7 @@ test("task tools list, mark done, and create a blocker", async () => {
   const blank = text(await call("task_block", { id: parent.id, title: "   " }));
   assert.equal(blank.isError, true);
 
-  const completion = {
-    timeSpent: "45m",
-    tokens: 120_000,
-    evidence: "e2e/task-tools.test.ts",
-  };
+  const completion = { evidence: "e2e/task-tools.test.ts" };
   const tooSoon = text(await call("task_done", { id: parent.id, ...completion }));
   assert.equal(tooSoon.isError, true);
   assert.match(tooSoon.text, /subtask/i);

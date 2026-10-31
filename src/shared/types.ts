@@ -237,11 +237,11 @@ export interface DraftSync {
 
 export type TaskStatus = "open" | "done" | "proposed";
 
-/** What closing a task cost, and where a reviewer can check the work. */
+/**
+ * Where a reviewer can check the work. Time, tokens and cost are measured from the runs that
+ * worked on the task (`TaskTrace.measured`), never self-reported.
+ */
 export interface TaskCompletion {
-  timeSpentMinutes: number;
-  timeSpentText: string;
-  tokens: number;
   evidence: string;
 }
 

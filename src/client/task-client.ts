@@ -36,7 +36,7 @@ export function updateTask(
   patch: {
     status?: TaskStatus;
     blockedBy?: string[];
-    completion?: { timeSpent: string | number; tokens: number; evidence: string };
+    completion?: { evidence: string };
   },
 ): Promise<TaskOutcome> {
   return requestTask(`/api/tasks/${encodeURIComponent(id)}`, {

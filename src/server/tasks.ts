@@ -18,18 +18,11 @@ export class TaskError extends Error {
   }
 }
 
-function isCompletion(value: unknown): value is TaskCompletion {
-  if (typeof value !== "object" || value === null) return false;
-  const completion = value as Record<string, unknown>;
-  return (
-    typeof completion.timeSpentMinutes === "number" &&
-    Number.isFinite(completion.timeSpentMinutes) &&
-    typeof completion.timeSpentText === "string" &&
-    typeof completion.tokens === "number" &&
-    Number.isInteger(completion.tokens) &&
-    completion.tokens >= 0 &&
-    typeof completion.evidence === "string"
-  );
+/** Older ledgers also stored self-reported time and tokens; only the evidence is kept. */
+function readCompletion(value: unknown): TaskCompletion | null {
+  if (typeof value !== "object" || value === null) return null;
+  const evidence = (value as Record<string, unknown>).evidence;
+  return typeof evidence === "string" ? { evidence } : null;
 }
 
 function cloneTask(task: Task): Task {
@@ -38,7 +31,7 @@ function cloneTask(task: Task): Task {
     blockedBy: [...task.blockedBy],
     ...(task.attachments === undefined ? {} : { attachments: [...task.attachments] }),
     completedAt: typeof task.completedAt === "string" ? task.completedAt : null,
-    completion: isCompletion(task.completion) ? { ...task.completion } : null,
+    completion: readCompletion(task.completion),
   };
 }
 
@@ -76,7 +69,9 @@ function isTask(value: unknown): value is Task {
     (task.completedAt === undefined ||
       task.completedAt === null ||
       typeof task.completedAt === "string") &&
-    (task.completion === undefined || task.completion === null || isCompletion(task.completion))
+    (task.completion === undefined ||
+      task.completion === null ||
+      readCompletion(task.completion) !== null)
   );
 }
 
@@ -272,9 +267,6 @@ export class TaskStore {
           throw new TaskError("Open subtasks", 409);
         }
         if (patch.status === "done") {
-          if (patch.completion === undefined) {
-            throw new TaskError("completion is required when marking a task done", 400);
-          }
           next = {
             ...next,
             status: "done",
@@ -282,7 +274,13 @@ export class TaskStore {
               current.status === "done" && current.completedAt !== null
                 ? current.completedAt
                 : new Date().toISOString(),
-            completion: { ...patch.completion },
+            // A human closing a task may not leave evidence; keep what was there.
+            completion:
+              patch.completion === undefined
+                ? current.status === "done"
+                  ? current.completion
+                  : null
+                : { ...patch.completion },
           };
         } else if (patch.status === "proposed") {
           next = {

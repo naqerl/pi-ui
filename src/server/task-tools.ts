@@ -4,12 +4,7 @@ import {
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
-import {
-  compareTasks,
-  formatTokenCount,
-  liveBlockerIds,
-  parseCompletion,
-} from "../shared/tasks.js";
+import { compareTasks, liveBlockerIds, parseCompletion } from "../shared/tasks.js";
 import { formatDateTime } from "../shared/time.js";
 import type { Task, TaskLedger } from "../shared/types.js";
 import type { MediaStore } from "./media.js";
@@ -45,20 +40,10 @@ const proposeSchema = Type.Object({
 
 const doneSchema = Type.Object({
   id: Type.String({ description: "Task id from task_list." }),
-  timeSpent: Type.Union([
-    Type.String({ description: "How long the work took: ~25m, 2h, 1h40m or 45." }),
-    Type.Number({ description: "Minutes spent, as a positive number." }),
-  ]),
-  tokens: Type.Number({ description: "Input plus output tokens spent; a non-negative integer." }),
   evidence: Type.String({
     description: "A commit sha, file path, screenshot path or sentence a reviewer can check.",
   }),
 });
-
-function taskCost(task: Task): string {
-  if (task.status !== "done" || task.completion == null) return "";
-  return ` · ${task.completion.timeSpentText} · ${formatTokenCount(task.completion.tokens)} tok`;
-}
 
 function formatLedger(ledger: TaskLedger): string {
   const lines = [`revision ${ledger.revision}`];
@@ -70,9 +55,7 @@ function formatLedger(ledger: TaskLedger): string {
     const title = task.title.replace(/\s+/g, " ").trim();
     const count = task.attachments?.length ?? 0;
     const images = count > 0 ? ` images=${count}` : "";
-    lines.push(
-      `${"  ".repeat(depth)}${task.id} ${task.status}${blocked}${images}${taskCost(task)} ${title}`,
-    );
+    lines.push(`${"  ".repeat(depth)}${task.id} ${task.status}${blocked}${images} ${title}`);
     const children = active
       .filter((item) => item.parentId === task.id)
       .sort((a, b) => compareTasks(active, a, b));
@@ -172,8 +155,6 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
             ? []
             : [
                 `completed ${task.completedAt === null ? "unknown" : formatDateTime(task.completedAt)}`,
-                `time spent ${completion.timeSpentText} (${completion.timeSpentMinutes} min)`,
-                `tokens ${completion.tokens}`,
                 `evidence ${completion.evidence}`,
               ]),
         ].filter((line) => line.length > 0);
@@ -192,7 +173,7 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
     defineTool({
       name: "task_done",
       description:
-        "Mark one task done and record what it cost: how long it took, the tokens spent, and where a reviewer can check the work. A task with an open subtask cannot be marked done. This cannot reopen a task or edit its title.",
+        "Mark one task done and say where a reviewer can check the work. Time, tokens and cost are measured from the tool calls tagged with the task's piuiTaskId, so do not report them. A task with an open subtask cannot be marked done. This cannot reopen a task or edit its title.",
       parameters: doneSchema,
       async execute(args) {
         const current = bridge.store.ledger().tasks.find((task) => task.id === args.id);

@@ -121,7 +121,7 @@ const memoryWrites: { current?: (record: MemoryWriteRecord) => void } = {};
 const memoryBlock = await memorySnapshot.get(memory, "first_turn");
 const baseInstructions = `${await buildPiSystemPrompt(cwd, catalog.runtime)}
 
-Tasks are a shared todo ledger on the tasks page. You can list them with task_list, mark one done with task_done, and create a blocker for one with task_block. Every task needs human approval: write down work you think is worth doing with propose_task, and a human can approve it from the tasks page. A proposal is not a task and does not appear in task_list; use task_proposals to read the waiting proposals. A done blocker does not block. A task with an open subtask cannot be marked done. You cannot add a task that blocks nothing, reopen a task, or delete one. Every tool takes an optional piuiTaskId argument: when a call works on a task, set it to that task's id so the tasks page shows the task as being worked on and measures its time and cost; leave it out for work that is not part of a task.
+Tasks are a shared todo ledger on the tasks page. You can list them with task_list, mark one done with task_done (with evidence a reviewer can check), and create a blocker for one with task_block. Every task needs human approval: write down work you think is worth doing with propose_task, and a human can approve it from the tasks page. A proposal is not a task and does not appear in task_list; use task_proposals to read the waiting proposals. A done blocker does not block. A task with an open subtask cannot be marked done. You cannot add a task that blocks nothing, reopen a task, or delete one. Every tool takes an optional piuiTaskId argument: when a call works on a task, set it to that task's id so the tasks page shows the task as being worked on and measures its time and cost; leave it out for work that is not part of a task.
 
 Draw a diagram into the chat with draw_diagram (Mermaid source) and revise it later with replace_diagram and the id from the first result. The drawing is part of your reply; do not repeat its source in your text.
 
@@ -556,13 +556,12 @@ app.patch("/api/tasks/:id", async (c) => {
     }
     patch.status = body.status;
   }
-  if ("completion" in body) {
+  // Evidence is optional here: a human ticking a task off may have nothing to point at.
+  if ("completion" in body && body.completion !== null && body.completion !== undefined) {
     if (patch.status !== "done") return c.text('completion requires status "done"', 400);
     const parsed = parseCompletion(body.completion);
     if (!parsed.ok) return c.text(parsed.error, 400);
     patch.completion = parsed.completion;
-  } else if (patch.status === "done") {
-    return c.text("completion is required when status is done", 400);
   }
   if ("blockedBy" in body) {
     if (!Array.isArray(body.blockedBy)) return c.text("blockedBy must be a list of task ids", 400);

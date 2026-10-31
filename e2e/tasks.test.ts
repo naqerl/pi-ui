@@ -10,10 +10,11 @@ import { createTaskTools, type TaskBridge } from "../src/server/task-tools.js";
 import { TaskStore } from "../src/server/tasks.js";
 import {
   compareTasks,
+  formatActiveTime,
+  formatCost,
   formatTokenCount,
   hasOpenDescendant,
   liveBlockerIds,
-  parseTimeSpentMinutes,
 } from "../src/shared/tasks.js";
 import { formatDateTime } from "../src/shared/time.js";
 import type { Task, TaskLedger } from "../src/shared/types.js";
@@ -111,12 +112,7 @@ test("the task modal shows the full rationale, blockers and completion record", 
     blockedBy: [],
     createdAt: "2026-01-01T12:00:00.000Z",
     completedAt: "2026-01-01T12:20:00.000Z",
-    completion: {
-      timeSpentMinutes: 25,
-      timeSpentText: "25m",
-      tokens: 1200,
-      evidence: "commit 9c58abc",
-    },
+    completion: { evidence: "commit 9c58abc" },
   };
   const task: Task = {
     id: "t1",
@@ -147,7 +143,7 @@ test("the task modal shows the full rationale, blockers and completion record", 
   assert.match(markup, /Mark done/);
 });
 
-test("the completed task modal carries time spent, tokens, evidence and the closed time", () => {
+test("the completed task modal carries the evidence and the closed time", () => {
   const task: Task = {
     id: "t2",
     title: "Ship the modal",
@@ -156,19 +152,12 @@ test("the completed task modal carries time spent, tokens, evidence and the clos
     blockedBy: [],
     createdAt: "2026-01-01T12:00:00.000Z",
     completedAt: "2026-01-01T12:25:00.000Z",
-    completion: {
-      timeSpentMinutes: 25,
-      timeSpentText: "25m",
-      tokens: 1200,
-      evidence: "commit 9c58abc",
-    },
+    completion: { evidence: "commit 9c58abc" },
   };
   const markup = renderToStaticMarkup(
     createElement(TaskModal, { task, tasks: [task], onClose: () => {}, onStatus: () => {} }),
   );
   assert.match(markup, /data-testid="task-modal-completion"/);
-  assert.match(markup, /25m \(25 min\)/);
-  assert.match(markup, /1\.2k/);
   assert.match(markup, /commit 9c58abc/);
   assert.match(markup, /Closed/);
 });
@@ -193,12 +182,7 @@ test("task cards show created and closed times in the browser's local zone", () 
     blockedBy: [],
     createdAt: "2026-01-01T12:00:00.000Z",
     completedAt: "2026-01-01T12:25:00.000Z",
-    completion: {
-      timeSpentMinutes: 25,
-      timeSpentText: "25m",
-      tokens: 0,
-      evidence: "e2e/tasks.test.ts",
-    },
+    completion: { evidence: "e2e/tasks.test.ts" },
   };
   const markup = inZone("Asia/Tokyo", () =>
     renderToStaticMarkup(createElement(TaskTimes, { task })),
@@ -214,67 +198,38 @@ test("task cards show created and closed times in the browser's local zone", () 
   assert.doesNotMatch(markup, new RegExp(`created ${utc.replaceAll(".", "\\.")}`));
 });
 
-test("parses the accepted time-spent forms", () => {
-  const accepted: Array<[unknown, number]> = [
-    ["~25m", 25],
-    ["2h", 120],
-    ["1h40m", 100],
-    ["1h 40m", 100],
-    ["45", 45],
-    [45, 45],
-  ];
-  for (const [input, minutes] of accepted) {
-    assert.equal(parseTimeSpentMinutes(input), minutes, String(input));
-  }
-  for (const input of ["", "0", "0m", "-5", "soon", null, undefined]) {
-    assert.equal(parseTimeSpentMinutes(input), null, String(input));
-  }
+test("formats measured tokens, time and cost", () => {
   assert.equal(formatTokenCount(120_000), "120k");
   assert.equal(formatTokenCount(0), "0");
+  assert.equal(formatActiveTime(42_000), "42s");
+  assert.equal(formatActiveTime(18 * 60_000), "18m");
+  assert.equal(formatActiveTime(65 * 60_000), "1h 05m");
+  assert.equal(formatCost(0), "$0");
+  assert.equal(formatCost(0.004), "<$0.01");
+  assert.equal(formatCost(1.234), "$1.23");
 });
 
-test("task_done rejects each missing field and leaves the task open", async () => {
+test("task_done needs checkable evidence and leaves the task open without it", async () => {
   const { directory, store, bridge } = await temporaryStore();
   try {
-    const created = await store.create("Report the cost", null);
+    const created = await store.create("Report the evidence", null);
     const task = created.tasks[0];
     assert.ok(task);
-    const complete = {
-      timeSpent: "~25m",
-      tokens: 120_000,
-      evidence: "src/server/task-tools.ts",
-    };
-
-    for (const field of ["timeSpent", "tokens", "evidence"]) {
-      const args: Record<string, unknown> = { id: task.id, ...complete };
-      delete args[field];
+    for (const args of [{ id: task.id }, { id: task.id, evidence: "short" }]) {
       const rejected = text(await call(bridge, "task_done", args));
-      assert.equal(rejected.isError, true, field);
-      assert.match(rejected.text, new RegExp(field, "i"));
-      const current = store.ledger().tasks.find((item) => item.id === task.id);
-      assert.equal(current?.status, "open", field);
-      assert.equal(current?.completedAt, null, field);
-      assert.equal(current?.completion, null, field);
-    }
-
-    for (const invalid of [
-      { ...complete, timeSpent: "soon" },
-      { ...complete, timeSpent: "0" },
-      { ...complete, tokens: -1 },
-      { ...complete, tokens: 1.5 },
-      { ...complete, evidence: "short" },
-    ]) {
-      const rejected = text(await call(bridge, "task_done", { id: task.id, ...invalid }));
       assert.equal(rejected.isError, true);
+      assert.match(rejected.text, /evidence/i);
       const current = store.ledger().tasks.find((item) => item.id === task.id);
       assert.equal(current?.status, "open");
+      assert.equal(current?.completedAt, null);
+      assert.equal(current?.completion, null);
     }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("task_done stores the report and both views show it", async () => {
+test("task_done stores the evidence, and the views do not invent a cost", async () => {
   const { directory, store, bridge } = await temporaryStore();
   try {
     const task = (await store.create("Close with a report", null)).tasks[0];
@@ -287,40 +242,60 @@ test("task_done stores the report and both views show it", async () => {
         evidence: "  commit 9c58abc  ",
       }),
     );
-    assert.equal(closed.isError, false);
+    assert.equal(closed.isError, false, "old callers that still send numbers are not refused");
 
     const stored = store.ledger().tasks.find((item) => item.id === task.id);
     assert.equal(stored?.status, "done");
     assert.match(stored?.completedAt ?? "", /^\d{4}-\d{2}-\d{2}T/);
-    assert.deepEqual(stored?.completion, {
-      timeSpentMinutes: 25,
-      timeSpentText: "~25m",
-      tokens: 120_000,
-      evidence: "commit 9c58abc",
-    });
+    assert.deepEqual(stored?.completion, { evidence: "commit 9c58abc" });
 
     const listed = text(await call(bridge, "task_list", {}));
-    assert.match(listed.text, new RegExp(`${task.id} done · ~25m · 120k tok Close with a report`));
+    assert.match(listed.text, new RegExp(`${task.id} done Close with a report`));
     const viewed = text(await call(bridge, "task_view", { id: task.id }));
     assert.match(viewed.text, /completed /);
-    assert.match(viewed.text, /time spent ~25m \(25 min\)/);
-    assert.match(viewed.text, /tokens 120000/);
+    assert.doesNotMatch(viewed.text, /time spent|tokens/);
     assert.match(viewed.text, /evidence commit 9c58abc/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
-    const zero = (await store.create("No model work", null)).tasks.find(
-      (item) => item.title === "No model work",
-    );
-    assert.ok(zero);
-    const zeroDone = text(
-      await call(bridge, "task_done", {
-        id: zero.id,
-        timeSpent: 45,
-        tokens: 0,
-        evidence: "Closed after review from the tasks page",
+test("a human can close a task without evidence, and old completion records load", async () => {
+  const { directory, file, store } = await temporaryStore();
+  try {
+    const task = (await store.create("Tick it off", null)).tasks[0];
+    assert.ok(task);
+    await store.update(task.id, { status: "done" });
+    const closed = store.ledger().tasks.find((item) => item.id === task.id);
+    assert.equal(closed?.status, "done");
+    assert.equal(closed?.completion, null);
+
+    await writeFile(
+      file,
+      JSON.stringify({
+        revision: 3,
+        tasks: [
+          {
+            id: "old2",
+            title: "Self-reported",
+            status: "done",
+            parentId: null,
+            blockedBy: [],
+            createdAt: "2025-01-01T00:00:00.000Z",
+            completedAt: "2025-01-01T01:00:00.000Z",
+            completion: {
+              timeSpentMinutes: 25,
+              timeSpentText: "25m",
+              tokens: 9,
+              evidence: "abc1234x",
+            },
+          },
+        ],
       }),
+      "utf8",
     );
-    assert.equal(zeroDone.isError, false);
-    assert.equal(store.ledger().tasks.find((item) => item.id === zero.id)?.completion?.tokens, 0);
+    await store.load();
+    assert.deepEqual(store.ledger().tasks[0]?.completion, { evidence: "abc1234x" });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -390,8 +365,6 @@ test("task_proposals lists proposals and task_done refuses them", async () => {
     const refused = text(
       await call(bridge, "task_done", {
         id: proposal.id,
-        timeSpent: "5m",
-        tokens: 10,
         evidence: "e2e/tasks.test.ts",
       }),
     );
@@ -481,12 +454,7 @@ test("store round-trips completedAt and clears it when reopened", async () => {
     assert.equal(task.completedAt, null);
     assert.equal(task.completion, null);
 
-    const completion = {
-      timeSpentMinutes: 100,
-      timeSpentText: "1h40m",
-      tokens: 12_345,
-      evidence: "e2e/tasks.test.ts",
-    };
+    const completion = { evidence: "e2e/tasks.test.ts" };
     await store.update(task.id, { status: "done", completion });
     const closed = store.ledger().tasks.find((item) => item.id === task.id);
     assert.ok(closed?.completedAt);

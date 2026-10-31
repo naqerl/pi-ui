@@ -5,7 +5,6 @@ import {
   blockerClosesCycle,
   compareTasks,
   descendantIds,
-  formatTokenCount,
   hasOpenDescendant,
   liveBlockerIds,
 } from "../shared/tasks";
@@ -16,18 +15,6 @@ import { mediaUrl } from "./media-client";
 import { removeTask, type TaskOutcome, updateTask } from "./task-client";
 
 const LONG_PRESS_MS = 500;
-
-function manualCompletion(task: Task) {
-  const created = Date.parse(task.createdAt);
-  const minutes = Number.isFinite(created)
-    ? Math.max(1, Math.round((Date.now() - created) / 60_000))
-    : 1;
-  return {
-    timeSpent: `${minutes}m`,
-    tokens: 0,
-    evidence: `Closed from the tasks page (${task.id})`,
-  };
-}
 
 interface TasksViewProps {
   tasks: Task[];
@@ -159,15 +146,7 @@ export function TasksView({
                 setMenu({ id, x, y });
               }}
               onOpen={() => setOpenTaskId(task.id)}
-              onStatus={(task, status) =>
-                void apply(
-                  task.id,
-                  updateTask(
-                    task.id,
-                    status === "done" ? { status, completion: manualCompletion(task) } : { status },
-                  ),
-                )
-              }
+              onStatus={(task, status) => void apply(task.id, updateTask(task.id, { status }))}
             />
           ))}
         </ul>
@@ -206,15 +185,7 @@ export function TasksView({
           task={openTask}
           tasks={tasks}
           onClose={() => setOpenTaskId(null)}
-          onStatus={(task, status) =>
-            void apply(
-              task.id,
-              updateTask(
-                task.id,
-                status === "done" ? { status, completion: manualCompletion(task) } : { status },
-              ),
-            )
-          }
+          onStatus={(task, status) => void apply(task.id, updateTask(task.id, { status }))}
         />
       )}
     </div>
@@ -517,9 +488,6 @@ function TaskBranch({
                 completed {formatTime(task.completedAt)}
               </time>
             )}
-            <span>
-              · {completion.timeSpentText} · {formatTokenCount(completion.tokens)} tok
-            </span>
           </span>
         )}
         {task.attachments !== undefined && task.attachments.length > 0 && (
@@ -704,12 +672,6 @@ export function TaskModal({
                 <p className="font-mono text-xs text-muted-foreground">No completion record</p>
               ) : (
                 <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-xs">
-                  <dt className="text-muted-foreground">Time spent</dt>
-                  <dd>
-                    {completion.timeSpentText} ({completion.timeSpentMinutes} min)
-                  </dd>
-                  <dt className="text-muted-foreground">Tokens</dt>
-                  <dd>{formatTokenCount(completion.tokens)}</dd>
                   <dt className="text-muted-foreground">Evidence</dt>
                   <dd className="min-w-0 [overflow-wrap:anywhere]">{completion.evidence}</dd>
                 </dl>

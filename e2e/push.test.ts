@@ -283,12 +283,7 @@ test("marking a task done sends one push only on the transition", async (t) => {
     await store.load();
     const task = (await store.create("Ship the modal", null)).tasks[0];
     assert.ok(task);
-    const completion = {
-      timeSpentMinutes: 25,
-      timeSpentText: "25m",
-      tokens: 120,
-      evidence: "e2e/push.test.ts",
-    };
+    const completion = { evidence: "e2e/push.test.ts" };
 
     await store.update(task.id, { status: "done", completion });
     assert.equal(sent.length, 1);
