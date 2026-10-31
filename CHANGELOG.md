@@ -1,10 +1,17 @@
 # Changelog
 
+Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
+
+## 1.6.31 - 2026-10-31
+
+- Tasks can carry an optional project. It is stored in the ledger, accepted by the API (`project` on create and update, `null` clears it) and by the agent task tools; names are reused case-insensitively and subtasks inherit their parent's project.
+- Fast tagging when adding a task: the composer on the Tasks page has a plain Project select (with "New project…"), and typing `@name` in the title opens an autocomplete (arrow keys, Enter/Tab or tap to accept, Esc to dismiss). An unknown name creates the project, and the `@token` is removed from the title.
+- The default project for a new task is the parent's, then the active filter, then the last one used, else "No project".
+- The task list has a project filter (All projects / each project / No project) that also sets the default. Under "All projects", open tasks are grouped into collapsible project sections with a count, "No project" last. The task detail has an editable Project line.
+
 ## 1.6.30 - 2026-10-31
 
 - Ledger notifications coalesce: a burst of proposals and completions arrives as one push ("3 tasks updated") instead of one per task, a repeat of the same task inside the burst is mentioned once with its final status, tagged notifications now pass `renotify: true` so a replacement actually alerts, and a pending burst is flushed on shutdown instead of being dropped.
-
-Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
 
 ## 1.6.29 - 2026-10-31
 
