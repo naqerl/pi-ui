@@ -26,6 +26,8 @@ import {
   type McpSubscriptionRecord,
   McpSubscriptionRegistry,
   recordKey,
+  recordStableId,
+  subscriptionEnabled,
 } from "./mcp-subscriptions.js";
 
 const require = createRequire(import.meta.url);
@@ -734,7 +736,7 @@ export class McpRuntime {
 
   /** Subscriptions opened at boot, with the id pi-mcp-events assigned this process. */
   get restoredSubscriptions(): RestoredMcpSubscription[] {
-    return [...this.restored].map(([id, record]) => ({ id, ...record }));
+    return [...this.restored].map(([id, record]) => ({ ...record, id }));
   }
 
   get tools(): readonly ToolRegistration[] {
@@ -797,6 +799,7 @@ export class McpRuntime {
     const records = await this.subscriptionStore.read();
     const already = new Set([...this.restored.values()].map((record) => recordKey(record)));
     for (const record of records) {
+      if (!subscriptionEnabled(record.status) || record.enabled === false) continue;
       if (record.status !== "active" && record.status !== "reconnecting") continue;
       const key = recordKey(record);
       if (already.has(key)) continue;
@@ -806,6 +809,51 @@ export class McpRuntime {
       [...this.pendingRestore.values()].map((record) => this.restoreSubscription(record)),
     );
     return this.restoredSubscriptions;
+  }
+
+  /**
+   * Stop a live adapter stream and mark the durable entry cancelled. `liveId`
+   * is the current adapter id when the caller knows it from the feed; the
+   * restored map covers subscriptions opened at boot. Repeating the call is
+   * harmless and still returns the existing cancelled record.
+   */
+  async cancelSubscription(
+    stableId: string,
+    liveIds?: string | readonly string[],
+  ): Promise<McpSubscriptionRecord | null> {
+    const ids = new Set<string>();
+    if (typeof liveIds === "string") {
+      if (liveIds.length > 0) ids.add(liveIds);
+    } else if (liveIds !== undefined) {
+      for (const id of liveIds) if (id.length > 0) ids.add(id);
+    }
+    for (const [id, record] of this.restored) {
+      if (recordStableId(record) === stableId) ids.add(id);
+    }
+    for (const [key, record] of this.pendingRestore) {
+      if (recordStableId(record) === stableId) this.pendingRestore.delete(key);
+    }
+    for (const id of ids) {
+      try {
+        await this.shim.callTool("mcp_events", {
+          action: "unsubscribe",
+          subscription_id: id,
+        });
+      } catch (error) {
+        console.warn(`mcp: could not stop subscription ${stableId}`, error);
+      }
+      this.restored.delete(id);
+    }
+    const cancelled = await this.subscriptionStore?.cancel(stableId);
+    return cancelled ?? null;
+  }
+
+  /** Alternate name for `cancelSubscription`, kept for callers that think in identity. */
+  cancelByStableId(
+    stableId: string,
+    liveIds?: string | readonly string[],
+  ): Promise<McpSubscriptionRecord | null> {
+    return this.cancelSubscription(stableId, liveIds);
   }
 
   private deliverNotice(notice: ExtensionNotice): void {
@@ -853,10 +901,14 @@ export class McpRuntime {
         arguments: isRecord(raw.arguments) ? raw.arguments : record.arguments,
         cursor: typeof raw.cursor === "string" ? raw.cursor : record.cursor,
       };
+      const stableId = recordStableId(record);
       const restored: McpSubscriptionRecord = {
         ...record,
+        stableId,
+        id: subscription.id,
         cursor: subscription.cursor,
         status: subscription.status,
+        enabled: subscriptionEnabled(subscription.status),
         updatedAt: new Date().toISOString(),
       };
       this.restored.set(subscription.id, restored);
@@ -873,8 +925,15 @@ export class McpRuntime {
             name: record.name,
             arguments: record.arguments,
             cursor: record.cursor,
+            restored: true,
           },
-          result: { subscription },
+          result: {
+            subscription: {
+              ...subscription,
+              stableId,
+              deliveredEventIds: record.deliveredEventIds ?? [],
+            },
+          },
         },
       });
       void this.subscriptionStore?.record(restored).catch(() => {});

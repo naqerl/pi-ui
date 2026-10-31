@@ -675,7 +675,7 @@ export function builtinData(
         servers: mcp.servers.map((server) => {
           const subscribed = live
             .filter((item) => item.server === server.name)
-            .map((item) => item.name);
+            .map((item) => item.title ?? item.stableId ?? item.name);
           const base = server.available
             ? server.tools.length === 0
               ? "no tools"
@@ -721,6 +721,7 @@ export function builtinData(
             timestamp: event.timestamp,
             time: clock ?? event.timestamp,
             summary: event.summary,
+            ...(event.replayed === true ? { replayed: true } : {}),
             label: `${event.server} · ${event.name}`,
             value:
               clock === null
@@ -730,18 +731,27 @@ export function builtinData(
                   : clock,
           };
         }),
-        subscriptions: subscriptions.map((item) => ({
-          key: `mcp-sub-${item.id}`,
-          id: item.id,
-          server: item.server,
-          name: item.name,
-          status: item.status,
-          cursor: item.cursor ?? null,
-          label: `${item.server} · ${item.name}`,
-          state: subscriptionState(item.status),
-          detail:
-            (item.cursor ?? null) === null ? item.status : `${item.status} · cursor ${item.cursor}`,
-        })),
+        subscriptions: subscriptions.map((item) => {
+          // Without a title the durable id is the only identity a user can
+          // copy into DELETE /api/mcp/subscriptions/<stableId>.
+          const label = item.title ?? item.stableId ?? `${item.server} · ${item.name}`;
+          return {
+            key: `mcp-sub-${item.id}`,
+            id: item.id,
+            stableId: item.stableId,
+            server: item.server,
+            name: item.name,
+            title: item.title ?? null,
+            status: item.status,
+            cursor: item.cursor ?? null,
+            label,
+            state: subscriptionState(item.status),
+            detail:
+              (item.cursor ?? null) === null
+                ? item.status
+                : `${item.status} · cursor ${item.cursor}`,
+          };
+        }),
       };
     }
 
