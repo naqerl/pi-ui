@@ -2,6 +2,10 @@
 
 Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
 
+## 1.6.37 - 2026-10-31
+
+- A task can be edited in its detail view: title, body and project are now settable there, with an empty title refused and a project picked from suggestions.
+
 ## 1.6.36 - 2026-10-31
 
 - The Active / Blocked / Proposed filters moved onto the composer's top line, the selected filter and the Open header share one dark pill with the count on the right, the Done header is gone and closed tasks are grouped into "Done today", "Done yesterday" and per-date sections with their own counts and chevrons.
