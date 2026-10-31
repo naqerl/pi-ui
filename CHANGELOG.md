@@ -4,6 +4,11 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.20 - 2026-10-31
+
+- nudge the agent after 20 idle minutes when work is open
+
+
 ## 1.6.19 - 2026-10-31
 
 - compact notifications row with the toggle on the right
