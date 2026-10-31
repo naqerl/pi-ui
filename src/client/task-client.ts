@@ -19,6 +19,7 @@ export function createTask(
   title: string,
   parentId: string | null,
   attachments: string[] = [],
+  project?: string | null,
 ): Promise<TaskOutcome> {
   return requestTask("/api/tasks", {
     method: "POST",
@@ -27,6 +28,7 @@ export function createTask(
       title,
       parentId,
       ...(attachments.length > 0 ? { attachments } : {}),
+      ...(project === undefined ? {} : { project }),
     }),
   });
 }
@@ -37,6 +39,7 @@ export function updateTask(
     status?: TaskStatus;
     blockedBy?: string[];
     completion?: { evidence: string };
+    project?: string | null;
   },
 ): Promise<TaskOutcome> {
   return requestTask(`/api/tasks/${encodeURIComponent(id)}`, {

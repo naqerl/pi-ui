@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { type ProjectFilter, projectsOf, sameProject } from "../shared/project";
 import { subtaskCount, taskState } from "../shared/task-status";
 import {
   ancestorIds,
@@ -27,10 +28,12 @@ import { Button } from "./components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader } from "./components/ui/card";
 import { Checkbox } from "./components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
+import { NativeSelect } from "./components/ui/native-select";
 import { Separator } from "./components/ui/separator";
 import { cn } from "./lib/utils";
 import { InlineMarkdown, plainInline } from "./markdown";
 import { mediaUrl } from "./media-client";
+import { ProjectSelect } from "./ProjectSelect";
 import { removeTask, type TaskOutcome, updateTask } from "./task-client";
 
 const LONG_PRESS_MS = 500;
@@ -49,6 +52,42 @@ interface TasksViewProps {
   armedParentId: string | null;
   onArmParent: (id: string | null) => void;
   onLedger: (ledger: TaskLedger) => void;
+  projectFilter: ProjectFilter;
+  onProjectFilter: (filter: ProjectFilter) => void;
+}
+
+/** Whether a task belongs in the list the project filter shows. */
+export function inProject(task: { project?: string }, filter: ProjectFilter): boolean {
+  if (filter.kind === "all") return true;
+  if (filter.kind === "none") return task.project === undefined;
+  return sameProject(task.project, filter.name);
+}
+
+/** Root tasks split into one group per project, A–Z, with "No project" (null) last. */
+export function groupByProject<T extends { project?: string }>(
+  items: T[],
+): Array<[string | null, T[]]> {
+  const groups = new Map<string, T[]>();
+  const loose: T[] = [];
+  for (const item of items) {
+    if (item.project === undefined) {
+      loose.push(item);
+      continue;
+    }
+    const key = [...groups.keys()].find((name) => sameProject(name, item.project)) ?? item.project;
+    const group = groups.get(key);
+    if (group === undefined) groups.set(key, [item]);
+    else group.push(item);
+  }
+  const named = [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
+  return loose.length > 0 ? [...named, [null, loose]] : named;
+}
+
+const FILTER_ALL = "all";
+const FILTER_NONE = "none";
+
+function filterValue(filter: ProjectFilter): string {
+  return filter.kind === "project" ? `project:${filter.name}` : filter.kind;
 }
 
 function useWide(): boolean {
@@ -181,6 +220,8 @@ export function TasksView({
   armedParentId,
   onArmParent,
   onLedger,
+  projectFilter,
+  onProjectFilter,
 }: TasksViewProps) {
   const wide = useWide();
   const [filter, setFilter] = useState<Filter>("active");
@@ -196,10 +237,15 @@ export function TasksView({
   for (const task of tasks) stateOf.set(task.id, taskState(tasks, task, activity));
   const state = (task: Task): TaskState => stateOf.get(task.id) ?? "ready";
 
+  const projects = projectsOf(tasks);
+  const shown = (task: Task) => inProject(task, projectFilter);
+  // With every project in view, open work is grouped by project, so its rows drop the label.
+  const grouped = projectFilter.kind === "all" && projects.length > 0;
+  const labelled = projectFilter.kind === "all";
   const activeTasks = tasks.filter((task) => task.status !== "proposed");
-  const openTasks = activeTasks.filter((task) => task.status !== "done");
+  const openTasks = activeTasks.filter((task) => task.status !== "done" && shown(task));
   const proposedTasks = tasks
-    .filter((task) => task.status === "proposed")
+    .filter((task) => task.status === "proposed" && shown(task))
     .sort((a, b) => {
       const left = a.proposedAt ?? a.createdAt;
       const right = b.proposedAt ?? b.createdAt;
@@ -215,9 +261,13 @@ export function TasksView({
   const hasChildren = (task: Task) => activeTasks.some((item) => item.parentId === task.id);
   // A failed leaf already sits under "Needs you"; a failed parent stays in the tree with its subtasks.
   const activeRoots = roots.filter(
-    (task) => task.status !== "done" && !(state(task) === "failed" && !hasChildren(task)),
+    (task) =>
+      task.status !== "done" && shown(task) && !(state(task) === "failed" && !hasChildren(task)),
   );
-  const doneRoots = roots.filter((task) => task.status === "done").sort(byCompletedDesc);
+  const projectGroups = groupByProject(activeRoots);
+  const doneRoots = roots
+    .filter((task) => task.status === "done" && shown(task))
+    .sort(byCompletedDesc);
   const days = groupByDay(doneRoots, (task) => task.completedAt ?? task.createdAt);
   const today = dayKey(now);
   if (days.length > 0 && days[0]?.[0] !== today) days.unshift([today, []]);
@@ -294,12 +344,14 @@ export function TasksView({
     onOpenMenu: openMenu,
     onOpen: setOpenTaskId,
     onStatus: setStatus,
+    showProject: labelled,
   };
 
   const proposal = (task: Task) => (
     <ProposedTask
       key={task.id}
       task={task}
+      showProject={labelled}
       selected={openTaskId === task.id}
       notice={problem?.id === task.id ? problem.message : null}
       onOpen={() => setOpenTaskId(task.id)}
@@ -345,29 +397,57 @@ export function TasksView({
         </p>
       )}
       {tasks.length > 0 && (
-        <div
-          role="tablist"
-          aria-label="Task filter"
-          data-testid="task-filters"
-          className="inline-flex h-9 w-fit items-center rounded-md bg-muted p-1 text-muted-foreground"
-        >
-          {(["active", "blocked", "proposed"] as const).map((item) => (
-            <button
-              key={item}
-              type="button"
-              role="tab"
-              aria-selected={filter === item}
-              data-testid={`task-filter-${item}`}
-              onClick={() => setFilter(item)}
-              className={cn(
-                "inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-sm px-3 text-sm font-medium leading-none",
-                filter === item && "bg-background text-foreground shadow-sm",
-              )}
+        <div className="flex flex-wrap items-center gap-2">
+          <div
+            role="tablist"
+            aria-label="Task filter"
+            data-testid="task-filters"
+            className="inline-flex h-9 w-fit items-center rounded-md bg-muted p-1 text-muted-foreground"
+          >
+            {(["active", "blocked", "proposed"] as const).map((item) => (
+              <button
+                key={item}
+                type="button"
+                role="tab"
+                aria-selected={filter === item}
+                data-testid={`task-filter-${item}`}
+                onClick={() => setFilter(item)}
+                className={cn(
+                  "inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-sm px-3 text-sm font-medium leading-none",
+                  filter === item && "bg-background text-foreground shadow-sm",
+                )}
+              >
+                {labels[item]}
+                <span className="text-xs leading-none text-muted-foreground">{counts[item]}</span>
+              </button>
+            ))}
+          </div>
+          {(projects.length > 0 || projectFilter.kind !== "all") && (
+            <NativeSelect
+              aria-label="Project filter"
+              data-testid="task-project-filter"
+              className="h-9 [&>select]:h-9"
+              value={filterValue(projectFilter)}
+              onChange={(event) => {
+                const next = event.target.value;
+                if (next === FILTER_ALL) onProjectFilter({ kind: "all" });
+                else if (next === FILTER_NONE) onProjectFilter({ kind: "none" });
+                else onProjectFilter({ kind: "project", name: next.slice("project:".length) });
+              }}
             >
-              {labels[item]}
-              <span className="text-xs leading-none text-muted-foreground">{counts[item]}</span>
-            </button>
-          ))}
+              <option value={FILTER_ALL}>All projects</option>
+              {projects.map((name) => (
+                <option key={name} value={`project:${name}`}>
+                  {name}
+                </option>
+              ))}
+              {projectFilter.kind === "project" &&
+                !projects.some((name) => sameProject(name, projectFilter.name)) && (
+                  <option value={filterValue(projectFilter)}>{projectFilter.name}</option>
+                )}
+              <option value={FILTER_NONE}>No project</option>
+            </NativeSelect>
+          )}
         </div>
       )}
       {filter === "active" && (
@@ -384,20 +464,44 @@ export function TasksView({
           )}
           {activeRoots.length > 0 && (
             <Section title="Open" count={openTasks.length - failedTasks.length} id="active">
-              <ul className="flex flex-col gap-2">
-                {activeRoots.map((task) => (
-                  <TaskRow key={task.id} task={task} depth={0} {...rowProps} />
-                ))}
-              </ul>
+              {grouped ? (
+                projectGroups.map(([name, items]) => (
+                  <Group
+                    key={name ?? ""}
+                    testId={`task-project-${name ?? "none"}`}
+                    label={name ?? "No project"}
+                    count={items.length}
+                    defaultOpen
+                  >
+                    <ul className="flex flex-col gap-2">
+                      {items.map((task) => (
+                        <TaskRow
+                          key={task.id}
+                          task={task}
+                          depth={0}
+                          {...rowProps}
+                          showProject={false}
+                        />
+                      ))}
+                    </ul>
+                  </Group>
+                ))
+              ) : (
+                <ul className="flex flex-col gap-2">
+                  {activeRoots.map((task) => (
+                    <TaskRow key={task.id} task={task} depth={0} {...rowProps} />
+                  ))}
+                </ul>
+              )}
             </Section>
           )}
           {days.length > 0 && (
             <section className="flex flex-col gap-2" data-testid="task-section-done">
               <Heading>Done</Heading>
               {days.slice(0, dayLimit + 1).map(([key, items]) => (
-                <DoneDay
+                <Group
                   key={key}
-                  dayKey={key}
+                  testId={`task-day-${key}`}
                   label={dayLabel(key, now)}
                   count={items.length}
                   defaultOpen={key === today}
@@ -413,7 +517,7 @@ export function TasksView({
                       ))}
                     </ul>
                   )}
-                </DoneDay>
+                </Group>
               ))}
               {days.length > dayLimit + 1 && (
                 <Button
@@ -468,6 +572,8 @@ export function TasksView({
         onStatus={setStatus}
         onArm={() => onArmParent(armedParentId === openTask.id ? null : openTask.id)}
         onBlock={(x, y) => openMenu(openTask.id, x, y, true)}
+        projects={projects}
+        onProject={(project) => void apply(openTask.id, updateTask(openTask.id, { project }))}
         onApprove={() => void apply(openTask.id, updateTask(openTask.id, { status: "open" }))}
         onDismiss={() => void apply(openTask.id, removeTask(openTask.id))}
         onRemove={() => {
@@ -542,14 +648,14 @@ export function TasksView({
   );
 }
 
-function DoneDay({
-  dayKey: key,
+function Group({
+  testId,
   label,
   count,
   defaultOpen,
   children,
 }: {
-  dayKey: string;
+  testId: string;
   label: string;
   count: number;
   defaultOpen: boolean;
@@ -560,7 +666,7 @@ function DoneDay({
     <Collapsible
       open={open}
       onOpenChange={setOpen}
-      data-testid={`task-day-${key}`}
+      data-testid={testId}
       data-open={open ? "true" : "false"}
     >
       <CollapsibleTrigger className="flex h-9 w-full items-center gap-2 rounded-md px-1 text-left text-sm font-medium leading-5 hover:bg-muted">
@@ -665,6 +771,7 @@ function TaskRow({
   depth,
   flat = false,
   history = false,
+  showProject = false,
   selectedId,
   armedParentId,
   ignoreNextCardClick,
@@ -682,6 +789,8 @@ function TaskRow({
   flat?: boolean;
   /** A row in the done-by-day list: no status badge, the day already says it. */
   history?: boolean;
+  /** Name the project on the row, for lists not already grouped by project. */
+  showProject?: boolean;
   selectedId: string | null;
   armedParentId: string | null;
   ignoreNextCardClick: { current: boolean };
@@ -705,7 +814,12 @@ function TaskRow({
   const armed = armedParentId === task.id;
   const trace = activity?.traces[task.id];
   const badge = history || (done && depth > 0) ? null : stateBadge(current, trace);
-  const note = rowNote(task, tasks, current, trace, activity?.traces ?? {});
+  const note = [
+    showProject && depth === 0 ? (task.project ?? "") : "",
+    rowNote(task, tasks, current, trace, activity?.traces ?? {}),
+  ]
+    .filter((part) => part !== "")
+    .join(" · ");
 
   const clearPress = () => {
     if (press.current === null) return;
@@ -859,6 +973,7 @@ function TaskRow({
 
 function ProposedTask({
   task,
+  showProject,
   selected,
   notice,
   onOpen,
@@ -866,6 +981,7 @@ function ProposedTask({
   onDismiss,
 }: {
   task: Task;
+  showProject: boolean;
   selected: boolean;
   notice: string | null;
   onOpen: () => void;
@@ -893,8 +1009,15 @@ function ProposedTask({
           onOpen();
         }}
       >
-        <span className="line-clamp-2 min-w-0 flex-1 basis-40 text-sm leading-5 [overflow-wrap:anywhere]">
-          <InlineMarkdown text={task.title} />
+        <span className="flex min-w-0 flex-1 basis-40 flex-col gap-0.5">
+          <span className="line-clamp-2 text-sm leading-5 [overflow-wrap:anywhere]">
+            <InlineMarkdown text={task.title} />
+          </span>
+          {showProject && task.project !== undefined && (
+            <span className="text-xs leading-4 text-muted-foreground [overflow-wrap:anywhere]">
+              {task.project}
+            </span>
+          )}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-2">
           <Badge variant="outline">Proposed</Badge>
@@ -977,6 +1100,8 @@ export function TaskDetail({
   onApprove,
   onDismiss,
   onRemove,
+  projects = [],
+  onProject,
 }: {
   task: Task;
   tasks: Task[];
@@ -995,6 +1120,9 @@ export function TaskDetail({
   onApprove: () => void;
   onDismiss: () => void;
   onRemove: () => void;
+  projects?: string[];
+  /** Move the task to another project, or null for none. Absent: the project is read-only. */
+  onProject?: (project: string | null) => void;
 }) {
   const done = task.status === "done";
   const proposed = task.status === "proposed";
@@ -1094,6 +1222,24 @@ export function TaskDetail({
         )}
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
+        <div
+          className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1"
+          data-testid="task-project-line"
+        >
+          <span className="text-xs leading-4 text-muted-foreground">Project</span>
+          {onProject === undefined ? (
+            <span className="text-sm leading-5">{task.project ?? "No project"}</span>
+          ) : (
+            <ProjectSelect
+              label="Project"
+              testId="task-project"
+              value={task.project ?? null}
+              projects={projects}
+              onChange={onProject}
+              className="min-w-0 max-w-full"
+            />
+          )}
+        </div>
         {!proposed && (
           <dl
             data-testid="task-stats"
