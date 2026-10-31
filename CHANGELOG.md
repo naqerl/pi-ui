@@ -4,6 +4,9 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.14 - 2026-10-30
+
+- The interrupted-run note only appears when the run actually left something behind: nothing is written for a run that produced no partial reply and was not stopped, and the chip promises a resume only when one will happen.
 ## 1.6.13 - 2026-10-30
 
 - The interrupted-run note is a warning chip like the MCP and job notices, in amber, and it states whether the run was interrupted or stopped.
