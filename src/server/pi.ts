@@ -5,6 +5,7 @@ import {
   getAgentDir,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
+import { TASK_ID_PARAM } from "./task-attribution.js";
 
 const TOOLS = ["read", "bash", "edit", "write"];
 
@@ -56,6 +57,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function formatToolArguments(value: unknown): string {
   if (value === undefined) return "{}";
+  // The task tag is bookkeeping for the tasks page, not part of what the tool did.
+  if (isRecord(value) && TASK_ID_PARAM in value) {
+    const { [TASK_ID_PARAM]: _tag, ...rest } = value;
+    value = rest;
+  }
   try {
     return JSON.stringify(value, null, 2);
   } catch {

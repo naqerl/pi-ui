@@ -36,6 +36,7 @@ import {
 } from "./push.js";
 import { type DurableSessionOptions, openDurableSession, SESSION_CONTEXT } from "./session.js";
 import { StreamHub } from "./stream-hub.js";
+import { TaskActivityTracker } from "./task-activity.js";
 import type { TaskBridge } from "./task-tools.js";
 import { TaskError, TaskStore } from "./tasks.js";
 import { liveDataDirInTestError } from "./test-mode.js";
@@ -63,6 +64,13 @@ const taskStore = new TaskStore(resolve(dataDir, "tasks.json"));
 const media = new MediaStore(resolve(dataDir, "media"));
 const diagrams = new DiagramStore(resolve(dataDir, "diagrams"));
 await taskStore.load();
+const taskActivity = new TaskActivityTracker(resolve(dataDir, "task-activity.json"));
+await taskActivity.load();
+taskActivity.observeLedger(taskStore.ledger().tasks);
+/** The ledger as clients see it: tasks plus what the runs measured for them. */
+function taskView(ledger: TaskLedger = taskStore.ledger()): TaskLedger {
+  return { ...ledger, activity: taskActivity.view() };
+}
 await diagrams.load();
 const taskBridge: TaskBridge = {
   store: taskStore,
@@ -113,7 +121,7 @@ const memoryWrites: { current?: (record: MemoryWriteRecord) => void } = {};
 const memoryBlock = await memorySnapshot.get(memory, "first_turn");
 const baseInstructions = `${await buildPiSystemPrompt(cwd, catalog.runtime)}
 
-Tasks are a shared todo ledger on the tasks page. You can list them with task_list, mark one done with task_done, and create a blocker for one with task_block. Every task needs human approval: write down work you think is worth doing with propose_task, and a human can approve it from the tasks page. A proposal is not a task and does not appear in task_list; use task_proposals to read the waiting proposals. A done blocker does not block. A task with an open subtask cannot be marked done. You cannot add a task that blocks nothing, reopen a task, or delete one.
+Tasks are a shared todo ledger on the tasks page. You can list them with task_list, mark one done with task_done, and create a blocker for one with task_block. Every task needs human approval: write down work you think is worth doing with propose_task, and a human can approve it from the tasks page. A proposal is not a task and does not appear in task_list; use task_proposals to read the waiting proposals. A done blocker does not block. A task with an open subtask cannot be marked done. You cannot add a task that blocks nothing, reopen a task, or delete one. Every tool takes an optional piuiTaskId argument: when a call works on a task, set it to that task's id so the tasks page shows the task as being worked on and measures its time and cost; leave it out for work that is not part of a task.
 
 Draw a diagram into the chat with draw_diagram (Mermaid source) and revise it later with replace_diagram and the id from the first result. The drawing is part of your reply; do not repeat its source in your text.
 
@@ -173,8 +181,19 @@ const memoryCheckpoints = new SnapshotController(
 );
 const hub = new StreamHub();
 taskBridge.publish = (ledger) => {
-  hub.broadcast({ event: "tasks", data: ledger });
+  taskActivity.observeLedger(ledger.tasks);
+  hub.broadcast({ event: "tasks", data: taskView(ledger) });
 };
+// Tool calls arrive in bursts; one refresh per half second keeps the tasks page live enough.
+let activityTimer: NodeJS.Timeout | undefined;
+taskActivity.onChange(() => {
+  if (activityTimer !== undefined) return;
+  activityTimer = setTimeout(() => {
+    activityTimer = undefined;
+    hub.broadcast({ event: "tasks", data: taskView() });
+  }, 500);
+  activityTimer.unref?.();
+});
 diagramBridge.publish = (diagram) => {
   hub.broadcast({ event: "diagram", data: { id: diagram.id, revision: diagram.revision } });
 };
@@ -207,6 +226,7 @@ memoryWrites.current = (record) => {
 const events = new McpEventFeed(boot.mcp.subscriptionRegistry);
 await events.hydrate();
 chat.setEventFeed(events);
+chat.setTaskActivity(taskActivity);
 boot.mcp.setObserver((notice) => {
   const previous = events.state;
   const changed = events.ingest(notice);
@@ -393,7 +413,7 @@ app.post("/api/theme", async (c) => {
 app.get("/api/state", async (c) =>
   c.json({
     ...(await chat.getSnapshot(windowRequestFromQuery(c.req.query()))),
-    tasks: taskStore.ledger(),
+    tasks: taskView(),
   }),
 );
 
@@ -435,7 +455,7 @@ app.get("/api/history", async (c) => {
   return c.json(await chat.getHistory(request));
 });
 
-app.get("/api/tasks", (c) => c.json(taskStore.ledger()));
+app.get("/api/tasks", (c) => c.json(taskView()));
 
 app.get("/api/dashboard", (c) => c.json(dashboard.state()));
 
@@ -469,7 +489,7 @@ app.post("/api/dashboard/viewer", async (c) => {
 
 function publishTasks(ledger: TaskLedger) {
   taskBridge.publish(ledger);
-  return ledger;
+  return taskView(ledger);
 }
 
 function taskFailure(c: Context, error: unknown) {
@@ -729,7 +749,7 @@ app.get("/api/stream", (c) => {
         console.error("[pi] theme snapshot failed", error);
       }
       await client.send({ event: "run.state", data: chat.getRunStatus() });
-      await client.send({ event: "tasks", data: taskStore.ledger() });
+      await client.send({ event: "tasks", data: taskView() });
       await client.send({ event: "dashboard", data: dashboard.state() });
       const currentModel = chat.currentModel();
       if (currentModel !== null) {
@@ -876,6 +896,9 @@ async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   chat.beginShutdown();
+  await taskActivity.flush().catch((error: unknown) => {
+    console.error("[pi] could not save task activity", error);
+  });
   dashboard.dispose();
   try {
     await dashboard.flush();

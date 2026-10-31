@@ -18,6 +18,7 @@ import type { SnapshotCache } from "./memory/snapshot.js";
 import type { MemoryStore } from "./memory/store.js";
 import { createMemoryTools, type MemoryWriteRecord } from "./memory/tools.js";
 import { createOperatorTools, type OperatorBridge } from "./operator-tools.js";
+import { attributeTools } from "./task-attribution.js";
 import { createTaskTools, type TaskBridge } from "./task-tools.js";
 
 export interface AppRegistryBoot {
@@ -54,10 +55,12 @@ export interface AppRegistryOptions {
 
 /**
  * The registry the server boots with. MCP tools stay deferred; `tool_search`
- * is installed alongside them so loading a tool can expose it later.
+ * is installed alongside them so loading a tool can expose it later. Every tool also takes the
+ * optional `piuiTaskId` argument, stripped before it runs.
  */
 export async function createAppRegistry(options: AppRegistryOptions): Promise<AppRegistryBoot> {
-  const registry = createRegistry();
+  // Every tool the agent sees, MCP included, takes an optional task id; see task-attribution.
+  const registry = attributeTools(createRegistry());
   const taskTools = createTaskTools(options.tasks);
   registry.install(
     defineExtension({

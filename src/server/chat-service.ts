@@ -4,6 +4,7 @@ import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
   type AgentEvent,
   type AgentEventStream,
+  AssistantEntry,
   type Conversation,
   type EntryRecord,
   type Harness,
@@ -79,6 +80,7 @@ import {
 } from "./session.js";
 import type { SseFrame } from "./sse.js";
 import type { StreamHub } from "./stream-hub.js";
+import type { TaskActivityTracker } from "./task-activity.js";
 import { type WindowRequest, windowTranscript } from "./transcript-window.js";
 
 type IdleTaskSource = () => readonly IdleTask[] | readonly string[];
@@ -168,6 +170,7 @@ export class ChatService {
   private draftRevision = 0;
   private toolsRevision = 0;
   private eventFeed: McpEventFeed | undefined;
+  private taskActivity: TaskActivityTracker | undefined;
   private readonly mcpNotices = new NoticeCoalescer();
   /** Events shown by each open notice window, so an update carries the full text. */
   private readonly mcpNoticeEvents = new Map<string, unknown[]>();
@@ -434,6 +437,12 @@ export class ChatService {
 
   setEventFeed(feed: McpEventFeed): void {
     this.eventFeed = feed;
+  }
+
+  /** Measure which task each run works on from the tools' `piuiTaskId` tags. */
+  setTaskActivity(tracker: TaskActivityTracker): void {
+    this.taskActivity = tracker;
+    if (this.runState === "running") tracker.runStarted();
   }
 
   mcpEventsState(): McpEventsState {
@@ -826,6 +835,7 @@ export class ChatService {
       };
       await this.writeMarker(this.marker);
     }
+    if (wasRunning) this.taskActivity?.runFailed("interrupted", "stopped from the chat");
     try {
       await this.conversation.abort(SESSION_CONTEXT);
     } catch (error) {
@@ -1292,6 +1302,7 @@ export class ChatService {
         return;
 
       case "message_end": {
+        this.measureModelCall(event.entry);
         const message = assistantMessageFromEntry(event.entry);
         this.currentText = "";
         this.currentThinking = "";
@@ -1346,6 +1357,7 @@ export class ChatService {
 
       case "tool_execution_start": {
         if (event.parentToolCallId !== undefined) return;
+        this.taskActivity?.toolStarted(event.toolName, event.args);
         const timestamp = new Date().toISOString();
         this.activeTools.set(event.toolCallId, {
           name: event.toolName,
@@ -1370,6 +1382,7 @@ export class ChatService {
         if (event.parentToolCallId !== undefined) return;
         const active = this.activeTools.get(event.toolCallId);
         this.activeTools.delete(event.toolCallId);
+        this.taskActivity?.toolEnded(active?.args);
         this.toolsRevision += 1;
         const activity = this.toolActivity(event, active);
         this.hub.broadcast({
@@ -1596,6 +1609,8 @@ export class ChatService {
     }
     this.runState = state;
     this.idleNudge.noteActivity();
+    if (state === "running") this.taskActivity?.runStarted();
+    else this.taskActivity?.runEnded(state === "interrupted");
     if (state === "running") {
       this.lastEventAt = Date.now();
     } else {
@@ -1612,6 +1627,45 @@ export class ChatService {
       event: "run.state",
       data: this.getRunStatus(),
     });
+  }
+
+  /** Hand a finished model reply to the task tracker: its tagged tool calls, cost and failure. */
+  private measureModelCall(entry: EntryRecord): void {
+    const tracker = this.taskActivity;
+    if (tracker === undefined || !AssistantEntry.is(entry)) return;
+    const message = entry.model?.[0] as
+      | {
+          content?: unknown;
+          usage?: { input?: unknown; output?: unknown; cost?: { total?: unknown } };
+          stopReason?: unknown;
+          errorMessage?: unknown;
+        }
+      | undefined;
+    if (message === undefined) return;
+    const blocks = Array.isArray(message.content) ? (message.content as unknown[]) : [];
+    const toolCalls = blocks
+      .filter(
+        (block): block is { type: "toolCall"; arguments: unknown } =>
+          typeof block === "object" &&
+          block !== null &&
+          (block as { type?: unknown }).type === "toolCall",
+      )
+      .map((block) => ({ arguments: block.arguments }));
+    const number = (value: unknown) =>
+      typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
+    tracker.modelCall({
+      toolCalls,
+      tokens: number(message.usage?.input) + number(message.usage?.output),
+      cost: number(message.usage?.cost?.total),
+    });
+    if (message.stopReason === "error") {
+      tracker.runFailed(
+        "error",
+        typeof message.errorMessage === "string" ? message.errorMessage : "model error",
+      );
+    } else if (message.stopReason === "aborted") {
+      tracker.runFailed("interrupted", "aborted");
+    }
   }
 
   private resetRetryBudget(): void {
@@ -1632,6 +1686,7 @@ export class ChatService {
       console.error(
         `[pi] giving up after ${attempts} retries in ${Math.round(spentMs / 1000)}s; stopping the turn`,
       );
+      this.taskActivity?.runFailed("error", `the provider kept failing after ${attempts} retries`);
       await this.conversation.abort(SESSION_CONTEXT);
       this.hub.broadcast({
         event: "notice",
