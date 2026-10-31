@@ -6,8 +6,17 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { NoticeLine } from "../src/client/NoticeView.js";
 import { type JobRecord, jobNotice } from "../src/server/jobs.js";
 import type { RunMarker } from "../src/server/run-marker.js";
-import { appendInterruptionNote, buildTranscript } from "../src/server/session.js";
-import { type ChatNotice, parseNotice } from "../src/shared/notices.js";
+import {
+  appendInterruptionNote,
+  appendMemoryWriteNotice,
+  buildTranscript,
+} from "../src/server/session.js";
+import {
+  type ChatNotice,
+  MEMORY_NOTICE_TEXT_LIMIT,
+  memoryUndoPrompt,
+  parseNotice,
+} from "../src/shared/notices.js";
 import type { ChatMessage } from "../src/shared/types.js";
 
 function job(overrides: Partial<JobRecord>): JobRecord {
@@ -207,6 +216,38 @@ test("an interrupted run becomes one warning chip after the partial reply", () =
   assert.doesNotMatch(markup, /class="[^"]*\btext-muted-foreground\b/);
   assert.doesNotMatch(markup, /class="[^"]*\bborder-foreground\/10\b/);
   assert.match(markup, new RegExp(`title="${note.replaceAll(".", "\\.")}"`));
+});
+
+test("a memory write becomes a persistent chip with an undo steer", async () => {
+  const { conversation, entries } = recordingConversation();
+  const path = "topics/projects/widget-cache.md";
+  const text = `# Widget cache\n\n${"the cache keeps 200 responses. ".repeat(120)}`;
+  const message = await appendMemoryWriteNotice(conversation, { path, text });
+  assert.ok(message?.notice?.kind === "memory");
+  assert.equal(message.notice.path, path);
+  assert.equal(message.notice.summary, `memory · ${path}`);
+  assert.equal(message.notice.truncated, true);
+  assert.equal(message.notice.text.length, MEMORY_NOTICE_TEXT_LIMIT);
+  assert.equal(message.role, "system");
+  assert.notEqual(entries[0]?.kind, "user");
+
+  // A later snapshot rebuild reads the same chip from the stored entry.
+  const reloaded = buildTranscript(entries).messages[0];
+  assert.deepEqual(reloaded?.notice, message.notice);
+  const notice = reloaded?.notice;
+  assert.ok(notice !== undefined);
+  const markup = renderToStaticMarkup(
+    createElement(NoticeLine, { message: reloaded, notice, onSteer: () => {} }),
+  );
+  assert.match(markup, /data-notice-kind="memory"/);
+  assert.match(markup, new RegExp(`memory · ${path.replaceAll(".", "\\.")}`));
+  assert.match(markup, /class="[^"]*\bbackdrop-blur-md\b/);
+  assert.match(markup, /class="[^"]*\bbg-surface\/90\b/);
+
+  assert.equal(
+    memoryUndoPrompt(path),
+    `Undo the memory write to ${path} — restore the previous content of that file and confirm.`,
+  );
 });
 
 test("ordinary messages and broken payloads are not notices", () => {

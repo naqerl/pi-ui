@@ -21,7 +21,12 @@ import {
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { diagramPartFromDetails, parseDiagramDetails } from "../shared/diagrams.js";
-import { parseNotice } from "../shared/notices.js";
+import {
+  type MemoryNoticeDetails,
+  memoryNoticeSummary,
+  memoryNoticeText,
+  parseNotice,
+} from "../shared/notices.js";
 import { steerKeyFromEntryData } from "../shared/steers.js";
 import { toIsoTimestamp } from "../shared/time.js";
 import {
@@ -42,6 +47,7 @@ import type { JobManager } from "./jobs.js";
 import type { McpRuntime } from "./mcp-runtime.js";
 import type { SnapshotCache } from "./memory/snapshot.js";
 import type { MemoryStore } from "./memory/store.js";
+import type { MemoryWriteRecord } from "./memory/tools.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
 import { notify } from "./push.js";
 import { retrySettings } from "./retry.js";
@@ -80,6 +86,16 @@ const JobNoticeEntry = defineEntry<{
 /** The entry kind a job result is placed as; the chat never renders it as a user message. */
 export const JOB_NOTICE_ENTRY_KIND = JobNoticeEntry.kind;
 
+/** A memory_write result. It carries no model message, so it never starts or joins a turn. */
+const MemoryWriteEntry = defineEntry<{
+  path: string;
+  text: string;
+  truncated: boolean;
+  createdAt: string;
+}>("ui.memory-write");
+
+export const MEMORY_WRITE_ENTRY_KIND = MemoryWriteEntry.kind;
+
 export interface DurableSessionOptions {
   readonly cwd: string;
   readonly models: Parameters<typeof HarnessImpl.open>[1]["models"];
@@ -91,7 +107,11 @@ export interface DurableSessionOptions {
   readonly tasks: TaskBridge;
   readonly jobs?: JobManager;
   readonly dashboard?: DashboardManager;
-  readonly memory?: { readonly store: MemoryStore; readonly snapshot?: SnapshotCache };
+  readonly memory?: {
+    readonly store: MemoryStore;
+    readonly snapshot?: SnapshotCache;
+    readonly onWrite?: (record: MemoryWriteRecord) => void | Promise<void>;
+  };
   /** Diagrams the agent draws into the chat. */
   readonly diagrams?: DiagramBridge;
 }
@@ -608,6 +628,27 @@ export function buildTranscript(
       });
       continue;
     }
+    if (kind === MemoryWriteEntry.kind) {
+      if (!isRecord(entry.data) || typeof entry.data.path !== "string") continue;
+      if (typeof entry.data.text !== "string") continue;
+      const path = entry.data.path;
+      const notice: MemoryNoticeDetails = {
+        kind: "memory",
+        path,
+        text: entry.data.text,
+        truncated: entry.data.truncated === true,
+        summary: memoryNoticeSummary(path),
+      };
+      messages.push({
+        id: `m-${entry.id}`,
+        role: "system",
+        text: notice.summary,
+        timestamp: entryTimestamp(entry.data),
+        order: entry.id * 10_000,
+        notice,
+      });
+      continue;
+    }
     if (
       kind !== UserEntry.kind &&
       kind !== STEER_ENTRY_KIND &&
@@ -782,6 +823,33 @@ export function assistantMessageFromEntry(entry: EntryRecord): ChatMessage | nul
     isError: errorText.length > 0,
     ...(spend !== undefined && !hasThinking && !hasToolCall ? { usage: spend } : {}),
   };
+}
+
+/** Records a memory write as a persistent chip the chat can show after a reload. */
+export async function appendMemoryWriteNotice(
+  conversation: Conversation,
+  record: { path: string; text: string },
+): Promise<ChatMessage | undefined> {
+  const createdAt = new Date().toISOString();
+  const capped = memoryNoticeText(record.text);
+  await conversation.commit(
+    (tx) =>
+      tx.appendEntry(MemoryWriteEntry, conversation.id, {
+        data: { path: record.path, ...capped, createdAt },
+      }),
+    SESSION_CONTEXT,
+  );
+  const context = await conversation.context(SESSION_CONTEXT);
+  const entry = [...context.entries]
+    .reverse()
+    .find(
+      (candidate) =>
+        candidate.kind === MemoryWriteEntry.kind &&
+        isRecord(candidate.data) &&
+        candidate.data.createdAt === createdAt &&
+        candidate.data.path === record.path,
+    );
+  return entry === undefined ? undefined : buildTranscript([entry]).messages[0];
 }
 
 /** Records a job result the agent is not told about and returns its activity item. */

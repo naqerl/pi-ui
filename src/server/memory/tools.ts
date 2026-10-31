@@ -8,7 +8,7 @@ import { dreamMemory, summarizeDream } from "./dream.js";
 import { findMemory } from "./find.js";
 import { scopeOf, slugify } from "./scopes.js";
 import type { SnapshotCache } from "./snapshot.js";
-import { isMissing, type MemoryStore, type TopicRecord } from "./store.js";
+import { isMissing, type MemoryStore, type TopicRecord, todayIso } from "./store.js";
 
 function text(value: string, isError = false): ToolExecutionResult {
   return { output: [{ type: "text", text: value }], ...(isError ? { isError: true } : {}) };
@@ -16,6 +16,18 @@ function text(value: string, isError = false): ToolExecutionResult {
 
 function failure(error: unknown): ToolExecutionResult {
   return text(error instanceof Error ? error.message : String(error), true);
+}
+
+export interface MemoryWriteRecord {
+  /** Memory-relative path, such as topics/projects/widget.md. */
+  readonly path: string;
+  /** The text just written, without front matter. */
+  readonly text: string;
+}
+
+export interface MemoryToolHooks {
+  /** Persist a chip for a successful write. A failure here never fails the write. */
+  readonly onWrite?: (record: MemoryWriteRecord) => void | Promise<void>;
 }
 
 function topicPath(topic: string, scope: string | undefined, title: string | undefined): string {
@@ -31,7 +43,16 @@ function topicPath(topic: string, scope: string | undefined, title: string | und
 export function createMemoryTools(
   store: MemoryStore,
   snapshot?: SnapshotCache,
+  hooks: MemoryToolHooks = {},
 ): ToolRegistration[] {
+  const recordWrite = async (record: MemoryWriteRecord): Promise<void> => {
+    if (hooks.onWrite === undefined) return;
+    try {
+      await hooks.onWrite(record);
+    } catch (error) {
+      console.error("[pi] could not record the memory write notice", error);
+    }
+  };
   return [
     defineTool({
       name: "memory_write",
@@ -64,10 +85,12 @@ export function createMemoryTools(
         try {
           if (args.target === "daily") {
             await store.appendDaily(args.body);
+            await recordWrite({ path: `daily/${todayIso()}.md`, text: args.body.trim() });
             return text(`Appended one daily block (${args.body.trim().length} chars).`);
           }
           if (args.target === "scratchpad") {
             await store.appendScratchpad(args.body);
+            await recordWrite({ path: "SCRATCHPAD.md", text: args.body.trim() });
             return text(`Appended one open scratchpad item.`);
           }
           if (args.body.trim().length === 0) return text("Refusing to write an empty topic.", true);
@@ -91,6 +114,7 @@ export function createMemoryTools(
             });
           }
           snapshot?.invalidate();
+          await recordWrite({ path: `topics/${written.rel}`, text: written.body });
           return text(
             `wrote ${written.rel} (${written.body.length} chars, updated ${written.updated})`,
           );

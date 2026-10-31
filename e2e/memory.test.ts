@@ -471,6 +471,39 @@ test("a snapshot controller reconfigures only at a checkpoint", async (t) => {
   assert.ok(third.startsWith("BASE INSTRUCTIONS\n\n"));
 });
 
+test("a successful memory_write reports its path and written text", async (t) => {
+  const store = await freshStore(t);
+  const writes: { path: string; text: string }[] = [];
+  const tools = new Map(
+    createMemoryTools(store, undefined, {
+      onWrite: (record) => {
+        writes.push(record);
+      },
+    }).map((tool) => [tool.name, tool]),
+  );
+  const write = tools.get("memory_write");
+  assert.ok(write);
+  const run = (args: Record<string, unknown>) =>
+    write.execute(args as never, {} as never, {} as never);
+
+  await run({
+    target: "long_term",
+    topic: "widget-cache",
+    scope: "projects",
+    body: "# Widget cache\n\nthe cache keeps 200 responses.",
+  });
+  assert.equal(writes[0]?.path, "topics/projects/widget-cache.md");
+  assert.match(writes[0]?.text ?? "", /the cache keeps 200 responses/);
+
+  await run({ target: "daily", body: "a daily note" });
+  assert.equal(writes[1]?.path, `daily/${todayIso()}.md`);
+  assert.equal(writes[1]?.text, "a daily note");
+
+  await run({ target: "scratchpad", body: "an open item" });
+  assert.equal(writes[2]?.path, "SCRATCHPAD.md");
+  assert.equal(writes[2]?.text, "an open item");
+});
+
 test("the memory tool set is the five documented tools", async (t) => {
   const store = await freshStore(t);
   const names = createMemoryTools(store).map((tool) => tool.name);

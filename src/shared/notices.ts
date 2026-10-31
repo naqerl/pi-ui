@@ -46,6 +46,18 @@ export interface McpNoticeDetails {
   summary: string;
 }
 
+/** A memory file written by the memory_write tool. */
+export interface MemoryNoticeDetails {
+  kind: "memory";
+  /** Memory-relative path, such as topics/projects/widget.md. */
+  path: string;
+  /** The written body, capped before it is stored. */
+  text: string;
+  /** True when the body was longer than the stored cap. */
+  truncated: boolean;
+  summary: string;
+}
+
 /** The restart note recorded for an interrupted run. */
 export interface InterruptedNoticeDetails {
   kind: "interrupted";
@@ -56,7 +68,11 @@ export interface InterruptedNoticeDetails {
   summary?: string;
 }
 
-export type ChatNotice = JobNoticeDetails | McpNoticeDetails | InterruptedNoticeDetails;
+export type ChatNotice =
+  | JobNoticeDetails
+  | McpNoticeDetails
+  | InterruptedNoticeDetails
+  | MemoryNoticeDetails;
 
 const JOB_HEAD = /^\[background job (\S+) finished\] (\S+) (.+?): (.*)$/;
 const MCP_EVENTS_HEAD = "MCP event data follows.";
@@ -185,6 +201,24 @@ function parseMcp(body: string, status: boolean): McpNoticeDetails | null {
           : `${events.length} events`;
   }
   return { kind: "mcp", servers, events, statuses, dropped, summary: mcpSummary(servers, label) };
+}
+
+/** Longest memory body a chip keeps; the rest stays on disk only. */
+export const MEMORY_NOTICE_TEXT_LIMIT = 2_000;
+
+export function memoryNoticeSummary(path: string): string {
+  return `memory · ${path}`;
+}
+
+/** Caps the text stored with a memory chip, telling the panel when it was cut. */
+export function memoryNoticeText(value: string): { text: string; truncated: boolean } {
+  if (value.length <= MEMORY_NOTICE_TEXT_LIMIT) return { text: value, truncated: false };
+  return { text: value.slice(0, MEMORY_NOTICE_TEXT_LIMIT), truncated: true };
+}
+
+/** The steer a reader sends from a memory chip's Undo button. */
+export function memoryUndoPrompt(path: string): string {
+  return `Undo the memory write to ${path} — restore the previous content of that file and confirm.`;
 }
 
 /** The notice a message stands for, or null for an ordinary message. */

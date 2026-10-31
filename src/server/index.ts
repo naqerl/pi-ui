@@ -19,6 +19,7 @@ import { McpEventFeed } from "./mcp-events.js";
 import { MAX_MEDIA_BYTES, MediaError, MediaStore, parseAttachmentIds } from "./media.js";
 import { composeInstructions, SnapshotCache, SnapshotController } from "./memory/snapshot.js";
 import { MemoryStore } from "./memory/store.js";
+import type { MemoryWriteRecord } from "./memory/tools.js";
 import { createModelCatalog } from "./models.js";
 import { buildPiSystemPrompt } from "./pi.js";
 import {
@@ -92,6 +93,7 @@ const catalog = await createModelCatalog();
 const memory = new MemoryStore(resolve(dataDir, "memory"));
 await memory.ensure();
 const memorySnapshot = new SnapshotCache();
+const memoryWrites: { current?: (record: MemoryWriteRecord) => void } = {};
 const memoryBlock = await memorySnapshot.get(memory, "first_turn");
 const baseInstructions = `${await buildPiSystemPrompt(cwd, catalog.runtime)}
 
@@ -116,7 +118,11 @@ const boot = await openDurableSession({
   tasks: taskBridge,
   jobs,
   dashboard,
-  memory: { store: memory, snapshot: memorySnapshot },
+  memory: {
+    store: memory,
+    snapshot: memorySnapshot,
+    onWrite: (record) => memoryWrites.current?.(record),
+  },
   diagrams: diagramBridge,
 });
 const activeModel =
@@ -173,6 +179,11 @@ const chat = new ChatService(
   },
   (id) => diagrams.ref(id)?.revision,
 );
+memoryWrites.current = (record) => {
+  void chat.recordMemoryWrite(record).catch((error: unknown) => {
+    console.error("[pi] memory write notice failed", error);
+  });
+};
 const events = new McpEventFeed(boot.mcp.subscriptionRegistry);
 chat.setEventFeed(events);
 boot.mcp.setObserver((notice) => {

@@ -35,6 +35,7 @@ import {
   type StreamActivity,
   type StreamDraftSync,
   type StreamMessageDone,
+  type StreamNotice,
   type StreamRunState,
   type StreamSteerDropped,
   type StreamTextDelta,
@@ -53,6 +54,7 @@ import type { RunMarker, RunMarkerStore } from "./run-marker.js";
 import {
   appendAssistantError,
   appendJobNotice,
+  appendMemoryWriteNotice,
   assistantMessageFromEntry,
   buildTranscript,
   contextUsage,
@@ -919,6 +921,13 @@ export class ChatService {
     const activity = await appendJobNotice(this.conversation, text);
     if (activity === undefined) return;
     this.hub.broadcast({ event: "activity", data: { activity } satisfies StreamActivity });
+  }
+
+  /** Shows a memory write as a persistent chat chip without placing a user message. */
+  async recordMemoryWrite(record: { path: string; text: string }): Promise<void> {
+    const message = await appendMemoryWriteNotice(this.conversation, record);
+    if (message === undefined) return;
+    this.hub.broadcast({ event: "notice", data: { message } satisfies StreamNotice });
   }
 
   private async appendNoModelMessage(): Promise<void> {

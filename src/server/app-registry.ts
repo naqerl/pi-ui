@@ -16,7 +16,7 @@ import type { JobManager } from "./jobs.js";
 import { type McpRuntime, startMcpRuntime } from "./mcp-runtime.js";
 import type { SnapshotCache } from "./memory/snapshot.js";
 import type { MemoryStore } from "./memory/store.js";
-import { createMemoryTools } from "./memory/tools.js";
+import { createMemoryTools, type MemoryWriteRecord } from "./memory/tools.js";
 import { createTaskTools, type TaskBridge } from "./task-tools.js";
 
 export interface AppRegistryBoot {
@@ -38,8 +38,12 @@ export interface AppRegistryOptions {
   readonly jobs?: JobManager;
   /** The agent-editable dashboard page. Without it, the dashboard tools are not offered. */
   readonly dashboard?: DashboardManager;
-  /** The layered memory tree and its injected-snapshot cache. */
-  readonly memory?: { readonly store: MemoryStore; readonly snapshot?: SnapshotCache };
+  /** The layered memory tree, its injected-snapshot cache and the write notice hook. */
+  readonly memory?: {
+    readonly store: MemoryStore;
+    readonly snapshot?: SnapshotCache;
+    readonly onWrite?: (record: MemoryWriteRecord) => void | Promise<void>;
+  };
   /** Diagrams the agent draws into the chat. Without it, the diagram tools are not offered. */
   readonly diagrams?: DiagramBridge;
 }
@@ -78,7 +82,9 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
   const memoryTools =
     options.memory === undefined
       ? []
-      : createMemoryTools(options.memory.store, options.memory.snapshot);
+      : createMemoryTools(options.memory.store, options.memory.snapshot, {
+          ...(options.memory.onWrite === undefined ? {} : { onWrite: options.memory.onWrite }),
+        });
   if (memoryTools.length > 0) {
     registry.install(defineExtension({ name: "pi-ui-memory-tools", tools: memoryTools }));
   }

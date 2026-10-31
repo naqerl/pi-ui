@@ -1,9 +1,11 @@
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
-import type {
-  ChatNotice,
-  InterruptedNoticeDetails,
-  JobNoticeDetails,
-  McpNoticeDetails,
+import {
+  type ChatNotice,
+  type InterruptedNoticeDetails,
+  type JobNoticeDetails,
+  type McpNoticeDetails,
+  type MemoryNoticeDetails,
+  memoryUndoPrompt,
 } from "../shared/notices";
 import { formatDateTime, formatTime } from "../shared/time";
 import type { ChatMessage } from "../shared/types";
@@ -35,11 +37,21 @@ function noticeLabel(notice: ChatNotice): string {
 function noticeGlyph(notice: ChatNotice): string {
   if (notice.kind === "job") return "⚙";
   if (notice.kind === "mcp") return "↯";
+  if (notice.kind === "memory") return "✎";
   return "⚠";
 }
 
 /** A background job result, MCP event or restart note, shown as one centred line. */
-export function NoticeLine({ message, notice }: { message: ChatMessage; notice: ChatNotice }) {
+export function NoticeLine({
+  message,
+  notice,
+  onSteer,
+}: {
+  message: ChatMessage;
+  notice: ChatNotice;
+  /** Sends the memory Undo prompt as a steer through the chat's existing path. */
+  onSteer?: (text: string) => void;
+}) {
   const [open, setOpen] = useState(false);
   const timestamp = noticeTimestamp(message, notice);
   const time = noticeClock(message, notice);
@@ -78,7 +90,14 @@ export function NoticeLine({ message, notice }: { message: ChatMessage; notice: 
           </time>
         )}
       </button>
-      {open && <NoticeDialog message={message} notice={notice} onClose={() => setOpen(false)} />}
+      {open && (
+        <NoticeDialog
+          message={message}
+          notice={notice}
+          onClose={() => setOpen(false)}
+          {...(onSteer === undefined ? {} : { onSteer })}
+        />
+      )}
     </div>
   );
 }
@@ -87,10 +106,12 @@ function NoticeDialog({
   message,
   notice,
   onClose,
+  onSteer,
 }: {
   message: ChatMessage;
   notice: ChatNotice;
   onClose: () => void;
+  onSteer?: (text: string) => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -126,9 +147,11 @@ function NoticeDialog({
                 ? "Background job"
                 : notice.kind === "mcp"
                   ? "MCP event"
-                  : notice.stopped
-                    ? "Run stopped"
-                    : "Run interrupted"}
+                  : notice.kind === "memory"
+                    ? "Memory write"
+                    : notice.stopped
+                      ? "Run stopped"
+                      : "Run interrupted"}
               {dateTime !== "" && ` · ${dateTime}`}
             </div>
             <h2 id={titleId} className="mt-0.5 font-mono text-sm [overflow-wrap:anywhere]">
@@ -150,6 +173,8 @@ function NoticeDialog({
             <JobDetails notice={notice} />
           ) : notice.kind === "mcp" ? (
             <McpDetails notice={notice} />
+          ) : notice.kind === "memory" ? (
+            <MemoryDetails notice={notice} onSteer={onSteer} />
           ) : (
             <InterruptedDetails notice={notice} />
           )}
@@ -161,6 +186,32 @@ function NoticeDialog({
 
 function InterruptedDetails({ notice }: { notice: InterruptedNoticeDetails }) {
   return <p className="[overflow-wrap:anywhere]">{notice.note}</p>;
+}
+
+function MemoryDetails({
+  notice,
+  onSteer,
+}: {
+  notice: MemoryNoticeDetails;
+  onSteer?: (text: string) => void;
+}) {
+  return (
+    <>
+      <Fields rows={[["Path", notice.path]]} />
+      <Block label="Written">
+        {notice.truncated ? `${notice.text}\n\n… truncated` : notice.text}
+      </Block>
+      <button
+        type="button"
+        data-testid="memory-undo"
+        disabled={onSteer === undefined}
+        onClick={() => onSteer?.(memoryUndoPrompt(notice.path))}
+        className="mt-4 theme-radius border border-foreground/20 bg-surface px-3 py-1.5 font-mono text-[11px] text-foreground disabled:opacity-40"
+      >
+        Undo
+      </button>
+    </>
+  );
 }
 
 function Fields({ rows }: { rows: [string, ReactNode][] }) {

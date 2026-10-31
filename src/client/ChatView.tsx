@@ -165,9 +165,15 @@ function MessageParts({ parts }: { parts: ChatMessage["parts"] }) {
   );
 }
 
-function MessageBubble({ message }: { message: ChatMessage }) {
+function MessageBubble({
+  message,
+  onSteer,
+}: {
+  message: ChatMessage;
+  onSteer?: (text: string) => void;
+}) {
   if (message.notice !== undefined) {
-    return <NoticeLine message={message} notice={message.notice} />;
+    return <NoticeLine message={message} notice={message.notice} onSteer={onSteer} />;
   }
   if (message.role === "system") {
     if (isVersionUpdate(message)) {
@@ -1168,7 +1174,13 @@ export function ChatView({
                   )}
                   {groups.map((group, index) => {
                     if (group.kind === "message") {
-                      return <MessageBubble key={group.key} message={group.message} />;
+                      return (
+                        <MessageBubble
+                          key={group.key}
+                          message={group.message}
+                          onSteer={(text) => void handleSend(text, "steer")}
+                        />
+                      );
                     }
                     const next = groups[index + 1];
                     const usage =
