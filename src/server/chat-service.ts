@@ -14,6 +14,7 @@ import {
   type SubmissionId,
   watchEvents,
 } from "@earendil-works/pi-durable";
+import { type IdleNudge, IdleNudge as IdleNudgeImpl, idleNudgeMs } from "../shared/idle-nudge.js";
 import { parseNotice } from "../shared/notices.js";
 import {
   QUIET_AFTER_MS as DEFAULT_QUIET_AFTER_MS,
@@ -59,6 +60,7 @@ import {
   buildTranscript,
   contextUsage,
   type DiagramRevisionResolver,
+  IDLE_NUDGE_ENTRY_KIND,
   JOB_NOTICE_ENTRY_KIND,
   SESSION_CONTEXT,
   summarizeUsage,
@@ -122,7 +124,10 @@ export class ChatService {
   /** Submissions sent to durable that it has not recorded yet. */
   private submitting = 0;
   private watchdog: ReturnType<typeof setInterval> | undefined;
+  private idleNudgeTimer: ReturnType<typeof setInterval> | undefined;
+  private readonly idleNudge: IdleNudge;
   private checkingRun = false;
+  private checkingIdleNudge = false;
   private quietLogged = false;
   private readonly queued = new Map<string, QueuedRun>();
   /** Steers durable holds in its inbox for the next turn boundary, by submission id. */
@@ -158,8 +163,11 @@ export class ChatService {
     private readonly beforeTurn: (reason?: string) => Promise<void> = async () => undefined,
     /** Reads a stored diagram's current revision for the transcript's message part. */
     private readonly diagramRevision: DiagramRevisionResolver = () => undefined,
+    /** Ids of open ledger tasks, read when an idle window expires. */
+    private readonly openTaskIds: () => readonly string[] = () => [],
   ) {
     this.mcpStatus = typeof mcpStatus === "function" ? mcpStatus : () => mcpStatus;
+    this.idleNudge = new IdleNudgeImpl(idleNudgeMs());
     this.runState = interrupted ? "interrupted" : "idle";
     this.modelWindow = modelWindow;
     this.selected = initialModel === undefined ? null : modelOption(initialModel);
@@ -192,6 +200,7 @@ export class ChatService {
     this.watchdog.unref?.();
     await this.restorePersistedQueue();
     await this.restorePendingSteers();
+    this.startIdleNudge();
     // Durable carries a turn across a restart from its committed checkpoint. A
     // stop requested before the restart was settled in recovery, so leave it be.
     if (this.marker?.stopRequested !== true) this.harness.resume();
@@ -200,7 +209,50 @@ export class ChatService {
   async close(): Promise<void> {
     this.closed = true;
     if (this.watchdog !== undefined) clearInterval(this.watchdog);
+    if (this.idleNudgeTimer !== undefined) clearInterval(this.idleNudgeTimer);
     await this.stream?.stop();
+  }
+
+  /**
+   * Check often enough that a short test window still fires near its deadline,
+   * without waking the process every millisecond in normal use.
+   */
+  private startIdleNudge(): void {
+    if (!this.idleNudge.enabled) return;
+    const interval = Math.min(10_000, Math.max(10, this.idleNudge.intervalMs));
+    this.idleNudgeTimer = setInterval(() => void this.checkIdleNudge(), interval);
+    this.idleNudgeTimer.unref?.();
+  }
+
+  /**
+   * Sends one automated prompt after an idle window with open work. It uses the
+   * normal queue path, never a steer, and only while no turn or submission waits.
+   */
+  private async checkIdleNudge(): Promise<void> {
+    if (this.closed || this.checkingIdleNudge || !this.idleNudge.enabled) return;
+    const taskIds = this.openTaskIds();
+    const text = this.idleNudge.maybeNudge({
+      active: this.runState === "running" || this.submitting > 0,
+      queued: this.queued.size + this.steers.size,
+      openTaskIds: taskIds,
+    });
+    if (text === null) return;
+    this.checkingIdleNudge = true;
+    const createdAt = new Date().toISOString();
+    try {
+      await this.submit(text, "queue", {
+        entry: {
+          kind: IDLE_NUDGE_ENTRY_KIND,
+          data: { text, taskIds: [...taskIds], createdAt },
+        },
+      });
+    } catch (error) {
+      // Nothing reached the chat, so let the same idle period try again.
+      this.idleNudge.noteActivity();
+      console.error("[pi] could not submit the idle nudge", error);
+    } finally {
+      this.checkingIdleNudge = false;
+    }
   }
 
   /**
@@ -494,6 +546,7 @@ export class ChatService {
     mode: MessageMode = "queue",
     options: SubmitOptions = {},
   ): Promise<SubmittedMessage> {
+    this.idleNudge.noteActivity();
     const steer = mode === "steer";
     const attachments = options.attachments ?? [];
     if (attachments.length > 0) this.assertAcceptsImages();
@@ -1340,6 +1393,7 @@ export class ChatService {
       return;
     }
     this.runState = state;
+    this.idleNudge.noteActivity();
     if (state === "running") {
       this.lastEventAt = Date.now();
     } else {

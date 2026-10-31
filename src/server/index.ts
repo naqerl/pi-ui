@@ -7,6 +7,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
+import { openTaskIds } from "../shared/idle-nudge.js";
 import { parseCompletion } from "../shared/tasks.js";
 import type { TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
@@ -178,6 +179,7 @@ const chat = new ChatService(
     await memoryCheckpoints.refresh(reason);
   },
   (id) => diagrams.ref(id)?.revision,
+  () => openTaskIds(taskStore.ledger().tasks),
 );
 memoryWrites.current = (record) => {
   void chat.recordMemoryWrite(record).catch((error: unknown) => {

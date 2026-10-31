@@ -96,6 +96,18 @@ const MemoryWriteEntry = defineEntry<{
 
 export const MEMORY_WRITE_ENTRY_KIND = MemoryWriteEntry.kind;
 
+/**
+ * The automated idle prompt. It carries a model message so it starts a turn, but
+ * the chat renders it as a notice chip rather than a user bubble.
+ */
+const IdleNudgeEntry = defineEntry<{
+  text: string;
+  taskIds: string[];
+  createdAt: string;
+}>("ui.idle-nudge");
+
+export const IDLE_NUDGE_ENTRY_KIND = IdleNudgeEntry.kind;
+
 export interface DurableSessionOptions {
   readonly cwd: string;
   readonly models: Parameters<typeof HarnessImpl.open>[1]["models"];
@@ -589,6 +601,20 @@ export function buildTranscript(
         notice,
         timestamp: entryTimestamp(entry.data),
         order: entry.id * 10_000,
+      });
+      continue;
+    }
+    if (kind === IdleNudgeEntry.kind) {
+      if (!isRecord(entry.data) || typeof entry.data.text !== "string") continue;
+      const notice = parseNotice(entry.data.text);
+      if (notice === null || notice.kind !== "idle") continue;
+      messages.push({
+        id: `m-${entry.id}`,
+        role: "system",
+        text: entry.data.text,
+        timestamp: entryTimestamp(entry.data),
+        order: entry.id * 10_000,
+        notice,
       });
       continue;
     }
