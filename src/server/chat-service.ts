@@ -15,7 +15,7 @@ import {
   watchEvents,
 } from "@earendil-works/pi-durable";
 import { type IdleNudge, IdleNudge as IdleNudgeImpl, idleNudgeMs } from "../shared/idle-nudge.js";
-import { parseNotice } from "../shared/notices.js";
+import { type OperatorNoticeRecord, parseNotice } from "../shared/notices.js";
 import {
   QUIET_AFTER_MS as DEFAULT_QUIET_AFTER_MS,
   type DurableRunFacts,
@@ -56,6 +56,7 @@ import {
   appendAssistantError,
   appendJobNotice,
   appendMemoryWriteNotice,
+  appendOperatorNotice,
   assistantMessageFromEntry,
   buildTranscript,
   contextUsage,
@@ -979,6 +980,13 @@ export class ChatService {
   /** Shows a memory write as a persistent chat chip without placing a user message. */
   async recordMemoryWrite(record: { path: string; text: string }): Promise<void> {
     const message = await appendMemoryWriteNotice(this.conversation, record);
+    if (message === undefined) return;
+    this.hub.broadcast({ event: "notice", data: { message } satisfies StreamNotice });
+  }
+
+  /** Shows a notify_operator call as a persistent chat chip without placing a user message. */
+  async recordOperatorNotice(record: OperatorNoticeRecord): Promise<void> {
+    const message = await appendOperatorNotice(this.conversation, record);
     if (message === undefined) return;
     this.hub.broadcast({ event: "notice", data: { message } satisfies StreamNotice });
   }

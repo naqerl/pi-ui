@@ -17,6 +17,7 @@ import { type McpRuntime, startMcpRuntime } from "./mcp-runtime.js";
 import type { SnapshotCache } from "./memory/snapshot.js";
 import type { MemoryStore } from "./memory/store.js";
 import { createMemoryTools, type MemoryWriteRecord } from "./memory/tools.js";
+import { createOperatorTools, type OperatorBridge } from "./operator-tools.js";
 import { createTaskTools, type TaskBridge } from "./task-tools.js";
 
 export interface AppRegistryBoot {
@@ -28,6 +29,7 @@ export interface AppRegistryBoot {
   readonly dashboardTools: readonly string[];
   readonly memoryTools: readonly string[];
   readonly diagramTools: readonly string[];
+  readonly operatorTools: readonly string[];
 }
 
 export interface AppRegistryOptions {
@@ -46,6 +48,8 @@ export interface AppRegistryOptions {
   };
   /** Diagrams the agent draws into the chat. Without it, the diagram tools are not offered. */
   readonly diagrams?: DiagramBridge;
+  /** Web push plus the chat chip for an explicit operator request. */
+  readonly operator?: OperatorBridge;
 }
 
 /**
@@ -94,6 +98,11 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
     registry.install(defineExtension({ name: "pi-ui-diagram-tools", tools: diagramTools }));
   }
 
+  const operatorTools = options.operator === undefined ? [] : createOperatorTools(options.operator);
+  if (operatorTools.length > 0) {
+    registry.install(defineExtension({ name: "pi-ui-operator-tools", tools: operatorTools }));
+  }
+
   const mcp = await startMcpRuntime(
     options.dataDir === undefined ? {} : { dataDir: options.dataDir },
   );
@@ -121,5 +130,6 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
     dashboardTools: dashboardTools.map((tool) => tool.name),
     memoryTools: memoryTools.map((tool) => tool.name),
     diagramTools: diagramTools.map((tool) => tool.name),
+    operatorTools: operatorTools.map((tool) => tool.name),
   };
 }

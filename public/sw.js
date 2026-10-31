@@ -136,10 +136,11 @@ self.addEventListener("push", (event) => {
       const url =
         typeof payload.url === "string" && payload.url.startsWith("/") ? payload.url : "/";
       const tag = typeof payload.tag === "string" && payload.tag ? payload.tag : "pi";
+      const extra = payload.data !== null && typeof payload.data === "object" ? payload.data : {};
 
       await self.registration.showNotification(title, {
         body,
-        data: { url },
+        data: { ...extra, url },
         tag,
         icon: "/icons/icon-192.png",
         badge: "/icons/icon-192.png",
