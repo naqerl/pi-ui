@@ -14,13 +14,6 @@ import {
   type SubmissionId,
   watchEvents,
 } from "@earendil-works/pi-durable";
-import {
-  type IdleNudge,
-  IdleNudge as IdleNudgeImpl,
-  type IdleTask,
-  idleNudgeMs,
-  openTaskIds,
-} from "../shared/idle-nudge.js";
 import { MCP_EVENTS_HEAD, type OperatorNoticeRecord, parseNotice } from "../shared/notices.js";
 import { QUEUE_ENTRY_KIND } from "../shared/queue.js";
 import {
@@ -53,6 +46,13 @@ import {
   type TranscriptHistory,
 } from "../shared/types.js";
 import type { BillionContextInline } from "./billion-context.js";
+import {
+  type IdleNudge,
+  IdleNudge as IdleNudgeImpl,
+  type IdleTask,
+  idleNudgeMs,
+  openTaskIds,
+} from "./idle-nudge.js";
 import { NoticeCoalescer } from "./mcp-event-policy.js";
 import type { McpEventFeed } from "./mcp-events.js";
 import { MEDIA_TYPES, MediaError, type MediaStore } from "./media.js";

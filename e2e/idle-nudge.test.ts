@@ -9,7 +9,6 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { NoticeLine } from "../src/client/NoticeView.js";
 import { ChatService } from "../src/server/chat-service.js";
-import { buildTranscript, IDLE_NUDGE_ENTRY_KIND } from "../src/server/session.js";
 import {
   DEFAULT_IDLE_NUDGE_MS,
   IdleNudge,
@@ -19,7 +18,8 @@ import {
   openTaskIds,
   taskSetHash,
   waitingOn,
-} from "../src/shared/idle-nudge.js";
+} from "../src/server/idle-nudge.js";
+import { buildTranscript, IDLE_NUDGE_ENTRY_KIND } from "../src/server/session.js";
 import { parseNotice } from "../src/shared/notices.js";
 import type { TaskStatus } from "../src/shared/types.js";
 
