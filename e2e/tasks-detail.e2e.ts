@@ -85,7 +85,7 @@ test("on a phone the task detail replaces the list and goes back with its button
     }),
   ).toBeVisible();
   await expect(detail.getByText("Review the details", { exact: true })).toBeVisible();
-  await expect(screen.getByTestId("task-state")).toHaveText("READY");
+  await expect(screen.getByTestId("task-state")).toHaveText("Open");
   await expect(screen.getByTestId("task-stats")).toBeVisible();
 
   const fits = await browser.evaluate(() => {
@@ -175,16 +175,24 @@ test("proposal approve and dismiss buttons act from the keyboard without opening
   await expect(screen.getByTestId("task-detail")).toHaveCount(0);
 });
 
-test("section headings carry their own card surface", async ({ app, browser, screen }) => {
+test("done tasks group by day: today open, past days collapsed with a count", async ({
+  app,
+  browser,
+  screen,
+}) => {
   await openWith(browser, 390, 844);
   await app.open("/?page=tasks");
-  await expect(screen.getByText("Needs you", { exact: true })).toBeVisible();
-  const heading = await browser.evaluate(() => {
-    const node = document.querySelector<HTMLElement>('[data-testid="task-section-needs"] h2');
-    if (node === null) return null;
-    const style = getComputedStyle(node);
-    return { className: node.className, background: style.backgroundColor };
-  });
-  expect(heading?.className).toContain("bg-surface");
-  expect(heading?.background).not.toBe("rgba(0, 0, 0, 0)");
+  const today = screen.getByTestId("task-section-done");
+  await expect(today).toBeVisible();
+  await expect(today).toContainText("Today");
+  await expect(today).toContainText("Nothing done yet today.");
+  const past = screen.getByTestId("task-day-2026-01-01");
+  await expect(past).toHaveAttribute("data-open", "false");
+  await expect(past).toContainText("1");
+  await expect(screen.getByTestId("task-t2")).toHaveCount(0);
+
+  await screen.getByRole("button", { name: /Jan 1/ }).tap();
+  await expect(past).toHaveAttribute("data-open", "true");
+  await expect(screen.getByTestId("task-t2")).toBeVisible();
+  await expect(screen.getByTestId("task-t2")).toContainText("Review the details");
 });

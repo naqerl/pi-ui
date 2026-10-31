@@ -25,8 +25,8 @@ test("tagged tool calls show a task as working, untagged ones touch no task", as
     return ledger.tasks.find((task) => task.title === name)?.id ?? null;
   }, title);
   expect(id).not.toBeNull();
-  const idle = screen.getByTestId("now-card");
-  await expect(idle).toHaveAttribute("data-running", "false");
+  await expect(screen.getByTestId(`task-${id}`)).toBeVisible();
+  await expect(screen.getByTestId("now-line")).toHaveCount(0);
 
   // The tagged call waits until the test has looked, however slow the machine.
   const release = join(tmpdir(), `pi-ui-task-activity-${tag}`);
@@ -49,11 +49,11 @@ test("tagged tool calls show a task as working, untagged ones touch no task", as
 
   await expect(screen.getByTestId(`task-${id}`)).toHaveAttribute("data-state", "working");
   await expect(screen.getByTestId(`now-task-${id}`)).toBeVisible();
-  await expect(screen.getByTestId("now-card")).toHaveAttribute("data-running", "true");
+  await expect(screen.getByTestId("now-line")).toContainText(`Working on ${title}`);
 
   writeFileSync(release, "");
-  await expect(screen.getByTestId("now-card")).toHaveAttribute("data-running", "false");
   await expect(screen.getByTestId(`task-${id}`)).toHaveAttribute("data-state", "ready");
+  await expect(screen.getByTestId("now-line")).toHaveCount(0);
 
   await screen.getByRole("button", { name: `Open ${title}` }).tap();
   await expect(screen.getByTestId("task-history")).toContainText("Run started");

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { TaskDetail, TaskTimes } from "../src/client/TasksView.js";
+import { dayLabel, groupByDay, TaskDetail, TaskTimes } from "../src/client/TasksView.js";
 import { createTaskTools, type TaskBridge } from "../src/server/task-tools.js";
 import { TaskStore } from "../src/server/tasks.js";
 import {
@@ -150,9 +150,9 @@ test("the task modal shows the full rationale, blockers and completion record", 
   assert.match(markup, /A long explanation\./);
   assert.match(markup, /Review the details/);
   assert.match(markup, /done/);
-  assert.match(markup, /created/);
-  assert.match(markup, /mark done/);
-  assert.match(markup, /data-testid="task-state"[^>]*>blocked</);
+  assert.match(markup, /Created/);
+  assert.match(markup, /Mark done/);
+  assert.match(markup, /data-testid="task-state"[^>]*>Blocked</);
   // Nothing ran yet, so every measured stat is a dash rather than a zero.
   assert.equal(markup.match(/>—</g)?.length, 4);
   assert.match(markup, /Nothing recorded yet/);
@@ -199,7 +199,7 @@ test("the completed task modal carries the evidence and the closed time", () => 
   );
   assert.match(markup, /data-testid="task-modal-completion"/);
   assert.match(markup, /commit 9c58abc/);
-  assert.match(markup, /closed/);
+  assert.match(markup, /Closed/);
   assert.match(markup, /18m/);
   assert.match(markup, /\$0\.42/);
   assert.match(markup, /run started/);
@@ -236,10 +236,10 @@ test("task cards show created and closed times in the browser's local zone", () 
   const utc = inZone("UTC", () => formatDateTime(task.createdAt));
 
   assert.match(markup, /data-testid="task-times"/);
-  assert.match(markup, new RegExp(`created ${created.replaceAll(".", "\\.")}`));
-  assert.match(markup, new RegExp(`closed ${closed.replaceAll(".", "\\.")}`));
+  assert.match(markup, new RegExp(`Created ${created.replaceAll(".", "\\.")}`));
+  assert.match(markup, new RegExp(`Closed ${closed.replaceAll(".", "\\.")}`));
   assert.notEqual(created, utc);
-  assert.doesNotMatch(markup, new RegExp(`created ${utc.replaceAll(".", "\\.")}`));
+  assert.doesNotMatch(markup, new RegExp(`Created ${utc.replaceAll(".", "\\.")}`));
 });
 
 test("formats measured tokens, time and cost", () => {
@@ -549,4 +549,29 @@ test("loads a task record written before completions existed", async () => {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("done tasks group by local day: today, yesterday, then short dates", () => {
+  inZone("Europe/Belgrade", () => {
+    const now = new Date(2026, 9, 31, 13, 0);
+    const items = [
+      { at: new Date(2026, 9, 31, 9, 0).toISOString(), id: "a" },
+      { at: new Date(2026, 9, 29, 18, 0).toISOString(), id: "b" },
+      { at: new Date(2026, 9, 30, 23, 30).toISOString(), id: "c" },
+      { at: new Date(2026, 9, 31, 8, 0).toISOString(), id: "d" },
+    ];
+    const days = groupByDay(items, (item) => item.at);
+    assert.deepEqual(
+      days.map(([key, group]) => [key, group.map((item) => item.id)]),
+      [
+        ["2026-10-31", ["a", "d"]],
+        ["2026-10-30", ["c"]],
+        ["2026-10-29", ["b"]],
+      ],
+    );
+    assert.equal(dayLabel("2026-10-31", now), "Today");
+    assert.equal(dayLabel("2026-10-30", now), "Yesterday");
+    assert.notEqual(dayLabel("2026-10-29", now), "Yesterday");
+    assert.match(dayLabel("2026-10-29", now), /29/);
+  });
 });

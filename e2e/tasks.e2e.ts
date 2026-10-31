@@ -90,7 +90,7 @@ test("keeps a todo with subtasks and blockers on the tasks page", async ({
   await subtask.fill("Store tasks.json");
   await screen.getByRole("button", "Add task").tap();
   await expect(screen.getByText("Store tasks.json", { exact: true })).toBeVisible();
-  await expect(screen.getByText("0/1", { exact: true })).toBeVisible();
+  await expect(screen.getByText("0 of 1 subtasks done", { exact: true })).toBeVisible();
   const cards = await browser.evaluate(() => {
     const page = getComputedStyle(document.body).backgroundColor;
     const read = (title: string) => {
@@ -151,7 +151,7 @@ test("keeps a todo with subtasks and blockers on the tasks page", async ({
   });
   await screen.getByRole("menuitem", "Blockers for Write the ledger").tap();
   await screen.getByRole("button", "Blocked by Review the diff").tap();
-  await expect(screen.getByText("blocked ← Review the diff", { exact: true })).toBeVisible();
+  await expect(screen.getByText("Blocked by Review the diff", { exact: true })).toBeVisible();
 
   const parentDone = await browser.evaluate(() => {
     const button = [...document.querySelectorAll("button")].find(
@@ -178,10 +178,10 @@ test("keeps a todo with subtasks and blockers on the tasks page", async ({
   expect(blockedTap).toBe("false");
 
   await screen.getByRole("button", "Done Review the diff").tap();
-  await expect(screen.getByText("blocked ← Review the diff", { exact: true })).not.toBeVisible();
+  await expect(screen.getByText("Blocked by Review the diff", { exact: true })).not.toBeVisible();
   await screen.getByRole("button", "Done Store tasks.json").tap();
   await expect(screen.getByRole("button", "Reopen Store tasks.json")).toBeVisible();
-  await expect(screen.getByText("1/1", { exact: true })).toBeVisible();
+  await expect(screen.getByText("1 of 1 subtasks done", { exact: true })).toBeVisible();
   await screen.getByRole("button", "Done Write the ledger").tap();
   await expect(screen.getByRole("button", "Reopen Write the ledger")).toBeVisible();
 
@@ -192,7 +192,7 @@ test("keeps a todo with subtasks and blockers on the tasks page", async ({
   await expect(screen.getByRole("textbox", "New task")).toBeVisible();
   await expect(screen.getByText("Write the ledger", { exact: true })).toBeVisible();
   await expect(screen.getByText("Store tasks.json", { exact: true })).toBeVisible();
-  await expect(screen.getByText("1/1", { exact: true })).toBeVisible();
+  await expect(screen.getByText("1 of 1 subtasks done", { exact: true })).toBeVisible();
 
   await browser.evaluate(() => {
     const card = [...document.querySelectorAll('[data-state="done"] > [data-task-card]')].find(
@@ -486,7 +486,7 @@ test("shows a failed task action beside the control and keeps a long title", asy
   expect(menuError).toBe(true);
 
   await screen.getByRole("button", "Blocked by Review the notice").tap();
-  await expect(screen.getByText("blocked ← Review the notice", { exact: true })).toBeVisible();
+  await expect(screen.getByText("Blocked by Review the notice", { exact: true })).toBeVisible();
   await expect(screen.getByTestId("task-error")).toHaveCount(0);
   await browser.evaluate(() => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));

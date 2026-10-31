@@ -26,11 +26,7 @@ function snapshotWith(tasks: SeedTask[]) {
   };
 }
 
-test("shows the empty task list in the latest-indicator style", async ({
-  app,
-  browser,
-  screen,
-}) => {
+test("shows the empty task list as plain muted text", async ({ app, browser, screen }) => {
   await browser.route("**/api/state**", async (route) => {
     await route.fulfill({ json: snapshotWith([]) });
   });
@@ -38,33 +34,29 @@ test("shows the empty task list in the latest-indicator style", async ({
   const empty = screen.getByText("No tasks yet.", { exact: true });
   await expect(empty).toBeVisible();
   const paint = await browser.evaluate(() => {
-    const label = [...document.querySelectorAll("span")].find(
+    const label = [...document.querySelectorAll("p")].find(
       (item) => item.textContent === "No tasks yet.",
     );
     if (!(label instanceof HTMLElement)) return null;
     const style = getComputedStyle(label);
     const root = getComputedStyle(document.documentElement);
     const probe = document.createElement("span");
-    probe.style.color = root.getPropertyValue("--foreground");
-    probe.style.backgroundColor = root.getPropertyValue("--background");
+    probe.style.color = root.getPropertyValue("--muted-foreground");
     document.body.append(probe);
     const theme = getComputedStyle(probe);
     const result = {
-      background: style.backgroundColor,
       color: style.color,
-      foreground: theme.color,
-      pageBackground: theme.backgroundColor,
+      muted: theme.color,
       font: style.fontFamily,
-      size: style.fontSize,
+      transform: style.textTransform,
     };
     probe.remove();
     return result;
   });
   expect(paint).not.toBeNull();
-  expect(paint?.background).toBe(paint?.foreground);
-  expect(paint?.color).toBe(paint?.pageBackground);
-  expect(paint?.size).toBe("11px");
-  expect(paint?.font).toContain("mono");
+  expect(paint?.color).toBe(paint?.muted);
+  expect(paint?.transform).toBe("none");
+  expect(paint?.font).not.toContain("mono");
 });
 
 test("renders inline markdown in task titles", async ({ app, browser, screen }) => {
@@ -123,7 +115,7 @@ test("renders inline markdown in task titles", async ({ app, browser, screen }) 
     anchors: 0,
     link: true,
     raw: false,
-    blockedBy: expect.stringContaining("blocked ← Ship bold and soft npm run build old see docs"),
+    blockedBy: expect.stringContaining("Blocked by Ship bold and soft npm run build old see docs"),
     emBlocked: "the build",
     overflow: false,
   });

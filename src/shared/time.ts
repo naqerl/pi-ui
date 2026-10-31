@@ -52,6 +52,19 @@ export function formatDateTime(value: TimestampValue): string {
   return formatter({ dateStyle: "medium", timeStyle: "medium" }).format(date);
 }
 
+/** A short local date such as "Thu, Oct 29", with the year only when it is not `thisYear`. */
+export function formatDay(value: TimestampValue, thisYear?: number): string {
+  const date = asDate(value);
+  if (date === null) return "";
+  const year = thisYear === undefined || date.getFullYear() !== thisYear;
+  return formatter({
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    ...(year ? { year: "numeric" } : {}),
+  }).format(date);
+}
+
 /**
  * Converts any accepted instant into the UTC ISO form the wire uses. Returns
  * null for a value that cannot be parsed, so callers can choose a fallback.

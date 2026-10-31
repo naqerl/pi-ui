@@ -12,17 +12,23 @@ import {
   hasOpenDescendant,
   liveBlockerIds,
 } from "../shared/tasks";
-import { formatDateTime, formatTime } from "../shared/time";
+import { formatDateTime, formatDay, formatTime } from "../shared/time";
 import type {
   Task,
   TaskActivity,
   TaskHistoryEvent,
-  TaskHistoryKind,
   TaskLedger,
   TaskMeasured,
   TaskState,
   TaskTrace,
 } from "../shared/types";
+import { Badge } from "./components/ui/badge";
+import { Button } from "./components/ui/button";
+import { Card, CardContent, CardFooter, CardHeader } from "./components/ui/card";
+import { Checkbox } from "./components/ui/checkbox";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
+import { Separator } from "./components/ui/separator";
+import { cn } from "./lib/utils";
 import { InlineMarkdown, plainInline } from "./markdown";
 import { mediaUrl } from "./media-client";
 import { removeTask, type TaskOutcome, updateTask } from "./task-client";
@@ -30,8 +36,10 @@ import { removeTask, type TaskOutcome, updateTask } from "./task-client";
 const LONG_PRESS_MS = 500;
 const WIDE_QUERY = "(min-width: 1024px)";
 const HISTORY_LIMIT = 12;
+/** Past days of the done list shown at first; "Show older days" adds this many more. */
+const DAY_PAGE = 7;
 
-type Filter = "active" | "blocked" | "proposed" | "done";
+type Filter = "active" | "blocked" | "proposed";
 
 interface TasksViewProps {
   tasks: Task[];
@@ -57,20 +65,112 @@ function useWide(): boolean {
   return wide;
 }
 
-function sameLocalDay(iso: string | null | undefined, now: Date): boolean {
-  if (typeof iso !== "string") return false;
-  const at = new Date(iso);
-  return (
-    at.getFullYear() === now.getFullYear() &&
-    at.getMonth() === now.getMonth() &&
-    at.getDate() === now.getDate()
-  );
+/** A local calendar day as `YYYY-MM-DD`, the key the day groups sort and match on. */
+export function dayKey(value: string | Date): string {
+  const at = typeof value === "string" ? new Date(value) : value;
+  const month = String(at.getMonth() + 1).padStart(2, "0");
+  const day = String(at.getDate()).padStart(2, "0");
+  return `${at.getFullYear()}-${month}-${day}`;
+}
+
+/** "Today", "Yesterday", or a short weekday and date such as "Thu, Oct 29". */
+export function dayLabel(key: string, now: Date): string {
+  if (key === dayKey(now)) return "Today";
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (key === dayKey(yesterday)) return "Yesterday";
+  const [year, month, day] = key.split("-").map(Number);
+  const date = new Date(year ?? 1970, (month ?? 1) - 1, day ?? 1);
+  return formatDay(date, now.getFullYear());
+}
+
+/** Items grouped by the local day of `at`, newest day first, keeping each group's order. */
+export function groupByDay<T>(items: T[], at: (item: T) => string): Array<[string, T[]]> {
+  const groups = new Map<string, T[]>();
+  for (const item of items) {
+    const key = dayKey(at(item));
+    const group = groups.get(key);
+    if (group === undefined) groups.set(key, [item]);
+    else group.push(item);
+  }
+  return [...groups.entries()].sort(([a], [b]) => (a < b ? 1 : a > b ? -1 : 0));
 }
 
 function byCompletedDesc(a: Task, b: Task): number {
   const left = a.completedAt ?? a.createdAt;
   const right = b.completedAt ?? b.createdAt;
   return left === right ? 0 : left < right ? 1 : -1;
+}
+
+function Heading({ children, count }: { children: ReactNode; count?: number }) {
+  return (
+    <h2 className="flex items-center gap-2 px-1 text-sm font-medium leading-5 text-foreground">
+      {children}
+      {count !== undefined && (
+        <span className="text-sm font-normal leading-5 text-muted-foreground">{count}</span>
+      )}
+    </h2>
+  );
+}
+
+function Section({
+  id,
+  title,
+  count,
+  children,
+}: {
+  id: string;
+  title: string;
+  count?: number;
+  children: ReactNode;
+}) {
+  return (
+    <section className="flex flex-col gap-2" data-testid={`task-section-${id}`}>
+      <Heading count={count}>{title}</Heading>
+      {children}
+    </section>
+  );
+}
+
+function ErrorText({
+  id,
+  className,
+  children,
+}: {
+  id?: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <p
+      id={id}
+      role="alert"
+      data-testid="task-error"
+      className={cn("px-1 text-xs leading-4 text-destructive", className)}
+    >
+      {children}
+    </p>
+  );
+}
+
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      className={cn(
+        "size-4 shrink-0 text-muted-foreground transition-transform",
+        open && "rotate-180",
+      )}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  );
 }
 
 export function TasksView({
@@ -88,6 +188,7 @@ export function TasksView({
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [problem, setProblem] = useState<{ id: string; message: string } | null>(null);
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+  const [dayLimit, setDayLimit] = useState(DAY_PAGE);
   const ignoreNextCardClick = useRef(false);
   const now = new Date();
 
@@ -97,7 +198,6 @@ export function TasksView({
 
   const activeTasks = tasks.filter((task) => task.status !== "proposed");
   const openTasks = activeTasks.filter((task) => task.status !== "done");
-  const doneTasks = activeTasks.filter((task) => task.status === "done").sort(byCompletedDesc);
   const proposedTasks = tasks
     .filter((task) => task.status === "proposed")
     .sort((a, b) => {
@@ -107,6 +207,7 @@ export function TasksView({
     });
   const failedTasks = openTasks.filter((task) => state(task) === "failed");
   const blockedTasks = openTasks.filter((task) => state(task) === "blocked");
+  const workingTasks = openTasks.filter((task) => state(task) === "working");
   const ids = new Set(activeTasks.map((task) => task.id));
   const roots = activeTasks
     .filter((task) => task.parentId === null || !ids.has(task.parentId))
@@ -116,9 +217,10 @@ export function TasksView({
   const activeRoots = roots.filter(
     (task) => task.status !== "done" && !(state(task) === "failed" && !hasChildren(task)),
   );
-  const doneToday = roots.filter(
-    (task) => task.status === "done" && sameLocalDay(task.completedAt, now),
-  );
+  const doneRoots = roots.filter((task) => task.status === "done").sort(byCompletedDesc);
+  const days = groupByDay(doneRoots, (task) => task.completedAt ?? task.createdAt);
+  const today = dayKey(now);
+  if (days.length > 0 && days[0]?.[0] !== today) days.unshift([today, []]);
 
   const apply = async (id: string, outcome: Promise<TaskOutcome>) => {
     const next = await outcome;
@@ -210,31 +312,46 @@ export function TasksView({
     active: openTasks.length,
     blocked: blockedTasks.length,
     proposed: proposedTasks.length,
-    done: doneTasks.length,
+  };
+  const labels: Record<Filter, string> = {
+    active: "Active",
+    blocked: "Blocked",
+    proposed: "Proposed",
   };
 
   const list = (
-    <div className="flex min-w-0 flex-col gap-2" data-testid="task-list">
-      <NowCard
-        tasks={activeTasks}
-        activity={activity}
-        state={state}
-        counts={{
-          ready: openTasks.filter((task) => state(task) === "ready" || state(task) === "partial")
-            .length,
-          blocked: blockedTasks.length,
-          doneToday: doneTasks.filter((task) => sameLocalDay(task.completedAt, now)).length,
-        }}
-        onOpen={setOpenTaskId}
-      />
+    <div className="flex min-w-0 flex-col gap-5" data-testid="task-list">
+      {workingTasks.length > 0 && (
+        <p
+          data-testid="now-line"
+          aria-live="polite"
+          className="px-1 text-sm leading-5 text-muted-foreground"
+        >
+          Working on{" "}
+          {workingTasks.map((task, index) => (
+            <span key={task.id}>
+              {index > 0 && ", "}
+              <button
+                type="button"
+                data-testid={`now-task-${task.id}`}
+                aria-label={`Working on ${plainInline(task.title)}`}
+                onClick={() => setOpenTaskId(task.id)}
+                className="font-medium text-foreground underline-offset-4 hover:underline"
+              >
+                {plainInline(task.title)}
+              </button>
+            </span>
+          ))}
+        </p>
+      )}
       {tasks.length > 0 && (
         <div
           role="tablist"
           aria-label="Task filter"
           data-testid="task-filters"
-          className="flex flex-wrap gap-1.5"
+          className="inline-flex h-9 w-fit items-center rounded-md bg-muted p-1 text-muted-foreground"
         >
-          {(["active", "blocked", "proposed", "done"] as const).map((item) => (
+          {(["active", "blocked", "proposed"] as const).map((item) => (
             <button
               key={item}
               type="button"
@@ -242,13 +359,13 @@ export function TasksView({
               aria-selected={filter === item}
               data-testid={`task-filter-${item}`}
               onClick={() => setFilter(item)}
-              className={
-                filter === item
-                  ? "theme-radius bg-foreground px-2.5 py-1 font-mono text-[11px] text-background"
-                  : "theme-radius border border-foreground/25 bg-surface px-2.5 py-1 font-mono text-[11px] text-foreground/70"
-              }
+              className={cn(
+                "inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-sm px-3 text-sm font-medium leading-none",
+                filter === item && "bg-background text-foreground shadow-sm",
+              )}
             >
-              {item} {counts[item]}
+              {labels[item]}
+              <span className="text-xs leading-none text-muted-foreground">{counts[item]}</span>
             </button>
           ))}
         </div>
@@ -257,7 +374,7 @@ export function TasksView({
         <>
           {(proposedTasks.length > 0 || failedTasks.length > 0) && (
             <Section title="Needs you" count={proposedTasks.length + failedTasks.length} id="needs">
-              <ul id="proposed-tasks" className="flex flex-col gap-1" data-testid="task-proposals">
+              <ul id="proposed-tasks" className="flex flex-col gap-2" data-testid="task-proposals">
                 {proposedTasks.map(proposal)}
                 {failedTasks.map((task) => (
                   <TaskRow key={task.id} task={task} depth={0} {...rowProps} flat />
@@ -266,28 +383,55 @@ export function TasksView({
             </Section>
           )}
           {activeRoots.length > 0 && (
-            <Section title="Active" count={openTasks.length - failedTasks.length} id="active">
-              <ul className="flex flex-col gap-1">
+            <Section title="Open" count={openTasks.length - failedTasks.length} id="active">
+              <ul className="flex flex-col gap-2">
                 {activeRoots.map((task) => (
                   <TaskRow key={task.id} task={task} depth={0} {...rowProps} />
                 ))}
               </ul>
             </Section>
           )}
-          {doneToday.length > 0 && (
-            <Section title="Done today" count={doneToday.length} id="done-today">
-              <ul className="flex flex-col gap-1">
-                {doneToday.map((task) => (
-                  <TaskRow key={task.id} task={task} depth={0} {...rowProps} />
-                ))}
-              </ul>
-            </Section>
+          {days.length > 0 && (
+            <section className="flex flex-col gap-2" data-testid="task-section-done">
+              <Heading>Done</Heading>
+              {days.slice(0, dayLimit + 1).map(([key, items]) => (
+                <DoneDay
+                  key={key}
+                  dayKey={key}
+                  label={dayLabel(key, now)}
+                  count={items.length}
+                  defaultOpen={key === today}
+                >
+                  {items.length === 0 ? (
+                    <p className="px-1 text-sm leading-5 text-muted-foreground">
+                      Nothing done yet today.
+                    </p>
+                  ) : (
+                    <ul className="flex flex-col gap-2">
+                      {items.map((task) => (
+                        <TaskRow key={task.id} task={task} depth={0} {...rowProps} history />
+                      ))}
+                    </ul>
+                  )}
+                </DoneDay>
+              ))}
+              {days.length > dayLimit + 1 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="w-fit rounded-md"
+                  onClick={() => setDayLimit((limit) => limit + DAY_PAGE)}
+                >
+                  Show older days
+                </Button>
+              )}
+            </section>
           )}
         </>
       )}
       {filter === "blocked" && (
         <Section title="Blocked" count={blockedTasks.length} id="blocked">
-          <ul className="flex flex-col gap-1">
+          <ul className="flex flex-col gap-2">
             {blockedTasks.map((task) => (
               <TaskRow key={task.id} task={task} depth={0} {...rowProps} flat />
             ))}
@@ -296,31 +440,14 @@ export function TasksView({
       )}
       {filter === "proposed" && (
         <Section title="Proposed" count={proposedTasks.length} id="proposed">
-          <ul id="proposed-tasks" className="flex flex-col gap-1" data-testid="task-proposals">
+          <ul id="proposed-tasks" className="flex flex-col gap-2" data-testid="task-proposals">
             {proposedTasks.map(proposal)}
           </ul>
         </Section>
       )}
-      {filter === "done" && (
-        <Section title="Done" count={doneTasks.length} id="done">
-          <ul className="flex flex-col gap-1">
-            {doneTasks.map((task) => (
-              <TaskRow key={task.id} task={task} depth={0} {...rowProps} flat />
-            ))}
-          </ul>
-        </Section>
-      )}
-      {!ready && (
-        <p className="theme-radius bg-surface px-3 py-2 font-mono text-xs text-foreground/70">
-          Loading…
-        </p>
-      )}
+      {!ready && <p className="px-1 text-sm text-muted-foreground">Loading…</p>}
       {ready && tasks.length === 0 && (
-        <p className="py-8 text-center">
-          <span className="bg-foreground px-2 py-1 font-mono text-[11px] text-background">
-            No tasks yet.
-          </span>
-        </p>
+        <p className="py-8 text-center text-sm text-muted-foreground">No tasks yet.</p>
       )}
     </div>
   );
@@ -359,7 +486,7 @@ export function TasksView({
       <div
         className={
           wide
-            ? "mx-auto grid w-full max-w-[1200px] grid-cols-[minmax(360px,440px)_1fr] items-start gap-3 px-4"
+            ? "mx-auto grid w-full max-w-[1200px] grid-cols-[minmax(360px,440px)_1fr] items-start gap-6 px-4"
             : "mx-auto flex w-full max-w-[72ch] flex-col gap-4 px-4"
         }
         style={{ paddingTop: 16, paddingBottom: footerClearance + 16 }}
@@ -369,12 +496,12 @@ export function TasksView({
             {list}
             <div className="sticky top-4 min-w-0">
               {detail ?? (
-                <p
+                <Card
                   data-testid="task-detail-empty"
-                  className="theme-radius bg-surface px-4 py-6 text-center font-mono text-[11px] text-foreground/65"
+                  className="items-center px-4 py-10 text-sm text-muted-foreground"
                 >
-                  Select a task to see its runs and history.
-                </p>
+                  Select a task to see its details.
+                </Card>
               )}
             </div>
           </>
@@ -415,89 +542,35 @@ export function TasksView({
   );
 }
 
-function Section({
-  title,
+function DoneDay({
+  dayKey: key,
+  label,
   count,
-  id,
+  defaultOpen,
   children,
 }: {
-  title: string;
+  dayKey: string;
+  label: string;
   count: number;
-  id: string;
+  defaultOpen: boolean;
   children: ReactNode;
 }) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
-    <section className="flex flex-col gap-1" data-testid={`task-section-${id}`}>
-      <h2 className="theme-radius mt-1 flex items-center justify-between bg-surface px-3 py-1.5 font-mono text-[11px] uppercase tracking-wide text-foreground/65">
-        <span>{title}</span>
-        <span>{count}</span>
-      </h2>
-      {children}
-    </section>
+    <Collapsible
+      open={open}
+      onOpenChange={setOpen}
+      data-testid={`task-day-${key}`}
+      data-open={open ? "true" : "false"}
+    >
+      <CollapsibleTrigger className="flex h-9 w-full items-center gap-2 rounded-md px-1 text-left text-sm font-medium leading-5 hover:bg-muted">
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+        <Badge variant="secondary">{count}</Badge>
+        <Chevron open={open} />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="pt-1">{children}</CollapsibleContent>
+    </Collapsible>
   );
-}
-
-const GLYPH_BASE =
-  "grid h-4 w-4 shrink-0 place-items-center theme-radius font-mono text-[10px] leading-none";
-
-/** A monochrome-safe status mark: shape and fill carry the state, never color alone. */
-export function StatusGlyph({ state }: { state: TaskState | "idle" }) {
-  switch (state) {
-    case "working":
-      return (
-        <span
-          aria-hidden
-          className={`${GLYPH_BASE} border border-foreground bg-foreground text-background`}
-        >
-          ●
-        </span>
-      );
-    case "done":
-      return (
-        <span
-          aria-hidden
-          className={`${GLYPH_BASE} border border-foreground/40 text-foreground/70`}
-        >
-          ✓
-        </span>
-      );
-    case "blocked":
-      return (
-        <span
-          aria-hidden
-          className={`${GLYPH_BASE} border border-dashed border-foreground/40 text-foreground/70`}
-        >
-          ⊘
-        </span>
-      );
-    case "failed":
-      return (
-        <span
-          aria-hidden
-          className={`${GLYPH_BASE} border-2 border-foreground font-bold text-foreground`}
-        >
-          ✕
-        </span>
-      );
-    case "proposed":
-      return (
-        <span
-          aria-hidden
-          className={`${GLYPH_BASE} border border-dotted border-foreground/60 text-foreground/70`}
-        >
-          ?
-        </span>
-      );
-    case "partial":
-      return (
-        <span
-          aria-hidden
-          className={`${GLYPH_BASE} border border-foreground/40 bg-[linear-gradient(90deg,var(--color-foreground)_50%,transparent_50%)] bg-clip-content p-0.5`}
-        />
-      );
-    default:
-      return <span aria-hidden className={`${GLYPH_BASE} border border-foreground/40`} />;
-  }
 }
 
 /** What a task and all its subtasks measured, summed. */
@@ -525,77 +598,62 @@ export function subtreeMeasured(
   return sum;
 }
 
-function measuredSummary(trace: TaskTrace | undefined): string {
-  if (trace === undefined || trace.measured.runs === 0) return "";
-  const parts = [formatActiveTime(trace.measured.activeMs)];
-  if (trace.measured.tokens > 0) parts.push(formatTokenCount(trace.measured.tokens));
+function measuredSummary(measured: TaskMeasured | undefined): string {
+  if (measured === undefined || measured.runs === 0) return "";
+  const parts = [formatActiveTime(measured.activeMs)];
+  if (measured.tokens > 0) parts.push(`${formatTokenCount(measured.tokens)} tokens`);
   return parts.join(" · ");
 }
 
 function failureLabel(trace: TaskTrace | undefined): string {
-  return trace?.lastRun?.outcome === "interrupted" ? "interrupted" : "failed";
+  return trace?.lastRun?.outcome === "interrupted" ? "Interrupted" : "Failed";
 }
 
-function RowMeta({
-  task,
-  tasks,
-  state,
-  trace,
-}: {
-  task: Task;
-  tasks: Task[];
-  state: TaskState;
-  trace: TaskTrace | undefined;
-}) {
-  const base = "shrink-0 font-mono text-[11px] text-foreground/70";
+/** The status word for a badge, or null for a plain open task. */
+export function stateBadge(state: TaskState, trace: TaskTrace | undefined): string | null {
   switch (state) {
     case "working":
-      return <span className={`${base} font-bold uppercase text-foreground`}>working</span>;
+      return "Working";
+    case "blocked":
+      return "Blocked";
     case "failed":
-      return (
-        <span className={`${base} font-bold uppercase text-foreground`}>
-          <span className="text-destructive">✕</span> {failureLabel(trace)}
-        </span>
-      );
+      return failureLabel(trace);
+    case "proposed":
+      return "Proposed";
+    case "done":
+      return "Done";
+    default:
+      return null;
+  }
+}
+
+/** The one muted line under a row's title, or "" for none. */
+function rowNote(
+  task: Task,
+  tasks: Task[],
+  state: TaskState,
+  trace: TaskTrace | undefined,
+  traces: Record<string, TaskTrace>,
+): string {
+  const children = subtaskCount(tasks, task.id);
+  const subtasks = children.total > 0 ? `${children.done} of ${children.total} subtasks done` : "";
+  switch (state) {
     case "blocked": {
       const names = liveBlockerIds(tasks, task).map((id) => {
         const blocker = tasks.find((item) => item.id === id);
         return blocker === undefined ? id : plainInline(blocker.title);
       });
-      const more = names.length > 1 ? ` +${names.length - 1}` : "";
-      return (
-        <span className={`${base} min-w-0 max-w-[45%] truncate`} title={names.join(", ")}>
-          blocked ← {names[0]}
-          {more}
-        </span>
-      );
+      if (names.length === 0) return subtasks;
+      return `Blocked by ${names[0]}${names.length > 1 ? ` and ${names.length - 1} more` : ""}`;
     }
-    case "partial": {
-      const count = subtaskCount(tasks, task.id);
-      return (
-        <span className={base} title={`${count.done} of ${count.total} subtasks done`}>
-          {count.done}/{count.total}
-        </span>
-      );
-    }
+    case "failed":
+      return trace?.lastRun?.reason ?? subtasks;
     case "done": {
-      const summary = measuredSummary(trace);
-      const children = subtaskCount(tasks, task.id);
-      const text =
-        summary !== "" ? summary : children.total > 0 ? `${children.done}/${children.total}` : "—";
-      return <span className={base}>{text}</span>;
+      const summary = measuredSummary(subtreeMeasured(tasks, task.id, traces));
+      return summary !== "" ? summary : subtasks;
     }
-    default: {
-      const children = subtaskCount(tasks, task.id);
-      if (children.total > 0) {
-        return (
-          <span className={base} title={`${children.done} of ${children.total} subtasks done`}>
-            {children.done}/{children.total}
-          </span>
-        );
-      }
-      return <span className={base}>{measuredSummary(trace)}</span>;
-    }
+    default:
+      return subtasks;
   }
 }
 
@@ -606,6 +664,7 @@ function TaskRow({
   state,
   depth,
   flat = false,
+  history = false,
   selectedId,
   armedParentId,
   ignoreNextCardClick,
@@ -621,6 +680,8 @@ function TaskRow({
   state: (task: Task) => TaskState;
   depth: number;
   flat?: boolean;
+  /** A row in the done-by-day list: no status badge, the day already says it. */
+  history?: boolean;
   selectedId: string | null;
   armedParentId: string | null;
   ignoreNextCardClick: { current: boolean };
@@ -642,6 +703,9 @@ function TaskRow({
   const openedAt = useRef(0);
   const selected = selectedId === task.id;
   const armed = armedParentId === task.id;
+  const trace = activity?.traces[task.id];
+  const badge = history || (done && depth > 0) ? null : stateBadge(current, trace);
+  const note = rowNote(task, tasks, current, trace, activity?.traces ?? {});
 
   const clearPress = () => {
     if (press.current === null) return;
@@ -659,20 +723,9 @@ function TaskRow({
     };
   }, []);
 
-  const titleClass =
-    current === "working"
-      ? "font-semibold text-foreground"
-      : current === "failed"
-        ? "font-semibold text-foreground"
-        : current === "done"
-          ? "text-foreground/60 line-through"
-          : current === "blocked"
-            ? "text-foreground/60"
-            : "text-foreground";
-
   return (
     <li className="min-w-0" data-testid={`task-${task.id}`} data-state={current}>
-      {/* biome-ignore lint/a11y/useSemanticElements: the row contains its own status button. */}
+      {/* biome-ignore lint/a11y/useSemanticElements: the row contains its own checkbox. */}
       <div
         data-task-card=""
         role="button"
@@ -680,13 +733,14 @@ function TaskRow({
         aria-current={selected ? "true" : undefined}
         aria-label={`Open ${plainInline(task.title)}`}
         aria-describedby={notice !== null ? `task-error-${task.id}` : undefined}
-        className={`flex min-h-[42px] w-full cursor-pointer select-none items-center gap-2.5 theme-radius bg-surface px-3 py-2 text-left${
-          selected || armed ? " ring-1 ring-inset ring-foreground/40" : ""
-        }`}
+        className={cn(
+          "flex min-h-11 w-full cursor-pointer select-none items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 text-left hover:bg-muted",
+          (selected || armed) && "ring-1 ring-foreground",
+        )}
         style={{
           WebkitTouchCallout: "none",
-          marginLeft: depth * 18,
-          width: `calc(100% - ${depth * 18}px)`,
+          marginLeft: depth * 24,
+          width: `calc(100% - ${depth * 24}px)`,
         }}
         onPointerDown={(event) => {
           origin.current = { x: event.clientX, y: event.clientY };
@@ -733,8 +787,8 @@ function TaskRow({
           onOpen(task.id);
         }}
       >
-        <button
-          type="button"
+        <Checkbox
+          checked={done}
           data-task-check=""
           aria-pressed={done}
           aria-disabled={openChildren}
@@ -742,33 +796,42 @@ function TaskRow({
             done ? `Reopen ${plainInline(task.title)}` : `Done ${plainInline(task.title)}`
           }
           title={openChildren ? "Finish open subtasks first" : done ? "Reopen" : "Mark done"}
-          className="-m-1 shrink-0 p-1 aria-disabled:opacity-60"
+          className="relative before:absolute before:-inset-3 before:content-['']"
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
             event.stopPropagation();
             if (openChildren) return;
             onStatus(task, done ? "open" : "done");
           }}
-        >
-          <StatusGlyph state={current} />
-        </button>
-        <span className={`min-w-0 flex-1 truncate text-sm ${titleClass}`}>
-          <InlineMarkdown text={task.title} />
+        />
+        <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
+          <span
+            className={cn(
+              "line-clamp-2 text-sm leading-5 [overflow-wrap:anywhere]",
+              done ? "text-muted-foreground" : "text-foreground",
+            )}
+          >
+            <InlineMarkdown text={task.title} />
+          </span>
+          {note !== "" && (
+            <span className="truncate text-xs leading-4 text-muted-foreground" title={note}>
+              {note}
+            </span>
+          )}
         </span>
-        <RowMeta task={task} tasks={tasks} state={current} trace={activity?.traces[task.id]} />
+        {badge !== null && (
+          <Badge variant={current === "working" || current === "failed" ? "default" : "outline"}>
+            {badge}
+          </Badge>
+        )}
       </div>
       {notice !== null && (
-        <p
-          id={`task-error-${task.id}`}
-          role="alert"
-          data-testid="task-error"
-          className="theme-radius mt-1 bg-surface px-3 py-1 font-mono text-[11px] leading-4 text-destructive"
-        >
+        <ErrorText id={`task-error-${task.id}`} className="mt-1">
           {notice}
-        </p>
+        </ErrorText>
       )}
       {children.length > 0 && (
-        <ul className="mt-1 flex flex-col gap-1">
+        <ul className="mt-2 flex flex-col gap-2">
           {children.map((child) => (
             <TaskRow
               key={child.id}
@@ -777,6 +840,7 @@ function TaskRow({
               activity={activity}
               state={state}
               depth={depth + 1}
+              history={history}
               selectedId={selectedId}
               armedParentId={armedParentId}
               ignoreNextCardClick={ignoreNextCardClick}
@@ -817,9 +881,10 @@ function ProposedTask({
         tabIndex={0}
         aria-current={selected ? "true" : undefined}
         aria-label={`Open proposal ${plainInline(task.title)}`}
-        className={`flex min-h-[42px] w-full cursor-pointer select-none items-center gap-2.5 theme-radius border border-dashed border-foreground/30 bg-surface px-3 py-1.5 text-left${
-          selected ? " ring-1 ring-inset ring-foreground/40" : ""
-        }`}
+        className={cn(
+          "flex min-h-11 w-full cursor-pointer select-none flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-border bg-surface px-3 py-2 text-left hover:bg-muted",
+          selected && "ring-1 ring-foreground",
+        )}
         onClick={onOpen}
         onKeyDown={(event) => {
           if (event.target !== event.currentTarget) return;
@@ -828,130 +893,42 @@ function ProposedTask({
           onOpen();
         }}
       >
-        <StatusGlyph state="proposed" />
-        <span className="min-w-0 flex-1 truncate text-sm text-foreground/80">
+        <span className="line-clamp-2 min-w-0 flex-1 basis-40 text-sm leading-5 [overflow-wrap:anywhere]">
           <InlineMarkdown text={task.title} />
         </span>
-        <span className="flex shrink-0 gap-1.5">
-          <button
-            type="button"
-            aria-label={`Approve ${plainInline(task.title)}`}
-            className="theme-radius bg-foreground px-2 py-1 font-mono text-[10px] text-background"
-            onClick={(event) => {
-              stop(event);
-              onApprove();
-            }}
-          >
-            approve
-          </button>
-          <button
-            type="button"
+        <span className="ml-auto flex shrink-0 items-center gap-2">
+          <Badge variant="outline">Proposed</Badge>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 shrink-0 rounded-md px-2"
             aria-label={`Dismiss ${plainInline(task.title)}`}
-            className="theme-radius border border-foreground/25 bg-surface px-2 py-1 font-mono text-[10px] text-foreground/70"
             onClick={(event) => {
               stop(event);
               onDismiss();
             }}
           >
-            ✕
-          </button>
+            Dismiss
+          </Button>
+          <Button
+            size="sm"
+            className="h-7 shrink-0 rounded-md px-3"
+            aria-label={`Approve ${plainInline(task.title)}`}
+            onClick={(event) => {
+              stop(event);
+              onApprove();
+            }}
+          >
+            Approve
+          </Button>
         </span>
       </div>
       {notice !== null && (
-        <p
-          role="alert"
-          data-testid="task-error"
-          className="theme-radius mt-1 bg-surface px-3 py-1 font-mono text-[11px] leading-4 text-destructive"
-        >
-          {notice}
-        </p>
+        <div className="mt-1">
+          <ErrorText>{notice}</ErrorText>
+        </div>
       )}
     </li>
-  );
-}
-
-function NowCard({
-  tasks,
-  activity,
-  state,
-  counts,
-  onOpen,
-}: {
-  tasks: Task[];
-  activity: TaskActivity | undefined;
-  state: (task: Task) => TaskState;
-  counts: { ready: number; blocked: number; doneToday: number };
-  onOpen: (id: string) => void;
-}) {
-  const running = activity?.running === true;
-  const working = tasks.filter((task) => state(task) === "working");
-  const parentTitle = (task: Task) => {
-    const parent =
-      task.parentId === null ? undefined : tasks.find((item) => item.id === task.parentId);
-    return parent === undefined ? null : plainInline(parent.title);
-  };
-  const idleSummary = [
-    counts.ready > 0 ? `${counts.ready} ready` : "",
-    counts.blocked > 0 ? `${counts.blocked} blocked` : "",
-    counts.doneToday > 0 ? `${counts.doneToday} done today` : "",
-  ]
-    .filter((part) => part !== "")
-    .join(" · ");
-  const line2 = "mt-0.5 truncate pl-[26px] font-mono text-[11px] text-foreground/70";
-
-  return (
-    <section
-      data-testid="now-card"
-      data-running={running ? "true" : "false"}
-      aria-label="Now"
-      aria-live="polite"
-      className="theme-radius flex flex-col gap-2 border border-foreground/30 bg-surface px-3 py-2.5"
-    >
-      {!running && (
-        <div>
-          <div className="flex items-center gap-2.5 text-sm">
-            <StatusGlyph state="idle" />
-            <span className="font-bold">Idle</span>
-            <span className="text-foreground/70">· no run in progress</span>
-          </div>
-          <div className={line2}>{idleSummary === "" ? "no open tasks" : idleSummary}</div>
-        </div>
-      )}
-      {running && working.length === 0 && (
-        <div>
-          <div className="flex items-center gap-2.5 text-sm">
-            <StatusGlyph state="working" />
-            <span className="font-bold">Working</span>
-          </div>
-          <div className={line2}>no tool calls yet</div>
-        </div>
-      )}
-      {working.map((task) => {
-        const parent = parentTitle(task);
-        return (
-          <button
-            key={task.id}
-            type="button"
-            data-testid={`now-task-${task.id}`}
-            aria-label={`Working on ${plainInline(task.title)}`}
-            onClick={() => onOpen(task.id)}
-            className="block min-w-0 text-left"
-          >
-            <span className="flex items-center gap-2.5 text-sm">
-              <StatusGlyph state="working" />
-              <span className="shrink-0 font-bold">Working</span>
-              <span className="min-w-0 truncate">
-                <InlineMarkdown text={task.title} />
-              </span>
-            </span>
-            <span className={`block ${line2}`}>
-              {task.id}
-              {parent === null ? "" : ` · in ${parent}`}
-            </span>
-          </button>
-        );
-      })}
-    </section>
   );
 }
 
@@ -965,35 +942,22 @@ export function TaskTimes({ task }: { task: Task }) {
   return (
     <span
       data-testid="task-times"
-      className="flex flex-wrap items-center gap-x-2 font-mono text-[11px] text-foreground/65"
+      className="flex flex-wrap items-center gap-x-3 text-xs leading-4 text-muted-foreground"
     >
       <time dateTime={task.createdAt} title={created}>
-        created {created}
+        Created {created}
       </time>
       {closed !== "" && (
         <time dateTime={task.completedAt ?? undefined} title={closed}>
-          closed {closed}
+          Closed {closed}
         </time>
       )}
     </span>
   );
 }
 
-const HISTORY_GLYPH: Record<TaskHistoryKind, string> = {
-  created: "+",
-  approved: "↑",
-  blocked: "⊘",
-  unblocked: "○",
-  done: "✓",
-  reopened: "↺",
-  "run-start": "▶",
-  "run-end": "■",
-  failed: "✕",
-};
-
-function stateLabel(state: TaskState, trace: TaskTrace | undefined): string {
-  if (state === "failed") return failureLabel(trace);
-  return state;
+function SubHeading({ children }: { children: ReactNode }) {
+  return <h3 className="text-sm font-medium leading-5">{children}</h3>;
 }
 
 export function TaskDetail({
@@ -1043,294 +1007,290 @@ export function TaskDetail({
   const blockers = task.blockedBy.map((id) => {
     const blocker = tasks.find((item) => item.id === id);
     return blocker === undefined
-      ? { id, title: id, status: "missing" }
-      : { id, title: plainInline(blocker.title), status: blocker.status };
+      ? { id, title: id, done: false }
+      : { id, title: plainInline(blocker.title), done: blocker.status === "done" };
   });
   // A parent's own runs are often none; its subtasks' runs are the work done for it.
   const measured = subtree ?? trace?.measured;
   const ran = measured !== undefined && measured.runs > 0;
   const rolledUp = ran && measured.runs > (trace?.measured.runs ?? 0);
   const stats: Array<[string, string]> = [
-    ["active", ran ? formatActiveTime(measured.activeMs) : "—"],
-    ["tokens", ran ? formatTokenCount(measured.tokens) : "—"],
-    ["cost", ran ? formatCost(measured.cost) : "—"],
-    [rolledUp ? "runs · subtasks" : "runs", ran ? String(measured.runs) : "—"],
+    ["Active time", ran ? formatActiveTime(measured.activeMs) : "—"],
+    ["Tokens", ran ? formatTokenCount(measured.tokens) : "—"],
+    ["Cost", ran ? formatCost(measured.cost) : "—"],
+    [rolledUp ? "Runs with subtasks" : "Runs", ran ? String(measured.runs) : "—"],
   ];
-  const history: TaskHistoryEvent[] = (trace?.history ?? []).slice(-HISTORY_LIMIT);
-  const hidden = (trace?.history.length ?? 0) - history.length;
+  const events: TaskHistoryEvent[] = (trace?.history ?? []).slice(-HISTORY_LIMIT);
+  const hidden = (trace?.history.length ?? 0) - events.length;
+  const now = new Date();
+  const eventDays = groupByDay([...events].reverse(), (event) => event.at);
   const reason =
     state === "failed" && trace?.lastRun?.reason !== undefined ? trace.lastRun.reason : null;
-  const card = "theme-radius bg-surface px-4 py-3";
-  const label = "mb-1.5 font-mono text-[11px] uppercase tracking-wide text-foreground/65";
-  const button =
-    "theme-radius border border-foreground/25 bg-surface px-2.5 py-1.5 font-mono text-[11px] text-foreground";
-  const primary =
-    "theme-radius bg-foreground px-3 py-1.5 font-mono text-[11px] font-bold text-background";
+  const badge = stateBadge(state, trace) ?? "Open";
+  const title = plainInline(task.title);
 
   return (
-    <article
-      data-testid="task-detail"
-      aria-label={plainInline(task.title)}
-      className="flex flex-col gap-2"
-    >
-      <header className={card}>
-        <div className="flex items-center gap-2 font-mono text-[11px] text-foreground/65">
+    <Card data-testid="task-detail" aria-label={title} role="article">
+      <CardHeader>
+        <div className="flex min-h-8 items-center gap-2">
           {!wide && (
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="sm"
               data-testid="task-detail-back"
               aria-label="Back to tasks"
               onClick={onClose}
-              className="theme-radius -ml-1 px-1 text-foreground"
+              className="-ml-2 shrink-0 rounded-md px-2"
             >
-              ‹ tasks
-            </button>
+              Back
+            </Button>
           )}
-          <span className="min-w-0 flex-1 truncate">
+          <span className="min-w-0 flex-1 truncate text-xs leading-4 text-muted-foreground">
             {parent !== undefined && (
-              <>
-                <button
-                  type="button"
-                  className="underline decoration-foreground/30 underline-offset-2"
-                  onClick={() => onOpen(parent.id)}
-                >
-                  {plainInline(parent.title)}
-                </button>
-                {" · "}
-              </>
+              <button
+                type="button"
+                className="underline-offset-4 hover:underline"
+                onClick={() => onOpen(parent.id)}
+              >
+                {plainInline(parent.title)}
+              </button>
             )}
-            {task.id}
           </span>
           {wide && (
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="sm"
               data-testid="task-detail-close"
               aria-label="Close"
               onClick={onClose}
-              className="theme-radius px-1.5 text-sm text-foreground/70 hover:text-foreground"
+              className="-mr-2 shrink-0 rounded-md px-2"
             >
-              ✕
-            </button>
+              Close
+            </Button>
           )}
         </div>
-        <h2 className="mt-1.5 text-lg font-bold leading-snug [overflow-wrap:anywhere]">
-          <InlineMarkdown text={task.title} />
-        </h2>
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <span
+        <div className="flex items-start gap-3">
+          <h2 className="min-w-0 flex-1 text-lg font-semibold leading-7 [overflow-wrap:anywhere]">
+            <InlineMarkdown text={task.title} />
+          </h2>
+          <Badge
             data-testid="task-state"
-            className="theme-radius inline-flex items-center gap-1.5 bg-foreground px-2 py-0.5 font-mono text-[11px] font-bold uppercase text-background"
+            className="mt-1"
+            variant={state === "working" || state === "failed" ? "default" : "outline"}
           >
-            {stateLabel(state, trace)}
-          </span>
-          <TaskTimes task={task} />
+            {badge}
+          </Badge>
         </div>
+        <TaskTimes task={task} />
         {reason !== null && (
-          <p data-testid="task-failure" className="mt-2 font-mono text-[11px] text-foreground/80">
-            <span className="text-destructive">✕</span> {reason}
+          <p data-testid="task-failure" className="text-sm leading-5 text-muted-foreground">
+            {reason}
           </p>
         )}
         {task.rationale !== undefined && task.rationale.length > 0 && (
-          <p className="mt-2 whitespace-pre-wrap text-sm text-foreground/80 [overflow-wrap:anywhere]">
+          <p className="whitespace-pre-wrap text-sm leading-5 [overflow-wrap:anywhere]">
             {task.rationale}
           </p>
         )}
-      </header>
-      {!proposed && (
-        <dl
-          data-testid="task-stats"
-          data-rollup={rolledUp ? "subtasks" : undefined}
-          title={rolledUp ? "Includes runs of its subtasks" : undefined}
-          className="grid grid-cols-4 gap-0.5"
-        >
-          {stats.map(([name, value]) => (
-            <div key={name} className="theme-radius bg-surface px-3 py-2">
-              <dt className="font-mono text-[10px] uppercase tracking-wide text-foreground/65">
-                {name}
-              </dt>
-              <dd className="mt-0.5 font-mono text-sm font-bold">{value}</dd>
-            </div>
-          ))}
-        </dl>
-      )}
-      {done && (
-        <section className={card} data-testid="task-modal-completion">
-          <h3 className={label}>Evidence</h3>
-          {task.completion == null ? (
-            <p className="font-mono text-xs text-foreground/65">No evidence recorded</p>
-          ) : (
-            <p
-              data-testid="task-evidence"
-              className="whitespace-pre-wrap text-sm [overflow-wrap:anywhere]"
-            >
-              {task.completion.evidence}
-            </p>
-          )}
-        </section>
-      )}
-      {(blockers.length > 0 || children.length > 0) && (
-        <section className={card}>
-          {blockers.length > 0 && (
-            <>
-              <h3 className={label}>Blocked by</h3>
-              <ul className="mb-2 flex flex-col gap-1 font-mono text-xs">
-                {blockers.map((blocker) => (
-                  <li key={blocker.id} className="flex gap-2 [overflow-wrap:anywhere]">
-                    <span className="text-foreground/65">{blocker.status}</span>
-                    <span className="min-w-0 flex-1">{blocker.title}</span>
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-          {children.length > 0 && (
-            <>
-              <h3 className={label}>Subtasks</h3>
-              <ul className="flex flex-col gap-1 text-sm">
-                {children.map((child) => (
-                  <li key={child.id}>
-                    <button
-                      type="button"
-                      onClick={() => onOpen(child.id)}
-                      className={`text-left ${child.status === "done" ? "text-foreground/60 line-through" : ""}`}
-                    >
-                      <InlineMarkdown text={child.title} />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-        </section>
-      )}
-      {task.attachments !== undefined && task.attachments.length > 0 && (
-        <section className={`${card} flex flex-wrap gap-1.5`} data-testid="task-attachments">
-          {task.attachments.map((id, index) => (
-            <img
-              key={id}
-              src={mediaUrl(id)}
-              alt={`Task attachment ${index + 1}`}
-              loading="lazy"
-              draggable={false}
-              className="block size-16 theme-radius border border-foreground/15 object-cover"
-            />
-          ))}
-        </section>
-      )}
-      <section className={card} data-testid="task-history">
-        <h3 className={label}>History</h3>
-        {history.length === 0 ? (
-          <p className="font-mono text-xs text-foreground/65">Nothing recorded yet</p>
-        ) : (
-          <ol className="flex flex-col">
-            {hidden > 0 && (
-              <li className="pb-1 font-mono text-[11px] text-foreground/60">
-                {hidden} earlier {hidden === 1 ? "event" : "events"}
-              </li>
-            )}
-            {history.map((event, index) => (
-              <li
-                // biome-ignore lint/suspicious/noArrayIndexKey: history is append-only and has no ids.
-                key={`${event.at}-${index}`}
-                data-kind={event.kind}
-                className={`grid grid-cols-[38px_14px_1fr] items-baseline gap-x-2 py-0.5 text-[13px] ${
-                  event.kind === "failed" ? "font-semibold" : ""
-                }`}
-              >
-                <time
-                  dateTime={event.at}
-                  title={formatDateTime(event.at)}
-                  className="font-mono text-[11px] text-foreground/65"
-                >
-                  {formatTime(event.at)}
-                </time>
-                <span
-                  aria-hidden
-                  className={`text-center font-mono text-[11px] ${event.kind === "failed" ? "text-destructive" : "text-foreground/70"}`}
-                >
-                  {HISTORY_GLYPH[event.kind]}
-                </span>
-                <span className="min-w-0 [overflow-wrap:anywhere]">{event.text}</span>
-              </li>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        {!proposed && (
+          <dl
+            data-testid="task-stats"
+            data-rollup={rolledUp ? "subtasks" : undefined}
+            title={rolledUp ? "Includes runs of its subtasks" : undefined}
+            className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4"
+          >
+            {stats.map(([name, value]) => (
+              <div key={name} className="flex min-w-0 flex-col gap-1">
+                <dt className="text-xs leading-4 text-muted-foreground">{name}</dt>
+                <dd className="text-sm font-medium leading-5 tabular-nums">{value}</dd>
+              </div>
             ))}
-          </ol>
+          </dl>
         )}
-      </section>
-      {notice !== null && (
-        <p
-          role="alert"
-          data-testid="task-error"
-          className="theme-radius bg-surface px-3 py-1.5 font-mono text-[11px] leading-4 text-destructive"
-        >
-          {notice}
-        </p>
-      )}
-      <div
-        className="theme-radius flex flex-wrap items-center gap-1.5 bg-surface px-3 py-2"
-        data-testid="task-detail-actions"
-      >
+        {done && (
+          <section className="flex flex-col gap-1" data-testid="task-modal-completion">
+            <SubHeading>Evidence</SubHeading>
+            {task.completion == null ? (
+              <p className="text-sm leading-5 text-muted-foreground">No evidence recorded</p>
+            ) : (
+              <p
+                data-testid="task-evidence"
+                className="whitespace-pre-wrap text-sm leading-5 [overflow-wrap:anywhere]"
+              >
+                {task.completion.evidence}
+              </p>
+            )}
+          </section>
+        )}
+        {blockers.length > 0 && (
+          <section className="flex flex-col gap-1">
+            <SubHeading>Blocked by</SubHeading>
+            <ul className="flex flex-col gap-1">
+              {blockers.map((blocker) => (
+                <li
+                  key={blocker.id}
+                  className="flex min-h-6 items-center gap-2 text-sm leading-5 [overflow-wrap:anywhere]"
+                >
+                  <span className="min-w-0 flex-1">{blocker.title}</span>
+                  {blocker.done && <Badge variant="outline">Done</Badge>}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+        {children.length > 0 && (
+          <section className="flex flex-col gap-1">
+            <SubHeading>Subtasks</SubHeading>
+            <ul className="flex flex-col gap-1">
+              {children.map((child) => (
+                <li key={child.id} className="flex min-h-6 items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onOpen(child.id)}
+                    className="min-w-0 flex-1 text-left text-sm leading-5 underline-offset-4 hover:underline"
+                  >
+                    <InlineMarkdown text={child.title} />
+                  </button>
+                  {child.status === "done" && <Badge variant="outline">Done</Badge>}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+        {task.attachments !== undefined && task.attachments.length > 0 && (
+          <section className="flex flex-wrap gap-2" data-testid="task-attachments">
+            {task.attachments.map((id, index) => (
+              <img
+                key={id}
+                src={mediaUrl(id)}
+                alt={`Task attachment ${index + 1}`}
+                loading="lazy"
+                draggable={false}
+                className="block size-16 rounded-md border border-border object-cover"
+              />
+            ))}
+          </section>
+        )}
+        <Separator />
+        <section className="flex flex-col gap-2" data-testid="task-history">
+          <SubHeading>History</SubHeading>
+          {events.length === 0 ? (
+            <p className="text-sm leading-5 text-muted-foreground">Nothing recorded yet</p>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {eventDays.map(([key, items]) => (
+                <div key={key} className="flex flex-col gap-1">
+                  <p className="text-xs font-medium leading-4 text-muted-foreground">
+                    {dayLabel(key, now)}
+                  </p>
+                  <ol className="flex flex-col gap-1">
+                    {items.map((event, index) => (
+                      <li
+                        // biome-ignore lint/suspicious/noArrayIndexKey: history is append-only and has no ids.
+                        key={`${event.at}-${index}`}
+                        data-kind={event.kind}
+                        className="flex items-baseline gap-3 text-sm leading-5"
+                      >
+                        <time
+                          dateTime={event.at}
+                          title={formatDateTime(event.at)}
+                          className="w-11 shrink-0 tabular-nums text-muted-foreground"
+                        >
+                          {formatTime(event.at)}
+                        </time>
+                        <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+                          {event.text}
+                        </span>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              ))}
+              {hidden > 0 && (
+                <p className="text-xs leading-4 text-muted-foreground">
+                  {hidden} earlier {hidden === 1 ? "event" : "events"}
+                </p>
+              )}
+            </div>
+          )}
+        </section>
+        {notice !== null && <ErrorText>{notice}</ErrorText>}
+      </CardContent>
+      <CardFooter className="flex-wrap gap-2" data-testid="task-detail-actions">
         {proposed ? (
           <>
-            <button
-              type="button"
-              className={button}
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0 rounded-md"
               onClick={onDismiss}
-              aria-label={`Dismiss ${plainInline(task.title)} proposal`}
+              aria-label={`Dismiss ${title} proposal`}
             >
-              dismiss
-            </button>
+              Dismiss
+            </Button>
             <span className="flex-1" />
-            <button
-              type="button"
-              className={primary}
+            <Button
+              size="sm"
+              className="shrink-0 rounded-md"
               onClick={onApprove}
-              aria-label={`Approve ${plainInline(task.title)} proposal`}
+              aria-label={`Approve ${title} proposal`}
             >
-              approve
-            </button>
+              Approve
+            </Button>
           </>
         ) : (
           <>
-            <button type="button" className={button} aria-pressed={armed} onClick={onArm}>
-              {armed ? "adding subtask…" : "subtask"}
-            </button>
-            <button
-              type="button"
-              className={button}
-              aria-label={`Add blocker to ${plainInline(task.title)}`}
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0 rounded-md"
+              aria-pressed={armed}
+              onClick={onArm}
+            >
+              {armed ? "Adding subtask" : "Subtask"}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0 rounded-md"
+              aria-label={`Add blocker to ${title}`}
               onClick={(event) => {
                 const rect = event.currentTarget.getBoundingClientRect();
                 onBlock(rect.left, rect.bottom + 4);
               }}
             >
-              block…
-            </button>
-            <button
-              type="button"
-              className={button}
+              Block
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0 rounded-md"
               onClick={onRemove}
-              aria-label={`Remove ${plainInline(task.title)} task`}
+              aria-label={`Remove ${title} task`}
             >
-              remove
-            </button>
+              Remove
+            </Button>
             <span className="flex-1" />
-            <button
-              type="button"
+            <Button
+              size="sm"
+              variant={done ? "outline" : "default"}
               data-testid="task-detail-status"
               aria-disabled={openChildren}
               title={openChildren ? "Finish open subtasks first" : undefined}
-              className={`${done ? button : primary} aria-disabled:opacity-60`}
+              className="shrink-0 rounded-md aria-disabled:opacity-50"
               onClick={() => {
                 if (openChildren) return;
                 onStatus(task, done ? "open" : "done");
               }}
             >
-              {done ? "reopen" : "mark done"}
-            </button>
+              {done ? "Reopen" : "Mark done"}
+            </Button>
           </>
         )}
-      </div>
-    </article>
+      </CardFooter>
+    </Card>
   );
 }
 
@@ -1360,49 +1320,47 @@ function TaskMenu({
   const candidates = tasks
     .filter((item) => item.id !== task.id && !ancestors.has(item.id) && !descendants.has(item.id))
     .sort((a, b) => compareTasks(tasks, a, b));
-  const left = Math.max(8, Math.min(point.x, window.innerWidth - 184));
+  const left = Math.max(8, Math.min(point.x, window.innerWidth - 248));
   const top = Math.max(8, Math.min(point.y, window.innerHeight - 160));
+  const item =
+    "flex min-h-8 w-full items-center rounded-sm px-2 text-left text-sm leading-5 hover:bg-muted";
 
   return (
     <div
       id="task-menu"
       data-testid="task-menu"
       role="menu"
-      className="ink-line theme-radius fixed z-40 w-44 border bg-surface p-1 text-foreground"
+      className="fixed z-40 w-60 rounded-md border border-border bg-surface p-1 text-foreground shadow-md"
       style={{ left, top }}
     >
       {notice !== null && (
-        <p
-          role="alert"
-          data-testid="task-error"
-          className="px-2 py-1 font-mono text-[11px] leading-4 text-destructive"
-        >
-          {notice}
-        </p>
+        <div className="px-1 py-1">
+          <ErrorText>{notice}</ErrorText>
+        </div>
       )}
       <button
         type="button"
         role="menuitem"
         aria-label={`Subtask of ${plainInline(task.title)}`}
-        className="block w-full theme-radius px-2 py-1.5 text-left font-mono text-[11px] hover:bg-foreground/10"
+        className={item}
         onClick={onArm}
       >
-        subtask
+        Add subtask
       </button>
       <button
         type="button"
         role="menuitem"
         aria-expanded={pickerOpen}
         aria-label={`Blockers for ${plainInline(task.title)}`}
-        className="block w-full theme-radius px-2 py-1.5 text-left font-mono text-[11px] hover:bg-foreground/10"
+        className={item}
         onClick={onTogglePicker}
       >
-        blocker
+        Blocked by…
       </button>
       {pickerOpen && (
-        <ul className="flex flex-col gap-1 px-2 py-1">
+        <ul className="flex max-h-60 flex-col overflow-y-auto py-1">
           {candidates.length === 0 && (
-            <li className="font-mono text-[10px] text-muted-foreground">No other tasks</li>
+            <li className="px-2 py-1 text-sm leading-5 text-muted-foreground">No other tasks</li>
           )}
           {candidates.map((other) => {
             const selected = task.blockedBy.includes(other.id);
@@ -1414,7 +1372,7 @@ function TaskMenu({
                   aria-pressed={selected}
                   aria-label={`Blocked by ${plainInline(other.title)}`}
                   disabled={cycle}
-                  className="text-left font-mono text-[11px] text-foreground disabled:opacity-40"
+                  className={cn(item, "gap-2 disabled:opacity-50")}
                   onClick={() => {
                     const blockedBy = selected
                       ? task.blockedBy.filter((id) => id !== other.id)
@@ -1422,21 +1380,44 @@ function TaskMenu({
                     onBlockers(blockedBy);
                   }}
                 >
-                  {selected ? "●" : "○"} <InlineMarkdown text={other.title} />
+                  <span
+                    aria-hidden
+                    data-state={selected ? "checked" : "unchecked"}
+                    className="grid size-4 shrink-0 place-items-center rounded-sm border border-foreground/60 text-background data-[state=checked]:border-foreground data-[state=checked]:bg-foreground"
+                  >
+                    {selected && (
+                      <svg
+                        aria-hidden
+                        viewBox="0 0 24 24"
+                        className="size-3"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={3}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M20 6 9 17l-5-5" />
+                      </svg>
+                    )}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">
+                    <InlineMarkdown text={other.title} />
+                  </span>
                 </button>
               </li>
             );
           })}
         </ul>
       )}
+      <div className="-mx-1 my-1 h-px bg-border" />
       <button
         type="button"
         role="menuitem"
         aria-label={`Remove ${plainInline(task.title)}`}
-        className="block w-full theme-radius px-2 py-1.5 text-left font-mono text-[11px] hover:bg-foreground/10"
+        className={item}
         onClick={onRemove}
       >
-        remove
+        Remove
       </button>
     </div>
   );
