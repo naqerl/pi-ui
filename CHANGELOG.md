@@ -11,6 +11,14 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 - Backlog tasks stay out of the way on the tasks page: their cards are blurred and desaturated, they sort after live work in their project, a project with only backlog tasks sits at the end, and they do not count in Active, Blocked or Proposed.
 - The agent's ledger tools hide backlog tasks from `task_list`, counts and reports, and `task_view`, `task_edit`, `task_done` and `task_block` refuse a backlog id as unknown.
 
+## 1.6.43 - 2026-11-01
+
+- Task cards carry the 4-char id beside the title and move their status actions into the card menu, so the row no longer opens a menu by accident.
+- Idle nudges became a remembered per-task decision protocol: the agent marks a task working, blocked or ignored, a working task is asked for a status update at most once an hour, and an ignored task returns only after three nudges.
+- A task marked working keeps its badge until it is finished, and a task with no tool activity for an hour is added to the next nudge so its status is re-confirmed.
+- The active/blocked/proposed filters left the composer for the task list itself, which now owns the filter row on every screen size.
+- A task can be created as hidden backlog by long-pressing Send: it parks at the end of its group with a blurred background and stays invisible to the agent until it is promoted.
+
 ## 1.6.42 - 2026-11-01
 
 - Opening the chat now hydrates the conversation immediately instead of requiring a page switch: the first paint waits for one real state fetch, a failed fetch keeps the last state and retries with backoff, and the page refreshes again when it becomes visible or the app regains focus.
