@@ -21,6 +21,7 @@ import {
   pendingSteerMessage,
   rebuildSteersFromSnapshot,
 } from "../shared/steers";
+import { carryWorkingTraces } from "../shared/task-status";
 import type {
   ActivityItem,
   ChatMessage,
@@ -109,6 +110,9 @@ function addJobActivity(current: ActivityItem[], extra: ActivityItem[]): Activit
 
 /** Messages fetched per scroll-up page. */
 const HISTORY_PAGE = 30;
+/** A failed state fetch retries from here, doubling up to the cap. */
+const RETRY_MIN_MS = 1_000;
+const RETRY_MAX_MS = 30_000;
 
 /** Keeps every held item below `from`, then the snapshot's items from `from` up. */
 function mergeWindow<T extends { order: number }>(current: T[], from: number, fresh: T[]): T[] {
@@ -154,12 +158,25 @@ export function useChat(options: UseChatOptions = {}) {
   const toolsRevision = useRef(0);
   const eventsRevision = useRef(0);
   const taskRevision = useRef(-1);
-  const [taskLedger, setTaskLedger] = useState<TaskLedger>({ tasks: [], revision: -1 });
+  const initialLedger = { tasks: [], revision: -1 } satisfies TaskLedger;
+  const taskLedgerRef = useRef<TaskLedger>(initialLedger);
+  const [taskLedger, setTaskLedger] = useState<TaskLedger>(initialLedger);
+  /** The current refresh function, so a retry timer never holds a stale closure. */
+  const refreshRef = useRef<() => Promise<void>>(async () => undefined);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const retryDelay = useRef(RETRY_MIN_MS);
 
   const applyTasks = useCallback((ledger: TaskLedger) => {
     if (ledger.revision < taskRevision.current) return;
     taskRevision.current = ledger.revision;
-    setTaskLedger(ledger);
+    // A snapshot that omits run activity must not take a Working badge back down.
+    const previous = taskLedgerRef.current;
+    const next: TaskLedger = {
+      ...ledger,
+      activity: carryWorkingTraces(previous.activity, ledger.activity, ledger.tasks),
+    };
+    taskLedgerRef.current = next;
+    setTaskLedger(next);
   }, []);
 
   const applyDraft = useCallback((draft: StreamDraftSync, adoptLower = false) => {
@@ -177,13 +194,34 @@ export function useChat(options: UseChatOptions = {}) {
     setMcpEvents(state);
   }, []);
 
+  const scheduleRetry = useCallback(() => {
+    if (retryTimer.current !== undefined) return;
+    const delay = retryDelay.current;
+    retryTimer.current = setTimeout(() => {
+      retryTimer.current = undefined;
+      void refreshRef.current();
+    }, delay);
+    retryDelay.current = Math.min(RETRY_MAX_MS, delay * 2);
+  }, []);
+
+  const clearRetry = useCallback(() => {
+    if (retryTimer.current !== undefined) {
+      clearTimeout(retryTimer.current);
+      retryTimer.current = undefined;
+    }
+    retryDelay.current = RETRY_MIN_MS;
+  }, []);
+
   const refreshState = useCallback(async () => {
     const sequence = ++refreshSequence.current;
     try {
       const from = windowFrom.current ?? (fullHistory ? 0 : null);
       const url = from === null ? "/api/state" : `/api/state?from=${from}`;
       const response = await fetch(url, { cache: "no-store" });
-      if (!response.ok) return;
+      if (!response.ok) {
+        scheduleRetry();
+        return;
+      }
       const snapshot = (await response.json()) as Snapshot;
       if (sequence !== refreshSequence.current) return;
       const snapshotFrom = snapshot.from ?? 0;
@@ -233,10 +271,17 @@ export function useChat(options: UseChatOptions = {}) {
       if (snapshot.mcpEvents !== undefined) applyEvents(snapshot.mcpEvents);
       if (snapshot.tasks !== undefined) applyTasks(snapshot.tasks);
       setReady(true);
+      // A service worker may answer a failed request from its cache; keep what it showed,
+      // but ask the network again instead of treating the cached render as hydrated.
+      if (response.headers.get("x-pi-stale") === "1") scheduleRetry();
+      else clearRetry();
     } catch {
-      // The SSE connection will keep the UI usable once the server is reachable again.
+      // Keep the state already on screen and try again rather than showing an empty chat.
+      scheduleRetry();
     }
-  }, [applyDraft, applyEvents, applyTasks, fullHistory]);
+  }, [applyDraft, applyEvents, applyTasks, clearRetry, fullHistory, scheduleRetry]);
+
+  refreshRef.current = refreshState;
 
   /** Fetches the page of transcript just older than what is held. */
   const loadEarlier = useCallback(async () => {
@@ -274,6 +319,13 @@ export function useChat(options: UseChatOptions = {}) {
     void refreshState();
     const source = new EventSource("/api/stream");
     let offlineTimer: ReturnType<typeof setTimeout> | undefined;
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") void refreshState();
+    };
+    const refreshOnFocus = () => void refreshState();
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    window.addEventListener("focus", refreshOnFocus);
+    window.addEventListener("pageshow", refreshOnFocus);
     const reportOfflineSteers = () => {
       const reason = "The connection to the server closed before the steer was delivered.";
       setSteers((current) => {
@@ -481,6 +533,13 @@ export function useChat(options: UseChatOptions = {}) {
 
     return () => {
       if (offlineTimer !== undefined) clearTimeout(offlineTimer);
+      if (retryTimer.current !== undefined) {
+        clearTimeout(retryTimer.current);
+        retryTimer.current = undefined;
+      }
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+      window.removeEventListener("focus", refreshOnFocus);
+      window.removeEventListener("pageshow", refreshOnFocus);
       source.close();
     };
   }, [applyDraft, applyEvents, applyTasks, refreshState]);

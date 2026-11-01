@@ -154,7 +154,9 @@ function NoticeDialog({
                   : notice.kind === "memory"
                     ? "Memory write"
                     : notice.kind === "idle"
-                      ? "Idle nudge"
+                      ? notice.stale === true
+                        ? "Status check"
+                        : "Idle nudge"
                       : notice.kind === "operator"
                         ? "Operator request"
                         : notice.stopped
@@ -204,7 +206,9 @@ function IdleDetails({ notice }: { notice: IdleNoticeDetails }) {
   return (
     <>
       <p className="[overflow-wrap:anywhere]">{notice.text}</p>
-      <Fields rows={[["Open tasks", notice.taskIds.join(", ")]]} />
+      <Fields
+        rows={[[notice.stale === true ? "Tracked tasks" : "Open tasks", notice.taskIds.join(", ")]]}
+      />
     </>
   );
 }

@@ -53,6 +53,8 @@ import {
   type IdleTask,
   idleNudgeMs,
   openTaskIds,
+  StaleRunNudge,
+  staleRunNudgeMs,
 } from "./idle-nudge.js";
 import { NoticeCoalescer } from "./mcp-event-policy.js";
 import type { McpEventFeed } from "./mcp-events.js";
@@ -204,9 +206,11 @@ export class ChatService {
   private watchdog: ReturnType<typeof setInterval> | undefined;
   private idleNudgeTimer: ReturnType<typeof setInterval> | undefined;
   private readonly idleNudge: IdleNudge;
+  private readonly staleRunNudge: StaleRunNudge;
   private readonly idleTasks: IdleTaskSource;
   private checkingRun = false;
   private checkingIdleNudge = false;
+  private checkingStaleRunNudge = false;
   private quietLogged = false;
   private readonly queued = new Map<string, QueuedRun>();
   /** Steers durable holds in its inbox for the next turn boundary, by submission id. */
@@ -264,6 +268,7 @@ export class ChatService {
     }
     this.idleTasks = idleTasksSource;
     this.idleNudge = new IdleNudgeImpl(idleNudgeMs(), Date.now(), idleNudgeDataDir);
+    this.staleRunNudge = new StaleRunNudge(staleRunNudgeMs(), idleNudgeDataDir);
     this.runState = interrupted ? "interrupted" : "idle";
     this.modelWindow = modelWindow;
     this.selected = initialModel === undefined ? null : modelOption(initialModel);
@@ -314,9 +319,16 @@ export class ChatService {
    * without waking the process every millisecond in normal use.
    */
   private startIdleNudge(): void {
-    if (!this.idleNudge.enabled) return;
-    const interval = Math.min(10_000, Math.max(10, this.idleNudge.intervalMs));
-    this.idleNudgeTimer = setInterval(() => void this.checkIdleNudge(), interval);
+    const windows = [
+      ...(this.idleNudge.enabled ? [this.idleNudge.intervalMs] : []),
+      ...(this.staleRunNudge.enabled ? [this.staleRunNudge.intervalMs] : []),
+    ];
+    if (windows.length === 0) return;
+    const interval = Math.min(10_000, Math.max(10, ...windows));
+    this.idleNudgeTimer = setInterval(() => {
+      void this.checkIdleNudge();
+      void this.checkStaleRunNudge();
+    }, interval);
     this.idleNudgeTimer.unref?.();
   }
 
@@ -353,6 +365,38 @@ export class ChatService {
       console.error("[pi] could not submit the idle nudge", error);
     } finally {
       this.checkingIdleNudge = false;
+    }
+  }
+
+  /**
+   * A live run that has not called a tool for an hour on one of its tagged tasks gets
+   * one status check. It uses the same notice chip and queue path as the idle nudge,
+   * never a steer, and is silent for terminal, blocked or waiting runs.
+   */
+  private async checkStaleRunNudge(): Promise<void> {
+    if (this.closed || this.checkingStaleRunNudge || !this.staleRunNudge.enabled) return;
+    if (this.runState !== "running" || this.submitting > 0) return;
+    if (this.queued.size > 0 || this.steers.size > 0) return;
+    const tasks = this.idleTasks();
+    if (tasks.every((task): task is string => typeof task === "string")) return;
+    const plan = this.staleRunNudge.maybeNudge(tasks, this.taskActivity?.view());
+    if (plan === null) return;
+    this.checkingStaleRunNudge = true;
+    const createdAt = new Date().toISOString();
+    try {
+      await this.submit(plan.text, "queue", {
+        entry: {
+          kind: IDLE_NUDGE_ENTRY_KIND,
+          label: "Status check",
+          data: { text: plan.text, taskIds: [...plan.taskIds], createdAt },
+        },
+      });
+    } catch (error) {
+      // Nothing reached the chat, so let the same task try again instead of waiting an hour.
+      this.staleRunNudge.forget(plan.taskIds);
+      console.error("[pi] could not submit the stale-run nudge", error);
+    } finally {
+      this.checkingStaleRunNudge = false;
     }
   }
 

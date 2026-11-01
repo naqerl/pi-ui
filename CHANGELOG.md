@@ -2,6 +2,12 @@
 
 Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
 
+## Unreleased
+
+- The chat hydrates when it opens: the first paint waits for one real state fetch, a failed fetch keeps the last state and retries with backoff, and the page refreshes again when it becomes visible or the app regains focus.
+- A task keeps its Working badge until its run reaches a terminal outcome or the task closes; a snapshot that omits the run activity no longer clears a badge that was already shown.
+- A live run that has made no tool call for an hour gets one status-check nudge per task, asking whether it is still in progress, done or blocked and to update the ledger; it is a notice chip and never fires for a terminal, blocked or waiting run.
+
 ## 1.6.39 - 2026-10-31
 
 - A queued MCP event is now a machine chip, not a bubble: the events that arrive while a turn is running are submitted as notices, so their raw payload never appears in the chat as something you said.

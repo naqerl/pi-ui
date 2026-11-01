@@ -1319,7 +1319,14 @@ export function ChatView({
                     paddingBottom: footerClearance + TRANSCRIPT_END_GAP,
                   }}
                 >
-                  {!ready && <p className="font-mono text-xs text-muted-foreground">Loading…</p>}
+                  {!ready && (
+                    <p
+                      data-testid="chat-loading"
+                      className="theme-radius w-fit self-center border border-border bg-surface/90 px-3 py-1.5 font-mono text-xs text-muted-foreground shadow-sm backdrop-blur-md"
+                    >
+                      Loading…
+                    </p>
+                  )}
                   {history?.hasEarlier === true && (
                     <EarlierMessages
                       history={history}

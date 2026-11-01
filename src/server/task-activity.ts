@@ -100,6 +100,8 @@ export class TaskActivityTracker {
   private runId: string | null = null;
   /** Tasks the live run touched, with their first and last tagged call. */
   private spans = new Map<string, RunSpan>();
+  /** Tasks a live model reply mentioned, even if no tagged tool call followed. */
+  private mentioned = new Set<string>();
   /** A failure seen during the run, reported when it ends. */
   private failure: { outcome: "error" | "interrupted"; reason: string } | null = null;
   private listeners = new Set<() => void>();
@@ -181,6 +183,7 @@ export class TaskActivityTracker {
     if (this.runId !== null) return;
     this.runId = randomUUID();
     this.spans.clear();
+    this.mentioned.clear();
     this.failure = null;
     this.changed();
   }
@@ -199,14 +202,22 @@ export class TaskActivityTracker {
     const outcome: TaskRunOutcome = interrupted ? "interrupted" : (this.failure?.outcome ?? "ok");
     const reason = interrupted ? "run interrupted" : this.failure?.reason;
     const at = this.iso();
-    for (const [id, span] of this.spans) {
+    const touched = new Set([...this.spans.keys(), ...this.mentioned]);
+    for (const id of touched) {
       const trace = this.traces.get(id);
       if (trace === undefined || trace.lastRun?.id !== this.runId) continue;
+      const span = this.spans.get(id);
       trace.lastRun = { id: this.runId, outcome, at, ...(reason === undefined ? {} : { reason }) };
-      const spent = Math.max(0, this.spanEnd(span, this.clock()) - span.firstAt);
+      const spent =
+        span === undefined ? 0 : Math.max(0, this.spanEnd(span, this.clock()) - span.firstAt);
       trace.measured.activeMs += spent;
       if (outcome === "ok") {
-        this.push(trace, at, "run-end", `Run ended · ${duration(spent)}`);
+        this.push(
+          trace,
+          at,
+          "run-end",
+          span === undefined ? "Run ended" : `Run ended · ${duration(spent)}`,
+        );
       } else {
         this.push(
           trace,
@@ -218,6 +229,7 @@ export class TaskActivityTracker {
     }
     this.runId = null;
     this.spans.clear();
+    this.mentioned.clear();
     this.failure = null;
     this.changed();
   }
@@ -237,10 +249,14 @@ export class TaskActivityTracker {
     const trace = this.trace(taskId);
     const span = this.spans.get(taskId);
     if (span === undefined || trace.lastRun?.id !== runId) {
+      const startsRun = trace.lastRun?.id !== runId || trace.lastRun?.outcome !== "running";
       this.spans.set(taskId, { firstAt: now, lastAt: now, open: 1 });
       trace.measured.runs += 1;
-      trace.lastRun = { id: runId, outcome: "running", at: new Date(now).toISOString() };
-      this.push(trace, new Date(now).toISOString(), "run-start", "Run started");
+      if (startsRun) {
+        trace.lastRun = { id: runId, outcome: "running", at: new Date(now).toISOString() };
+        this.push(trace, new Date(now).toISOString(), "run-start", "Run started");
+      }
+      this.mentioned.delete(taskId);
     } else {
       span.lastAt = now;
       span.open += 1;
@@ -274,10 +290,18 @@ export class TaskActivityTracker {
       .filter((id): id is string => id !== undefined);
     if (ids.length === 0) return;
     const share = 1 / ids.length;
+    const at = this.iso();
     for (const id of ids) {
       const trace = this.trace(id);
       trace.measured.tokens += Math.round(call.tokens * share);
       trace.measured.cost += call.cost * share;
+      // A model reply that names the task is a mention that outlives this snapshot. It keeps
+      // the task working until the run it belongs to ends, even without a tagged tool call.
+      if (this.runId !== null && trace.lastRun?.id !== this.runId) {
+        trace.lastRun = { id: this.runId, outcome: "running", at };
+        this.mentioned.add(id);
+        this.push(trace, at, "run-start", "Run started");
+      }
     }
     this.changed();
   }
