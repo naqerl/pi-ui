@@ -22,7 +22,7 @@ import {
   memoryUndoPrompt,
   parseNotice,
 } from "../src/shared/notices.js";
-import { isQueuedNotice } from "../src/shared/queue.js";
+import { isQueuedNotice, queuedNoticeGlyph } from "../src/shared/queue.js";
 import type { ChatMessage } from "../src/shared/types.js";
 
 function job(overrides: Partial<JobRecord>): JobRecord {
@@ -393,6 +393,9 @@ test("a notify_operator call becomes an operator chip with its question and reas
     createElement(NoticeLine, { message, notice: message.notice as ChatNotice }),
   );
   assert.match(html, /operator · Deploy or wait\?/);
+  assert.match(html, /◇/);
+  assert.doesNotMatch(html, /✉/);
+  assert.equal(queuedNoticeGlyph("operator"), "◇");
 });
 
 test("recording an interrupted run sends no push", async (t) => {

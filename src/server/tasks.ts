@@ -225,6 +225,11 @@ function pushTitle(kind: PendingTaskKind): string {
   }
 }
 
+/** A decision is shown in the chat but never rings the operator's phone. */
+function pushes(kind: PendingTaskKind): kind is "proposal" | "done" {
+  return kind === "proposal" || kind === "done";
+}
+
 const defaultTaskNotifier: TaskNotifier = async (notification) => {
   await notify(notification);
 };
@@ -612,8 +617,9 @@ export class TaskStore {
   }
 
   /**
-   * One push when a proposal appears, is decided, or a task moves to done.
-   * A repeat write, or deleting anything that was not a proposal, stays quiet.
+   * One push when a proposal appears or a task moves to done. Approving or
+   * declining a proposal records the chat notice only. A repeat write, or
+   * deleting anything that was not a proposal, stays quiet.
    */
   private async announce(previous: readonly Task[], next: readonly Task[]): Promise<void> {
     const before = new Map(previous.map((task) => [task.id, task]));
@@ -649,14 +655,23 @@ export class TaskStore {
 
     await Promise.all(changes.map((change) => this.recordDecisionNotice(change)));
 
+    // A decision stays in the chat. Drop its proposal's pending push, which
+    // would otherwise describe a state the ledger has already left.
+    const notifiable = changes.filter((change) => {
+      if (pushes(change.kind)) return true;
+      this.pendingChanges.delete(change.task.id);
+      return false;
+    });
+    if (notifiable.length === 0) return;
+
     // A write that arrives while another write is already queued belongs to a
     // burst. A lone change still goes out with the write that caused it.
     if (this.pushWindowMs > 0 && (this.pendingChanges.size > 0 || this.queuedCommits > 1)) {
-      this.queueBurst(changes, next);
+      this.queueBurst(notifiable, next);
       return;
     }
 
-    await Promise.all(changes.map((change) => this.sendIndividual(change)));
+    await Promise.all(notifiable.map((change) => this.sendIndividual(change)));
   }
 
   private queueBurst(changes: readonly PendingTaskChange[], next: readonly Task[]): void {

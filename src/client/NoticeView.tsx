@@ -41,7 +41,7 @@ function noticeGlyph(notice: ChatNotice): string {
   if (notice.kind === "mcp") return "↯";
   if (notice.kind === "memory") return "✎";
   if (notice.kind === "idle") return "◷";
-  if (notice.kind === "operator") return "✉";
+  if (notice.kind === "operator") return "◇";
   return "⚠";
 }
 

@@ -540,7 +540,7 @@ test("approving a proposal keeps its rationale and makes it normal work", async 
   }
 });
 
-test("approving a proposal pushes Proposal approved and records one operator notice", async () => {
+test("approving a proposal records one operator notice without a push", async () => {
   const pushes: PushNotification[] = [];
   const notices: OperatorNoticeRecord[] = [];
   const { directory, store } = await temporaryStore({
@@ -563,14 +563,7 @@ test("approving a proposal pushes Proposal approved and records one operator not
 
     await store.update(proposal.id, { status: "open" });
 
-    assert.deepEqual(pushes, [
-      {
-        title: "Proposal approved",
-        body: "Tidy the ledger",
-        tag: proposal.id,
-        url: "/tasks",
-      },
-    ]);
+    assert.deepEqual(pushes, []);
     assert.equal(notices.length, 1);
     assert.match(notices[0]?.body ?? "", /Tidy the ledger/);
     assert.match(notices[0]?.body ?? "", /approved/i);
@@ -579,7 +572,7 @@ test("approving a proposal pushes Proposal approved and records one operator not
   }
 });
 
-test("declining a proposal pushes Proposal declined and records one operator notice", async () => {
+test("declining a proposal records one operator notice without a push", async () => {
   const pushes: PushNotification[] = [];
   const notices: OperatorNoticeRecord[] = [];
   const { directory, store } = await temporaryStore({
@@ -602,14 +595,7 @@ test("declining a proposal pushes Proposal declined and records one operator not
 
     await store.remove(proposal.id);
 
-    assert.deepEqual(pushes, [
-      {
-        title: "Proposal declined",
-        body: "Drop the old importer",
-        tag: proposal.id,
-        url: "/tasks",
-      },
-    ]);
+    assert.deepEqual(pushes, []);
     assert.equal(notices.length, 1);
     assert.match(notices[0]?.body ?? "", /Drop the old importer/);
     assert.match(notices[0]?.body ?? "", /declined/i);
@@ -626,7 +612,7 @@ test("declining a proposal pushes Proposal declined and records one operator not
   }
 });
 
-test("approving in the burst window replaces the pending New proposal push", async () => {
+test("approving in the burst window cancels the approval push and keeps the other proposal", async () => {
   const pushes: PushNotification[] = [];
   const notices: OperatorNoticeRecord[] = [];
   const { directory, store } = await temporaryStore({
@@ -650,18 +636,18 @@ test("approving in the burst window replaces the pending New proposal push", asy
     await wait(250);
 
     assert.equal(pushes.length, 1);
-    assert.equal(pushes[0]?.title, "2 tasks updated");
+    assert.equal(pushes[0]?.title, "New proposal");
     const body = pushes[0]?.body ?? "";
-    assert.match(body, /Proposal approved: Alpha/);
+    assert.doesNotMatch(body, /Proposal approved: Alpha/);
     assert.doesNotMatch(body, /New proposal: Alpha/);
-    assert.match(body, /New proposal: Beta/);
+    assert.equal(body, "Beta");
     assert.equal(notices.length, 1);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("three proposal decisions in one burst push once and record three notices", async () => {
+test("three proposal decisions in one burst record three notices without a push", async () => {
   const pushes: PushNotification[] = [];
   const notices: OperatorNoticeRecord[] = [];
   const { directory, store } = await temporaryStore({
@@ -694,12 +680,7 @@ test("three proposal decisions in one burst push once and record three notices",
     ]);
     await wait(250);
 
-    assert.equal(pushes.length, 1);
-    assert.equal(pushes[0]?.title, "3 tasks updated");
-    const body = pushes[0]?.body ?? "";
-    assert.match(body, /Proposal approved: Alpha/);
-    assert.match(body, /Proposal declined: Beta/);
-    assert.match(body, /Proposal declined: Gamma/);
+    assert.deepEqual(pushes, []);
     assert.equal(notices.length, 3);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -734,8 +715,7 @@ test("a failing operator notice does not fail a proposal decision", async () => 
 
       const ledger = await store.update(proposal.id, { status: "open" });
       assert.equal(ledger.tasks.find((task) => task.id === proposal.id)?.status, "open");
-      assert.equal(pushes.length, 1);
-      assert.equal(pushes[0]?.title, "Proposal approved");
+      assert.deepEqual(pushes, []);
       assert.equal(errors.length, 1);
       assert.match(String(errors[0]?.[0]), /\[pi\] task notice failed for/);
     } finally {
