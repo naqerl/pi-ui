@@ -118,7 +118,10 @@ function isTask(value: unknown): value is Task {
     task.id.length > 0 &&
     task.id.length <= 16 &&
     typeof task.title === "string" &&
-    (task.status === "open" || task.status === "done" || task.status === "proposed") &&
+    (task.status === "open" ||
+      task.status === "done" ||
+      task.status === "proposed" ||
+      task.status === "backlog") &&
     (task.parentId === null || typeof task.parentId === "string") &&
     Array.isArray(task.blockedBy) &&
     task.blockedBy.every((id) => typeof id === "string") &&
@@ -268,6 +271,7 @@ export class TaskStore {
     attachments: readonly string[] = [],
     project?: string | null,
     body?: string | null,
+    mode?: TaskStatus | { status?: TaskStatus; backlog?: boolean } | boolean,
   ): Promise<TaskLedger> {
     const text = title.trim();
     if (text.length === 0) return Promise.reject(new TaskError("Task title is required", 400));
@@ -289,10 +293,11 @@ export class TaskStore {
       }
       const parent = parentId === null ? undefined : tasks.find((item) => item.id === parentId);
       const name = chooseProject(project, tasks, parent?.project);
+      const status = createStatus(mode);
       const task: Task = {
         id: newId(new Set(tasks.map((item) => item.id))),
         title: text,
-        status: "open",
+        status,
         parentId,
         blockedBy: [],
         createdAt: new Date().toISOString(),
@@ -433,8 +438,13 @@ export class TaskStore {
         next = withBody(next, normalizeBody(patch.body));
       }
       if (patch.status !== undefined) {
-        if (patch.status !== "open" && patch.status !== "done" && patch.status !== "proposed") {
-          throw new TaskError('Status must be "open", "done" or "proposed"', 400);
+        if (
+          patch.status !== "open" &&
+          patch.status !== "done" &&
+          patch.status !== "proposed" &&
+          patch.status !== "backlog"
+        ) {
+          throw new TaskError('Status must be "open", "done", "proposed" or "backlog"', 400);
         }
         if (patch.status === "proposed" && current.status !== "proposed") {
           throw new TaskError("Only a proposal can be moved to proposed", 409);
@@ -475,7 +485,7 @@ export class TaskStore {
         } else {
           next = {
             ...next,
-            status: "open",
+            status: patch.status,
             completedAt: null,
             completion: null,
             ...(current.status === "proposed" ? { proposedAt: null } : {}),
@@ -697,6 +707,26 @@ export class TaskStore {
     await writeFile(temporary, body, "utf8");
     await rename(temporary, this.file);
   }
+}
+
+/** Resolve the create API's status, `backlog` boolean, or options object. */
+function createStatus(
+  mode: TaskStatus | { status?: TaskStatus; backlog?: boolean } | boolean | undefined,
+): TaskStatus {
+  const status =
+    mode === undefined
+      ? "open"
+      : typeof mode === "boolean"
+        ? mode
+          ? "backlog"
+          : "open"
+        : typeof mode === "string"
+          ? mode
+          : (mode.status ?? (mode.backlog === true ? "backlog" : "open"));
+  if (status !== "open" && status !== "backlog") {
+    throw new TaskError('A new task must be "open" or "backlog"', 400);
+  }
+  return status;
 }
 
 function normalizeBlockers(

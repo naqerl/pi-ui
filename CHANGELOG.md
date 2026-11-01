@@ -2,6 +2,12 @@
 
 Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
 
+## Unreleased
+
+- A long press on the tasks page's Send button parks the next task in the backlog: the composer shows a Backlog chip and muted placeholder, a second long press (or Escape, a pointer move, or releasing early) cancels, and a short press still creates a normal task.
+- Backlog tasks stay out of the way on the tasks page: their cards are blurred and desaturated, they sort after live work in their project, a project with only backlog tasks sits at the end, and they do not count in Active, Blocked or Proposed.
+- The agent's ledger tools hide backlog tasks from `task_list`, counts and reports, and `task_view`, `task_edit`, `task_done` and `task_block` refuse a backlog id as unknown.
+
 ## 1.6.42 - 2026-11-01
 
 - Opening the chat now hydrates the conversation immediately instead of requiring a page switch: the first paint waits for one real state fetch, a failed fetch keeps the last state and retries with backoff, and the page refreshes again when it becomes visible or the app regains focus.

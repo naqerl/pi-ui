@@ -293,7 +293,9 @@ export function TasksView({
   const state = (task: Task): TaskState => stateOf.get(task.id) ?? "ready";
 
   const activeTasks = tasks.filter((task) => task.status !== "proposed");
-  const openTasks = activeTasks.filter((task) => task.status !== "done");
+  const openTasks = activeTasks.filter(
+    (task) => task.status !== "done" && task.status !== "backlog",
+  );
   const proposedTasks = tasks
     .filter((task) => task.status === "proposed")
     .sort((a, b) => {
@@ -314,6 +316,12 @@ export function TasksView({
   );
   // Open work is grouped by project once any task has one; grouped rows drop the label.
   const projectGroups = groupByProject(activeRoots);
+  // A project with only parked work moves behind every project that has live work.
+  projectGroups.sort(([, a], [, b]) => {
+    const parkedA = a.every((task) => task.status === "backlog");
+    const parkedB = b.every((task) => task.status === "backlog");
+    return parkedA === parkedB ? 0 : parkedA ? 1 : -1;
+  });
   const grouped = projectGroups.some(([name]) => name !== null);
   const doneRoots = roots.filter((task) => task.status === "done").sort(byCompletedDesc);
   const days = groupByDay(doneRoots, (task) => task.completedAt ?? task.createdAt);
@@ -759,6 +767,8 @@ export function stateBadge(state: TaskState, trace: TaskTrace | undefined): stri
       return failureLabel(trace);
     case "proposed":
       return "Proposed";
+    case "backlog":
+      return "Backlog";
     case "done":
       return "Done";
     default:
@@ -836,6 +846,7 @@ export function TaskRow({
     : tasks.filter((item) => item.parentId === task.id).sort((a, b) => compareTasks(tasks, a, b));
   const current = state(task);
   const done = task.status === "done";
+  const backlog = task.status === "backlog";
   const notice = problem?.id === task.id && menuTaskId !== task.id ? problem.message : null;
   const press = useRef<number | null>(null);
   const origin = useRef({ x: 0, y: 0 });
@@ -879,6 +890,8 @@ export function TaskRow({
         aria-describedby={notice !== null ? `task-error-${task.id}` : undefined}
         className={cn(
           "flex min-h-11 w-full cursor-pointer select-none items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 text-left hover:bg-muted",
+          backlog &&
+            "border-dashed bg-surface/60 text-muted-foreground backdrop-blur-sm saturate-0",
           (selected || armed) && "ring-1 ring-foreground",
         )}
         style={{
@@ -935,7 +948,7 @@ export function TaskRow({
           <span
             className={cn(
               "line-clamp-2 text-sm leading-5 [overflow-wrap:anywhere]",
-              done ? "text-muted-foreground" : "text-foreground",
+              done || backlog ? "text-muted-foreground" : "text-foreground",
             )}
           >
             <InlineMarkdown text={task.title} />

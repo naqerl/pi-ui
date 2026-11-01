@@ -72,6 +72,7 @@ export function taskState(
   activity: TaskActivity | undefined,
 ): TaskState {
   if (task.status === "proposed") return "proposed";
+  if (task.status === "backlog") return "backlog";
   if (task.status === "done") return "done";
   if (isWorking(task, activity)) return "working";
   if (isFailed(task, activity)) return "failed";

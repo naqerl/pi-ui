@@ -20,6 +20,7 @@ export function createTask(
   parentId: string | null,
   attachments: string[] = [],
   project?: string | null,
+  options?: { backlog?: boolean; status?: TaskStatus },
 ): Promise<TaskOutcome> {
   return requestTask("/api/tasks", {
     method: "POST",
@@ -29,6 +30,8 @@ export function createTask(
       parentId,
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(project === undefined ? {} : { project }),
+      ...(options?.backlog === true ? { backlog: true } : {}),
+      ...(options?.status === undefined ? {} : { status: options.status }),
     }),
   });
 }
