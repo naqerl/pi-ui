@@ -158,7 +158,7 @@ function MessageParts({ parts }: { parts: ChatMessage["parts"] }) {
   );
 }
 
-/** A queued machine notice, shown as the transparent version of its future notice chip. */
+/** A queued machine notice, shown as the translucent version of its future notice chip. */
 function QueuedNoticeChip({
   message,
   notice,
@@ -183,7 +183,7 @@ function QueuedNoticeChip({
       data-testid="queued-notice-chip"
       className="flex justify-center px-2 py-0.5"
     >
-      <div className="flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border border-foreground/10 bg-transparent px-2.5 py-0.5 font-mono text-[11px] leading-5 text-muted-foreground">
+      <div className="flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border border-foreground/10 bg-background/40 px-2.5 py-0.5 font-mono text-[11px] leading-5 text-foreground/80 backdrop-blur-md">
         <span aria-hidden="true" className="shrink-0">
           {glyph}
         </span>
