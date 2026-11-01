@@ -36,6 +36,38 @@ test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300
   expect(await browser.evaluate(() => document.querySelector("[data-task-check]") === null)).toBe(
     true,
   );
+  const cardId = await browser.evaluate(() => {
+    const card = [...document.querySelectorAll("[data-task-card]")].find((item) =>
+      item.textContent?.includes("Write the ledger"),
+    );
+    const chip = card?.querySelector<HTMLElement>('[data-testid^="task-id-"]');
+    const title = card?.querySelector<HTMLElement>(".line-clamp-2");
+    if (
+      !(card instanceof HTMLElement) ||
+      !(chip instanceof HTMLElement) ||
+      !(title instanceof HTMLElement)
+    ) {
+      return null;
+    }
+    const style = getComputedStyle(chip);
+    return {
+      id: chip.textContent?.trim() ?? "",
+      title: chip.getAttribute("title"),
+      label: chip.getAttribute("aria-label"),
+      classes: chip.className,
+      background: style.backgroundColor,
+      leftOfTitle: chip.getBoundingClientRect().right <= title.getBoundingClientRect().left + 1,
+      describedBy: card.getAttribute("aria-describedby"),
+    };
+  });
+  expect(cardId?.id).toHaveLength(4);
+  expect(cardId?.title).toBe(cardId?.id);
+  expect(cardId?.label).toBe(`task ${cardId?.id}`);
+  expect(cardId?.classes).toContain("font-mono");
+  expect(cardId?.classes).toContain("text-[11px]");
+  expect(cardId?.background).toBe("rgba(0, 0, 0, 0)");
+  expect(cardId?.leftOfTitle).toBe(true);
+  expect(cardId?.describedBy).toContain(`task-id-${cardId?.id}`);
   await expect(composer).toHaveValue("");
   await expect(screen.getByTestId("subtask-progress")).toHaveCount(0);
 
@@ -138,6 +170,41 @@ test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300
   expect(cards?.child?.background).toBe(cards?.parent?.background);
   expect(cards?.child?.alpha).toBe(1);
 
+  // A parent with an open subtask cannot be completed from its card menu either.
+  await browser.evaluate(() => {
+    const card = [...document.querySelectorAll("[data-task-card]")].find((item) =>
+      item.textContent?.includes("Write the ledger"),
+    );
+    if (!(card instanceof HTMLElement)) return null;
+    const box = card.getBoundingClientRect();
+    card.dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: box.left + 16,
+        clientY: box.top + box.height / 2,
+      }),
+    );
+    return null;
+  });
+  const parentMarkDone = screen.getByRole("menuitem", "Mark done Write the ledger");
+  await expect(parentMarkDone).toBeVisible();
+  await expect(parentMarkDone).toHaveAttribute("aria-disabled", "true");
+  await expect(parentMarkDone).toHaveAttribute("title", "Finish open subtasks first");
+  expect(
+    await browser.evaluate(() => {
+      const item = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(
+        (node) => node.getAttribute("aria-label") === "Mark done Write the ledger",
+      );
+      return item?.disabled ?? null;
+    }),
+  ).toBe(true);
+  await browser.evaluate(() => {
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    return null;
+  });
+  await expect(screen.getByTestId("task-menu")).toHaveCount(0);
+
   await screen.getByRole("button", "New top-level task").tap();
   await screen.getByRole("textbox", "New task").fill("Review the diff");
   await screen.getByRole("button", "Add task").tap();
@@ -187,8 +254,23 @@ test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300
   });
   expect(blockedTap).toEqual({ disabled: "true", label: "Mark done" });
 
-  await screen.getByRole("button", { name: "Open Review the diff" }).tap();
-  await screen.getByTestId("task-detail-status").tap();
+  await browser.evaluate(() => {
+    const card = [...document.querySelectorAll("[data-task-card]")].find((item) =>
+      item.textContent?.includes("Review the diff"),
+    );
+    if (!(card instanceof HTMLElement)) return null;
+    const box = card.getBoundingClientRect();
+    card.dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: box.left + 16,
+        clientY: box.top + box.height / 2,
+      }),
+    );
+    return null;
+  });
+  await screen.getByRole("menuitem", "Mark done Review the diff").tap();
   await expect(list.getByText("Blocked by Review the diff", { exact: true })).not.toBeVisible();
   await screen.getByRole("button", { name: "Open Store tasks.json" }).tap();
   await screen.getByTestId("task-detail-status").tap();
@@ -223,6 +305,7 @@ test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300
     );
     return null;
   });
+  await expect(screen.getByRole("menuitem", "Reopen Review the diff")).toBeVisible();
   await screen.getByRole("menuitem", "Remove Review the diff").tap();
   await expect(screen.getByText("Review the diff", { exact: true })).not.toBeVisible();
 
@@ -516,8 +599,11 @@ test("shows a failed task action beside the control and keeps a long title", asy
   await expect(screen.getByTestId("task-detail-status")).toHaveText("Mark done");
   const cardError = await browser.evaluate(() => {
     const error = document.querySelector("[data-testid=task-error]");
-    const card = [...document.querySelectorAll("[data-task-card]")].find(
-      (item) => item.getAttribute("aria-describedby") === error?.id,
+    const card = [...document.querySelectorAll("[data-task-card]")].find((item) =>
+      item
+        .getAttribute("aria-describedby")
+        ?.split(" ")
+        .includes(error?.id ?? ""),
     );
     if (!(error instanceof HTMLElement) || !(card instanceof HTMLElement)) return null;
     const errorBox = error.getBoundingClientRect();
