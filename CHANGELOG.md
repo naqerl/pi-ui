@@ -2,6 +2,13 @@
 
 Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
 
+## Unreleased
+
+- MCP cursors are now opaque server truth everywhere: the cursor a poll returns is persisted even when the replay is truncated or the result carries no events, and a lower or differently shaped cursor is never replaced by a remembered one. `lastEventAt`, `lastPollAt`, `lastError` and `lastErrorAt` are recorded per subscription.
+- A subscription watchdog marks a stream `stalled` after 60 seconds without a pushed event or heartbeat, re-subscribes from the persisted cursor, and marks it `dead` after two recoveries fail to restore traffic. Poll replies only prove the cursor, never reset the silence clock, and the recovery budget clears only on the first post-recovery heartbeat or event.
+- Every MCP subscription exposes `state` (`active`, `stalled`, `recovering`, `dead` or `cancelled`) through `/api/state`; the MCP status card and the events page show a stalled or dead subscription in the warning colour with its reason.
+- A successful MCP protocol connection clears every previous failure for that server, so a server that recovers is no longer reported unavailable from the boot probe.
+
 ## 1.6.39 - 2026-10-31
 
 - A queued MCP event is now a machine chip, not a bubble: the events that arrive while a turn is running are submitted as notices, so their raw payload never appears in the chat as something you said.

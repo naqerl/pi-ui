@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { McpSubscriptionState } from "../shared/types.js";
 
 /** The registry lives next to the rest of pi-ui's durable state. */
 export const MCP_SUBSCRIPTIONS_FILE = "mcp-subscriptions.json";
@@ -28,12 +29,28 @@ export interface McpSubscriptionRecord {
   readonly arguments: Record<string, unknown>;
   readonly cursor: string | null;
   readonly status: McpSubscriptionRecordStatus;
+  /** Watchdog health. Older rows omit it and derive it from `status`. */
+  readonly state?: McpSubscriptionState;
   /** False for a cancelled/stopped entry, so boot does not resubscribe it. */
   readonly enabled?: boolean;
   /** Most recent event ids delivered for this stable id, oldest first. */
   readonly deliveredEventIds?: readonly string[];
   /** ISO time of the last event delivered to this subscription. */
   readonly lastEventAt?: string;
+  /** ISO time of the last heartbeat from the push stream. */
+  readonly lastHeartbeatAt?: string;
+  /** ISO time of the last poll, successful or failed. */
+  readonly lastPollAt?: string;
+  /** Why the latest poll or recovery failed. Cleared by a healthy observation. */
+  readonly lastError?: string;
+  /** ISO time of `lastError`. */
+  readonly lastErrorAt?: string;
+  /** Consecutive automatic recovery attempts that failed. */
+  readonly recoveryFailures?: number;
+  /** The last re-subscribe is still waiting for its first heartbeat/event. */
+  readonly recoveryPending?: boolean;
+  /** The clock at which that re-subscribe happened. */
+  readonly recoveryStartedAt?: string;
   /** Watchdog re-opens since the subscription was last healthy. */
   readonly reconnects?: number;
   /** Why the last watchdog re-open happened. */
@@ -115,6 +132,35 @@ export function subscriptionEnabled(status: string): boolean {
   return !INACTIVE_STATUS.has(status);
 }
 
+const SUBSCRIPTION_STATES = new Set<McpSubscriptionState>([
+  "active",
+  "stalled",
+  "recovering",
+  "dead",
+  "cancelled",
+]);
+
+/** Normalize a persisted state, accepting only the five public values. */
+export function normalizeSubscriptionState(value: unknown): McpSubscriptionState | undefined {
+  return typeof value === "string" && SUBSCRIPTION_STATES.has(value as McpSubscriptionState)
+    ? (value as McpSubscriptionState)
+    : undefined;
+}
+
+/** Older rows have no `state`; derive one from the adapter's status spelling. */
+export function deriveSubscriptionState(
+  status: string,
+  state?: McpSubscriptionState,
+): McpSubscriptionState {
+  if (state !== undefined) return state;
+  if (status === "cancelled" || status === "stopped" || status === "ended") return "cancelled";
+  // Retry exhaustion is a stall until the watchdog's two recovery attempts
+  // are used up; only that watchdog decision marks a row dead.
+  if (status === "failed") return "stalled";
+  if (status === "opening" || status === "reconnecting") return "recovering";
+  return "active";
+}
+
 function normalizeEventIds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
@@ -154,8 +200,34 @@ function normalizeRecord(value: unknown): McpSubscriptionRecord | null {
     status,
     enabled: typeof value.enabled === "boolean" ? value.enabled : subscriptionEnabled(status),
     deliveredEventIds: normalizeEventIds(value.deliveredEventIds),
+    ...(normalizeSubscriptionState(value.state) === undefined
+      ? {}
+      : { state: normalizeSubscriptionState(value.state) }),
     ...(typeof value.lastEventAt === "string" && value.lastEventAt.length > 0
       ? { lastEventAt: value.lastEventAt }
+      : {}),
+    ...(typeof value.lastHeartbeatAt === "string" && value.lastHeartbeatAt.length > 0
+      ? { lastHeartbeatAt: value.lastHeartbeatAt }
+      : {}),
+    ...(typeof value.lastPollAt === "string" && value.lastPollAt.length > 0
+      ? { lastPollAt: value.lastPollAt }
+      : {}),
+    ...(typeof value.lastError === "string" && value.lastError.length > 0
+      ? { lastError: value.lastError }
+      : {}),
+    ...(typeof value.lastErrorAt === "string" && value.lastErrorAt.length > 0
+      ? { lastErrorAt: value.lastErrorAt }
+      : {}),
+    ...(typeof value.recoveryFailures === "number" &&
+    Number.isSafeInteger(value.recoveryFailures) &&
+    value.recoveryFailures >= 0
+      ? { recoveryFailures: value.recoveryFailures }
+      : {}),
+    ...(typeof value.recoveryPending === "boolean"
+      ? { recoveryPending: value.recoveryPending }
+      : {}),
+    ...(typeof value.recoveryStartedAt === "string" && value.recoveryStartedAt.length > 0
+      ? { recoveryStartedAt: value.recoveryStartedAt }
       : {}),
     ...(typeof value.reconnects === "number" &&
     Number.isSafeInteger(value.reconnects) &&
@@ -207,30 +279,19 @@ export function recordStableId(record: McpSubscriptionRecord): string {
 /** Alternate name kept for callers that describe the record rather than the value. */
 export const stableIdForRecord = recordStableId;
 
-function cursorHighWater(cursor: string | null): number | null {
-  if (cursor === null) return null;
-  const match = /^hub:(\d+)$/.exec(cursor);
-  if (match === null) return null;
-  const value = Number(match[1]);
-  return Number.isSafeInteger(value) ? value : null;
-}
-
 function newer(first: McpSubscriptionRecord, second: McpSubscriptionRecord): boolean {
   return Date.parse(second.updatedAt) >= Date.parse(first.updatedAt);
 }
 
-/** Merge two observations of the same subscription. The newest status wins; a numeric cursor never moves back. */
+/** Merge two observations of the same subscription. The newest observation wins. */
 function mergeRecord(
   existing: McpSubscriptionRecord,
   incoming: McpSubscriptionRecord,
 ): McpSubscriptionRecord {
   const latest = newer(existing, incoming) ? incoming : existing;
-  let cursor = incoming.cursor ?? existing.cursor;
-  const existingMark = cursorHighWater(existing.cursor);
-  const incomingMark = cursorHighWater(incoming.cursor);
-  if (existingMark !== null && incomingMark !== null && existingMark > incomingMark) {
-    cursor = existing.cursor;
-  }
+  // Cursors are opaque. The server's newest value is authoritative even when
+  // it looks smaller or is not the shape we saw before.
+  const cursor = latest.cursor;
   let status = latest.status;
   let enabled = latest.enabled ?? subscriptionEnabled(status);
   // A late reconnecting/active notice for the adapter id that was cancelled
@@ -250,6 +311,7 @@ function mergeRecord(
     status = "cancelled";
     enabled = false;
   }
+  const state = latest.state ?? existing.state ?? incoming.state;
   return {
     ...latest,
     stableId: latest.stableId ?? existing.stableId ?? incoming.stableId,
@@ -261,7 +323,19 @@ function mergeRecord(
       latest === incoming
         ? mergedEventIds(existing.deliveredEventIds, incoming.deliveredEventIds)
         : mergedEventIds(incoming.deliveredEventIds, existing.deliveredEventIds),
+    ...(state === undefined ? {} : { state }),
     lastEventAt: latest.lastEventAt ?? existing.lastEventAt ?? incoming.lastEventAt,
+    lastHeartbeatAt: latest.lastHeartbeatAt ?? existing.lastHeartbeatAt ?? incoming.lastHeartbeatAt,
+    lastPollAt: latest.lastPollAt ?? existing.lastPollAt ?? incoming.lastPollAt,
+    ...(latest.state === "active"
+      ? {}
+      : { lastError: latest.lastError ?? existing.lastError ?? incoming.lastError }),
+    lastErrorAt: latest.lastErrorAt ?? existing.lastErrorAt ?? incoming.lastErrorAt,
+    recoveryFailures:
+      latest.recoveryFailures ?? existing.recoveryFailures ?? incoming.recoveryFailures,
+    recoveryPending: latest.recoveryPending ?? existing.recoveryPending ?? incoming.recoveryPending,
+    recoveryStartedAt:
+      latest.recoveryStartedAt ?? existing.recoveryStartedAt ?? incoming.recoveryStartedAt,
     reconnects: latest.reconnects ?? existing.reconnects ?? incoming.reconnects,
     lastReconnectReason:
       latest.lastReconnectReason ?? existing.lastReconnectReason ?? incoming.lastReconnectReason,

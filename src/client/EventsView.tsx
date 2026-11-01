@@ -1,17 +1,25 @@
+import { subscriptionHealth, subscriptionLabel } from "../shared/dashboard";
 import { formatTime } from "../shared/time";
 import type { McpEventsState, McpSubscriptionView } from "../shared/types";
 import { PiMenu } from "./PiMenu";
 
-const LIVE_STATUS = new Set(["opening", "active", "reconnecting"]);
-
 function SubscriptionRow({ subscription }: { subscription: McpSubscriptionView }) {
-  const live = LIVE_STATUS.has(subscription.status);
+  const health = subscriptionHealth(subscription);
+  const live = health === "active";
+  const warning = health === "stalled" || health === "recovering" || health === "dead";
+  const reason =
+    subscription.lastError ?? subscription.lastReconnectReason ?? subscription.endReason;
   // The stable id is the cancellable identity. A title is only a friendlier
   // label; without one the id itself must be visible here.
-  const label = subscription.title ?? subscription.stableId ?? subscription.name;
+  const label = subscriptionLabel(subscription);
   return (
-    <div className="flex items-baseline gap-3 border-b border-border py-3 font-mono text-xs">
-      <span className={live ? "text-foreground" : "text-muted-foreground"}>
+    <div
+      className="flex flex-wrap items-baseline gap-3 border-b border-border py-3 font-mono text-xs"
+      data-state={health}
+    >
+      <span
+        className={warning ? "text-amber-600" : live ? "text-foreground" : "text-muted-foreground"}
+      >
         {subscription.server}
       </span>
       <span
@@ -30,13 +38,28 @@ function SubscriptionRow({ subscription }: { subscription: McpSubscriptionView }
           {subscription.cursor}
         </span>
       )}
-      <span className="shrink-0 text-muted-foreground">{subscription.status}</span>
+      <span
+        className={warning ? "shrink-0 text-amber-600" : "shrink-0 text-muted-foreground"}
+        data-testid="subscription-state"
+      >
+        {health}
+      </span>
+      {warning && reason !== undefined && (
+        <span className="min-w-0 text-amber-600" data-testid="subscription-reason" title={reason}>
+          {reason}
+        </span>
+      )}
     </div>
   );
 }
 
 export function EventsView({ events, ready }: { events: McpEventsState; ready: boolean }) {
-  const live = events.subscriptions.filter((subscription) => LIVE_STATUS.has(subscription.status));
+  const health = events.subscriptions.map((subscription) => subscriptionHealth(subscription));
+  const live = events.subscriptions.filter((_subscription, index) => health[index] === "active");
+  const attention = events.subscriptions.filter((_subscription, index) => {
+    const state = health[index];
+    return state === "stalled" || state === "recovering" || state === "dead";
+  });
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -59,8 +82,10 @@ export function EventsView({ events, ready }: { events: McpEventsState; ready: b
           <h1 className="mb-2 text-sm font-medium">MCP subscriptions</h1>
           <p className="mb-4 text-xs text-muted-foreground">
             {live.length === 0
-              ? "No live subscriptions."
-              : `${live.length} live. Updates below are the same on every open client.`}
+              ? attention.length === 0
+                ? "No live subscriptions."
+                : `${attention.length} subscription${attention.length === 1 ? "" : "s"} need attention.`
+              : `${live.length} live.${attention.length === 0 ? "" : ` ${attention.length} need attention.`} Updates below are the same on every open client.`}
           </p>
 
           {!ready && <p className="font-mono text-xs text-muted-foreground">Loading…</p>}

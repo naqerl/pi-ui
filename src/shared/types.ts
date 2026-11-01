@@ -162,6 +162,9 @@ export interface McpStatus {
   unavailable: string[];
 }
 
+/** The health of one event stream, independent of the adapter's `status` spelling. */
+export type McpSubscriptionState = "active" | "stalled" | "recovering" | "dead" | "cancelled";
+
 export interface McpSubscriptionView {
   /** Adapter id minted by pi-mcp-events; it changes on a restart. */
   id: string;
@@ -172,15 +175,30 @@ export interface McpSubscriptionView {
   /** Optional human title; when absent clients fall back to `stableId`. */
   title?: string;
   status: string;
+  /** What the watchdog currently believes, not merely what the stream last said. */
+  state: McpSubscriptionState;
   arguments: Record<string, unknown>;
   /**
-   * Last replay cursor the stream reported, null before the first one. A
-   * cursor that moves while `events` stays empty means events are arriving
-   * but being dropped; a still one means the subscription is just quiet.
+   * Last cursor the server reported, null before the first one. It is opaque:
+   * never parse or compare it, and always keep the server's newest value.
    */
   cursor: string | null;
   /** ISO time of the last event delivered to this subscription. */
   lastEventAt?: string;
+  /** ISO time of the last heartbeat from the push stream. */
+  lastHeartbeatAt?: string;
+  /** ISO time of the last poll, successful or failed. */
+  lastPollAt?: string;
+  /** Why the latest poll or recovery failed. Cleared by a healthy observation. */
+  lastError?: string;
+  /** ISO time of `lastError`. */
+  lastErrorAt?: string;
+  /** Consecutive automatic recovery attempts that failed. */
+  recoveryFailures?: number;
+  /** A re-subscribe succeeded but no post-recovery heartbeat/event has arrived yet. */
+  recoveryPending?: boolean;
+  /** ISO time of that re-subscribe, used as its silence grace window. */
+  recoveryStartedAt?: string;
   /** Watchdog re-opens since the subscription was last healthy. */
   reconnects?: number;
   /** Why the last watchdog re-open happened. */

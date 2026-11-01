@@ -2,9 +2,11 @@ import { toIsoTimestamp } from "../shared/time.js";
 import type { McpEventsState, McpEventView, McpSubscriptionView } from "../shared/types.js";
 import {
   deriveStableId,
+  deriveSubscriptionState,
   MAX_DELIVERED_EVENT_IDS,
   type McpSubscriptionRecord,
   type McpSubscriptionRegistry,
+  normalizeSubscriptionState,
   recordStableId,
   subscriptionEnabled,
 } from "./mcp-subscriptions.js";
@@ -36,35 +38,15 @@ function summarize(data: unknown): string {
   }
 }
 
-/**
- * The comparable high-water mark of a cursor. Hub event cursors are
- * `hub:<n>`; anything else, including `hub:snapshot:a:b`, is opaque and can
- * only be stored, never compared.
- */
-export function cursorHighWater(cursor: string | null | undefined): number | null {
-  if (typeof cursor !== "string") return null;
-  const match = /^hub:(\d+)$/.exec(cursor);
-  if (match === null) return null;
-  const value = Number(match[1]);
-  return Number.isSafeInteger(value) ? value : null;
-}
-
-/** Alias used by callers that describe the value rather than the mark. */
-export const comparableCursor = cursorHighWater;
-
 /** The real position rides in `event.data.cursor`; the envelope cursor is often null. */
 export function eventCursor(event: Record<string, unknown>): string | null {
   if (isRecord(event.data) && typeof event.data.cursor === "string") return event.data.cursor;
   return typeof event.cursor === "string" ? event.cursor : null;
 }
 
-function newerCursor(current: string | null, incoming: string | null): string | null {
-  if (incoming === null) return current;
-  if (current === null) return incoming;
-  const currentMark = cursorHighWater(current);
-  const incomingMark = cursorHighWater(incoming);
-  if (currentMark !== null && incomingMark !== null && incomingMark < currentMark) return current;
-  return incoming;
+/** Cursors are opaque: a string from the server replaces whatever we had. */
+function serverCursor(current: string | null, incoming: string | null): string | null {
+  return incoming ?? current;
 }
 
 function sameArguments(first: Record<string, unknown>, second: Record<string, unknown>): boolean {
@@ -93,9 +75,36 @@ function subscriptionFrom(value: unknown): McpSubscriptionView | null {
     typeof value.title === "string" && value.title.trim().length > 0
       ? value.title.trim()
       : undefined;
+  const state = deriveSubscriptionState(status, normalizeSubscriptionState(value.state));
   const lastEventAt =
     typeof value.lastEventAt === "string" && value.lastEventAt.length > 0
       ? value.lastEventAt
+      : undefined;
+  const lastHeartbeatAt =
+    typeof value.lastHeartbeatAt === "string" && value.lastHeartbeatAt.length > 0
+      ? value.lastHeartbeatAt
+      : undefined;
+  const lastPollAt =
+    typeof value.lastPollAt === "string" && value.lastPollAt.length > 0
+      ? value.lastPollAt
+      : undefined;
+  const lastError =
+    typeof value.lastError === "string" && value.lastError.length > 0 ? value.lastError : undefined;
+  const lastErrorAt =
+    typeof value.lastErrorAt === "string" && value.lastErrorAt.length > 0
+      ? value.lastErrorAt
+      : undefined;
+  const recoveryFailures =
+    typeof value.recoveryFailures === "number" &&
+    Number.isSafeInteger(value.recoveryFailures) &&
+    value.recoveryFailures >= 0
+      ? value.recoveryFailures
+      : undefined;
+  const recoveryPending =
+    typeof value.recoveryPending === "boolean" ? value.recoveryPending : undefined;
+  const recoveryStartedAt =
+    typeof value.recoveryStartedAt === "string" && value.recoveryStartedAt.length > 0
+      ? value.recoveryStartedAt
       : undefined;
   const reconnects =
     typeof value.reconnects === "number" &&
@@ -116,9 +125,17 @@ function subscriptionFrom(value: unknown): McpSubscriptionView | null {
     name,
     ...(title === undefined ? {} : { title }),
     status,
+    state,
     arguments: args,
     cursor,
     ...(lastEventAt === undefined ? {} : { lastEventAt }),
+    ...(lastHeartbeatAt === undefined ? {} : { lastHeartbeatAt }),
+    ...(lastPollAt === undefined ? {} : { lastPollAt }),
+    ...(lastError === undefined ? {} : { lastError }),
+    ...(lastErrorAt === undefined ? {} : { lastErrorAt }),
+    ...(recoveryFailures === undefined ? {} : { recoveryFailures }),
+    ...(recoveryPending === undefined ? {} : { recoveryPending }),
+    ...(recoveryStartedAt === undefined ? {} : { recoveryStartedAt }),
     ...(reconnects === undefined ? {} : { reconnects }),
     ...(lastReconnectReason === undefined ? {} : { lastReconnectReason }),
     ...(endReason === undefined ? {} : { endReason }),
@@ -138,8 +155,6 @@ function subscriptionFrom(value: unknown): McpSubscriptionView | null {
  */
 export class McpEventFeed {
   private readonly subscriptions = new Map<string, McpSubscriptionView>();
-  /** Numeric cursor high-water per subscription, independent of opaque snapshots. */
-  private readonly highWater = new Map<string, number>();
   /** Event ids delivered for a stable id, including the historical ones. */
   private readonly delivered = new Map<string, Set<string>>();
   /** The subset of `delivered` that came from a previous process. */
@@ -208,7 +223,13 @@ export class McpEventFeed {
     let found: McpSubscriptionView | null = null;
     for (const [id, subscription] of this.subscriptions) {
       if (subscription.stableId !== stableId) continue;
-      const cancelled = { ...subscription, status: "cancelled" };
+      const cancelled = {
+        ...subscription,
+        status: "cancelled",
+        state: "cancelled" as const,
+        recoveryPending: false,
+        recoveryStartedAt: undefined,
+      };
       this.subscriptions.set(id, cancelled);
       this.persist(cancelled);
       found = cancelled;
@@ -222,31 +243,55 @@ export class McpEventFeed {
     return this.cancel(stableId);
   }
 
-  /** Apply the watchdog's re-open metadata to the visible row. */
+  /** Apply the watchdog's latest observation (poll, stall, recovery) to the visible row. */
   noteReconnect(record: McpSubscriptionRecord): boolean {
     const stableId = recordStableId(record);
     const current = this.findByStableId(stableId);
-    if (current === undefined) return false;
+    const state = deriveSubscriptionState(record.status, record.state);
     const next: McpSubscriptionView = {
-      ...current,
+      ...(current ?? {
+        id: record.id ?? stableId,
+        stableId,
+        server: record.server,
+        name: record.name,
+        arguments: record.arguments,
+        cursor: record.cursor,
+      }),
       ...(typeof record.id === "string" && record.id.length > 0 ? { id: record.id } : {}),
       cursor: record.cursor,
       status: record.status,
-      lastEventAt: record.lastEventAt ?? current.lastEventAt,
+      state,
+      lastEventAt: record.lastEventAt ?? current?.lastEventAt,
+      lastHeartbeatAt: record.lastHeartbeatAt ?? current?.lastHeartbeatAt,
+      lastPollAt: record.lastPollAt,
+      lastError: record.lastError,
+      lastErrorAt: record.lastErrorAt,
+      recoveryFailures: record.recoveryFailures,
+      recoveryPending: record.recoveryPending,
+      recoveryStartedAt: record.recoveryStartedAt,
       reconnects: record.reconnects,
       lastReconnectReason: record.lastReconnectReason,
       endReason: record.endReason,
     };
     const changed =
+      current === undefined ||
       current.id !== next.id ||
       current.cursor !== next.cursor ||
       current.status !== next.status ||
+      current.state !== next.state ||
       current.lastEventAt !== next.lastEventAt ||
+      current.lastHeartbeatAt !== next.lastHeartbeatAt ||
+      current.lastPollAt !== next.lastPollAt ||
+      current.lastError !== next.lastError ||
+      current.lastErrorAt !== next.lastErrorAt ||
+      current.recoveryFailures !== next.recoveryFailures ||
+      current.recoveryPending !== next.recoveryPending ||
+      current.recoveryStartedAt !== next.recoveryStartedAt ||
       current.reconnects !== next.reconnects ||
       current.lastReconnectReason !== next.lastReconnectReason ||
       current.endReason !== next.endReason;
-    if (!changed) return false;
     this.storeView(next);
+    if (current !== undefined && !changed) return false;
     this.touch();
     return true;
   }
@@ -286,21 +331,12 @@ export class McpEventFeed {
     if (notice.customType === "mcp-events") return this.ingestEvents(notice.details);
     if (notice.customType === "mcp-events-status") return this.ingestStatuses(notice.details);
     if (notice.customType === "mcp-events-tool") return this.ingestTool(notice.details);
+    if (notice.customType === "mcp-events-traffic") return this.ingestTraffic(notice.details);
     return false;
   }
 
   private touch(): void {
     this.revision += 1;
-  }
-
-  private noteHighWater(id: string, mark: number | null): void {
-    if (mark === null) return;
-    const current = this.highWater.get(id);
-    if (current === undefined || mark > current) this.highWater.set(id, mark);
-  }
-
-  private observeCursor(id: string, cursor: string | null): void {
-    this.noteHighWater(id, cursorHighWater(cursor));
   }
 
   private seedRecords(records: readonly McpSubscriptionRecord[]): void {
@@ -400,9 +436,26 @@ export class McpEventFeed {
       arguments: subscription.arguments,
       cursor: subscription.cursor,
       status: subscription.status,
-      enabled: subscriptionEnabled(subscription.status),
+      state: subscription.state,
+      enabled:
+        subscription.status === "cancelled" ? false : subscriptionEnabled(subscription.status),
       deliveredEventIds: this.deliveredIds(subscription.stableId),
       ...(subscription.lastEventAt === undefined ? {} : { lastEventAt: subscription.lastEventAt }),
+      ...(subscription.lastHeartbeatAt === undefined
+        ? {}
+        : { lastHeartbeatAt: subscription.lastHeartbeatAt }),
+      ...(subscription.lastPollAt === undefined ? {} : { lastPollAt: subscription.lastPollAt }),
+      ...(subscription.lastError === undefined ? {} : { lastError: subscription.lastError }),
+      ...(subscription.lastErrorAt === undefined ? {} : { lastErrorAt: subscription.lastErrorAt }),
+      ...(subscription.recoveryFailures === undefined
+        ? {}
+        : { recoveryFailures: subscription.recoveryFailures }),
+      ...(subscription.recoveryPending === undefined
+        ? {}
+        : { recoveryPending: subscription.recoveryPending }),
+      ...(subscription.recoveryStartedAt === undefined
+        ? {}
+        : { recoveryStartedAt: subscription.recoveryStartedAt }),
       ...(subscription.reconnects === undefined ? {} : { reconnects: subscription.reconnects }),
       ...(subscription.lastReconnectReason === undefined
         ? {}
@@ -422,10 +475,6 @@ export class McpEventFeed {
     if (!isRecord(details) || !Array.isArray(details.events)) return false;
     let stateChanged = false;
     let deliveredNew = false;
-    let replayStored = 0;
-    let skipped = 0;
-    let stored = 0;
-    const skippedServers: string[] = [];
     for (const item of details.events) {
       if (!isRecord(item) || typeof item.server !== "string" || !isRecord(item.event)) continue;
       const event = item.event;
@@ -447,24 +496,15 @@ export class McpEventFeed {
         subscriptionId === undefined ? undefined : this.viewForAdapter(subscriptionId);
       const stableId =
         current?.stableId ?? deriveStableId(item.server, streamName, current?.arguments ?? {});
-      const mark = cursorHighWater(cursor);
-      const high = current === undefined ? undefined : this.highWater.get(current.id);
-      const cursorReplay = mark !== null && high !== undefined && mark <= high;
       const historical = this.isHistorical(stableId, eventId);
       const liveDuplicate = this.isLiveDuplicate(stableId, eventId);
-      // A stored id is only a replay when its cursor is demonstrably behind
-      // the stream. A null, non-advancing or uncomparable cursor may be a
-      // genuine live frame, so it must not be swallowed by the restored id set.
-      const historicalReplay = mark !== null && high !== undefined && mark < high;
-      const replay =
-        !liveDuplicate &&
-        this.restored.has(stableId) &&
-        (historical ? historicalReplay : cursorReplay);
+      // Event ids are the replay key. A cursor is opaque, so it is stored but
+      // never used to decide whether a frame is old.
+      const replay = !liveDuplicate && historical && this.restored.has(stableId);
 
       if (replay) {
-        // A restored stream may redeliver an event whose id we know, or whose
-        // cursor is already behind us. Keep it visibly marked, but never make
-        // it a chat notice.
+        // A restored stream may redeliver an event whose id we already stored
+        // before this process started. Keep it visibly marked, never a notice.
         if (this.trackCursor(item, streamName, cursor)) stateChanged = true;
         if (eventId !== undefined) this.remember(stableId, eventId, true);
         const existing = this.events.find((entry) => entry.id === id);
@@ -480,7 +520,6 @@ export class McpEventFeed {
               replayed: true,
             },
           ].slice(-EVENT_LIMIT);
-          replayStored += 1;
           stateChanged = true;
         }
         const tracked =
@@ -502,7 +541,6 @@ export class McpEventFeed {
           );
           this.notice = `new event from ${item.server}`;
           deliveredNew = true;
-          stored += 1;
           stateChanged = true;
         }
         if (this.trackCursor(item, streamName, cursor, promoted ? timestamp : undefined)) {
@@ -511,16 +549,6 @@ export class McpEventFeed {
         const tracked =
           subscriptionId === undefined ? undefined : this.viewForAdapter(subscriptionId);
         if (tracked !== undefined) this.persist(tracked);
-        continue;
-      }
-
-      if (cursorReplay && !historical) {
-        // A live stream at or below its high-water mark is a duplicate of an
-        // event this process already saw. Drop it as before. A historical id
-        // reaching this point has not been proven to be behind the stream, so
-        // it is delivered as live.
-        skipped += 1;
-        if (!skippedServers.includes(item.server)) skippedServers.push(item.server);
         continue;
       }
 
@@ -552,15 +580,10 @@ export class McpEventFeed {
       }
       this.notice = `new event from ${item.server}`;
       deliveredNew = true;
-      stored += 1;
       stateChanged = true;
       const tracked =
         subscriptionId === undefined ? undefined : this.viewForAdapter(subscriptionId);
       if (tracked !== undefined) this.persist(tracked);
-    }
-    if (skipped > 0 && (stored > 0 || replayStored > 0)) {
-      const server = skippedServers[0] ?? "unknown";
-      this.notice = `replayed ${skipped} event(s) from ${server}, skipped`;
     }
     if (stateChanged) this.touch();
     return deliveredNew;
@@ -583,17 +606,18 @@ export class McpEventFeed {
         server,
         name: streamName,
         status: "active",
+        state: "active",
         arguments: {},
         cursor,
+        recoveryFailures: 0,
+        recoveryPending: false,
         ...(deliveredAt === undefined ? {} : { lastEventAt: deliveredAt }),
       };
       this.storeView(subscription);
-      this.observeCursor(subscription.id, cursor);
       this.persist(subscription);
       return true;
     }
-    const nextCursor = newerCursor(current.cursor, cursor);
-    this.observeCursor(current.id, nextCursor);
+    const nextCursor = serverCursor(current.cursor, cursor);
     if (
       nextCursor === current.cursor &&
       (deliveredAt === undefined || current.lastEventAt === deliveredAt)
@@ -603,10 +627,51 @@ export class McpEventFeed {
     const next = {
       ...current,
       cursor: nextCursor,
+      state: "active" as const,
+      lastError: undefined,
+      lastErrorAt: undefined,
+      recoveryFailures: 0,
+      recoveryPending: false,
       ...(deliveredAt === undefined ? {} : { lastEventAt: deliveredAt }),
     };
     this.storeView(next);
     this.persist(next);
+    return true;
+  }
+
+  /** A stream heartbeat (or active acknowledgement) means the push path is alive. */
+  private ingestTraffic(details: unknown): boolean {
+    if (!isRecord(details) || typeof details.subscription_id !== "string") return false;
+    const current = this.viewForAdapter(details.subscription_id);
+    if (current === undefined || current.state === "cancelled") return false;
+    const timestamp =
+      typeof details.timestamp === "string" && details.timestamp.length > 0
+        ? details.timestamp
+        : new Date().toISOString();
+    const cursor = typeof details.cursor === "string" ? details.cursor : null;
+    const alive = current.state !== "active" || current.status === "failed";
+    const next: McpSubscriptionView = {
+      ...current,
+      ...(cursor === null ? {} : { cursor }),
+      ...(alive ? { status: "active", state: "active" as const } : {}),
+      lastHeartbeatAt: timestamp,
+      lastError: undefined,
+      lastErrorAt: undefined,
+      recoveryFailures: 0,
+      recoveryPending: false,
+    };
+    const changed =
+      next.cursor !== current.cursor ||
+      next.status !== current.status ||
+      next.state !== current.state ||
+      next.lastHeartbeatAt !== current.lastHeartbeatAt ||
+      current.lastError !== undefined ||
+      current.recoveryFailures !== 0 ||
+      current.recoveryPending === true;
+    if (!changed) return false;
+    this.storeView(next);
+    this.persist(next);
+    this.touch();
     return true;
   }
 
@@ -633,12 +698,32 @@ export class McpEventFeed {
         incoming.status === "active"
           ? 0
           : (current?.reconnects ?? saved?.reconnects ?? incoming.reconnects);
+      const incomingState = deriveSubscriptionState(incoming.status, incoming.state);
       const subscription: McpSubscriptionView =
         current === undefined
           ? {
               ...incoming,
+              state: incomingState,
               ...(incoming.lastEventAt === undefined && saved?.lastEventAt !== undefined
                 ? { lastEventAt: saved.lastEventAt }
+                : {}),
+              ...(incoming.lastPollAt === undefined && saved?.lastPollAt !== undefined
+                ? { lastPollAt: saved.lastPollAt }
+                : {}),
+              ...(incoming.lastError === undefined && saved?.lastError !== undefined
+                ? { lastError: saved.lastError }
+                : {}),
+              ...(incoming.lastErrorAt === undefined && saved?.lastErrorAt !== undefined
+                ? { lastErrorAt: saved.lastErrorAt }
+                : {}),
+              ...(incoming.recoveryFailures === undefined && saved?.recoveryFailures !== undefined
+                ? { recoveryFailures: saved.recoveryFailures }
+                : {}),
+              ...(incoming.recoveryPending === undefined && saved?.recoveryPending !== undefined
+                ? { recoveryPending: saved.recoveryPending }
+                : {}),
+              ...(incoming.recoveryStartedAt === undefined && saved?.recoveryStartedAt !== undefined
+                ? { recoveryStartedAt: saved.recoveryStartedAt }
                 : {}),
               ...(reconnects === undefined ? {} : { reconnects }),
               ...(incoming.lastReconnectReason === undefined &&
@@ -652,13 +737,36 @@ export class McpEventFeed {
           : {
               ...incoming,
               stableId: current.stableId,
-              cursor: newerCursor(current.cursor, incoming.cursor),
+              cursor: serverCursor(current.cursor, incoming.cursor),
+              state:
+                current.state === "dead" && incoming.status !== "active"
+                  ? "dead"
+                  : incoming.status === "active"
+                    ? "active"
+                    : incomingState,
               arguments:
                 Object.keys(incoming.arguments).length === 0 &&
                 Object.keys(current.arguments).length > 0
                   ? current.arguments
                   : incoming.arguments,
               lastEventAt: current.lastEventAt ?? incoming.lastEventAt ?? saved?.lastEventAt,
+              lastHeartbeatAt:
+                current.lastHeartbeatAt ?? incoming.lastHeartbeatAt ?? saved?.lastHeartbeatAt,
+              lastPollAt: current.lastPollAt ?? incoming.lastPollAt ?? saved?.lastPollAt,
+              lastError:
+                incoming.status === "active"
+                  ? undefined
+                  : (incoming.lastError ?? current.lastError ?? saved?.lastError),
+              lastErrorAt:
+                incoming.status === "active"
+                  ? undefined
+                  : (incoming.lastErrorAt ?? current.lastErrorAt ?? saved?.lastErrorAt),
+              recoveryFailures:
+                current.recoveryFailures ?? saved?.recoveryFailures ?? incoming.recoveryFailures,
+              recoveryPending:
+                current.recoveryPending ?? saved?.recoveryPending ?? incoming.recoveryPending,
+              recoveryStartedAt:
+                current.recoveryStartedAt ?? saved?.recoveryStartedAt ?? incoming.recoveryStartedAt,
               reconnects,
               lastReconnectReason:
                 current.lastReconnectReason ??
@@ -669,14 +777,21 @@ export class McpEventFeed {
                   ? undefined
                   : (incoming.endReason ?? current.endReason ?? saved?.endReason),
             };
-      this.observeCursor(subscription.id, current?.cursor ?? null);
-      this.observeCursor(subscription.id, subscription.cursor);
       const unchanged =
         current !== undefined &&
         current.name === subscription.name &&
         current.stableId === subscription.stableId &&
         current.status === subscription.status &&
+        current.state === subscription.state &&
         current.cursor === subscription.cursor &&
+        current.lastEventAt === subscription.lastEventAt &&
+        current.lastHeartbeatAt === subscription.lastHeartbeatAt &&
+        current.lastPollAt === subscription.lastPollAt &&
+        current.lastError === subscription.lastError &&
+        current.lastErrorAt === subscription.lastErrorAt &&
+        current.recoveryFailures === subscription.recoveryFailures &&
+        current.recoveryPending === subscription.recoveryPending &&
+        current.recoveryStartedAt === subscription.recoveryStartedAt &&
         sameArguments(current.arguments, subscription.arguments);
       this.storeView(subscription);
       if (unchanged) continue;
@@ -697,12 +812,10 @@ export class McpEventFeed {
 
     if (action === "list" && Array.isArray(result.subscriptions)) {
       const previousViews = [...this.subscriptions.values()];
-      const previousHighWater = new Map(this.highWater);
       const cancelledViews = previousViews.filter(
         (view) => view.status === "cancelled" || this.cancellationId(view.stableId) !== undefined,
       );
       this.subscriptions.clear();
-      this.highWater.clear();
       for (const view of cancelledViews) this.storeView({ ...view, status: "cancelled" });
       for (const item of result.subscriptions) {
         const incoming = subscriptionFrom(item);
@@ -720,15 +833,13 @@ export class McpEventFeed {
         const subscription: McpSubscriptionView = {
           ...incoming,
           stableId: current?.stableId ?? incoming.stableId,
-          cursor: newerCursor(current?.cursor ?? null, incoming.cursor),
+          state: deriveSubscriptionState(incoming.status, incoming.state),
+          cursor: serverCursor(current?.cursor ?? null, incoming.cursor),
+          recoveryFailures: current?.recoveryFailures ?? incoming.recoveryFailures,
+          recoveryPending: current?.recoveryPending ?? incoming.recoveryPending,
+          recoveryStartedAt: current?.recoveryStartedAt ?? incoming.recoveryStartedAt,
         };
         this.storeView(subscription);
-        const previousId = current?.id ?? incoming.id;
-        this.noteHighWater(
-          subscription.id,
-          previousHighWater.get(previousId) ?? previousHighWater.get(incoming.id) ?? null,
-        );
-        this.observeCursor(subscription.id, subscription.cursor);
         this.persist(subscription);
       }
       this.touch();
@@ -757,7 +868,21 @@ export class McpEventFeed {
       const subscription: McpSubscriptionView = {
         ...incoming,
         stableId: current?.stableId ?? incoming.stableId,
-        cursor: newerCursor(current?.cursor ?? null, incoming.cursor),
+        state: deriveSubscriptionState(incoming.status, incoming.state),
+        cursor: serverCursor(current?.cursor ?? null, incoming.cursor),
+        lastHeartbeatAt:
+          current?.lastHeartbeatAt ?? incoming.lastHeartbeatAt ?? saved?.lastHeartbeatAt,
+        lastPollAt: current?.lastPollAt ?? incoming.lastPollAt ?? saved?.lastPollAt,
+        lastError:
+          incoming.status === "active" ? undefined : (incoming.lastError ?? current?.lastError),
+        lastErrorAt:
+          incoming.status === "active" ? undefined : (incoming.lastErrorAt ?? current?.lastErrorAt),
+        recoveryFailures:
+          current?.recoveryFailures ?? saved?.recoveryFailures ?? incoming.recoveryFailures,
+        recoveryPending:
+          current?.recoveryPending ?? saved?.recoveryPending ?? incoming.recoveryPending,
+        recoveryStartedAt:
+          current?.recoveryStartedAt ?? saved?.recoveryStartedAt ?? incoming.recoveryStartedAt,
         arguments:
           Object.keys(incoming.arguments).length === 0 &&
           current !== undefined &&
@@ -779,8 +904,6 @@ export class McpEventFeed {
             : (incoming.endReason ?? current?.endReason ?? saved?.endReason),
       };
       this.storeView(subscription);
-      this.observeCursor(subscription.id, current?.cursor ?? null);
-      this.observeCursor(subscription.id, subscription.cursor);
       this.persist(subscription);
       this.touch();
       return true;
@@ -792,7 +915,13 @@ export class McpEventFeed {
       // replaced by a later subscribe must not stop the newer stream.
       const current = id.length > 0 ? this.subscriptions.get(id) : undefined;
       if (current === undefined) return false;
-      const subscription = { ...current, status: "stopped" };
+      const subscription = {
+        ...current,
+        status: "stopped",
+        state: "cancelled" as const,
+        recoveryPending: false,
+        recoveryStartedAt: undefined,
+      };
       this.storeView(subscription);
       this.persist(subscription);
       this.touch();
