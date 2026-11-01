@@ -197,7 +197,7 @@ test("on a desktop the first task is selected and the detail stays beside the li
   await expect(screen.getByTestId("task-detail")).toHaveAttribute("aria-label", "Ship the modal");
 });
 
-test("a task card has no checkbox and the detail adds a blocker", async ({
+test("a task card has no checkbox and the detail only displays seeded structure", async ({
   app,
   browser,
   screen,
@@ -217,8 +217,39 @@ test("a task card has no checkbox and the detail adds a blocker", async ({
   ).toBe(false);
 
   await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
-  await screen.getByRole("button", { name: "Add blocker to Ship the modal" }).tap();
+  const detail = screen.getByTestId("task-detail");
+  await expect(detail.getByText("Blocked by", { exact: true })).toBeVisible();
+  await expect(detail.getByText("Review the details", { exact: true })).toBeVisible();
+  await expect(detail.getByRole("button", { name: "Subtask" })).toHaveCount(0);
+  await expect(detail.getByRole("button", { name: "Adding subtask" })).toHaveCount(0);
+  await expect(detail.getByRole("button", { name: "Block" })).toHaveCount(0);
+  await expect(screen.getByRole("button", { name: "Add blocker to Ship the modal" })).toHaveCount(
+    0,
+  );
+  await expect(screen.getByRole("textbox", "New subtask")).toHaveCount(0);
+
+  await screen.getByTestId("task-detail-back").tap();
+  await expect(screen.getByTestId("task-list")).toBeVisible();
+  await browser.evaluate(() => {
+    const card = [...document.querySelectorAll("[data-task-card]")].find((item) =>
+      item.textContent?.includes("Ship the modal"),
+    );
+    if (!(card instanceof HTMLElement)) return null;
+    const box = card.getBoundingClientRect();
+    card.dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: box.left + 16,
+        clientY: box.top + box.height / 2,
+      }),
+    );
+    return null;
+  });
   await expect(screen.getByTestId("task-menu")).toBeVisible();
+  await expect(screen.getByRole("menuitem", "Subtask of Ship the modal")).toHaveCount(0);
+  await expect(screen.getByRole("menuitem", "Blockers for Ship the modal")).toHaveCount(0);
+  await expect(screen.getByRole("menuitem", "Backlog Ship the modal")).toBeVisible();
 });
 
 test("proposal approve and dismiss buttons act from the keyboard without opening the detail", async ({

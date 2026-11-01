@@ -135,11 +135,22 @@ test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300
   await expect(screen.getByTestId("task-menu")).toBeVisible();
   await expect(list.getByRole("button", { name: /Done Write the ledger/ })).toHaveCount(0);
 
-  await screen.getByRole("menuitem", "Subtask of Write the ledger").tap();
-  const subtask = screen.getByRole("textbox", "New subtask");
-  await expect(subtask).toBeVisible();
-  await subtask.fill("Store tasks.json");
-  await screen.getByRole("button", "Add task").tap();
+  // Structure now comes from the ledger tools, so seed the child through the API instead.
+  const seeded = await browser.evaluate(async () => {
+    const ledger = (await (await fetch("/api/tasks")).json()) as {
+      tasks: Array<{ id: string; title: string }>;
+    };
+    const parentId = ledger.tasks.find((task) => task.title === "Write the ledger")?.id;
+    if (parentId === undefined) return false;
+    const response = await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Store tasks.json", parentId }),
+    });
+    return response.ok;
+  });
+  expect(seeded).toBe(true);
+  await app.open("/?page=tasks");
   await expect(list.getByText("Store tasks.json", { exact: true })).toBeVisible();
   await expect(list.getByText("0 of 1 subtasks done", { exact: true })).toBeVisible();
   const cards = await browser.evaluate(() => {
@@ -200,36 +211,28 @@ test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300
   });
   await expect(screen.getByTestId("task-menu")).toHaveCount(0);
 
-  await screen.getByRole("button", "New top-level task").tap();
   await screen.getByRole("textbox", "New task").fill("Review the diff");
   await screen.getByRole("button", "Add task").tap();
   await expect(list.getByText("Review the diff", { exact: true })).toBeVisible();
 
-  await browser.evaluate(() => {
-    const card = [...document.querySelectorAll("[data-task-card]")].find((item) =>
-      item.textContent?.includes("Write the ledger"),
-    );
-    if (!(card instanceof HTMLElement)) return null;
-    const box = card.getBoundingClientRect();
-    card.dispatchEvent(
-      new MouseEvent("contextmenu", {
-        bubbles: true,
-        cancelable: true,
-        clientX: box.left + 16,
-        clientY: box.top + box.height / 2,
-      }),
-    );
-    return null;
+  // The blocker link is a ledger fact; seed it through the API and keep asserting the display.
+  const blocked = await browser.evaluate(async () => {
+    const ledger = (await (await fetch("/api/tasks")).json()) as {
+      tasks: Array<{ id: string; title: string }>;
+    };
+    const gated = ledger.tasks.find((task) => task.title === "Write the ledger");
+    const blocker = ledger.tasks.find((task) => task.title === "Review the diff");
+    if (gated === undefined || blocker === undefined) return false;
+    const response = await fetch(`/api/tasks/${encodeURIComponent(gated.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ blockedBy: [blocker.id] }),
+    });
+    return response.ok;
   });
-  await screen.getByRole("menuitem", "Blockers for Write the ledger").tap();
-  await screen.getByRole("button", "Blocked by Review the diff").tap();
+  expect(blocked).toBe(true);
   await expect(list.getByText("Blocked by Review the diff", { exact: true })).toBeVisible();
 
-  await browser.evaluate(() => {
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    return null;
-  });
-  await expect(screen.getByTestId("task-menu")).toHaveCount(0);
   await screen.getByRole("button", { name: "Open Write the ledger" }).tap();
   const parentStatus = screen.getByTestId("task-detail-status");
   await expect(parentStatus).toBeVisible();

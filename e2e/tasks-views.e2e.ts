@@ -212,27 +212,6 @@ test("shows a failed task action beside the control and keeps a long title", asy
   const composer = screen.getByRole("textbox", "New task");
   await composer.fill("Write the notice");
   await screen.getByRole("button", "Add task").tap();
-  await screen.getByRole("textbox", "New task").fill("Review the notice");
-  await screen.getByRole("button", "Add task").tap();
-
-  const openMenu = (title: string) =>
-    browser.evaluate((name) => {
-      const card = [...document.querySelectorAll("[data-task-card]")].find((item) =>
-        item.textContent?.includes(name),
-      );
-      if (!(card instanceof HTMLElement)) return null;
-      const box = card.getBoundingClientRect();
-      card.dispatchEvent(
-        new MouseEvent("contextmenu", {
-          bubbles: true,
-          cancelable: true,
-          clientX: box.left + 16,
-          clientY: box.top + box.height / 2,
-        }),
-      );
-      return null;
-    }, title);
-
   const failNextPatch = (message: string) =>
     browser.evaluate((text) => {
       const original = window.fetch.bind(window);
@@ -250,29 +229,6 @@ test("shows a failed task action beside the control and keeps a long title", asy
       };
       return null;
     }, message);
-
-  await openMenu("Write the notice");
-  await screen.getByRole("menuitem", "Blockers for Write the notice").tap();
-  await failNextPatch("Blockers would cycle");
-  await screen.getByRole("button", "Blocked by Review the notice").tap();
-  await expect(screen.getByTestId("task-error")).toHaveText("Blockers would cycle");
-  const menuError = await browser.evaluate(() => {
-    const menu = document.querySelector("[data-testid=task-menu]");
-    const error = menu?.querySelector("[data-testid=task-error]");
-    const item = menu?.querySelector("[role=menuitem]");
-    if (!(error instanceof HTMLElement) || !(item instanceof HTMLElement)) return null;
-    return error.getBoundingClientRect().bottom <= item.getBoundingClientRect().top + 1;
-  });
-  expect(menuError).toBe(true);
-
-  await screen.getByRole("button", "Blocked by Review the notice").tap();
-  await expect(screen.getByText("Blocked by Review the notice", { exact: true })).toBeVisible();
-  await expect(screen.getByTestId("task-error")).toHaveCount(0);
-  await browser.evaluate(() => {
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    return null;
-  });
-  await expect(screen.getByTestId("task-menu")).toHaveCount(0);
 
   await failNextPatch("Open subtasks");
   await screen.getByRole("button", { name: "Open Write the notice" }).tap();
@@ -300,42 +256,6 @@ test("shows a failed task action beside the control and keeps a long title", asy
   await expect(screen.getByTestId("task-state")).toHaveText("Done");
   await expect(screen.getByTestId("task-error")).toHaveCount(0);
 
-  await openMenu("Write the notice");
-  await screen.getByRole("menuitem", "Subtask of Write the notice").tap();
-  const subtask = screen.getByRole("textbox", "New subtask");
-  await subtask.fill("too late");
-  await screen.getByRole("button", "Add task").tap();
-  await expect(screen.getByTestId("composer-error")).toHaveText("Task is done");
-  await expect(subtask).toHaveValue("too late");
-  const added = await browser.evaluate(
-    () =>
-      [...document.querySelectorAll("[data-task-card]")].some((item) =>
-        item.textContent?.includes("too late"),
-      ) ?? false,
-  );
-  expect(added).toBe(false);
-  const composerError = await browser.evaluate(() => {
-    const error = document.querySelector("[data-testid=composer-error]");
-    const field = document.querySelector("textarea");
-    const footer = field?.closest(".float-footer");
-    if (
-      !(error instanceof HTMLElement) ||
-      !(field instanceof HTMLElement) ||
-      !(footer instanceof HTMLElement)
-    ) {
-      return null;
-    }
-    return (
-      footer.contains(error) &&
-      error.getBoundingClientRect().bottom <= field.getBoundingClientRect().top + 1
-    );
-  });
-  expect(composerError).toBe(true);
-
-  await subtask.fill("too late.");
-  await expect(screen.getByTestId("composer-error")).toHaveCount(0);
-
-  await screen.getByRole("button", "New top-level task").tap();
   const longTitle = "M".repeat(450);
   await screen.getByRole("textbox", "New task").fill(longTitle);
   await screen.getByRole("button", "Add task").tap();
