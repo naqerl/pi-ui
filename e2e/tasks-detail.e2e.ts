@@ -83,6 +83,16 @@ async function openWith(browser: Browser, width: number, height: number) {
   });
 }
 
+async function expectProjectAboveBody(browser: Browser) {
+  const projectAboveBody = await browser.evaluate(() => {
+    const project = document.querySelector<HTMLElement>('[data-testid="task-project-line"]');
+    const body = document.querySelector<HTMLElement>('[data-testid="task-body-section"]');
+    if (project === null || body === null) return null;
+    return !!(project.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+  expect(projectAboveBody).toBe(true);
+}
+
 test("on a phone the task detail replaces the list and goes back with its button or Escape", async ({
   app,
   browser,
@@ -105,6 +115,7 @@ test("on a phone the task detail replaces the list and goes back with its button
   await expect(detail.getByText("Review the details", { exact: true })).toBeVisible();
   await expect(detail.getByTestId("task-detail-id")).toHaveText("t1");
   await expect(detail.getByRole("heading", { name: "Ship plan" })).toBeVisible();
+  await expectProjectAboveBody(browser);
   await expect(screen.getByTestId("task-state")).toHaveText("Open");
   await expect(screen.getByTestId("task-stats")).toBeVisible();
 
@@ -143,6 +154,7 @@ test("on a desktop the first task is selected and the detail stays beside the li
   await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
   await expect(screen.getByTestId("task-detail")).toHaveAttribute("aria-label", "Ship the modal");
   await expect(screen.getByTestId("task-detail")).toBeVisible();
+  await expectProjectAboveBody(browser);
   await expect(screen.getByTestId("task-filters")).toHaveCount(0);
   const sides = await browser.evaluate(() => {
     const list = document.querySelector<HTMLElement>('[data-testid="task-list"]');
