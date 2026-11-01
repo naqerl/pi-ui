@@ -809,3 +809,47 @@ test("switches the model from the pi menu", async ({ app, browser, screen }) => 
   });
   expect(restored).toBe(true);
 });
+
+test("hydrates the chat after a failed first fetch and refreshes on focus", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  const timestamp = new Date().toISOString();
+  let version = 0;
+  let stateRequests = 0;
+  const snapshot = (text: string) => ({
+    conversationId: "hydrate-e2e",
+    messages: [{ id: `hydrate-${version}`, role: "assistant", text, timestamp, order: 1 }],
+    activity: [],
+    run: "idle",
+    queue: [],
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 },
+    context: { tokens: 0, window: null, percent: null },
+  });
+
+  // No stream to rescue the first load: the retry has to fetch the state again.
+  await browser.route("**/api/stream", async (route) => route.abort());
+  await browser.route("**/api/state**", async (route) => {
+    stateRequests += 1;
+    if (stateRequests === 1) {
+      await route.fulfill({ status: 503, body: "starting" });
+      return;
+    }
+    await route.fulfill({
+      json: snapshot(version === 0 ? "First hydration" : "Refreshed on focus"),
+    });
+  });
+
+  await app.open("/");
+  await expect(screen.getByText("First hydration", { exact: true })).toBeVisible({
+    timeout: 10_000,
+  });
+  expect(stateRequests).toBeGreaterThan(1);
+
+  version = 1;
+  await browser.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(screen.getByText("Refreshed on focus", { exact: true })).toBeVisible({
+    timeout: 10_000,
+  });
+});

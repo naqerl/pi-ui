@@ -53,10 +53,10 @@ test("ledger facts: proposed and done win over anything measured", () => {
   assert.equal(taskState(tasks, tasks[1] as Task, live), "done");
 });
 
-test("working needs a live run with a recent call tagged with the task", () => {
+test("working follows a live run until it reaches a terminal outcome", () => {
   const a = task("a");
   const recent = new Date(Date.parse(NOW) - 60_000).toISOString();
-  const stale = new Date(Date.parse(NOW) - WORKING_WINDOW_MS - 1).toISOString();
+  const stale = new Date(Date.parse(NOW) - 6 * 60 * 60_000).toISOString();
   const running = { id: "r1", outcome: "running" as const, at: recent };
   assert.equal(
     taskState(
@@ -81,7 +81,7 @@ test("working needs a live run with a recent call tagged with the task", () => {
     ),
     "ready",
   );
-  // A live run that has not touched the task for a while does not keep it working.
+  // A live run with no recent tool call keeps working; only a terminal outcome clears it.
   assert.equal(
     taskState(
       [a],
@@ -92,7 +92,7 @@ test("working needs a live run with a recent call tagged with the task", () => {
         traces: { a: trace({ lastActivityAt: stale, lastRun: running }) },
       }),
     ),
-    "ready",
+    "working",
   );
   // Another run is live; this task was touched by an older one.
   assert.equal(

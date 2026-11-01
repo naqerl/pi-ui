@@ -7,6 +7,12 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 - A task that has received a tagged tool call keeps its Working badge after the run ends, instead of dropping back to ready at the end of the turn or after ten quiet minutes. The ledger now stores `lastWorkedAt`, so the badge also survives a restart, and closing or reopening the task clears it.
 - A working task untouched for over an hour keeps its badge but gains a small muted `stale` marker, and the idle nudge names those tasks and asks the agent to confirm the work, block it, or mark it done. Stale requests reuse the existing once-per-task-set hash, so the same backlog stays quiet until it changes.
 
+## 1.6.42 - 2026-11-01
+
+- Opening the chat now hydrates the conversation immediately instead of requiring a page switch: the first paint waits for one real state fetch, a failed fetch keeps the last state and retries with backoff, and the page refreshes again when it becomes visible or the app regains focus.
+- A task's working status survives a reload: the Working badge stays until its run reaches a terminal outcome or the task closes, and a snapshot that omits the run activity no longer clears a badge that was already shown.
+- A live run that has made no tool call for an hour gets one status-check nudge per task, asking whether it is still in progress, done or blocked and to update the ledger; it is a notice chip and never fires for a terminal, blocked or waiting run.
+
 ## 1.6.41 - 2026-11-01
 
 - The MCP subscription is watched for silence: after 60 seconds without a pushed event or heartbeat it is reported as stalled, re-subscribed from the cursor the server last returned, and reported as dead when two recoveries fail to restore traffic. A dead or muted stream is no longer shown as "active".

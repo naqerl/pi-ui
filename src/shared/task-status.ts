@@ -1,7 +1,7 @@
 import { descendantIds, liveBlockerIds } from "./tasks.js";
-import type { Task, TaskActivity, TaskState } from "./types.js";
+import type { Task, TaskActivity, TaskState, TaskTrace } from "./types.js";
 
-/** A task counts as working while its last tagged call in the live run is this recent. */
+/** Kept for callers that still name the old recency window; working now lasts until the run ends. */
 export const WORKING_WINDOW_MS = 10 * 60_000;
 
 /** After an hour without a tagged call, a working task is shown as stale as well. */
@@ -29,14 +29,32 @@ export function lastWorkedAtMs(task: Task, activity: TaskActivity | undefined): 
   return newest;
 }
 
-/** True when the live run tagged a tool call with this task recently. */
+/** True when the trace says its run has not reached a terminal outcome yet. */
+function runIsLive(trace: TaskTrace | undefined): boolean {
+  return trace?.lastRun?.outcome === "running";
+}
+
+/** True when the trace records a terminal run, so a badge may clear. */
+export function runIsTerminal(trace: TaskTrace | undefined): boolean {
+  const outcome = trace?.lastRun?.outcome;
+  return outcome === "ok" || outcome === "error" || outcome === "interrupted";
+}
+
+/**
+ * True when a task was touched by a run that has not ended. A later snapshot that omits
+ * the activity (or carries the same non-terminal run) must not clear the badge; only the
+ * task closing or a terminal outcome does.
+ */
 export function isWorking(task: Task, activity: TaskActivity | undefined): boolean {
-  if (activity === undefined || !activity.running || activity.runId === null) return false;
+  if (task.status !== "open" || activity === undefined) return false;
   const trace = activity.traces[task.id];
-  if (trace?.lastRun == null || trace.lastActivityAt === null) return false;
-  if (trace.lastRun.id !== activity.runId || trace.lastRun.outcome !== "running") return false;
-  const last = Date.parse(trace.lastActivityAt);
-  return Number.isFinite(last) && nowOf(activity) - last <= WORKING_WINDOW_MS;
+  if (!runIsLive(trace)) return false;
+  // Another run being live means this task belongs to an older run, not the current one.
+  if (activity.running && activity.runId !== null) {
+    return trace?.lastRun?.id === activity.runId;
+  }
+  // No terminal event has arrived for the run that touched the task.
+  return true;
 }
 
 /** True when the run that last touched the task errored or was interrupted. */
@@ -57,6 +75,29 @@ export function isStaleWorking(
   if (task.status !== "open") return false;
   const last = lastWorkedAtMs(task, activity);
   return last !== null && at - last > STALE_WORKING_MS;
+}
+
+/**
+ * Carries a task's working trace across a snapshot that omits it, so a badge already shown
+ * stays until the task closes or the snapshot reports a terminal run for it.
+ */
+export function carryWorkingTraces(
+  previous: TaskActivity | undefined,
+  next: TaskActivity | undefined,
+  tasks: readonly Task[],
+): TaskActivity | undefined {
+  if (next === undefined) return previous;
+  if (previous === undefined) return next;
+  const open = new Set(tasks.filter((task) => task.status === "open").map((task) => task.id));
+  const traces = { ...next.traces };
+  for (const [id, trace] of Object.entries(previous.traces)) {
+    if (!open.has(id) || !runIsLive(trace)) continue;
+    const current = traces[id];
+    if (runIsTerminal(current)) continue;
+    if (runIsLive(current)) continue;
+    traces[id] = trace;
+  }
+  return { ...next, traces };
 }
 
 /**

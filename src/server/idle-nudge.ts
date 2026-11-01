@@ -6,8 +6,13 @@ import {
   type IdleTask,
   idleNudgeText,
   openTaskIds,
+  STALE_RUN_NUDGE_FILE,
+  staleRunNudgeMs,
+  staleRunNudgeText,
+  staleRunTaskIds,
   staleWorkedTasks,
 } from "../shared/idle-nudge.js";
+import type { TaskActivity } from "../shared/types.js";
 
 export * from "../shared/idle-nudge.js";
 
@@ -35,18 +40,23 @@ export function idleNudgeFile(dataDir: string): string {
   return join(dataDir, IDLE_NUDGE_FILE);
 }
 
-function storageFile(input?: IdleNudgeStorage): string | undefined {
+/** The `stale-nudge.json` path for a data directory. */
+export function staleRunNudgeFile(dataDir: string): string {
+  return join(dataDir, STALE_RUN_NUDGE_FILE);
+}
+
+function storageFile(input?: IdleNudgeStorage, fileName = IDLE_NUDGE_FILE): string | undefined {
   if (input === undefined) {
     const env = process.env.DATA_DIR?.trim();
-    return env === undefined || env.length === 0 ? undefined : idleNudgeFile(resolve(env));
+    return env === undefined || env.length === 0 ? undefined : join(resolve(env), fileName);
   }
   if (typeof input === "string") {
     const path = input.trim();
     if (path.length === 0) return undefined;
-    return path.endsWith(".json") ? resolve(path) : idleNudgeFile(resolve(path));
+    return path.endsWith(".json") ? resolve(path) : join(resolve(path), fileName);
   }
   if (input.file !== undefined) return resolve(input.file);
-  if (input.dataDir !== undefined) return idleNudgeFile(resolve(input.dataDir));
+  if (input.dataDir !== undefined) return join(resolve(input.dataDir), fileName);
   return undefined;
 }
 
@@ -100,6 +110,130 @@ export function clearIdleNudgeRecord(fileOrDataDir: string): void {
       return;
     }
     throw error;
+  }
+}
+
+/** The last stale-run nudge for each task, as task id to ISO timestamp. */
+export type StaleRunNudgeRecord = Record<string, string>;
+
+/** Read the per-task stale-run records; a missing or malformed file yields an empty map. */
+export function readStaleRunNudgeRecord(fileOrDataDir: string): StaleRunNudgeRecord {
+  const file = storageFile(fileOrDataDir, STALE_RUN_NUDGE_FILE);
+  if (file === undefined) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return {};
+  }
+  if (typeof parsed !== "object" || parsed === null) return {};
+  const tasks = (parsed as Record<string, unknown>).tasks;
+  if (typeof tasks !== "object" || tasks === null) return {};
+  const out: StaleRunNudgeRecord = {};
+  for (const [id, value] of Object.entries(tasks)) {
+    if (id.length === 0 || typeof value !== "string") continue;
+    if (!Number.isFinite(Date.parse(value))) continue;
+    out[id] = value;
+  }
+  return out;
+}
+
+/** Write the per-task stale-run records through a temporary file, then rename. */
+export function writeStaleRunNudgeRecord(
+  fileOrDataDir: string,
+  record: StaleRunNudgeRecord,
+): string | undefined {
+  const file = storageFile(fileOrDataDir, STALE_RUN_NUDGE_FILE);
+  if (file === undefined) return undefined;
+  mkdirSync(dirname(file), { recursive: true });
+  const temporary = `${file}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(temporary, `${JSON.stringify({ version: 1, tasks: record })}\n`, "utf8");
+  renameSync(temporary, file);
+  return file;
+}
+
+export interface StaleRunNudgePlan {
+  text: string;
+  taskIds: string[];
+}
+
+/**
+ * The one-hour status check for a live run that stopped calling tools on a task.
+ * Each task gets at most one nudge per window, even across a restart.
+ */
+export class StaleRunNudge {
+  private readonly storage: string | undefined;
+  private readonly nudgedAt = new Map<string, number>();
+
+  constructor(
+    readonly intervalMs: number = staleRunNudgeMs(),
+    storage?: IdleNudgeStorage,
+    private readonly clock: () => number = Date.now,
+  ) {
+    this.storage = storageFile(storage, STALE_RUN_NUDGE_FILE);
+    this.load();
+  }
+
+  get enabled(): boolean {
+    return this.intervalMs > 0;
+  }
+
+  load(): void {
+    if (this.storage === undefined) return;
+    for (const [id, at] of Object.entries(readStaleRunNudgeRecord(this.storage))) {
+      const parsed = Date.parse(at);
+      if (Number.isFinite(parsed)) this.nudgedAt.set(id, parsed);
+    }
+  }
+
+  /** Tasks due for a status check right now, after the per-task cooldown. */
+  due(
+    tasks: readonly IdleTask[],
+    activity: TaskActivity | undefined,
+    at: number = this.clock(),
+  ): string[] {
+    if (!this.enabled) return [];
+    return staleRunTaskIds(tasks, activity, at, this.intervalMs).filter((id) => {
+      const last = this.nudgedAt.get(id);
+      return last === undefined || at - last >= this.intervalMs;
+    });
+  }
+
+  /** Remember that these tasks were nudged, so they stay quiet for one window. */
+  record(taskIds: readonly string[], at: number = this.clock()): void {
+    if (taskIds.length === 0) return;
+    for (const id of taskIds) this.nudgedAt.set(id, at);
+    this.save();
+  }
+
+  /** Forget a failed submission, so the same tasks can try again. */
+  forget(taskIds: readonly string[]): void {
+    if (taskIds.length === 0) return;
+    for (const id of taskIds) this.nudgedAt.delete(id);
+    this.save();
+  }
+
+  /** A ready-to-submit status check, or null when nothing is due. */
+  maybeNudge(
+    tasks: readonly IdleTask[],
+    activity: TaskActivity | undefined,
+    at: number = this.clock(),
+  ): StaleRunNudgePlan | null {
+    const taskIds = this.due(tasks, activity, at);
+    if (taskIds.length === 0) return null;
+    this.record(taskIds, at);
+    return { text: staleRunNudgeText(taskIds), taskIds };
+  }
+
+  private save(): void {
+    if (this.storage === undefined) return;
+    const record: StaleRunNudgeRecord = {};
+    for (const [id, at] of this.nudgedAt) record[id] = new Date(at).toISOString();
+    try {
+      writeStaleRunNudgeRecord(this.storage, record);
+    } catch (error) {
+      console.error("[pi] could not record the stale-run nudge", error);
+    }
   }
 }
 

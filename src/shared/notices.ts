@@ -65,6 +65,8 @@ export interface IdleNoticeDetails {
   text: string;
   taskIds: string[];
   summary: string;
+  /** True for the narrower status check after a live run went quiet on a task. */
+  stale?: true;
 }
 
 /** A request the agent pushed to the operator's devices with notify_operator. */
@@ -103,6 +105,8 @@ const MCP_STATUS_HEAD = "MCP subscription status follows.";
 const IDLE_HEAD =
   /^You have been idle for \d+ minutes and (\d+) task\(s\) are open: (.+)\. Pick the next one and implement it\.$/;
 const IDLE_BLOCKED_HEAD = /^You have been idle for \d+ minutes\. Nothing is unblocked: (.+)\.$/;
+const STALE_RUN_HEAD =
+  /^Tasks? (.+?) (?:has|have) had no tool call for \d+ minutes\. Confirm whether .*\bupdate the task ledger accordingly\.$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -163,6 +167,21 @@ function mcpSummary(servers: string[], label: string): string {
 
 function parseIdle(body: string): IdleNoticeDetails | null {
   const text = body.trim();
+  const stale = STALE_RUN_HEAD.exec(text);
+  if (stale !== null) {
+    const taskIds = (stale[1] ?? "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter((id) => id.length > 0);
+    if (taskIds.length === 0) return null;
+    return {
+      kind: "idle",
+      text,
+      taskIds,
+      summary: `status check · ${taskIds.join(", ")}`,
+      stale: true,
+    };
+  }
   // A stale request follows the usual prompt on its own paragraph; the first line still
   // carries the task ids the chip and its summary need.
   const head = text.split("\n", 1)[0] ?? "";
@@ -293,6 +312,12 @@ export function parseNotice(message: string): ChatNotice | null {
   if (message.startsWith("[background job ")) return parseJob(message.split("\n"));
   if (message.startsWith(MCP_EVENTS_HEAD)) return parseMcp(message, false);
   if (message.startsWith(MCP_STATUS_HEAD)) return parseMcp(message, true);
-  if (message.startsWith("You have been idle for ")) return parseIdle(message);
+  if (
+    message.startsWith("You have been idle for ") ||
+    message.startsWith("Task ") ||
+    message.startsWith("Tasks ")
+  ) {
+    return parseIdle(message);
+  }
   return null;
 }

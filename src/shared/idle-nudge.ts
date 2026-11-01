@@ -1,5 +1,5 @@
 import { STALE_WORKING_MS } from "./task-status.js";
-import type { Task } from "./types.js";
+import type { Task, TaskActivity } from "./types.js";
 
 /**
  * The browser-safe half of the idle nudge: wording and task selection. The
@@ -13,6 +13,13 @@ export const DEFAULT_IDLE_NUDGE_MS = 1_200_000;
 export const IDLE_NUDGE_MINUTES = 20;
 /** The persisted record of the last task set that produced a nudge. */
 export const IDLE_NUDGE_FILE = "idle-nudge.json";
+
+/** One hour; a live run with no tool call for this long gets a status nudge. */
+export const STALE_RUN_NUDGE_MS = 3_600_000;
+/** The wording names the stale-run window; it is what the user sees in the prompt. */
+export const STALE_RUN_NUDGE_MINUTES = 60;
+/** The persisted record of the last stale-run nudge for each task. */
+export const STALE_RUN_NUDGE_FILE = "stale-nudge.json";
 
 /** The fields the idle nudge needs from a task. */
 export type IdleTask = Pick<Task, "id" | "status"> & {
@@ -68,6 +75,62 @@ export function idleNudgeMs(env: Record<string, string | undefined> = process.en
   const value = Number(raw);
   if (!Number.isFinite(value) || value < 0) return DEFAULT_IDLE_NUDGE_MS;
   return Math.floor(value);
+}
+
+/**
+ * The stale-run window from `PI_STALE_RUN_NUDGE_MS`. Zero disables the check; a
+ * missing or invalid value keeps the one-hour default. The same window is the
+ * per-task cooldown, so a task is nudged at most once per hour in production.
+ */
+export function staleRunNudgeMs(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.PI_STALE_RUN_NUDGE_MS;
+  if (raw === undefined || raw.trim().length === 0) return STALE_RUN_NUDGE_MS;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) return STALE_RUN_NUDGE_MS;
+  return Math.floor(value);
+}
+
+/**
+ * Tasks whose live run has not made a tagged tool call for `windowMs`. A terminal
+ * run, a closed or proposed task, and a task waiting on an open blocker are left
+ * alone: only work that is still live and still unblocked is worth a status check.
+ */
+export function staleRunTaskIds(
+  tasks: readonly IdleTask[],
+  activity: TaskActivity | undefined,
+  at: number = Date.now(),
+  windowMs: number = STALE_RUN_NUDGE_MS,
+): string[] {
+  if (activity === undefined || !activity.running || activity.runId === null) return [];
+  if (windowMs <= 0) return [];
+  const open = new Set(tasks.filter((task) => task.status === "open").map((task) => task.id));
+  const ids: string[] = [];
+  for (const task of tasks) {
+    if (task.status !== "open") continue;
+    if ((task.blockedBy ?? []).some((id) => open.has(id))) continue;
+    const trace = activity.traces[task.id];
+    const run = trace?.lastRun;
+    if (run?.outcome !== "running" || run.id !== activity.runId) continue;
+    // Quiet time starts at the later of the last tool call and the current run's start.
+    // Without this, an old timestamp from a previous run makes a fresh run look stale.
+    const calledAt = trace.lastActivityAt === null ? Number.NaN : Date.parse(trace.lastActivityAt);
+    const startedAt = Date.parse(run.at);
+    const last = Math.max(
+      Number.isFinite(calledAt) ? calledAt : Number.NEGATIVE_INFINITY,
+      Number.isFinite(startedAt) ? startedAt : Number.NEGATIVE_INFINITY,
+    );
+    if (!Number.isFinite(last) || at - last < windowMs) continue;
+    ids.push(task.id);
+  }
+  return ids;
+}
+
+/** The prompt sent when a live run has gone quiet on these tasks. */
+export function staleRunNudgeText(taskIds: readonly string[]): string {
+  const list = taskIds.join(", ");
+  const subject = taskIds.length === 1 ? `Task ${list}` : `Tasks ${list}`;
+  const verb = taskIds.length === 1 ? "has" : "have";
+  return `${subject} ${verb} had no tool call for ${STALE_RUN_NUDGE_MINUTES} minutes. Confirm whether ${taskIds.length === 1 ? "it is" : "they are"} still in progress, close ${taskIds.length === 1 ? "it" : "them"} if ${taskIds.length === 1 ? "it is" : "they are"} done, or mark ${taskIds.length === 1 ? "it" : "them"} blocked if not, and update the task ledger accordingly.`;
 }
 
 /**

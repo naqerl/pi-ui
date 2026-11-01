@@ -58,7 +58,17 @@ async function networkFirst(request) {
     if (response.ok) await cache.put(request, response.clone());
     return response;
   } catch {
-    return (await cache.match(request)) ?? Response.error();
+    const cached = await cache.match(request);
+    if (cached === undefined) return Response.error();
+    // Keep the last render usable offline, but tell the client it is stale so it
+    // keeps retrying instead of treating a cached state snapshot as hydrated.
+    const headers = new Headers(cached.headers);
+    headers.set("X-Pi-Stale", "1");
+    return new Response(await cached.blob(), {
+      status: cached.status,
+      statusText: cached.statusText,
+      headers,
+    });
   }
 }
 

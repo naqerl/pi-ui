@@ -146,7 +146,7 @@ test("a tagged call is handed to the ledger recorder at start and end", () => {
   ]);
 });
 
-test("a long tagged call keeps its task working and counts its time while it runs", () => {
+test("a live run keeps its task working through quiet time until it ends", () => {
   let now = Date.parse("2026-10-31T12:00:00.000Z");
   const tracker = new TaskActivityTracker(undefined, () => now);
   const tasks = [task("a")];
@@ -160,8 +160,14 @@ test("a long tagged call keeps its task working and counts its time while it run
   tracker.toolEnded({ [TASK_ID_PARAM]: "a" });
   now += 15 * 60_000;
   view = tracker.view();
-  assert.equal(taskState(tasks, tasks[0] as Task, view), "ready", "quiet past the window");
+  assert.equal(
+    taskState(tasks, tasks[0] as Task, view),
+    "working",
+    "the run is still live, so the badge stays",
+  );
   assert.equal(view.traces.a?.measured.activeMs, 25 * 60_000, "silence after the call is not work");
+  tracker.runEnded();
+  assert.equal(taskState(tasks, tasks[0] as Task, tracker.view()), "ready", "run end clears it");
 });
 
 test("a failed run marks the tasks it touched, and the ledger adds status history", () => {
