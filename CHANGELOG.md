@@ -4,6 +4,12 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.47 - 2026-11-01
+
+- Project names come only from open tasks, project headers use the solid Open header background, and the project line sits above the task body.
+- The task id moved to the top right of the card, the activity table is gone from the detail view, and the task_working tool now exists so the idle nudge names a real tool.
+- The composer animates on the compositor instead of layout, and the operator notice glyph is neutral with no push on an approval.
+
 ## 1.6.46 - 2026-11-01
 
 - The browser suite now runs in parallel and finishes in minutes instead of an hour: several app shards per box, workers derived from the available CPUs, and CI fails when the suite exceeds ten minutes.
