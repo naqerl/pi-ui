@@ -14,11 +14,10 @@ import {
   liveBlockerIds,
   TASK_BODY_MAX_LENGTH,
 } from "../shared/tasks";
-import { formatDateTime, formatDay, formatMonthDay, formatTime } from "../shared/time";
+import { formatDateTime, formatMonthDay, formatTime } from "../shared/time";
 import type {
   Task,
   TaskActivity,
-  TaskHistoryEvent,
   TaskLedger,
   TaskMeasured,
   TaskState,
@@ -28,7 +27,6 @@ import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader } from "./components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
-import { Separator } from "./components/ui/separator";
 import { cn } from "./lib/utils";
 import { InlineMarkdown, Markdown, plainInline } from "./markdown";
 import { mediaUrl } from "./media-client";
@@ -38,7 +36,6 @@ import { removeTask, type TaskOutcome, updateTask } from "./task-client";
 
 const LONG_PRESS_MS = 500;
 const WIDE_QUERY = "(min-width: 1024px)";
-const HISTORY_LIMIT = 12;
 /** Past days of the done list shown at first; "Show older days" adds this many more. */
 const DAY_PAGE = 7;
 
@@ -94,17 +91,6 @@ export function dayKey(value: string | Date): string {
   const month = String(at.getMonth() + 1).padStart(2, "0");
   const day = String(at.getDate()).padStart(2, "0");
   return `${at.getFullYear()}-${month}-${day}`;
-}
-
-/** "Today", "Yesterday", or a short weekday and date such as "Thu, Oct 29". */
-export function dayLabel(key: string, now: Date): string {
-  if (key === dayKey(now)) return "Today";
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  if (key === dayKey(yesterday)) return "Yesterday";
-  const [year, month, day] = key.split("-").map(Number);
-  const date = new Date(year ?? 1970, (month ?? 1) - 1, day ?? 1);
-  return formatDay(date, now.getFullYear());
 }
 
 /** The heading for one done day: "Done today", "Done yesterday", then "Done <date>". */
@@ -1423,10 +1409,6 @@ export function TaskDetail({
     ["Cost", ran ? formatCost(measured.cost) : "—"],
     [rolledUp ? "Runs with subtasks" : "Runs", ran ? String(measured.runs) : "—"],
   ];
-  const events: TaskHistoryEvent[] = (trace?.history ?? []).slice(-HISTORY_LIMIT);
-  const hidden = (trace?.history.length ?? 0) - events.length;
-  const now = new Date();
-  const eventDays = groupByDay([...events].reverse(), (event) => event.at);
   const reason =
     state === "failed" && trace?.lastRun?.reason !== undefined ? trace.lastRun.reason : null;
   const badge = stateBadge(state, trace) ?? "Open";
@@ -1808,49 +1790,6 @@ export function TaskDetail({
             ))}
           </section>
         )}
-        <Separator />
-        <section className="flex flex-col gap-2" data-testid="task-history">
-          <SubHeading>History</SubHeading>
-          {events.length === 0 ? (
-            <p className="text-sm leading-5 text-muted-foreground">Nothing recorded yet</p>
-          ) : (
-            <div className="flex flex-col gap-3">
-              {eventDays.map(([key, items]) => (
-                <div key={key} className="flex flex-col gap-1">
-                  <p className="text-xs font-medium leading-4 text-muted-foreground">
-                    {dayLabel(key, now)}
-                  </p>
-                  <ol className="flex flex-col gap-1">
-                    {items.map((event, index) => (
-                      <li
-                        // biome-ignore lint/suspicious/noArrayIndexKey: history is append-only and has no ids.
-                        key={`${event.at}-${index}`}
-                        data-kind={event.kind}
-                        className="flex items-baseline gap-3 text-sm leading-5"
-                      >
-                        <time
-                          dateTime={event.at}
-                          title={formatDateTime(event.at)}
-                          className="w-11 shrink-0 tabular-nums text-muted-foreground"
-                        >
-                          {formatTime(event.at)}
-                        </time>
-                        <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
-                          {event.text}
-                        </span>
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-              ))}
-              {hidden > 0 && (
-                <p className="text-xs leading-4 text-muted-foreground">
-                  {hidden} earlier {hidden === 1 ? "event" : "events"}
-                </p>
-              )}
-            </div>
-          )}
-        </section>
         {notice !== null && <ErrorText>{notice}</ErrorText>}
       </CardContent>
       <CardFooter

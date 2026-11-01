@@ -7,7 +7,6 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { taskFilterCounts } from "../src/client/TaskFilters.js";
 import {
-  dayLabel,
   doneDayLabel,
   groupByDay,
   groupByProject,
@@ -191,7 +190,7 @@ test("the task modal shows the full rationale, blockers and completion record", 
   assert.match(markup, /data-testid="task-state"[^>]*>Blocked</);
   // Nothing ran yet, so every measured stat is a dash rather than a zero.
   assert.equal(markup.match(/>—</g)?.length, 4);
-  assert.match(markup, /Nothing recorded yet/);
+  assert.doesNotMatch(markup, /data-testid="task-history"/);
 });
 
 test("the completed task modal carries the evidence and the closed time", () => {
@@ -238,7 +237,7 @@ test("the completed task modal carries the evidence and the closed time", () => 
   assert.match(markup, /Closed/);
   assert.match(markup, /18m/);
   assert.match(markup, /\$0\.42/);
-  assert.match(markup, /run started/);
+  assert.doesNotMatch(markup, /data-testid="task-history"/);
   assert.match(markup, /data-testid="task-detail-back"/);
 });
 
@@ -922,10 +921,6 @@ test("done tasks group by local day: today, yesterday, then short dates", () => 
       days.map(([key]) => doneDayLabel(key, now)),
       ["Done today", "Done yesterday", "Done Oct 29"],
     );
-    assert.equal(dayLabel("2026-10-31", now), "Today");
-    assert.equal(dayLabel("2026-10-30", now), "Yesterday");
-    assert.notEqual(dayLabel("2026-10-29", now), "Yesterday");
-    assert.match(dayLabel("2026-10-29", now), /29/);
   });
 });
 
