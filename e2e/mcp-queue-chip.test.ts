@@ -150,7 +150,7 @@ function findButton(element: ReactElement): ReactElement<{ onClick?: () => unkno
   return null;
 }
 
-test("a queued MCP notice renders as a transparent chip", async () => {
+test("a queued MCP notice renders as a blurred chip", async () => {
   const { chat } = queuedChat();
   await chat.submitMcpEventNotice(mcpText());
   const item = firstQueued(chat);
@@ -167,7 +167,10 @@ test("a queued MCP notice renders as a transparent chip", async () => {
   assert.match(markup, /1 queued/);
   assert.doesNotMatch(markup, /MCP event data follows/);
   assert.doesNotMatch(markup, /· queued/);
-  assert.match(markup, /\bbg-transparent\b/);
+  assert.match(markup, /\bbackdrop-blur-md\b/);
+  assert.match(markup, /\bbg-background\/40\b/);
+  assert.match(markup, /\btext-foreground\/80\b/);
+  assert.doesNotMatch(markup, /\bbg-transparent\b/);
   assert.doesNotMatch(markup, /\bbg-surface\b/);
   assert.doesNotMatch(markup, /\bopacity-60\b/);
   assert.match(markup, /aria-label="cancel"/);
@@ -432,6 +435,9 @@ test("a background-job notice uses the same chip", async () => {
   })();
   assert.equal(chipClass(job), chipClass(await mcp));
   assert.doesNotMatch(chipClass(job), /\bbg-surface\b/);
-  assert.match(chipClass(job), /\bbg-transparent\b/);
+  assert.match(chipClass(job), /\bbackdrop-blur-md\b/);
+  assert.match(chipClass(job), /\bbg-background\/40\b/);
+  assert.match(chipClass(job), /\btext-foreground\/80\b/);
+  assert.doesNotMatch(chipClass(job), /\bbg-transparent\b/);
   assert.doesNotMatch(job, /\bopacity-60\b/);
 });
