@@ -2,7 +2,7 @@
 
 Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
 
-## Unreleased
+## 1.6.40 - 2026-11-01
 
 - A task body renders as Markdown in a scrollable, height-limited area inside the detail card, so a long description no longer stretches the page.
 - On desktop the first task of the current filter is selected as soon as the list arrives, and the detail stays open beside the list without a close button; mobile still opens details only when tapped.
