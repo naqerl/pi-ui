@@ -156,8 +156,10 @@ test("attaches an image to a new task", async ({ app, browser, screen }) => {
 
   await field.fill("Fix the layout in this screenshot");
   await screen.getByRole("button", "Add task").tap();
+  // Scope to the list: the composer draft still carries the title until the
+  // create round-trip resolves, so a page-wide text match can see both.
   await expect(
-    screen.getByText("Fix the layout in this screenshot", { exact: true }),
+    screen.getByTestId("task-list").getByText("Fix the layout in this screenshot", { exact: true }),
   ).toBeVisible();
   // Rows stay slim; the attachment shows in the task's detail.
   await screen.getByRole("button", "Open Fix the layout in this screenshot").tap();

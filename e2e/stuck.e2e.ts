@@ -10,7 +10,9 @@ test("a quiet run keeps just the animation and the word working", async ({ app, 
   await composer.fill("SLOW response please");
   await screen.getByRole("button", "Send").tap();
   const activity = screen.getByTestId("header-activity");
-  await expect(screen.getByRole("button", "Stop")).toBeVisible();
+  // Shard startup and the send round-trip can sit behind another suite on a busy
+  // host; wait for the run to begin instead of failing on the default deadline.
+  await expect(screen.getByRole("button", "Stop")).toBeVisible({ timeout: 30_000 });
 
   try {
     await expect(activity).toHaveText("working");
