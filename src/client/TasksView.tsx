@@ -996,16 +996,13 @@ export function TaskRow({
         }}
       >
         <span className="flex min-w-0 flex-1 flex-col justify-start gap-0.5 self-stretch">
-          <span className="flex min-w-0 items-start gap-1.5">
-            <TaskIdChip id={task.id} className="mt-0.5" />
-            <span
-              className={cn(
-                "line-clamp-2 min-w-0 flex-1 text-sm leading-5 [overflow-wrap:anywhere]",
-                done || backlog ? "text-muted-foreground" : "text-foreground",
-              )}
-            >
-              <InlineMarkdown text={task.title} />
-            </span>
+          <span
+            className={cn(
+              "line-clamp-2 min-w-0 text-sm leading-5 [overflow-wrap:anywhere]",
+              done || backlog ? "text-muted-foreground" : "text-foreground",
+            )}
+          >
+            <InlineMarkdown text={task.title} />
           </span>
           {note !== "" && (
             <span className="truncate text-xs leading-4 text-muted-foreground" title={note}>
@@ -1014,7 +1011,7 @@ export function TaskRow({
           )}
         </span>
         <span className="flex min-h-9 shrink-0 flex-col items-end justify-between self-stretch">
-          <span className="flex items-center gap-1.5">
+          <span className="flex items-center justify-end gap-1.5">
             {badge !== null && (
               <Badge
                 variant={current === "working" || current === "failed" ? "default" : "outline"}
@@ -1023,6 +1020,7 @@ export function TaskRow({
               </Badge>
             )}
             {stale && <StaleMarker id={task.id} />}
+            <TaskIdChip id={task.id} />
           </span>
           <TaskCardTimes task={task} />
         </span>
@@ -1107,8 +1105,7 @@ function ProposedTask({
           )}
         </span>
         <span className="ml-auto flex shrink-0 flex-col items-end justify-between gap-1 self-stretch">
-          <span className="flex items-center gap-2">
-            <TaskIdBadge id={task.id} />
+          <span className="flex items-center justify-end gap-2">
             <Badge variant="outline">Proposed</Badge>
             <Button
               variant="ghost"
@@ -1133,6 +1130,7 @@ function ProposedTask({
             >
               Approve
             </Button>
+            <TaskIdBadge id={task.id} />
           </span>
           <TaskCardTimes task={task} />
         </span>

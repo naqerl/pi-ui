@@ -50,14 +50,21 @@ test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300
       return null;
     }
     const style = getComputedStyle(chip);
+    const box = card.getBoundingClientRect();
+    const describedBy = (card.getAttribute("aria-describedby") ?? "")
+      .split(/\s+/)
+      .filter((part) => part !== "");
     return {
       id: chip.textContent?.trim() ?? "",
       title: chip.getAttribute("title"),
       label: chip.getAttribute("aria-label"),
       classes: chip.className,
       background: style.backgroundColor,
-      leftOfTitle: chip.getBoundingClientRect().right <= title.getBoundingClientRect().left + 1,
-      describedBy: card.getAttribute("aria-describedby"),
+      afterTitle: (chip.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_PRECEDING) !== 0,
+      rightAligned: Math.abs(box.right - chip.getBoundingClientRect().right) <= 16,
+      idCount: card.querySelectorAll('[data-testid^="task-id-"]').length,
+      describedBy,
+      describedIsChip: describedBy.some((part) => document.getElementById(part) === chip),
     };
   });
   expect(cardId?.id).toHaveLength(4);
@@ -66,8 +73,11 @@ test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300
   expect(cardId?.classes).toContain("font-mono");
   expect(cardId?.classes).toContain("text-[11px]");
   expect(cardId?.background).toBe("rgba(0, 0, 0, 0)");
-  expect(cardId?.leftOfTitle).toBe(true);
+  expect(cardId?.afterTitle).toBe(true);
+  expect(cardId?.rightAligned).toBe(true);
+  expect(cardId?.idCount).toBe(1);
   expect(cardId?.describedBy).toContain(`task-id-${cardId?.id}`);
+  expect(cardId?.describedIsChip).toBe(true);
   await expect(composer).toHaveValue("");
   await expect(screen.getByTestId("subtask-progress")).toHaveCount(0);
 
