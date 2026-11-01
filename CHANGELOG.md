@@ -2,6 +2,12 @@
 
 Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
 
+## 1.6.42 - 2026-11-01
+
+- Opening the chat now hydrates the conversation immediately instead of requiring a page switch: the first paint waits for one real state fetch, a failed fetch keeps the last state and retries with backoff, and the page refreshes again when it becomes visible or the app regains focus.
+- A task's working status survives a reload: the Working badge stays until its run reaches a terminal outcome or the task closes, and a snapshot that omits the run activity no longer clears a badge that was already shown.
+- A live run that has made no tool call for an hour gets one status-check nudge per task, asking whether it is still in progress, done or blocked and to update the ledger; it is a notice chip and never fires for a terminal, blocked or waiting run.
+
 ## 1.6.41 - 2026-11-01
 
 - The MCP subscription is watched for silence: after 60 seconds without a pushed event or heartbeat it is reported as stalled, re-subscribed from the cursor the server last returned, and reported as dead when two recoveries fail to restore traffic. A dead or muted stream is no longer shown as "active".
@@ -14,12 +20,6 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 - A task body renders as Markdown in a scrollable, height-limited area inside the detail card, so a long description no longer stretches the page.
 - On desktop the first task of the current filter is selected as soon as the list arrives, and the detail stays open beside the list without a close button; mobile still opens details only when tapped.
 - Task cards show the short 4-char id badge again, on open and done rows, and no longer carry a checkbox; done and reopen stay available in the task detail.
-
-## Unreleased
-
-- The chat hydrates when it opens: the first paint waits for one real state fetch, a failed fetch keeps the last state and retries with backoff, and the page refreshes again when it becomes visible or the app regains focus.
-- A task keeps its Working badge until its run reaches a terminal outcome or the task closes; a snapshot that omits the run activity no longer clears a badge that was already shown.
-- A live run that has made no tool call for an hour gets one status-check nudge per task, asking whether it is still in progress, done or blocked and to update the ledger; it is a notice chip and never fires for a terminal, blocked or waiting run.
 
 ## 1.6.39 - 2026-10-31
 
