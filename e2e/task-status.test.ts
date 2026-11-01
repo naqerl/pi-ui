@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { subtaskCount, taskState } from "../src/shared/task-status.js";
+import {
+  isStaleWorking,
+  STALE_WORKING_MS,
+  subtaskCount,
+  taskState,
+  WORKING_WINDOW_MS,
+} from "../src/shared/task-status.js";
 import type { Task, TaskActivity, TaskTrace } from "../src/shared/types.js";
 
 const NOW = "2026-10-31T12:00:00.000Z";
@@ -153,4 +159,48 @@ test("a parent with some finished subtasks is partial and counts its children", 
   assert.equal(taskState(tasks, parent, activity()), "partial");
   assert.deepEqual(subtaskCount(tasks, "p"), { done: 1, total: 3 });
   assert.equal(taskState([parent, two, three], parent, activity()), "ready");
+});
+
+test("a tagged task keeps working after the run, and is stale after an hour", () => {
+  const at = Date.parse(NOW);
+  const worked = new Date(at - 2 * 60 * 60_000).toISOString();
+  const a = task("a", { lastWorkedAt: worked });
+  assert.equal(taskState([a], a, undefined), "working", "the ledger keeps the badge");
+  assert.equal(taskState([a], a, activity()), "working", "an idle view keeps it too");
+  assert.equal(isStaleWorking(a, activity()), true);
+  assert.equal(isStaleWorking(a, activity({ now: worked })), false, "not yet an hour old");
+
+  const recent = task("a", { lastWorkedAt: new Date(at - 60_000).toISOString() });
+  assert.equal(isStaleWorking(recent, activity()), false);
+  const traced = activity({
+    traces: {
+      a: trace({ lastActivityAt: new Date(at - 60_000).toISOString() }),
+    },
+  });
+  assert.equal(isStaleWorking(a, traced), false, "a newer tagged trace is still activity");
+
+  const closed = task("a", { status: "done", lastWorkedAt: worked });
+  assert.equal(taskState([closed], closed, activity()), "done");
+  assert.equal(isStaleWorking(closed, activity()), false);
+
+  const blocker = task("b", { lastWorkedAt: worked });
+  const blocked = task("a", { lastWorkedAt: worked, blockedBy: ["b"] });
+  assert.equal(taskState([blocked, blocker], blocked, activity()), "blocked");
+});
+
+test("a restart keeps working from lastWorkedAt even when its old run is interrupted", () => {
+  const at = Date.parse(NOW);
+  const lastWorkedAt = new Date(at - 2 * 60 * 60_000).toISOString();
+  const a = task("a", { lastWorkedAt });
+  const restarted = activity({
+    traces: {
+      a: trace({
+        lastActivityAt: lastWorkedAt,
+        lastRun: { id: "old", outcome: "interrupted", at: NOW, reason: "pi-ui restarted mid-run" },
+      }),
+    },
+  });
+  assert.equal(taskState([a], a, restarted), "working");
+  assert.equal(isStaleWorking(a, restarted), true);
+  assert.ok(STALE_WORKING_MS > WORKING_WINDOW_MS);
 });

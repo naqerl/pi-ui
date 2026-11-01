@@ -18,6 +18,7 @@ import {
   idleNudgeMs,
   idleNudgeText,
   openTaskIds,
+  staleWorkedTasks,
   taskSetHash,
   waitingOn,
   workingTaskIds,
@@ -70,6 +71,58 @@ test("the prompt names the count and ids, and only unblocked open tasks count", 
     taskIds: ["a1", "b2"],
     summary: "idle · 2 task(s) open: a1, b2",
   });
+});
+
+test("the nudge names stale working tasks and repeats only when the set changes", () => {
+  const now = Date.parse("2026-10-31T12:00:00.000Z");
+  const hour = 60 * 60_000;
+  const stale = {
+    id: "a1",
+    title: "Ship the stale badge",
+    status: "open" as const,
+    blockedBy: [],
+    lastWorkedAt: new Date(now - 2 * hour).toISOString(),
+  };
+  const fresh = {
+    id: "b2",
+    title: "Fresh work",
+    status: "open" as const,
+    blockedBy: [],
+    lastWorkedAt: new Date(now - 60_000).toISOString(),
+  };
+  assert.deepEqual(
+    staleWorkedTasks([stale, fresh], now).map((task) => task.id),
+    ["a1"],
+  );
+  assert.deepEqual(
+    staleWorkedTasks([{ ...stale, lastWorkedAt: new Date(now - hour).toISOString() }], now),
+    [],
+  );
+
+  const nudge = new IdleNudge(1_000, 0, "");
+  const text = nudge.maybeNudge(
+    { ...nothing, tasks: [stale, fresh], openTaskIds: ["a1", "b2"] },
+    now,
+  );
+  assert.match(
+    text ?? "",
+    /These tasks were marked as working, but nothing has touched them for over an hour: a1 — Ship the stale badge\./,
+  );
+  assert.match(text ?? "", /call a tool with its id as piuiTaskId/);
+  assert.equal(parseNotice(text ?? "")?.kind, "idle");
+
+  nudge.noteActivity(now + 1);
+  assert.equal(
+    nudge.maybeNudge({ ...nothing, tasks: [stale, fresh], openTaskIds: ["a1", "b2"] }, now + 2_000),
+    null,
+    "the same set is silenced by the existing hash",
+  );
+  const changed = nudge.maybeNudge(
+    { ...nothing, tasks: [stale, fresh], openTaskIds: ["a1", "b2", "c3"] },
+    now + 3_000,
+  );
+  assert.match(changed ?? "", /over an hour: a1 — Ship the stale badge\./);
+  assert.doesNotMatch(changed ?? "", /b2 —/);
 });
 
 test("a task blocked by an open task is not nudged", () => {

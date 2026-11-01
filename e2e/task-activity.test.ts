@@ -126,6 +126,26 @@ test("tagged calls make a task's run, untagged ones are not attributed", () => {
   );
 });
 
+test("a tagged call is handed to the ledger recorder at start and end", () => {
+  let now = Date.parse("2026-10-31T12:00:00.000Z");
+  const seen: Array<[string, number]> = [];
+  const tracker = new TaskActivityTracker(
+    undefined,
+    () => now,
+    (id, at) => seen.push([id, at]),
+  );
+  tracker.observeLedger([task("a")]);
+  tracker.runStarted();
+  tracker.toolStarted("bash", { [TASK_ID_PARAM]: "a" });
+  now += 1_000;
+  tracker.toolEnded({ [TASK_ID_PARAM]: "a" });
+  tracker.toolStarted("read", { path: "untagged" });
+  assert.deepEqual(seen, [
+    ["a", Date.parse("2026-10-31T12:00:00.000Z")],
+    ["a", Date.parse("2026-10-31T12:00:01.000Z")],
+  ]);
+});
+
 test("a live run keeps its task working through quiet time until it ends", () => {
   let now = Date.parse("2026-10-31T12:00:00.000Z");
   const tracker = new TaskActivityTracker(undefined, () => now);

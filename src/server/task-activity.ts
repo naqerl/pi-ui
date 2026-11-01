@@ -110,6 +110,8 @@ export class TaskActivityTracker {
   constructor(
     private readonly path: string | undefined,
     private readonly clock: () => number = Date.now,
+    /** Records a tagged call in the ledger, so `lastWorkedAt` survives a restart. */
+    private readonly onTaggedCall?: (taskId: string, at: number) => void,
   ) {}
 
   async load(): Promise<void> {
@@ -246,6 +248,7 @@ export class TaskActivityTracker {
     const now = this.clock();
     const taskId = taggedTaskId(args);
     if (taskId === undefined) return;
+    this.recordWork(taskId, now);
     const trace = this.trace(taskId);
     const span = this.spans.get(taskId);
     if (span === undefined || trace.lastRun?.id !== runId) {
@@ -274,10 +277,20 @@ export class TaskActivityTracker {
     const trace = this.traces.get(taskId);
     if (span === undefined || trace === undefined) return;
     const now = this.clock();
+    this.recordWork(taskId, now);
     span.lastAt = now;
     span.open = Math.max(0, span.open - 1);
     trace.lastActivityAt = new Date(now).toISOString();
     this.changed();
+  }
+
+  private recordWork(taskId: string, at: number): void {
+    try {
+      this.onTaggedCall?.(taskId, at);
+    } catch (error) {
+      // A ledger write failure must not break the tool that was tagged.
+      console.error(`[pi] could not record work on task ${taskId}:`, error);
+    }
   }
 
   /**

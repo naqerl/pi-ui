@@ -186,8 +186,11 @@ function parseIdle(body: string): IdleNoticeDetails | null {
       stale: true,
     };
   }
-  const match = IDLE_HEAD.exec(text);
-  const status = IDLE_STATUS_HEAD.exec(text);
+  // A stale request follows the usual prompt on its own paragraph; the first line still
+  // carries the task ids the chip and its summary need.
+  const head = text.split("\n", 1)[0] ?? "";
+  const match = IDLE_HEAD.exec(head);
+  const status = IDLE_STATUS_HEAD.exec(head);
   if (match !== null || status !== null) {
     const openIds = ids(match?.[2]);
     const workingIds = ids(status?.[1]);
@@ -203,7 +206,7 @@ function parseIdle(body: string): IdleNoticeDetails | null {
           : `idle · ${workingIds.length} task(s) working: ${workingIds.join(", ")}`,
     };
   }
-  const blocked = IDLE_BLOCKED_HEAD.exec(text);
+  const blocked = IDLE_BLOCKED_HEAD.exec(head);
   if (blocked === null) return null;
   const waits = (blocked[1] ?? "")
     .split(";")

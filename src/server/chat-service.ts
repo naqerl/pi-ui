@@ -340,14 +340,16 @@ export class ChatService {
   private async checkIdleNudge(): Promise<void> {
     if (this.closed || this.checkingIdleNudge || !this.idleNudge.enabled) return;
     const tasks = this.idleTasks();
+    const titled = tasks.every((task): task is string => typeof task === "string")
+      ? undefined
+      : (tasks as readonly IdleTask[]);
     let openIds: readonly string[];
     let workingIds: readonly string[] = [];
-    if (tasks.every((task): task is string => typeof task === "string")) {
-      openIds = tasks;
+    if (titled === undefined) {
+      openIds = tasks as readonly string[];
     } else {
-      const taskList = tasks as readonly IdleTask[];
-      openIds = openTaskIds(taskList);
-      workingIds = workingTaskIds(taskList);
+      openIds = openTaskIds(titled);
+      workingIds = workingTaskIds(titled);
     }
     const namedIds = [...new Set([...openIds, ...workingIds])];
     const text = this.idleNudge.maybeNudge({
@@ -355,6 +357,7 @@ export class ChatService {
       queued: this.queued.size + this.steers.size,
       openTaskIds: openIds,
       workingTaskIds: workingIds,
+      ...(titled === undefined ? {} : { tasks: titled }),
     });
     if (text === null) return;
     this.checkingIdleNudge = true;

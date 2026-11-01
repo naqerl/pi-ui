@@ -4,6 +4,31 @@ import type { Task, TaskActivity, TaskState, TaskTrace } from "./types.js";
 /** Kept for callers that still name the old recency window; working now lasts until the run ends. */
 export const WORKING_WINDOW_MS = 10 * 60_000;
 
+/** After an hour without a tagged call, a working task is shown as stale as well. */
+export const STALE_WORKING_MS = 60 * 60_000;
+
+function nowOf(activity: TaskActivity | undefined): number {
+  const parsed = activity === undefined ? Number.NaN : Date.parse(activity.now);
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function instant(value: string | null | undefined): number | null {
+  if (typeof value !== "string") return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * The newest tagged call recorded for a task: the ledger's `lastWorkedAt`, or a live trace
+ * when it is fresher. The trace also covers views from before the ledger remembered the time.
+ */
+export function lastWorkedAtMs(task: Task, activity: TaskActivity | undefined): number | null {
+  let newest = instant(task.lastWorkedAt);
+  const traced = instant(activity?.traces[task.id]?.lastActivityAt);
+  if (traced !== null && (newest === null || traced > newest)) newest = traced;
+  return newest;
+}
+
 /** True when the trace says its run has not reached a terminal outcome yet. */
 function runIsLive(trace: TaskTrace | undefined): boolean {
   return trace?.lastRun?.outcome === "running";
@@ -39,6 +64,20 @@ export function isFailed(task: Task, activity: TaskActivity | undefined): boolea
 }
 
 /**
+ * True when an open task carries the working badge but nothing has touched it for over an
+ * hour. The marker never replaces `working`; done and proposed tasks are never stale.
+ */
+export function isStaleWorking(
+  task: Task,
+  activity: TaskActivity | undefined,
+  at: number = nowOf(activity),
+): boolean {
+  if (task.status !== "open") return false;
+  const last = lastWorkedAtMs(task, activity);
+  return last !== null && at - last > STALE_WORKING_MS;
+}
+
+/**
  * Carries a task's working trace across a snapshot that omits it, so a badge already shown
  * stays until the task closes or the snapshot reports a terminal run for it.
  */
@@ -62,9 +101,10 @@ export function carryWorkingTraces(
 }
 
 /**
- * The one state a task shows. Ledger facts (proposed, done) win; then what runs measured
- * (working beats everything open, a failed run beats blockers); then blockers; then a parent
- * with some finished subtasks is partial; anything else is ready.
+ * The one state a task shows. Ledger facts (proposed, done, a live blocker) win; then a task
+ * keeps its working badge once it has been tagged, even after the run ends; live activity only
+ * animates it. A failed run or a parent with some finished subtasks follows, and anything else
+ * is ready.
  */
 export function taskState(
   tasks: readonly Task[],
@@ -74,6 +114,11 @@ export function taskState(
   if (task.status === "proposed") return "proposed";
   if (task.status === "done") return "done";
   if (isWorking(task, activity)) return "working";
+  if (task.lastWorkedAt !== undefined && task.lastWorkedAt !== null) {
+    // A live blocker is still ledger truth, even for work that was tagged before it appeared.
+    if (liveBlockerIds(tasks, task).length > 0) return "blocked";
+    return "working";
+  }
   if (isFailed(task, activity)) return "failed";
   if (liveBlockerIds(tasks, task).length > 0) return "blocked";
   const below = descendantIds(tasks, task.id);

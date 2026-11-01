@@ -820,6 +820,54 @@ test("store round-trips completedAt and clears it when reopened", async () => {
   }
 });
 
+test("lastWorkedAt survives a restart and clears when the task closes or reopens", async () => {
+  const { directory, file, store } = await temporaryStore();
+  try {
+    const task = (await store.create("Remember the work", null)).tasks[0];
+    assert.ok(task);
+    const first = "2026-01-01T10:00:00.000Z";
+    await store.noteWorked(task.id, first);
+    assert.equal(store.ledger().tasks.find((item) => item.id === task.id)?.lastWorkedAt, first);
+
+    const restarted = new TaskStore(file);
+    await restarted.load();
+    assert.equal(
+      restarted.ledger().tasks.find((item) => item.id === task.id)?.lastWorkedAt,
+      first,
+      "the ledger remembers work across a restart",
+    );
+
+    await restarted.update(task.id, { status: "done" });
+    assert.equal(
+      restarted.ledger().tasks.find((item) => item.id === task.id)?.lastWorkedAt,
+      null,
+      "closing clears the stamp",
+    );
+    await restarted.noteWorked(task.id, "2026-01-01T11:00:00.000Z");
+    assert.equal(
+      restarted.ledger().tasks.find((item) => item.id === task.id)?.lastWorkedAt,
+      null,
+      "a tagged call that finishes after the close does not revive the task",
+    );
+
+    await restarted.update(task.id, { status: "open" });
+    assert.equal(
+      restarted.ledger().tasks.find((item) => item.id === task.id)?.lastWorkedAt,
+      null,
+      "reopening starts untouched",
+    );
+    const again = "2026-01-01T12:00:00.000Z";
+    await restarted.noteWorked(task.id, again);
+    assert.equal(
+      restarted.ledger().tasks.find((item) => item.id === task.id)?.lastWorkedAt,
+      again,
+      "new work stamps it again",
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("loads a task record written before completions existed", async () => {
   const { directory, file, store, bridge } = await temporaryStore();
   try {

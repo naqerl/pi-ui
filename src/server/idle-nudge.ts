@@ -14,6 +14,8 @@ import {
   staleRunNudgeMs,
   staleRunNudgeText,
   staleRunTaskIds,
+  staleWorkedTasks,
+  withStaleRequest,
   workingTaskIds,
 } from "../shared/idle-nudge.js";
 import type { TaskActivity } from "../shared/types.js";
@@ -321,12 +323,14 @@ export interface IdleNudgeState {
   active: boolean;
   /** Messages and steers waiting for the current turn. */
   queued: number;
-  /** Open tasks ready to pick. */
+  /** Open tasks ready to pick. Derived from `tasks` when omitted. */
   openTaskIds?: readonly string[];
   /** Tasks the agent has already started and not finished. */
   workingTaskIds?: readonly string[];
   /** A richer task list; its statuses may include the derived working state. */
   tasks?: readonly IdleTask[];
+  /** The stale subset, when the caller already selected it. Derived from `tasks` otherwise. */
+  staleTasks?: readonly IdleTask[];
   /** Explicit task states, for callers that keep them separately from the ids. */
   taskStatuses?: Readonly<Record<string, IdleTaskStatus>>;
   statuses?: Readonly<Record<string, IdleTaskStatus>>;
@@ -461,6 +465,10 @@ export class IdleNudge {
     if (open.length === 0 && working.length === 0) return null;
     if (at - this.lastActivityAt < this.intervalMs) return null;
 
+    // Stale working tasks ride along with the usual decision prompt. A caller may
+    // have already selected them; otherwise derive them from the richer task list.
+    const stale = state.staleTasks ?? staleWorkedTasks(state.tasks ?? [], at);
+
     const hash = taskSetHash([...new Set([...open, ...working])]);
     // The 10s timer may poll many times inside one idle window. Only one check per
     // window may advance the cooldown, or three silent opportunities become 30s. A
@@ -554,7 +562,10 @@ export class IdleNudge {
 
     for (const id of visibleOpen) tasks[id] = taskRecord(tasks[id], "open", atIso);
     for (const id of visibleWorking) tasks[id] = taskRecord(tasks[id], "working", atIso);
-    const text = idleDecisionNudgeText(visibleOpen, visibleWorking, open.length);
+    const text = withStaleRequest(
+      idleDecisionNudgeText(visibleOpen, visibleWorking, open.length),
+      stale,
+    );
     this.record = { hash, nudgedAt: atIso, tasks };
     this.legacy = false;
     this.fired = true;

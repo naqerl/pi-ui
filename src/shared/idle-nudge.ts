@@ -1,3 +1,4 @@
+import { STALE_WORKING_MS } from "./task-status.js";
 import type { Task, TaskActivity } from "./types.js";
 
 /**
@@ -31,10 +32,13 @@ export const STALE_RUN_NUDGE_MINUTES = 60;
 export const STALE_RUN_NUDGE_FILE = "stale-nudge.json";
 
 /** The fields the idle nudge needs from a task. */
-export type IdleTask = {
-  readonly id: string;
+export type IdleTask = Pick<Task, "id"> & {
   readonly status: IdleTaskStatus;
+  readonly title?: string;
   readonly blockedBy?: readonly string[];
+  readonly lastWorkedAt?: string | null;
+  /** A live trace's last tagged call, when the caller has one. */
+  readonly lastActivityAt?: string | null;
   /** A derived client state, when the caller already has one. */
   readonly state?: IdleTaskState;
 };
@@ -44,6 +48,41 @@ function taskState(task: IdleTask): IdleTaskStatus {
   if (task.status === "blocked" || task.state === "blocked") return "blocked";
   if (task.status === "open") return "open";
   return task.status;
+}
+
+function instant(value: string | null | undefined): number | null {
+  if (typeof value !== "string") return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** The newest tagged call an idle task knows about, or null when it was never worked on. */
+export function lastTouchedAt(task: IdleTask): number | null {
+  let newest = instant(task.lastWorkedAt);
+  const traced = instant(task.lastActivityAt);
+  if (traced !== null && (newest === null || traced > newest)) newest = traced;
+  return newest;
+}
+
+/** Open tasks that still carry working but have not been tagged for over an hour. */
+export function staleWorkedTasks(tasks: readonly IdleTask[], at: number = Date.now()): IdleTask[] {
+  return tasks.filter((task) => {
+    if (task.status !== "open") return false;
+    const last = lastTouchedAt(task);
+    return last !== null && at - last > STALE_WORKING_MS;
+  });
+}
+
+function staleRequestText(tasks: readonly IdleTask[]): string {
+  const named = tasks.map((task) => {
+    const title = (task.title ?? "").replace(/\s+/g, " ").trim() || task.id;
+    return `${task.id} — ${title}`;
+  });
+  return `These tasks were marked as working, but nothing has touched them for over an hour: ${named.join(", ")}. For each one, either confirm it is still in work (call a tool with its id as piuiTaskId), or mark it blocked and propose what unblocks it, or mark it done.`;
+}
+
+export function withStaleRequest(text: string, tasks: readonly IdleTask[]): string {
+  return tasks.length === 0 ? text : `${text}\n\n${staleRequestText(tasks)}`;
 }
 
 /**
@@ -227,10 +266,12 @@ export function idleDecisionNudgeText(
 export function idleNudgeText(
   taskIdsOrTasks: readonly string[] | readonly IdleTask[] | WaitingOn,
   waiting?: WaitingOn,
+  staleTasks?: readonly IdleTask[],
 ): string {
   let taskIds: readonly string[];
   let workingIds: readonly string[] = [];
   let blocked: WaitingOn | undefined;
+  let stale = staleTasks ?? [];
   if (Array.isArray(taskIdsOrTasks)) {
     const items: readonly unknown[] = taskIdsOrTasks;
     if (items.every((item): item is string => typeof item === "string")) {
@@ -241,6 +282,7 @@ export function idleNudgeText(
       taskIds = openTaskIds(tasks);
       workingIds = workingTaskIds(tasks);
       blocked = waitingOn(tasks);
+      if (staleTasks === undefined) stale = staleWorkedTasks(tasks);
     }
   } else {
     taskIds = [];
@@ -250,9 +292,9 @@ export function idleNudgeText(
     return idleDecisionNudgeText(taskIds, workingIds);
   }
   if (taskIds.length === 0 && blocked !== undefined && Object.keys(blocked).length > 0) {
-    return idleBlockedNudgeText(blocked);
+    return withStaleRequest(idleBlockedNudgeText(blocked), stale);
   }
-  return idleDecisionNudgeText(taskIds, workingIds);
+  return withStaleRequest(idleDecisionNudgeText(taskIds, workingIds), stale);
 }
 
 /** The notice used when the open work exists but every task is still blocked. */
