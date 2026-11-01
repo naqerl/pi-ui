@@ -624,6 +624,11 @@ export function TasksView({
             onBlockers={(blockedBy) =>
               void apply(menuTask.id, updateTask(menuTask.id, { blockedBy }))
             }
+            onStatus={(task, status) => {
+              setPickerId(null);
+              setMenu(null);
+              setStatus(task, status);
+            }}
             onRemove={() => {
               if (armedParentId === menuTask.id) onArmParent(null);
               setPickerId(null);
@@ -748,6 +753,25 @@ function TaskIdBadge({
   );
 }
 
+/** The bare task id beside the title, so a card carries the handle agents use. */
+function TaskIdChip({ id, className }: { id: string; className?: string }) {
+  return (
+    <span
+      role="note"
+      id={`task-id-${id}`}
+      data-testid={`task-id-${id}`}
+      title={id}
+      aria-label={`task ${id}`}
+      className={cn(
+        "w-fit shrink-0 whitespace-nowrap font-mono text-[11px] leading-4 text-muted-foreground",
+        className,
+      )}
+    >
+      {shortTaskId(id)}
+    </span>
+  );
+}
+
 /** The status word for a badge, or null for a plain open task. */
 export function stateBadge(state: TaskState, trace: TaskTrace | undefined): string | null {
   switch (state) {
@@ -850,6 +874,10 @@ export function TaskRow({
   ]
     .filter((part) => part !== "")
     .join(" · ");
+  const describedBy = [
+    `task-id-${task.id}`,
+    notice !== null ? `task-error-${task.id}` : null,
+  ].filter((id) => id !== null);
 
   const clearPress = () => {
     if (press.current === null) return;
@@ -876,7 +904,7 @@ export function TaskRow({
         tabIndex={0}
         aria-current={selected ? "true" : undefined}
         aria-label={`Open ${plainInline(task.title)}`}
-        aria-describedby={notice !== null ? `task-error-${task.id}` : undefined}
+        aria-describedby={describedBy.length > 0 ? describedBy.join(" ") : undefined}
         className={cn(
           "flex min-h-11 w-full cursor-pointer select-none items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 text-left hover:bg-muted",
           (selected || armed) && "ring-1 ring-foreground",
@@ -926,19 +954,28 @@ export function TaskRow({
         }}
         onKeyDown={(event) => {
           if (event.target !== event.currentTarget) return;
+          if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+            event.preventDefault();
+            const box = event.currentTarget.getBoundingClientRect();
+            openMenu(box.left + 16, box.top + box.height / 2);
+            return;
+          }
           if (event.key !== "Enter" && event.key !== " ") return;
           event.preventDefault();
           onOpen(task.id);
         }}
       >
         <span className="flex min-w-0 flex-1 flex-col justify-start gap-0.5 self-stretch">
-          <span
-            className={cn(
-              "line-clamp-2 text-sm leading-5 [overflow-wrap:anywhere]",
-              done ? "text-muted-foreground" : "text-foreground",
-            )}
-          >
-            <InlineMarkdown text={task.title} />
+          <span className="flex min-w-0 items-start gap-1.5">
+            <TaskIdChip id={task.id} className="mt-0.5" />
+            <span
+              className={cn(
+                "line-clamp-2 min-w-0 flex-1 text-sm leading-5 [overflow-wrap:anywhere]",
+                done ? "text-muted-foreground" : "text-foreground",
+              )}
+            >
+              <InlineMarkdown text={task.title} />
+            </span>
           </span>
           {note !== "" && (
             <span className="truncate text-xs leading-4 text-muted-foreground" title={note}>
@@ -947,16 +984,13 @@ export function TaskRow({
           )}
         </span>
         <span className="flex min-h-9 shrink-0 flex-col items-end justify-between self-stretch">
-          <span className="flex items-center gap-1.5">
-            <TaskIdBadge id={task.id} />
-            {badge !== null && (
-              <Badge
-                variant={current === "working" || current === "failed" ? "default" : "outline"}
-              >
-                {badge}
-              </Badge>
-            )}
-          </span>
+          {badge !== null ? (
+            <Badge variant={current === "working" || current === "failed" ? "default" : "outline"}>
+              {badge}
+            </Badge>
+          ) : (
+            <span aria-hidden className="h-5 shrink-0" />
+          )}
           <TaskCardTimes task={task} />
         </span>
       </div>
@@ -1874,6 +1908,7 @@ function TaskMenu({
   onArm,
   onTogglePicker,
   onBlockers,
+  onStatus,
   onRemove,
 }: {
   task: Task;
@@ -1884,6 +1919,7 @@ function TaskMenu({
   onArm: () => void;
   onTogglePicker: () => void;
   onBlockers: (blockedBy: string[]) => void;
+  onStatus: (task: Task, status: Task["status"]) => void;
   onRemove: () => void;
 }) {
   const ancestors = ancestorIds(tasks, task.id);
@@ -1891,8 +1927,10 @@ function TaskMenu({
   const candidates = tasks
     .filter((item) => item.id !== task.id && !ancestors.has(item.id) && !descendants.has(item.id))
     .sort((a, b) => compareTasks(tasks, a, b));
+  const done = task.status === "done";
+  const openChildren = !done && hasOpenDescendant(tasks, task.id);
   const left = Math.max(8, Math.min(point.x, window.innerWidth - 248));
-  const top = Math.max(8, Math.min(point.y, window.innerHeight - 160));
+  const top = Math.max(8, Math.min(point.y, window.innerHeight - 200));
   const item =
     "flex min-h-8 w-full items-center rounded-sm px-2 text-left text-sm leading-5 hover:bg-muted";
 
@@ -1981,6 +2019,21 @@ function TaskMenu({
         </ul>
       )}
       <div className="-mx-1 my-1 h-px bg-border" />
+      <button
+        type="button"
+        role="menuitem"
+        aria-label={`${done ? "Reopen" : "Mark done"} ${plainInline(task.title)}`}
+        aria-disabled={openChildren}
+        disabled={openChildren}
+        title={openChildren ? "Finish open subtasks first" : undefined}
+        className={cn(item, "disabled:opacity-50")}
+        onClick={() => {
+          if (openChildren) return;
+          onStatus(task, done ? "open" : "done");
+        }}
+      >
+        {done ? "Reopen" : "Mark done"}
+      </button>
       <button
         type="button"
         role="menuitem"
