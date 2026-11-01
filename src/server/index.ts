@@ -671,11 +671,12 @@ app.patch("/api/tasks/:id", async (c) => {
   if ("status" in body) {
     if (
       body.status !== "open" &&
+      body.status !== "working" &&
       body.status !== "done" &&
       body.status !== "proposed" &&
       body.status !== "backlog"
     ) {
-      return c.text('Status must be "open", "done", "proposed" or "backlog"', 400);
+      return c.text('Status must be "open", "working", "done", "proposed" or "backlog"', 400);
     }
     patch.status = body.status;
   }

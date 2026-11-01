@@ -54,6 +54,7 @@ test("task tools list, mark done, and create a blocker", async () => {
       "task_proposals",
       "task_view",
       "task_done",
+      "task_working",
       "task_edit",
       "propose_task",
       "task_block",

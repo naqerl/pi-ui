@@ -1,4 +1,4 @@
-import { descendantIds, liveBlockerIds } from "./tasks.js";
+import { descendantIds, isActiveStatus, liveBlockerIds } from "./tasks.js";
 import type { Task, TaskActivity, TaskState, TaskTrace } from "./types.js";
 
 /** Kept for callers that still name the old recency window; working now lasts until the run ends. */
@@ -72,8 +72,10 @@ export function isStaleWorking(
   activity: TaskActivity | undefined,
   at: number = nowOf(activity),
 ): boolean {
-  if (task.status !== "open") return false;
-  const last = lastWorkedAtMs(task, activity);
+  if (!isActiveStatus(task.status)) return false;
+  const marked = instant(task.workingSince);
+  const touched = lastWorkedAtMs(task, activity);
+  const last = marked === null ? touched : touched === null ? marked : Math.max(marked, touched);
   return last !== null && at - last > STALE_WORKING_MS;
 }
 
@@ -88,7 +90,7 @@ export function carryWorkingTraces(
 ): TaskActivity | undefined {
   if (next === undefined) return previous;
   if (previous === undefined) return next;
-  const open = new Set(tasks.filter((task) => task.status === "open").map((task) => task.id));
+  const open = new Set(tasks.filter((task) => isActiveStatus(task.status)).map((task) => task.id));
   const traces = { ...next.traces };
   for (const [id, trace] of Object.entries(previous.traces)) {
     if (!open.has(id) || !runIsLive(trace)) continue;
@@ -114,6 +116,7 @@ export function taskState(
   if (task.status === "proposed") return "proposed";
   if (task.status === "backlog") return "backlog";
   if (task.status === "done") return "done";
+  if (task.status === "working") return "working";
   if (isWorking(task, activity)) return "working";
   if (task.lastWorkedAt !== undefined && task.lastWorkedAt !== null) {
     // A live blocker is still ledger truth, even for work that was tagged before it appeared.

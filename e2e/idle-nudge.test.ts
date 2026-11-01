@@ -63,7 +63,7 @@ test("the prompt names the count and ids, and only unblocked open tasks count", 
   assert.deepEqual(openTaskIds(tasks), ["a1", "b2"]);
   assert.equal(
     idleNudgeText(["a1", "b2"]),
-    "You have been idle for 20 minutes and 2 task(s) are open: a1, b2. Mark a task working with the task tool before starting it; if it cannot be done now, mark it blocked and propose_task the task that would unblock it; if other tasks are already in progress, leave it alone — ignoring it is a valid answer.",
+    "You have been idle for 20 minutes and 2 task(s) are open: a1, b2. Mark a task working with task_working before starting it; it sets the task to working and records when the work began. If it cannot be done now, mark it blocked and propose_task the task that would unblock it; if other tasks are already in progress, leave it alone — ignoring it is a valid answer.",
   );
   assert.deepEqual(parseNotice(idleNudgeText(["a1", "b2"])), {
     kind: "idle",
@@ -123,6 +123,36 @@ test("the nudge names stale working tasks and repeats only when the set changes"
   );
   assert.match(changed ?? "", /over an hour: a1 — Ship the stale badge\./);
   assert.doesNotMatch(changed ?? "", /b2 —/);
+});
+
+test("a persisted working task is stale only when nothing newer touched it", () => {
+  const now = Date.parse("2026-10-31T12:00:00.000Z");
+  const hour = 60 * 60_000;
+  const old = new Date(now - 2 * hour).toISOString();
+  const recent = new Date(now - 60_000).toISOString();
+  const touchedRecently = {
+    id: "w1",
+    title: "Recently tagged",
+    status: "working" as const,
+    blockedBy: [],
+    workingSince: old,
+    lastWorkedAt: recent,
+  };
+  const tracedRecently = {
+    ...touchedRecently,
+    id: "w2",
+    lastWorkedAt: undefined,
+    lastActivityAt: recent,
+  };
+  const untouchedSince = {
+    ...touchedRecently,
+    id: "w3",
+    lastWorkedAt: undefined,
+  };
+  assert.deepEqual(
+    staleWorkedTasks([touchedRecently, tracedRecently, untouchedSince], now).map((task) => task.id),
+    ["w3"],
+  );
 });
 
 test("a task blocked by an open task is not nudged", () => {
