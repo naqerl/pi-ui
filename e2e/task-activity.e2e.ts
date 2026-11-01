@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
-// A task is working because a live run calls tools tagged with its id, never because the agent
-// said so; calls without a tag are not attributed to any task.
+// A task is working because a run called tools tagged with its id, never because the agent said
+// so; calls without a tag are not attributed to any task, and the badge survives the turn.
 test("tagged tool calls show a task as working, untagged ones touch no task", async ({
   app,
   browser,
@@ -53,7 +53,26 @@ test("tagged tool calls show a task as working, untagged ones touch no task", as
   await expect(screen.getByTestId("now-line")).toHaveCount(0);
 
   writeFileSync(release, "");
-  await expect(screen.getByTestId(`task-${id}`)).toHaveAttribute("data-state", "ready");
+
+  // Wait for the turn to end, then check the ledger still remembers the tagged call.
+  await expect
+    .poll(() =>
+      browser.evaluate(async (taskId) => {
+        const ledger = (await (await fetch("/api/tasks")).json()) as {
+          tasks: Array<{ id: string; lastWorkedAt?: string | null }>;
+          activity?: { running: boolean };
+        };
+        const task = ledger.tasks.find((item) => item.id === taskId);
+        return {
+          running: ledger.activity?.running ?? null,
+          lastWorkedAt: task?.lastWorkedAt ?? null,
+        };
+      }, id),
+    )
+    .toMatchObject({ running: false, lastWorkedAt: expect.any(String) });
+  await expect(screen.getByTestId(`task-${id}`)).toHaveAttribute("data-state", "working");
+  await expect(screen.getByTestId(`task-${id}`)).toContainText("Working");
+  await expect(screen.getByTestId(`task-stale-${id}`)).toHaveCount(0);
 
   await screen.getByRole("button", { name: `Open ${title}` }).tap();
   await expect(screen.getByTestId("task-history")).toContainText("Run started");
@@ -65,4 +84,8 @@ test("tagged tool calls show a task as working, untagged ones touch no task", as
       )[3] ?? null,
   );
   expect(runs).toBe("1");
+
+  // Finishing the task is what clears the badge; the run ending did not.
+  await screen.getByTestId("task-detail-status").tap();
+  await expect(screen.getByTestId("task-state")).toHaveText("Done");
 });

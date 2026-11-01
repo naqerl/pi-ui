@@ -308,6 +308,11 @@ export interface Task {
   attachments?: string[];
   /** Short project name such as `pi-ui`. Absent means no project. */
   project?: string;
+  /**
+   * When a tool call last tagged this task with `piuiTaskId`, or null before the first one
+   * and after the task is closed or reopened. The badge stays until the task is finished.
+   */
+  lastWorkedAt?: string | null;
   /** When the task was closed, or null while it is open. */
   completedAt: string | null;
   /** The report recorded when the task was closed, or null while it is open. */

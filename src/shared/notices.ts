@@ -5,7 +5,6 @@
  * sent to the model is unchanged.
  */
 
-import { idleNudgeText } from "./idle-nudge.js";
 import { toIsoTimestamp } from "./time.js";
 
 export interface JobNoticeDetails {
@@ -164,7 +163,10 @@ function mcpSummary(servers: string[], label: string): string {
 
 function parseIdle(body: string): IdleNoticeDetails | null {
   const text = body.trim();
-  const match = IDLE_HEAD.exec(text);
+  // A stale request follows the usual prompt on its own paragraph; the first line still
+  // carries the task ids the chip and its summary need.
+  const head = text.split("\n", 1)[0] ?? "";
+  const match = IDLE_HEAD.exec(head);
   if (match !== null) {
     const taskIds = (match[2] ?? "")
       .split(",")
@@ -173,12 +175,12 @@ function parseIdle(body: string): IdleNoticeDetails | null {
     if (taskIds.length === 0) return null;
     return {
       kind: "idle",
-      text: idleNudgeText(taskIds),
+      text,
       taskIds,
       summary: `idle · ${taskIds.length} task(s) open: ${taskIds.join(", ")}`,
     };
   }
-  const blocked = IDLE_BLOCKED_HEAD.exec(text);
+  const blocked = IDLE_BLOCKED_HEAD.exec(head);
   if (blocked === null) return null;
   const waits = (blocked[1] ?? "")
     .split(";")

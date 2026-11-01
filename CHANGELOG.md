@@ -2,6 +2,11 @@
 
 Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
 
+## Unreleased
+
+- A task that has received a tagged tool call keeps its Working badge after the run ends, instead of dropping back to ready at the end of the turn or after ten quiet minutes. The ledger now stores `lastWorkedAt`, so the badge also survives a restart, and closing or reopening the task clears it.
+- A working task untouched for over an hour keeps its badge but gains a small muted `stale` marker, and the idle nudge names those tasks and asks the agent to confirm the work, block it, or mark it done. Stale requests reuse the existing once-per-task-set hash, so the same backlog stays quiet until it changes.
+
 ## 1.6.41 - 2026-11-01
 
 - The MCP subscription is watched for silence: after 60 seconds without a pushed event or heartbeat it is reported as stalled, re-subscribed from the cursor the server last returned, and reported as dead when two recoveries fail to restore traffic. A dead or muted stream is no longer shown as "active".

@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { projectsOf, sameProject } from "../shared/project";
-import { subtaskCount, taskState } from "../shared/task-status";
+import { isStaleWorking, subtaskCount, taskState } from "../shared/task-status";
 import {
   ancestorIds,
   blockerClosesCycle,
@@ -748,6 +748,19 @@ function TaskIdBadge({
   );
 }
 
+/** The quiet marker that says a working badge has not been touched for over an hour. */
+function StaleMarker({ id }: { id: string }) {
+  return (
+    <Badge
+      variant="outline"
+      data-testid={`task-stale-${id}`}
+      className="h-4 px-1.5 text-[10px] font-normal leading-4 text-muted-foreground"
+    >
+      stale
+    </Badge>
+  );
+}
+
 /** The status word for a badge, or null for a plain open task. */
 export function stateBadge(state: TaskState, trace: TaskTrace | undefined): string | null {
   switch (state) {
@@ -844,6 +857,7 @@ export function TaskRow({
   const armed = armedParentId === task.id;
   const trace = activity?.traces[task.id];
   const badge = history || (done && depth > 0) ? null : stateBadge(current, trace);
+  const stale = current === "working" && isStaleWorking(task, activity);
   const note = [
     showProject && depth === 0 ? (task.project ?? "") : "",
     rowNote(task, tasks, current, trace, activity?.traces ?? {}),
@@ -956,6 +970,7 @@ export function TaskRow({
                 {badge}
               </Badge>
             )}
+            {stale && <StaleMarker id={task.id} />}
           </span>
           <TaskCardTimes task={task} />
         </span>

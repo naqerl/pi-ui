@@ -129,6 +129,9 @@ function isTask(value: unknown): value is Task {
     (task.rationale === undefined || typeof task.rationale === "string") &&
     (task.body === undefined || typeof task.body === "string") &&
     (task.project === undefined || typeof task.project === "string") &&
+    (task.lastWorkedAt === undefined ||
+      task.lastWorkedAt === null ||
+      typeof task.lastWorkedAt === "string") &&
     (task.attachments === undefined ||
       (Array.isArray(task.attachments) &&
         task.attachments.every((id) => typeof id === "string"))) &&
@@ -241,6 +244,25 @@ export class TaskStore {
 
   ledger(): TaskLedger {
     return { tasks: this.tasks.map(cloneTask), revision: this.revision };
+  }
+
+  /**
+   * Remember that a tool call tagged this task. Only open work is touched: a closed task keeps
+   * its empty stamp, and a tagged call that finishes after `task_done` must not revive it.
+   */
+  noteWorked(id: string, at: number | string | Date = Date.now()): Promise<TaskLedger> {
+    const date = at instanceof Date ? at : new Date(at);
+    if (!Number.isFinite(date.getTime())) return Promise.reject(new TaskError("Invalid time", 400));
+    const stamp = date.toISOString();
+    return this.commit((tasks) => {
+      const index = tasks.findIndex((task) => task.id === id);
+      const current = tasks[index];
+      if (current === undefined || current.status !== "open") return tasks;
+      if (current.lastWorkedAt === stamp) return tasks;
+      const copy = tasks.slice();
+      copy[index] = { ...current, lastWorkedAt: stamp };
+      return copy;
+    });
   }
 
   async load(): Promise<void> {
@@ -461,6 +483,7 @@ export class TaskStore {
                   ? current.completion
                   : null
                 : { ...patch.completion },
+            lastWorkedAt: null,
           };
         } else if (patch.status === "proposed") {
           next = {
@@ -471,6 +494,7 @@ export class TaskStore {
             proposedAt: current.proposedAt ?? new Date().toISOString(),
             completedAt: null,
             completion: null,
+            lastWorkedAt: null,
           };
         } else {
           next = {
@@ -478,6 +502,8 @@ export class TaskStore {
             status: "open",
             completedAt: null,
             completion: null,
+            // Reopening starts an untouched task; an already-open task keeps its stamp.
+            ...(current.status === "open" ? {} : { lastWorkedAt: null }),
             ...(current.status === "proposed" ? { proposedAt: null } : {}),
           };
         }

@@ -327,13 +327,15 @@ export class ChatService {
   private async checkIdleNudge(): Promise<void> {
     if (this.closed || this.checkingIdleNudge || !this.idleNudge.enabled) return;
     const tasks = this.idleTasks();
-    const taskIds = tasks.every((task): task is string => typeof task === "string")
-      ? tasks
-      : openTaskIds(tasks);
+    const titled = tasks.every((task): task is string => typeof task === "string")
+      ? undefined
+      : (tasks as readonly IdleTask[]);
+    const taskIds = titled === undefined ? (tasks as readonly string[]) : openTaskIds(titled);
     const text = this.idleNudge.maybeNudge({
       active: this.runState === "running" || this.submitting > 0,
       queued: this.queued.size + this.steers.size,
       openTaskIds: taskIds,
+      ...(titled === undefined ? {} : { tasks: titled }),
     });
     if (text === null) return;
     this.checkingIdleNudge = true;

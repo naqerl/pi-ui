@@ -70,7 +70,15 @@ const taskStore = new TaskStore(resolve(dataDir, "tasks.json"), {
 const media = new MediaStore(resolve(dataDir, "media"));
 const diagrams = new DiagramStore(resolve(dataDir, "diagrams"));
 await taskStore.load();
-const taskActivity = new TaskActivityTracker(resolve(dataDir, "task-activity.json"));
+const taskActivity = new TaskActivityTracker(
+  resolve(dataDir, "task-activity.json"),
+  Date.now,
+  (taskId, at) => {
+    void taskStore.noteWorked(taskId, at).catch((error: unknown) => {
+      console.error(`[pi] could not record work on task ${taskId}:`, error);
+    });
+  },
+);
 await taskActivity.load();
 taskActivity.observeLedger(taskStore.ledger().tasks);
 /** The ledger as clients see it: tasks plus what the runs measured for them. */

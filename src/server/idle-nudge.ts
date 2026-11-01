@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { IDLE_NUDGE_FILE, idleNudgeText } from "../shared/idle-nudge.js";
+import {
+  IDLE_NUDGE_FILE,
+  type IdleTask,
+  idleNudgeText,
+  openTaskIds,
+  staleWorkedTasks,
+} from "../shared/idle-nudge.js";
 
 export * from "../shared/idle-nudge.js";
 
@@ -102,7 +108,12 @@ export interface IdleNudgeState {
   active: boolean;
   /** Messages and steers waiting for the current turn. */
   queued: number;
-  openTaskIds: readonly string[];
+  /** The ready task ids. Derived from `tasks` when omitted. */
+  openTaskIds?: readonly string[];
+  /** Open work with titles and `lastWorkedAt`, so stale tasks can be named. */
+  tasks?: readonly IdleTask[];
+  /** The stale subset, when the caller already selected it. Derived from `tasks` otherwise. */
+  staleTasks?: readonly IdleTask[];
 }
 
 export type IdleNudgeStart = number | IdleNudgeStorage;
@@ -177,10 +188,13 @@ export class IdleNudge {
   maybeNudge(state: IdleNudgeState, at: number = Date.now()): string | null {
     if (!this.armed) return null;
     if (state.active || state.queued > 0) return null;
-    if (state.openTaskIds.length === 0) return null;
+    const tasks = state.tasks ?? [];
+    const openIds = state.openTaskIds ?? openTaskIds(tasks);
+    if (openIds.length === 0) return null;
     if (at - this.lastActivityAt < this.intervalMs) return null;
-    const hash = taskSetHash(state.openTaskIds);
+    const hash = taskSetHash(openIds);
     if (hash === this.recordedHash) return null;
+    const stale = state.staleTasks ?? staleWorkedTasks(tasks, at);
     this.recordedHash = hash;
     this.fired = true;
     if (this.storage !== undefined) {
@@ -190,6 +204,6 @@ export class IdleNudge {
         console.error("[pi] could not record the idle nudge", error);
       }
     }
-    return idleNudgeText(state.openTaskIds);
+    return idleNudgeText(openIds, undefined, stale);
   }
 }
