@@ -1,5 +1,6 @@
 import {
   lazy,
+  type PointerEvent as ReactPointerEvent,
   Suspense,
   useCallback,
   useEffect,
@@ -386,6 +387,7 @@ function ActivityGroup({
 }
 
 const ACTION_BUTTON_CLASS = "h-9 w-full hover:bg-foreground/10";
+const BACKLOG_LONG_PRESS_MS = 500;
 /** Space above the first message and below the last, on every viewport. */
 const TRANSCRIPT_END_GAP = 16;
 
@@ -638,7 +640,12 @@ function Composer({
   stop: () => Promise<void>;
   unsendSteer?: () => Promise<QueuedMessage | null>;
   /** Without a project a subtask takes its parent's, and a top-level task gets none. */
-  addTask: (text: string, attachments: string[], project?: string) => Promise<boolean>;
+  addTask: (
+    text: string,
+    attachments: string[],
+    project?: string,
+    options?: { backlog?: boolean },
+  ) => Promise<boolean>;
   /** Known project names, A–Z, for the `@` autocomplete. */
   projects: string[];
   error: string | null;
@@ -648,6 +655,9 @@ function Composer({
   const [caret, setCaret] = useState<number | null>(null);
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [backlog, setBacklog] = useState(false);
+  const backlogPress = useRef<{ timer: number; x: number; y: number } | null>(null);
+  const suppressAddClick = useRef(false);
   const mention = tasksPage && caret !== null ? mentionAt(value, caret) : null;
   const suggestions = mention === null ? [] : projectSuggestions(projects, mention.query);
   const suggesting = mention !== null && dismissedAt !== mention.start && suggestions.length > 0;
@@ -667,6 +677,61 @@ function Composer({
   const hasText = value.trim().length > 0;
   // A task still needs a title; a chat message can be images alone.
   const canSend = !uploading && !failed && (hasText || (!tasksPage && readyIds.length > 0));
+
+  const clearBacklogPress = useCallback(() => {
+    const press = backlogPress.current;
+    if (press !== null) window.clearTimeout(press.timer);
+    backlogPress.current = null;
+  }, []);
+
+  useEffect(() => {
+    if (!tasksPage) {
+      clearBacklogPress();
+      setBacklog(false);
+      return;
+    }
+    const onMove = (event: PointerEvent) => {
+      const press = backlogPress.current;
+      if (press === null) return;
+      if (Math.hypot(event.clientX - press.x, event.clientY - press.y) <= 10) return;
+      clearBacklogPress();
+    };
+    const onUp = () => clearBacklogPress();
+    const onCancel = () => clearBacklogPress();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      clearBacklogPress();
+      setBacklog(false);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      window.removeEventListener("keydown", onKey);
+      clearBacklogPress();
+    };
+  }, [clearBacklogPress, tasksPage]);
+
+  const startBacklogPress = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!tasksPage || !event.isPrimary) return;
+    clearBacklogPress();
+    suppressAddClick.current = false;
+    const x = event.clientX;
+    const y = event.clientY;
+    backlogPress.current = {
+      x,
+      y,
+      timer: window.setTimeout(() => {
+        backlogPress.current = null;
+        suppressAddClick.current = true;
+        setBacklog((current) => !current);
+      }, BACKLOG_LONG_PRESS_MS),
+    };
+  };
 
   const resizeTextarea = useCallback(() => {
     const element = textareaRef.current;
@@ -744,11 +809,17 @@ function Composer({
     let sent: boolean;
     if (tasksPage) {
       const parsed = parseProjectToken(text, projects);
-      sent = await addTask(parsed.title, ids, parsed.project ?? undefined);
+      sent = await addTask(
+        parsed.title,
+        ids,
+        parsed.project ?? undefined,
+        backlog ? { backlog: true } : undefined,
+      );
     } else {
       sent = await send(text, mode, ids);
     }
     if (!sent) return;
+    if (backlog) setBacklog(false);
     attachments.clear(sentKeys);
     // Keep a draft typed while the request was in flight; only clear the text we sent.
     if (element !== null && element.value !== text) return;
@@ -837,7 +908,7 @@ function Composer({
           aria-errormessage={error !== null ? "composer-error" : undefined}
           aria-label={tasksPage ? (parentTitle === null ? "New task" : "New subtask") : "Message"}
           rows={1}
-          className="bg-transparent"
+          className={cn("bg-transparent", backlog && "placeholder:text-muted-foreground/60")}
           value={value}
           aria-autocomplete={tasksPage ? "list" : undefined}
           aria-controls={suggesting ? "project-suggestions" : undefined}
@@ -848,9 +919,11 @@ function Composer({
           onBlur={() => setCaret(null)}
           placeholder={
             tasksPage
-              ? parentTitle === null
-                ? "New task"
-                : `Subtask of ${parentTitle}`
+              ? backlog
+                ? "New backlog task"
+                : parentTitle === null
+                  ? "New task"
+                  : `Subtask of ${parentTitle}`
               : "Message pi"
           }
           onChange={(event) => {
@@ -930,10 +1003,30 @@ function Composer({
               variant="ghost"
               size="icon"
               aria-label="Add task"
-              className={ACTION_BUTTON_CLASS}
+              aria-pressed={backlog}
+              data-testid="add-task"
+              data-backlog={backlog ? "true" : undefined}
+              title={backlog ? "Add to backlog" : "Add task"}
+              className={cn(ACTION_BUTTON_CLASS, backlog && "text-muted-foreground")}
               disabled={!canSend}
+              onPointerDown={startBacklogPress}
+              onClick={(event) => {
+                if (!suppressAddClick.current) return;
+                suppressAddClick.current = false;
+                event.preventDefault();
+              }}
             >
-              <SendIcon />
+              <span className="flex flex-col items-center justify-center gap-0.5">
+                <SendIcon />
+                {backlog && (
+                  <span
+                    data-testid="backlog-chip"
+                    className="font-mono text-[7px] leading-none tracking-tight"
+                  >
+                    Backlog
+                  </span>
+                )}
+              </span>
             </Button>
           ) : running && !hasText && attachments.items.length === 0 ? (
             <Button
@@ -1215,12 +1308,18 @@ export function ChatView({
     return true;
   };
 
-  const addTask = async (text: string, attachments: string[], project?: string) => {
+  const addTask = async (
+    text: string,
+    attachments: string[],
+    project?: string,
+    options?: { backlog?: boolean },
+  ) => {
     const outcome = await createTask(
       text,
       tasksPage ? (armed?.id ?? null) : null,
       attachments,
       project,
+      options,
     );
     if (!outcome.ok) {
       setComposerError(outcome.error);

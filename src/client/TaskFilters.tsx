@@ -18,7 +18,9 @@ export function taskFilterCounts(
 ): Record<TaskFilter, number> {
   const stateOf = new Map<string, ReturnType<typeof taskState>>();
   for (const task of tasks) stateOf.set(task.id, taskState(tasks, task, activity));
-  const open = tasks.filter((task) => task.status !== "proposed" && task.status !== "done");
+  const open = tasks.filter(
+    (task) => task.status !== "proposed" && task.status !== "done" && task.status !== "backlog",
+  );
   return {
     active: open.length,
     blocked: open.filter((task) => stateOf.get(task.id) === "blocked").length,

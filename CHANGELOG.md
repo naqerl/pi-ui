@@ -7,6 +7,9 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 - A task that has received a tagged tool call keeps its Working badge after the run ends, instead of dropping back to ready at the end of the turn or after ten quiet minutes. The ledger now stores `lastWorkedAt`, so the badge also survives a restart, and closing or reopening the task clears it.
 - A working task untouched for over an hour keeps its badge but gains a small muted `stale` marker, and the idle nudge names those tasks and asks the agent to confirm the work, block it, or mark it done. Stale requests are appended to the remembered idle decision prompt, so the same backlog stays quiet until it changes.
 - The Active / Blocked / Proposed task filters moved from the composer's top line to the top of the task list, where they scroll with the list instead of squeezing the working status; on a narrow window the row scrolls sideways rather than wrapping its counts.
+- A long press on the tasks page's Send button parks the next task in the backlog: the composer shows a Backlog chip and muted placeholder, a second long press (or Escape, a pointer move, or releasing early) cancels, and a short press still creates a normal task.
+- Backlog tasks stay out of the way on the tasks page: their cards are blurred and desaturated, they sort after live work in their project, a project with only backlog tasks sits at the end, and they do not count in Active, Blocked or Proposed.
+- The agent's ledger tools hide backlog tasks from `task_list`, counts and reports, and `task_view`, `task_edit`, `task_done` and `task_block` refuse a backlog id as unknown.
 
 ## 1.6.42 - 2026-11-01
 

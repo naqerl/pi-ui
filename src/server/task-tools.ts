@@ -85,7 +85,9 @@ const doneSchema = Type.Object({
 
 function formatLedger(ledger: TaskLedger): string {
   const lines = [`revision ${ledger.revision}`];
-  const active = ledger.tasks.filter((task) => task.status !== "proposed");
+  const active = ledger.tasks.filter(
+    (task) => task.status !== "proposed" && task.status !== "backlog",
+  );
   const ids = new Set(active.map((task) => task.id));
   const write = (task: Task, depth: number) => {
     const live = liveBlockerIds(ledger.tasks, task);
@@ -155,7 +157,7 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
     defineTool({
       name: "task_list",
       description:
-        "List the shared todo ledger: id, status, live blockers, attached image count, @project when set, and title. Ready tasks come first, then blocked, then done. A done blocker is omitted. Proposals are not work and appear only as a waiting count; use task_proposals to read them. Use task_view to see a task's images.",
+        "List the shared todo ledger: id, status, live blockers, attached image count, @project when set, and title. Ready tasks come first, then blocked, then done. A done blocker is omitted. Proposals and backlog tasks are not work: proposals appear only as a waiting count; use task_proposals to read them. Use task_view to see a task's images.",
       parameters: Type.Object({}),
       async execute() {
         return { output: [{ type: "text", text: formatLedger(bridge.store.ledger()) }] };
@@ -177,7 +179,9 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
       parameters: idSchema,
       async execute(args) {
         const task = bridge.store.ledger().tasks.find((item) => item.id === args.id);
-        if (task === undefined) return failure(new TaskError("Unknown task", 404));
+        if (task === undefined || task.status === "backlog") {
+          return failure(new TaskError("Unknown task", 404));
+        }
         const ids = task.attachments ?? [];
         const completion = task.status === "done" ? (task.completion ?? null) : null;
         const header = [
@@ -221,7 +225,10 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
       parameters: doneSchema,
       async execute(args) {
         const current = bridge.store.ledger().tasks.find((task) => task.id === args.id);
-        if (current?.status === "proposed") {
+        if (current === undefined || current.status === "backlog") {
+          return failure(new TaskError("Unknown task", 404));
+        }
+        if (current.status === "proposed") {
           return failure(new TaskError("Task is not open; a proposal must be approved first", 409));
         }
         const parsed = parseCompletion(args);
@@ -237,6 +244,10 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
         "Edit an existing task's title, body or project. The body is free markdown shown under the title in the tasks page; pass an empty string to clear it. A title cannot be empty.",
       parameters: editSchema,
       async execute(args) {
+        const current = bridge.store.ledger().tasks.find((task) => task.id === args.id);
+        if (current === undefined || current.status === "backlog") {
+          return failure(new TaskError("Unknown task", 404));
+        }
         const patch: { title?: string; body?: string; project?: string | null } = {};
         if (args.title !== undefined) patch.title = args.title;
         if (args.body !== undefined) patch.body = args.body;
@@ -267,6 +278,10 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
         "Create a new open task and make it a blocker for the given task. Existing blockers stay. A done blocker no longer blocks. This cannot create a task that does not block something.",
       parameters: blockSchema,
       async execute(args) {
+        const current = bridge.store.ledger().tasks.find((task) => task.id === args.id);
+        if (current === undefined || current.status === "backlog") {
+          return failure(new TaskError("Unknown task", 404));
+        }
         return changed(bridge, () =>
           bridge.store.addBlocker(args.id, args.title, args.project, args.body),
         );

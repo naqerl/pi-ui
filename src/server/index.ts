@@ -569,6 +569,21 @@ app.post("/api/tasks", async (c) => {
     return c.text("parentId must be a string", 400);
   const proposed =
     typeof body === "object" && body !== null && "propose" in body && body.propose === true;
+  const requestedStatus =
+    typeof body === "object" && body !== null && "status" in body ? body.status : undefined;
+  if (
+    requestedStatus !== undefined &&
+    requestedStatus !== "open" &&
+    requestedStatus !== "backlog"
+  ) {
+    return c.text('Status must be "open" or "backlog"', 400);
+  }
+  const backlogFlag =
+    typeof body === "object" && body !== null && "backlog" in body ? body.backlog : undefined;
+  if (backlogFlag !== undefined && typeof backlogFlag !== "boolean") {
+    return c.text("backlog must be a boolean", 400);
+  }
+  const backlog = backlogFlag === true || requestedStatus === "backlog";
   const project =
     typeof body === "object" && body !== null && "project" in body ? body.project : undefined;
   if (project !== undefined && project !== null && typeof project !== "string")
@@ -603,7 +618,16 @@ app.post("/api/tasks", async (c) => {
       );
     }
     return c.json(
-      publishTasks(await taskStore.create(title, parentId, attachments, project, taskBody)),
+      publishTasks(
+        await taskStore.create(
+          title,
+          parentId,
+          attachments,
+          project,
+          taskBody,
+          backlog ? { backlog: true } : { status: "open" },
+        ),
+      ),
       201,
     );
   } catch (error) {
@@ -645,8 +669,13 @@ app.patch("/api/tasks/:id", async (c) => {
     patch.project = body.project;
   }
   if ("status" in body) {
-    if (body.status !== "open" && body.status !== "done" && body.status !== "proposed") {
-      return c.text('Status must be "open", "done" or "proposed"', 400);
+    if (
+      body.status !== "open" &&
+      body.status !== "done" &&
+      body.status !== "proposed" &&
+      body.status !== "backlog"
+    ) {
+      return c.text('Status must be "open", "done", "proposed" or "backlog"', 400);
     }
     patch.status = body.status;
   }

@@ -279,7 +279,7 @@ export interface DraftSync {
   revision: number;
 }
 
-export type TaskStatus = "open" | "done" | "proposed";
+export type TaskStatus = "open" | "done" | "proposed" | "backlog";
 
 /**
  * Where a reviewer can check the work. Time, tokens and cost are measured from the runs that
@@ -329,6 +329,7 @@ export interface TaskLedger {
 /** A task's state as the UI shows it, derived from the ledger plus measured run activity. */
 export type TaskState =
   | "proposed"
+  | "backlog"
   | "ready"
   | "working"
   | "blocked"
