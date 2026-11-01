@@ -10,6 +10,7 @@
     "start": "node --import tsx dist/server/index.js",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
+    "gate": "npm run typecheck && npm run lint && npm run build && npm test",
     "e2e": "e2e run",
     "icons": "node scripts/generate-icons.mjs",
     "test": "node scripts/run-tests.mjs"

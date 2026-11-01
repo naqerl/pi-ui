@@ -11,21 +11,23 @@ import { NoticeLine } from "../src/client/NoticeView.js";
 import { ChatService } from "../src/server/chat-service.js";
 import {
   DEFAULT_IDLE_NUDGE_MS,
+  IDLE_STATUS_INTERVAL_MS,
   IdleNudge,
+  type IdleTaskStatus,
   idleBlockedNudgeText,
   idleNudgeMs,
   idleNudgeText,
   openTaskIds,
   taskSetHash,
   waitingOn,
+  workingTaskIds,
 } from "../src/server/idle-nudge.js";
 import { buildTranscript, IDLE_NUDGE_ENTRY_KIND } from "../src/server/session.js";
 import { parseNotice } from "../src/shared/notices.js";
 import { isQueuedNotice } from "../src/shared/queue.js";
-import type { TaskStatus } from "../src/shared/types.js";
 
 const nothing = { active: false, queued: 0, openTaskIds: [] as string[] };
-const task = (id: string, status: TaskStatus = "open", blockedBy: string[] = []) => ({
+const task = (id: string, status: IdleTaskStatus = "open", blockedBy: string[] = []) => ({
   id,
   status,
   blockedBy,
@@ -60,7 +62,7 @@ test("the prompt names the count and ids, and only unblocked open tasks count", 
   assert.deepEqual(openTaskIds(tasks), ["a1", "b2"]);
   assert.equal(
     idleNudgeText(["a1", "b2"]),
-    "You have been idle for 20 minutes and 2 task(s) are open: a1, b2. Pick the next one and implement it.",
+    "You have been idle for 20 minutes and 2 task(s) are open: a1, b2. Mark a task working with the task tool before starting it; if it cannot be done now, mark it blocked and propose_task the task that would unblock it; if other tasks are already in progress, leave it alone — ignoring it is a valid answer.",
   );
   assert.deepEqual(parseNotice(idleNudgeText(["a1", "b2"])), {
     kind: "idle",
@@ -89,7 +91,7 @@ test("a task whose blocker is done is nudged", () => {
   const nudge = new IdleNudge(1_000, 0, "");
   assert.equal(
     nudge.maybeNudge({ ...nothing, openTaskIds: openTaskIds(tasks) }, 1_000),
-    "You have been idle for 20 minutes and 1 task(s) are open: fvte. Pick the next one and implement it.",
+    idleNudgeText(["fvte"]),
   );
 });
 
@@ -121,6 +123,173 @@ test("an unknown blocker id does not block", () => {
   const tasks = [task("fvte", "open", ["missing"])];
   assert.deepEqual(openTaskIds(tasks), ["fvte"]);
   assert.deepEqual(waitingOn(tasks), {});
+});
+
+test("a nudge names at most twenty task ids", () => {
+  const ids = Array.from({ length: 25 }, (_, index) => `t${index + 1}`);
+  const text = idleNudgeText(ids);
+  assert.match(text, /t20/);
+  assert.doesNotMatch(text, /t21/);
+});
+
+test("an ignored task returns after three silent nudges", async () => {
+  const directory = await temporaryDataDir();
+  try {
+    const nudge = new IdleNudge(1_000, 0, directory);
+    const firstTasks = ["a1", "a2", "a3", "a4", "a5"].map((id) => task(id));
+    assert.equal(openTaskIds(firstTasks).length, 5);
+    const first = nudge.maybeNudge({ ...nothing, tasks: firstTasks }, 1_000);
+    for (const id of ["a1", "a2", "a3", "a4", "a5"]) assert.match(first ?? "", new RegExp(id));
+
+    // Three tasks were answered by starting them; two were silently ignored.
+    const tasks = [
+      task("a1", "working"),
+      task("a2", "working"),
+      task("a3", "working"),
+      task("a4"),
+      task("a5"),
+    ];
+    assert.deepEqual(workingTaskIds(tasks), ["a1", "a2", "a3"]);
+    assert.deepEqual(openTaskIds(tasks), ["a4", "a5"]);
+
+    for (let index = 1; index <= 3; index++) {
+      const at = 1_000 + index * IDLE_STATUS_INTERVAL_MS;
+      nudge.noteActivity(at - 1_000);
+      const text = nudge.maybeNudge({ ...nothing, tasks }, at);
+      assert.ok(text, `silent nudge ${index} still asks the working tasks`);
+      for (const id of ["a1", "a2", "a3"]) assert.match(text, new RegExp(id));
+      assert.doesNotMatch(text, /a4|a5/);
+      assert.match(text, /Status check/);
+    }
+
+    const record = JSON.parse(await readFile(join(directory, "idle-nudge.json"), "utf8")) as {
+      tasks: Record<string, { named: number; lastNamedAt: string; state: string; silent: number }>;
+    };
+    assert.equal(record.tasks.a1?.named, 4);
+    assert.equal(record.tasks.a1?.state, "working");
+    assert.equal(
+      record.tasks.a1?.lastNamedAt,
+      new Date(3 * IDLE_STATUS_INTERVAL_MS + 1_000).toISOString(),
+    );
+    assert.equal(record.tasks.a4?.silent, 3);
+
+    const fourthAt = 1_000 + 4 * IDLE_STATUS_INTERVAL_MS;
+    nudge.noteActivity(fourthAt - 1_000);
+    const fourth = nudge.maybeNudge({ ...nothing, tasks }, fourthAt);
+    assert.match(fourth ?? "", /a4, a5/, "the ignored tasks come back together");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a single ignored task comes back on the fourth quiet idle window", async () => {
+  const directory = await temporaryDataDir();
+  try {
+    const nudge = new IdleNudge(1_000, 0, directory);
+    const tasks = [task("a1")];
+    assert.ok(nudge.maybeNudge({ ...nothing, tasks }, 1_000));
+    nudge.noteActivity(2_000);
+
+    for (let index = 1; index <= 3; index++) {
+      const at = 2_000 + index * 1_000;
+      assert.equal(nudge.maybeNudge({ ...nothing, tasks }, at), null);
+      const record = JSON.parse(await readFile(join(directory, "idle-nudge.json"), "utf8")) as {
+        tasks: Record<string, { silent: number }>;
+      };
+      assert.equal(record.tasks.a1?.silent, index, "each quiet window is remembered");
+      // The timer may poll again immediately; that must not burn another window.
+      assert.equal(nudge.maybeNudge({ ...nothing, tasks }, at + 1), null);
+    }
+
+    const fourth = nudge.maybeNudge({ ...nothing, tasks }, 6_000);
+    assert.match(fourth ?? "", /open: a1\./);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("all ignored tasks return after three quiet idle windows", async () => {
+  const directory = await temporaryDataDir();
+  try {
+    const nudge = new IdleNudge(1_000, 0, directory);
+    const tasks = ["a1", "a2", "a3", "a4", "a5"].map((id) => task(id));
+    const first = nudge.maybeNudge({ ...nothing, tasks }, 1_000);
+    assert.match(first ?? "", /a1, a2, a3, a4, a5/);
+    nudge.noteActivity(2_000);
+
+    for (let index = 1; index <= 3; index++) {
+      assert.equal(nudge.maybeNudge({ ...nothing, tasks }, 2_000 + index * 1_000), null);
+    }
+    const fourth = nudge.maybeNudge({ ...nothing, tasks }, 6_000);
+    assert.match(fourth ?? "", /a1, a2, a3, a4, a5/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("only the ids shown in the capped text are remembered as named", async () => {
+  const directory = await temporaryDataDir();
+  try {
+    const nudge = new IdleNudge(1_000, 0, directory);
+    const tasks = Array.from({ length: 25 }, (_, index) => task(`t${index + 1}`));
+    const first = nudge.maybeNudge({ ...nothing, tasks }, 1_000);
+    assert.match(first ?? "", /t20/);
+    assert.doesNotMatch(first ?? "", /t21/);
+
+    const record = JSON.parse(await readFile(join(directory, "idle-nudge.json"), "utf8")) as {
+      tasks: Record<string, { named: number }>;
+    };
+    assert.equal(record.tasks.t20?.named, 1);
+    assert.equal(record.tasks.t21, undefined, "a task the text never named is still new");
+
+    nudge.noteActivity(2_000);
+    const second = nudge.maybeNudge({ ...nothing, tasks }, 3_000);
+    assert.match(second ?? "", /t21, t22, t23, t24, t25/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a working task is asked for a status at most hourly", () => {
+  const nudge = new IdleNudge(1_000, 0, "");
+  const tasks = [task("a1", "working")];
+  const first = nudge.maybeNudge({ ...nothing, tasks }, 1_000);
+  assert.match(first ?? "", /Status check for tasks marked working: a1/);
+  assert.doesNotMatch(first ?? "", /task\(s\) are open/);
+
+  const tooSoon = 1_000 + IDLE_STATUS_INTERVAL_MS - 1;
+  nudge.noteActivity(tooSoon - 1_000);
+  assert.equal(nudge.maybeNudge({ ...nothing, tasks }, tooSoon), null);
+
+  const hourly = 1_000 + IDLE_STATUS_INTERVAL_MS;
+  nudge.noteActivity(hourly - 1_000);
+  assert.match(
+    nudge.maybeNudge({ ...nothing, tasks }, hourly) ?? "",
+    /Status check for tasks marked working: a1/,
+  );
+});
+
+test("an old hash-only record is read and upgraded on the next write", async () => {
+  const directory = await temporaryDataDir();
+  try {
+    const file = join(directory, "idle-nudge.json");
+    await writeFile(
+      file,
+      JSON.stringify({ hash: taskSetHash(["a1"]), nudgedAt: new Date(1_000).toISOString() }),
+      "utf8",
+    );
+    const nudge = new IdleNudge(1_000, 0, directory);
+    assert.equal(nudge.nudgedHash, taskSetHash(["a1"]));
+    assert.equal(nudge.maybeNudge({ ...nothing, openTaskIds: ["a1"] }, 5_000), null);
+
+    assert.ok(nudge.maybeNudge({ ...nothing, openTaskIds: ["a2"] }, 6_000));
+    const record = JSON.parse(await readFile(file, "utf8")) as {
+      tasks: Record<string, { named: number }>;
+    };
+    assert.equal(record.tasks.a2?.named, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("the same task set nudges only once", () => {
@@ -158,10 +327,15 @@ test("the recorded hash survives a restart", async () => {
 
     const restarted = new IdleNudge(1_000, 0, directory);
     assert.equal(restarted.nudgedHash, record.hash);
-    assert.equal(restarted.maybeNudge(work, 5_000), null, "a restart does not repeat the nudge");
+    assert.equal(restarted.nudgedTasks.a1?.named, 1);
+    assert.equal(
+      restarted.maybeNudge(work, 5_000),
+      null,
+      "an unacted task is not repeated at once",
+    );
 
     restarted.noteActivity(6_000);
-    assert.ok(restarted.maybeNudge({ ...nothing, openTaskIds: ["a1"] }, 7_000));
+    assert.ok(restarted.maybeNudge({ ...nothing, openTaskIds: ["a1", "c3"] }, 7_000));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -199,10 +373,7 @@ test("it fires once after the window, then waits for fresh activity and a new ta
   const nudge = new IdleNudge(1_000, 0, "");
   const work = { ...nothing, openTaskIds: ["a1"] };
   assert.equal(nudge.maybeNudge(work, 999), null);
-  assert.equal(
-    nudge.maybeNudge(work, 1_000),
-    "You have been idle for 20 minutes and 1 task(s) are open: a1. Pick the next one and implement it.",
-  );
+  assert.equal(nudge.maybeNudge(work, 1_000), idleNudgeText(["a1"]));
   assert.equal(nudge.maybeNudge(work, 20_000), null, "the same idle period does not nudge twice");
 
   nudge.noteActivity(20_000);
