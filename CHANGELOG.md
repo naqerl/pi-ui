@@ -4,6 +4,11 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.44 - 2026-11-01
+
+- The task detail lost its activity table, and the backlog toggle now sits where that table was, so a task opened from the list shows what it is for and what state it is in without a scroll.
+- A queued MCP notice chip has a blurred translucent background, so its text stays readable over the moving background before the event reaches the model.
+
 - A task that has received a tagged tool call keeps its Working badge after the run ends, instead of dropping back to ready at the end of the turn or after ten quiet minutes. The ledger now stores `lastWorkedAt`, so the badge also survives a restart, and closing or reopening the task clears it.
 - A working task untouched for over an hour keeps its badge but gains a small muted `stale` marker, and the idle nudge names those tasks and asks the agent to confirm the work, block it, or mark it done. Stale requests are appended to the remembered idle decision prompt, so the same backlog stays quiet until it changes.
 - The Active / Blocked / Proposed task filters moved from the composer's top line to the top of the task list, where they scroll with the list instead of squeezing the working status; on a narrow window the row scrolls sideways rather than wrapping its counts.
