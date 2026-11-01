@@ -230,10 +230,33 @@ const events = new McpEventFeed(boot.mcp.subscriptionRegistry);
 await events.hydrate();
 chat.setEventFeed(events);
 chat.setTaskActivity(taskActivity);
+function positiveWatchdogEnv(...names: readonly string[]): number | undefined {
+  for (const name of names) {
+    const value = Number(process.env[name]);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return undefined;
+}
+const watchdogInterval = positiveWatchdogEnv(
+  "PI_MCP_WATCHDOG_INTERVAL_MS",
+  "PI_MCP_WATCHDOG_INTERVAL",
+);
+const watchdogHeartbeat = positiveWatchdogEnv(
+  "PI_MCP_HEARTBEAT_INTERVAL_MS",
+  "PI_MCP_HEARTBEAT_MS",
+);
+const watchdogStall = positiveWatchdogEnv(
+  "PI_MCP_STALL_MS",
+  "PI_MCP_STALL_AFTER_MS",
+  "PI_MCP_SILENCE_MS",
+);
 const subscriptionWatchdog = new McpSubscriptionWatchdog({
   registry: boot.mcp.subscriptionRegistry,
   runtime: boot.mcp,
-  onReopened(record) {
+  ...(watchdogInterval === undefined ? {} : { intervalMs: watchdogInterval }),
+  ...(watchdogStall === undefined ? {} : { stallAfterMs: watchdogStall }),
+  ...(watchdogHeartbeat === undefined ? {} : { heartbeatIntervalMs: watchdogHeartbeat }),
+  onUpdated(record) {
     if (!events.noteReconnect(record)) return;
     hub.broadcast({ event: "mcp.events", data: events.state });
   },

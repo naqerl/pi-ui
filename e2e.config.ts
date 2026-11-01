@@ -26,6 +26,7 @@ export default {
             "PI_MODEL",
             "PI_PROVIDER",
             "PI_CODING_AGENT_DIR",
+            "PI_MCP_*",
             "OPENAI_*",
             "ANTHROPIC_*",
             "GOOGLE_*",
