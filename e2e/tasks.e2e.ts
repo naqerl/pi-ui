@@ -750,7 +750,7 @@ test("shows created and closed times at the bottom right of a task card", async 
   });
 });
 
-test("puts the task filters above the task list and groups done work by day", async ({
+test("shows the single task list without filter tabs and groups done work by day", async ({
   app,
   browser,
   screen,
@@ -768,7 +768,7 @@ test("puts the task filters above the task list and groups done work by day", as
   await browser.route("**/api/state**", async (route) => {
     await route.fulfill({
       json: {
-        conversationId: "task-filters-e2e",
+        conversationId: "task-list-e2e",
         messages: [],
         activity: [],
         run: "idle",
@@ -812,6 +812,17 @@ test("puts the task filters above the task list and groups done work by day", as
               completion: null,
             },
             {
+              id: "blocked-task",
+              title: "Waiting on open",
+              status: "open",
+              parentId: null,
+              blockedBy: ["open-task"],
+              createdAt: at(yesterday),
+              proposedAt: null,
+              completedAt: null,
+              completion: null,
+            },
+            {
               id: "proposal",
               title: "A proposal",
               status: "proposed",
@@ -829,70 +840,38 @@ test("puts the task filters above the task list and groups done work by day", as
     });
   });
   await app.open("/?page=tasks");
-  await expect(screen.getByTestId("task-filters")).toBeVisible();
+  await expect(screen.getByTestId("task-filters")).toHaveCount(0);
+  await expect(screen.getByTestId("task-filter-active")).toHaveCount(0);
+  await expect(screen.getByTestId("task-filter-blocked")).toHaveCount(0);
+  await expect(screen.getByTestId("task-filter-proposed")).toHaveCount(0);
 
-  const place = await browser.evaluate(() => {
-    const filters = document.querySelector<HTMLElement>('[data-testid="task-filters"]');
-    const dock = document.querySelector<HTMLElement>('[data-testid="composer-dock"]');
-    const list = document.querySelector<HTMLElement>('[data-testid="task-list"]');
-    const first = list?.querySelector<HTMLElement>('[data-testid^="task-section-"]');
-    if (filters === null || dock === null || list === null || first == null) return null;
-    const filtersBox = filters.getBoundingClientRect();
-    const firstBox = first.getBoundingClientRect();
-    return {
-      inList: list.contains(filters),
-      notInDock: !dock.contains(filters),
-      aboveFirst: filtersBox.bottom <= firstBox.top + 1,
-      noWrap: getComputedStyle(filters).flexWrap === "nowrap",
-      scrolls: getComputedStyle(filters).overflowX === "auto",
-    };
-  });
-  expect(place).toEqual({
-    inList: true,
-    notInDock: true,
-    aboveFirst: true,
-    noWrap: true,
-    scrolls: true,
-  });
+  await expect(screen.getByTestId("task-list")).toBeVisible();
+  await expect(screen.getByTestId("task-section-needs")).toBeVisible();
+  await expect(screen.getByTestId("proposal-proposal")).toBeVisible();
+  await expect(screen.getByTestId("task-open-task")).toBeVisible();
+  await expect(screen.getByTestId("task-blocked-task")).toBeVisible();
 
-  const selected = await browser.evaluate(() => {
-    const tab = document.querySelector<HTMLElement>('[data-testid="task-filter-active"]');
+  const openHeader = await browser.evaluate(() => {
     const open = document.querySelector<HTMLElement>(
       '[data-testid="task-section-active"] [data-slot="collapsible-trigger"]',
     );
-    const tabCount = tab?.querySelector<HTMLElement>("span:last-child");
     const openCount = open?.querySelectorAll<HTMLElement>("span")[1];
-    if (tab === null || tab === undefined || open == null) return null;
-    if (tabCount === null || tabCount === undefined || openCount == null) return null;
-    const tabBox = tab.getBoundingClientRect();
+    if (open == null || openCount == null) return null;
     const openBox = open.getBoundingClientRect();
     return {
-      sameBackground:
-        getComputedStyle(tab).backgroundColor === getComputedStyle(open).backgroundColor,
-      tabCountRight: tabCount.getBoundingClientRect().right > tabBox.left + tabBox.width / 2,
-      openCountRight: openCount.getBoundingClientRect().right > openBox.left + openBox.width / 2,
-      openChevron: open.querySelector("svg") !== null,
+      countRight: openCount.getBoundingClientRect().right > openBox.left + openBox.width / 2,
+      chevron: open.querySelector("svg") !== null,
     };
   });
-  expect(selected).toEqual({
-    sameBackground: true,
-    tabCountRight: true,
-    openCountRight: true,
-    openChevron: true,
-  });
-
-  await screen.getByTestId("task-filter-proposed").tap();
-  await expect(screen.getByTestId("proposal-proposal")).toBeVisible();
-  await expect(screen.getByTestId("task-done-today")).toHaveCount(0);
-  await expect(screen.getByTestId("task-open-task")).toHaveCount(0);
+  expect(openHeader).toEqual({ countRight: true, chevron: true });
 
   await screen.getByRole("tab", "Chat").tap();
   await expect(screen.getByRole("textbox", "Message")).toBeVisible();
   await screen.getByRole("tab", "Tasks").tap();
-  await expect(screen.getByTestId("task-filter-proposed")).toHaveAttribute("aria-selected", "true");
+  await expect(screen.getByTestId("task-filters")).toHaveCount(0);
+  await expect(screen.getByTestId("task-filter-proposed")).toHaveCount(0);
   await expect(screen.getByTestId("proposal-proposal")).toBeVisible();
 
-  await screen.getByTestId("task-filter-active").tap();
   const todayGroup = screen.getByTestId(`task-day-${key(today)}`);
   await expect(todayGroup).toContainText("Done today");
   await expect(todayGroup).toContainText("Finished today");
@@ -928,17 +907,11 @@ test("puts the task filters above the task list and groups done work by day", as
   expect(header).toEqual({ dark: true, labelLeft: true, chevronLeftOfCount: true });
 
   await browser.setViewport({ width: 360, height: 800 });
-  const narrow = await browser.evaluate(() => {
-    const filters = document.querySelector<HTMLElement>('[data-testid="task-filters"]');
-    const tabs = [...(filters?.querySelectorAll<HTMLElement>('[role="tab"]') ?? [])];
-    if (filters === null || tabs.length !== 3) return null;
-    const tops = tabs.map((tab) => tab.getBoundingClientRect().top);
-    return {
-      noWrap: getComputedStyle(filters).flexWrap === "nowrap",
-      oneLine: Math.max(...tops) - Math.min(...tops) <= 1,
-    };
-  });
-  expect(narrow).toEqual({ noWrap: true, oneLine: true });
+  await expect(screen.getByTestId("task-filters")).toHaveCount(0);
+  await expect(screen.getByTestId("task-filter-active")).toHaveCount(0);
+  await expect(screen.getByTestId("task-filter-blocked")).toHaveCount(0);
+  await expect(screen.getByTestId("task-filter-proposed")).toHaveCount(0);
+  await expect(screen.getByTestId("task-list")).toBeVisible();
 });
 
 test("edits a task title in the detail view and refuses an empty one", async ({

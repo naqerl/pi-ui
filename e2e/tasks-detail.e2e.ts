@@ -143,7 +143,7 @@ test("on a desktop the first task is selected and the detail stays beside the li
   await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
   await expect(screen.getByTestId("task-detail")).toHaveAttribute("aria-label", "Ship the modal");
   await expect(screen.getByTestId("task-detail")).toBeVisible();
-  await expect(screen.getByTestId("task-filters")).toBeVisible();
+  await expect(screen.getByTestId("task-filters")).toHaveCount(0);
   const sides = await browser.evaluate(() => {
     const list = document.querySelector<HTMLElement>('[data-testid="task-list"]');
     const detail = document.querySelector<HTMLElement>('[data-testid="task-detail"]');

@@ -24,7 +24,10 @@ test("a long press on Send parks the next task in the backlog", { timeout: 300_0
   await app.open("/?page=tasks");
   const composer = screen.getByRole("textbox", "New task");
   await expect(composer).toBeVisible();
-  await expect(screen.getByTestId("task-filters")).toBeVisible();
+  await expect(screen.getByTestId("task-filters")).toHaveCount(0);
+  await expect(screen.getByTestId("task-filter-active")).toHaveCount(0);
+  await expect(screen.getByTestId("task-filter-blocked")).toHaveCount(0);
+  await expect(screen.getByTestId("task-filter-proposed")).toHaveCount(0);
 
   const tag = Date.now();
   const liveProject = `Zlive${tag}`;
@@ -33,19 +36,6 @@ test("a long press on Send parks the next task in the backlog", { timeout: 300_0
   const parkedTitle = `Parked ${tag}`;
   const parkedOnlyTitle = `Parked elsewhere ${tag}`;
   const titles = [liveTitle, parkedTitle, parkedOnlyTitle];
-
-  const counts = () =>
-    browser.evaluate(() =>
-      Object.fromEntries(
-        [...document.querySelectorAll<HTMLElement>('[data-testid^="task-filter-"]')].map(
-          (element) => [
-            element.dataset.testid?.replace("task-filter-", "") ?? "",
-            Number(element.textContent?.match(/(\d+)\s*$/)?.[1] ?? 0),
-          ],
-        ),
-      ),
-    );
-  const before = await counts();
 
   // A project whose only task is parked, sorted before the live project by name.
   await browser.evaluate(
@@ -64,7 +54,6 @@ test("a long press on Send parks the next task in the backlog", { timeout: 300_0
   await composer.fill(`@${liveProject} ${liveTitle}`);
   await screen.getByRole("button", "Add task").tap();
   await expect(screen.getByText(liveTitle, { exact: true })).toBeVisible();
-  expect((await counts()).active).toBe((before.active ?? 0) + 1);
 
   await composer.fill(`@${liveProject} ${parkedTitle}`);
   await browser.evaluate(async () => {
@@ -100,9 +89,14 @@ test("a long press on Send parks the next task in the backlog", { timeout: 300_0
   await expect(composer).toHaveAttribute("placeholder", "New backlog task");
 
   await screen.getByRole("button", "Add task").tap();
+  await expect(screen.getByText(liveTitle, { exact: true })).toBeVisible();
   await expect(screen.getByText(parkedTitle, { exact: true })).toBeVisible();
   await expect(screen.getByTestId("add-task")).toHaveAttribute("aria-pressed", "false");
   await expect(screen.getByTestId("backlog-chip")).toHaveCount(0);
+  await expect(screen.getByTestId("task-filters")).toHaveCount(0);
+  await expect(screen.getByTestId("task-filter-active")).toHaveCount(0);
+  await expect(screen.getByTestId("task-filter-blocked")).toHaveCount(0);
+  await expect(screen.getByTestId("task-filter-proposed")).toHaveCount(0);
 
   const ledger = await browser.evaluate(async (names) => {
     const result = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
@@ -115,11 +109,6 @@ test("a long press on Send parks the next task in the backlog", { timeout: 300_0
   expect(parked?.status).toBe("backlog");
   expect(live?.status).toBe("open");
   expect(parked?.project).toBe(liveProject);
-
-  const after = await counts();
-  expect(after.active).toBe((before.active ?? 0) + 1);
-  expect(after.blocked).toBe(before.blocked);
-  expect(after.proposed).toBe(before.proposed);
 
   const page = await browser.evaluate(
     ({ parkedName, liveName, liveGroup, parkedGroup }) => {
