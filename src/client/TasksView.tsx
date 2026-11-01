@@ -27,7 +27,6 @@ import type {
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader } from "./components/ui/card";
-import { Checkbox } from "./components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
 import { Separator } from "./components/ui/separator";
 import { cn } from "./lib/utils";
@@ -334,9 +333,28 @@ export function TasksView({
   const menuTask = menu === null ? undefined : activeTasks.find((task) => task.id === menu.id);
   const openTask = openTaskId === null ? undefined : tasks.find((task) => task.id === openTaskId);
 
+  // The first row the current filter shows, used when the desktop has nothing selected.
+  const firstVisibleId =
+    filter === "proposed"
+      ? (proposedTasks[0]?.id ?? null)
+      : filter === "blocked"
+        ? (blockedTasks[0]?.id ?? null)
+        : (proposedTasks[0]?.id ??
+          failedTasks[0]?.id ??
+          (grouped ? projectGroups.flatMap(([, items]) => items) : activeRoots)[0]?.id ??
+          doneRoots[0]?.id ??
+          null);
   useEffect(() => {
-    if (openTaskId !== null && !tasks.some((task) => task.id === openTaskId)) setOpenTaskId(null);
-  }, [openTaskId, tasks]);
+    if (!wide) return;
+    setOpenTaskId((current) => {
+      if (current !== null && tasks.some((task) => task.id === current)) return current;
+      return firstVisibleId;
+    });
+  }, [wide, firstVisibleId, tasks]);
+
+  useEffect(() => {
+    if (!wide) setOpenTaskId(null);
+  }, [wide]);
 
   useEffect(() => {
     if (menu === null) return;
@@ -366,13 +384,13 @@ export function TasksView({
   }, [menu]);
 
   useEffect(() => {
-    if (openTaskId === null || menu !== null) return;
+    if (openTaskId === null || menu !== null || wide) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") setOpenTaskId(null);
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [openTaskId, menu]);
+  }, [openTaskId, menu, wide]);
 
   const openMenu = (id: string, x: number, y: number, picker = false) => {
     setPickerId(picker ? id : null);
@@ -392,7 +410,6 @@ export function TasksView({
     menuTaskId: menu?.id ?? null,
     onOpenMenu: openMenu,
     onOpen: setOpenTaskId,
-    onStatus: setStatus,
     showProject: true,
   };
 
@@ -554,22 +571,25 @@ export function TasksView({
 
   return (
     <div
-      className="h-full overflow-x-hidden overflow-y-auto overscroll-x-none"
+      className={cn(
+        "h-full overflow-x-hidden overscroll-x-none",
+        wide ? "overflow-hidden" : "overflow-y-auto",
+      )}
       data-testid="tasks-page"
       data-layout={wide ? "split" : "stack"}
     >
       <div
         className={
           wide
-            ? "mx-auto grid w-full max-w-[1200px] grid-cols-[minmax(360px,440px)_1fr] items-start gap-6 px-4"
+            ? "mx-auto grid h-full min-h-0 w-full max-w-[1200px] grid-cols-[minmax(360px,440px)_1fr] gap-6 px-4"
             : "mx-auto flex w-full max-w-[72ch] flex-col gap-4 px-4"
         }
         style={{ paddingTop: 16, paddingBottom: footerClearance + 16 }}
       >
         {wide ? (
           <>
-            {list}
-            <div className="sticky top-4 min-w-0">
+            <div className="min-h-0 overflow-y-auto overscroll-contain">{list}</div>
+            <div className="flex min-h-0 min-w-0 flex-col">
               {detail ?? (
                 <Card
                   data-testid="task-detail-empty"
@@ -702,6 +722,32 @@ function failureLabel(trace: TaskTrace | undefined): string {
   return trace?.lastRun?.outcome === "interrupted" ? "Interrupted" : "Failed";
 }
 
+/** The short task id, the handle cards and the detail share. */
+export function shortTaskId(id: string): string {
+  return id.slice(0, 4);
+}
+
+function TaskIdBadge({
+  id,
+  testId = `task-id-${id}`,
+  className,
+}: {
+  id: string;
+  testId?: string;
+  className?: string;
+}) {
+  return (
+    <Badge
+      variant="outline"
+      data-testid={testId}
+      title={id}
+      className={cn("font-mono text-[10px] leading-4 text-muted-foreground", className)}
+    >
+      {shortTaskId(id)}
+    </Badge>
+  );
+}
+
 /** The status word for a badge, or null for a plain open task. */
 export function stateBadge(state: TaskState, trace: TaskTrace | undefined): string | null {
   switch (state) {
@@ -766,7 +812,6 @@ export function TaskRow({
   menuTaskId,
   onOpenMenu,
   onOpen,
-  onStatus,
 }: {
   task: Task;
   tasks: Task[];
@@ -785,14 +830,12 @@ export function TaskRow({
   menuTaskId: string | null;
   onOpenMenu: (id: string, x: number, y: number) => void;
   onOpen: (id: string) => void;
-  onStatus: (task: Task, status: Task["status"]) => void;
 }) {
   const children = flat
     ? []
     : tasks.filter((item) => item.parentId === task.id).sort((a, b) => compareTasks(tasks, a, b));
   const current = state(task);
   const done = task.status === "done";
-  const openChildren = !done && hasOpenDescendant(tasks, task.id);
   const notice = problem?.id === task.id && menuTaskId !== task.id ? problem.message : null;
   const press = useRef<number | null>(null);
   const origin = useRef({ x: 0, y: 0 });
@@ -826,7 +869,7 @@ export function TaskRow({
 
   return (
     <li className="min-w-0" data-testid={`task-${task.id}`} data-state={current}>
-      {/* biome-ignore lint/a11y/useSemanticElements: the row contains its own checkbox. */}
+      {/* biome-ignore lint/a11y/useSemanticElements: the card is a row of block content. */}
       <div
         data-task-card=""
         role="button"
@@ -888,23 +931,6 @@ export function TaskRow({
           onOpen(task.id);
         }}
       >
-        <Checkbox
-          checked={done}
-          data-task-check=""
-          aria-pressed={done}
-          aria-disabled={openChildren}
-          aria-label={
-            done ? `Reopen ${plainInline(task.title)}` : `Done ${plainInline(task.title)}`
-          }
-          title={openChildren ? "Finish open subtasks first" : done ? "Reopen" : "Mark done"}
-          className="relative before:absolute before:-inset-3 before:content-['']"
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.stopPropagation();
-            if (openChildren) return;
-            onStatus(task, done ? "open" : "done");
-          }}
-        />
         <span className="flex min-w-0 flex-1 flex-col justify-start gap-0.5 self-stretch">
           <span
             className={cn(
@@ -921,13 +947,16 @@ export function TaskRow({
           )}
         </span>
         <span className="flex min-h-9 shrink-0 flex-col items-end justify-between self-stretch">
-          {badge !== null ? (
-            <Badge variant={current === "working" || current === "failed" ? "default" : "outline"}>
-              {badge}
-            </Badge>
-          ) : (
-            <span aria-hidden className="h-5 shrink-0" />
-          )}
+          <span className="flex items-center gap-1.5">
+            <TaskIdBadge id={task.id} />
+            {badge !== null && (
+              <Badge
+                variant={current === "working" || current === "failed" ? "default" : "outline"}
+              >
+                {badge}
+              </Badge>
+            )}
+          </span>
           <TaskCardTimes task={task} />
         </span>
       </div>
@@ -954,7 +983,6 @@ export function TaskRow({
               menuTaskId={menuTaskId}
               onOpenMenu={onOpenMenu}
               onOpen={onOpen}
-              onStatus={onStatus}
             />
           ))}
         </ul>
@@ -1013,6 +1041,7 @@ function ProposedTask({
         </span>
         <span className="ml-auto flex shrink-0 flex-col items-end justify-between gap-1 self-stretch">
           <span className="flex items-center gap-2">
+            <TaskIdBadge id={task.id} />
             <Badge variant="outline">Proposed</Badge>
             <Button
               variant="ghost"
@@ -1337,8 +1366,13 @@ export function TaskDetail({
   const title = plainInline(task.title);
 
   return (
-    <Card data-testid="task-detail" aria-label={title} role="article">
-      <CardHeader>
+    <Card
+      data-testid="task-detail"
+      aria-label={title}
+      role="article"
+      className={cn(wide && "h-full min-h-0")}
+    >
+      <CardHeader className={cn(wide && "min-h-0 flex-1 overflow-hidden")}>
         <div className="flex min-h-8 items-center gap-2">
           {!wide && (
             <Button
@@ -1363,18 +1397,6 @@ export function TaskDetail({
               </button>
             )}
           </span>
-          {wide && (
-            <Button
-              variant="ghost"
-              size="sm"
-              data-testid="task-detail-close"
-              aria-label="Close"
-              onClick={onClose}
-              className="-mr-2 shrink-0 rounded-md px-2"
-            >
-              Close
-            </Button>
-          )}
         </div>
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
@@ -1444,15 +1466,20 @@ export function TaskDetail({
             )}
             {!editingTitle && titleError !== null && <ErrorText>{titleError}</ErrorText>}
           </div>
-          <Badge
-            data-testid="task-state"
-            className="mt-1"
-            variant={state === "working" || state === "failed" ? "default" : "outline"}
-          >
-            {badge}
-          </Badge>
+          <span className="mt-1 flex shrink-0 items-center gap-1.5">
+            <TaskIdBadge id={task.id} testId="task-detail-id" />
+            <Badge
+              data-testid="task-state"
+              variant={state === "working" || state === "failed" ? "default" : "outline"}
+            >
+              {badge}
+            </Badge>
+          </span>
         </div>
-        <div data-testid="task-body-section" className="flex min-w-0 flex-col gap-1">
+        <div
+          data-testid="task-body-section"
+          className={cn("flex min-w-0 flex-col gap-1", wide && "min-h-0 flex-1")}
+        >
           {editingBody ? (
             <div className="flex min-w-0 flex-col gap-2">
               <textarea
@@ -1507,7 +1534,13 @@ export function TaskDetail({
           ) : (
             <>
               {task.body !== undefined && task.body.length > 0 && (
-                <div data-testid="task-body" className="min-w-0 text-sm leading-5">
+                <div
+                  data-testid="task-body"
+                  className={cn(
+                    "min-w-0 overflow-y-auto pr-1 text-sm leading-5",
+                    wide ? "min-h-0 max-h-full flex-1" : "max-h-[min(60vh,40rem)]",
+                  )}
+                >
                   <Markdown text={task.body} />
                 </div>
               )}
@@ -1530,6 +1563,13 @@ export function TaskDetail({
             </>
           )}
         </div>
+      </CardHeader>
+      <CardContent
+        className={cn(
+          "flex flex-col gap-4",
+          wide && "max-h-[40vh] min-h-0 shrink-0 overflow-y-auto",
+        )}
+      >
         <TaskTimes task={task} />
         {reason !== null && (
           <p data-testid="task-failure" className="text-sm leading-5 text-muted-foreground">
@@ -1537,12 +1577,15 @@ export function TaskDetail({
           </p>
         )}
         {task.rationale !== undefined && task.rationale.length > 0 && (
-          <p className="whitespace-pre-wrap text-sm leading-5 [overflow-wrap:anywhere]">
-            {task.rationale}
-          </p>
+          <div
+            data-testid="task-rationale"
+            className={cn("min-w-0", wide && "max-h-40 overflow-y-auto pr-1")}
+          >
+            <p className="whitespace-pre-wrap text-sm leading-5 [overflow-wrap:anywhere]">
+              {task.rationale}
+            </p>
+          </div>
         )}
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
         <div className="flex min-w-0 flex-col gap-1" data-testid="task-project-line">
           <div className="flex min-w-0 items-center gap-3">
             <span className="shrink-0 text-xs leading-4 text-muted-foreground">Project</span>
@@ -1743,7 +1786,10 @@ export function TaskDetail({
         </section>
         {notice !== null && <ErrorText>{notice}</ErrorText>}
       </CardContent>
-      <CardFooter className="flex-wrap gap-2" data-testid="task-detail-actions">
+      <CardFooter
+        className={cn("flex-wrap gap-2", wide && "shrink-0")}
+        data-testid="task-detail-actions"
+      >
         {proposed ? (
           <>
             <Button

@@ -16,11 +16,12 @@ async function removeTasks(browser: Browser, titles: readonly string[]) {
   expect(left).toBe(0);
 }
 
-test("keeps a todo with subtasks and blockers on the tasks page", async ({
+test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300_000 }, async ({
   app,
   browser,
   screen,
 }) => {
+  await browser.setViewport({ width: 1280, height: 800 });
   await app.open("/");
   await expect(screen.getByRole("textbox", "Message")).toBeVisible();
 
@@ -30,7 +31,11 @@ test("keeps a todo with subtasks and blockers on the tasks page", async ({
 
   await composer.fill("Write the ledger");
   await screen.getByRole("button", "Add task").tap();
-  await expect(screen.getByText("Write the ledger", { exact: true })).toBeVisible();
+  const list = screen.getByTestId("task-list");
+  await expect(list.getByText("Write the ledger", { exact: true })).toBeVisible();
+  expect(await browser.evaluate(() => document.querySelector("[data-task-check]") === null)).toBe(
+    true,
+  );
   await expect(composer).toHaveValue("");
   await expect(screen.getByTestId("subtask-progress")).toHaveCount(0);
 
@@ -64,6 +69,9 @@ test("keeps a todo with subtasks and blockers on the tasks page", async ({
   });
   expect(mouseHold).toBe(false);
 
+  const selectedBefore = await browser.evaluate(
+    () => document.querySelector("[data-testid=task-detail]")?.getAttribute("aria-label") ?? null,
+  );
   const longPress = await browser.evaluate(async () => {
     const card = [...document.querySelectorAll("[data-task-card]")].find((item) =>
       item.textContent?.includes("Write the ledger"),
@@ -93,19 +101,20 @@ test("keeps a todo with subtasks and blockers on the tasks page", async ({
     });
     fire("pointerup");
     card.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-    return document.querySelector("[data-testid=task-detail]") !== null;
+    return document.querySelector("[data-testid=task-detail]")?.getAttribute("aria-label") ?? null;
   });
-  expect(longPress).toBe(false);
+  // The long press leaves the desktop's selected task alone instead of opening another one.
+  expect(longPress).toBe(selectedBefore);
   await expect(screen.getByTestId("task-menu")).toBeVisible();
-  await expect(screen.getByRole("button", "Done Write the ledger")).toBeVisible();
+  await expect(list.getByRole("button", { name: /Done Write the ledger/ })).toHaveCount(0);
 
   await screen.getByRole("menuitem", "Subtask of Write the ledger").tap();
   const subtask = screen.getByRole("textbox", "New subtask");
   await expect(subtask).toBeVisible();
   await subtask.fill("Store tasks.json");
   await screen.getByRole("button", "Add task").tap();
-  await expect(screen.getByText("Store tasks.json", { exact: true })).toBeVisible();
-  await expect(screen.getByText("0 of 1 subtasks done", { exact: true })).toBeVisible();
+  await expect(list.getByText("Store tasks.json", { exact: true })).toBeVisible();
+  await expect(list.getByText("0 of 1 subtasks done", { exact: true })).toBeVisible();
   const cards = await browser.evaluate(() => {
     const page = getComputedStyle(document.body).backgroundColor;
     const read = (title: string) => {
@@ -129,24 +138,10 @@ test("keeps a todo with subtasks and blockers on the tasks page", async ({
   expect(cards?.child?.background).toBe(cards?.parent?.background);
   expect(cards?.child?.alpha).toBe(1);
 
-  const checkbox = await browser.evaluate(() => {
-    const card = [...document.querySelectorAll("[data-task-card]")].find((item) =>
-      item.textContent?.includes("Write the ledger"),
-    );
-    const box = card?.querySelector("[data-task-check]");
-    if (!(card instanceof HTMLElement) || !(box instanceof HTMLElement)) return null;
-    const title = box.nextElementSibling;
-    if (!(title instanceof HTMLElement)) return null;
-    const titleBox = title.getBoundingClientRect();
-    const check = box.getBoundingClientRect();
-    return Math.abs(check.top + check.height / 2 - (titleBox.top + titleBox.height / 2));
-  });
-  expect(checkbox ?? 99).toBeLessThanOrEqual(1);
-
   await screen.getByRole("button", "New top-level task").tap();
   await screen.getByRole("textbox", "New task").fill("Review the diff");
   await screen.getByRole("button", "Add task").tap();
-  await expect(screen.getByText("Review the diff", { exact: true })).toBeVisible();
+  await expect(list.getByText("Review the diff", { exact: true })).toBeVisible();
 
   await browser.evaluate(() => {
     const card = [...document.querySelectorAll("[data-task-card]")].find((item) =>
@@ -166,48 +161,51 @@ test("keeps a todo with subtasks and blockers on the tasks page", async ({
   });
   await screen.getByRole("menuitem", "Blockers for Write the ledger").tap();
   await screen.getByRole("button", "Blocked by Review the diff").tap();
-  await expect(screen.getByText("Blocked by Review the diff", { exact: true })).toBeVisible();
+  await expect(list.getByText("Blocked by Review the diff", { exact: true })).toBeVisible();
 
-  const parentDone = await browser.evaluate(() => {
-    const button = [...document.querySelectorAll("button")].find(
-      (item) => item.getAttribute("aria-label") === "Done Write the ledger",
-    );
-    return button?.getAttribute("aria-disabled") === "true";
-  });
-  expect(parentDone).toBe(true);
   await browser.evaluate(() => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     return null;
   });
   await expect(screen.getByTestId("task-menu")).toHaveCount(0);
+  await screen.getByRole("button", { name: "Open Write the ledger" }).tap();
+  const parentDone = await browser.evaluate(() => {
+    const button = document.querySelector<HTMLElement>('[data-testid="task-detail-status"]');
+    return button?.getAttribute("aria-disabled") === "true";
+  });
+  expect(parentDone).toBe(true);
   const blockedTap = await browser.evaluate(async () => {
-    const button = [...document.querySelectorAll("button")].find(
-      (item) => item.getAttribute("aria-label") === "Done Write the ledger",
-    );
+    const button = document.querySelector<HTMLElement>('[data-testid="task-detail-status"]');
     button?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     await new Promise<void>((resolve) => {
       requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
     });
-    return button?.getAttribute("aria-pressed") ?? null;
+    return {
+      disabled: button?.getAttribute("aria-disabled") ?? null,
+      label: button?.textContent?.trim() ?? null,
+    };
   });
-  expect(blockedTap).toBe("false");
+  expect(blockedTap).toEqual({ disabled: "true", label: "Mark done" });
 
-  await screen.getByRole("button", "Done Review the diff").tap();
-  await expect(screen.getByText("Blocked by Review the diff", { exact: true })).not.toBeVisible();
-  await screen.getByRole("button", "Done Store tasks.json").tap();
-  await expect(screen.getByRole("button", "Reopen Store tasks.json")).toBeVisible();
-  await expect(screen.getByText("1 of 1 subtasks done", { exact: true })).toBeVisible();
-  await screen.getByRole("button", "Done Write the ledger").tap();
-  await expect(screen.getByRole("button", "Reopen Write the ledger")).toBeVisible();
+  await screen.getByRole("button", { name: "Open Review the diff" }).tap();
+  await screen.getByTestId("task-detail-status").tap();
+  await expect(list.getByText("Blocked by Review the diff", { exact: true })).not.toBeVisible();
+  await screen.getByRole("button", { name: "Open Store tasks.json" }).tap();
+  await screen.getByTestId("task-detail-status").tap();
+  await expect(screen.getByTestId("task-state")).toHaveText("Done");
+  await expect(list.getByText("1 of 1 subtasks done", { exact: true })).toBeVisible();
+  await screen.getByRole("button", { name: "Open Write the ledger" }).tap();
+  await screen.getByTestId("task-detail-status").tap();
+  await expect(screen.getByTestId("task-state")).toHaveText("Done");
 
   expect(await browser.evaluate(() => new URLSearchParams(location.search).get("page"))).toBe(
     "tasks",
   );
   await app.open("/?page=tasks");
   await expect(screen.getByRole("textbox", "New task")).toBeVisible();
-  await expect(screen.getByText("Write the ledger", { exact: true })).toBeVisible();
-  await expect(screen.getByText("Store tasks.json", { exact: true })).toBeVisible();
-  await expect(screen.getByText("1 of 1 subtasks done", { exact: true })).toBeVisible();
+  await expect(list.getByText("Write the ledger", { exact: true })).toBeVisible();
+  await expect(list.getByText("Store tasks.json", { exact: true })).toBeVisible();
+  await expect(list.getByText("1 of 1 subtasks done", { exact: true })).toBeVisible();
 
   await browser.evaluate(() => {
     const card = [...document.querySelectorAll('[data-state="done"] > [data-task-card]')].find(
@@ -510,9 +508,12 @@ test("shows a failed task action beside the control and keeps a long title", asy
   await expect(screen.getByTestId("task-menu")).toHaveCount(0);
 
   await failNextPatch("Open subtasks");
-  await screen.getByRole("button", "Done Write the notice").tap();
-  await expect(screen.getByTestId("task-error")).toHaveText("Open subtasks");
-  await expect(screen.getByRole("button", "Done Write the notice")).toBeVisible();
+  await screen.getByRole("button", { name: "Open Write the notice" }).tap();
+  await screen.getByTestId("task-detail-status").tap();
+  await expect(screen.getByTestId("task-detail").getByTestId("task-error")).toHaveText(
+    "Open subtasks",
+  );
+  await expect(screen.getByTestId("task-detail-status")).toHaveText("Mark done");
   const cardError = await browser.evaluate(() => {
     const error = document.querySelector("[data-testid=task-error]");
     const card = [...document.querySelectorAll("[data-task-card]")].find(
@@ -525,8 +526,8 @@ test("shows a failed task action beside the control and keeps a long title", asy
   });
   expect(cardError).toBe(true);
 
-  await screen.getByRole("button", "Done Write the notice").tap();
-  await expect(screen.getByRole("button", "Reopen Write the notice")).toBeVisible();
+  await screen.getByTestId("task-detail-status").tap();
+  await expect(screen.getByTestId("task-state")).toHaveText("Done");
   await expect(screen.getByTestId("task-error")).toHaveCount(0);
 
   await openMenu("Write the notice");

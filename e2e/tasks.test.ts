@@ -78,7 +78,6 @@ function renderTaskCard(task: Task) {
       menuTaskId: null,
       onOpenMenu: () => {},
       onOpen: () => {},
-      onStatus: () => {},
     }),
   );
 }

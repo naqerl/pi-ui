@@ -85,7 +85,7 @@ test("renders inline markdown in task titles", async ({ app, browser, screen }) 
   });
   await app.open("/?page=tasks");
   await expect(
-    screen.getByRole("button", "Done Ship bold and soft npm run build old see docs"),
+    screen.getByRole("button", "Open Ship bold and soft npm run build old see docs"),
   ).toBeVisible();
   const rendered = await browser.evaluate(() => {
     const card = document.querySelector('[data-testid="task-t1"] [data-task-card]');

@@ -2,6 +2,12 @@
 
 Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
 
+## Unreleased
+
+- A task body renders as Markdown in a scrollable, height-limited area inside the detail card, so a long description no longer stretches the page.
+- On desktop the first task of the current filter is selected as soon as the list arrives, and the detail stays open beside the list without a close button; mobile still opens details only when tapped.
+- Task cards show the short 4-char id badge again, on open and done rows, and no longer carry a checkbox; done and reopen stay available in the task detail.
+
 ## 1.6.39 - 2026-10-31
 
 - A queued MCP event is now a machine chip, not a bubble: the events that arrive while a turn is running are submitted as notices, so their raw payload never appears in the chat as something you said.

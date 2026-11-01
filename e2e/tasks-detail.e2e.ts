@@ -3,6 +3,23 @@ import { expect } from "e2e";
 
 const at = (second: number) => new Date(Date.UTC(2026, 0, 1, 12, 0, second)).toISOString();
 
+const longBody = [
+  "# Ship plan",
+  "",
+  "Use **small** steps.",
+  "",
+  ...Array.from({ length: 30 }, (_, index) => `- Step ${index + 1} keeps the body long.`),
+].join("\n");
+
+const longRationale = [
+  "The card hides too much detail when a task has a long rationale.",
+  "The modal keeps the full text readable without widening the card.",
+  ...Array.from(
+    { length: 10 },
+    (_, index) => `Paragraph ${index + 1} keeps the rationale long enough to overflow.`,
+  ),
+].join("\n\n");
+
 const snapshot = {
   conversationId: "task-detail-e2e",
   messages: [],
@@ -22,8 +39,8 @@ const snapshot = {
         blockedBy: ["t2"],
         createdAt: at(0),
         proposedAt: null,
-        rationale:
-          "The card hides too much detail when a task has a long rationale.\n\nThe modal keeps the full text readable without widening the card.",
+        body: longBody,
+        rationale: longRationale,
         completedAt: null,
         completion: null,
       },
@@ -86,6 +103,8 @@ test("on a phone the task detail replaces the list and goes back with its button
     }),
   ).toBeVisible();
   await expect(detail.getByText("Review the details", { exact: true })).toBeVisible();
+  await expect(detail.getByTestId("task-detail-id")).toHaveText("t1");
+  await expect(detail.getByRole("heading", { name: "Ship plan" })).toBeVisible();
   await expect(screen.getByTestId("task-state")).toHaveText("Open");
   await expect(screen.getByTestId("task-stats")).toBeVisible();
 
@@ -107,13 +126,22 @@ test("on a phone the task detail replaces the list and goes back with its button
   await expect(screen.getByTestId("task-detail")).toHaveCount(0);
 });
 
-test("on a desktop the list and the detail sit side by side", async ({ app, browser, screen }) => {
+test("on a desktop the first task is selected and the detail stays beside the list", async ({
+  app,
+  browser,
+  screen,
+}) => {
   await openWith(browser, 1280, 800);
   await app.open("/?page=tasks");
   await expect(screen.getByTestId("tasks-page")).toHaveAttribute("data-layout", "split");
-  await expect(screen.getByTestId("task-detail-empty")).toBeVisible();
+  await expect(screen.getByTestId("task-detail-empty")).toHaveCount(0);
+  await expect(screen.getByTestId("task-detail")).toHaveAttribute("aria-label", "Clean the cache");
+  await expect(screen.getByTestId("task-detail-close")).toHaveCount(0);
+  await expect(screen.getByTestId("task-t1").getByTestId("task-id-t1")).toHaveText("t1");
+  await expect(screen.getByTestId("proposal-p1").getByTestId("task-id-p1")).toHaveText("p1");
 
   await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
+  await expect(screen.getByTestId("task-detail")).toHaveAttribute("aria-label", "Ship the modal");
   await expect(screen.getByTestId("task-detail")).toBeVisible();
   await expect(screen.getByTestId("task-filters")).toBeVisible();
   const sides = await browser.evaluate(() => {
@@ -124,12 +152,40 @@ test("on a desktop the list and the detail sit side by side", async ({ app, brow
   });
   expect(sides).toBe(true);
 
-  await screen.getByTestId("task-detail-close").tap();
-  await expect(screen.getByTestId("task-detail")).toHaveCount(0);
-  await expect(screen.getByTestId("task-detail-empty")).toBeVisible();
+  const body = await browser.evaluate(() => {
+    const node = document.querySelector<HTMLElement>('[data-testid="task-body"]');
+    const detail = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
+    const composer = document.querySelector<HTMLElement>('[data-testid="composer-dock"]');
+    const rationale = document.querySelector<HTMLElement>('[data-testid="task-rationale"]');
+    if (node === null || detail === null || composer === null || rationale === null) return null;
+    const style = getComputedStyle(node);
+    const detailBox = detail.getBoundingClientRect();
+    return {
+      overflowY: style.overflowY,
+      maxHeight: style.maxHeight,
+      flexGrow: style.flexGrow,
+      height: node.clientHeight,
+      scrolls: node.scrollHeight > node.clientHeight,
+      cardOverflow: detail.scrollHeight - detail.clientHeight,
+      rationaleInside: rationale.getBoundingClientRect().bottom <= detailBox.bottom + 1,
+      aboveComposer: detailBox.bottom <= composer.getBoundingClientRect().top,
+    };
+  });
+  expect(body?.overflowY).toBe("auto");
+  expect(body?.maxHeight).not.toBe("none");
+  expect(body?.flexGrow).toBe("1");
+  expect(body?.height).toBeGreaterThan(0);
+  expect(body?.scrolls).toBe(true);
+  expect(body?.cardOverflow).toBeLessThanOrEqual(1);
+  expect(body?.rationaleInside).toBe(true);
+  expect(body?.aboveComposer).toBe(true);
+
+  // The task page is persistent on desktop: Escape and a missing close button leave it open.
+  await browser.keyboard.press("Escape");
+  await expect(screen.getByTestId("task-detail")).toHaveAttribute("aria-label", "Ship the modal");
 });
 
-test("the row glyph marks done without opening the detail, and the detail adds a blocker", async ({
+test("a task card has no checkbox and the detail adds a blocker", async ({
   app,
   browser,
   screen,
@@ -137,8 +193,16 @@ test("the row glyph marks done without opening the detail, and the detail adds a
   await openWith(browser, 390, 844);
   await app.open("/?page=tasks");
 
-  await screen.getByRole("button", { name: "Done Ship the modal" }).tap();
-  await expect(screen.getByTestId("task-detail")).toHaveCount(0);
+  expect(await browser.evaluate(() => document.querySelector("[data-task-check]") === null)).toBe(
+    true,
+  );
+  expect(
+    await browser.evaluate(() =>
+      [...document.querySelectorAll("button")].some(
+        (item) => item.getAttribute("aria-label") === "Done Ship the modal",
+      ),
+    ),
+  ).toBe(false);
 
   await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
   await screen.getByRole("button", { name: "Add blocker to Ship the modal" }).tap();
@@ -201,4 +265,5 @@ test("done tasks group by day: today open, past days collapsed with a count", as
   await expect(past).toHaveAttribute("data-open", "true");
   await expect(screen.getByTestId("task-t2")).toBeVisible();
   await expect(screen.getByTestId("task-t2")).toContainText("Review the details");
+  await expect(screen.getByTestId("task-t2").getByTestId("task-id-t2")).toHaveText("t2");
 });
