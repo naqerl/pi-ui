@@ -38,7 +38,7 @@ import { NoticeLine } from "./NoticeView";
 import { PiMenu } from "./PiMenu";
 import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
 import type { ChatStats } from "./StatsView";
-import { type TaskFilter, TaskFilters } from "./TaskFilters";
+import type { TaskFilter } from "./TaskFilters";
 import { createTask } from "./task-client";
 import { groupTimeline, type TimelineGroup } from "./timeline-groups";
 import type { SendOutcome, TimelineItem } from "./use-chat";
@@ -1378,6 +1378,7 @@ export function ChatView({
                   footerClearance={footerClearance}
                   armedParentId={armed?.id ?? null}
                   filter={taskFilter}
+                  onFilterChange={setTaskFilter}
                   onArmParent={setArmedParentId}
                   onLedger={applyTasks}
                 />
@@ -1391,28 +1392,17 @@ export function ChatView({
           className="float-footer absolute z-20 theme-radius"
         >
           <div className="ink-line flex items-center gap-3 border-b py-1.5 pr-1.5 pl-[18px]">
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
-              {tasksPage && (
-                <TaskFilters
-                  tasks={tasks}
-                  activity={taskActivity}
-                  filter={taskFilter}
-                  onChange={setTaskFilter}
-                  className="shrink-0"
-                />
+            <div
+              data-testid="working-status"
+              data-open={running ? "true" : "false"}
+              aria-live="polite"
+              className="min-w-0 flex-1 truncate font-mono text-[11px] leading-4 text-muted-foreground"
+            >
+              {running ? (
+                <WorkingIndicator running={running} thinking={thinking} />
+              ) : (
+                <span>idle</span>
               )}
-              <div
-                data-testid="working-status"
-                data-open={running ? "true" : "false"}
-                aria-live="polite"
-                className="min-w-0 flex-1 truncate font-mono text-[11px] leading-4 text-muted-foreground"
-              >
-                {running ? (
-                  <WorkingIndicator running={running} thinking={thinking} />
-                ) : tasksPage ? null : (
-                  <span>idle</span>
-                )}
-              </div>
             </div>
             <div
               role="tablist"

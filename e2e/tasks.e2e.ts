@@ -750,7 +750,7 @@ test("shows created and closed times at the bottom right of a task card", async 
   });
 });
 
-test("puts the task filters in the composer header and groups done work by day", async ({
+test("puts the task filters above the task list and groups done work by day", async ({
   app,
   browser,
   screen,
@@ -833,22 +833,27 @@ test("puts the task filters in the composer header and groups done work by day",
 
   const place = await browser.evaluate(() => {
     const filters = document.querySelector<HTMLElement>('[data-testid="task-filters"]');
-    const row = document.querySelector<HTMLElement>(
-      '[data-testid="composer-dock"]',
-    )?.firstElementChild;
-    const dots = document.querySelector<HTMLElement>('[data-testid="page-dots"]');
-    const status = document.querySelector<HTMLElement>('[data-testid="working-status"]');
-    if (filters === null || row == null || dots === null || status === null) return null;
+    const dock = document.querySelector<HTMLElement>('[data-testid="composer-dock"]');
+    const list = document.querySelector<HTMLElement>('[data-testid="task-list"]');
+    const first = list?.querySelector<HTMLElement>('[data-testid^="task-section-"]');
+    if (filters === null || dock === null || list === null || first == null) return null;
     const filtersBox = filters.getBoundingClientRect();
-    const dotsBox = dots.getBoundingClientRect();
-    const statusBox = status.getBoundingClientRect();
+    const firstBox = first.getBoundingClientRect();
     return {
-      inRow: row.contains(filters) && row.contains(dots) && row.contains(status),
-      leftOfDots: filtersBox.right <= dotsBox.left + 1,
-      leftOfStatus: filtersBox.left < statusBox.left,
+      inList: list.contains(filters),
+      notInDock: !dock.contains(filters),
+      aboveFirst: filtersBox.bottom <= firstBox.top + 1,
+      noWrap: getComputedStyle(filters).flexWrap === "nowrap",
+      scrolls: getComputedStyle(filters).overflowX === "auto",
     };
   });
-  expect(place).toEqual({ inRow: true, leftOfDots: true, leftOfStatus: true });
+  expect(place).toEqual({
+    inList: true,
+    notInDock: true,
+    aboveFirst: true,
+    noWrap: true,
+    scrolls: true,
+  });
 
   const selected = await browser.evaluate(() => {
     const tab = document.querySelector<HTMLElement>('[data-testid="task-filter-active"]');
@@ -880,6 +885,12 @@ test("puts the task filters in the composer header and groups done work by day",
   await expect(screen.getByTestId("proposal-proposal")).toBeVisible();
   await expect(screen.getByTestId("task-done-today")).toHaveCount(0);
   await expect(screen.getByTestId("task-open-task")).toHaveCount(0);
+
+  await screen.getByRole("tab", "Chat").tap();
+  await expect(screen.getByRole("textbox", "Message")).toBeVisible();
+  await screen.getByRole("tab", "Tasks").tap();
+  await expect(screen.getByTestId("task-filter-proposed")).toHaveAttribute("aria-selected", "true");
+  await expect(screen.getByTestId("proposal-proposal")).toBeVisible();
 
   await screen.getByTestId("task-filter-active").tap();
   const todayGroup = screen.getByTestId(`task-day-${key(today)}`);
@@ -915,6 +926,19 @@ test("puts the task filters in the composer header and groups done work by day",
     };
   });
   expect(header).toEqual({ dark: true, labelLeft: true, chevronLeftOfCount: true });
+
+  await browser.setViewport({ width: 360, height: 800 });
+  const narrow = await browser.evaluate(() => {
+    const filters = document.querySelector<HTMLElement>('[data-testid="task-filters"]');
+    const tabs = [...(filters?.querySelectorAll<HTMLElement>('[role="tab"]') ?? [])];
+    if (filters === null || tabs.length !== 3) return null;
+    const tops = tabs.map((tab) => tab.getBoundingClientRect().top);
+    return {
+      noWrap: getComputedStyle(filters).flexWrap === "nowrap",
+      oneLine: Math.max(...tops) - Math.min(...tops) <= 1,
+    };
+  });
+  expect(narrow).toEqual({ noWrap: true, oneLine: true });
 });
 
 test("edits a task title in the detail view and refuses an empty one", async ({

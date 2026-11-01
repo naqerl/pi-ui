@@ -96,7 +96,7 @@ test("on a phone the task detail replaces the list and goes back with its button
   const detail = screen.getByTestId("task-detail");
   await expect(detail).toBeVisible();
   await expect(screen.getByTestId("task-list")).toHaveCount(0);
-  await expect(screen.getByTestId("task-filters")).toBeVisible();
+  await expect(screen.getByTestId("task-filters")).toHaveCount(0);
   await expect(
     screen.getByText("The modal keeps the full text readable without widening the card.", {
       exact: false,
