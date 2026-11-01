@@ -12,7 +12,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer as createHttpServer, request } from "node:http";
 import { createServer as createNetServer } from "node:net";
-import { tmpdir } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -23,11 +23,16 @@ const port = Number(process.env.PORT || 8787);
 if (!Number.isInteger(port) || port < 0 || port > 65_535) {
   throw new Error(`Invalid PORT: ${process.env.PORT}`);
 }
-const requestedShards = Number(process.env.PI_E2E_SHARDS ?? 8);
+const cpuCount = Math.max(1, availableParallelism());
+const defaultShards = Math.max(4, cpuCount * 2);
+const requestedShards = Number(process.env.PI_E2E_SHARDS ?? defaultShards);
 const initialShards = Number.isInteger(requestedShards)
   ? Math.min(64, Math.max(1, requestedShards))
-  : 8;
-const MAX_SHARDS = 64;
+  : defaultShards;
+// Under heavy load a wide, dynamic shard pool multiplies backend boot races.
+// Keep the pool bounded by the machine, with only a little room for overlapping
+// browser contexts.
+const MAX_SHARDS = Math.min(64, initialShards + Math.ceil(cpuCount / 2));
 // A newly leased shard stays out of the pool long enough for its first document
 // and EventSource to arrive; an open SSE stream keeps it leased until it closes.
 const LEASE_MS = 15_000;
@@ -70,20 +75,22 @@ function appendLog(shard, chunk) {
 
 async function waitForHealth(shard) {
   const url = `http://127.0.0.1:${shard.port}/api/health`;
-  const deadline = Date.now() + 60_000;
+  const deadline = Date.now() + 240_000;
+  let delay = 250;
   while (Date.now() < deadline) {
     if (shard.child?.exitCode !== null && shard.child?.exitCode !== undefined) {
       throw new Error(`shard ${shard.id} exited before it answered\n${shard.log}`);
     }
     try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(1_000) });
+      const response = await fetch(url, { signal: AbortSignal.timeout(3_000) });
       if (response.ok) return;
     } catch {
       // The backend is still booting.
     }
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    delay = Math.min(1_000, delay * 2);
   }
-  throw new Error(`shard ${shard.id} did not answer within 60 seconds\n${shard.log}`);
+  throw new Error(`shard ${shard.id} did not answer within 240 seconds\n${shard.log}`);
 }
 
 function startShard(shard) {

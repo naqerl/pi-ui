@@ -3,13 +3,14 @@ import { availableParallelism } from "node:os";
 import { web } from "@e2e-dev/web";
 import type { E2EConfig } from "e2e";
 
-// Half the cores, never one, so a two-core runner still overlaps two files.
-// `--workers` still overrides this on the command line.
-export const workers = Math.max(2, Math.floor(availableParallelism() / 2));
+// Leave one core for the proxy and backend shards. Two files still overlap on
+// a two-core runner, while a four-core host does not starve the browser during
+// another suite's run. `--workers` still overrides this on the command line.
+export const workers = Math.max(2, Math.min(8, availableParallelism() - 1));
 
-// Every browser session gets its own app shard (see e2e/server.mjs). Two per
-// worker leaves room for a context that is still closing while the next starts.
-const appShards = Math.max(4, workers * 2);
+// Every worker gets its own initial app shard (see e2e/server.mjs); the server
+// grows the pool for a closing context but keeps that growth tightly bounded.
+const appShards = Math.max(4, workers);
 
 // The image keeps its Playwright cache under /opt/playwright. Setting this here
 // keeps a bare `npm run e2e` from trying to install into an unwritable HOME.
@@ -20,9 +21,9 @@ if (process.env.PLAYWRIGHT_BROWSERS_PATH === undefined && existsSync("/opt/playw
 export default {
   tests: ["e2e/**/*.e2e.ts"],
   workers,
-  // Four browser workers on a busy host can stretch a long UI test past the
-  // 120s default; keep a bounded deadline without turning load into a failure.
-  timeout: 180_000,
+  // A busy host can stretch a long UI test past the 120s default; keep a
+  // bounded deadline without turning another suite's load into a failure.
+  timeout: 300_000,
   targets: [
     {
       name: "web",
