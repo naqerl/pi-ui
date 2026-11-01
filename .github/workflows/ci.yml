@@ -15,9 +15,9 @@ concurrency:
 
 jobs:
   check:
-    name: Lint, build, and e2e
+    name: Lint, build, and unit tests
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -40,8 +40,39 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Unit tests
+        run: npm test
+
+  e2e:
+    name: Browser e2e under ten minutes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
       - name: Install Playwright Chromium
         run: npx e2e-web install chromium --with-deps
 
       - name: Run e2e
-        run: npm run e2e
+        run: |
+          started=$(date +%s)
+          npm run e2e
+          elapsed=$(( $(date +%s) - started ))
+          echo "e2e suite wall clock: ${elapsed}s"
+          if [ "${elapsed}" -gt 600 ]; then
+            echo "::error::e2e suite took ${elapsed}s, over the 600s budget"
+            exit 1
+          fi

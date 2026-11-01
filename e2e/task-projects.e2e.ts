@@ -46,6 +46,7 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
   await composer.fill("Loose end");
   await screen.getByRole("button", "Add task").tap();
   await expect(screen.getByText("Loose end", { exact: true })).toBeVisible();
+  await expect(composer).toHaveValue("");
 
   // @ lists the known projects, filtered as you type.
   await composer.tap();
@@ -64,6 +65,7 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
   await expect(composer).toHaveValue("Write the docs @zero ");
   await screen.getByRole("button", "Add task").tap();
   await expect(screen.getByText("Write the docs", { exact: true })).toBeVisible();
+  await expect(composer).toHaveValue("");
 
   // Escape closes the list and keeps the text.
   await composer.tap();

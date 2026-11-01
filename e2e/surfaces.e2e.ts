@@ -80,6 +80,7 @@ test("paints the composer dock and latest button apart from the page", async ({
   browser,
   screen,
 }) => {
+  await browser.emulateMedia({ reducedMotion: "no-preference" });
   await openSeeded(app, browser);
   await expect(screen.getByText("Seed message 59", { exact: false })).toBeVisible();
 
@@ -558,6 +559,9 @@ test("follows the theme color and corner radius on the chrome", async ({
   browser,
   screen,
 }) => {
+  // The suite runs with reduced motion for speed; this test covers the shader's
+  // normal drifting state explicitly.
+  await browser.emulateMedia({ reducedMotion: "no-preference" });
   await browser.route("**/api/themes", async (route) => {
     await route.fulfill({
       json: {

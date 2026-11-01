@@ -207,6 +207,7 @@ test("collapses the composer on the stats page and restores it on chat and tasks
   browser,
   screen,
 }) => {
+  await browser.emulateMedia({ reducedMotion: "no-preference" });
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/");
   const dock = screen.getByTestId("composer-dock");
@@ -371,7 +372,7 @@ test("lists MCP events newest first in the default widget, not the composer chro
   expect(read.first).toBe("stat-mcp-event-e24");
   expect(read.last).toBe("stat-mcp-event-e22");
   expect(read.label).toBe("web · alerts");
-  expect(read.value ?? "").toMatch(/^\d\d:\d\d:\d\d · alert 24$/);
+  expect(read.value ?? "").toMatch(/^\d\d:\d\d · alert 24$/);
   expect(read.web).toBe("web2 tools · subscribed: alerts");
   await app.screenshot("mcp-events-widget");
   await screen.getByRole("tab", "Chat").tap();

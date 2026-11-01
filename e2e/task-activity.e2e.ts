@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,7 +30,7 @@ test("tagged tool calls show a task as working, untagged ones touch no task", as
   await expect(screen.getByTestId("now-line")).toHaveCount(0);
 
   // The tagged call waits until the test has looked, however slow the machine.
-  const release = join(tmpdir(), `pi-ui-task-activity-${tag}`);
+  const release = join(tmpdir(), `pi-ui-task-activity-${tag}-${randomUUID()}`);
   const wait = `for i in $(seq 600); do [ -e '${release}' ] && break; sleep 0.1; done; echo released`;
   const calls = [
     { name: "bash", arguments: { command: wait, piuiTaskId: id } },

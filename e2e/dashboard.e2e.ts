@@ -107,6 +107,40 @@ async function readDashboard(browser: {
 const lastAssistant = () =>
   [...document.querySelectorAll<HTMLElement>('[data-role="assistant"]')].at(-1)?.textContent ?? "";
 
+/** Runs dashboard tool calls through the real message route. */
+async function seedDashboard(
+  browser: { evaluate<T>(fn: (text: string) => Promise<T> | T, text: string): Promise<T> },
+  calls: unknown[],
+) {
+  await browser.evaluate(
+    async (text) => {
+      const response = await fetch("/api/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!response.ok) throw new Error(`message failed: ${response.status}`);
+      return null;
+    },
+    `TOOLCALLS ${JSON.stringify(calls)}`,
+  );
+}
+
+async function dashboardHas(
+  browser: { evaluate<T>(fn: () => Promise<T> | T): Promise<T> },
+  ids: string[],
+) {
+  await expect
+    .poll(
+      async () => {
+        const widgets = (await readDashboard(browser)).widgets.map((widget) => widget.id);
+        return ids.every((id) => widgets.includes(id));
+      },
+      { timeout: 30_000 },
+    )
+    .toBe(true);
+}
+
 test("the agent builds dashboard widgets that render at 1280px and 390px", async ({
   app,
   browser,
@@ -207,6 +241,9 @@ test("the agent builds dashboard widgets that render at 1280px and 390px", async
   // Leaving the page tells the server right away, so the next test starts unwatched.
   await screen.getByRole("tab", "Chat").tap();
   await expect.poll(async () => (await readDashboard(browser)).polling).toBe(false);
+  // Leave the default dashboard behind for whichever isolated session runs next.
+  await seedDashboard(browser, resetCalls);
+  await dashboardHas(browser, ["context", "tokens", "mcp", "mcp-events"]);
 });
 
 test("polls run only while the dashboard is visible, and widgets can be removed", async ({
@@ -215,6 +252,17 @@ test("polls run only while the dashboard is visible, and widgets can be removed"
   screen,
 }) => {
   await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/");
+  // Each parallel worker may land on a fresh app shard, so build the widgets
+  // this test removes rather than relying on the previous test's session.
+  await seedDashboard(browser, createCalls);
+  await dashboardHas(browser, [
+    "example-cloud-cost",
+    "context",
+    "tokens",
+    "example-cloud-servers",
+    "mcp",
+  ]);
   await app.open("/?page=stats");
   await expect(screen.getByText("Live servers", { exact: true })).toBeVisible();
 
@@ -281,6 +329,8 @@ test("the MCP events widget shows at most 3 rows", async ({ app, browser, screen
     summary: `alert ${index}`,
   }));
   await app.open("/");
+  await seedDashboard(browser, resetCalls);
+  await dashboardHas(browser, ["context", "tokens", "mcp", "mcp-events"]);
   const state = await browser.evaluate(async () => {
     const res = await fetch("/api/state");
     return (await res.json()) as { [key: string]: JsonValue };

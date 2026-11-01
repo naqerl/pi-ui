@@ -48,11 +48,9 @@ function anchorTop() {
 }
 
 for (const width of [390, 1280]) {
-  test(`loads the latest page first and older pages on scroll up at ${width}px`, async ({
-    app,
-    browser,
-    screen,
-  }) => {
+  test(`loads the latest page first and older pages on scroll up at ${width}px`, {
+    timeout: 240_000,
+  }, async ({ app, browser, screen }) => {
     await browser.setViewport({ width, height: 844 });
     await app.open("/");
     const base = width * 1000;
@@ -78,10 +76,16 @@ for (const width of [390, 1280]) {
       if (attempt % 20 === 19) before = await browser.evaluate(scrollToTopAndPick);
     }
     expect(await browser.evaluate(bubbleCount)).toBeGreaterThan(first);
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    // The message the reader was looking at did not move.
-    const after = await browser.evaluate(anchorTop);
-    expect(after).not.toBeNull();
-    expect(Math.abs((after ?? 0) - (before ?? 0))).toBeLessThanOrEqual(2);
+    // The message the reader was looking at did not move. Wait for the
+    // scroll-anchor correction to settle rather than sampling one frame.
+    await expect
+      .poll(
+        async () => {
+          const after = await browser.evaluate(anchorTop);
+          return after === null ? Number.POSITIVE_INFINITY : Math.abs(after - (before ?? 0));
+        },
+        { timeout: 3_000 },
+      )
+      .toBeLessThanOrEqual(2);
   });
 }

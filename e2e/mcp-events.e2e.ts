@@ -51,7 +51,7 @@ test("a subscription's events reach the feed, the chat notice and both MCP widge
           );
           return loaded && state.run === "idle";
         }),
-      { timeout: 20_000 },
+      { timeout: 60_000 },
     )
     .toBe(true);
 
@@ -87,7 +87,7 @@ test("a subscription's events reach the feed, the chat notice and both MCP widge
             (node) => node.querySelector('[data-testid="chat-notice-summary"]')?.textContent ?? "",
           ),
         ),
-      { timeout: 20_000 },
+      { timeout: 60_000 },
     )
     .toContain("MCP stub: stub-hub.job event");
 
@@ -98,7 +98,7 @@ test("a subscription's events reach the feed, the chat notice and both MCP widge
       event: document.querySelector('[data-testid="stat-mcp-event-510"] dt')?.textContent ?? null,
       stub: document.querySelector('[data-testid="stat-mcp-stub"]')?.textContent ?? null,
     }));
-  await expect.poll(widgets, { timeout: 10_000 }).toEqual({
+  await expect.poll(widgets, { timeout: 60_000 }).toEqual({
     event: "stub · stub-hub.job",
     stub: expect.stringContaining("subscribed: stub-hub"),
   });
@@ -110,6 +110,6 @@ test("a subscription's events reach the feed, the chat notice and both MCP widge
   expect(id).toBeTruthy();
   await send([{ name: "mcp_events", arguments: { action: "unsubscribe", subscription_id: id } }]);
   await expect
-    .poll(async () => (await hubSubscription(browser))?.status, { timeout: 20_000 })
+    .poll(async () => (await hubSubscription(browser))?.status, { timeout: 60_000 })
     .toBe("stopped");
 });

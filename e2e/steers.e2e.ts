@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -49,7 +50,7 @@ test("steers sent during a tool call all arrive right after it, in order", async
   await app.open("/");
   const tag = Date.now();
   // The tool waits until the test has seen both steers pending, however slow the machine.
-  const release = join(tmpdir(), `pi-ui-steers-${tag}`);
+  const release = join(tmpdir(), `pi-ui-steers-${tag}-${randomUUID()}`);
   const wait = `for i in $(seq 600); do [ -e '${release}' ] && break; sleep 0.1; done; echo released`;
   const calls = [{ name: "bash", arguments: { command: wait } }];
   const composer = screen.getByRole("textbox", "Message");
