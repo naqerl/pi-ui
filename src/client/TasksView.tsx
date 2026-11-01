@@ -1524,6 +1524,82 @@ export function TaskDetail({
             </Badge>
           </span>
         </div>
+        <div className="flex min-w-0 flex-col gap-1" data-testid="task-project-line">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="shrink-0 text-xs leading-4 text-muted-foreground">Project</span>
+            <div ref={projectAnchor} className="min-w-0 flex-1">
+              {projectMatches.length > 0 && (
+                <ProjectSuggestions
+                  anchor={projectAnchor}
+                  items={projectMatches}
+                  active={activeProject}
+                  onHover={setProjectActive}
+                  onAccept={(item) => acceptProject(item.name)}
+                />
+              )}
+              <input
+                type="text"
+                aria-label="Task project"
+                data-testid="task-project-input"
+                value={projectDraft}
+                placeholder="No project"
+                aria-autocomplete="list"
+                aria-controls={projectMatches.length > 0 ? "project-suggestions" : undefined}
+                aria-activedescendant={
+                  projectMatches.length > 0 ? `project-suggestion-${activeProject}` : undefined
+                }
+                onChange={(event) => {
+                  setProjectDraft(event.target.value);
+                  setProjectError(null);
+                  setProjectActive(0);
+                  setProjectOpen(true);
+                }}
+                onFocus={() => setProjectActive(0)}
+                onBlur={() => {
+                  setProjectOpen(false);
+                  void saveProject();
+                }}
+                onKeyDown={(event) => {
+                  if (projectMatches.length > 0) {
+                    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                      event.preventDefault();
+                      const count = projectMatches.length;
+                      setProjectActive(
+                        (activeProject + (event.key === "ArrowDown" ? 1 : count - 1)) % count,
+                      );
+                      return;
+                    }
+                    if (event.key === "Enter" || event.key === "Tab") {
+                      event.preventDefault();
+                      const item = projectMatches[activeProject];
+                      if (item !== undefined) acceptProject(item.name);
+                      return;
+                    }
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setProjectOpen(false);
+                      return;
+                    }
+                  }
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    setProjectOpen(false);
+                    void saveProject();
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setProjectDraft(task.project ?? "");
+                    setProjectError(null);
+                    setProjectOpen(false);
+                  }
+                }}
+                className="h-8 w-full min-w-0 rounded-md border border-border bg-background px-2 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-foreground"
+              />
+            </div>
+          </div>
+          {projectError !== null && <ErrorText>{projectError}</ErrorText>}
+        </div>
         <div
           data-testid="task-body-section"
           className={cn("flex min-w-0 flex-col gap-1", wide && "min-h-0 flex-1")}
@@ -1634,82 +1710,6 @@ export function TaskDetail({
             </p>
           </div>
         )}
-        <div className="flex min-w-0 flex-col gap-1" data-testid="task-project-line">
-          <div className="flex min-w-0 items-center gap-3">
-            <span className="shrink-0 text-xs leading-4 text-muted-foreground">Project</span>
-            <div ref={projectAnchor} className="min-w-0 flex-1">
-              {projectMatches.length > 0 && (
-                <ProjectSuggestions
-                  anchor={projectAnchor}
-                  items={projectMatches}
-                  active={activeProject}
-                  onHover={setProjectActive}
-                  onAccept={(item) => acceptProject(item.name)}
-                />
-              )}
-              <input
-                type="text"
-                aria-label="Task project"
-                data-testid="task-project-input"
-                value={projectDraft}
-                placeholder="No project"
-                aria-autocomplete="list"
-                aria-controls={projectMatches.length > 0 ? "project-suggestions" : undefined}
-                aria-activedescendant={
-                  projectMatches.length > 0 ? `project-suggestion-${activeProject}` : undefined
-                }
-                onChange={(event) => {
-                  setProjectDraft(event.target.value);
-                  setProjectError(null);
-                  setProjectActive(0);
-                  setProjectOpen(true);
-                }}
-                onFocus={() => setProjectActive(0)}
-                onBlur={() => {
-                  setProjectOpen(false);
-                  void saveProject();
-                }}
-                onKeyDown={(event) => {
-                  if (projectMatches.length > 0) {
-                    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-                      event.preventDefault();
-                      const count = projectMatches.length;
-                      setProjectActive(
-                        (activeProject + (event.key === "ArrowDown" ? 1 : count - 1)) % count,
-                      );
-                      return;
-                    }
-                    if (event.key === "Enter" || event.key === "Tab") {
-                      event.preventDefault();
-                      const item = projectMatches[activeProject];
-                      if (item !== undefined) acceptProject(item.name);
-                      return;
-                    }
-                    if (event.key === "Escape") {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      setProjectOpen(false);
-                      return;
-                    }
-                  }
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    setProjectOpen(false);
-                    void saveProject();
-                  } else if (event.key === "Escape") {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setProjectDraft(task.project ?? "");
-                    setProjectError(null);
-                    setProjectOpen(false);
-                  }
-                }}
-                className="h-8 w-full min-w-0 rounded-md border border-border bg-background px-2 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-foreground"
-              />
-            </div>
-          </div>
-          {projectError !== null && <ErrorText>{projectError}</ErrorText>}
-        </div>
         {!proposed && (
           <dl
             data-testid="task-stats"
