@@ -152,3 +152,93 @@ test("subtasks take their parent's project and the detail edits it in place", as
     "Water the plants",
   ]);
 });
+
+test("project headers share the Open header's solid fill in both themes", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  const tag = Date.now();
+  const title = `Header task ${tag}`;
+  const project = `header${tag}`;
+  await app.open("/?page=tasks");
+  const created = await browser.evaluate(
+    async ({ taskTitle, taskProject }) => {
+      const response = await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: taskTitle, parentId: null, project: taskProject }),
+      });
+      return response.ok;
+    },
+    { taskTitle: title, taskProject: project },
+  );
+  expect(created).toBe(true);
+
+  for (const colorScheme of ["dark", "light"] as const) {
+    await browser.emulateMedia({ colorScheme });
+    await app.open("/?page=tasks");
+    await expect(screen.getByTestId(`task-project-${project}`)).toBeVisible();
+
+    const styles = await browser.evaluate((testId) => {
+      const open = document.querySelector<HTMLElement>(
+        '[data-testid="task-section-active"] [data-slot="collapsible-trigger"]',
+      );
+      const grouped = document.querySelector<HTMLElement>(
+        `[data-testid="${testId}"] [data-slot="collapsible-trigger"]`,
+      );
+      if (open === null || grouped === null) return null;
+      const read = (trigger: HTMLElement) => {
+        const spans = [...trigger.querySelectorAll("span")];
+        const count = spans[1] ?? null;
+        const chevron = trigger.querySelector("svg");
+        const style = getComputedStyle(trigger);
+        const box = trigger.getBoundingClientRect();
+        const countBox = count?.getBoundingClientRect() ?? null;
+        const chevronBox = chevron?.getBoundingClientRect() ?? null;
+        return {
+          background: style.backgroundColor,
+          titleColor: spans[0] === undefined ? "" : getComputedStyle(spans[0]).color,
+          countColor: count === null ? "" : getComputedStyle(count).color,
+          chevronColor: chevron === null ? "" : getComputedStyle(chevron).color,
+          height: Math.round(box.height),
+          paddingLeft: style.paddingLeft,
+          paddingRight: style.paddingRight,
+          radius: style.borderRadius,
+          wrap: style.flexWrap,
+          right: box.right,
+          countLeft: countBox?.left ?? 0,
+          countRight: countBox?.right ?? 0,
+          chevronRight: chevronBox?.right ?? 0,
+        };
+      };
+      return {
+        open: read(open),
+        grouped: read(grouped),
+        page: getComputedStyle(document.body).backgroundColor,
+        foreground: getComputedStyle(document.body).color,
+      };
+    }, `task-project-${project}`);
+
+    expect(styles).not.toBeNull();
+    // The project bar is the same solid, inverted header as Open, not a muted row.
+    expect(styles?.grouped.background).not.toBe("rgba(0, 0, 0, 0)");
+    expect(styles?.grouped.background).toBe(styles?.open.background);
+    expect(styles?.grouped.background).not.toBe(styles?.page);
+    expect(styles?.grouped.titleColor).not.toBe(styles?.foreground);
+    expect(styles?.grouped.titleColor).toBe(styles?.open.titleColor);
+    expect(styles?.grouped.countColor).toBe(styles?.open.countColor);
+    expect(styles?.grouped.chevronColor).toBe(styles?.open.chevronColor);
+    // On a phone the same row keeps Open's height, padding and radius without wrapping.
+    expect(styles?.grouped.height).toBe(styles?.open.height);
+    expect(styles?.grouped.paddingLeft).toBe(styles?.open.paddingLeft);
+    expect(styles?.grouped.paddingRight).toBe(styles?.open.paddingRight);
+    expect(styles?.grouped.radius).toBe(styles?.open.radius);
+    expect(styles?.grouped.wrap).toBe("nowrap");
+    expect(styles?.grouped.countRight).toBeLessThanOrEqual(styles?.grouped.right ?? 0);
+    expect(styles?.grouped.chevronRight).toBeLessThanOrEqual(styles?.grouped.countLeft ?? 0);
+  }
+
+  await removeTasks(browser, [title]);
+});
