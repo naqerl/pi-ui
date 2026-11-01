@@ -1237,10 +1237,10 @@ export function TaskDetail({
   const [projectActive, setProjectActive] = useState(0);
   const projectAnchor = useRef<HTMLDivElement>(null);
   const projectBusy = useRef(false);
-  const projects = projectsOf(tasks);
+  const projects = projectsOf(tasks.filter((item) => item.status === "open"));
   const projectQuery = projectDraft.trim().replace(/^@/, "");
   const projectMatches =
-    projectOpen && projectQuery.length > 0 ? projectSuggestions(projects, projectQuery) : [];
+    projectOpen && projectDraft.trim().length > 0 ? projectSuggestions(projects, projectQuery) : [];
   const activeProject = Math.min(projectActive, Math.max(0, projectMatches.length - 1));
 
   // A different task starts with a clean editor; a saved edit refreshes its draft.

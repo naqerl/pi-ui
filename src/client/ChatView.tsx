@@ -1165,7 +1165,10 @@ export function ChatView({
   useEffect(() => setComposerError(null), [pager.page]);
   const statsPage = pager.page === STATS_PAGE;
   const armed = tasks.find((task) => task.id === armedParentId) ?? null;
-  const projects = useMemo(() => projectsOf(tasks), [tasks]);
+  const projects = useMemo(
+    () => projectsOf(tasks.filter((task) => task.status === "open")),
+    [tasks],
+  );
 
   useEffect(() => {
     if (!tasksPage || (armedParentId !== null && armed === null)) setArmedParentId(null);
