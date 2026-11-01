@@ -176,6 +176,71 @@ test("project suggestions come only from open tasks", { timeout: 300_000 }, asyn
   await removeTasks(browser, [alphaTitle, betaTitle, gammaTitle]);
 });
 
+test("a working task keeps its project in the vocabulary and spelling", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 1280, height: 800 });
+  await app.open("/?page=tasks");
+  const tag = Date.now();
+  const project = `Piu${tag}`;
+  const lower = `piu${tag}`;
+  const title = `Working project ${tag}`;
+  const second = `Working project two ${tag}`;
+  const composer = screen.getByRole("textbox", "New task");
+  await composer.fill(`${title} @${project}`);
+  await screen.getByRole("button", "Add task").click();
+  await expect(screen.getByRole("button", { name: `Open ${title}` })).toBeVisible();
+
+  // Working is live work: the server reuses the spelling and the client keeps the
+  // name in both suggestion lists instead of treating the project as closed.
+  const stored = await browser.evaluate(
+    async ({ taskTitle, secondTitle, lowercase }) => {
+      const ledger = async () =>
+        (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
+          tasks: Array<{ id: string; title: string; project?: string }>;
+        };
+      const first = (await ledger()).tasks.find((task) => task.title === taskTitle);
+      if (first === undefined) return null;
+      const patched = await fetch(`/api/tasks/${encodeURIComponent(first.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "working" }),
+      });
+      const created = await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: secondTitle, parentId: null, project: lowercase }),
+      });
+      const tasks = (await ledger()).tasks;
+      return {
+        patched: patched.status,
+        created: created.status,
+        working: tasks.find((task) => task.title === taskTitle)?.project ?? null,
+        second: tasks.find((task) => task.title === secondTitle)?.project ?? null,
+      };
+    },
+    { taskTitle: title, secondTitle: second, lowercase: lower },
+  );
+  expect(stored).toEqual({ patched: 200, created: 201, working: project, second: project });
+
+  await app.open("/?page=tasks");
+  const typeMention = async () => {
+    await composer.fill("");
+    await composer.tap();
+    await browser.keyboard.type("@");
+  };
+  await typeMention();
+  await expect(screen.getByTestId(`project-suggestion-${project}`)).toBeVisible();
+
+  await screen.getByRole("button", { name: `Open ${title}` }).click();
+  await screen.getByRole("textbox", "Task project").fill("@");
+  await expect(screen.getByTestId(`project-suggestion-${project}`)).toBeVisible();
+
+  await removeTasks(browser, [title, second]);
+});
+
 test("subtasks take their parent's project and the detail edits it in place", async ({
   app,
   browser,

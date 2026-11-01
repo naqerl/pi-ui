@@ -8,6 +8,7 @@ import {
   formatCost,
   formatTokenCount,
   hasOpenDescendant,
+  isActiveStatus,
   liveBlockerIds,
   TASK_BODY_MAX_LENGTH,
 } from "../shared/tasks";
@@ -1189,7 +1190,7 @@ export function TaskDetail({
   const [projectActive, setProjectActive] = useState(0);
   const projectAnchor = useRef<HTMLDivElement>(null);
   const projectBusy = useRef(false);
-  const projects = projectsOf(tasks.filter((item) => item.status === "open"));
+  const projects = projectsOf(tasks.filter((item) => isActiveStatus(item.status)));
   const projectQuery = projectDraft.trim().replace(/^@/, "");
   const projectMatches =
     projectOpen && projectDraft.trim().length > 0 ? projectSuggestions(projects, projectQuery) : [];

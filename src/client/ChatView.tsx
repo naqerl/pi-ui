@@ -11,6 +11,7 @@ import {
 } from "react";
 import { acceptMention, mentionAt, parseProjectToken, projectsOf } from "../shared/project";
 import { isQueuedNotice, queuedMessageIds, queuedNoticeGlyph } from "../shared/queue";
+import { isActiveStatus } from "../shared/tasks";
 import { formatDateTime, formatTime } from "../shared/time";
 import type {
   ActivityItem,
@@ -1151,8 +1152,9 @@ export function ChatView({
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on page change only
   useEffect(() => setComposerError(null), [pager.page]);
   const statsPage = pager.page === STATS_PAGE;
+  // A working task is still live work, so its project stays part of the vocabulary.
   const projects = useMemo(
-    () => projectsOf(tasks.filter((task) => task.status === "open")),
+    () => projectsOf(tasks.filter((task) => isActiveStatus(task.status))),
     [tasks],
   );
   // The body moves on the compositor first; the grid end state snaps in after the
