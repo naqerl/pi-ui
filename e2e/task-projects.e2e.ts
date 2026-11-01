@@ -128,9 +128,22 @@ test("subtasks take their parent's project and the detail edits it in place", as
   await expect(screen.getByRole("textbox", "Task project")).toHaveValue("citydiff");
   await expect(screen.getByTestId("task-project")).toHaveCount(0);
 
-  await screen.getByRole("button", { name: "Subtask" }).click();
-  await screen.getByRole("textbox", "New subtask").fill("Map the stops");
-  await screen.getByRole("button", "Add task").click();
+  // The agent creates structure through the ledger; seed the child through the API.
+  const seeded = await browser.evaluate(async () => {
+    const ledger = (await (await fetch("/api/tasks")).json()) as {
+      tasks: Array<{ id: string; title: string }>;
+    };
+    const parentId = ledger.tasks.find((task) => task.title === "Diff the tram routes")?.id;
+    if (parentId === undefined) return false;
+    const response = await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Map the stops", parentId }),
+    });
+    return response.ok;
+  });
+  expect(seeded).toBe(true);
+  await app.open("/?page=tasks");
   await expect(
     screen.getByTestId("task-project-citydiff").getByText("Map the stops", { exact: true }),
   ).toBeVisible();

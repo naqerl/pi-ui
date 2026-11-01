@@ -27,12 +27,7 @@ import { groupSummaryParts } from "./activity-format";
 import { Button } from "./components/ui/button";
 import { Textarea } from "./components/ui/textarea";
 import { DiagramPart } from "./DiagramPart";
-import {
-  DeferredMarkdown,
-  LazyInlineMarkdown,
-  lazyPlainInline,
-  loadMarkdown,
-} from "./lazy-markdown";
+import { DeferredMarkdown, loadMarkdown } from "./lazy-markdown";
 import { cn } from "./lib/utils";
 import { ATTACH_ACCEPT, mediaUrl, uploadMedia } from "./media-client";
 import { NoticeLine } from "./NoticeView";
@@ -622,7 +617,6 @@ function AttachmentStrip({
 
 function Composer({
   tasksPage,
-  parentTitle,
   running,
   send,
   stop,
@@ -633,7 +627,6 @@ function Composer({
   onDismissError,
 }: {
   tasksPage: boolean;
-  parentTitle: string | null;
   running: boolean;
   send: (text: string, mode?: MessageMode, attachments?: string[]) => Promise<boolean>;
   stop: () => Promise<void>;
@@ -905,7 +898,7 @@ function Composer({
           ref={textareaRef}
           aria-invalid={error !== null ? true : undefined}
           aria-errormessage={error !== null ? "composer-error" : undefined}
-          aria-label={tasksPage ? (parentTitle === null ? "New task" : "New subtask") : "Message"}
+          aria-label={tasksPage ? "New task" : "Message"}
           rows={1}
           className={cn("bg-transparent", backlog && "placeholder:text-muted-foreground/60")}
           value={value}
@@ -916,15 +909,7 @@ function Composer({
             if (tasksPage) setCaret(event.currentTarget.selectionStart);
           }}
           onBlur={() => setCaret(null)}
-          placeholder={
-            tasksPage
-              ? backlog
-                ? "New backlog task"
-                : parentTitle === null
-                  ? "New task"
-                  : `Subtask of ${parentTitle}`
-              : "Message pi"
-          }
+          placeholder={tasksPage ? (backlog ? "New backlog task" : "New task") : "Message pi"}
           onChange={(event) => {
             setValue(event.target.value);
             if (tasksPage) {
@@ -1153,7 +1138,6 @@ export function ChatView({
 }: ChatViewProps) {
   useViewportHeight();
   const pager = usePager(PAGES.length, pageFromLocation());
-  const [armedParentId, setArmedParentId] = useState<string | null>(null);
   const [composerError, setComposerError] = useState<string | null>(null);
   const [activityRun, setActivityRun] = useState<string | null | undefined>(
     activityRunFromLocation,
@@ -1164,12 +1148,7 @@ export function ChatView({
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on page change only
   useEffect(() => setComposerError(null), [pager.page]);
   const statsPage = pager.page === STATS_PAGE;
-  const armed = tasks.find((task) => task.id === armedParentId) ?? null;
   const projects = useMemo(() => projectsOf(tasks), [tasks]);
-
-  useEffect(() => {
-    if (!tasksPage || (armedParentId !== null && armed === null)) setArmedParentId(null);
-  }, [armed, armedParentId, tasksPage]);
 
   useEffect(() => {
     if (statsPage) refreshStats?.();
@@ -1312,13 +1291,7 @@ export function ChatView({
     project?: string,
     options?: { backlog?: boolean },
   ) => {
-    const outcome = await createTask(
-      text,
-      tasksPage ? (armed?.id ?? null) : null,
-      attachments,
-      project,
-      options,
-    );
+    const outcome = await createTask(text, null, attachments, project, options);
     if (!outcome.ok) {
       setComposerError(outcome.error);
       return false;
@@ -1355,7 +1328,6 @@ export function ChatView({
 
   const selectPage = (index: number) => {
     pager.setPage(index);
-    if (index !== TASKS_PAGE) setArmedParentId(null);
   };
 
   return (
@@ -1473,8 +1445,6 @@ export function ChatView({
                   activity={taskActivity}
                   ready={ready}
                   footerClearance={footerClearance}
-                  armedParentId={armed?.id ?? null}
-                  onArmParent={setArmedParentId}
                   onLedger={applyTasks}
                 />
               </Suspense>
@@ -1527,21 +1497,6 @@ export function ChatView({
             </div>
             <PiMenu />
           </div>
-          {tasksPage && armed !== null && (
-            <div className="flex items-center gap-2 px-3 font-mono text-[10px] text-muted-foreground">
-              <span className="min-w-0 truncate">
-                subtask of <LazyInlineMarkdown text={armed.title} />
-              </span>
-              <button
-                type="button"
-                className="shrink-0 hover:text-foreground"
-                aria-label="New top-level task"
-                onClick={() => setArmedParentId(null)}
-              >
-                top level
-              </button>
-            </div>
-          )}
           <div
             data-testid="composer-body"
             data-hidden={statsPage ? "true" : "false"}
@@ -1552,7 +1507,6 @@ export function ChatView({
             <div className="composer-body-clip">
               <Composer
                 tasksPage={tasksPage}
-                parentTitle={tasksPage && armed !== null ? lazyPlainInline(armed.title) : null}
                 running={running}
                 send={handleSend}
                 stop={stop}

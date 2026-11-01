@@ -3,10 +3,7 @@ import { createPortal } from "react-dom";
 import { projectsOf, sameProject } from "../shared/project";
 import { isStaleWorking, subtaskCount, taskState } from "../shared/task-status";
 import {
-  ancestorIds,
-  blockerClosesCycle,
   compareTasks,
-  descendantIds,
   formatActiveTime,
   formatCost,
   formatTokenCount,
@@ -43,8 +40,6 @@ interface TasksViewProps {
   activity?: TaskActivity;
   ready: boolean;
   footerClearance: number;
-  armedParentId: string | null;
-  onArmParent: (id: string | null) => void;
   onLedger: (ledger: TaskLedger) => void;
 }
 
@@ -264,17 +259,8 @@ function Chevron({ open, className }: { open: boolean; className?: string }) {
   );
 }
 
-export function TasksView({
-  tasks,
-  activity,
-  ready,
-  footerClearance,
-  armedParentId,
-  onArmParent,
-  onLedger,
-}: TasksViewProps) {
+export function TasksView({ tasks, activity, ready, footerClearance, onLedger }: TasksViewProps) {
   const wide = useWide();
-  const [pickerId, setPickerId] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [problem, setProblem] = useState<{ id: string; message: string } | null>(null);
   const [statusPending, setStatusPending] = useState<Record<string, boolean>>({});
@@ -365,12 +351,10 @@ export function TasksView({
         ignoreNextCardClick.current = true;
       }
       setMenu(null);
-      setPickerId(null);
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setMenu(null);
-        setPickerId(null);
       }
     };
     document.addEventListener("pointerdown", onPointerDown, true);
@@ -390,8 +374,7 @@ export function TasksView({
     return () => document.removeEventListener("keydown", onKey);
   }, [openTaskId, menu, wide]);
 
-  const openMenu = (id: string, x: number, y: number, picker = false) => {
-    setPickerId(picker ? id : null);
+  const openMenu = (id: string, x: number, y: number) => {
     setMenu({ id, x, y });
   };
   const setStatus = async (task: Task, status: Task["status"]) => {
@@ -413,7 +396,6 @@ export function TasksView({
     activity,
     state,
     selectedId: openTaskId,
-    armedParentId,
     ignoreNextCardClick,
     problem,
     menuTaskId: menu?.id ?? null,
@@ -538,18 +520,14 @@ export function TasksView({
         trace={activity?.traces[openTask.id]}
         subtree={subtreeMeasured(tasks, openTask.id, activity?.traces ?? {})}
         wide={wide}
-        armed={armedParentId === openTask.id}
         statusPending={statusPending[openTask.id] === true}
         notice={problem?.id === openTask.id && menu === null ? problem.message : null}
         onClose={() => setOpenTaskId(null)}
         onOpen={setOpenTaskId}
         onStatus={setStatus}
-        onArm={() => onArmParent(armedParentId === openTask.id ? null : openTask.id)}
-        onBlock={(x, y) => openMenu(openTask.id, x, y, true)}
         onApprove={() => void apply(openTask.id, updateTask(openTask.id, { status: "open" }))}
         onDismiss={() => void apply(openTask.id, removeTask(openTask.id))}
         onRemove={() => {
-          if (armedParentId === openTask.id) onArmParent(null);
           void apply(openTask.id, removeTask(openTask.id));
         }}
         onLedger={(ledger) => {
@@ -601,28 +579,13 @@ export function TasksView({
             task={menuTask}
             tasks={activeTasks}
             point={menu}
-            pickerOpen={pickerId === menuTask.id}
             statusPending={statusPending[menuTask.id] === true}
-            onArm={() => {
-              onArmParent(armedParentId === menuTask.id ? null : menuTask.id);
-              setMenu(null);
-              setPickerId(null);
-            }}
-            onTogglePicker={() =>
-              setPickerId((current) => (current === menuTask.id ? null : menuTask.id))
-            }
             notice={problem?.id === menuTask.id ? problem.message : null}
-            onBlockers={(blockedBy) =>
-              void apply(menuTask.id, updateTask(menuTask.id, { blockedBy }))
-            }
             onStatus={(task, status) => {
-              setPickerId(null);
               setMenu(null);
               setStatus(task, status);
             }}
             onRemove={() => {
-              if (armedParentId === menuTask.id) onArmParent(null);
-              setPickerId(null);
               setMenu(null);
               void apply(menuTask.id, removeTask(menuTask.id));
             }}
@@ -836,7 +799,6 @@ export function TaskRow({
   history = false,
   showProject = false,
   selectedId,
-  armedParentId,
   ignoreNextCardClick,
   problem,
   menuTaskId,
@@ -854,7 +816,6 @@ export function TaskRow({
   /** Name the project on the row, for lists not already grouped by project. */
   showProject?: boolean;
   selectedId: string | null;
-  armedParentId: string | null;
   ignoreNextCardClick: { current: boolean };
   problem: { id: string; message: string } | null;
   menuTaskId: string | null;
@@ -872,7 +833,6 @@ export function TaskRow({
   const origin = useRef({ x: 0, y: 0 });
   const openedAt = useRef(0);
   const selected = selectedId === task.id;
-  const armed = armedParentId === task.id;
   const trace = activity?.traces[task.id];
   const badge = history || (done && depth > 0) ? null : stateBadge(current, trace);
   const stale = current === "working" && isStaleWorking(task, activity);
@@ -917,7 +877,7 @@ export function TaskRow({
           "flex min-h-11 w-full cursor-pointer select-none items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 text-left hover:bg-muted",
           backlog &&
             "border-dashed bg-surface/60 text-muted-foreground backdrop-blur-sm saturate-0",
-          (selected || armed) && "ring-1 ring-foreground",
+          selected && "ring-1 ring-foreground",
         )}
         style={{
           WebkitTouchCallout: "none",
@@ -1024,7 +984,6 @@ export function TaskRow({
               depth={depth + 1}
               history={history}
               selectedId={selectedId}
-              armedParentId={armedParentId}
               ignoreNextCardClick={ignoreNextCardClick}
               problem={problem}
               menuTaskId={menuTaskId}
@@ -1184,14 +1143,11 @@ export function TaskDetail({
   trace,
   subtree,
   wide,
-  armed,
   statusPending = false,
   notice,
   onClose,
   onOpen,
   onStatus,
-  onArm,
-  onBlock,
   onApprove,
   onDismiss,
   onRemove,
@@ -1204,14 +1160,11 @@ export function TaskDetail({
   /** This task plus its subtasks, when the detail should show what the subtree cost. */
   subtree?: TaskMeasured;
   wide: boolean;
-  armed: boolean;
   statusPending?: boolean;
   notice: string | null;
   onClose: () => void;
   onOpen: (id: string) => void;
   onStatus: (task: Task, status: Task["status"]) => void;
-  onArm: () => void;
-  onBlock: (x: number, y: number) => void;
   onApprove: () => void;
   onDismiss: () => void;
   onRemove: () => void;
@@ -1827,27 +1780,6 @@ export function TaskDetail({
           </>
         ) : (
           <>
-            <Button
-              variant="outline"
-              size="sm"
-              className="shrink-0 rounded-md"
-              aria-pressed={armed}
-              onClick={onArm}
-            >
-              {armed ? "Adding subtask" : "Subtask"}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="shrink-0 rounded-md"
-              aria-label={`Add blocker to ${title}`}
-              onClick={(event) => {
-                const rect = event.currentTarget.getBoundingClientRect();
-                onBlock(rect.left, rect.bottom + 4);
-              }}
-            >
-              Block
-            </Button>
             {!done && (
               <Button
                 variant="outline"
@@ -1895,32 +1827,19 @@ function TaskMenu({
   task,
   tasks,
   point,
-  pickerOpen,
   notice,
   statusPending,
-  onArm,
-  onTogglePicker,
-  onBlockers,
   onStatus,
   onRemove,
 }: {
   task: Task;
   tasks: Task[];
   point: { x: number; y: number };
-  pickerOpen: boolean;
   notice: string | null;
   statusPending: boolean;
-  onArm: () => void;
-  onTogglePicker: () => void;
-  onBlockers: (blockedBy: string[]) => void;
   onStatus: (task: Task, status: Task["status"]) => void;
   onRemove: () => void;
 }) {
-  const ancestors = ancestorIds(tasks, task.id);
-  const descendants = descendantIds(tasks, task.id);
-  const candidates = tasks
-    .filter((item) => item.id !== task.id && !ancestors.has(item.id) && !descendants.has(item.id))
-    .sort((a, b) => compareTasks(tasks, a, b));
   const done = task.status === "done";
   const openChildren = !done && hasOpenDescendant(tasks, task.id);
   const left = Math.max(8, Math.min(point.x, window.innerWidth - 248));
@@ -1941,78 +1860,7 @@ function TaskMenu({
           <ErrorText>{notice}</ErrorText>
         </div>
       )}
-      <button
-        type="button"
-        role="menuitem"
-        aria-label={`Subtask of ${plainInline(task.title)}`}
-        className={item}
-        onClick={onArm}
-      >
-        Add subtask
-      </button>
-      <button
-        type="button"
-        role="menuitem"
-        aria-expanded={pickerOpen}
-        aria-label={`Blockers for ${plainInline(task.title)}`}
-        className={item}
-        onClick={onTogglePicker}
-      >
-        Blocked by…
-      </button>
-      {pickerOpen && (
-        <ul className="flex max-h-60 flex-col overflow-y-auto py-1">
-          {candidates.length === 0 && (
-            <li className="px-2 py-1 text-sm leading-5 text-muted-foreground">No other tasks</li>
-          )}
-          {candidates.map((other) => {
-            const selected = task.blockedBy.includes(other.id);
-            const cycle = !selected && blockerClosesCycle(tasks, task.id, other.id);
-            return (
-              <li key={other.id}>
-                <button
-                  type="button"
-                  aria-pressed={selected}
-                  aria-label={`Blocked by ${plainInline(other.title)}`}
-                  disabled={cycle}
-                  className={cn(item, "gap-2 disabled:opacity-50")}
-                  onClick={() => {
-                    const blockedBy = selected
-                      ? task.blockedBy.filter((id) => id !== other.id)
-                      : [...task.blockedBy, other.id];
-                    onBlockers(blockedBy);
-                  }}
-                >
-                  <span
-                    aria-hidden
-                    data-state={selected ? "checked" : "unchecked"}
-                    className="grid size-4 shrink-0 place-items-center rounded-sm border border-foreground/60 text-background data-[state=checked]:border-foreground data-[state=checked]:bg-foreground"
-                  >
-                    {selected && (
-                      <svg
-                        aria-hidden
-                        viewBox="0 0 24 24"
-                        className="size-3"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth={3}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      >
-                        <path d="M20 6 9 17l-5-5" />
-                      </svg>
-                    )}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate">
-                    <InlineMarkdown text={other.title} />
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      <div className="-mx-1 my-1 h-px bg-border" />
+      {notice !== null && <div className="-mx-1 my-1 h-px bg-border" />}
       {!done && (
         <button
           type="button"
