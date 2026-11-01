@@ -2,11 +2,11 @@
 
 Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
 
-## Unreleased
+## 1.6.41 - 2026-11-01
 
-- MCP cursors are now opaque server truth everywhere: the cursor a poll returns is persisted even when the replay is truncated or the result carries no events, and a lower or differently shaped cursor is never replaced by a remembered one. `lastEventAt`, `lastPollAt`, `lastError` and `lastErrorAt` are recorded per subscription.
-- A subscription watchdog marks a stream `stalled` after 60 seconds without a pushed event or heartbeat, re-subscribes from the persisted cursor, and marks it `dead` after two recoveries fail to restore traffic. Poll replies only prove the cursor, never reset the silence clock, and the recovery budget clears only on the first post-recovery heartbeat or event.
-- Every MCP subscription exposes `state` (`active`, `stalled`, `recovering`, `dead` or `cancelled`) through `/api/state`; the MCP status card and the events page show a stalled or dead subscription in the warning colour with its reason.
+- The MCP subscription is watched for silence: after 60 seconds without a pushed event or heartbeat it is reported as stalled, re-subscribed from the cursor the server last returned, and reported as dead when two recoveries fail to restore traffic. A dead or muted stream is no longer shown as "active".
+- Every MCP subscription exposes its connection state (`active`, `stalled`, `recovering`, `dead` or `cancelled`) through `/api/state`, and the MCP status card and the events page show a stalled or dead subscription in the warning colour with its reason.
+- MCP cursors are opaque server truth: the cursor a poll returns is persisted even when the replay is truncated or empty, and a lower or differently shaped cursor is never replaced by a remembered one. `lastEventAt`, `lastPollAt`, `lastError` and `lastErrorAt` are recorded per subscription, while poll replies never reset the silence clock.
 - A successful MCP protocol connection clears every previous failure for that server, so a server that recovers is no longer reported unavailable from the boot probe.
 
 ## 1.6.40 - 2026-11-01
