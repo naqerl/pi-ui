@@ -1174,14 +1174,15 @@ export function TaskDetail({
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(task.title);
   const [titleError, setTitleError] = useState<string | null>(null);
-  const titleRef = useRef<HTMLInputElement>(null);
-  const titleIgnoreBlur = useRef(false);
+  const titleRef = useRef<HTMLTextAreaElement>(null);
   const titleBusy = useRef(false);
 
   const [editingBody, setEditingBody] = useState(false);
   const [bodyDraft, setBodyDraft] = useState(task.body ?? "");
   const [bodyError, setBodyError] = useState<string | null>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
+  const bodyEditorRef = useRef<HTMLDivElement>(null);
+  const bodyIgnoreBlur = useRef(false);
   const bodyBusy = useRef(false);
 
   const [projectDraft, setProjectDraft] = useState(task.project ?? "");
@@ -1234,29 +1235,44 @@ export function TaskDetail({
     element.setSelectionRange(element.value.length, element.value.length);
   }, [editingBody]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: bodyDraft changes the scroll height being measured
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the draft changes the height being measured
+  useLayoutEffect(() => {
+    if (!editingTitle) return;
+    const element = titleRef.current;
+    if (element === null) return;
+    element.style.height = "0px";
+    element.style.height = `${element.scrollHeight}px`;
+  }, [editingTitle, titleDraft]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: bodyDraft, wide and bodyError change the height being measured
   useLayoutEffect(() => {
     if (!editingBody) return;
     const element = bodyRef.current;
     if (element === null) return;
     element.style.height = "0px";
-    element.style.height = `${Math.min(element.scrollHeight, 240)}px`;
-  }, [editingBody, bodyDraft]);
+    const contentHeight = element.scrollHeight;
+    if (wide) {
+      const available = bodyEditorRef.current?.clientHeight ?? contentHeight;
+      element.style.height = `${Math.min(contentHeight, available)}px`;
+      element.style.overflowY = contentHeight > available ? "auto" : "hidden";
+    } else {
+      element.style.height = `${contentHeight}px`;
+      element.style.overflowY = "auto";
+    }
+  }, [editingBody, bodyDraft, bodyError, wide]);
 
-  const saveTitle = async () => {
+  const saveTitle = async (value = titleDraft) => {
     if (titleBusy.current) return;
-    const next = titleDraft.trim();
+    const next = value.trim();
     if (next.length === 0) {
       setTitleError("Title must not be empty");
       setTitleDraft(task.title);
-      titleIgnoreBlur.current = true;
       setEditingTitle(false);
       return;
     }
     if (next === task.title) {
       setTitleDraft(task.title);
       setTitleError(null);
-      titleIgnoreBlur.current = true;
       setEditingTitle(false);
       return;
     }
@@ -1266,26 +1282,25 @@ export function TaskDetail({
     if (!outcome.ok) {
       setTitleError(outcome.error);
       setTitleDraft(task.title);
-      titleIgnoreBlur.current = true;
       setEditingTitle(false);
       return;
     }
     setTitleError(null);
     setTitleDraft(next);
-    titleIgnoreBlur.current = true;
     setEditingTitle(false);
     onLedger?.(outcome.ledger);
   };
 
-  const saveBody = async () => {
+  const saveBody = async (value = bodyDraft) => {
     if (bodyBusy.current) return;
-    const next = bodyDraft.trim();
+    const next = value.trim();
     if (next.length > TASK_BODY_MAX_LENGTH) {
       setBodyError(`Body must be at most ${TASK_BODY_MAX_LENGTH} characters`);
       return;
     }
     if (next === (task.body ?? "")) {
       setBodyError(null);
+      bodyIgnoreBlur.current = true;
       setEditingBody(false);
       return;
     }
@@ -1298,8 +1313,17 @@ export function TaskDetail({
     }
     setBodyError(null);
     setBodyDraft(next);
+    bodyIgnoreBlur.current = true;
     setEditingBody(false);
     onLedger?.(outcome.ledger);
+  };
+
+  const beginBodyEdit = () => {
+    if (editingBody) return;
+    bodyIgnoreBlur.current = false;
+    setBodyDraft(task.body ?? "");
+    setBodyError(null);
+    setEditingBody(true);
   };
 
   const saveProject = async (value = projectDraft) => {
@@ -1401,70 +1425,55 @@ export function TaskDetail({
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
             {editingTitle ? (
-              <form
-                className="flex min-w-0 flex-col gap-1"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void saveTitle();
-                }}
-              >
-                <input
+              <div className="flex min-w-0 flex-col gap-1">
+                <textarea
                   ref={titleRef}
-                  type="text"
                   aria-label="Task title"
                   aria-invalid={titleError !== null ? true : undefined}
                   data-testid="task-title-input"
+                  rows={Math.max(1, titleDraft.split("\n").length)}
                   value={titleDraft}
                   onChange={(event) => {
                     setTitleDraft(event.target.value);
                     setTitleError(null);
                   }}
-                  onBlur={() => {
-                    if (titleIgnoreBlur.current) {
-                      titleIgnoreBlur.current = false;
-                      return;
-                    }
-                    void saveTitle();
-                  }}
+                  onBlur={(event) => void saveTitle(event.currentTarget.value)}
                   onKeyDown={(event) => {
                     if (event.key === "Escape") {
                       event.preventDefault();
                       event.stopPropagation();
-                      titleIgnoreBlur.current = true;
                       setTitleDraft(task.title);
                       setTitleError(null);
                       setEditingTitle(false);
-                    } else if (event.key === "Enter") {
-                      event.preventDefault();
-                      void saveTitle();
                     }
                   }}
-                  className="h-9 w-full min-w-0 rounded-md border border-border bg-background px-2 text-lg font-semibold leading-7 text-foreground outline-none focus-visible:ring-1 focus-visible:ring-foreground"
+                  className="block w-full min-w-0 resize-none overflow-hidden border-0 bg-transparent p-0 text-lg font-semibold leading-7 text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-1 focus-visible:ring-foreground"
                 />
                 {titleError !== null && <ErrorText>{titleError}</ErrorText>}
-              </form>
+              </div>
             ) : (
-              <button
-                type="button"
-                data-testid="task-title-edit"
-                aria-label={`Edit title ${title}`}
-                className="group flex w-full min-w-0 items-start gap-2 text-left"
-                onClick={() => {
-                  titleIgnoreBlur.current = false;
-                  setTitleDraft(task.title);
-                  setTitleError(null);
-                  setEditingTitle(true);
-                }}
-              >
-                <h2 className="min-w-0 flex-1 text-lg font-semibold leading-7 [overflow-wrap:anywhere]">
-                  <InlineMarkdown text={task.title} />
-                </h2>
-                <span className="mt-1 shrink-0 text-xs font-normal leading-4 text-muted-foreground group-hover:text-foreground">
-                  Edit
-                </span>
-              </button>
+              <div className="flex w-full min-w-0 flex-col gap-1">
+                {/* biome-ignore lint/a11y/useSemanticElements: the read-only markdown is replaced by a textarea when focused. */}
+                <div
+                  role="textbox"
+                  aria-readonly="true"
+                  aria-label="Task title"
+                  tabIndex={0}
+                  data-testid="task-title"
+                  className="min-w-0 cursor-text outline-none focus-visible:ring-1 focus-visible:ring-foreground"
+                  onFocus={() => {
+                    setTitleDraft(task.title);
+                    setTitleError(null);
+                    setEditingTitle(true);
+                  }}
+                >
+                  <h2 className="min-w-0 text-lg font-semibold leading-7 [overflow-wrap:anywhere]">
+                    <InlineMarkdown text={task.title} />
+                  </h2>
+                </div>
+                {titleError !== null && <ErrorText>{titleError}</ErrorText>}
+              </div>
             )}
-            {!editingTitle && titleError !== null && <ErrorText>{titleError}</ErrorText>}
           </div>
           <span className="mt-1 flex shrink-0 items-center gap-1.5">
             <TaskIdBadge id={task.id} testId="task-detail-id" />
@@ -1552,17 +1561,20 @@ export function TaskDetail({
           </div>
           {projectError !== null && <ErrorText>{projectError}</ErrorText>}
         </div>
-        <div
-          data-testid="task-body-section"
-          className={cn("flex min-w-0 flex-col gap-1", wide && "min-h-0 flex-1")}
-        >
-          {editingBody ? (
-            <div className="flex min-w-0 flex-col gap-2">
+        {editingBody ? (
+          <div
+            data-testid="task-body-section"
+            className={cn("flex min-w-0 flex-col gap-1", wide && "min-h-0 flex-1")}
+          >
+            <div
+              ref={bodyEditorRef}
+              className={cn("flex min-w-0 flex-col", wide && "min-h-0 flex-1 overflow-hidden")}
+            >
               <textarea
                 ref={bodyRef}
                 aria-label="Task body"
                 data-testid="task-body-input"
-                rows={4}
+                rows={1}
                 maxLength={TASK_BODY_MAX_LENGTH}
                 value={bodyDraft}
                 placeholder="Write markdown…"
@@ -1570,75 +1582,78 @@ export function TaskDetail({
                   setBodyDraft(event.target.value);
                   setBodyError(null);
                 }}
+                onBlur={(event) => {
+                  if (bodyIgnoreBlur.current) {
+                    bodyIgnoreBlur.current = false;
+                    return;
+                  }
+                  void saveBody(event.currentTarget.value);
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Escape") {
                     event.preventDefault();
                     event.stopPropagation();
+                    bodyIgnoreBlur.current = true;
                     setBodyDraft(task.body ?? "");
                     setBodyError(null);
                     setEditingBody(false);
-                  } else if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    void saveBody();
                   }
                 }}
-                className="max-h-60 min-h-24 w-full min-w-0 resize-none overflow-y-auto rounded-md border border-border bg-background px-3 py-2 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-foreground"
+                className={cn(
+                  "block w-full min-w-0 resize-none border-0 bg-transparent p-0 pr-1 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-foreground",
+                  wide ? "overflow-hidden" : "overflow-y-auto max-h-[min(60vh,40rem)]",
+                )}
               />
-              <div className="flex flex-wrap items-center gap-2">
-                <Button size="sm" className="h-7 rounded-md px-3" onClick={() => void saveBody()}>
-                  Save body
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 rounded-md px-3"
-                  onClick={() => {
-                    setBodyDraft(task.body ?? "");
-                    setBodyError(null);
-                    setEditingBody(false);
-                  }}
-                >
-                  Cancel
-                </Button>
-                <span className="ml-auto text-xs leading-4 text-muted-foreground tabular-nums">
-                  {bodyDraft.length} / {TASK_BODY_MAX_LENGTH}
-                </span>
-              </div>
-              {bodyError !== null && <ErrorText>{bodyError}</ErrorText>}
             </div>
-          ) : (
-            <>
-              {task.body !== undefined && task.body.length > 0 && (
-                <div
-                  data-testid="task-body"
-                  className={cn(
-                    "min-w-0 overflow-y-auto pr-1 text-sm leading-5",
-                    wide ? "min-h-0 max-h-full flex-1" : "max-h-[min(60vh,40rem)]",
-                  )}
-                >
-                  <Markdown text={task.body} />
-                </div>
+            {bodyError !== null && <ErrorText>{bodyError}</ErrorText>}
+          </div>
+        ) : (
+          // biome-ignore lint/a11y/useSemanticElements: the body keeps its markdown descendants instead of becoming a fieldset.
+          <div
+            data-testid="task-body-section"
+            role="group"
+            aria-label="Task body"
+            {...{ tabIndex: 0 }}
+            className={cn(
+              "flex min-w-0 cursor-text flex-col gap-1 outline-none focus-visible:ring-1 focus-visible:ring-foreground",
+              wide && "min-h-0 flex-1",
+            )}
+            onClick={(event) => {
+              if (event.target instanceof Element && event.target.closest("a, button") !== null) {
+                return;
+              }
+              beginBodyEdit();
+            }}
+            onKeyDown={(event) => {
+              if (event.target !== event.currentTarget) return;
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                beginBodyEdit();
+              }
+            }}
+          >
+            <div
+              data-testid={
+                task.body !== undefined && task.body.length > 0 ? "task-body" : undefined
+              }
+              className={cn(
+                "min-w-0 cursor-text text-sm leading-5",
+                task.body !== undefined && task.body.length > 0
+                  ? cn(
+                      "overflow-y-auto pr-1",
+                      wide ? "min-h-0 max-h-full flex-1" : "max-h-[min(60vh,40rem)]",
+                    )
+                  : "text-muted-foreground",
               )}
-              <div className="flex">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  data-testid="task-body-edit"
-                  aria-label={task.body === undefined ? "Add body" : "Edit body"}
-                  className="h-7 rounded-md px-2 text-xs text-muted-foreground"
-                  onClick={() => {
-                    setBodyDraft(task.body ?? "");
-                    setBodyError(null);
-                    setEditingBody(true);
-                  }}
-                >
-                  {task.body === undefined ? "Add body" : "Edit body"}
-                </Button>
-              </div>
-            </>
-          )}
-        </div>
+            >
+              {task.body !== undefined && task.body.length > 0 ? (
+                <Markdown text={task.body} />
+              ) : (
+                <p className="whitespace-pre-wrap break-words">Write markdown…</p>
+              )}
+            </div>
+          </div>
+        )}
       </CardHeader>
       <CardContent
         className={cn(

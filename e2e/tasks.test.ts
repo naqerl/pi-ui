@@ -977,7 +977,9 @@ test("the task detail edits its project and shows a body as markdown", () => {
   assert.match(markup, /data-testid="task-body"[\s\S]*<h1[^>]*>Route plan<\/h1>/);
   assert.match(markup, /<strong[^>]*>tram 4<\/strong>/);
   assert.match(markup, /The proposer&#x27;s reason stays separate\./);
-  assert.match(markup, /aria-label="Edit title Diff the tram routes"/);
+  assert.match(markup, /data-testid="task-title"[\s\S]*<h2[^>]*>Diff the tram routes<\/h2>/);
+  assert.doesNotMatch(markup, /data-testid="task-title-edit"/);
+  assert.doesNotMatch(markup, /data-testid="task-body-edit"/);
   const { project: _drop, ...loose } = task;
   const bare = renderToStaticMarkup(createElement(TaskDetail, { ...props, task: loose }));
   assert.match(bare, /data-testid="task-project-input"[^>]*placeholder="No project"/);

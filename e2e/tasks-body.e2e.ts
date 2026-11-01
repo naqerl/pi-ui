@@ -1,14 +1,27 @@
-import { test } from "@e2e-dev/web";
+import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
 import { removeTasks } from "./tasks-helpers.js";
 
-test("sets, edits and clears a task body that renders as markdown", async ({
+async function blur(browser: Browser) {
+  await browser.evaluate(() => {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement) active.blur();
+    return true;
+  });
+}
+
+test("sets, edits and clears a task body in place that renders as markdown", async ({
   app,
   browser,
   screen,
 }) => {
   await browser.setViewport({ width: 1280, height: 800 });
+  let patches = 0;
+  await browser.route("**/api/tasks/**", async (route) => {
+    if (route.request.method === "PATCH") patches += 1;
+    await route.continue();
+  });
   await app.open("/?page=tasks");
   const rationale = "The rationale belongs to the proposer and must survive a body edit.";
   const id = await browser.evaluate(async (why) => {
@@ -29,10 +42,20 @@ test("sets, edits and clears a task body that renders as markdown", async ({
   }, rationale);
   await app.open("/?page=tasks");
   await screen.getByRole("button", { name: "Open Body draft" }).click();
-  await screen.getByRole("button", { name: "Add body" }).click();
+  await expect(screen.getByTestId("task-body-edit")).toHaveCount(0);
+  await expect(screen.getByRole("button", { name: "Add body" })).toHaveCount(0);
+  await expect(screen.getByRole("button", { name: "Edit body" })).toHaveCount(0);
+
+  await screen.getByTestId("task-body-section").click();
   const body = screen.getByRole("textbox", "Task body");
-  await body.fill("# Route plan\n\nUse **tram 4**.");
-  await body.press("Control+Enter");
+  await body.fill("# Route plan\n\nUse **tram 4**.\n\nKeep this line.\nAnd this one.");
+  const sizing = await browser.evaluate(() => {
+    const field = document.querySelector<HTMLTextAreaElement>('[data-testid="task-body-input"]');
+    if (field === null) return null;
+    return { scrolls: field.scrollHeight > field.clientHeight + 1 };
+  });
+  expect(sizing).toEqual({ scrolls: false });
+  await blur(browser);
   await expect(
     screen.getByTestId("task-body").getByRole("heading", { name: "Route plan" }),
   ).toBeVisible();
@@ -44,19 +67,36 @@ test("sets, edits and clears a task body that renders as markdown", async ({
   await expect(
     screen.getByTestId("task-body").getByRole("heading", { name: "Route plan" }),
   ).toBeVisible();
-  await screen.getByRole("button", { name: "Edit body" }).click();
+  await screen.getByTestId("task-body").click();
   const edited = screen.getByRole("textbox", "Task body");
-  await edited.fill("## Later plan\n\nWalk instead.");
-  await edited.press("Control+Enter");
+  await edited.fill(
+    "# Route plan\n\nUse **tram 4**.\n\nKeep this line.\nAnd this one.\n\nAdded **paragraph**.",
+  );
+  await blur(browser);
   await expect(
-    screen.getByTestId("task-body").getByRole("heading", { name: "Later plan" }),
+    screen.getByTestId("task-body").getByRole("heading", { name: "Route plan" }),
+  ).toBeVisible();
+  await expect(
+    screen.getByTestId("task-body").getByText("paragraph", { exact: true }),
   ).toBeVisible();
   await expect(screen.getByText(rationale)).toBeVisible();
 
-  await screen.getByRole("button", { name: "Edit body" }).click();
+  await screen.getByTestId("task-body").click();
+  const escaped = screen.getByRole("textbox", "Task body");
+  await escaped.fill("# Not saved");
+  const beforeEscape = patches;
+  await escaped.press("Escape");
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  expect(patches).toBe(beforeEscape);
+  await expect(
+    screen.getByTestId("task-body").getByText("paragraph", { exact: true }),
+  ).toBeVisible();
+  await expect(screen.getByTestId("task-body").getByText("Not saved")).toHaveCount(0);
+
+  await screen.getByTestId("task-body").click();
   const cleared = screen.getByRole("textbox", "Task body");
   await cleared.fill("");
-  await cleared.press("Control+Enter");
+  await screen.getByTestId("task-project-input").click();
   await expect(screen.getByTestId("task-body")).toHaveCount(0);
   await expect
     .poll(() =>
@@ -73,6 +113,7 @@ test("sets, edits and clears a task body that renders as markdown", async ({
   await app.open("/?page=tasks");
   await screen.getByRole("button", { name: "Open Body draft" }).click();
   await expect(screen.getByTestId("task-body")).toHaveCount(0);
+  await expect(screen.getByText("Write markdown…")).toBeVisible();
   await expect(screen.getByText(rationale)).toBeVisible();
 
   await removeTasks(browser, ["Body draft"]);

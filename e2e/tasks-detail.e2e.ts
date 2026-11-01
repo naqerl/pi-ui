@@ -197,6 +197,111 @@ test("on a desktop the first task is selected and the detail stays beside the li
   await expect(screen.getByTestId("task-detail")).toHaveAttribute("aria-label", "Ship the modal");
 });
 
+test("body markdown links and copy controls stay interactive until the text is clicked", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 1280, height: 800 });
+  const code = "const answer = 42;";
+  const payload = JSON.parse(JSON.stringify(snapshot));
+  payload.tasks.tasks[0].body = `See [docs](https://example.com).\n\n\`\`\`ts\n${code}\n\`\`\``;
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({ json: payload });
+  });
+  await app.open("/?page=tasks");
+  await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
+
+  const body = screen.getByTestId("task-body");
+  const link = body.getByRole("link", { name: "docs" });
+  await browser.evaluate(() => {
+    const anchor = document.querySelector<HTMLAnchorElement>('[data-testid="task-body"] a');
+    const target = window as unknown as { linkClicked?: boolean };
+    anchor?.addEventListener("click", (event) => {
+      event.preventDefault();
+      target.linkClicked = true;
+    });
+    return true;
+  });
+  await link.focus();
+  await expect(screen.getByTestId("task-body-input")).toHaveCount(0);
+  await link.press("Enter");
+  await expect
+    .poll(() =>
+      browser.evaluate(() => (window as unknown as { linkClicked?: boolean }).linkClicked ?? false),
+    )
+    .toBe(true);
+  await expect(screen.getByTestId("task-body-input")).toHaveCount(0);
+  await browser.evaluate(() => {
+    (window as unknown as { linkClicked?: boolean }).linkClicked = false;
+    return true;
+  });
+  await link.click();
+  await expect
+    .poll(() =>
+      browser.evaluate(() => (window as unknown as { linkClicked?: boolean }).linkClicked ?? false),
+    )
+    .toBe(true);
+  await expect(screen.getByTestId("task-body-input")).toHaveCount(0);
+
+  await browser.evaluate(() => {
+    const target = window as unknown as { copied?: string };
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => {
+          target.copied = text;
+        },
+      },
+    });
+    return true;
+  });
+  const copy = body.getByRole("button");
+  await copy.focus();
+  await browser.keyboard.press("Space");
+  await expect(copy).toHaveAttribute("aria-label", "Copied");
+  expect(
+    await browser.evaluate(() => (window as unknown as { copied?: string }).copied ?? null),
+  ).toBe(code);
+  await expect(screen.getByTestId("task-body-input")).toHaveCount(0);
+});
+
+test("a long body edits inside the split card and scrolls instead of clipping", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 1280, height: 800 });
+  const payload = JSON.parse(JSON.stringify(snapshot));
+  payload.tasks.tasks[0].body = Array.from(
+    { length: 80 },
+    (_, index) => `Paragraph ${index + 1} keeps the body taller than the card.`,
+  ).join("\n\n");
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({ json: payload });
+  });
+  await app.open("/?page=tasks");
+  await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
+  await screen.getByTestId("task-body").click();
+
+  const metrics = await browser.evaluate(() => {
+    const field = document.querySelector<HTMLTextAreaElement>('[data-testid="task-body-input"]');
+    const detail = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
+    if (field === null || detail === null) return null;
+    const fieldBox = field.getBoundingClientRect();
+    return {
+      overflowY: getComputedStyle(field).overflowY,
+      scrolls: field.scrollHeight > field.clientHeight,
+      inside: fieldBox.bottom <= detail.getBoundingClientRect().bottom + 1,
+      height: field.clientHeight,
+    };
+  });
+  expect(metrics?.overflowY).toBe("auto");
+  expect(metrics?.scrolls).toBe(true);
+  expect(metrics?.inside).toBe(true);
+  expect(metrics?.height ?? 0).toBeGreaterThan(0);
+});
+
 test("a task card has no checkbox and the detail only displays seeded structure", async ({
   app,
   browser,
