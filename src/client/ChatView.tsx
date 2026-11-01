@@ -88,6 +88,9 @@ const PAGES = [
 const STATS_PAGE = 0;
 const CHAT_PAGE = 1;
 const TASKS_PAGE = 2;
+// The pager slides for 300ms; the composer's compositor animation is shorter.
+const COMPOSER_ANIMATION_MS = 220;
+const PAGE_SETTLE_MS = 320;
 
 function pageFromLocation(): number {
   const name = new URLSearchParams(window.location.search).get("page");
@@ -1152,10 +1155,44 @@ export function ChatView({
     () => projectsOf(tasks.filter((task) => task.status === "open")),
     [tasks],
   );
+  // The body moves on the compositor first; the grid end state snaps in after the
+  // movement, so no frame of the collapse or restore runs layout.
+  const [composerCollapsed, setComposerCollapsed] = useState(statsPage);
+  const [pageAnimating, setPageAnimating] = useState(false);
+  const lastPagerState = useRef({ page: pager.page, dragging: pager.dragging });
 
   useEffect(() => {
     if (statsPage) refreshStats?.();
   }, [statsPage, refreshStats]);
+
+  useLayoutEffect(() => {
+    if (!statsPage) {
+      setComposerCollapsed(false);
+      return;
+    }
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setComposerCollapsed(true);
+      return;
+    }
+    if (composerCollapsed) return;
+    const timer = window.setTimeout(() => setComposerCollapsed(true), COMPOSER_ANIMATION_MS);
+    return () => window.clearTimeout(timer);
+  }, [statsPage, composerCollapsed]);
+
+  // Keep the dock's blur off for the whole pager movement, including a drag that
+  // snaps back to the page it started on.
+  useLayoutEffect(() => {
+    const previous = lastPagerState.current;
+    lastPagerState.current = { page: pager.page, dragging: pager.dragging };
+    if (previous.page === pager.page && previous.dragging === pager.dragging) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setPageAnimating(false);
+      return;
+    }
+    setPageAnimating(true);
+    const timer = window.setTimeout(() => setPageAnimating(false), PAGE_SETTLE_MS);
+    return () => window.clearTimeout(timer);
+  }, [pager.page, pager.dragging]);
 
   useEffect(() => {
     const id = PAGES[pager.page]?.id;
@@ -1457,6 +1494,7 @@ export function ChatView({
         <div
           ref={footerRef}
           data-testid="composer-dock"
+          data-transitioning={pager.dragging || pageAnimating ? "true" : undefined}
           className="float-footer absolute z-20 theme-radius"
         >
           <div className="ink-line flex items-center gap-3 border-b py-1.5 pr-1.5 pl-[18px]">
@@ -1503,6 +1541,7 @@ export function ChatView({
           <div
             data-testid="composer-body"
             data-hidden={statsPage ? "true" : "false"}
+            data-collapsed={composerCollapsed ? "true" : "false"}
             aria-hidden={statsPage ? true : undefined}
             inert={statsPage ? true : undefined}
             className="composer-body"

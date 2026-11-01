@@ -213,15 +213,20 @@ test("collapses the composer on the stats page and restores it on chat and tasks
   const dock = screen.getByTestId("composer-dock");
   const body = screen.getByTestId("composer-body");
   const dots = screen.getByTestId("page-dots");
+  const composer = screen.getByRole("textbox", "Message");
+  const draft = "draft kept across the page switch";
+  await composer.fill(draft);
   await expect(dock).toBeVisible();
   await expect(body).toBeVisible();
   expect(await body.getAttribute("data-hidden")).toBe("false");
-  expect(
-    await browser.evaluate(() => {
-      const element = document.querySelector('[data-testid="composer-body"]');
-      return element === null ? "" : getComputedStyle(element).transitionProperty;
-    }),
-  ).toContain("grid-template-rows");
+  expect(await body.getAttribute("data-collapsed")).toBe("false");
+  const transition = await browser.evaluate(() => {
+    const element = document.querySelector('[data-testid="composer-body"]');
+    return element === null ? "" : getComputedStyle(element).transitionProperty;
+  });
+  expect(transition).toContain("transform");
+  expect(transition).toContain("opacity");
+  expect(transition).not.toContain("grid-template-rows");
 
   await screen.getByRole("tab", "Stats").tap();
   await expect(screen.getByTestId("stats-page")).toBeVisible();
@@ -230,6 +235,7 @@ test("collapses the composer on the stats page and restores it on chat and tasks
   await expect(dots).toBeVisible();
   expect(await body.getAttribute("data-hidden")).toBe("true");
   expect(await body.getAttribute("aria-hidden")).toBe("true");
+  await expect(body).toHaveAttribute("data-collapsed", "true");
   expect(
     await browser.evaluate(() => {
       const element = document.querySelector('[data-testid="composer-body"]');
@@ -242,11 +248,95 @@ test("collapses the composer on the stats page and restores it on chat and tasks
   await expect(dock).toBeVisible();
   await expect(body).toBeVisible();
   expect(await body.getAttribute("data-hidden")).toBe("false");
+  await expect(body).toHaveAttribute("data-collapsed", "false");
+  await expect(composer).toHaveValue(draft);
+  expect(
+    await browser.evaluate(() => {
+      const field = document.querySelector('textarea[aria-label="Message"]');
+      if (field instanceof HTMLElement) field.focus();
+      return document.activeElement === field;
+    }),
+  ).toBe(true);
 
   await screen.getByRole("tab", "Tasks").tap();
   await expect(dock).toBeVisible();
   await expect(body).toBeVisible();
   await expect(screen.getByRole("textbox", "New task")).toBeVisible();
+});
+
+test("flattens the dock blur only while the page transition runs", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  // The suite runs with reduced motion by default; this case asserts the moving
+  // transition, so opt back into motion like the shader test does.
+  await browser.emulateMedia({ reducedMotion: "no-preference" });
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/");
+  const read = await browser.evaluate(async () => {
+    const dock = document.querySelector<HTMLElement>('[data-testid="composer-dock"]');
+    const stats = document.querySelector<HTMLElement>('[data-testid="page-dot-stats"]');
+    if (dock === null || stats === null) return null;
+    const style = () => {
+      const computed = getComputedStyle(dock);
+      return {
+        blur:
+          computed.backdropFilter || computed.getPropertyValue("-webkit-backdrop-filter") || "none",
+        background: computed.backgroundColor,
+      };
+    };
+    const waitFor = (read: () => boolean, timeout: number) =>
+      new Promise<boolean>((resolve) => {
+        const deadline = performance.now() + timeout;
+        const check = () => {
+          if (read()) {
+            resolve(true);
+            return;
+          }
+          if (performance.now() > deadline) {
+            resolve(false);
+            return;
+          }
+          window.setTimeout(check, 16);
+        };
+        check();
+      });
+    let resolveDuring: (() => void) | null = null;
+    const duringSeen = new Promise<void>((resolve) => {
+      resolveDuring = resolve;
+    });
+    const observer = new MutationObserver(() => {
+      if (dock.getAttribute("data-transitioning") === "true") resolveDuring?.();
+    });
+    observer.observe(dock, { attributes: true, attributeFilter: ["data-transitioning"] });
+    stats.click();
+    const appeared = await Promise.race([
+      duringSeen.then(() => true),
+      waitFor(() => dock.getAttribute("data-transitioning") === "true", 3000),
+    ]);
+    const during = style();
+    const removed = await waitFor(() => dock.getAttribute("data-transitioning") === null, 5000);
+    const after = style();
+    observer.disconnect();
+    return {
+      appeared,
+      removed,
+      during,
+      after,
+      current: dock.getAttribute("data-transitioning"),
+      background: getComputedStyle(document.documentElement).getPropertyValue("--surface").trim(),
+    };
+  });
+  expect(read).not.toBeNull();
+  expect(read?.appeared).toBe(true);
+  expect(read?.removed).toBe(true);
+  expect(read?.current).toBeNull();
+  expect(read?.during.blur).toBe("none");
+  expect(read?.after.blur ?? "").toContain("blur");
+  expect(read?.during.background).not.toBe("");
+  expect(read?.background).not.toBe("");
+  await expect(screen.getByTestId("stats-page")).toBeVisible();
 });
 
 test("keeps the composer body still under reduced motion", async ({ app, browser, screen }) => {
