@@ -4,6 +4,11 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.45 - 2026-11-01
+
+- The Active / Blocked / Proposed filter row is gone from the tasks list: every task renders in one list under its state heading, so the counts no longer squeeze the working status, and on a narrow window nothing scrolls sideways any more.
+- Two e2e assertions that failed on `main` now match what the app renders: the HH:MM chips and the history page structure.
+
 ## 1.6.44 - 2026-11-01
 
 - The task detail lost its activity table, and the backlog toggle now sits where that table was, so a task opened from the list shows what it is for and what state it is in without a scroll.
