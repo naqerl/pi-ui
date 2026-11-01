@@ -207,6 +207,7 @@ test("collapses the composer on the stats page and restores it on chat and tasks
   browser,
   screen,
 }) => {
+  await browser.emulateMedia({ reducedMotion: "no-preference" });
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/");
   const dock = screen.getByTestId("composer-dock");

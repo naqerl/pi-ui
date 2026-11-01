@@ -180,6 +180,10 @@ test("keeps long tokens, code blocks and tables inside the bubbles at 390px", as
   });
   await app.open("/");
   await expect(screen.getByText("Cancelled", { exact: false }).first()).toBeVisible();
+  // Markdown is rendered after the first paint; measure only once the code
+  // block and table have both mounted, not on whatever the first frame shows.
+  await expect(browser.locator("main pre")).toHaveCount(1);
+  await expect(browser.locator("main table")).toHaveCount(1);
 
   const report = await browser.evaluate(() => {
     const bubbles = Array.from(document.querySelectorAll<HTMLElement>("main .max-w-\\[85\\%\\]"));
@@ -301,6 +305,7 @@ test("hides the code copy button until its block is hovered or focused", async (
     await route.fulfill({ json: codeBlockSnapshot(code) });
   });
   await app.open("/");
+  await expect(browser.locator("main pre")).toHaveCount(1, { timeout: 15_000 });
   const button = screen.getByRole("button", "Copy code");
   await expect(button).toBeVisible();
   await expect.poll(async () => (await readCopyButton(browser))?.opacity ?? -1).toBe(0);
@@ -339,6 +344,7 @@ test("copies a fenced code block from its copy button", async ({ app, browser, s
     await route.fulfill({ json: codeBlockSnapshot(code) });
   });
   await app.open("/");
+  await expect(browser.locator("main pre")).toHaveCount(1, { timeout: 15_000 });
   const button = screen.getByRole("button", "Copy code");
   await expect(button).toBeVisible();
   await button.hover();
@@ -362,14 +368,18 @@ test("copies a fenced code block from its copy button", async ({ app, browser, s
   await browser.mouse.down();
   await browser.mouse.up();
   await browser.mouse.move(0, 0);
-  await expect.poll(async () => (await readCopyButton(browser))?.label ?? "").toBe("Copied");
+  // The copied state resets after 1.5s, so read the label and text together.
+  await expect
+    .poll(async () => {
+      const button = await readCopyButton(browser);
+      return { label: button?.label ?? "", text: button?.text ?? "" };
+    })
+    .toEqual({ label: "Copied", text: "copied" });
   const copied = await browser.evaluate(
     () => (window as unknown as { copied?: string }).copied ?? null,
   );
   expect(copied).toBe(code);
   expect((await readCopyButton(browser))?.opacity).toBe(0.9);
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  expect((await readCopyButton(browser))?.text).toBe("copied");
   await expect
     .poll(async () => (await readCopyButton(browser))?.opacity ?? -1, { timeout: 3_000 })
     .toBe(0);

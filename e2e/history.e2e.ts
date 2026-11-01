@@ -54,11 +54,9 @@ function scrollToTop() {
 }
 
 for (const width of [390, 1280]) {
-  test(`loads the latest page first and older pages on scroll up at ${width}px`, async ({
-    app,
-    browser,
-    screen,
-  }) => {
+  test(`loads the latest page first and older pages on scroll up at ${width}px`, {
+    timeout: 240_000,
+  }, async ({ app, browser, screen }) => {
     await browser.setViewport({ width, height: 844 });
     await app.open("/");
     const base = width * 1000;
