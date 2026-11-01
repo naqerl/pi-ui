@@ -155,10 +155,17 @@
     bottom: 0;
     padding-bottom: env(safe-area-inset-bottom);
     border-top: 1px solid color-mix(in srgb, var(--foreground) 28%, transparent);
-    transition:
-      background-color 280ms ease,
-      backdrop-filter 280ms ease,
-      -webkit-backdrop-filter 280ms ease;
+    transition: background-color 280ms ease;
+  }
+
+  /* A page slide moves the layout under the dock; a full-area blur recomputed
+     every frame is the expensive half of the transition. Flatten it while the
+     pager is in flight, then restore the glass once the pages settle. */
+  .float-footer[data-transitioning="true"] {
+    background-color: var(--surface);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    transition: none;
   }
 
   .float-footer:focus-within {
@@ -170,19 +177,28 @@
   }
 
   /* The stats page keeps the dock chrome but collapses the composer body.
-     0fr keeps it out of the layout while the field is hidden and inert. */
+     The movement is transform/opacity only; the 0fr grid end state snaps in
+     after it, so no frame of the animation runs layout. */
   .composer-body {
     display: grid;
     grid-template-rows: 1fr;
-    transition: grid-template-rows 220ms ease;
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scaleY(1);
+    transform-origin: bottom center;
+    will-change: transform, opacity;
+    transition:
+      transform 220ms ease,
+      opacity 220ms ease;
   }
 
   .composer-body[data-hidden="true"] {
+    opacity: 0;
+    transform: translate3d(0, 0.75rem, 0) scaleY(0.96);
+  }
+
+  .composer-body[data-collapsed="true"] {
     grid-template-rows: 0fr;
     visibility: hidden;
-    transition:
-      grid-template-rows 220ms ease,
-      visibility 0s linear 220ms;
   }
 
   .composer-body-clip {
@@ -193,7 +209,8 @@
   @media (prefers-reduced-motion: reduce) {
     .float-footer,
     .composer-body,
-    .composer-body[data-hidden="true"] {
+    .composer-body[data-hidden="true"],
+    .composer-body[data-collapsed="true"] {
       transition: none;
     }
   }
