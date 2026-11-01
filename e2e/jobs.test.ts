@@ -68,10 +68,14 @@ async function waitForGroup(
   }
 }
 
-async function until(check: () => boolean, ms = 5000, what = "condition"): Promise<void> {
+async function until(
+  check: () => boolean | Promise<boolean>,
+  ms = 5000,
+  what = "condition",
+): Promise<void> {
   const started = Date.now();
   const end = started + ms;
-  while (!check()) {
+  while (!(await check())) {
     if (Date.now() > end) {
       throw new Error(`${what} did not happen within ${Date.now() - started}ms`);
     }
@@ -225,8 +229,16 @@ test("the tools start, list, read and cancel jobs", async () => {
   const id = /Started (j\d+)/.exec(started)?.[1] ?? "";
   assert.ok(id.length > 0);
   assert.match(await run("job_list", {}), new RegExp(`${id} running for \\d+s: napper`));
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  assert.match(await run("job_output", { id }), /hi/);
+  let output = "";
+  await until(
+    async () => {
+      output = await run("job_output", { id });
+      return /hi/.test(output);
+    },
+    10_000,
+    `job_output for ${id} to contain "hi"`,
+  );
+  assert.match(output, /hi/);
   assert.match(await run("job_cancel", { id }), /cancelled/);
   assert.match(await run("job_output", { id: "nope" }), /Unknown job/);
 });
