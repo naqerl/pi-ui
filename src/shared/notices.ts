@@ -5,7 +5,6 @@
  * sent to the model is unchanged.
  */
 
-import { idleNudgeText } from "./idle-nudge.js";
 import { toIsoTimestamp } from "./time.js";
 
 export interface JobNoticeDetails {
@@ -103,8 +102,8 @@ export type ChatNotice =
 const JOB_HEAD = /^\[background job (\S+) finished\] (\S+) (.+?): (.*)$/;
 export const MCP_EVENTS_HEAD = "MCP event data follows.";
 const MCP_STATUS_HEAD = "MCP subscription status follows.";
-const IDLE_HEAD =
-  /^You have been idle for \d+ minutes and (\d+) task\(s\) are open: (.+)\. Pick the next one and implement it\.$/;
+const IDLE_HEAD = /^You have been idle for \d+ minutes and (\d+) task\(s\) are open: ([^.]+)\./;
+const IDLE_STATUS_HEAD = /(?:^|\. )Status check for tasks marked working: ([^.]+)\./;
 const IDLE_BLOCKED_HEAD = /^You have been idle for \d+ minutes\. Nothing is unblocked: (.+)\.$/;
 const STALE_RUN_HEAD =
   /^Tasks? (.+?) (?:has|have) had no tool call for \d+ minutes\. Confirm whether .*\bupdate the task ledger accordingly\.$/;
@@ -168,12 +167,16 @@ function mcpSummary(servers: string[], label: string): string {
 
 function parseIdle(body: string): IdleNoticeDetails | null {
   const text = body.trim();
-  const stale = STALE_RUN_HEAD.exec(text);
-  if (stale !== null) {
-    const taskIds = (stale[1] ?? "")
+  const ids = (value: string | undefined) => {
+    if (value === undefined) return [];
+    return value
       .split(",")
       .map((id) => id.trim())
       .filter((id) => id.length > 0);
+  };
+  const stale = STALE_RUN_HEAD.exec(text);
+  if (stale !== null) {
+    const taskIds = ids(stale[1]);
     if (taskIds.length === 0) return null;
     return {
       kind: "idle",
@@ -184,17 +187,20 @@ function parseIdle(body: string): IdleNoticeDetails | null {
     };
   }
   const match = IDLE_HEAD.exec(text);
-  if (match !== null) {
-    const taskIds = (match[2] ?? "")
-      .split(",")
-      .map((id) => id.trim())
-      .filter((id) => id.length > 0);
+  const status = IDLE_STATUS_HEAD.exec(text);
+  if (match !== null || status !== null) {
+    const openIds = ids(match?.[2]);
+    const workingIds = ids(status?.[1]);
+    const taskIds = [...new Set([...openIds, ...workingIds])];
     if (taskIds.length === 0) return null;
     return {
       kind: "idle",
-      text: idleNudgeText(taskIds),
+      text,
       taskIds,
-      summary: `idle · ${taskIds.length} task(s) open: ${taskIds.join(", ")}`,
+      summary:
+        openIds.length > 0
+          ? `idle · ${openIds.length} task(s) open: ${openIds.join(", ")}`
+          : `idle · ${workingIds.length} task(s) working: ${workingIds.join(", ")}`,
     };
   }
   const blocked = IDLE_BLOCKED_HEAD.exec(text);

@@ -217,7 +217,16 @@ const chat = new ChatService(
     await memoryCheckpoints.refresh(reason);
   },
   (id) => diagrams.ref(id)?.revision,
-  () => taskStore.ledger().tasks,
+  () => {
+    const activity = taskActivity.view();
+    return taskStore.ledger().tasks.map((task) => {
+      if (task.status !== "open") return task;
+      const outcome = activity.traces[task.id]?.lastRun?.outcome;
+      return outcome === "running" || outcome === "ok"
+        ? { ...task, status: "working" as const }
+        : task;
+    });
+  },
   dataDir,
 );
 operatorNotices.current = (record) => chat.recordOperatorNotice(record);

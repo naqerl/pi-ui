@@ -55,6 +55,7 @@ import {
   openTaskIds,
   StaleRunNudge,
   staleRunNudgeMs,
+  workingTaskIds,
 } from "./idle-nudge.js";
 import { NoticeCoalescer } from "./mcp-event-policy.js";
 import type { McpEventFeed } from "./mcp-events.js";
@@ -339,13 +340,21 @@ export class ChatService {
   private async checkIdleNudge(): Promise<void> {
     if (this.closed || this.checkingIdleNudge || !this.idleNudge.enabled) return;
     const tasks = this.idleTasks();
-    const taskIds = tasks.every((task): task is string => typeof task === "string")
-      ? tasks
-      : openTaskIds(tasks);
+    let openIds: readonly string[];
+    let workingIds: readonly string[] = [];
+    if (tasks.every((task): task is string => typeof task === "string")) {
+      openIds = tasks;
+    } else {
+      const taskList = tasks as readonly IdleTask[];
+      openIds = openTaskIds(taskList);
+      workingIds = workingTaskIds(taskList);
+    }
+    const namedIds = [...new Set([...openIds, ...workingIds])];
     const text = this.idleNudge.maybeNudge({
       active: this.runState === "running" || this.submitting > 0,
       queued: this.queued.size + this.steers.size,
-      openTaskIds: taskIds,
+      openTaskIds: openIds,
+      workingTaskIds: workingIds,
     });
     if (text === null) return;
     this.checkingIdleNudge = true;
@@ -355,7 +364,7 @@ export class ChatService {
         entry: {
           kind: IDLE_NUDGE_ENTRY_KIND,
           label: "Idle nudge",
-          data: { text, taskIds: [...taskIds], createdAt },
+          data: { text, taskIds: namedIds, createdAt },
         },
       });
     } catch (error) {
