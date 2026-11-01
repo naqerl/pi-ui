@@ -272,6 +272,9 @@ const WARN_STATES = new Set([
   "off",
   "unknown",
   "yellow",
+  "stalled",
+  "recovering",
+  "dead",
 ]);
 
 export function normalizeState(value: unknown): StatusState {
@@ -563,9 +566,43 @@ export const MCP_EVENT_LIMIT = 20;
 export const MCP_EVENT_WIDGET_LIMIT = 3;
 const LIVE_SUBSCRIPTION = new Set(["opening", "active", "reconnecting"]);
 
+/** The public watchdog state, derived from the adapter status for older rows. */
+export function subscriptionHealth(item: {
+  status: string;
+  state?: string;
+}): "active" | "stalled" | "recovering" | "dead" | "cancelled" {
+  if (
+    item.state === "active" ||
+    item.state === "stalled" ||
+    item.state === "recovering" ||
+    item.state === "dead" ||
+    item.state === "cancelled"
+  ) {
+    return item.state;
+  }
+  if (item.status === "cancelled" || item.status === "stopped" || item.status === "ended") {
+    return "cancelled";
+  }
+  if (item.status === "failed") return "stalled";
+  if (item.status === "opening" || item.status === "reconnecting") return "recovering";
+  return "active";
+}
+
 function subscriptionState(status: string): StatusState {
   if (LIVE_SUBSCRIPTION.has(status)) return status === "active" ? "ok" : "warn";
   return status === "stopped" ? "warn" : "error";
+}
+
+/** A title wins; with arguments the stable id is the only copyable identity. */
+export function subscriptionLabel(item: {
+  title?: string;
+  stableId?: string;
+  name: string;
+  arguments?: Record<string, unknown>;
+}): string {
+  if (item.title !== undefined) return item.title;
+  if (Object.keys(item.arguments ?? {}).length > 0) return item.stableId ?? item.name;
+  return item.name;
 }
 
 function exact(count: number): string {
@@ -666,16 +703,28 @@ export function builtinData(
       };
     }
     case "mcp": {
-      const live = inputs.mcpEvents.subscriptions.filter((item) =>
-        LIVE_SUBSCRIPTION.has(item.status),
+      const subscriptions = inputs.mcpEvents.subscriptions.map((item) => ({
+        item,
+        health: subscriptionHealth(item),
+      }));
+      const live = subscriptions.filter(({ health }) => health === "active");
+      const problems = subscriptions.filter(
+        ({ health }) => health === "stalled" || health === "recovering" || health === "dead",
       );
       return {
         count: mcp.servers.length,
         unavailable: mcp.unavailable,
         servers: mcp.servers.map((server) => {
           const subscribed = live
-            .filter((item) => item.server === server.name)
-            .map((item) => item.title ?? item.stableId ?? item.name);
+            .filter(({ item }) => item.server === server.name)
+            .map(({ item }) => subscriptionLabel(item));
+          const broken = problems
+            .filter(({ item }) => item.server === server.name)
+            .map(({ item, health }) => {
+              const label = subscriptionLabel(item);
+              const reason = item.lastError ?? item.lastReconnectReason ?? item.endReason;
+              return `${label}: ${health}${reason === undefined ? "" : ` · ${reason}`}`;
+            });
           const base = server.available
             ? server.tools.length === 0
               ? "no tools"
@@ -683,6 +732,12 @@ export function builtinData(
             : server.authRejected
               ? "auth rejected"
               : unavailable("server unreachable");
+          const detail =
+            server.available && broken.length > 0
+              ? `${base} · ${broken.join(", ")}`
+              : subscribed.length === 0
+                ? base
+                : `${base} · subscribed: ${subscribed.join(", ")}`;
           return {
             key: `mcp-${server.name}`,
             name: server.name,
@@ -690,9 +745,15 @@ export function builtinData(
             authRejected: server.authRejected,
             tools: server.tools.length,
             subscriptions: subscribed,
-            state: server.available ? "ok" : server.authRejected ? "warn" : "error",
-            detail:
-              subscribed.length === 0 ? base : `${base} · subscribed: ${subscribed.join(", ")}`,
+            problems: broken,
+            state: server.available
+              ? broken.length > 0
+                ? "warn"
+                : "ok"
+              : server.authRejected
+                ? "warn"
+                : "error",
+            detail,
           };
         }),
       };
@@ -700,15 +761,27 @@ export function builtinData(
     case "mcp_events": {
       const { events, subscriptions } = inputs.mcpEvents;
       const recent = events.slice(-MCP_EVENT_WIDGET_LIMIT).reverse();
+      const health = subscriptions.map((item) => subscriptionHealth(item));
       return {
         total: events.length,
         live: [
           ...new Set(
             subscriptions
-              .filter((item) => LIVE_SUBSCRIPTION.has(item.status))
+              .filter((_item, index) => health[index] === "active")
               .map((item) => item.server),
           ),
         ],
+        problems: subscriptions
+          .filter((_item, index) => {
+            const state = health[index];
+            return state === "stalled" || state === "recovering" || state === "dead";
+          })
+          .map((item) => ({
+            server: item.server,
+            label: subscriptionLabel(item),
+            state: subscriptionHealth(item),
+            reason: item.lastError ?? item.lastReconnectReason ?? item.endReason ?? null,
+          })),
         latest: recent[0] === undefined ? null : `new event from ${recent[0].server}`,
         events: recent.map((event) => {
           const formatted = options.formatTime?.(event.timestamp);
@@ -732,9 +805,10 @@ export function builtinData(
           };
         }),
         subscriptions: subscriptions.map((item) => {
-          // Without a title the durable id is the only identity a user can
-          // copy into DELETE /api/mcp/subscriptions/<stableId>.
-          const label = item.title ?? item.stableId ?? `${item.server} · ${item.name}`;
+          const health = subscriptionHealth(item);
+          const warning = health === "stalled" || health === "recovering" || health === "dead";
+          const reason = item.lastError ?? item.lastReconnectReason ?? item.endReason;
+          const cursor = item.cursor ?? null;
           return {
             key: `mcp-sub-${item.id}`,
             id: item.id,
@@ -743,13 +817,14 @@ export function builtinData(
             name: item.name,
             title: item.title ?? null,
             status: item.status,
-            cursor: item.cursor ?? null,
-            label,
-            state: subscriptionState(item.status),
-            detail:
-              (item.cursor ?? null) === null
+            state: warning ? "warn" : subscriptionState(item.status),
+            cursor,
+            label: subscriptionLabel(item),
+            detail: warning
+              ? `${health}${reason === undefined ? "" : ` · ${reason}`}`
+              : cursor === null
                 ? item.status
-                : `${item.status} · cursor ${item.cursor}`,
+                : `${item.status} · cursor ${cursor}`,
           };
         }),
       };

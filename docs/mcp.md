@@ -47,10 +47,40 @@ is started. A mixed flush keeps the new events and reports
 `GET /api/state` carries both identities in `mcpEvents.subscriptions[]`: `id`
 (the current adapter id) and `stableId`. The feed keeps one visible row per
 stable id, but remembers every adapter id that ever represented it. The events
-page and the MCP widgets use a title when one exists and otherwise show the
-stable id. `DELETE /api/mcp/subscriptions/<stableId>` stops every live adapter
+page and the MCP widgets use a title when one exists; a stream with arguments
+falls back to its stable id, while a no-argument stream shows its name.
+`DELETE /api/mcp/subscriptions/<stableId>` stops every live adapter
 stream for that identity, marks the durable entry `cancelled` with
 `enabled: false`, and is idempotent. A late status notice for the cancelled
 adapter id cannot turn the entry back on; a genuinely new subscribe gets a new
 adapter id and replaces it. A cancelled entry is not subscribed again on the
 next boot.
+
+## Stream health
+
+Cursors are opaque. Every ingest path stores the cursor the server returned,
+even when it moves backwards, when `truncated` is true, or when the result has
+no events; event ids, not cursor numbers, decide whether a frame was already
+delivered. Each row also carries `lastEventAt` (the last pushed event),
+`lastHeartbeatAt` (the keepalive that proves the push stream itself is alive),
+`lastPollAt`, `lastError` and `lastErrorAt`. A poll only proves the cursor and
+never counts as stream traffic or overwrites `lastEventAt`.
+
+The watchdog checks every 15 seconds. A push stream that delivers no event and
+no heartbeat for 60 seconds (three heartbeat intervals) is marked `stalled`
+and reopened from its persisted cursor. The row reads `recovering` while that
+unsubscribe + subscribe runs. A successful re-open stays `active`, but its
+recovery is not confirmed until the first heartbeat or pushed event; without
+one the next silence window counts as a failed recovery. Two failed recoveries
+mark it `dead`, stop timer retries for that row and leave the reason visible.
+`state` is one of `active`, `stalled`, `recovering`, `dead` or `cancelled` on
+every subscription. The MCP status card and the events page paint `stalled`
+and `dead` rows in the warning colour and show `lastError` or
+`lastReconnectReason`, so a quiet stream cannot look healthy.
+
+For a test or a small deployment the defaults can be shortened with
+`PI_MCP_WATCHDOG_INTERVAL_MS`, `PI_MCP_HEARTBEAT_INTERVAL_MS` (the stall limit
+becomes three of these unless overridden) and `PI_MCP_STALL_MS`. A successful
+protocol connection also clears every stale boot failure for that server, so
+availability is recomputed from the latest observation rather than a
+write-once list.

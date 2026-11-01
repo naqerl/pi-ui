@@ -12,8 +12,17 @@ import type { Transport } from "@modelcontextprotocol/client";
  */
 
 const EVENT_METHOD = "notifications/events/event";
+const HEARTBEAT_METHOD = "notifications/events/heartbeat";
 const STREAM_METHOD = "events/stream";
 const SUBSCRIPTION_META = "io.modelcontextprotocol/subscriptionId";
+
+/** A heartbeat proves the push stream is alive; an activation does not. */
+export interface EventTraffic {
+  readonly subscriptionId?: string;
+  readonly method: string;
+  readonly cursor: string | null;
+  readonly at: string;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -50,6 +59,7 @@ export function checkEventNotifications(
   transport: Transport,
   server: string,
   log: (line: string) => void = (line) => console.warn(line),
+  observe?: (traffic: EventTraffic) => void,
 ): Transport {
   let onMessage = transport.onmessage;
   /** Open `events/stream` request id → requested stream name. */
@@ -60,16 +70,31 @@ export function checkEventNotifications(
     const frame = message as unknown;
     if (isRecord(frame)) {
       if (!("method" in frame) && typeof frame.id === "string") streams.delete(frame.id);
-      if (frame.method === EVENT_METHOD && !("id" in frame) && isRecord(frame.params)) {
+      if (!("id" in frame) && isRecord(frame.params)) {
         const meta = frame.params._meta;
         const id = isRecord(meta) ? meta[SUBSCRIPTION_META] : undefined;
-        const reason = eventRejection(
-          frame.params,
-          typeof id === "string" ? streams.get(id) : undefined,
-        );
-        if (reason !== null && !reported.has(reason)) {
-          reported.add(reason);
-          log(`[mcp] ${server}: events/event ${reason}; pi-mcp-events drops it`);
+        const subscriptionId = typeof id === "string" ? id : undefined;
+        if (observe !== undefined && frame.method === HEARTBEAT_METHOD) {
+          try {
+            observe({
+              ...(subscriptionId === undefined ? {} : { subscriptionId }),
+              method: frame.method,
+              cursor: typeof frame.params.cursor === "string" ? frame.params.cursor : null,
+              at: new Date().toISOString(),
+            });
+          } catch {
+            // Observing traffic must never affect frame delivery.
+          }
+        }
+        if (frame.method === EVENT_METHOD) {
+          const reason = eventRejection(
+            frame.params,
+            subscriptionId === undefined ? undefined : streams.get(subscriptionId),
+          );
+          if (reason !== null && !reported.has(reason)) {
+            reported.add(reason);
+            log(`[mcp] ${server}: events/event ${reason}; pi-mcp-events drops it`);
+          }
         }
       }
     }

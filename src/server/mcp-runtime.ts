@@ -825,8 +825,8 @@ export class McpRuntime {
    */
   async reopenSubscription(
     record: McpSubscriptionRecord,
-    cursor: string,
-  ): Promise<{ id?: string; cursor: string; status: string; endReason?: string }> {
+    cursor: string | null,
+  ): Promise<{ id?: string; cursor: string | null; status: string; endReason?: string }> {
     if (this.toolNames.includes("mcp_events")) {
       if (record.id !== null && record.id !== undefined && record.id.length > 0) {
         await this.shim
@@ -862,8 +862,8 @@ export class McpRuntime {
 
   private async reopenDirect(
     record: McpSubscriptionRecord,
-    cursor: string,
-  ): Promise<{ id: string; cursor: string; status: string; endReason?: string }> {
+    cursor: string | null,
+  ): Promise<{ id: string; cursor: string | null; status: string; endReason?: string }> {
     if (record.id !== null && record.id !== undefined) {
       const previous = this.directSubscriptions.get(record.id);
       if (previous !== undefined) {
@@ -1167,10 +1167,11 @@ export class McpRuntime {
       throw protocolError(name, error);
     }
     // A server that was down during the boot probe can come back later. The
-    // protocol connection is a live probe of the same definition, so clear the
-    // boot failure instead of reporting it for the rest of the process.
-    const failure = this.failedServers.findIndex((entry) => entry.name === name);
-    if (failure !== -1) this.failedServers.splice(failure, 1);
+    // protocol connection is a live probe of the same definition, so clear
+    // every failure for this server instead of writing a stale array once.
+    for (let failure = this.failedServers.length - 1; failure >= 0; failure -= 1) {
+      if (this.failedServers[failure]?.name === name) this.failedServers.splice(failure, 1);
+    }
     // A server that was unavailable during the boot probe can now restore its
     // deferred subscriptions. The delay keeps the current subscribe first.
     setTimeout(() => {
@@ -1186,7 +1187,19 @@ export class McpRuntime {
     });
     const connection: ProtocolServerConnection = {
       status: "connected",
-      transport: checkEventNotifications(watched, name),
+      transport: checkEventNotifications(watched, name, undefined, (traffic) => {
+        if (traffic.subscriptionId === undefined) return;
+        this.deliverNotice({
+          customType: "mcp-events-traffic",
+          details: {
+            subscription_id: traffic.subscriptionId,
+            server: name,
+            method: traffic.method,
+            cursor: traffic.cursor,
+            timestamp: traffic.at,
+          },
+        });
+      }),
       client,
       activeProtocolOperations: 0,
       lastUsedAt: Date.now(),
