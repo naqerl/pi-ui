@@ -4,6 +4,12 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 ## Unreleased
 
+## 1.6.46 - 2026-11-01
+
+- The browser suite now runs in parallel and finishes in minutes instead of an hour: several app shards per box, workers derived from the available CPUs, and CI fails when the suite exceeds ten minutes.
+- The tasks e2e file was split into views, body, title and project specs so one change no longer re-runs a thousand lines.
+- Shard startup was hardened for concurrent load, which is what made the parallel run flaky at first.
+
 ## 1.6.45 - 2026-11-01
 
 - The Active / Blocked / Proposed filter row is gone from the tasks list: every task renders in one list under its state heading, so the counts no longer squeeze the working status, and on a narrow window nothing scrolls sideways any more.
