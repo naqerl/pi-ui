@@ -4,7 +4,7 @@ import type { EntryRecord } from "@earendil-works/pi-durable";
 import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MessageBubble } from "../src/client/ChatView.js";
-import { ChatService } from "../src/server/chat-service.js";
+import { ChatService, mcpMergedNoticeTexts } from "../src/server/chat-service.js";
 import {
   appendMcpNotice,
   buildTranscript,
@@ -15,6 +15,7 @@ import { MCP_EVENTS_HEAD } from "../src/shared/notices.js";
 import type { QueuedMessageGroup } from "../src/shared/queue.js";
 import {
   groupQueuedMessages,
+  mergeQueuedNotices,
   pendingQueuedMessage,
   queuedMessageIds,
   queuedNoticeGlyph,
@@ -305,6 +306,76 @@ test("an MCP update after a queued first notice stays visible", async () => {
   assert.equal(message.id, "m-queued-notice-key");
   assert.equal(message.text, updated);
   assert.equal(message.notice?.kind, "mcp");
+});
+
+test("the drain merge and the chip agree on one run of notices", () => {
+  const items = [
+    notice("1", MCP_NOTICE_ENTRY_KIND, "MCP events"),
+    notice("2", MCP_NOTICE_ENTRY_KIND, "MCP events"),
+    notice("3", MCP_NOTICE_ENTRY_KIND, "MCP events"),
+    human("4"),
+    notice("5", MCP_NOTICE_ENTRY_KIND, "MCP events"),
+  ];
+  const merged = mergeQueuedNotices(items);
+  assert.deepEqual(
+    merged.map((group) => [group.item.id, group.count, group.ids]),
+    [
+      ["1", 3, ["1", "2", "3"]],
+      ["4", 1, ["4"]],
+      ["5", 1, ["5"]],
+    ],
+  );
+  assert.deepEqual(mergeQueuedNotices(items), groupQueuedMessages(items));
+});
+
+test("a single queued MCP event keeps its one-event envelope", async () => {
+  const { chat, submissions } = queuedChat();
+  const text = mcpText();
+  await chat.submitMcpEventNotice(text);
+  const item = firstQueued(chat);
+  const groups = mergeQueuedNotices([item]);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0]?.count, 1);
+  assert.deepEqual(groups[0]?.ids, [item.id]);
+  const submission = submissions[0] as { content: string };
+  assert.equal(submission.content, text, "the model still receives exactly today's text");
+});
+
+test("a bounded merge counts down the events still remaining", () => {
+  const events = Array.from({ length: 5 }, (_, index) => ({
+    eventId: `big-${index}`,
+    data: { text: "x".repeat(12_000) },
+  }));
+  const texts = mcpMergedNoticeTexts({ head: MCP_EVENTS_HEAD, items: events, dropped: 0 }, events);
+  assert.ok(texts.length > 2, "the probe must split into more than two parts");
+
+  const carried: number[] = [];
+  const remaining: number[] = [];
+  const ids: string[] = [];
+  for (const text of texts) {
+    const match = /carries (\d+) of (\d+) merged events; (\d+) remain\./.exec(text);
+    assert.ok(match !== null);
+    carried.push(Number(match[1]));
+    remaining.push(Number(match[3]));
+    const payload = JSON.parse(text.slice(text.indexOf("\n") + 1)) as {
+      events: Array<{ eventId: string }>;
+    };
+    ids.push(...payload.events.map((event) => event.eventId));
+  }
+
+  let delivered = 0;
+  assert.deepEqual(
+    remaining,
+    carried.map((count) => {
+      delivered += count;
+      return events.length - delivered;
+    }),
+  );
+  assert.equal(remaining.at(-1), 0, "the last part carries everything left");
+  assert.deepEqual(
+    ids,
+    events.map((event) => event.eventId),
+  );
 });
 
 test("a burst of one notice kind is one chip that cancels every id", async () => {

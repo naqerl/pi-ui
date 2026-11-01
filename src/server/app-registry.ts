@@ -13,6 +13,7 @@ import { createDashboardTools } from "./dashboard-tools.js";
 import { createDiagramTools, type DiagramBridge } from "./diagram-tools.js";
 import { createJobTools } from "./job-tools.js";
 import type { JobManager } from "./jobs.js";
+import { createMcpQueueMergeExtension } from "./mcp-queue-merge.js";
 import { type McpRuntime, startMcpRuntime } from "./mcp-runtime.js";
 import type { SnapshotCache } from "./memory/snapshot.js";
 import type { MemoryStore } from "./memory/store.js";
@@ -74,6 +75,7 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
       tools: taskTools,
     }),
   );
+  registry.install(createMcpQueueMergeExtension());
 
   const jobTools = options.jobs === undefined ? [] : createJobTools(options.jobs);
   if (jobTools.length > 0) {

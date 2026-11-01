@@ -53,9 +53,10 @@ export interface QueuedMessageGroup {
 
 /**
  * Collapses consecutive queued machine notices of the same kind into one chip. A human
- * queued message breaks the run, and different notice kinds never share a chip.
+ * queued message breaks the run, and different notice kinds never share a chip. The
+ * server's drain merge uses the same run rule, so a chip always stands for one delivery.
  */
-export function groupQueuedMessages(items: readonly QueuedMessage[]): QueuedMessageGroup[] {
+export function mergeQueuedNotices(items: readonly QueuedMessage[]): QueuedMessageGroup[] {
   const groups: QueuedMessageGroup[] = [];
   for (const item of items) {
     const previous = groups[groups.length - 1];
@@ -69,6 +70,9 @@ export function groupQueuedMessages(items: readonly QueuedMessage[]): QueuedMess
   }
   return groups;
 }
+
+/** Older name for the same grouping rule, kept for callers that predate the merge. */
+export const groupQueuedMessages = mergeQueuedNotices;
 
 /** The queued submission ids a pending chip's cancel button removes. */
 export function queuedMessageIds(message: ChatMessage): string[] {

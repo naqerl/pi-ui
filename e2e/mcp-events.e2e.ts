@@ -1,3 +1,6 @@
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
@@ -112,4 +115,660 @@ test("a subscription's events reach the feed, the chat notice and both MCP widge
   await expect
     .poll(async () => (await hubSubscription(browser))?.status, { timeout: 60_000 })
     .toBe("stopped");
+});
+
+const burstNotices = (browser: Page) =>
+  browser.evaluate(async () => {
+    const res = await fetch("/api/state");
+    const state = (await res.json()) as {
+      run?: string;
+      messages?: Array<{
+        notice?: { kind?: string; summary?: string; events?: Array<{ id?: string | null }> };
+      }>;
+    };
+    return {
+      run: state.run ?? "",
+      notices: (state.messages ?? [])
+        .filter((message) => message.notice?.kind === "mcp")
+        .map((message) => ({
+          summary: message.notice?.summary ?? "",
+          ids: (message.notice?.events ?? []).map((event) => event.id ?? ""),
+        })),
+    };
+  });
+
+test("a burst of queued MCP events is delivered as one notice", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 1280, height: 900 });
+  await app.open("/");
+  const send = async (calls: unknown[]) => {
+    await screen.getByRole("textbox", "Message").fill(`TOOLCALLS ${JSON.stringify(calls)}`);
+    await screen.getByRole("button", "Send").tap();
+  };
+
+  await send([{ name: "tool_search", arguments: { query: "mcp_events" } }]);
+  await expect
+    .poll(
+      () =>
+        browser.evaluate(async () => {
+          const res = await fetch("/api/state");
+          const state = (await res.json()) as { run?: string };
+          return state.run === "idle";
+        }),
+      { timeout: 20_000 },
+    )
+    .toBe(true);
+
+  // Subscribe and hold the tool round open until all three events have queued.
+  const tag = Date.now();
+  const prefix = `burst-${tag}`;
+  const ids = [1, 2, 3].map((index) => `${prefix}-${index}`);
+  const release = join(tmpdir(), `pi-ui-mcp-burst-${tag}`);
+  const wait = `for i in $(seq 600); do [ -e '${release}' ] && break; sleep 0.1; done; echo released`;
+  try {
+    await send([
+      {
+        name: "mcp_events",
+        arguments: {
+          action: "subscribe",
+          server: "stub",
+          name: "stub-burst",
+          arguments: { prefix },
+        },
+      },
+      { name: "bash", arguments: { command: wait } },
+    ]);
+
+    await expect
+      .poll(
+        () =>
+          browser.evaluate(() =>
+            [...document.querySelectorAll<HTMLElement>('[data-testid="queued-notice-chip"]')].some(
+              (node) => (node.textContent ?? "").includes("3 queued"),
+            ),
+          ),
+        { timeout: 20_000 },
+      )
+      .toBe(true);
+  } finally {
+    writeFileSync(release, "");
+  }
+
+  await expect
+    .poll(
+      async () => {
+        const state = await burstNotices(browser);
+        const burst = state.notices.filter((notice) =>
+          notice.ids.some((id) => id.startsWith(`${prefix}-`)),
+        );
+        return {
+          run: state.run,
+          count: burst.length,
+          ids: burst[0]?.ids ?? [],
+          summary: burst[0]?.summary ?? "",
+        };
+      },
+      { timeout: 30_000 },
+    )
+    .toEqual({
+      run: "idle",
+      count: 1,
+      ids,
+      summary: "MCP stub: 3 stub-burst.event events",
+    });
+
+  const subscription = (await mcpEvents(browser)).subscriptions.find(
+    (item) => item.name === "stub-burst",
+  );
+  expect(subscription?.id).toBeTruthy();
+  if (subscription !== undefined && subscription.id.length > 0) {
+    await send([
+      {
+        name: "mcp_events",
+        arguments: { action: "unsubscribe", subscription_id: subscription.id },
+      },
+    ]);
+    await expect
+      .poll(
+        async () =>
+          (await mcpEvents(browser)).subscriptions.find((item) => item.name === "stub-burst")
+            ?.status,
+        { timeout: 20_000 },
+      )
+      .toBe("stopped");
+  }
+});
+
+const chipCount = (browser: Page, label: string) =>
+  browser.evaluate((text) => {
+    return [...document.querySelectorAll<HTMLElement>('[data-testid="queued-notice-chip"]')].filter(
+      (node) => (node.textContent ?? "").includes(text),
+    ).length;
+  }, label);
+
+test("a typed message between two bursts stays between their notices", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 1280, height: 900 });
+  await app.open("/");
+  const send = async (calls: unknown[]) => {
+    await screen.getByRole("textbox", "Message").fill(`TOOLCALLS ${JSON.stringify(calls)}`);
+    await screen.getByRole("button", "Send").tap();
+  };
+  await send([{ name: "tool_search", arguments: { query: "mcp_events" } }]);
+  await expect
+    .poll(
+      () =>
+        browser.evaluate(async () => {
+          const res = await fetch("/api/state");
+          const state = (await res.json()) as { run?: string };
+          return state.run === "idle";
+        }),
+      { timeout: 20_000 },
+    )
+    .toBe(true);
+
+  const tag = Date.now();
+  const human = `between bursts ${tag}`;
+  const earlyPrefix = `early-${tag}`;
+  const latePrefix = `late-${tag}`;
+  const earlyIds = [1, 2, 3].map((index) => `${earlyPrefix}-${index}`);
+  const lateIds = [1, 2, 3].map((index) => `${latePrefix}-${index}`);
+  const release = join(tmpdir(), `pi-ui-mcp-between-${tag}`);
+  const lateRelease = join(tmpdir(), `pi-ui-mcp-between-late-${tag}`);
+  const wait = `for i in $(seq 600); do [ -e '${release}' ] && break; sleep 0.1; done; echo released`;
+  try {
+    await send([
+      {
+        name: "mcp_events",
+        arguments: {
+          action: "subscribe",
+          server: "stub",
+          name: "stub-burst-early",
+          arguments: { prefix: earlyPrefix },
+        },
+      },
+      {
+        name: "mcp_events",
+        arguments: {
+          action: "subscribe",
+          server: "stub",
+          name: "stub-burst-late",
+          arguments: { release: lateRelease, prefix: latePrefix },
+        },
+      },
+      { name: "bash", arguments: { command: wait } },
+    ]);
+
+    // The early burst queues first; the late stream is still waiting for its release file.
+    await expect.poll(() => chipCount(browser, "3 queued"), { timeout: 20_000 }).toBe(1);
+    const queued = await browser.evaluate(async (text) => {
+      const response = await fetch("/api/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, mode: "queue" }),
+      });
+      return response.ok;
+    }, human);
+    expect(queued).toBe(true);
+    await expect(
+      browser.locator('[data-pending-queue="true"]').filter({ hasText: human }),
+    ).toHaveCount(1);
+
+    // The human message is visibly between the runs before the late burst exists.
+    writeFileSync(lateRelease, "");
+    await expect.poll(() => chipCount(browser, "3 queued"), { timeout: 20_000 }).toBe(2);
+  } finally {
+    writeFileSync(release, "");
+  }
+
+  await expect
+    .poll(
+      async () => {
+        const state = await browser.evaluate(async () => {
+          const res = await fetch("/api/state");
+          const value = (await res.json()) as {
+            run?: string;
+            messages?: Array<{
+              role?: string;
+              text?: string;
+              notice?: { kind?: string; events?: Array<{ id?: string | null }> };
+            }>;
+          };
+          return { run: value.run ?? "", messages: value.messages ?? [] };
+        });
+        const ids = (message: (typeof state.messages)[number]) =>
+          (message.notice?.events ?? []).map((event) => event.id ?? "");
+        const early = state.messages.findIndex((message) =>
+          ids(message).includes(`${earlyPrefix}-1`),
+        );
+        const late = state.messages.findIndex((message) =>
+          ids(message).includes(`${latePrefix}-1`),
+        );
+        const humanAt = state.messages.findIndex(
+          (message) => message.role === "user" && message.text === human,
+        );
+        return {
+          run: state.run,
+          early: early < 0 ? [] : ids(state.messages[early] ?? {}),
+          late: late < 0 ? [] : ids(state.messages[late] ?? {}),
+          between: early >= 0 && humanAt > early && late > humanAt,
+          notices: state.messages.filter(
+            (message) =>
+              message.notice?.kind === "mcp" &&
+              ids(message).some(
+                (id) => id.startsWith(`${earlyPrefix}-`) || id.startsWith(`${latePrefix}-`),
+              ),
+          ).length,
+        };
+      },
+      { timeout: 30_000 },
+    )
+    .toEqual({
+      run: "idle",
+      early: earlyIds,
+      late: lateIds,
+      between: true,
+      notices: 2,
+    });
+
+  for (const name of ["stub-burst-early", "stub-burst-late"]) {
+    const subscription = (await mcpEvents(browser)).subscriptions.find(
+      (item) => item.name === name,
+    );
+    if (subscription === undefined || subscription.id.length === 0) continue;
+    await send([
+      {
+        name: "mcp_events",
+        arguments: { action: "unsubscribe", subscription_id: subscription.id },
+      },
+    ]);
+    await expect
+      .poll(
+        async () =>
+          (await mcpEvents(browser)).subscriptions.find((item) => item.name === name)?.status,
+        { timeout: 20_000 },
+      )
+      .toBe("stopped");
+  }
+});
+
+test("cancelling the merged chip removes every queued id", async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 900 });
+  await app.open("/");
+  const send = async (calls: unknown[]) => {
+    await screen.getByRole("textbox", "Message").fill(`TOOLCALLS ${JSON.stringify(calls)}`);
+    await screen.getByRole("button", "Send").tap();
+  };
+  await send([{ name: "tool_search", arguments: { query: "mcp_events" } }]);
+  await expect
+    .poll(
+      () =>
+        browser.evaluate(async () => {
+          const res = await fetch("/api/state");
+          const state = (await res.json()) as { run?: string };
+          return state.run === "idle";
+        }),
+      { timeout: 20_000 },
+    )
+    .toBe(true);
+
+  const tag = Date.now();
+  const prefix = `cancel-${tag}`;
+  const release = join(tmpdir(), `pi-ui-mcp-cancel-${tag}`);
+  const wait = `for i in $(seq 600); do [ -e '${release}' ] && break; sleep 0.1; done; echo released`;
+  try {
+    await send([
+      {
+        name: "mcp_events",
+        arguments: {
+          action: "subscribe",
+          server: "stub",
+          name: "stub-burst-cancel",
+          arguments: { prefix },
+        },
+      },
+      { name: "bash", arguments: { command: wait } },
+    ]);
+    await expect.poll(() => chipCount(browser, "3 queued"), { timeout: 20_000 }).toBe(1);
+    await browser
+      .locator('[data-testid="queued-notice-chip"]')
+      .filter({ hasText: "3 queued" })
+      .getByRole("button", { name: "cancel" })
+      .tap();
+    await expect
+      .poll(
+        () =>
+          browser.evaluate(async () => {
+            const res = await fetch("/api/state");
+            const state = (await res.json()) as { queue?: unknown[] };
+            return {
+              queue: (state.queue ?? []).length,
+              chips: document.querySelectorAll('[data-testid="queued-notice-chip"]').length,
+            };
+          }),
+        { timeout: 20_000 },
+      )
+      .toEqual({ queue: 0, chips: 0 });
+  } finally {
+    writeFileSync(release, "");
+  }
+
+  await expect
+    .poll(
+      async () => {
+        const state = await browser.evaluate(async () => {
+          const res = await fetch("/api/state");
+          const value = (await res.json()) as {
+            run?: string;
+            messages?: Array<{
+              notice?: { kind?: string; events?: Array<{ id?: string | null }> };
+            }>;
+          };
+          return { run: value.run ?? "", messages: value.messages ?? [] };
+        });
+        return state.messages.filter(
+          (message) =>
+            message.notice?.kind === "mcp" &&
+            (message.notice?.events ?? []).some((event) =>
+              (event.id ?? "").startsWith(`${prefix}-`),
+            ),
+        ).length;
+      },
+      { timeout: 30_000 },
+    )
+    .toBe(0);
+
+  const subscription = (await mcpEvents(browser)).subscriptions.find(
+    (item) => item.name === "stub-burst-cancel",
+  );
+  if (subscription !== undefined && subscription.id.length > 0) {
+    await send([
+      {
+        name: "mcp_events",
+        arguments: { action: "unsubscribe", subscription_id: subscription.id },
+      },
+    ]);
+    await expect
+      .poll(
+        async () =>
+          (await mcpEvents(browser)).subscriptions.find((item) => item.name === "stub-burst-cancel")
+            ?.status,
+        { timeout: 20_000 },
+      )
+      .toBe("stopped");
+  }
+});
+
+test("a single queued MCP event stays one message with one event", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 1280, height: 900 });
+  await app.open("/");
+  const send = async (calls: unknown[]) => {
+    await screen.getByRole("textbox", "Message").fill(`TOOLCALLS ${JSON.stringify(calls)}`);
+    await screen.getByRole("button", "Send").tap();
+  };
+  await send([{ name: "tool_search", arguments: { query: "mcp_events" } }]);
+  await expect
+    .poll(
+      () =>
+        browser.evaluate(async () => {
+          const res = await fetch("/api/state");
+          const state = (await res.json()) as { run?: string };
+          return state.run === "idle";
+        }),
+      { timeout: 20_000 },
+    )
+    .toBe(true);
+
+  const tag = Date.now();
+  const prefix = `single-${tag}`;
+  const release = join(tmpdir(), `pi-ui-mcp-single-${tag}`);
+  const wait = `for i in $(seq 600); do [ -e '${release}' ] && break; sleep 0.1; done; echo released`;
+  try {
+    await send([
+      {
+        name: "mcp_events",
+        arguments: {
+          action: "subscribe",
+          server: "stub",
+          name: "stub-single",
+          arguments: { prefix },
+        },
+      },
+      { name: "bash", arguments: { command: wait } },
+    ]);
+    await expect.poll(() => chipCount(browser, "1 queued"), { timeout: 20_000 }).toBe(1);
+  } finally {
+    writeFileSync(release, "");
+  }
+
+  await expect
+    .poll(
+      async () => {
+        const state = await burstNotices(browser);
+        const single = state.notices.filter((notice) => notice.ids.includes(`${prefix}-1`));
+        return {
+          run: state.run,
+          count: single.length,
+          ids: single[0]?.ids ?? [],
+        };
+      },
+      { timeout: 30_000 },
+    )
+    .toEqual({ run: "idle", count: 1, ids: [`${prefix}-1`] });
+
+  const subscription = (await mcpEvents(browser)).subscriptions.find(
+    (item) => item.name === "stub-single",
+  );
+  if (subscription !== undefined && subscription.id.length > 0) {
+    await send([
+      {
+        name: "mcp_events",
+        arguments: { action: "unsubscribe", subscription_id: subscription.id },
+      },
+    ]);
+    await expect
+      .poll(
+        async () =>
+          (await mcpEvents(browser)).subscriptions.find((item) => item.name === "stub-single")
+            ?.status,
+        { timeout: 20_000 },
+      )
+      .toBe("stopped");
+  }
+});
+
+test("a burst over the text cap is delivered over several turns without a false remainder", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 1280, height: 900 });
+  await app.open("/");
+  const send = async (calls: unknown[]) => {
+    await screen.getByRole("textbox", "Message").fill(`TOOLCALLS ${JSON.stringify(calls)}`);
+    await screen.getByRole("button", "Send").tap();
+  };
+  await send([{ name: "tool_search", arguments: { query: "mcp_events" } }]);
+  await expect
+    .poll(
+      () =>
+        browser.evaluate(async () => {
+          const res = await fetch("/api/state");
+          const state = (await res.json()) as { run?: string };
+          return state.run === "idle";
+        }),
+      { timeout: 20_000 },
+    )
+    .toBe(true);
+
+  const tag = Date.now();
+  const prefix = `huge-${tag}`;
+  const expected = [1, 2, 3, 4, 5].map((index) => `${prefix}-${index}`);
+  const release = join(tmpdir(), `pi-ui-mcp-huge-${tag}`);
+  const wait = `for i in $(seq 600); do [ -e '${release}' ] && break; sleep 0.1; done; echo released`;
+  try {
+    await send([
+      {
+        name: "mcp_events",
+        arguments: {
+          action: "subscribe",
+          server: "stub",
+          name: "stub-huge",
+          arguments: { prefix },
+        },
+      },
+      { name: "bash", arguments: { command: wait } },
+    ]);
+    await expect.poll(() => chipCount(browser, "5 queued"), { timeout: 20_000 }).toBe(1);
+  } finally {
+    writeFileSync(release, "");
+  }
+
+  await expect
+    .poll(
+      async () => {
+        const state = await browser.evaluate(async () => {
+          const res = await fetch("/api/state");
+          const value = (await res.json()) as {
+            run?: string;
+            messages?: Array<{
+              text?: string;
+              notice?: { kind?: string; events?: Array<{ id?: string | null }> };
+            }>;
+          };
+          return { run: value.run ?? "", messages: value.messages ?? [] };
+        });
+        const parts = state.messages
+          .filter((message) => message.notice?.kind === "mcp")
+          .map((message) => ({
+            ids: (message.notice?.events ?? []).map((event) => event.id ?? ""),
+            text: message.text ?? "",
+          }))
+          .filter((part) => part.ids.some((id) => id.startsWith(`${prefix}-`)))
+          .map((part) => {
+            const summary = /carries (\d+) of (\d+) merged events; (\d+) remain\./.exec(part.text);
+            return {
+              ids: part.ids,
+              carried: summary === null ? 0 : Number(summary[1]),
+              total: summary === null ? 0 : Number(summary[2]),
+              remain: summary === null ? -1 : Number(summary[3]),
+              summaries: (part.text.match(/This notice carries/g) ?? []).length,
+            };
+          });
+        if (state.run !== "idle" || parts.length <= 2) return false;
+        let delivered = 0;
+        for (const part of parts) {
+          if (part.summaries !== 1 || part.total !== expected.length) return false;
+          if (part.carried !== part.ids.length) return false;
+          delivered += part.ids.length;
+          if (part.remain !== expected.length - delivered) return false;
+        }
+        const ids = parts.flatMap((part) => part.ids);
+        return delivered === expected.length && ids.join(",") === expected.join(",");
+      },
+      { timeout: 120_000 },
+    )
+    .toBe(true);
+});
+
+test("an update for a queued burst subject cannot hide the merged notice", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 1280, height: 900 });
+  await app.open("/");
+  const send = async (calls: unknown[]) => {
+    await screen.getByRole("textbox", "Message").fill(`TOOLCALLS ${JSON.stringify(calls)}`);
+    await screen.getByRole("button", "Send").tap();
+  };
+  await send([{ name: "tool_search", arguments: { query: "mcp_events" } }]);
+  await expect
+    .poll(
+      () =>
+        browser.evaluate(async () => {
+          const res = await fetch("/api/state");
+          const state = (await res.json()) as { run?: string };
+          return state.run === "idle";
+        }),
+      { timeout: 20_000 },
+    )
+    .toBe(true);
+
+  const tag = Date.now();
+  const prefix = `update-${tag}`;
+  const expected = [1, 2, 3].map((index) => `${prefix}-${index}`);
+  const release = join(tmpdir(), `pi-ui-mcp-update-${tag}`);
+  const wait = `for i in $(seq 600); do [ -e '${release}' ] && break; sleep 0.1; done; echo released`;
+  try {
+    await send([
+      {
+        name: "mcp_events",
+        arguments: {
+          action: "subscribe",
+          server: "stub",
+          name: "stub-burst-update",
+          arguments: { prefix },
+        },
+      },
+      { name: "bash", arguments: { command: wait } },
+    ]);
+    await expect.poll(() => chipCount(browser, "3 queued"), { timeout: 20_000 }).toBe(1);
+    await expect
+      .poll(
+        async () =>
+          (await mcpEvents(browser)).events.some((event) => event.id === `${prefix}-update`),
+        { timeout: 20_000 },
+      )
+      .toBe(true);
+  } finally {
+    writeFileSync(release, "");
+  }
+
+  await expect
+    .poll(
+      async () => {
+        const state = await burstNotices(browser);
+        const merged = state.notices.filter((notice) =>
+          expected.every((id) => notice.ids.includes(id)),
+        );
+        return {
+          run: state.run,
+          count: merged.length,
+          ids: merged[0]?.ids ?? [],
+        };
+      },
+      { timeout: 30_000 },
+    )
+    .toEqual({ run: "idle", count: 1, ids: expected });
+
+  const subscription = (await mcpEvents(browser)).subscriptions.find(
+    (item) => item.name === "stub-burst-update",
+  );
+  if (subscription !== undefined && subscription.id.length > 0) {
+    await send([
+      {
+        name: "mcp_events",
+        arguments: { action: "unsubscribe", subscription_id: subscription.id },
+      },
+    ]);
+    await expect
+      .poll(
+        async () =>
+          (await mcpEvents(browser)).subscriptions.find((item) => item.name === "stub-burst-update")
+            ?.status,
+        { timeout: 20_000 },
+      )
+      .toBe("stopped");
+  }
 });
