@@ -1,6 +1,8 @@
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
+import { removeTasks } from "./tasks-helpers.js";
+
 test("switches to tasks with a horizontal swipe and back again", async ({
   app,
   browser,
@@ -352,6 +354,67 @@ test("shows created and closed times at the bottom right of a task card", async 
     belowTitle: true,
     noOverflow: true,
   });
+});
+
+test("keeps the id chip at the top right above the created line", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 1280, height: 800 });
+  await app.open("/?page=tasks");
+  const composer = screen.getByRole("textbox", "New task");
+  await composer.fill("Chip anchor");
+  await screen.getByRole("button", "Add task").tap();
+  const list = screen.getByTestId("task-list");
+  await expect(list.getByText("Chip anchor", { exact: true })).toBeVisible();
+
+  const cardId = await browser.evaluate(() => {
+    const card = [...document.querySelectorAll("[data-task-card]")].find((item) =>
+      item.textContent?.includes("Chip anchor"),
+    );
+    const chip = card?.querySelector<HTMLElement>('[data-testid^="task-id-"]');
+    const title = card?.querySelector<HTMLElement>(".line-clamp-2");
+    if (
+      !(card instanceof HTMLElement) ||
+      !(chip instanceof HTMLElement) ||
+      !(title instanceof HTMLElement)
+    ) {
+      return null;
+    }
+    const style = getComputedStyle(chip);
+    const box = card.getBoundingClientRect();
+    const describedBy = (card.getAttribute("aria-describedby") ?? "")
+      .split(/\s+/)
+      .filter((part) => part !== "");
+    return {
+      id: chip.textContent?.trim() ?? "",
+      title: chip.getAttribute("title"),
+      label: chip.getAttribute("aria-label"),
+      classes: chip.className,
+      background: style.backgroundColor,
+      afterTitle: (chip.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_PRECEDING) !== 0,
+      rightAligned: Math.abs(box.right - chip.getBoundingClientRect().right) <= 16,
+      idCount: card.querySelectorAll('[data-testid^="task-id-"]').length,
+      describedBy,
+      describedIsChip: describedBy.some((part) => document.getElementById(part) === chip),
+    };
+  });
+  expect(cardId?.id).toHaveLength(4);
+  expect(cardId?.title).toBe(cardId?.id);
+  expect(cardId?.label).toBe(`task ${cardId?.id}`);
+  expect(cardId?.classes).toContain("font-mono");
+  expect(cardId?.classes).toContain("text-[11px]");
+  expect(cardId?.background).toBe("rgba(0, 0, 0, 0)");
+  expect(cardId?.afterTitle).toBe(true);
+  expect(cardId?.rightAligned).toBe(true);
+  expect(cardId?.idCount).toBe(1);
+  expect(cardId?.describedBy).toContain(`task-id-${cardId?.id}`);
+  expect(cardId?.describedIsChip).toBe(true);
+  await expect(composer).toHaveValue("");
+  await expect(screen.getByTestId("subtask-progress")).toHaveCount(0);
+
+  await removeTasks(browser, ["Chip anchor"]);
 });
 
 test("shows the single task list without filter tabs and groups done work by day", async ({
