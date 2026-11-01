@@ -39,7 +39,6 @@ import { NoticeLine } from "./NoticeView";
 import { PiMenu } from "./PiMenu";
 import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
 import type { ChatStats } from "./StatsView";
-import type { TaskFilter } from "./TaskFilters";
 import { createTask } from "./task-client";
 import { groupTimeline, type TimelineGroup } from "./timeline-groups";
 import type { SendOutcome, TimelineItem } from "./use-chat";
@@ -1155,7 +1154,6 @@ export function ChatView({
   useViewportHeight();
   const pager = usePager(PAGES.length, pageFromLocation());
   const [armedParentId, setArmedParentId] = useState<string | null>(null);
-  const [taskFilter, setTaskFilter] = useState<TaskFilter>("active");
   const [composerError, setComposerError] = useState<string | null>(null);
   const [activityRun, setActivityRun] = useState<string | null | undefined>(
     activityRunFromLocation,
@@ -1476,8 +1474,6 @@ export function ChatView({
                   ready={ready}
                   footerClearance={footerClearance}
                   armedParentId={armed?.id ?? null}
-                  filter={taskFilter}
-                  onFilterChange={setTaskFilter}
                   onArmParent={setArmedParentId}
                   onLedger={applyTasks}
                 />

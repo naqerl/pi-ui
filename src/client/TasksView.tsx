@@ -33,7 +33,6 @@ import { cn } from "./lib/utils";
 import { InlineMarkdown, Markdown, plainInline } from "./markdown";
 import { mediaUrl } from "./media-client";
 import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
-import { type TaskFilter, TaskFilters } from "./TaskFilters";
 import { removeTask, type TaskOutcome, updateTask } from "./task-client";
 
 const LONG_PRESS_MS = 500;
@@ -48,8 +47,6 @@ interface TasksViewProps {
   ready: boolean;
   footerClearance: number;
   armedParentId: string | null;
-  filter: TaskFilter;
-  onFilterChange: (filter: TaskFilter) => void;
   onArmParent: (id: string | null) => void;
   onLedger: (ledger: TaskLedger) => void;
 }
@@ -276,8 +273,6 @@ export function TasksView({
   ready,
   footerClearance,
   armedParentId,
-  filter,
-  onFilterChange,
   onArmParent,
   onLedger,
 }: TasksViewProps) {
@@ -306,7 +301,6 @@ export function TasksView({
       return left === right ? (a.id < b.id ? -1 : 1) : left < right ? -1 : 1;
     });
   const failedTasks = openTasks.filter((task) => state(task) === "failed");
-  const blockedTasks = openTasks.filter((task) => state(task) === "blocked");
   const ids = new Set(activeTasks.map((task) => task.id));
   const roots = activeTasks
     .filter((task) => task.parentId === null || !ids.has(task.parentId))
@@ -343,17 +337,13 @@ export function TasksView({
   const menuTask = menu === null ? undefined : activeTasks.find((task) => task.id === menu.id);
   const openTask = openTaskId === null ? undefined : tasks.find((task) => task.id === openTaskId);
 
-  // The first row the current filter shows, used when the desktop has nothing selected.
+  // The first row the list shows, used when the desktop has nothing selected.
   const firstVisibleId =
-    filter === "proposed"
-      ? (proposedTasks[0]?.id ?? null)
-      : filter === "blocked"
-        ? (blockedTasks[0]?.id ?? null)
-        : (proposedTasks[0]?.id ??
-          failedTasks[0]?.id ??
-          (grouped ? projectGroups.flatMap(([, items]) => items) : activeRoots)[0]?.id ??
-          doneRoots[0]?.id ??
-          null);
+    proposedTasks[0]?.id ??
+    failedTasks[0]?.id ??
+    (grouped ? projectGroups.flatMap(([, items]) => items) : activeRoots)[0]?.id ??
+    doneRoots[0]?.id ??
+    null;
   useEffect(() => {
     if (!wide) return;
     setOpenTaskId((current) => {
@@ -438,111 +428,90 @@ export function TasksView({
 
   const list = (
     <div className="flex min-w-0 flex-col gap-5" data-testid="task-list">
-      <TaskFilters tasks={tasks} activity={activity} filter={filter} onChange={onFilterChange} />
-      {filter === "active" && (
-        <>
-          {(proposedTasks.length > 0 || failedTasks.length > 0) && (
-            <Section title="Needs you" count={proposedTasks.length + failedTasks.length} id="needs">
-              <ul id="proposed-tasks" className="flex flex-col gap-2" data-testid="task-proposals">
-                {proposedTasks.map(proposal)}
-                {failedTasks.map((task) => (
-                  <TaskRow key={task.id} task={task} depth={0} {...rowProps} flat />
-                ))}
-              </ul>
-            </Section>
-          )}
-          {activeRoots.length > 0 && (
-            <Section
-              title="Open"
-              count={openTasks.length - failedTasks.length}
-              id="active"
-              dark
-              collapsible
-            >
-              {grouped ? (
-                projectGroups.map(([name, items]) => (
-                  <Group
-                    key={name ?? ""}
-                    testId={`task-project-${name ?? "none"}`}
-                    label={name ?? "No project"}
-                    count={items.length}
-                    defaultOpen
-                  >
-                    <ul className="flex flex-col gap-2">
-                      {items.map((task) => (
-                        <TaskRow
-                          key={task.id}
-                          task={task}
-                          depth={0}
-                          {...rowProps}
-                          showProject={false}
-                        />
-                      ))}
-                    </ul>
-                  </Group>
-                ))
-              ) : (
-                <ul className="flex flex-col gap-2">
-                  {activeRoots.map((task) => (
-                    <TaskRow key={task.id} task={task} depth={0} {...rowProps} />
-                  ))}
-                </ul>
-              )}
-            </Section>
-          )}
-          {days.length > 0 && (
-            <section className="flex flex-col gap-2" data-testid="task-section-done">
-              {days.slice(0, dayLimit + 1).map(([key, items]) => (
-                <Group
-                  key={key}
-                  testId={`task-day-${key}`}
-                  label={doneDayLabel(key, now)}
-                  count={items.length}
-                  defaultOpen={key === today}
-                  dark
-                >
-                  {items.length === 0 ? (
-                    <p className="px-1 text-sm leading-5 text-muted-foreground">
-                      Nothing done yet today.
-                    </p>
-                  ) : (
-                    <ul className="flex flex-col gap-2">
-                      {items.map((task) => (
-                        <TaskRow key={task.id} task={task} depth={0} {...rowProps} history />
-                      ))}
-                    </ul>
-                  )}
-                </Group>
-              ))}
-              {days.length > dayLimit + 1 && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="w-fit rounded-md"
-                  onClick={() => setDayLimit((limit) => limit + DAY_PAGE)}
-                >
-                  Show older days
-                </Button>
-              )}
-            </section>
-          )}
-        </>
-      )}
-      {filter === "blocked" && (
-        <Section title="Blocked" count={blockedTasks.length} id="blocked">
-          <ul className="flex flex-col gap-2">
-            {blockedTasks.map((task) => (
+      {(proposedTasks.length > 0 || failedTasks.length > 0) && (
+        <Section title="Needs you" count={proposedTasks.length + failedTasks.length} id="needs">
+          <ul id="proposed-tasks" className="flex flex-col gap-2" data-testid="task-proposals">
+            {proposedTasks.map(proposal)}
+            {failedTasks.map((task) => (
               <TaskRow key={task.id} task={task} depth={0} {...rowProps} flat />
             ))}
           </ul>
         </Section>
       )}
-      {filter === "proposed" && (
-        <Section title="Proposed" count={proposedTasks.length} id="proposed">
-          <ul id="proposed-tasks" className="flex flex-col gap-2" data-testid="task-proposals">
-            {proposedTasks.map(proposal)}
-          </ul>
+      {activeRoots.length > 0 && (
+        <Section
+          title="Open"
+          count={openTasks.length - failedTasks.length}
+          id="active"
+          dark
+          collapsible
+        >
+          {grouped ? (
+            projectGroups.map(([name, items]) => (
+              <Group
+                key={name ?? ""}
+                testId={`task-project-${name ?? "none"}`}
+                label={name ?? "No project"}
+                count={items.length}
+                defaultOpen
+              >
+                <ul className="flex flex-col gap-2">
+                  {items.map((task) => (
+                    <TaskRow
+                      key={task.id}
+                      task={task}
+                      depth={0}
+                      {...rowProps}
+                      showProject={false}
+                    />
+                  ))}
+                </ul>
+              </Group>
+            ))
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {activeRoots.map((task) => (
+                <TaskRow key={task.id} task={task} depth={0} {...rowProps} />
+              ))}
+            </ul>
+          )}
         </Section>
+      )}
+      {days.length > 0 && (
+        <section className="flex flex-col gap-2" data-testid="task-section-done">
+          {days.slice(0, dayLimit + 1).map(([key, items]) => (
+            <Group
+              key={key}
+              testId={`task-day-${key}`}
+              label={doneDayLabel(key, now)}
+              count={items.length}
+              defaultOpen={key === today}
+              dark
+            >
+              {items.length === 0 ? (
+                <p className="px-1 text-sm leading-5 text-muted-foreground">
+                  Nothing done yet today.
+                </p>
+              ) : (
+                <ul className="flex flex-col gap-2">
+                  {items.map((task) => (
+                    <TaskRow key={task.id} task={task} depth={0} {...rowProps} history />
+                  ))}
+                </ul>
+              )}
+            </Group>
+          ))}
+          {days.length > dayLimit + 1 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-fit rounded-md"
+              onClick={() => setDayLimit((limit) => limit + DAY_PAGE)}
+            >
+              Show older days
+            </Button>
+          )}
+        </section>
       )}
       {!ready && <p className="px-1 text-sm text-muted-foreground">Loading…</p>}
       {ready && tasks.length === 0 && (

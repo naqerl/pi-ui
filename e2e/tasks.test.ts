@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { taskFilterCounts } from "../src/client/TaskFilters.js";
 import {
   dayLabel,
   doneDayLabel,
@@ -944,62 +943,6 @@ test("a task completed today and one yesterday land in their named done days", (
         ["Done yesterday", ["yesterday"]],
       ],
     );
-  });
-});
-
-test("the task filter counts mirror the list: active includes blocked, proposed apart", () => {
-  const base: Omit<Task, "id" | "title" | "status" | "blockedBy" | "createdAt"> = {
-    parentId: null,
-    completedAt: null,
-    completion: null,
-  };
-  const tasks: Task[] = [
-    {
-      ...base,
-      id: "ready",
-      title: "Ready",
-      status: "open",
-      blockedBy: [],
-      createdAt: "2026-01-01T00:00:00.000Z",
-    },
-    {
-      ...base,
-      id: "blocked",
-      title: "Blocked",
-      status: "open",
-      blockedBy: ["ready"],
-      createdAt: "2026-01-01T00:00:01.000Z",
-    },
-    {
-      ...base,
-      id: "waiting",
-      title: "Waiting",
-      status: "open",
-      blockedBy: ["blocked"],
-      createdAt: "2026-01-01T00:00:02.000Z",
-    },
-    {
-      ...base,
-      id: "proposal",
-      title: "Proposal",
-      status: "proposed",
-      blockedBy: [],
-      createdAt: "2026-01-01T00:00:03.000Z",
-    },
-    {
-      ...base,
-      id: "done",
-      title: "Done",
-      status: "done",
-      blockedBy: [],
-      createdAt: "2026-01-01T00:00:04.000Z",
-      completedAt: "2026-01-01T01:00:00.000Z",
-    },
-  ];
-  assert.deepEqual(taskFilterCounts(tasks, undefined), {
-    active: 3,
-    blocked: 2,
-    proposed: 1,
   });
 });
 
