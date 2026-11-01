@@ -463,6 +463,7 @@ export function TasksView({
                 label={name ?? "No project"}
                 count={items.length}
                 defaultOpen
+                dark
               >
                 <ul className="flex flex-col gap-2">
                   {items.map((task) => (
