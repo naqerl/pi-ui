@@ -1,4 +1,5 @@
 import { STALE_WORKING_MS } from "./task-status.js";
+import { isActiveStatus } from "./tasks.js";
 import type { Task, TaskActivity } from "./types.js";
 
 /**
@@ -37,6 +38,8 @@ export type IdleTask = Pick<Task, "id"> & {
   readonly title?: string;
   readonly blockedBy?: readonly string[];
   readonly lastWorkedAt?: string | null;
+  /** When task_working marked this task working, when the caller has it. */
+  readonly workingSince?: string;
   /** A live trace's last tagged call, when the caller has one. */
   readonly lastActivityAt?: string | null;
   /** A derived client state, when the caller already has one. */
@@ -67,8 +70,10 @@ export function lastTouchedAt(task: IdleTask): number | null {
 /** Open tasks that still carry working but have not been tagged for over an hour. */
 export function staleWorkedTasks(tasks: readonly IdleTask[], at: number = Date.now()): IdleTask[] {
   return tasks.filter((task) => {
-    if (task.status !== "open") return false;
-    const last = lastTouchedAt(task);
+    if (!isActiveStatus(task.status)) return false;
+    const marked = instant(task.workingSince);
+    const touched = lastTouchedAt(task);
+    const last = marked === null ? touched : touched === null ? marked : Math.max(marked, touched);
     return last !== null && at - last > STALE_WORKING_MS;
   });
 }
@@ -78,7 +83,7 @@ function staleRequestText(tasks: readonly IdleTask[]): string {
     const title = (task.title ?? "").replace(/\s+/g, " ").trim() || task.id;
     return `${task.id} — ${title}`;
   });
-  return `These tasks were marked as working, but nothing has touched them for over an hour: ${named.join(", ")}. For each one, either confirm it is still in work (call a tool with its id as piuiTaskId), or mark it blocked and propose what unblocks it, or mark it done.`;
+  return `These tasks were marked as working, but nothing has touched them for over an hour: ${named.join(", ")}. For each one, either confirm it is still in work with task_working, or call a tool with its id as piuiTaskId, or mark it blocked and propose what unblocks it, or mark it done.`;
 }
 
 export function withStaleRequest(text: string, tasks: readonly IdleTask[]): string {
@@ -123,10 +128,10 @@ export function staleRunTaskIds(
 ): string[] {
   if (activity === undefined || !activity.running || activity.runId === null) return [];
   if (windowMs <= 0) return [];
-  const open = new Set(tasks.filter((task) => task.status === "open").map((task) => task.id));
+  const open = new Set(tasks.filter((task) => isActiveStatus(task.status)).map((task) => task.id));
   const ids: string[] = [];
   for (const task of tasks) {
-    if (task.status !== "open") continue;
+    if (!isActiveStatus(task.status)) continue;
     if ((task.blockedBy ?? []).some((id) => open.has(id))) continue;
     const trace = activity.traces[task.id];
     const run = trace?.lastRun;
@@ -234,7 +239,7 @@ function capped(ids: readonly string[]): string[] {
 /** The work list asks every named task for one of three decisions. */
 function idleWorkText(taskIds: readonly string[], totalOpen = taskIds.length): string {
   const ids = capped(taskIds);
-  return `You have been idle for ${IDLE_NUDGE_MINUTES} minutes and ${totalOpen} task(s) are open: ${ids.join(", ")}. Mark a task working with the task tool before starting it; if it cannot be done now, mark it blocked and propose_task the task that would unblock it; if other tasks are already in progress, leave it alone — ignoring it is a valid answer.`;
+  return `You have been idle for ${IDLE_NUDGE_MINUTES} minutes and ${totalOpen} task(s) are open: ${ids.join(", ")}. Mark a task working with task_working before starting it; it sets the task to working and records when the work began. If it cannot be done now, mark it blocked and propose_task the task that would unblock it; if other tasks are already in progress, leave it alone — ignoring it is a valid answer.`;
 }
 
 /** Working tasks get a status question instead of being offered as new work. */

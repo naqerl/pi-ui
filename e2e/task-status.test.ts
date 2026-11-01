@@ -179,6 +179,17 @@ test("a tagged task keeps working after the run, and is stale after an hour", ()
   });
   assert.equal(isStaleWorking(a, traced), false, "a newer tagged trace is still activity");
 
+  const persisted = task("a", {
+    status: "working",
+    workingSince: worked,
+    lastWorkedAt: new Date(at - 60_000).toISOString(),
+  });
+  assert.equal(isStaleWorking(persisted, activity()), false, "a newer tagged call clears stale");
+  const persistedTraced = task("a", { status: "working", workingSince: worked });
+  assert.equal(isStaleWorking(persistedTraced, traced), false, "newer trace activity clears stale");
+  const persistedIdle = task("a", { status: "working", workingSince: worked });
+  assert.equal(isStaleWorking(persistedIdle, activity()), true);
+
   const closed = task("a", { status: "done", lastWorkedAt: worked });
   assert.equal(taskState([closed], closed, activity()), "done");
   assert.equal(isStaleWorking(closed, activity()), false);

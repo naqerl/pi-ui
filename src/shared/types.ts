@@ -279,7 +279,7 @@ export interface DraftSync {
   revision: number;
 }
 
-export type TaskStatus = "open" | "done" | "proposed" | "backlog";
+export type TaskStatus = "open" | "working" | "done" | "proposed" | "backlog";
 
 /**
  * Where a reviewer can check the work. Time, tokens and cost are measured from the runs that
@@ -313,6 +313,8 @@ export interface Task {
    * and after the task is closed or reopened. The badge stays until the task is finished.
    */
   lastWorkedAt?: string | null;
+  /** When task_working last moved this task to working; cleared when it closes or reopens. */
+  workingSince?: string;
   /** When the task was closed, or null while it is open. */
   completedAt: string | null;
   /** The report recorded when the task was closed, or null while it is open. */

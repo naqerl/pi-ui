@@ -7,6 +7,7 @@ import {
   blockerClosesCycle,
   descendantIds,
   hasOpenDescendant,
+  isActiveStatus,
   TASK_BODY_MAX_LENGTH,
 } from "../shared/tasks.js";
 import type { Task, TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
@@ -84,6 +85,11 @@ function withBody(task: Task, body: string | undefined): Task {
   return body === undefined ? rest : { ...rest, body };
 }
 
+function withoutWorkingSince(task: Task): Task {
+  const { workingSince: _drop, ...rest } = task;
+  return rest;
+}
+
 /** A title the ledger can store, or a 400 that names the field. */
 function normalizeTitle(value: unknown): string {
   if (typeof value !== "string") throw new TaskError("title must be a string", 400);
@@ -122,6 +128,7 @@ function isTask(value: unknown): value is Task {
     task.id.length <= 16 &&
     typeof task.title === "string" &&
     (task.status === "open" ||
+      task.status === "working" ||
       task.status === "done" ||
       task.status === "proposed" ||
       task.status === "backlog") &&
@@ -138,6 +145,7 @@ function isTask(value: unknown): value is Task {
     (task.lastWorkedAt === undefined ||
       task.lastWorkedAt === null ||
       typeof task.lastWorkedAt === "string") &&
+    (task.workingSince === undefined || typeof task.workingSince === "string") &&
     (task.attachments === undefined ||
       (Array.isArray(task.attachments) &&
         task.attachments.every((id) => typeof id === "string"))) &&
@@ -263,7 +271,7 @@ export class TaskStore {
     return this.commit((tasks) => {
       const index = tasks.findIndex((task) => task.id === id);
       const current = tasks[index];
-      if (current === undefined || current.status !== "open") return tasks;
+      if (current === undefined || !isActiveStatus(current.status)) return tasks;
       if (current.lastWorkedAt === stamp) return tasks;
       const copy = tasks.slice();
       copy[index] = { ...current, lastWorkedAt: stamp };
@@ -465,11 +473,21 @@ export class TaskStore {
       if (patch.status !== undefined) {
         if (
           patch.status !== "open" &&
+          patch.status !== "working" &&
           patch.status !== "done" &&
           patch.status !== "proposed" &&
           patch.status !== "backlog"
         ) {
-          throw new TaskError('Status must be "open", "done", "proposed" or "backlog"', 400);
+          throw new TaskError(
+            'Status must be "open", "working", "done", "proposed" or "backlog"',
+            400,
+          );
+        }
+        if (patch.status === "working" && current.status === "backlog") {
+          throw new TaskError("Unknown task", 404);
+        }
+        if (patch.status === "working" && current.status === "proposed") {
+          throw new TaskError("Task is not open; a proposal must be approved first", 409);
         }
         if (patch.status === "proposed" && current.status !== "proposed") {
           throw new TaskError("Only a proposal can be moved to proposed", 409);
@@ -498,6 +516,7 @@ export class TaskStore {
                 : { ...patch.completion },
             lastWorkedAt: null,
           };
+          next = withoutWorkingSince(next);
         } else if (patch.status === "proposed") {
           next = {
             ...next,
@@ -509,6 +528,22 @@ export class TaskStore {
             completion: null,
             lastWorkedAt: null,
           };
+          next = withoutWorkingSince(next);
+        } else if (patch.status === "working") {
+          const stamp = new Date().toISOString();
+          next = {
+            ...next,
+            status: "working",
+            completedAt: null,
+            completion: null,
+            // Repeating the call keeps the original start; moving back starts a new one.
+            workingSince:
+              current.status === "working" && typeof current.workingSince === "string"
+                ? current.workingSince
+                : stamp,
+            lastWorkedAt: stamp,
+            ...(current.status === "proposed" ? { proposedAt: null } : {}),
+          };
         } else {
           next = {
             ...next,
@@ -519,6 +554,7 @@ export class TaskStore {
             ...(current.status === "open" ? {} : { lastWorkedAt: null }),
             ...(current.status === "proposed" ? { proposedAt: null } : {}),
           };
+          next = withoutWorkingSince(next);
         }
       }
       if (patch.blockedBy !== undefined) {

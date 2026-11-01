@@ -83,6 +83,27 @@ const doneSchema = Type.Object({
   }),
 });
 
+const workingSchema = Type.Object({
+  id: Type.String({ description: "Task id from task_list." }),
+  note: Type.Optional(
+    Type.String({
+      description: "What you are working on, up to 200 characters. Echoed back, not stored.",
+    }),
+  ),
+});
+
+const WORKING_NOTE_MAX_LENGTH = 200;
+
+function workingNote(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw new TaskError("note must be a string", 400);
+  const note = value.trim();
+  if (note.length > WORKING_NOTE_MAX_LENGTH) {
+    throw new TaskError(`note must be at most ${WORKING_NOTE_MAX_LENGTH} characters`, 400);
+  }
+  return note.length === 0 ? undefined : note;
+}
+
 function formatLedger(ledger: TaskLedger): string {
   const lines = [`revision ${ledger.revision}`];
   const active = ledger.tasks.filter(
@@ -236,6 +257,39 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
         return changed(bridge, () =>
           bridge.store.update(args.id, { status: "done", completion: parsed.completion }),
         );
+      },
+    }),
+    defineTool({
+      name: "task_working",
+      description:
+        "Mark one task working before starting it. Sets its status to working, records when the work began and stamps lastWorkedAt. Pass an optional short note about what you are doing; it is echoed back but not stored. A proposal or backlog task cannot be marked working.",
+      parameters: workingSchema,
+      async execute(args) {
+        const current = bridge.store.ledger().tasks.find((task) => task.id === args.id);
+        if (current === undefined || current.status === "backlog") {
+          return failure(new TaskError("Unknown task", 404));
+        }
+        if (current.status === "proposed") {
+          return failure(new TaskError("Task is not open; a proposal must be approved first", 409));
+        }
+        let note: string | undefined;
+        try {
+          note = workingNote(args.note);
+        } catch (error) {
+          return failure(error);
+        }
+        const result = await changed(bridge, () =>
+          bridge.store.update(args.id, { status: "working" }),
+        );
+        if (result.isError === true) return result;
+        const task = bridge.store.ledger().tasks.find((item) => item.id === args.id);
+        if (task === undefined) return result;
+        const lines = [`${task.id} ${task.status} ${task.title}`];
+        if (task.workingSince !== undefined) {
+          lines.push(`working since ${task.workingSince} (${formatDateTime(task.workingSince)})`);
+        }
+        if (note !== undefined) lines.push(`note: ${note}`);
+        return { output: [{ type: "text", text: lines.join("\n") }] };
       },
     }),
     defineTool({

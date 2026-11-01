@@ -34,15 +34,20 @@ export function ancestorIds(tasks: readonly Task[], id: string): Set<string> {
   return out;
 }
 
-/** Open tasks in `blockedBy`. A done blocker does not keep the task blocked. */
+/** True while a task is still in flight: open, or explicitly marked working. */
+export function isActiveStatus(status: string): boolean {
+  return status === "open" || status === "working";
+}
+
+/** Active tasks in `blockedBy`. A done blocker does not keep the task blocked. */
 export function liveBlockerIds(tasks: readonly Task[], task: Task): string[] {
-  const open = new Set(tasks.filter((item) => item.status === "open").map((item) => item.id));
+  const open = new Set(tasks.filter((item) => isActiveStatus(item.status)).map((item) => item.id));
   return task.blockedBy.filter((id) => open.has(id));
 }
 
 export function hasOpenDescendant(tasks: readonly Task[], id: string): boolean {
   const descendants = descendantIds(tasks, id);
-  return tasks.some((task) => descendants.has(task.id) && task.status === "open");
+  return tasks.some((task) => descendants.has(task.id) && isActiveStatus(task.status));
 }
 
 /**
