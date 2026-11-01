@@ -33,7 +33,7 @@ import { cn } from "./lib/utils";
 import { InlineMarkdown, Markdown, plainInline } from "./markdown";
 import { mediaUrl } from "./media-client";
 import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
-import type { TaskFilter } from "./TaskFilters";
+import { type TaskFilter, TaskFilters } from "./TaskFilters";
 import { removeTask, type TaskOutcome, updateTask } from "./task-client";
 
 const LONG_PRESS_MS = 500;
@@ -49,6 +49,7 @@ interface TasksViewProps {
   footerClearance: number;
   armedParentId: string | null;
   filter: TaskFilter;
+  onFilterChange: (filter: TaskFilter) => void;
   onArmParent: (id: string | null) => void;
   onLedger: (ledger: TaskLedger) => void;
 }
@@ -276,6 +277,7 @@ export function TasksView({
   footerClearance,
   armedParentId,
   filter,
+  onFilterChange,
   onArmParent,
   onLedger,
 }: TasksViewProps) {
@@ -428,6 +430,7 @@ export function TasksView({
 
   const list = (
     <div className="flex min-w-0 flex-col gap-5" data-testid="task-list">
+      <TaskFilters tasks={tasks} activity={activity} filter={filter} onChange={onFilterChange} />
       {filter === "active" && (
         <>
           {(proposedTasks.length > 0 || failedTasks.length > 0) && (

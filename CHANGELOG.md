@@ -2,6 +2,10 @@
 
 Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
 
+## Unreleased
+
+- The Active / Blocked / Proposed task filters moved from the composer's top line to the top of the task list, where they scroll with the list instead of squeezing the working status; on a narrow window the row scrolls sideways rather than wrapping its counts.
+
 ## 1.6.42 - 2026-11-01
 
 - Opening the chat now hydrates the conversation immediately instead of requiring a page switch: the first paint waits for one real state fetch, a failed fetch keeps the last state and retries with backoff, and the page refreshes again when it becomes visible or the app regains focus.

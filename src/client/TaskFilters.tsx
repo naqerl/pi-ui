@@ -26,7 +26,7 @@ export function taskFilterCounts(
   };
 }
 
-/** The task filters that sit on the composer's top line while the tasks page is open. */
+/** The task filters that sit at the top of the task list. */
 export function TaskFilters({
   tasks,
   activity,
@@ -46,7 +46,7 @@ export function TaskFilters({
       role="tablist"
       aria-label="Task filter"
       data-testid="task-filters"
-      className={cn("flex max-w-full flex-wrap items-center gap-1", className)}
+      className={cn("flex w-full min-w-0 max-w-full items-center gap-1 overflow-x-auto", className)}
     >
       {FILTERS.map((item) => {
         const selected = filter === item;
@@ -59,7 +59,7 @@ export function TaskFilters({
             data-testid={`task-filter-${item}`}
             onClick={() => onChange(item)}
             className={cn(
-              "inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-sm px-2.5 text-sm font-medium leading-none",
+              "inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm px-2.5 text-sm font-medium leading-none",
               selected ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted",
             )}
           >
