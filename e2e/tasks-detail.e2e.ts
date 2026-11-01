@@ -267,3 +267,75 @@ test("done tasks group by day: today open, past days collapsed with a count", as
   await expect(screen.getByTestId("task-t2")).toContainText("Review the details");
   await expect(screen.getByTestId("task-t2").getByTestId("task-id-t2")).toHaveText("t2");
 });
+
+test("the detail drops the activity history and its backlog toggle parks and reopens the task", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  const ledger = JSON.parse(JSON.stringify(snapshot.tasks)) as {
+    revision: number;
+    tasks: Array<{ id: string; status: string; project?: string }>;
+  };
+  const ship = ledger.tasks[0];
+  if (ship === undefined) throw new Error("snapshot is missing the open task");
+  ship.project = "Pi UI";
+
+  await browser.setViewport({ width: 1280, height: 800 });
+  await browser.route("**/api/tasks/**", async (route) => {
+    if (route.request.method === "PATCH") {
+      const patch = JSON.parse(route.request.postData ?? "{}") as { status?: string };
+      const id = decodeURIComponent(new URL(route.request.url).pathname.split("/").pop() ?? "");
+      const task = ledger.tasks.find((item) => item.id === id);
+      if (task !== undefined && patch.status !== undefined) task.status = patch.status;
+      ledger.revision += 1;
+    }
+    await route.fulfill({ json: ledger });
+  });
+  await browser.route("**/api/state**", async (route) => {
+    const state = JSON.parse(JSON.stringify(snapshot));
+    state.tasks = ledger;
+    await route.fulfill({ json: state });
+  });
+
+  await app.open("/?page=tasks");
+  await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
+  const detail = screen.getByTestId("task-detail");
+  await expect(detail).toBeVisible();
+  await expect(detail.getByTestId("task-history")).toHaveCount(0);
+  await expect(detail).not.toContainText("earlier events");
+
+  const toggle = detail.getByTestId("task-detail-backlog");
+  await expect(toggle).toHaveText("Backlog");
+  await toggle.tap();
+  await expect.poll(() => ship.status).toBe("backlog");
+  await expect(toggle).toHaveText("Reopen");
+  await expect(
+    screen.getByTestId("task-project-Pi UI").getByRole("button", { name: "Open Ship the modal" }),
+  ).toBeVisible();
+
+  await toggle.tap();
+  await expect.poll(() => ship.status).toBe("open");
+  await expect(toggle).toHaveText("Backlog");
+
+  await browser.evaluate(() => {
+    const card = [...document.querySelectorAll<HTMLElement>("[data-task-card]")].find(
+      (item) => item.getAttribute("aria-label") === "Open Ship the modal",
+    );
+    if (card === undefined) return null;
+    const box = card.getBoundingClientRect();
+    card.dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: box.left + 16,
+        clientY: box.top + box.height / 2,
+      }),
+    );
+    return null;
+  });
+  await screen.getByRole("menuitem", { name: "Backlog Ship the modal" }).tap();
+  await expect.poll(() => ship.status).toBe("backlog");
+  await expect(toggle).toHaveText("Reopen");
+  await expect(screen.getByTestId("task-project-Pi UI")).toContainText("Ship the modal");
+});

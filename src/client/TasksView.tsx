@@ -18,7 +18,6 @@ import { formatDateTime, formatDay, formatMonthDay, formatTime } from "../shared
 import type {
   Task,
   TaskActivity,
-  TaskHistoryEvent,
   TaskLedger,
   TaskMeasured,
   TaskState,
@@ -28,7 +27,6 @@ import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader } from "./components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
-import { Separator } from "./components/ui/separator";
 import { cn } from "./lib/utils";
 import { InlineMarkdown, Markdown, plainInline } from "./markdown";
 import { mediaUrl } from "./media-client";
@@ -38,7 +36,6 @@ import { removeTask, type TaskOutcome, updateTask } from "./task-client";
 
 const LONG_PRESS_MS = 500;
 const WIDE_QUERY = "(min-width: 1024px)";
-const HISTORY_LIMIT = 12;
 /** Past days of the done list shown at first; "Show older days" adds this many more. */
 const DAY_PAGE = 7;
 
@@ -285,6 +282,7 @@ export function TasksView({
   const [pickerId, setPickerId] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [problem, setProblem] = useState<{ id: string; message: string } | null>(null);
+  const [statusPending, setStatusPending] = useState<Record<string, boolean>>({});
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
   const [dayLimit, setDayLimit] = useState(DAY_PAGE);
   const ignoreNextCardClick = useRef(false);
@@ -406,8 +404,19 @@ export function TasksView({
     setPickerId(picker ? id : null);
     setMenu({ id, x, y });
   };
-  const setStatus = (task: Task, status: Task["status"]) =>
-    void apply(task.id, updateTask(task.id, { status }));
+  const setStatus = async (task: Task, status: Task["status"]) => {
+    setStatusPending((current) => ({ ...current, [task.id]: true }));
+    try {
+      await apply(task.id, updateTask(task.id, { status }));
+    } finally {
+      setStatusPending((current) => {
+        if (current[task.id] !== true) return current;
+        const next = { ...current };
+        delete next[task.id];
+        return next;
+      });
+    }
+  };
 
   const rowProps = {
     tasks: activeTasks,
@@ -561,6 +570,7 @@ export function TasksView({
         subtree={subtreeMeasured(tasks, openTask.id, activity?.traces ?? {})}
         wide={wide}
         armed={armedParentId === openTask.id}
+        statusPending={statusPending[openTask.id] === true}
         notice={problem?.id === openTask.id && menu === null ? problem.message : null}
         onClose={() => setOpenTaskId(null)}
         onOpen={setOpenTaskId}
@@ -623,6 +633,7 @@ export function TasksView({
             tasks={activeTasks}
             point={menu}
             pickerOpen={pickerId === menuTask.id}
+            statusPending={statusPending[menuTask.id] === true}
             onArm={() => {
               onArmParent(armedParentId === menuTask.id ? null : menuTask.id);
               setMenu(null);
@@ -1205,6 +1216,7 @@ export function TaskDetail({
   subtree,
   wide,
   armed,
+  statusPending = false,
   notice,
   onClose,
   onOpen,
@@ -1224,6 +1236,7 @@ export function TaskDetail({
   subtree?: TaskMeasured;
   wide: boolean;
   armed: boolean;
+  statusPending?: boolean;
   notice: string | null;
   onClose: () => void;
   onOpen: (id: string) => void;
@@ -1401,6 +1414,8 @@ export function TaskDetail({
   };
   const done = task.status === "done";
   const proposed = task.status === "proposed";
+  const parked = task.status === "backlog";
+  const backlogLabel = parked ? "Reopen" : "Backlog";
   const openChildren = !done && hasOpenDescendant(tasks, task.id);
   const parent =
     task.parentId === null ? undefined : tasks.find((item) => item.id === task.parentId);
@@ -1423,10 +1438,6 @@ export function TaskDetail({
     ["Cost", ran ? formatCost(measured.cost) : "—"],
     [rolledUp ? "Runs with subtasks" : "Runs", ran ? String(measured.runs) : "—"],
   ];
-  const events: TaskHistoryEvent[] = (trace?.history ?? []).slice(-HISTORY_LIMIT);
-  const hidden = (trace?.history.length ?? 0) - events.length;
-  const now = new Date();
-  const eventDays = groupByDay([...events].reverse(), (event) => event.at);
   const reason =
     state === "failed" && trace?.lastRun?.reason !== undefined ? trace.lastRun.reason : null;
   const badge = stateBadge(state, trace) ?? "Open";
@@ -1808,49 +1819,6 @@ export function TaskDetail({
             ))}
           </section>
         )}
-        <Separator />
-        <section className="flex flex-col gap-2" data-testid="task-history">
-          <SubHeading>History</SubHeading>
-          {events.length === 0 ? (
-            <p className="text-sm leading-5 text-muted-foreground">Nothing recorded yet</p>
-          ) : (
-            <div className="flex flex-col gap-3">
-              {eventDays.map(([key, items]) => (
-                <div key={key} className="flex flex-col gap-1">
-                  <p className="text-xs font-medium leading-4 text-muted-foreground">
-                    {dayLabel(key, now)}
-                  </p>
-                  <ol className="flex flex-col gap-1">
-                    {items.map((event, index) => (
-                      <li
-                        // biome-ignore lint/suspicious/noArrayIndexKey: history is append-only and has no ids.
-                        key={`${event.at}-${index}`}
-                        data-kind={event.kind}
-                        className="flex items-baseline gap-3 text-sm leading-5"
-                      >
-                        <time
-                          dateTime={event.at}
-                          title={formatDateTime(event.at)}
-                          className="w-11 shrink-0 tabular-nums text-muted-foreground"
-                        >
-                          {formatTime(event.at)}
-                        </time>
-                        <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
-                          {event.text}
-                        </span>
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-              ))}
-              {hidden > 0 && (
-                <p className="text-xs leading-4 text-muted-foreground">
-                  {hidden} earlier {hidden === 1 ? "event" : "events"}
-                </p>
-              )}
-            </div>
-          )}
-        </section>
         {notice !== null && <ErrorText>{notice}</ErrorText>}
       </CardContent>
       <CardFooter
@@ -1867,6 +1835,16 @@ export function TaskDetail({
               aria-label={`Dismiss ${title} proposal`}
             >
               Dismiss
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="task-detail-backlog"
+              className="shrink-0 rounded-md"
+              disabled={statusPending}
+              onClick={() => onStatus(task, parked ? "open" : "backlog")}
+            >
+              {backlogLabel}
             </Button>
             <span className="flex-1" />
             <Button
@@ -1901,6 +1879,18 @@ export function TaskDetail({
             >
               Block
             </Button>
+            {!done && (
+              <Button
+                variant="outline"
+                size="sm"
+                data-testid="task-detail-backlog"
+                className="shrink-0 rounded-md"
+                disabled={statusPending}
+                onClick={() => onStatus(task, parked ? "open" : "backlog")}
+              >
+                {backlogLabel}
+              </Button>
+            )}
             <Button
               variant="outline"
               size="sm"
@@ -1938,6 +1928,7 @@ function TaskMenu({
   point,
   pickerOpen,
   notice,
+  statusPending,
   onArm,
   onTogglePicker,
   onBlockers,
@@ -1949,6 +1940,7 @@ function TaskMenu({
   point: { x: number; y: number };
   pickerOpen: boolean;
   notice: string | null;
+  statusPending: boolean;
   onArm: () => void;
   onTogglePicker: () => void;
   onBlockers: (blockedBy: string[]) => void;
@@ -2052,6 +2044,19 @@ function TaskMenu({
         </ul>
       )}
       <div className="-mx-1 my-1 h-px bg-border" />
+      {!done && (
+        <button
+          type="button"
+          role="menuitem"
+          data-testid="task-menu-backlog"
+          aria-label={`${task.status === "backlog" ? "Reopen" : "Backlog"} ${plainInline(task.title)}`}
+          disabled={statusPending}
+          className={cn(item, "disabled:opacity-50")}
+          onClick={() => onStatus(task, task.status === "backlog" ? "open" : "backlog")}
+        >
+          {task.status === "backlog" ? "Reopen" : "Backlog"}
+        </button>
+      )}
       <button
         type="button"
         role="menuitem"

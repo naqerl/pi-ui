@@ -75,8 +75,8 @@ test("tagged tool calls show a task as working, untagged ones touch no task", as
   await expect(screen.getByTestId(`task-stale-${id}`)).toHaveCount(0);
 
   await screen.getByRole("button", { name: `Open ${title}` }).tap();
-  await expect(screen.getByTestId("task-history")).toContainText("Run started");
-  await expect(screen.getByTestId("task-history")).toContainText("Run ended");
+  await expect(screen.getByTestId("task-history")).toHaveCount(0);
+  await expect(screen.getByTestId("task-detail")).not.toContainText("Run started");
   const runs = await browser.evaluate(
     () =>
       [...document.querySelectorAll('[data-testid="task-stats"] dd')].map(
