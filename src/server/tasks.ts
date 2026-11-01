@@ -64,10 +64,13 @@ function chooseProject(
       400,
     );
   }
-  // Reuse an existing spelling so `PI-UI` and `pi-ui` stay one project.
+  // Reuse an open task's spelling so `PI-UI` and `pi-ui` stay one project. Closed,
+  // proposed and parked tasks are not part of the project vocabulary.
   return (
-    tasks.find((task) => task.project !== undefined && sameProject(task.project, name))?.project ??
-    name
+    tasks.find(
+      (task) =>
+        task.status === "open" && task.project !== undefined && sameProject(task.project, name),
+    )?.project ?? name
   );
 }
 

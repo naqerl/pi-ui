@@ -95,6 +95,85 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
   await removeTasks(browser, ["Diff the maps", "Loose end", "Fix the login", "Write the docs"]);
 });
 
+test("project suggestions come only from open tasks", { timeout: 300_000 }, async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 1280, height: 800 });
+  await app.open("/?page=tasks");
+  const tag = Date.now();
+  const alpha = `alpha${tag}`;
+  const beta = `beta${tag}`;
+  const gamma = `gamma${tag}`;
+  const alphaTitle = `Alpha work ${tag}`;
+  const betaTitle = `Beta work ${tag}`;
+  const gammaTitle = `Gamma work ${tag}`;
+  const composer = screen.getByRole("textbox", "New task");
+
+  const addTask = async (title: string, project: string) => {
+    await composer.fill(`${title} @${project}`);
+    await screen.getByRole("button", "Add task").click();
+    await expect(screen.getByRole("button", { name: `Open ${title}` })).toBeVisible();
+  };
+
+  const typeMention = async () => {
+    await composer.fill("");
+    await composer.tap();
+    await browser.keyboard.type("@");
+  };
+
+  await addTask(alphaTitle, alpha);
+  await addTask(betaTitle, beta);
+
+  await typeMention();
+  await expect(screen.getByTestId(`project-suggestion-${alpha}`)).toBeVisible();
+  await expect(screen.getByTestId(`project-suggestion-${beta}`)).toBeVisible();
+
+  await screen.getByRole("button", { name: `Open ${betaTitle}` }).click();
+  const betaProject = screen.getByRole("textbox", "Task project");
+  await betaProject.fill("@");
+  await expect(screen.getByTestId(`project-suggestion-${alpha}`)).toBeVisible();
+  await expect(screen.getByTestId(`project-suggestion-${beta}`)).toBeVisible();
+  await betaProject.fill(beta);
+  await betaProject.press("Enter");
+  await expect(betaProject).toHaveValue(beta);
+
+  // Closing the last alpha task removes its name from every suggestion list.
+  await screen.getByRole("button", { name: `Open ${alphaTitle}` }).click();
+  await screen.getByTestId("task-detail-status").click();
+  await expect(screen.getByTestId("task-state")).toHaveText("Done");
+  await expect(screen.getByTestId(`task-project-${alpha}`)).toHaveCount(0);
+
+  await screen.getByRole("button", { name: `Open ${betaTitle}` }).click();
+  await betaProject.fill("@");
+  await expect(screen.getByTestId(`project-suggestion-${beta}`)).toBeVisible();
+  await expect(screen.getByTestId(`project-suggestion-${alpha}`)).toHaveCount(0);
+  await betaProject.fill(beta);
+  await betaProject.press("Enter");
+
+  await typeMention();
+  await expect(screen.getByTestId(`project-suggestion-${beta}`)).toBeVisible();
+  await expect(screen.getByTestId(`project-suggestion-${alpha}`)).toHaveCount(0);
+
+  // A deleted task's project never becomes a remembered suggestion.
+  await addTask(gammaTitle, gamma);
+  await screen.getByRole("button", { name: `Open ${gammaTitle}` }).click();
+  await screen.getByRole("button", { name: `Remove ${gammaTitle} task` }).click();
+  await expect(screen.getByText(gammaTitle, { exact: true })).toHaveCount(0);
+
+  await typeMention();
+  await expect(screen.getByTestId(`project-suggestion-${gamma}`)).toHaveCount(0);
+  await expect(screen.getByTestId(`project-suggestion-${beta}`)).toBeVisible();
+
+  await screen.getByRole("button", { name: `Open ${betaTitle}` }).click();
+  await screen.getByRole("textbox", "Task project").fill("@");
+  await expect(screen.getByTestId(`project-suggestion-${gamma}`)).toHaveCount(0);
+  await expect(screen.getByTestId(`project-suggestion-${beta}`)).toBeVisible();
+
+  await removeTasks(browser, [alphaTitle, betaTitle, gammaTitle]);
+});
+
 test("subtasks take their parent's project and the detail edits it in place", async ({
   app,
   browser,
