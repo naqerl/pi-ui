@@ -8,6 +8,8 @@ import {
   type Conversation,
   type EntryRecord,
   type Harness,
+  InboxDoc,
+  type InboxItem,
   type InputEntry,
   type SettledSubmissionRecord,
   type SnapshotEvent,
@@ -59,6 +61,7 @@ import {
 } from "./idle-nudge.js";
 import { NoticeCoalescer } from "./mcp-event-policy.js";
 import type { McpEventFeed } from "./mcp-events.js";
+import { registerMcpQueueMerger, unregisterMcpQueueMerger } from "./mcp-queue-merge.js";
 import { MEDIA_TYPES, MediaError, type MediaStore } from "./media.js";
 import { listAvailableModels, modelOption } from "./models.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
@@ -152,6 +155,170 @@ export function mcpEventText(envelope: McpEventEnvelope, items: readonly unknown
   })}`;
 }
 
+/** Longest merged MCP notice text before a second notice carries the rest. */
+export const MCP_MERGED_NOTICE_TEXT_LIMIT = 20_000;
+
+type InboxInputItem = Extract<InboxItem, { mode: "steer" | "followUp" }>;
+
+interface MergedMcpEvents {
+  readonly head: string;
+  readonly events: unknown[];
+  readonly dropped: number;
+  readonly noticeIds: string[];
+  readonly at: string;
+  readonly createdAt: string;
+}
+
+interface McpQueueItemInfo {
+  readonly id: SubmissionId;
+  readonly text: string;
+  readonly createdAt: string;
+  readonly key: string;
+}
+
+function inboxItemText(item: InboxInputItem): string | null {
+  if (typeof item.content === "string") return item.content;
+  if (!Array.isArray(item.content)) return null;
+  const parts: string[] = [];
+  for (const part of item.content) {
+    if (!isRecord(part) || part.type !== "text" || typeof part.text !== "string") continue;
+    parts.push(part.text);
+  }
+  return parts.length === 0 ? null : parts.join("\n");
+}
+
+function inboxItemData(item: InboxInputItem): Record<string, unknown> {
+  const data = item.entry?.data;
+  return isRecord(data) ? { ...data } : {};
+}
+
+function inboxMcpEnvelope(item: InboxInputItem): McpEventEnvelope | null {
+  const text = inboxItemText(item);
+  return text === null ? null : mcpEventEnvelope(text);
+}
+
+function isMcpNoticeItem(item: InboxItem): item is InboxInputItem {
+  if (item.mode === "write" || item.entry?.kind !== MCP_NOTICE_ENTRY_KIND) return false;
+  return inboxMcpEnvelope(item) !== null;
+}
+
+/** A part of an already-split merge keeps its own summary and is never merged again. */
+function isMergeableMcpNoticeItem(item: InboxItem): item is InboxInputItem {
+  return isMcpNoticeItem(item) && inboxItemData(item).mergedChunk !== true;
+}
+
+/** One envelope with every event of a run, in the order the entries arrived. */
+function mergeMcpNoticeItems(run: readonly InboxInputItem[]): MergedMcpEvents | null {
+  let head: string | null = null;
+  let dropped = 0;
+  let at = "";
+  let createdAt = "";
+  const events: unknown[] = [];
+  const noticeIds: string[] = [];
+  for (const item of run) {
+    const envelope = inboxMcpEnvelope(item);
+    if (envelope === null) return null;
+    head ??= envelope.head;
+    dropped += envelope.dropped;
+    events.push(...envelope.items);
+    const data = inboxItemData(item);
+    if (typeof data.noticeId === "string" && !noticeIds.includes(data.noticeId)) {
+      noticeIds.push(data.noticeId);
+    }
+    if (Array.isArray(data.noticeIds)) {
+      for (const noticeId of data.noticeIds) {
+        if (typeof noticeId === "string" && !noticeIds.includes(noticeId)) {
+          noticeIds.push(noticeId);
+        }
+      }
+    }
+    if (typeof data.at === "string" && (at === "" || Date.parse(data.at) >= Date.parse(at))) {
+      at = data.at;
+    }
+    if (
+      typeof data.createdAt === "string" &&
+      (createdAt === "" || Date.parse(data.createdAt) >= Date.parse(createdAt))
+    ) {
+      createdAt = data.createdAt;
+    }
+  }
+  if (head === null || events.length === 0) return null;
+  const now = new Date().toISOString();
+  return {
+    head,
+    events,
+    dropped,
+    noticeIds,
+    at: at === "" ? now : at,
+    createdAt: createdAt === "" ? now : createdAt,
+  };
+}
+
+/** Split events so a merged notice stays bounded; an oversized lone event stays whole. */
+function splitMcpEvents(envelope: McpEventEnvelope, events: readonly unknown[]): unknown[][] {
+  const chunks: unknown[][] = [];
+  let current: unknown[] = [];
+  for (const event of events) {
+    const candidate = [...current, event];
+    if (
+      current.length > 0 &&
+      mcpEventText(envelope, candidate).length > MCP_MERGED_NOTICE_TEXT_LIMIT - 256
+    ) {
+      chunks.push(current);
+      current = [event];
+      continue;
+    }
+    current = candidate;
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
+
+function mergedNoticeText(
+  head: string,
+  totalEvents: number,
+  dropped: number,
+  events: readonly unknown[],
+  part: number,
+  parts: number,
+  carriedBefore: number,
+): string {
+  if (parts <= 1) {
+    return mcpEventText({ head, items: [...events], dropped }, [...events]);
+  }
+  const remain = totalEvents - (carriedBefore + events.length);
+  const summary = `${head} This notice carries ${events.length} of ${totalEvents} merged events; ${remain} remain.`;
+  return mcpEventText({ head: summary, items: [...events], dropped: part === 0 ? dropped : 0 }, [
+    ...events,
+  ]);
+}
+
+/** The bounded texts one merged run produces, with the remaining count on every part. */
+export function mcpMergedNoticeTexts(
+  envelope: McpEventEnvelope,
+  events: readonly unknown[],
+): string[] {
+  const chunks = splitMcpEvents(envelope, events);
+  const texts: string[] = [];
+  let carriedBefore = 0;
+  for (let part = 0; part < chunks.length; part++) {
+    const chunk = chunks[part] ?? [];
+    texts.push(
+      mergedNoticeText(
+        envelope.head,
+        events.length,
+        envelope.dropped,
+        chunk,
+        part,
+        chunks.length,
+        carriedBefore,
+      ),
+    );
+    carriedBefore += chunk.length;
+  }
+  return texts;
+}
+
 function positiveEnv(name: string): number | undefined {
   const value = Number(process.env[name]);
   return Number.isFinite(value) && value > 0 ? value : undefined;
@@ -226,6 +393,9 @@ export class ChatService {
   private retryAttempts = 0;
   /** Guards the abort path so a burst of retry events abandons a turn once. */
   private abandoning = false;
+  /** Guards the pre-boundary merge so a nested commit cannot start it twice. */
+  private mergingMcpQueue = false;
+  private readonly mergeMcpQueue = () => this.mergeQueuedMcpNotices();
   private selected: ModelOption | null;
   /** Read on every snapshot, so a server may recover after its boot probe fails. */
   private readonly mcpStatus: () => McpStatus;
@@ -274,6 +444,7 @@ export class ChatService {
     this.modelWindow = modelWindow;
     this.selected = initialModel === undefined ? null : modelOption(initialModel);
     this.marker = initialMarker;
+    registerMcpQueueMerger(this.conversation.id, this.mergeMcpQueue);
   }
 
   /**
@@ -310,6 +481,7 @@ export class ChatService {
 
   async close(): Promise<void> {
     this.closed = true;
+    unregisterMcpQueueMerger(this.conversation.id, this.mergeMcpQueue);
     if (this.watchdog !== undefined) clearInterval(this.watchdog);
     if (this.idleNudgeTimer !== undefined) clearInterval(this.idleNudgeTimer);
     await this.stream?.stop();
@@ -1054,10 +1226,12 @@ export class ChatService {
       const settled = await submission.wait(SESSION_CONTEXT);
       final = settled;
       if (settled.status === "unanswered") {
-        console.warn(
-          `[pi] run ${submission.id} ended without an answer: ${settled.reason}` +
-            (settled.detail === undefined ? "" : ` (${JSON.stringify(settled.detail)})`),
-        );
+        if (settled.reason !== "merged_into_mcp_notice") {
+          console.warn(
+            `[pi] run ${submission.id} ended without an answer: ${settled.reason}` +
+              (settled.detail === undefined ? "" : ` (${JSON.stringify(settled.detail)})`),
+          );
+        }
         if (settled.reason === "no_model") {
           await this.appendNoModelMessage();
         }
@@ -1150,6 +1324,172 @@ export class ChatService {
       },
     ]);
     return true;
+  }
+
+  /**
+   * Collapses each run of consecutive queued MCP notices into one entry, just
+   * before durable's final boundary places the oldest follow-up. The run rule
+   * matches `mergeQueuedNotices`: a human message (or another notice kind) ends
+   * the run. A run larger than the text cap becomes several merged entries, each
+   * saying how many events it carries and how many remain.
+   */
+  private async mergeQueuedMcpNotices(): Promise<void> {
+    if (this.closed || this.mergingMcpQueue) return;
+    let runLength = 0;
+    let longest = 0;
+    for (const item of this.queueItems()) {
+      if (item.notice?.kind === MCP_NOTICE_ENTRY_KIND) {
+        runLength += 1;
+        longest = Math.max(longest, runLength);
+      } else {
+        runLength = 0;
+      }
+    }
+    if (longest < 2) return;
+
+    this.mergingMcpQueue = true;
+    try {
+      const changes = await this.conversation.commit(async (tx) => {
+        const inbox = await tx.doc(InboxDoc, this.conversation.id);
+        const items = inbox.items;
+        const infos: McpQueueItemInfo[] = [];
+        const removed: string[] = [];
+        for (let index = 0; index < items.length; ) {
+          const first = items[index];
+          if (first === undefined || !isMergeableMcpNoticeItem(first)) {
+            index += 1;
+            continue;
+          }
+          let end = index + 1;
+          while (end < items.length) {
+            const next = items[end];
+            if (next === undefined || !isMergeableMcpNoticeItem(next)) break;
+            end += 1;
+          }
+          if (end - index < 2) {
+            index = end;
+            continue;
+          }
+          const run = items.slice(index, end) as InboxInputItem[];
+          const merged = mergeMcpNoticeItems(run);
+          if (merged === null) {
+            index = end;
+            continue;
+          }
+          const chunks = splitMcpEvents(
+            { head: merged.head, items: merged.events, dropped: merged.dropped },
+            merged.events,
+          );
+          const replacements: InboxItem[] = [];
+          let carriedBefore = 0;
+          for (let part = 0; part < chunks.length; part++) {
+            const events = chunks[part] ?? [];
+            const reused = part < run.length ? run[part] : undefined;
+            const base = inboxItemData(reused ?? run[0] ?? run[run.length - 1]);
+            const text = mergedNoticeText(
+              merged.head,
+              merged.events.length,
+              merged.dropped,
+              events,
+              part,
+              chunks.length,
+              carriedBefore,
+            );
+            const queueKey =
+              reused !== undefined && typeof base.queueKey === "string" && base.queueKey.length > 0
+                ? base.queueKey
+                : randomUUID();
+            // A fresh id keeps a later display update for one source notice
+            // from becoming the group's first entry and hiding the merge.
+            const noticeId = `mcp/merged#${randomUUID()}`;
+            const data = {
+              ...base,
+              noticeId,
+              noticeIds: [...merged.noticeIds],
+              key: typeof base.key === "string" ? base.key : "mcp/merged",
+              text,
+              at: merged.at,
+              createdAt: merged.createdAt,
+              queueKey,
+              ...(chunks.length > 1 ? { mergedChunk: true } : {}),
+            };
+            if (reused !== undefined) {
+              reused.content = text;
+              reused.entry = { kind: MCP_NOTICE_ENTRY_KIND, data };
+              replacements.push(reused);
+            } else {
+              const record = await tx.createSubmission({
+                conversationId: this.conversation.id,
+                type: "input",
+                status: "queued",
+              });
+              replacements.push({
+                id: record.id,
+                mode: "followUp",
+                content: text,
+                entry: { kind: MCP_NOTICE_ENTRY_KIND, data },
+              });
+            }
+            const replacement = replacements[replacements.length - 1];
+            if (replacement !== undefined) {
+              infos.push({
+                id: replacement.id,
+                text,
+                createdAt: merged.createdAt,
+                key: queueKey,
+              });
+            }
+            carriedBefore += events.length;
+          }
+          for (let part = chunks.length; part < run.length; part++) {
+            const item = run[part];
+            if (item === undefined) continue;
+            tx.settleSubmission(item.id, {
+              status: "unanswered",
+              reason: "merged_into_mcp_notice",
+            });
+            removed.push(String(item.id));
+          }
+          items.splice(index, run.length, ...replacements);
+          index += replacements.length;
+        }
+        return { infos, removed };
+      }, SESSION_CONTEXT);
+
+      if (changes.infos.length === 0 && changes.removed.length === 0) return;
+      for (const id of changes.removed) this.queued.delete(id);
+      for (const info of changes.infos) {
+        const id = String(info.id);
+        const existing = this.queued.get(id);
+        if (existing !== undefined) {
+          existing.item.text = info.text;
+          existing.item.createdAt = info.createdAt;
+          continue;
+        }
+        const submission = await this.harness.submission(info.id, SESSION_CONTEXT);
+        if (submission === undefined) continue;
+        this.queued.set(id, {
+          item: {
+            id,
+            text: info.text,
+            createdAt: info.createdAt,
+            key: info.key,
+            notice: {
+              kind: MCP_NOTICE_ENTRY_KIND,
+              label: "MCP events",
+              glyph: queuedNoticeGlyph(MCP_NOTICE_ENTRY_KIND),
+            },
+          },
+          submission,
+        });
+      }
+      await this.persistMarkerState();
+      this.broadcastQueue();
+    } catch (error) {
+      console.error("[pi] could not merge queued MCP notices", error);
+    } finally {
+      this.mergingMcpQueue = false;
+    }
   }
 
   /**

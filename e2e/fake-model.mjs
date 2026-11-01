@@ -74,6 +74,9 @@ function updateNotice(body) {
 
 function responseFor(prompt, body = {}) {
   if (prompt.includes("WHATVERSION")) return `Update notice: ${updateNotice(body)}`;
+  // A bounded huge burst carries kilobytes of event data; a short reply keeps
+  // its multi-turn delivery test about the notices, not the echo.
+  if (prompt.includes("stub-huge.event")) return "Huge burst received.";
   if (prompt.includes("BULK")) return bulkAnswer(prompt);
   if (prompt.includes("LONG")) {
     return [
