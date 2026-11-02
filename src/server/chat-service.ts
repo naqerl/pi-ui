@@ -17,6 +17,7 @@ import {
   type SubmissionId,
   watchEvents,
 } from "@earendil-works/pi-durable";
+import { parseMemoryToolDetails } from "../shared/memory.js";
 import {
   MCP_EVENTS_HEAD,
   type OperatorNoticeRecord,
@@ -2043,6 +2044,7 @@ export class ChatService {
     }
 
     const result = event.result;
+    const memory = parseMemoryToolDetails(result?.details);
     return {
       kind: "tool",
       id: `local-${event.toolCallId}`,
@@ -2050,6 +2052,7 @@ export class ChatService {
       arguments: formatToolArguments(active?.args),
       output: result ? formatToolResult(result) : "The tool did not finish.",
       details: formatToolDetails(result?.details),
+      ...(memory === undefined ? {} : { memory }),
       isError: result?.isError ?? true,
       durationMs: result?.durationMs,
       timestamp: new Date().toISOString(),

@@ -29,6 +29,10 @@ export interface FindResult {
   readonly updated: string;
   readonly score: number;
   readonly snippet: string;
+  /** Matching term occurrences in the title and body. */
+  readonly hits: number;
+  /** The first body line that matched, for the chat chip's provenance list. */
+  readonly line: string;
 }
 
 export interface FindOptions {
@@ -43,6 +47,28 @@ function termFrequency(text: string): Map<string, number> {
     frequencies.set(word, (frequencies.get(word) ?? 0) + 1);
   }
   return frequencies;
+}
+
+function matchesTerm(word: string, terms: readonly string[]): boolean {
+  return terms.some((term) => word.startsWith(term) || term.startsWith(word));
+}
+
+function countHits(text: string, queryTerms: readonly string[]): number {
+  let hits = 0;
+  for (const word of tokenize(text)) {
+    if (matchesTerm(word, queryTerms)) hits += 1;
+  }
+  return hits;
+}
+
+function firstMatchingLine(
+  lines: readonly string[],
+  queryTerms: readonly string[],
+): string | undefined {
+  for (const line of lines) {
+    if (tokenize(line).some((word) => matchesTerm(word, queryTerms))) return line.trim();
+  }
+  return undefined;
 }
 
 function makeSnippet(lines: readonly string[], queryTerms: readonly string[]): string {
@@ -125,12 +151,15 @@ export async function findMemory(
       score *= 1 + 0.25 * Math.exp(-ageDays / 45);
       const hits = usage.hits[document.topic.rel]?.count ?? 0;
       score *= 1 + 0.15 * Math.min(4, hits);
+      const lines = document.topic.body.split(/\r?\n/);
       const result: FindResult = {
         rel: document.topic.rel,
         title: document.topic.title,
         updated: document.topic.updated,
         score,
-        snippet: makeSnippet(document.topic.body.split(/\r?\n/), queryTerms),
+        snippet: makeSnippet(lines, queryTerms),
+        hits: countHits(`${document.topic.title}\n${document.topic.body}`, queryTerms),
+        line: firstMatchingLine(lines, queryTerms) ?? document.topic.title,
       };
       return result;
     })
