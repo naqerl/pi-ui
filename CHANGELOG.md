@@ -1,3 +1,8 @@
+## 1.6.55 - 2026-11-02
+
+- feat(nudge): ask the agent to actualize stale working tasks as well as new work (mnok).
+- fix(chat): mark MCP notices as non-messages and drop assistant echoes (4bwv).
+
 ## 1.6.54 - 2026-11-02
 
 - feat(chat): show a memory-search chip with hit counts, one chip per turn (2r8i).
