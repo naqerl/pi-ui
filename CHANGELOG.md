@@ -1,3 +1,7 @@
+## 1.6.52 - 2026-11-02
+
+- feat(composer): the active page marker is a small square instead of a long line, page switches animate and buzz once, and the back button closes a task detail instead of leaving the app (2co6).
+
 ## 1.6.51 - 2026-11-02
 
 - test(display): keep the done-group fixture inside today so the browser suite cannot flake around midnight (tdfl).
