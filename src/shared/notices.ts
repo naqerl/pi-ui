@@ -124,6 +124,8 @@ const MCP_STATUS_HEAD = "MCP subscription status follows.";
 const IDLE_HEAD = /^You have been idle for \d+ minutes and (\d+) task\(s\) are open: ([^.]+)\./;
 const IDLE_STATUS_HEAD = /(?:^|\. )Status check for tasks marked working: ([^.]+)\./;
 const IDLE_BLOCKED_HEAD = /^You have been idle for \d+ minutes\. Nothing is unblocked: (.+)\.$/;
+const IDLE_ACTUALIZE_HEAD =
+  /Actualize these tasks\. These tasks were marked as working, but nothing has touched them for over an hour: ([\s\S]+?)\. For each one, confirm/;
 const STALE_RUN_HEAD =
   /^Tasks? (.+?) (?:has|have) had no tool call for \d+ minutes\. Confirm whether .*\bupdate the task ledger accordingly\.$/;
 const TASK_APPROVED_HEAD =
@@ -188,6 +190,15 @@ function mcpSummary(servers: string[], label: string): string {
   return `MCP ${servers.join(", ")}: ${label}`;
 }
 
+function actualizeIds(named: string): string[] {
+  const ids: string[] = [];
+  for (const match of named.matchAll(/(?:^|,\s*)([^\s,]+)\s+—\s+/g)) {
+    const id = match[1];
+    if (id !== undefined && id.length > 0) ids.push(id);
+  }
+  return ids;
+}
+
 function parseIdle(body: string): IdleNoticeDetails | null {
   const text = body.trim();
   const ids = (value: string | undefined) => {
@@ -211,13 +222,15 @@ function parseIdle(body: string): IdleNoticeDetails | null {
   }
   // A stale request follows the usual prompt on its own paragraph; the first line still
   // carries the task ids the chip and its summary need.
+  const actualize = IDLE_ACTUALIZE_HEAD.exec(text);
+  const actualizeTaskIds = actualize === null ? [] : actualizeIds(actualize[1] ?? "");
   const head = text.split("\n", 1)[0] ?? "";
   const match = IDLE_HEAD.exec(head);
   const status = IDLE_STATUS_HEAD.exec(head);
   if (match !== null || status !== null) {
     const openIds = ids(match?.[2]);
     const workingIds = ids(status?.[1]);
-    const taskIds = [...new Set([...openIds, ...workingIds])];
+    const taskIds = [...new Set([...openIds, ...workingIds, ...actualizeTaskIds])];
     if (taskIds.length === 0) return null;
     return {
       kind: "idle",
@@ -230,7 +243,15 @@ function parseIdle(body: string): IdleNoticeDetails | null {
     };
   }
   const blocked = IDLE_BLOCKED_HEAD.exec(head);
-  if (blocked === null) return null;
+  if (blocked === null) {
+    if (actualizeTaskIds.length === 0) return null;
+    return {
+      kind: "idle",
+      text,
+      taskIds: actualizeTaskIds,
+      summary: `idle · ${actualizeTaskIds.length} task(s) working: ${actualizeTaskIds.join(", ")}`,
+    };
+  }
   const waits = (blocked[1] ?? "")
     .split(";")
     .map((entry) => entry.trim())
@@ -242,7 +263,7 @@ function parseIdle(body: string): IdleNoticeDetails | null {
   return {
     kind: "idle",
     text,
-    taskIds,
+    taskIds: [...new Set([...taskIds, ...actualizeTaskIds])],
     summary: `idle · nothing unblocked: ${waits.join("; ")}`,
   };
 }

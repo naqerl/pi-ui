@@ -155,6 +155,118 @@ test("a persisted working task is stale only when nothing newer touched it", () 
   );
 });
 
+test("an hour-stale working task is actualized and a freshly worked one is not", () => {
+  const now = Date.parse("2026-10-31T12:00:00.000Z");
+  const hour = 60 * 60_000;
+  const old = new Date(now - 2 * hour).toISOString();
+  const recent = new Date(now - 60_000).toISOString();
+  const stale = {
+    id: "w1",
+    title: "Long-running badge",
+    status: "working" as const,
+    blockedBy: [],
+    workingSince: old,
+    lastWorkedAt: old,
+  };
+  const fresh = {
+    id: "w2",
+    title: "Fresh work",
+    status: "working" as const,
+    blockedBy: [],
+    workingSince: old,
+    lastWorkedAt: recent,
+  };
+
+  const nudge = new IdleNudge(1_000, 0, "");
+  const text = nudge.maybeNudge({ ...nothing, tasks: [stale, fresh] }, now);
+  assert.ok(text);
+  const actualize = text.split("\n\n").find((part) => part.startsWith("Actualize these tasks"));
+  assert.ok(actualize, "the stale task gets its own actualize paragraph");
+  assert.match(actualize, /w1 — Long-running badge/);
+  assert.doesNotMatch(actualize, /w2 —/);
+  assert.match(actualize, /confirm it is still being worked on/);
+  assert.match(actualize, /task_done and evidence/);
+  assert.match(actualize, /one-line note/);
+  assert.equal(parseNotice(text)?.kind, "idle");
+});
+
+test("a stale working task nudges even when there is no new work", () => {
+  const now = Date.parse("2026-10-31T12:00:00.000Z");
+  const stale = {
+    id: "w1",
+    title: "Still marked working",
+    status: "working" as const,
+    blockedBy: [],
+    workingSince: new Date(now - 2 * 60 * 60_000).toISOString(),
+  };
+
+  const nudge = new IdleNudge(1_000, 0, "");
+  const text = nudge.maybeNudge(
+    { ...nothing, openTaskIds: [], workingTaskIds: [], staleTasks: [stale] },
+    now,
+  );
+  assert.equal(text?.startsWith("You have been idle for 20 minutes. Actualize these tasks."), true);
+  assert.match(text ?? "", /w1 — Still marked working/);
+  const notice = parseNotice(text ?? "");
+  assert.equal(notice?.kind, "idle");
+  assert.deepEqual(notice?.taskIds, ["w1"]);
+});
+
+test("an unchanged new-work and actualize set stays silent", () => {
+  const now = Date.parse("2026-10-31T12:00:00.000Z");
+  const hour = 60 * 60_000;
+  const open = { id: "o1", title: "New work", status: "open" as const, blockedBy: [] };
+  const stale = {
+    id: "w1",
+    title: "Still marked working",
+    status: "working" as const,
+    blockedBy: [],
+    workingSince: new Date(now - 2 * hour).toISOString(),
+  };
+  const state = { ...nothing, tasks: [open, stale] };
+
+  const nudge = new IdleNudge(1_000, 0, "");
+  const first = nudge.maybeNudge(state, now);
+  assert.match(first ?? "", /open: o1/);
+  assert.match(first ?? "", /Actualize these tasks/);
+  assert.equal(nudge.nudgedHash, taskSetHash(["o1", "w1"]));
+
+  nudge.noteActivity(now + 1);
+  assert.equal(
+    nudge.maybeNudge(state, now + 2_000),
+    null,
+    "the actualize set is part of the nudge hash",
+  );
+
+  const extra = {
+    ...stale,
+    id: "w2",
+    title: "Another stale task",
+    workingSince: new Date(now - 3 * hour).toISOString(),
+  };
+  const changed = nudge.maybeNudge({ ...nothing, tasks: [open, stale, extra] }, now + 3_000);
+  assert.match(changed ?? "", /Actualize these tasks/);
+  assert.match(changed ?? "", /w2 — Another stale task/);
+});
+
+test("no tasks at all still means no nudge", () => {
+  const nudge = new IdleNudge(1_000, 0, "");
+  assert.equal(nudge.maybeNudge({ ...nothing }, 5_000), null);
+  assert.equal(
+    nudge.maybeNudge(
+      {
+        ...nothing,
+        tasks: [
+          { id: "d1", status: "done" },
+          { id: "p1", status: "proposed" },
+        ],
+      },
+      5_000,
+    ),
+    null,
+  );
+});
+
 test("a task blocked by an open task is not nudged", () => {
   const tasks = [task("simy"), task("fvte", "open", ["simy"])];
   assert.deepEqual(openTaskIds(tasks), ["simy"]);

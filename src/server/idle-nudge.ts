@@ -8,6 +8,7 @@ import {
   IDLE_STATUS_INTERVAL_MS,
   type IdleTask,
   type IdleTaskStatus,
+  idleActualizeNudgeText,
   idleDecisionNudgeText,
   openTaskIds,
   STALE_RUN_NUDGE_FILE,
@@ -462,14 +463,15 @@ export class IdleNudge {
     if (!this.armed) return null;
     if (state.active || state.queued > 0) return null;
     const { open, working } = selectableTasks(state);
-    if (open.length === 0 && working.length === 0) return null;
-    if (at - this.lastActivityAt < this.intervalMs) return null;
-
-    // Stale working tasks ride along with the usual decision prompt. A caller may
+    // Stale working tasks ride along with the usual decision prompt, and can also
+    // produce a nudge on their own when there is no new work to pick. A caller may
     // have already selected them; otherwise derive them from the richer task list.
     const stale = state.staleTasks ?? staleWorkedTasks(state.tasks ?? [], at);
+    if (open.length === 0 && working.length === 0 && stale.length === 0) return null;
+    if (at - this.lastActivityAt < this.intervalMs) return null;
 
-    const hash = taskSetHash([...new Set([...open, ...working])]);
+    const staleIds = stale.map((task) => task.id);
+    const hash = taskSetHash([...new Set([...open, ...working, ...staleIds])]);
     // The 10s timer may poll many times inside one idle window. Only one check per
     // window may advance the cooldown, or three silent opportunities become 30s. A
     // genuinely new task set is new information and is not held back.
@@ -489,7 +491,7 @@ export class IdleNudge {
     for (const [id, record] of Object.entries(this.record?.tasks ?? {})) {
       tasks[id] = { ...record };
     }
-    const current = new Set([...open, ...working]);
+    const current = new Set([...open, ...working, ...staleIds]);
     for (const id of Object.keys(tasks)) {
       if (!current.has(id)) delete tasks[id];
     }
@@ -542,6 +544,23 @@ export class IdleNudge {
     );
 
     if (visibleOpen.length === 0 && visibleWorking.length === 0) {
+      // No new work is due. A stale working task still deserves an actualize request,
+      // unless this exact new-work + actualize set was already named.
+      if (stale.length > 0 && hash !== this.record?.hash) {
+        const text = idleActualizeNudgeText(stale);
+        this.record = { hash, nudgedAt: atIso, tasks };
+        this.legacy = false;
+        this.fired = true;
+        this.lastOpportunityAt = at;
+        if (this.storage !== undefined) {
+          try {
+            writeIdleNudgeRecord(this.storage, this.record);
+          } catch (error) {
+            console.error("[pi] could not record the idle nudge", error);
+          }
+        }
+        return text;
+      }
       // Nothing to submit, but the silent counters still move. Persist them so the
       // next idle window resumes from here instead of starting over at zero.
       this.lastOpportunityAt = at;
