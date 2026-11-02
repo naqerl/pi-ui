@@ -13,7 +13,7 @@ import { parseCompletion, TASK_BODY_MAX_LENGTH } from "../shared/tasks.js";
 import type { TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
 import { ChatService } from "./chat-service.js";
-import { DashboardManager } from "./dashboard.js";
+import { DashboardError, DashboardManager } from "./dashboard.js";
 import type { DiagramBridge } from "./diagram-tools.js";
 import { DiagramStore } from "./diagrams.js";
 import { JobManager, jobNotice } from "./jobs.js";
@@ -514,6 +514,23 @@ app.get("/api/history", async (c) => {
 app.get("/api/tasks", (c) => c.json(taskView()));
 
 app.get("/api/dashboard", (c) => c.json(dashboard.state()));
+
+app.patch("/api/dashboard/layout", async (c) => {
+  let body: unknown;
+  try {
+    body = JSON.parse(await c.req.text());
+  } catch {
+    return c.text("Expected a JSON body", 400);
+  }
+  try {
+    await dashboard.setLayout(body);
+    return c.json(dashboard.state());
+  } catch (error) {
+    if (error instanceof DashboardError) return c.text(error.message, 400);
+    console.error("[pi] dashboard layout failed", error);
+    return c.text("Could not save the dashboard layout", 500);
+  }
+});
 
 app.delete("/api/dashboard/widgets/:id", async (c) => {
   try {
