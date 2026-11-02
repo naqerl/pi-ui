@@ -7,7 +7,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import type { OperatorNoticeRecord } from "../shared/notices.js";
+import type { OperatorNoticeRecord, TaskDecisionNoticeRecord } from "../shared/notices.js";
 import { MCP_EVENTS_HEAD } from "../shared/notices.js";
 import { parseCompletion, TASK_BODY_MAX_LENGTH } from "../shared/tasks.js";
 import type { TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
@@ -64,8 +64,11 @@ const themeFile = resolve(dataDir, "theme.json");
 const operatorNotices: {
   current?: (record: OperatorNoticeRecord) => void | Promise<void>;
 } = {};
+const taskNotices: {
+  current?: (record: TaskDecisionNoticeRecord) => void | Promise<void>;
+} = {};
 const taskStore = new TaskStore(resolve(dataDir, "tasks.json"), {
-  notice: (record) => operatorNotices.current?.(record),
+  notice: (record) => taskNotices.current?.(record),
 });
 const media = new MediaStore(resolve(dataDir, "media"));
 const diagrams = new DiagramStore(resolve(dataDir, "diagrams"));
@@ -238,6 +241,7 @@ const chat = new ChatService(
   dataDir,
 );
 operatorNotices.current = (record) => chat.recordOperatorNotice(record);
+taskNotices.current = (record) => chat.recordTaskDecision(record);
 memoryWrites.current = (record) => {
   void chat.recordMemoryWrite(record).catch((error: unknown) => {
     console.error("[pi] memory write notice failed", error);

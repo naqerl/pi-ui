@@ -1,7 +1,7 @@
 import { randomInt } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { OperatorNoticeRecord } from "../shared/notices.js";
+import type { TaskDecisionNoticeRecord } from "../shared/notices.js";
 import { normalizeProject, PROJECT_MAX_LENGTH, sameProject } from "../shared/project.js";
 import {
   blockerClosesCycle,
@@ -185,13 +185,13 @@ function sanitize(tasks: Task[]): Task[] {
 
 export type TaskNotifier = (notification: PushNotification) => Promise<void> | void;
 
-/** Where a proposal decision is recorded as a persistent notice in the chat. */
-export type TaskNoticeRecorder = (record: OperatorNoticeRecord) => Promise<void> | void;
+/** Where a proposal decision is delivered to the chat and the model. */
+export type TaskNoticeRecorder = (record: TaskDecisionNoticeRecord) => Promise<void> | void;
 
 export interface TaskStoreOptions {
   /** Where a status change is announced. Tests replace the web push sender. */
   readonly notify?: TaskNotifier;
-  /** Where a proposal approval or decline is recorded as an operator notice. */
+  /** Where a proposal approval or decline is delivered as a chat notice. */
   readonly notice?: TaskNoticeRecorder;
   /** Alias for callers that name the chat method. */
   readonly recordOperatorNotice?: TaskNoticeRecorder;
@@ -719,6 +719,10 @@ export class TaskStore {
         reason: approved
           ? "A human approved this proposal on the tasks page."
           : "A human declined this proposal on the tasks page.",
+        proposalId: change.task.id,
+        taskId: change.task.id,
+        taskTitle: change.task.title,
+        decision: approved ? "approved" : "declined",
       });
     } catch (error) {
       // A notice failure must never fail the ledger write that caused it.

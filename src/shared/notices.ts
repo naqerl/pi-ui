@@ -81,6 +81,24 @@ export interface OperatorNoticeDetails extends OperatorNoticeRecord {
   summary: string;
 }
 
+/** A human's decision on a proposed task, recorded as a notice the model reads. */
+export type TaskProposalDecision = "approved" | "declined";
+
+export interface TaskDecisionNoticeRecord extends OperatorNoticeRecord {
+  proposalId: string;
+  /** The task the proposal became, or its id when it was declined. */
+  taskId: string;
+  taskTitle: string;
+  decision: TaskProposalDecision;
+}
+
+export interface TaskDecisionNoticeDetails extends TaskDecisionNoticeRecord {
+  kind: "decision";
+  /** The prompt the agent received, also shown when the chip is opened. */
+  text: string;
+  summary: string;
+}
+
 /** The restart note recorded for an interrupted run. */
 export interface InterruptedNoticeDetails {
   kind: "interrupted";
@@ -97,7 +115,8 @@ export type ChatNotice =
   | InterruptedNoticeDetails
   | MemoryNoticeDetails
   | IdleNoticeDetails
-  | OperatorNoticeDetails;
+  | OperatorNoticeDetails
+  | TaskDecisionNoticeDetails;
 
 const JOB_HEAD = /^\[background job (\S+) finished\] (\S+) (.+?): (.*)$/;
 export const MCP_EVENTS_HEAD = "MCP event data follows.";
@@ -107,6 +126,10 @@ const IDLE_STATUS_HEAD = /(?:^|\. )Status check for tasks marked working: ([^.]+
 const IDLE_BLOCKED_HEAD = /^You have been idle for \d+ minutes\. Nothing is unblocked: (.+)\.$/;
 const STALE_RUN_HEAD =
   /^Tasks? (.+?) (?:has|have) had no tool call for \d+ minutes\. Confirm whether .*\bupdate the task ledger accordingly\.$/;
+const TASK_APPROVED_HEAD =
+  /^Task proposal (\S+) was approved and is now task (\S+): ([\s\S]*?)\.\nYou may start working on it now; it is no longer waiting for approval\.$/;
+const TASK_DECLINED_HEAD =
+  /^Task proposal (\S+) was declined: ([\s\S]*?)\.\nDo not start work on it and do not propose it again\.$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -303,6 +326,47 @@ export function operatorNoticeSummary(title: string): string {
   return `operator · ${title}`;
 }
 
+/** The prompt that tells the model a proposal was approved or declined. */
+export function taskDecisionPrompt(record: TaskDecisionNoticeRecord): string {
+  if (record.decision === "approved") {
+    return `Task proposal ${record.proposalId} was approved and is now task ${record.taskId}: ${record.taskTitle}.\nYou may start working on it now; it is no longer waiting for approval.`;
+  }
+  return `Task proposal ${record.proposalId} was declined: ${record.taskTitle}.\nDo not start work on it and do not propose it again.`;
+}
+
+export function taskDecisionSummary(
+  record: Pick<TaskDecisionNoticeRecord, "proposalId" | "taskId" | "taskTitle" | "decision">,
+): string {
+  return record.decision === "approved"
+    ? `proposal ${record.proposalId} approved as ${record.taskId} · ${record.taskTitle}`
+    : `proposal ${record.proposalId} declined · ${record.taskTitle}`;
+}
+
+function parseTaskDecision(body: string): TaskDecisionNoticeDetails | null {
+  const text = body.trim();
+  const approved = TASK_APPROVED_HEAD.exec(text);
+  const declined = approved === null ? TASK_DECLINED_HEAD.exec(text) : null;
+  const match = approved ?? declined;
+  if (match === null) return null;
+  const proposalId = match[1] ?? "";
+  const taskId = approved === null ? proposalId : (match[2] ?? proposalId);
+  const taskTitle = match[approved === null ? 2 : 3] ?? "";
+  if (proposalId.length === 0 || taskId.length === 0 || taskTitle.length === 0) return null;
+  const decision: TaskProposalDecision = approved === null ? "declined" : "approved";
+  return {
+    kind: "decision",
+    proposalId,
+    taskId,
+    taskTitle,
+    decision,
+    title: approved === null ? "Proposal declined" : "Proposal approved",
+    body: `${approved === null ? "Proposal declined" : "Proposal approved"}: ${taskTitle}`,
+    reason: "A human made this decision on the tasks page.",
+    text,
+    summary: taskDecisionSummary({ proposalId, taskId, taskTitle, decision }),
+  };
+}
+
 /** Caps the text stored with a memory chip, telling the panel when it was cut. */
 export function memoryNoticeText(value: string): { text: string; truncated: boolean } {
   if (value.length <= MEMORY_NOTICE_TEXT_LIMIT) return { text: value, truncated: false };
@@ -319,6 +383,7 @@ export function parseNotice(message: string): ChatNotice | null {
   if (message.startsWith("[background job ")) return parseJob(message.split("\n"));
   if (message.startsWith(MCP_EVENTS_HEAD)) return parseMcp(message, false);
   if (message.startsWith(MCP_STATUS_HEAD)) return parseMcp(message, true);
+  if (message.startsWith("Task proposal ")) return parseTaskDecision(message);
   if (
     message.startsWith("You have been idle for ") ||
     message.startsWith("Task ") ||
