@@ -10,12 +10,14 @@ import {
   type IdleTaskStatus,
   idleActualizeNudgeText,
   idleDecisionNudgeText,
+  idleMemoryNudgeText,
   openTaskIds,
   STALE_RUN_NUDGE_FILE,
   staleRunNudgeMs,
   staleRunNudgeText,
   staleRunTaskIds,
   staleWorkedTasks,
+  withMemoryRequest,
   withStaleRequest,
   workingTaskIds,
 } from "../shared/idle-nudge.js";
@@ -51,6 +53,8 @@ export interface IdleNudgeRecord {
   nudgedAt: string;
   /** Per-task memory. Absent on records written before this protocol. */
   tasks?: Record<string, IdleNudgeTaskRecord>;
+  /** Closed task ids already folded into the hash, so a closure is asked at most once. */
+  closed?: string[];
 }
 
 export interface IdleNudgeStorageOptions {
@@ -98,6 +102,48 @@ function iso(value: unknown): string | undefined {
 
 function count(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+}
+
+function instant(value: unknown): number | null {
+  if (typeof value !== "string" || value.length === 0) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function stringIds(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return [...new Set(value.filter((id): id is string => typeof id === "string" && id.length > 0))];
+}
+
+/** When the activity feed last saw a durable-memory tool call. */
+function lastMemoryWriteAt(activity: TaskActivity | undefined): number | null {
+  return instant(activity?.lastMemoryWriteAt ?? activity?.memoryWriteAt);
+}
+
+/** When a done task closed, using the older ledger spellings when needed. */
+function closedAt(task: IdleTask): number | null {
+  return instant(task.completedAt) ?? instant(task.closedAt) ?? instant(task.lastWorkedAt);
+}
+
+/** Closed tasks that happened after the previous nudge and have no memory write after them. */
+function unrecordedClosures(
+  tasks: readonly IdleTask[],
+  since: number,
+  activity: TaskActivity | undefined,
+  pending: ReadonlySet<string> = new Set(),
+): IdleTask[] {
+  const wroteAt = lastMemoryWriteAt(activity);
+  return tasks
+    .filter((task) => task.status === "done")
+    .filter((task) => {
+      const at = closedAt(task);
+      if (at === null) return false;
+      // A pending id survives a failed submission even though its closure time is
+      // already behind the stable watermark.
+      if (at <= since && !pending.has(task.id)) return false;
+      return wroteAt === null || wroteAt < at;
+    })
+    .sort((a, b) => (closedAt(a) ?? 0) - (closedAt(b) ?? 0));
 }
 
 function readTaskRecord(value: unknown, fallbackAt: string): IdleNudgeTaskRecord | undefined {
@@ -160,10 +206,14 @@ export function readIdleNudgeRecord(fileOrDataDir: string): IdleNudgeRecord | un
   // A valid hash with an unusable timestamp is still a corrupt record.
   if (nudgedAt === undefined) return undefined;
   const tasks = readTaskRecords(record, nudgedAt);
+  const closed = stringIds(
+    record.closed ?? record.closedIds ?? record.closures ?? record.askedClosures,
+  );
   return {
     hash: record.hash,
     nudgedAt,
     ...(tasks === undefined ? {} : { tasks }),
+    ...(closed === undefined ? {} : { closed }),
   };
 }
 
@@ -335,6 +385,10 @@ export interface IdleNudgeState {
   /** Explicit task states, for callers that keep them separately from the ids. */
   taskStatuses?: Readonly<Record<string, IdleTaskStatus>>;
   statuses?: Readonly<Record<string, IdleTaskStatus>>;
+  /** Tool-call activity, where the last memory write is recorded. */
+  activity?: TaskActivity;
+  /** Alias for callers that name the activity feed as their task activity. */
+  taskActivity?: TaskActivity;
 }
 
 export type IdleNudgeStart = number | IdleNudgeStorage;
@@ -386,6 +440,12 @@ function taskRecord(
 export class IdleNudge {
   private readonly storage: string | undefined;
   private lastActivityAt: number;
+  /** Stable closure watermark: noteActivity does not advance it. */
+  private closureSinceAt: number;
+  /** Unasked closures restored after their first submission failed. */
+  private pendingClosures = new Set<string>();
+  /** The closures in the latest nudge attempt; forgetNudge restores them on failure. */
+  private attemptedClosures: string[] = [];
   private fired = false;
   private record: IdleNudgeRecord | undefined;
   /** The last idle window that advanced the per-task counters, prompt or not. */
@@ -408,6 +468,8 @@ export class IdleNudge {
     }
     this.storage = storageFile(storageInput);
     this.load();
+    this.closureSinceAt =
+      (this.record === undefined ? null : instant(this.record.nudgedAt)) ?? this.lastActivityAt;
   }
 
   get enabled(): boolean {
@@ -440,6 +502,10 @@ export class IdleNudge {
    * the same task set try again instead of staying silenced until the set changes.
    */
   forgetNudge(): void {
+    // The submission never reached the chat, so the closures it named are still
+    // unasked. Keep them for the retry even after the record is cleared.
+    for (const id of this.attemptedClosures) this.pendingClosures.add(id);
+    this.attemptedClosures = [];
     this.record = undefined;
     this.legacy = false;
     if (this.storage === undefined) return;
@@ -459,7 +525,25 @@ export class IdleNudge {
   }
 
   /** The prompt to submit now, or null while disabled, busy, waiting, blocked or already nudged. */
-  maybeNudge(state: IdleNudgeState, at: number = Date.now()): string | null {
+  maybeNudge(state: IdleNudgeState, at?: number, activity?: TaskActivity): string | null;
+  maybeNudge(state: IdleNudgeState, activity?: TaskActivity, at?: number): string | null;
+  maybeNudge(
+    state: IdleNudgeState,
+    atOrActivity?: number | TaskActivity,
+    activityOrAt?: TaskActivity | number,
+  ): string | null {
+    const at =
+      typeof atOrActivity === "number"
+        ? atOrActivity
+        : typeof activityOrAt === "number"
+          ? activityOrAt
+          : Date.now();
+    const explicitActivity =
+      typeof atOrActivity === "object"
+        ? atOrActivity
+        : typeof activityOrAt === "object"
+          ? activityOrAt
+          : undefined;
     if (!this.armed) return null;
     if (state.active || state.queued > 0) return null;
     const { open, working } = selectableTasks(state);
@@ -467,15 +551,32 @@ export class IdleNudge {
     // produce a nudge on their own when there is no new work to pick. A caller may
     // have already selected them; otherwise derive them from the richer task list.
     const stale = state.staleTasks ?? staleWorkedTasks(state.tasks ?? [], at);
-    if (open.length === 0 && working.length === 0 && stale.length === 0) return null;
+    const activity = explicitActivity ?? state.activity ?? state.taskActivity;
+    const previousNudge = this.record === undefined ? null : instant(this.record.nudgedAt);
+    // noteActivity advances lastActivityAt even for run ends and failed retries; a
+    // closure must stay visible until a nudge actually carries it.
+    const since = previousNudge ?? this.closureSinceAt;
+    const closures = unrecordedClosures(state.tasks ?? [], since, activity, this.pendingClosures);
+    const liveClosures = new Set(closures.map((task) => task.id));
+    for (const id of [...this.pendingClosures]) {
+      if (!liveClosures.has(id)) this.pendingClosures.delete(id);
+    }
+    if (open.length === 0 && working.length === 0 && stale.length === 0 && closures.length === 0) {
+      return null;
+    }
     if (at - this.lastActivityAt < this.intervalMs) return null;
 
     const staleIds = stale.map((task) => task.id);
-    const hash = taskSetHash([...new Set([...open, ...working, ...staleIds])]);
+    const closedIds = [
+      ...new Set([...(this.record?.closed ?? []), ...closures.map((task) => task.id)]),
+    ];
+    const hash = taskSetHash([...new Set([...open, ...working, ...staleIds, ...closedIds])]);
+    const hasMemoryAsk = closures.length > 0;
     // The 10s timer may poll many times inside one idle window. Only one check per
     // window may advance the cooldown, or three silent opportunities become 30s. A
     // genuinely new task set is new information and is not held back.
     if (
+      !hasMemoryAsk &&
       hash === this.record?.hash &&
       this.lastOpportunityAt !== undefined &&
       at - this.lastOpportunityAt < this.intervalMs
@@ -484,7 +585,7 @@ export class IdleNudge {
     }
     // A legacy record only knows a hash. Keep its old silence until the set changes,
     // then the write below upgrades it to the per-task form.
-    if (this.legacy && hash === this.record?.hash) return null;
+    if (!hasMemoryAsk && this.legacy && hash === this.record?.hash) return null;
 
     const atIso = new Date(at).toISOString();
     const tasks: Record<string, IdleNudgeTaskRecord> = {};
@@ -545,10 +646,20 @@ export class IdleNudge {
 
     if (visibleOpen.length === 0 && visibleWorking.length === 0) {
       // No new work is due. A stale working task still deserves an actualize request,
-      // unless this exact new-work + actualize set was already named.
-      if (stale.length > 0 && hash !== this.record?.hash) {
-        const text = idleActualizeNudgeText(stale);
-        this.record = { hash, nudgedAt: atIso, tasks };
+      // unless this exact new-work + actualize set was already named. A closure is
+      // new information even when the work set is unchanged.
+      const staleDue = stale.length > 0 && (hash !== this.record?.hash || hasMemoryAsk);
+      if (staleDue || hasMemoryAsk) {
+        const base = staleDue ? idleActualizeNudgeText(stale) : "";
+        const text =
+          base.length === 0 ? idleMemoryNudgeText(closures) : withMemoryRequest(base, closures);
+        this.markAttempt(closures, at);
+        this.record = {
+          hash,
+          nudgedAt: atIso,
+          tasks,
+          ...(closedIds.length === 0 ? {} : { closed: closedIds }),
+        };
         this.legacy = false;
         this.fired = true;
         this.lastOpportunityAt = at;
@@ -568,6 +679,7 @@ export class IdleNudge {
         hash,
         nudgedAt: this.record?.nudgedAt ?? atIso,
         tasks,
+        ...(closedIds.length === 0 ? {} : { closed: closedIds }),
       };
       if (this.storage !== undefined) {
         try {
@@ -581,11 +693,17 @@ export class IdleNudge {
 
     for (const id of visibleOpen) tasks[id] = taskRecord(tasks[id], "open", atIso);
     for (const id of visibleWorking) tasks[id] = taskRecord(tasks[id], "working", atIso);
-    const text = withStaleRequest(
-      idleDecisionNudgeText(visibleOpen, visibleWorking, open.length),
-      stale,
+    const text = withMemoryRequest(
+      withStaleRequest(idleDecisionNudgeText(visibleOpen, visibleWorking, open.length), stale),
+      closures,
     );
-    this.record = { hash, nudgedAt: atIso, tasks };
+    this.markAttempt(closures, at);
+    this.record = {
+      hash,
+      nudgedAt: atIso,
+      tasks,
+      ...(closedIds.length === 0 ? {} : { closed: closedIds }),
+    };
     this.legacy = false;
     this.fired = true;
     this.lastOpportunityAt = at;
@@ -597,5 +715,12 @@ export class IdleNudge {
       }
     }
     return text;
+  }
+
+  /** Remember what this submission carries; forgetNudge restores the closures on failure. */
+  private markAttempt(closures: readonly IdleTask[], at: number): void {
+    this.attemptedClosures = closures.map((task) => task.id);
+    this.pendingClosures.clear();
+    if (at > this.closureSinceAt) this.closureSinceAt = at;
   }
 }

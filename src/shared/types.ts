@@ -400,6 +400,10 @@ export interface TaskActivity {
   /** The live run, or null between runs. */
   runId: string | null;
   traces: Record<string, TaskTrace>;
+  /** When the last `memory_write` or `memory_long_term` call started, or null. */
+  lastMemoryWriteAt?: string | null;
+  /** Alias for callers that name the event without the `last` prefix. */
+  memoryWriteAt?: string | null;
 }
 
 export interface Snapshot {
