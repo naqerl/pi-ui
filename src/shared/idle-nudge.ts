@@ -83,11 +83,16 @@ function staleRequestText(tasks: readonly IdleTask[]): string {
     const title = (task.title ?? "").replace(/\s+/g, " ").trim() || task.id;
     return `${task.id} — ${title}`;
   });
-  return `These tasks were marked as working, but nothing has touched them for over an hour: ${named.join(", ")}. For each one, either confirm it is still in work with task_working, or call a tool with its id as piuiTaskId, or mark it blocked and propose what unblocks it, or mark it done.`;
+  return `Actualize these tasks. These tasks were marked as working, but nothing has touched them for over an hour: ${named.join(", ")}. For each one, confirm it is still being worked on with task_working: if it is done, close it with task_done and evidence; if it cannot continue, mark it blocked and propose_task what would unblock it; if work continues, call a tool with its id as piuiTaskId; otherwise leave it working with a one-line note — do not silently keep the working badge.`;
 }
 
 export function withStaleRequest(text: string, tasks: readonly IdleTask[]): string {
   return tasks.length === 0 ? text : `${text}\n\n${staleRequestText(tasks)}`;
+}
+
+/** The idle notice used when the only thing to do is revisit stale working tasks. */
+export function idleActualizeNudgeText(tasks: readonly IdleTask[]): string {
+  return `You have been idle for ${IDLE_NUDGE_MINUTES} minutes. ${staleRequestText(tasks)}`;
 }
 
 /**
@@ -294,7 +299,7 @@ export function idleNudgeText(
     blocked = taskIdsOrTasks as WaitingOn;
   }
   if (taskIds.length === 0 && workingIds.length > 0) {
-    return idleDecisionNudgeText(taskIds, workingIds);
+    return withStaleRequest(idleDecisionNudgeText(taskIds, workingIds), stale);
   }
   if (taskIds.length === 0 && blocked !== undefined && Object.keys(blocked).length > 0) {
     return withStaleRequest(idleBlockedNudgeText(blocked), stale);
