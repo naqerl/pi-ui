@@ -1,3 +1,10 @@
+## 1.6.53 - 2026-11-02
+
+- fix(chat): the whole composer slides on page switch, not only its text (por2).
+- refactor(tasks): drop the metrics table from the task detail view (gaba).
+- feat(tasks): tell the model when a proposal is approved or declined (uixu).
+- fix(tasks): one consistent gap between headers and cards (h7oi).
+
 ## 1.6.52 - 2026-11-02
 
 - feat(composer): the active page marker is a small square instead of a long line, page switches animate and buzz once, and the back button closes a task detail instead of leaving the app (2co6).
