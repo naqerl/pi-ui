@@ -120,6 +120,12 @@ export type ChatNotice =
 
 const JOB_HEAD = /^\[background job (\S+) finished\] (\S+) (.+?): (.*)$/;
 export const MCP_EVENTS_HEAD = "MCP event data follows.";
+/**
+ * The fixed line after every MCP event notice. It tells the model the notice is
+ * background data, not a turn it should answer.
+ */
+export const MCP_EVENTS_TRAILER =
+  "This is a background MCP event notification, not a user message. Do not reply to it, do not summarise it, and never repeat its JSON. If it needs action, act; otherwise continue silently.";
 const MCP_STATUS_HEAD = "MCP subscription status follows.";
 const IDLE_HEAD = /^You have been idle for \d+ minutes and (\d+) task\(s\) are open: ([^.]+)\./;
 const IDLE_STATUS_HEAD = /(?:^|\. )Status check for tasks marked working: ([^.]+)\./;
@@ -137,6 +143,44 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function text(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+/** The notice body without the fixed trailer an event notice carries. */
+function withoutMcpTrailer(body: string): string {
+  const trimmed = body.trimEnd();
+  if (!trimmed.endsWith(MCP_EVENTS_TRAILER)) return trimmed;
+  return trimmed.slice(0, -MCP_EVENTS_TRAILER.length).trimEnd();
+}
+
+/** Parses the JSON body of an MCP event notice, ignoring its fixed trailer. */
+export function parseMcpEventPayload(body: string): Record<string, unknown> | null {
+  try {
+    const payload: unknown = JSON.parse(withoutMcpTrailer(body));
+    return isRecord(payload) ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+function echoText(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+/**
+ * True for an assistant message that repeats an MCP event notice instead of
+ * answering the conversation: either the notice itself, or the most recently
+ * delivered notice after whitespace normalisation.
+ */
+export function isMcpEventEcho(value: string, latestNotice: string | null = null): boolean {
+  const trimmed = value.trim();
+  if (trimmed.startsWith(MCP_EVENTS_HEAD)) {
+    const newline = trimmed.indexOf("\n");
+    if (newline >= 0) {
+      const payload = parseMcpEventPayload(trimmed.slice(newline + 1));
+      if (payload !== null && Array.isArray(payload.events)) return true;
+    }
+  }
+  return latestNotice !== null && echoText(trimmed) === echoText(latestNotice);
 }
 
 function parseJob(lines: string[]): JobNoticeDetails | null {
@@ -250,13 +294,8 @@ function parseIdle(body: string): IdleNoticeDetails | null {
 function parseMcp(body: string, status: boolean): McpNoticeDetails | null {
   const newline = body.indexOf("\n");
   if (newline < 0) return null;
-  let payload: unknown;
-  try {
-    payload = JSON.parse(body.slice(newline + 1));
-  } catch {
-    return null;
-  }
-  if (!isRecord(payload)) return null;
+  const payload = parseMcpEventPayload(body.slice(newline + 1));
+  if (payload === null) return null;
   const servers: string[] = [];
   const addServer = (server: string) => {
     if (!servers.includes(server)) servers.push(server);

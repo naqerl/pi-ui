@@ -74,6 +74,10 @@ function updateNotice(body) {
 
 function responseFor(prompt, body = {}) {
   if (prompt.includes("WHATVERSION")) return `Update notice: ${updateNotice(body)}`;
+  // The echo guard test wants the model to repeat a notice verbatim, trailer included.
+  if (prompt.includes("MCP event data follows.") && prompt.includes("ECHO_MCP_NOTICE")) {
+    return prompt;
+  }
   // A bounded huge burst carries kilobytes of event data; a short reply keeps
   // its multi-turn delivery test about the notices, not the echo.
   if (prompt.includes("stub-huge.event")) return "Huge burst received.";

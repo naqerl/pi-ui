@@ -23,6 +23,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { diagramPartFromDetails, parseDiagramDetails } from "../shared/diagrams.js";
 import { parseMemoryToolDetails } from "../shared/memory.js";
 import {
+  isMcpEventEcho,
   type MemoryNoticeDetails,
   memoryNoticeSummary,
   memoryNoticeText,
@@ -630,6 +631,7 @@ export function buildTranscript(
   }
 
   const mcpNotices = new Map<string, { first: EntryRecord; latest: EntryRecord }>();
+  let latestMcpNoticeText: string | null = null;
   for (const entry of sorted) {
     const groupId = mcpNoticeGroupId(entry);
     if (groupId === null) continue;
@@ -677,6 +679,7 @@ export function buildTranscript(
       if (group === undefined || group.first.id !== entry.id) continue;
       if (!isRecord(group.latest.data) || typeof group.latest.data.text !== "string") continue;
       const text = group.latest.data.text;
+      latestMcpNoticeText = text;
       const notice = parseNotice(text);
       if (notice === null) continue;
       const at = group.latest.data.at;
@@ -845,6 +848,7 @@ export function buildTranscript(
       const queueKey = kind === QUEUE_ENTRY_KIND ? queueKeyFromEntryData(entry.data) : undefined;
       if (text.length > 0 || attachments.length > 0) {
         const notice = parseNotice(text);
+        if (notice?.kind === "mcp") latestMcpNoticeText = text;
         // Older conversations stored a job result as a normal user entry. Keep it out of the chat
         // too, and show it where every other result of that run is shown.
         if (notice?.kind === "job") {
@@ -893,7 +897,9 @@ export function buildTranscript(
         )
         .map((block) => block.id);
       const visible = text.length > 0 || errorText.length > 0;
-      if (visible) {
+      const echo =
+        visible && isMcpEventEcho(text.length > 0 ? text : errorText, latestMcpNoticeText);
+      if (visible && !echo) {
         messages.push({
           id: `m-${entry.id}`,
           role: "assistant",
