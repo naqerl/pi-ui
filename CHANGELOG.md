@@ -1,3 +1,7 @@
+## 1.6.63 - 2026-11-02
+
+- test(tools): reject tool schemas the model provider refuses — the tuple schema that broke every request is now a lint test (g8ix).
+
 ## 1.6.62 - 2026-11-02
 
 - fix(tools): describe the sparkline chart yDomain as a two-number array instead of a JSON-schema tuple, which some providers reject with "Invalid schema for function 'dashboard_upsert'".
