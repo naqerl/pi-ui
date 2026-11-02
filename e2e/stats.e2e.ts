@@ -225,15 +225,9 @@ test("collapses the composer on the stats page and restores it on chat and tasks
     const element = document.querySelector('[data-testid="composer-body"]');
     return element === null ? "" : getComputedStyle(element).transitionProperty;
   });
-  expect(transition).toContain("transform");
+  expect(transition).toContain("height");
   expect(transition).toContain("opacity");
-  expect(transition).not.toContain("grid-template-rows");
-  expect(
-    await browser.evaluate(() => {
-      const element = document.querySelector('[data-testid="composer-slide"]');
-      return element === null ? "" : getComputedStyle(element).transitionProperty;
-    }),
-  ).toContain("transform");
+  expect(transition).not.toContain("transform");
 
   await screen.getByRole("tab", "Stats").tap();
   await expect(screen.getByTestId("stats-page")).toBeVisible();
@@ -243,13 +237,17 @@ test("collapses the composer on the stats page and restores it on chat and tasks
   expect(await body.getAttribute("data-hidden")).toBe("true");
   expect(await body.getAttribute("aria-hidden")).toBe("true");
   await expect(body).toHaveAttribute("data-collapsed", "true");
-  expect(
-    await browser.evaluate(() => {
-      const element = document.querySelector('[data-testid="composer-body"]');
-      if (element === null || !element.hasAttribute("inert")) return null;
-      return getComputedStyle(element).visibility;
-    }),
-  ).toBe("hidden");
+  await expect
+    .poll(
+      async () =>
+        browser.evaluate(() => {
+          const element = document.querySelector('[data-testid="composer-body"]');
+          if (element === null || !element.hasAttribute("inert")) return null;
+          return getComputedStyle(element).visibility;
+        }),
+      { timeout: 1500 },
+    )
+    .toBe("hidden");
 
   await screen.getByRole("tab", "Chat").tap();
   await expect(dock).toBeVisible();
@@ -269,10 +267,11 @@ test("collapses the composer on the stats page and restores it on chat and tasks
   await expect(dock).toBeVisible();
   await expect(body).toBeVisible();
   await expect(screen.getByRole("textbox", "New task")).toBeVisible();
-  await expect(slide).toHaveAttribute("data-shifted", "false");
+  await expect(body).toHaveAttribute("data-collapsed", "false");
+  await expect(slide).toBeVisible();
 });
 
-test("slides the navigation row and the field as one composer block", async ({
+test("moves the navigation row without a snap at either end of the page switch", async ({
   app,
   browser,
   screen,
@@ -280,123 +279,97 @@ test("slides the navigation row and the field as one composer block", async ({
   await browser.emulateMedia({ reducedMotion: "no-preference" });
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/");
-  const composer = screen.getByRole("textbox", "Message");
-  await expect(composer).toBeVisible();
-  const settled = await browser.evaluate(() => {
-    const field = document.querySelector('textarea[aria-label="Message"]');
-    const dots = document.querySelector('[data-testid="page-dots"]');
-    if (!(field instanceof HTMLElement) || !(dots instanceof HTMLElement)) return null;
-    const fieldBox = field.getBoundingClientRect();
-    const dotsBox = dots.getBoundingClientRect();
-    return { fieldTop: fieldBox.top, dotsTop: dotsBox.top };
-  });
-  expect(settled).not.toBeNull();
+  await expect(screen.getByTestId("working-status")).toBeVisible();
 
   const trace = await browser.evaluate(async () => {
+    const status = document.querySelector<HTMLElement>('[data-testid="working-status"]');
     const stats = document.querySelector<HTMLElement>('[data-testid="page-dot-stats"]');
-    const slide = document.querySelector<HTMLElement>('[data-testid="composer-slide"]');
-    const body = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
-    const dots = document.querySelector<HTMLElement>('[data-testid="page-dots"]');
-    const field = document.querySelector<HTMLElement>('textarea[aria-label="Message"]');
-    if (stats === null || slide === null || body === null || dots === null || field === null) {
-      return null;
-    }
-    const animated = (node: Element) => {
-      for (let element: Element | null = node; element !== null; element = element.parentElement) {
-        if (getComputedStyle(element).transform !== "none") return element;
+    const chat = document.querySelector<HTMLElement>('[data-testid="page-dot-chat"]');
+    if (status === null || stats === null || chat === null) return null;
+    const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 50));
+    const sample = async (button: HTMLElement) => {
+      const before = status.getBoundingClientRect().top;
+      button.click();
+      // Let React commit the page state, then take the animation away from the
+      // frame clock. Stepping its currentTime makes the sample cadence exact
+      // even when a loaded runner drops rAF frames.
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const animations = document
+        .getAnimations()
+        .filter((animation) => animation.playState !== "finished");
+      const duration = animations.reduce(
+        (longest, animation) =>
+          Math.max(longest, Number(animation.effect?.getComputedTiming().endTime ?? 0)),
+        0,
+      );
+      for (const animation of animations) {
+        animation.pause();
+        animation.currentTime = 0;
       }
-      return null;
-    };
-    const samples: { top: number; collapsed: string | null; shifted: string | null }[] = [];
-    let appeared: boolean = false;
-    let same: boolean = false;
-    let ancestor: string | null = null;
-    const capture = () => {
-      if (!appeared && slide.getAttribute("data-shifted") === "true") {
-        appeared = true;
-        const navigator = animated(dots);
-        same = navigator !== null && navigator === animated(field);
-        ancestor = navigator?.getAttribute("data-testid") ?? null;
-      }
-      samples.push({
-        top: dots.getBoundingClientRect().top,
-        collapsed: body.getAttribute("data-collapsed"),
-        shifted: slide.getAttribute("data-shifted"),
-      });
-    };
-    const observer = new MutationObserver(capture);
-    observer.observe(slide, { attributes: true, attributeFilter: ["data-shifted"] });
-    observer.observe(body, { attributes: true, attributeFilter: ["data-collapsed"] });
-    stats.click();
-    capture();
-    await new Promise<void>((resolve) => {
-      const deadline = performance.now() + 2000;
-      const tick = () => {
-        capture();
-        if (performance.now() >= deadline) {
-          resolve();
-          return;
+      const tops = [status.getBoundingClientRect().top];
+      for (let time = 1; time <= duration; time += 1) {
+        for (const animation of animations) {
+          const end = Number(animation.effect?.getComputedTiming().endTime ?? duration);
+          animation.currentTime = Math.min(time, end);
         }
-        requestAnimationFrame(tick);
-      };
-      requestAnimationFrame(tick);
-    });
-    observer.disconnect();
-    return {
-      appeared: appeared as boolean,
-      same: same as boolean,
-      ancestor: ancestor as string | null,
-      samples,
+        tops.push(status.getBoundingClientRect().top);
+      }
+      // A timer that commits the old end state does not run while this loop is
+      // synchronous. Catch it after the transition's own duration has elapsed.
+      await new Promise<void>((resolve) => setTimeout(resolve, 350));
+      tops.push(status.getBoundingClientRect().top);
+      for (const animation of document.getAnimations()) animation.cancel();
+      return { before, duration, tops };
     };
+    const down = await sample(stats);
+    await settle();
+    const up = await sample(chat);
+    return { down, up };
   });
   expect(trace).not.toBeNull();
-  expect(trace?.appeared).toBe(true);
-  expect(trace?.same).toBe(true);
-  expect(trace?.ancestor).toBe("composer-slide");
 
-  const samples = trace?.samples ?? [];
-  const collapsed = samples.filter((sample) => sample.collapsed === "true");
-  const beforeCollapse = samples.filter((sample) => sample.collapsed !== "true");
-  expect(collapsed.length).toBeGreaterThan(1);
-  expect(beforeCollapse.length).toBeGreaterThan(1);
-  const finalTop = samples[samples.length - 1]?.top ?? 0;
-  for (const sample of collapsed) {
-    // The row may finish its slide down, but it must not overshoot the settled
-    // stats position or ease back to it after the body collapses.
-    expect(Math.abs(sample.top - finalTop)).toBeLessThanOrEqual(20);
+  for (const run of [trace?.down, trace?.up]) {
+    const tops = run?.tops ?? [];
+    expect(run?.duration ?? 0).toBeGreaterThan(0);
+    expect(tops.length).toBeGreaterThan(1);
+    const deltas = tops.slice(1).map((top, index) => Math.abs(top - (tops[index] ?? top)));
+    const average = deltas.reduce((sum, delta) => sum + delta, 0) / deltas.length;
+    const largest = Math.max(...deltas);
+    const last = deltas[deltas.length - 1] ?? 0;
+    expect(Math.abs((tops[0] ?? 0) - (run?.before ?? 0))).toBeLessThan(0.5);
+    expect(largest).toBeLessThanOrEqual(average + 1);
+    expect(last).toBeLessThanOrEqual(Math.min(...deltas));
   }
-  for (let index = 1; index < beforeCollapse.length; index += 1) {
-    const previous = beforeCollapse[index - 1]?.top ?? 0;
-    const next = beforeCollapse[index]?.top ?? 0;
-    // Chat -> stats only moves the row down while the block is sliding.
-    expect(next - previous).toBeGreaterThanOrEqual(-20);
-  }
+});
 
-  await expect(screen.getByTestId("stats-page")).toBeVisible();
-  await expect(screen.getByTestId("composer-body")).toBeHidden();
-  await screen.getByRole("tab", "Chat").tap();
-  await expect
-    .poll(
-      async () => {
-        const now = await browser.evaluate(() => {
-          const field = document.querySelector('textarea[aria-label="Message"]');
-          const dots = document.querySelector('[data-testid="page-dots"]');
-          if (!(field instanceof HTMLElement) || !(dots instanceof HTMLElement)) return null;
-          return {
-            fieldTop: field.getBoundingClientRect().top,
-            dotsTop: dots.getBoundingClientRect().top,
-          };
-        });
-        if (now === null || settled === null) return false;
-        return (
-          Math.abs(now.fieldTop - settled.fieldTop) < 1 &&
-          Math.abs(now.dotsTop - settled.dotsTop) < 1
-        );
-      },
-      { timeout: 5000 },
-    )
-    .toBe(true);
-  await expect(screen.getByTestId("composer-slide")).toHaveAttribute("data-shifted", "false");
+test("keeps the composer body's resting height after ten page switches", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.emulateMedia({ reducedMotion: "no-preference" });
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/");
+  await expect(screen.getByTestId("composer-body")).toBeVisible();
+
+  const read = await browser.evaluate(async () => {
+    const body = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
+    const stats = document.querySelector<HTMLElement>('[data-testid="page-dot-stats"]');
+    const chat = document.querySelector<HTMLElement>('[data-testid="page-dot-chat"]');
+    if (body === null || stats === null || chat === null) return null;
+    const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 300));
+    const before = body.getBoundingClientRect().height;
+    for (let index = 0; index < 10; index += 1) {
+      stats.click();
+      await settle();
+      chat.click();
+      await settle();
+    }
+    return { before, after: body.getBoundingClientRect().height };
+  });
+  expect(read).not.toBeNull();
+  expect(read?.before).toBeGreaterThan(0);
+  expect(Math.abs((read?.after ?? 0) - (read?.before ?? 0))).toBeLessThan(0.5);
 });
 
 test("flattens the dock blur only while the page transition runs", async ({
@@ -474,12 +447,15 @@ test("flattens the dock blur only while the page transition runs", async ({
   await expect(screen.getByTestId("stats-page")).toBeVisible();
 });
 
-test("keeps the composer body still under reduced motion", async ({ app, browser, screen }) => {
+test("keeps the composer body still under reduced motion and switches in one frame", async ({
+  app,
+  browser,
+  screen,
+}) => {
   await browser.emulateMedia({ reducedMotion: "reduce" });
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/");
   const dock = screen.getByTestId("composer-dock");
-  const slide = screen.getByTestId("composer-slide");
   const body = screen.getByTestId("composer-body");
   const transition = (testId: string) =>
     browser.evaluate((id) => {
@@ -489,20 +465,38 @@ test("keeps the composer body still under reduced motion", async ({ app, browser
   await expect(dock).toBeVisible();
   await expect(body).toBeVisible();
   expect(await transition("composer-dock")).toBe("none");
-  expect(await transition("composer-slide")).toBe("none");
   expect(await transition("composer-body")).toBe("none");
 
-  await screen.getByRole("tab", "Stats").tap();
+  const read = await browser.evaluate(async () => {
+    const element = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
+    const stats = document.querySelector<HTMLElement>('[data-testid="page-dot-stats"]');
+    const chat = document.querySelector<HTMLElement>('[data-testid="page-dot-chat"]');
+    if (element === null || stats === null || chat === null) return null;
+    const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const start = element.getBoundingClientRect().height;
+    stats.click();
+    await nextFrame();
+    const collapsed = {
+      height: element.getBoundingClientRect().height,
+      state: element.getAttribute("data-collapsed"),
+    };
+    chat.click();
+    await nextFrame();
+    const expanded = {
+      height: element.getBoundingClientRect().height,
+      state: element.getAttribute("data-collapsed"),
+    };
+    return { start, collapsed, expanded };
+  });
+  expect(read).not.toBeNull();
+  expect(read?.collapsed.height).toBeLessThan(1);
+  expect(read?.collapsed.state).toBe("true");
+  expect(Math.abs((read?.expanded.height ?? 0) - (read?.start ?? 0))).toBeLessThan(0.5);
+  expect(read?.expanded.state).toBe("false");
+
   await expect(dock).toBeVisible();
-  await expect(body).toBeHidden();
-  await expect(slide).toHaveAttribute("data-shifted", "false");
-  expect(await transition("composer-slide")).toBe("none");
-  expect(await transition("composer-body")).toBe("none");
-
-  await screen.getByRole("tab", "Chat").tap();
   await expect(body).toBeVisible();
-  await expect(slide).toHaveAttribute("data-shifted", "false");
-  expect(await transition("composer-slide")).toBe("none");
+  expect(await transition("composer-dock")).toBe("none");
   expect(await transition("composer-body")).toBe("none");
 });
 
