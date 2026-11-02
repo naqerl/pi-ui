@@ -92,8 +92,7 @@ const PAGES = [
 const STATS_PAGE = 0;
 const CHAT_PAGE = 1;
 const TASKS_PAGE = 2;
-// The pager slides for 300ms; the composer's compositor animation is shorter.
-const COMPOSER_ANIMATION_MS = 220;
+// The pager slides for 300ms; the composer body's height settles sooner.
 const PAGE_SETTLE_MS = 320;
 
 function pageFromLocation(): number {
@@ -1305,14 +1304,6 @@ export function ChatView({
     () => projectsOf(tasks.filter((task) => isActiveStatus(task.status))),
     [tasks],
   );
-  // The whole composer (navigation row and body) moves as one block. The body's
-  // grid end state snaps in after the movement, so the slide never runs layout.
-  const composerBodyRef = useRef<HTMLDivElement | null>(null);
-  const composerBodyHeight = useRef(0);
-  const composerFrame = useRef<number | null>(null);
-  const [composerCollapsed, setComposerCollapsed] = useState(statsPage);
-  const [composerShifted, setComposerShifted] = useState(false);
-  const [composerInstant, setComposerInstant] = useState(false);
   const [pageAnimating, setPageAnimating] = useState(false);
   const lastPagerState = useRef({ page: pager.page, dragging: pager.dragging });
 
@@ -1327,79 +1318,6 @@ export function ChatView({
     lastVibratedPage.current = pager.page;
     navigator.vibrate?.(10);
   }, [pager.page]);
-
-  // Leave the body expanded while the block slides down, then collapse its grid in
-  // the same frame the offset is cleared: the row's on-screen position does not move.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: statsPage drives the slide; the collapsed flag is the starting state for that slide.
-  useLayoutEffect(() => {
-    const cancelFrame = () => {
-      if (composerFrame.current === null) return;
-      cancelAnimationFrame(composerFrame.current);
-      composerFrame.current = null;
-    };
-    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduced) {
-      cancelFrame();
-      setComposerInstant(false);
-      setComposerShifted(false);
-      setComposerCollapsed(statsPage);
-      return;
-    }
-    if (statsPage) {
-      if (composerCollapsed) {
-        cancelFrame();
-        setComposerShifted(false);
-        return;
-      }
-      const body = composerBodyRef.current;
-      const height = body?.getBoundingClientRect().height ?? 0;
-      if (height > 0) composerBodyHeight.current = height;
-      setComposerInstant(false);
-      setComposerShifted(true);
-      const timer = window.setTimeout(() => {
-        // Keep the transition disabled until the next slide is armed: re-enabling
-        // it in the same frame as this reset would animate the offset back to zero.
-        setComposerInstant(true);
-        setComposerCollapsed(true);
-        setComposerShifted(false);
-      }, COMPOSER_ANIMATION_MS);
-      return () => {
-        window.clearTimeout(timer);
-        cancelFrame();
-      };
-    }
-    if (!composerCollapsed) {
-      cancelFrame();
-      setComposerShifted(false);
-      return;
-    }
-    // The body is already collapsed here; expand its grid only long enough to
-    // measure how far the block has to start below its settled position.
-    const body = composerBodyRef.current;
-    let height = composerBodyHeight.current;
-    if (body !== null) {
-      const previous = body.style.gridTemplateRows;
-      body.style.gridTemplateRows = "1fr";
-      const measured = body.getBoundingClientRect().height;
-      body.style.gridTemplateRows = previous;
-      if (measured > 0) height = measured;
-    }
-    composerBodyHeight.current = height;
-    cancelFrame();
-    setComposerInstant(true);
-    setComposerCollapsed(false);
-    setComposerShifted(height > 0);
-    // Let the transition-disabled, offset-armed frame paint before enabling the
-    // transition and clearing the offset, otherwise the browser animates the reset.
-    composerFrame.current = requestAnimationFrame(() => {
-      composerFrame.current = requestAnimationFrame(() => {
-        composerFrame.current = null;
-        setComposerInstant(false);
-        setComposerShifted(false);
-      });
-    });
-    return cancelFrame;
-  }, [statsPage]);
 
   // Keep the dock's blur off for the whole pager movement, including a drag that
   // snaps back to the page it started on.
@@ -1722,17 +1640,7 @@ export function ChatView({
           data-transitioning={pager.dragging || pageAnimating ? "true" : undefined}
           className="float-footer absolute z-20 theme-radius"
         >
-          <div
-            data-testid="composer-slide"
-            data-shifted={composerShifted ? "true" : "false"}
-            data-instant={composerInstant ? "true" : undefined}
-            className="composer-slide"
-            style={
-              composerShifted && composerBodyHeight.current > 0
-                ? { transform: `translate3d(0, ${composerBodyHeight.current}px, 0)` }
-                : undefined
-            }
-          >
+          <div data-testid="composer-slide">
             <div className="ink-line flex items-center gap-3 border-b py-1.5 pr-1.5 pl-[18px]">
               <div
                 data-testid="working-status"
@@ -1777,15 +1685,14 @@ export function ChatView({
               <PiMenu />
             </div>
             <div
-              ref={composerBodyRef}
               data-testid="composer-body"
               data-hidden={statsPage ? "true" : "false"}
-              data-collapsed={composerCollapsed ? "true" : "false"}
+              data-collapsed={statsPage ? "true" : "false"}
               aria-hidden={statsPage ? true : undefined}
               inert={statsPage ? true : undefined}
               className="composer-body"
             >
-              <div className="composer-body-clip">
+              <div>
                 <Composer
                   tasksPage={tasksPage}
                   running={running}
