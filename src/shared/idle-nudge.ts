@@ -40,7 +40,7 @@ export type IdleTask = Pick<Task, "id"> & {
   readonly lastWorkedAt?: string | null;
   /** When task_working marked this task working, when the caller has it. */
   readonly workingSince?: string;
-  /** A live trace's last tagged call, when the caller has one. */
+  /** A live trace's last attributed call, when the caller has one. */
   readonly lastActivityAt?: string | null;
   /** A derived client state, when the caller already has one. */
   readonly state?: IdleTaskState;
@@ -59,7 +59,7 @@ function instant(value: string | null | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-/** The newest tagged call an idle task knows about, or null when it was never worked on. */
+/** The newest attributed call an idle task knows about, or null when it was never worked on. */
 export function lastTouchedAt(task: IdleTask): number | null {
   let newest = instant(task.lastWorkedAt);
   const traced = instant(task.lastActivityAt);
@@ -67,7 +67,7 @@ export function lastTouchedAt(task: IdleTask): number | null {
   return newest;
 }
 
-/** Open tasks that still carry working but have not been tagged for over an hour. */
+/** Open tasks that still carry working but have not been touched for over an hour. */
 export function staleWorkedTasks(tasks: readonly IdleTask[], at: number = Date.now()): IdleTask[] {
   return tasks.filter((task) => {
     if (!isActiveStatus(task.status)) return false;
@@ -83,7 +83,7 @@ function staleRequestText(tasks: readonly IdleTask[]): string {
     const title = (task.title ?? "").replace(/\s+/g, " ").trim() || task.id;
     return `${task.id} — ${title}`;
   });
-  return `These tasks were marked as working, but nothing has touched them for over an hour: ${named.join(", ")}. For each one, either confirm it is still in work with task_working, or call a tool with its id as piuiTaskId, or mark it blocked and propose what unblocks it, or mark it done.`;
+  return `These tasks were marked as working, but nothing has touched them for over an hour: ${named.join(", ")}. For each one, either confirm it is still in work with task_working, or mark it blocked and propose what unblocks it, or mark it done.`;
 }
 
 export function withStaleRequest(text: string, tasks: readonly IdleTask[]): string {
@@ -116,7 +116,7 @@ export function staleRunNudgeMs(env: Record<string, string | undefined> = proces
 }
 
 /**
- * Tasks whose live run has not made a tagged tool call for `windowMs`. A terminal
+ * Tasks whose live run has not made an attributed tool call for `windowMs`. A terminal
  * run, a closed or proposed task, and a task waiting on an open blocker are left
  * alone: only work that is still live and still unblocked is worth a status check.
  */

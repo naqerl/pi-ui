@@ -4,7 +4,7 @@ import type { Task, TaskActivity, TaskState, TaskTrace } from "./types.js";
 /** Kept for callers that still name the old recency window; working now lasts until the run ends. */
 export const WORKING_WINDOW_MS = 10 * 60_000;
 
-/** After an hour without a tagged call, a working task is shown as stale as well. */
+/** After an hour without an attributed call, a working task is shown as stale as well. */
 export const STALE_WORKING_MS = 60 * 60_000;
 
 function nowOf(activity: TaskActivity | undefined): number {
@@ -19,7 +19,7 @@ function instant(value: string | null | undefined): number | null {
 }
 
 /**
- * The newest tagged call recorded for a task: the ledger's `lastWorkedAt`, or a live trace
+ * The newest attributed call recorded for a task: the ledger's `lastWorkedAt`, or a live trace
  * when it is fresher. The trace also covers views from before the ledger remembered the time.
  */
 export function lastWorkedAtMs(task: Task, activity: TaskActivity | undefined): number | null {
@@ -104,7 +104,7 @@ export function carryWorkingTraces(
 
 /**
  * The one state a task shows. Ledger facts (proposed, done, a live blocker) win; then a task
- * keeps its working badge once it has been tagged, even after the run ends; live activity only
+ * keeps its working badge once it has been attributed, even after the run ends; live activity only
  * animates it. A failed run or a parent with some finished subtasks follows, and anything else
  * is ready.
  */
@@ -119,7 +119,7 @@ export function taskState(
   if (task.status === "working") return "working";
   if (isWorking(task, activity)) return "working";
   if (task.lastWorkedAt !== undefined && task.lastWorkedAt !== null) {
-    // A live blocker is still ledger truth, even for work that was tagged before it appeared.
+    // A live blocker is still ledger truth, even for work attributed before it appeared.
     if (liveBlockerIds(tasks, task).length > 0) return "blocked";
     return "working";
   }

@@ -5,9 +5,9 @@ import { join } from "node:path";
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
-// A task is working because a run called tools tagged with its id, never because the agent said
-// so; calls without a tag are not attributed to any task, and the badge survives the turn.
-test("tagged tool calls show a task as working, untagged ones touch no task", async ({
+// A call belongs to the one task marked working, never to a per-call tag; its measurements stay
+// on that task after the run ends, and the badge survives the turn.
+test("tool calls made while one task is working are charged to it", async ({
   app,
   browser,
   screen,
@@ -29,12 +29,22 @@ test("tagged tool calls show a task as working, untagged ones touch no task", as
   await expect(screen.getByTestId(`task-${id}`)).toBeVisible();
   await expect(screen.getByTestId("now-line")).toHaveCount(0);
 
-  // The tagged call waits until the test has looked, however slow the machine.
+  const working = await browser.evaluate(async (taskId) => {
+    const response = await fetch(`/api/tasks/${taskId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status: "working" }),
+    });
+    return response.ok;
+  }, id ?? "");
+  expect(working).toBe(true);
+
+  // The call waits until the test has looked, however slow the machine.
   const release = join(tmpdir(), `pi-ui-task-activity-${tag}-${randomUUID()}`);
   const wait = `for i in $(seq 600); do [ -e '${release}' ] && break; sleep 0.1; done; echo released`;
   const calls = [
-    { name: "bash", arguments: { command: wait, piuiTaskId: id } },
-    { name: "bash", arguments: { command: "echo untagged" } },
+    { name: "bash", arguments: { command: wait } },
+    { name: "bash", arguments: { command: "echo also charged" } },
   ];
   await browser.evaluate(
     async (text) => {
@@ -55,7 +65,7 @@ test("tagged tool calls show a task as working, untagged ones touch no task", as
 
   writeFileSync(release, "");
 
-  // Wait for the turn to end, then check the ledger still remembers the tagged call.
+  // Wait for the turn to end, then check the ledger still remembers both attributed calls.
   await expect
     .poll(() =>
       browser.evaluate(async (taskId: string) => {
@@ -63,7 +73,7 @@ test("tagged tool calls show a task as working, untagged ones touch no task", as
           tasks: Array<{ id: string; lastWorkedAt?: string | null }>;
           activity?: {
             running: boolean;
-            traces: Record<string, { measured?: { runs: number } }>;
+            traces: Record<string, { measured?: { runs: number; calls: number } }>;
           };
         };
         const task = ledger.tasks.find((item) => item.id === taskId);
@@ -71,10 +81,11 @@ test("tagged tool calls show a task as working, untagged ones touch no task", as
           running: ledger.activity?.running ?? null,
           lastWorkedAt: task?.lastWorkedAt ?? null,
           runs: ledger.activity?.traces[taskId]?.measured?.runs ?? null,
+          calls: ledger.activity?.traces[taskId]?.measured?.calls ?? null,
         };
       }, id ?? ""),
     )
-    .toMatchObject({ running: false, lastWorkedAt: expect.any(String), runs: 1 });
+    .toMatchObject({ running: false, lastWorkedAt: expect.any(String), runs: 1, calls: 2 });
   await expect(screen.getByTestId(`task-${id}`)).toHaveAttribute("data-state", "working");
   await expect(screen.getByTestId(`task-${id}`)).toContainText("Working");
   await expect(screen.getByTestId(`task-stale-${id}`)).toHaveCount(0);

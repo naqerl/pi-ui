@@ -108,7 +108,7 @@ test("the nudge names stale working tasks and repeats only when the set changes"
     text ?? "",
     /These tasks were marked as working, but nothing has touched them for over an hour: a1 — Ship the stale badge\./,
   );
-  assert.match(text ?? "", /call a tool with its id as piuiTaskId/);
+  assert.match(text ?? "", /confirm it is still in work with task_working/);
   assert.equal(parseNotice(text ?? "")?.kind, "idle");
 
   nudge.noteActivity(now + 1);

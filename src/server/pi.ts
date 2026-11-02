@@ -57,7 +57,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function formatToolArguments(value: unknown): string {
   if (value === undefined) return "{}";
-  // The task tag is bookkeeping for the tasks page, not part of what the tool did.
+  // A legacy task tag is bookkeeping, not part of what the tool did.
   if (isRecord(value) && TASK_ID_PARAM in value) {
     const { [TASK_ID_PARAM]: _tag, ...rest } = value;
     value = rest;
