@@ -254,7 +254,16 @@ function IdleDetails({ notice }: { notice: IdleNoticeDetails }) {
     <>
       <p className="[overflow-wrap:anywhere]">{notice.text}</p>
       <Fields
-        rows={[[notice.stale === true ? "Tracked tasks" : "Open tasks", notice.taskIds.join(", ")]]}
+        rows={[
+          [
+            notice.stale === true
+              ? "Tracked tasks"
+              : notice.closed === true
+                ? "Closed tasks"
+                : "Open tasks",
+            notice.taskIds.join(", "),
+          ],
+        ]}
       />
     </>
   );

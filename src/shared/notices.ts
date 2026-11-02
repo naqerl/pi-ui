@@ -67,6 +67,8 @@ export interface IdleNoticeDetails {
   summary: string;
   /** True for the narrower status check after a live run went quiet on a task. */
   stale?: true;
+  /** True when the notice only asks for memory about closed tasks. */
+  closed?: true;
 }
 
 /** A request the agent pushed to the operator's devices with notify_operator. */
@@ -132,6 +134,9 @@ const IDLE_STATUS_HEAD = /(?:^|\. )Status check for tasks marked working: ([^.]+
 const IDLE_BLOCKED_HEAD = /^You have been idle for \d+ minutes\. Nothing is unblocked: (.+)\.$/;
 const IDLE_ACTUALIZE_HEAD =
   /Actualize these tasks\. These tasks were marked as working, but nothing has touched them for over an hour: ([\s\S]+?)\. For each one, confirm/;
+const IDLE_MEMORY_HEAD =
+  /You closed (.+?) since the last nudge and have not written anything durable about (?:it|them)\./;
+const IDLE_MEMORY_NAMES = /(?:^|,\s*)([^\s,]+)\s+"[^"]*"/g;
 const STALE_RUN_HEAD =
   /^Tasks? (.+?) (?:has|have) had no tool call for \d+ minutes\. Confirm whether .*\bupdate the task ledger accordingly\.$/;
 const TASK_APPROVED_HEAD =
@@ -243,6 +248,17 @@ function actualizeIds(named: string): string[] {
   return ids;
 }
 
+function memoryClosureIds(body: string): string[] {
+  const head = IDLE_MEMORY_HEAD.exec(body);
+  if (head === null) return [];
+  const ids: string[] = [];
+  for (const match of (head[1] ?? "").matchAll(IDLE_MEMORY_NAMES)) {
+    const id = match[1];
+    if (id !== undefined && id.length > 0) ids.push(id);
+  }
+  return ids;
+}
+
 function parseIdle(body: string): IdleNoticeDetails | null {
   const text = body.trim();
   const ids = (value: string | undefined) => {
@@ -264,17 +280,18 @@ function parseIdle(body: string): IdleNoticeDetails | null {
       stale: true,
     };
   }
-  // A stale request follows the usual prompt on its own paragraph; the first line still
-  // carries the task ids the chip and its summary need.
+  // A stale request and the memory ask follow the usual prompt on their own paragraphs;
+  // the first line still carries the task ids the chip and its summary need.
   const actualize = IDLE_ACTUALIZE_HEAD.exec(text);
   const actualizeTaskIds = actualize === null ? [] : actualizeIds(actualize[1] ?? "");
+  const closureIds = memoryClosureIds(text);
   const head = text.split("\n", 1)[0] ?? "";
   const match = IDLE_HEAD.exec(head);
   const status = IDLE_STATUS_HEAD.exec(head);
   if (match !== null || status !== null) {
     const openIds = ids(match?.[2]);
     const workingIds = ids(status?.[1]);
-    const taskIds = [...new Set([...openIds, ...workingIds, ...actualizeTaskIds])];
+    const taskIds = [...new Set([...openIds, ...workingIds, ...actualizeTaskIds, ...closureIds])];
     if (taskIds.length === 0) return null;
     return {
       kind: "idle",
@@ -288,11 +305,21 @@ function parseIdle(body: string): IdleNoticeDetails | null {
   }
   const blocked = IDLE_BLOCKED_HEAD.exec(head);
   if (blocked === null) {
-    if (actualizeTaskIds.length === 0) return null;
+    const taskIds = [...new Set([...actualizeTaskIds, ...closureIds])];
+    if (taskIds.length === 0) return null;
+    if (actualizeTaskIds.length === 0) {
+      return {
+        kind: "idle",
+        text,
+        taskIds,
+        summary: `idle · ${taskIds.length} task(s) closed: ${taskIds.join(", ")}`,
+        closed: true,
+      };
+    }
     return {
       kind: "idle",
       text,
-      taskIds: actualizeTaskIds,
+      taskIds,
       summary: `idle · ${actualizeTaskIds.length} task(s) working: ${actualizeTaskIds.join(", ")}`,
     };
   }
@@ -307,7 +334,7 @@ function parseIdle(body: string): IdleNoticeDetails | null {
   return {
     kind: "idle",
     text,
-    taskIds: [...new Set([...taskIds, ...actualizeTaskIds])],
+    taskIds: [...new Set([...taskIds, ...actualizeTaskIds, ...closureIds])],
     summary: `idle · nothing unblocked: ${waits.join("; ")}`,
   };
 }
@@ -446,6 +473,7 @@ export function parseNotice(message: string): ChatNotice | null {
   if (message.startsWith("Task proposal ")) return parseTaskDecision(message);
   if (
     message.startsWith("You have been idle for ") ||
+    message.startsWith("You closed ") ||
     message.startsWith("Task ") ||
     message.startsWith("Tasks ")
   ) {

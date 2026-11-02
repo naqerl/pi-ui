@@ -38,7 +38,12 @@ interface Persisted {
   traces: Record<string, TaskTrace>;
   /** What each task looked like last time, so ledger diffs survive a restart. */
   seen: Record<string, LedgerFacts>;
+  /** The last memory tool call, so the idle nudge can see it after a restart. */
+  lastMemoryWriteAt?: string | null;
 }
+
+/** Tool names that write durable memory. */
+const MEMORY_WRITE_TOOLS = new Set(["memory_write", "memory_long_term"]);
 
 interface LedgerFacts {
   status: Task["status"];
@@ -106,6 +111,7 @@ export class TaskActivityTracker {
   private workingTaskId: string | undefined;
   /** A failure seen during the run, reported when it ends. */
   private failure: { outcome: "error" | "interrupted"; reason: string } | null = null;
+  private lastMemoryWriteAt: string | null = null;
   private listeners = new Set<() => void>();
   private saveTimer: NodeJS.Timeout | undefined;
 
@@ -150,6 +156,12 @@ export class TaskActivityTracker {
     for (const [id, facts] of Object.entries(parsed.seen ?? {})) {
       if (typeof facts === "object" && facts !== null) this.seen.set(id, { ...facts });
     }
+    if (
+      typeof parsed.lastMemoryWriteAt === "string" &&
+      Number.isFinite(Date.parse(parsed.lastMemoryWriteAt))
+    ) {
+      this.lastMemoryWriteAt = parsed.lastMemoryWriteAt;
+    }
   }
 
   onChange(listener: () => void): () => void {
@@ -179,6 +191,7 @@ export class TaskActivityTracker {
       running: this.runId !== null,
       runId: this.runId,
       traces,
+      lastMemoryWriteAt: this.lastMemoryWriteAt,
     };
   }
 
@@ -246,12 +259,16 @@ export class TaskActivityTracker {
    * A top-level tool call started. It belongs to the one task whose status is working, if any,
    * and the returned id is kept for the matching `toolEnded` even if that task closes meanwhile.
    */
-  toolStarted(_name: string, args?: unknown): string | undefined {
+  toolStarted(name: string, args?: unknown): string | undefined {
     noteLegacyTaskId(args);
     // Some tool calls arrive without a run_start we saw, e.g. right after a restart.
     if (this.runId === null) this.runStarted();
     const runId = this.runId as string;
     const now = this.clock();
+    if (MEMORY_WRITE_TOOLS.has(name)) {
+      this.lastMemoryWriteAt = new Date(now).toISOString();
+      this.changed();
+    }
     const taskId = this.workingTaskId;
     if (taskId === undefined) return undefined;
     this.recordWork(taskId, now);
@@ -405,6 +422,7 @@ export class TaskActivityTracker {
       version: 1,
       traces: Object.fromEntries(this.traces),
       seen: Object.fromEntries(this.seen),
+      lastMemoryWriteAt: this.lastMemoryWriteAt,
     };
     await mkdir(dirname(this.path), { recursive: true });
     const temp = `${this.path}.${process.pid}.tmp`;

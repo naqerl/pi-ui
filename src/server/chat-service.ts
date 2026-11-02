@@ -538,12 +538,14 @@ export class ChatService {
       workingIds = workingTaskIds(titled);
     }
     const namedIds = [...new Set([...openIds, ...workingIds])];
+    const activity = this.taskActivity?.view();
     const text = this.idleNudge.maybeNudge({
       active: this.runState === "running" || this.submitting > 0,
       queued: this.queued.size + this.steers.size,
       openTaskIds: openIds,
       workingTaskIds: workingIds,
       ...(titled === undefined ? {} : { tasks: titled }),
+      ...(activity === undefined ? {} : { activity }),
     });
     if (text === null) return;
     this.checkingIdleNudge = true;

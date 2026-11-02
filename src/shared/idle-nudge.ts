@@ -40,6 +40,10 @@ export type IdleTask = Pick<Task, "id"> & {
   readonly lastWorkedAt?: string | null;
   /** When task_working marked this task working, when the caller has it. */
   readonly workingSince?: string;
+  /** When the task was closed, or null while it is open. */
+  readonly completedAt?: string | null;
+  /** Older ledgers may spell the closure timestamp this way. */
+  readonly closedAt?: string | null;
   /** A live trace's last attributed call, when the caller has one. */
   readonly lastActivityAt?: string | null;
   /** A derived client state, when the caller already has one. */
@@ -83,7 +87,6 @@ function staleRequestText(tasks: readonly IdleTask[]): string {
     const title = (task.title ?? "").replace(/\s+/g, " ").trim() || task.id;
     return `${task.id} — ${title}`;
   });
-D
   return `Actualize these tasks. These tasks were marked as working, but nothing has touched them for over an hour: ${named.join(", ")}. For each one, confirm it is still being worked on with task_working: if it is done, close it with task_done and evidence; if it cannot continue, mark it blocked and propose_task what would unblock it; if work continues, keep it working with task_working and a one-line note — do not silently keep the working badge.`;
 }
 
@@ -95,6 +98,35 @@ export function withStaleRequest(text: string, tasks: readonly IdleTask[]): stri
 export function idleActualizeNudgeText(tasks: readonly IdleTask[]): string {
   return `You have been idle for ${IDLE_NUDGE_MINUTES} minutes. ${staleRequestText(tasks)}`;
 }
+
+function closedDescription(tasks: readonly IdleTask[]): string {
+  return tasks
+    .map((task) => {
+      const title = (task.title ?? "").replace(/\s+/g, " ").trim() || task.id;
+      return `${task.id} "${title}"`;
+    })
+    .join(", ");
+}
+
+/**
+ * The one-paragraph ask for a durable memory after a task was closed. It names
+ * every closure that is still unrecorded so one nudge can cover a whole batch.
+ */
+export function idleMemoryNudgeText(tasks: readonly IdleTask[]): string {
+  const subject = tasks.length === 1 ? "it" : "them";
+  return `You closed ${closedDescription(tasks)} since the last nudge and have not written anything durable about ${subject}.
+If the work taught something reusable — a procedure, a trap, an environment fact — record it with
+memory_write (long_term for the topic, daily for the log). If it taught nothing reusable, say so in
+one line and continue.`;
+}
+
+/** Append the memory ask after the work and actualize paragraphs, when it is due. */
+export function withMemoryRequest(text: string, tasks: readonly IdleTask[]): string {
+  return tasks.length === 0 ? text : `${text}\n\n${idleMemoryNudgeText(tasks)}`;
+}
+
+/** Alias for callers that name the prompt by the write it asks for. */
+export const idleMemoryWriteNudgeText = idleMemoryNudgeText;
 
 /**
  * The idle period from `PI_IDLE_NUDGE_MS`. Zero disables nudges; a missing or
