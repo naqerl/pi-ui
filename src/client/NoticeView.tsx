@@ -47,6 +47,53 @@ function noticeGlyph(notice: ChatNotice): string {
   return "⚠";
 }
 
+/** The shared chip surface for chat notices and tool-activity chips. */
+export function ChipButton({
+  testId,
+  kind,
+  title,
+  onClick,
+  dialog = false,
+  expanded,
+  controls,
+  tone = "default",
+  children,
+}: {
+  testId: string;
+  kind: string;
+  title: string;
+  onClick: () => void;
+  /** Opens a modal dialog rather than expanding inline. */
+  dialog?: boolean;
+  expanded?: boolean;
+  controls?: string;
+  tone?: "default" | "warning" | "destructive";
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      data-testid={testId}
+      data-notice-kind={kind}
+      aria-haspopup={dialog ? "dialog" : undefined}
+      aria-expanded={expanded}
+      aria-controls={controls}
+      title={title}
+      onClick={onClick}
+      className={cn(
+        "flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-mono text-[11px] leading-5 shadow-sm backdrop-blur-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
+        tone === "warning"
+          ? "border-amber-500/40 bg-amber-500/10 text-amber-500 hover:border-amber-500/60 hover:text-amber-500"
+          : tone === "destructive"
+            ? "border-destructive/40 bg-surface/90 text-destructive hover:border-foreground/25 hover:text-destructive"
+            : "border-foreground/10 bg-surface/90 text-muted-foreground hover:border-foreground/25 hover:text-foreground",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
 /** A background job result, MCP event or restart note, shown as one centred line. */
 export function NoticeLine({
   message,
@@ -68,21 +115,15 @@ export function NoticeLine({
       data-role={message.role}
       className="flex justify-center px-2 py-0.5"
     >
-      <button
-        type="button"
-        data-testid="chat-notice"
-        data-notice-kind={notice.kind}
-        aria-haspopup="dialog"
+      <ChipButton
+        testId="chat-notice"
+        kind={notice.kind}
         title={label}
+        dialog
+        tone={
+          notice.kind === "interrupted" ? "warning" : failed(notice) ? "destructive" : "default"
+        }
         onClick={() => setOpen(true)}
-        className={cn(
-          "flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-mono text-[11px] leading-5 shadow-sm backdrop-blur-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
-          notice.kind === "interrupted"
-            ? "border-amber-500/40 bg-amber-500/10 text-amber-500 hover:border-amber-500/60 hover:text-amber-500"
-            : failed(notice)
-              ? "border-destructive/40 bg-surface/90 text-destructive hover:border-foreground/25 hover:text-destructive"
-              : "border-foreground/10 bg-surface/90 text-muted-foreground hover:border-foreground/25 hover:text-foreground",
-        )}
       >
         <span aria-hidden="true" className="shrink-0">
           {noticeGlyph(notice)}
@@ -95,7 +136,7 @@ export function NoticeLine({
             {time}
           </time>
         )}
-      </button>
+      </ChipButton>
       {open && (
         <NoticeDialog
           message={message}

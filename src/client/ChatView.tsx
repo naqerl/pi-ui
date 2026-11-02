@@ -4,11 +4,13 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import type { MemoryPathMatch, MemoryReadRange, MemoryToolDetails } from "../shared/memory";
 import { acceptMention, mentionAt, parseProjectToken, projectsOf } from "../shared/project";
 import { isQueuedNotice, queuedMessageIds, queuedNoticeGlyph } from "../shared/queue";
 import { isActiveStatus } from "../shared/tasks";
@@ -23,6 +25,7 @@ import type {
   TaskActivity,
   TaskLedger,
   TokenSpend,
+  ToolActivity,
 } from "../shared/types";
 import { groupSummaryParts } from "./activity-format";
 import { Button } from "./components/ui/button";
@@ -31,7 +34,7 @@ import { DiagramPart } from "./DiagramPart";
 import { DeferredMarkdown, loadMarkdown } from "./lazy-markdown";
 import { cn } from "./lib/utils";
 import { ATTACH_ACCEPT, mediaUrl, uploadMedia } from "./media-client";
-import { NoticeLine } from "./NoticeView";
+import { ChipButton, NoticeLine } from "./NoticeView";
 import { PiMenu } from "./PiMenu";
 import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
 import type { ChatStats } from "./StatsView";
@@ -332,6 +335,134 @@ export function MessageBubble({
   );
 }
 
+interface MemoryChipView {
+  label: string;
+  paths: MemoryPathMatch[];
+  reads: MemoryReadRange[];
+}
+
+/** Collapses every memory tool call in one activity group into the data its chip shows. */
+export function memoryChipView(items: ActivityItem[]): MemoryChipView | null {
+  let hits: number | undefined = 0;
+  let reportedTopics: number | undefined = 0;
+  let searches = 0;
+  const paths = new Map<string, MemoryPathMatch>();
+  const reads = new Map<string, MemoryReadRange>();
+  for (const item of items) {
+    if (item.kind !== "tool" || item.memory === undefined) continue;
+    const memory: MemoryToolDetails = item.memory;
+    const readOnly =
+      memory.operation === "read" ||
+      (memory.operation === undefined &&
+        memory.reads.length > 0 &&
+        memory.paths.length === 0 &&
+        (memory.hits ?? 0) === 0);
+    if (!readOnly) {
+      searches += 1;
+      hits = hits === undefined || memory.hits === undefined ? undefined : hits + memory.hits;
+      reportedTopics =
+        reportedTopics === undefined || memory.topics === undefined
+          ? undefined
+          : reportedTopics + memory.topics;
+    }
+    for (const match of memory.paths) {
+      if (!paths.has(match.path)) paths.set(match.path, match);
+    }
+    for (const read of memory.reads) {
+      if (!reads.has(read.path)) reads.set(read.path, read);
+    }
+  }
+  const topics = paths.size > 0 ? paths.size : reportedTopics;
+  if ((hits ?? 0) === 0 && (topics ?? 0) === 0 && reads.size === 0) return null;
+  const parts = ["memory"];
+  if (hits !== undefined && (hits > 0 || paths.size > 0)) {
+    parts.push(`${hits} ${hits === 1 ? "hit" : "hits"}`);
+  }
+  if (topics !== undefined && topics > 0) {
+    parts.push(`${topics} ${topics === 1 ? "topic" : "topics"}`);
+  }
+  if (searches > 1) parts.push(`×${searches}`);
+  if (reads.size > 0) {
+    const ranges = [...reads.values()].map(
+      (read) => `${read.path} (lines ${read.from}–${read.to})`,
+    );
+    parts.push(`read ${ranges.join(", ")}`);
+  }
+  return { label: parts.join(" · "), paths: [...paths.values()], reads: [...reads.values()] };
+}
+
+/** One chip for all the memory searches and reads in a turn. */
+function MemoryActivityChip({ items }: { items: ActivityItem[] }) {
+  const [open, setOpen] = useState(false);
+  const detailsId = useId();
+  const view = useMemo(() => memoryChipView(items), [items]);
+  if (view === null) return null;
+  return (
+    <div data-testid="memory-chip" className="flex min-w-0 max-w-full flex-col items-start gap-1">
+      <ChipButton
+        testId="memory-search-chip"
+        kind="memory-search"
+        title={view.label}
+        expanded={open}
+        controls={detailsId}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span aria-hidden="true" className="shrink-0">
+          ⌕
+        </span>
+        <span className="min-w-0 truncate" data-testid="memory-search-chip-summary">
+          {view.label}
+        </span>
+        <span aria-hidden="true" className="shrink-0 text-[9px] opacity-60">
+          {open ? "▴" : "▾"}
+        </span>
+      </ChipButton>
+      {open && (
+        <div
+          id={detailsId}
+          data-testid="memory-search-details"
+          className="theme-radius w-fit max-w-full border border-foreground/10 bg-surface/90 px-3 py-2 font-mono text-[11px] leading-5 text-muted-foreground shadow-sm backdrop-blur-md"
+        >
+          {view.paths.length > 0 && (
+            <ul className="m-0 flex list-none flex-col gap-1 p-0">
+              {view.paths.map((match) => (
+                <li
+                  key={match.path}
+                  data-testid="memory-search-path"
+                  className="min-w-0 [overflow-wrap:anywhere]"
+                >
+                  <span className="text-foreground">{match.path}</span>
+                  <span aria-hidden="true" className="mx-1 opacity-50">
+                    ·
+                  </span>
+                  <span>{match.line}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {view.paths.length === 0 && view.reads.length > 0 && (
+            <ul className="m-0 flex list-none flex-col gap-1 p-0">
+              {view.reads.map((read) => (
+                <li
+                  key={read.path}
+                  data-testid="memory-search-read"
+                  className="min-w-0 [overflow-wrap:anywhere]"
+                >
+                  <span className="text-foreground">{read.path}</span>
+                  <span className="mx-1 opacity-50">·</span>
+                  <span>
+                    lines {read.from}–{read.to}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ActivityGroup({
   groupKey,
   items,
@@ -346,6 +477,11 @@ function ActivityGroup({
   onOpen: (groupKey: string, trigger: HTMLButtonElement) => void;
 }) {
   const [now, setNow] = useState(Date.now);
+  const memory = items.filter(
+    (item): item is ToolActivity => item.kind === "tool" && item.memory !== undefined,
+  );
+  const memoryView = memoryChipView(memory);
+  const other = items.filter((item) => !(item.kind === "tool" && item.memory !== undefined));
 
   useEffect(() => {
     if (!live) return;
@@ -355,32 +491,43 @@ function ActivityGroup({
   }, [live]);
 
   const parts = groupSummaryParts(items, live, now, usage);
+  const runInfo =
+    other.length === 0 ? null : (
+      <button
+        type="button"
+        onClick={(event) => onOpen(groupKey, event.currentTarget)}
+        aria-haspopup="dialog"
+        data-testid="run-info"
+        aria-label={`Run activity: ${parts.join(", ")}`}
+        className="theme-radius flex min-h-9 w-fit min-w-0 max-w-full items-start gap-2 border border-border/70 bg-surface px-2.5 py-2 text-left font-mono text-xs leading-5 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40 sm:min-h-0 sm:py-1.5"
+      >
+        <span aria-hidden="true" className="inline-block w-3 shrink-0">
+          ▸
+        </span>
+        {/* Each piece stays whole and the line wraps between pieces on a narrow screen. */}
+        <span className="flex min-w-0 flex-wrap gap-x-1.5">
+          {parts.map((part, index) => (
+            <span key={part} className="whitespace-nowrap">
+              {index > 0 && (
+                <span aria-hidden="true" className="mr-1.5 text-muted-foreground/60">
+                  ·
+                </span>
+              )}
+              {part}
+            </span>
+          ))}
+        </span>
+      </button>
+    );
+  if (memory.length === 0 || memoryView === null) return runInfo;
   return (
-    <button
-      type="button"
-      onClick={(event) => onOpen(groupKey, event.currentTarget)}
-      aria-haspopup="dialog"
-      data-testid="run-info"
-      aria-label={`Run activity: ${parts.join(", ")}`}
-      className="theme-radius flex min-h-9 w-fit min-w-0 max-w-full items-start gap-2 border border-border/70 bg-surface px-2.5 py-2 text-left font-mono text-xs leading-5 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40 sm:min-h-0 sm:py-1.5"
+    <div
+      data-testid="activity-group"
+      className="flex min-w-0 max-w-full flex-col items-start gap-1"
     >
-      <span aria-hidden="true" className="inline-block w-3 shrink-0">
-        ▸
-      </span>
-      {/* Each piece stays whole and the line wraps between pieces on a narrow screen. */}
-      <span className="flex min-w-0 flex-wrap gap-x-1.5">
-        {parts.map((part, index) => (
-          <span key={part} className="whitespace-nowrap">
-            {index > 0 && (
-              <span aria-hidden="true" className="mr-1.5 text-muted-foreground/60">
-                ·
-              </span>
-            )}
-            {part}
-          </span>
-        ))}
-      </span>
-    </button>
+      {runInfo}
+      <MemoryActivityChip items={memory} />
+    </div>
   );
 }
 
@@ -1370,7 +1517,10 @@ export function ChatView({
       if (bubble === null) return;
       const previous = bubble.previousElementSibling;
       const target =
-        previous instanceof HTMLElement && previous.dataset.testid === "run-info"
+        previous instanceof HTMLElement &&
+        (previous.dataset.testid === "run-info" ||
+          previous.dataset.testid === "activity-group" ||
+          previous.querySelector('[data-testid="run-info"]') !== null)
           ? previous
           : bubble;
       revealTop(target, TRANSCRIPT_END_GAP);

@@ -4,14 +4,39 @@ import {
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
+import type { MemoryToolDetails } from "../../shared/memory.js";
 import { dreamMemory, summarizeDream } from "./dream.js";
 import { findMemory } from "./find.js";
 import { scopeOf, slugify } from "./scopes.js";
 import type { SnapshotCache } from "./snapshot.js";
 import { isMissing, type MemoryStore, type TopicRecord, todayIso } from "./store.js";
 
-function text(value: string, isError = false): ToolExecutionResult {
-  return { output: [{ type: "text", text: value }], ...(isError ? { isError: true } : {}) };
+function text(value: string, isError = false, details?: MemoryToolDetails): ToolExecutionResult {
+  return {
+    output: [{ type: "text", text: value }],
+    ...(isError ? { isError: true } : {}),
+    ...(details === undefined
+      ? {}
+      : { details: details as unknown as ToolExecutionResult["details"] }),
+  };
+}
+
+function lineCount(content: string): number {
+  const lines = content.split(/\r?\n/);
+  while (lines.length > 1 && lines.at(-1) === "") lines.pop();
+  return lines.length;
+}
+
+function readDetails(path: string, content: string): MemoryToolDetails {
+  return {
+    kind: "memory",
+    operation: "read",
+    hits: 0,
+    topics: 0,
+    paths: [],
+    chars: content.length,
+    reads: [{ path, from: 1, to: Math.max(1, lineCount(content)) }],
+  };
 }
 
 function failure(error: unknown): ToolExecutionResult {
@@ -132,15 +157,24 @@ export function createMemoryTools(
       }),
       async execute(args) {
         try {
-          const rel = args.path.trim().replace(/^\/+/, "");
-          if (rel === "MEMORY.md") return text(await store.readMemory());
-          if (rel === "SCRATCHPAD.md") return text((await store.readScratchpad()) || "(empty)");
-          const daily = /^daily\/(\d{4}-\d{2}-\d{2})\.md$/.exec(rel);
-          if (daily?.[1] !== undefined) return text((await store.readDaily(daily[1])) || "(empty)");
-          const topic = await store.readTopic(rel);
-          return text(
-            `topics/${topic.rel} — ${topic.title}${topic.updated ? ` · ${topic.updated}` : ""}\n\n${topic.body.trim()}`,
-          );
+          const requested = args.path.trim().replace(/^\/+/, "");
+          if (requested === "MEMORY.md") {
+            const content = await store.readMemory();
+            return text(content, false, readDetails(requested, content));
+          }
+          if (requested === "SCRATCHPAD.md") {
+            const content = (await store.readScratchpad()) || "(empty)";
+            return text(content, false, readDetails(requested, content));
+          }
+          const daily = /^daily\/(\d{4}-\d{2}-\d{2})\.md$/.exec(requested);
+          if (daily?.[1] !== undefined) {
+            const content = (await store.readDaily(daily[1])) || "(empty)";
+            return text(content, false, readDetails(requested, content));
+          }
+          const topic = await store.readTopic(requested);
+          const path = `topics/${topic.rel}`;
+          const content = `${path} — ${topic.title}${topic.updated ? ` · ${topic.updated}` : ""}\n\n${topic.body.trim()}`;
+          return text(content, false, readDetails(path, content));
         } catch (error) {
           if (isMissing(error)) return text(`no such memory file: ${args.path}`, true);
           return failure(error);
@@ -160,7 +194,21 @@ export function createMemoryTools(
           const results = await findMemory(store, args.query, {
             ...(args.limit === undefined ? {} : { limit: args.limit }),
           });
-          if (results.length === 0) return text(`no match for: ${args.query}`);
+          const details: MemoryToolDetails = {
+            kind: "memory",
+            operation: "find",
+            hits: results.reduce((total, result) => total + result.hits, 0),
+            topics: results.length,
+            paths: results.map((result) => ({
+              path: `topics/${result.rel}`,
+              line: result.line,
+            })),
+            chars: results.reduce((total, result) => total + result.snippet.length, 0),
+            reads: [],
+          };
+          if (results.length === 0) {
+            return text(`no match for: ${args.query}`, false, details);
+          }
           return text(
             results
               .map(
@@ -170,6 +218,8 @@ export function createMemoryTools(
                   }\n    ${result.snippet}`,
               )
               .join("\n\n"),
+            false,
+            details,
           );
         } catch (error) {
           return failure(error);

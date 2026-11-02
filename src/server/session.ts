@@ -21,6 +21,7 @@ import {
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { diagramPartFromDetails, parseDiagramDetails } from "../shared/diagrams.js";
+import { parseMemoryToolDetails } from "../shared/memory.js";
 import {
   type MemoryNoticeDetails,
   memoryNoticeSummary,
@@ -960,6 +961,7 @@ export function buildTranscript(
 export function toolActivityFromEntry(entry: EntryRecord, args: unknown): ToolActivity | undefined {
   if (!ToolResultEntry.is(entry)) return undefined;
   const message = asRecord(entry.model?.[0]);
+  const memory = parseMemoryToolDetails(message.details);
   return {
     kind: "tool",
     id: `a-${entry.id}`,
@@ -967,6 +969,7 @@ export function toolActivityFromEntry(entry: EntryRecord, args: unknown): ToolAc
     arguments: formatToolArguments(args),
     output: formatToolResult(message),
     details: formatToolDetails(message.details),
+    ...(memory === undefined ? {} : { memory }),
     isError: message.isError === true,
     durationMs: typeof message.durationMs === "number" ? message.durationMs : undefined,
     timestamp: timestampOf(message),

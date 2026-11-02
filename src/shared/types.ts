@@ -1,3 +1,4 @@
+import type { MemoryToolDetails } from "./memory.js";
 import type { ChatNotice, JobNoticeDetails } from "./notices.js";
 export type RunState = "idle" | "running" | "interrupted";
 
@@ -101,6 +102,8 @@ export interface ToolActivity {
   output?: string;
   /** Tool-specific UI data. Never sent to the model. */
   details?: string;
+  /** Typed memory-search or memory-read data, when this was a memory tool call. */
+  memory?: MemoryToolDetails;
   isError: boolean;
   durationMs?: number;
   timestamp: string;
