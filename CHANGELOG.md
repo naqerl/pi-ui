@@ -1,3 +1,7 @@
+## 1.6.57 - 2026-11-02
+
+- feat(nudge): ask for a memory write after a task was closed (ss3u).
+
 ## 1.6.56 - 2026-11-02
 
 - fix(chat): animate the composer body height instead of snapping the grid at the end of the slide (shgf).
