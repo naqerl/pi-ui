@@ -1,3 +1,7 @@
+## 1.6.58 - 2026-11-02
+
+- test(nudge): assert the actualize wording that 1.6.55 shipped, so the unit job stops failing.
+
 ## 1.6.57 - 2026-11-02
 
 - feat(nudge): ask for a memory write after a task was closed (ss3u).
