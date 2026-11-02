@@ -218,6 +218,57 @@ test("opens a wide diagram full screen to zoom, pan, fit and close without movin
   const pannedTransform = await surfaceTransform();
   expect(pannedTransform).not.toBe(zoomedTransform);
 
+  // Touch pointers on the pan surface belong to the viewer, not the pager
+  // behind the dialog.
+  const touchPan = await browser.evaluate(async () => {
+    const pager = document.querySelector("[data-testid=pager]");
+    const stage = document.querySelector("[data-testid=diagram-viewer-stage]");
+    const surface = document.querySelector("[data-testid=diagram-viewer-surface]");
+    if (
+      !(pager instanceof HTMLElement) ||
+      !(stage instanceof HTMLElement) ||
+      !(surface instanceof HTMLElement)
+    ) {
+      return null;
+    }
+    const box = stage.getBoundingClientRect();
+    const y = box.top + box.height / 2;
+    const startX = box.left + box.width * 0.7;
+    const before = surface.style.transform;
+    const fire = (type: string, x: number) => {
+      stage.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          pointerId: 17,
+          pointerType: "touch",
+          isPrimary: true,
+          clientX: x,
+          clientY: y,
+          button: 0,
+          buttons: type === "pointerup" ? 0 : 1,
+        }),
+      );
+    };
+    fire("pointerdown", startX);
+    fire("pointermove", startX - 24);
+    fire("pointermove", startX - 96);
+    fire("pointerup", startX - 96);
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+    return {
+      page: pager.getAttribute("data-page"),
+      hint: stage.getAttribute("data-hscroll"),
+      before,
+      after: surface.style.transform,
+    };
+  });
+  expect(touchPan?.page).toBe("chat");
+  expect(touchPan?.hint).toBe("true");
+  expect(touchPan?.after).not.toBe(touchPan?.before);
+
   await screen.getByRole("button", { name: "Fit diagram" }).tap();
   await expect
     .poll(() =>
