@@ -123,18 +123,21 @@ ${MAPPING_DOC}`,
                 Type.Number({ description: "Chart height in pixels, 12-400. Default 40." }),
               ),
               yDomain: Type.Optional(
-                Type.Union([
-                  Type.Array(Type.Number(), {
-                    minItems: 2,
-                    maxItems: 2,
-                    description: "Two numbers: [min, max].",
-                  }),
-                  Type.Literal("auto"),
-                ], {
-                  // A tuple schema (`items: [A, B]`) is rejected by the model provider, so the
-                  // pair is described as a two-element array of numbers instead.
-                  description: 'Fixed y-axis range as [min, max], or "auto".',
-                }),
+                Type.Union(
+                  [
+                    Type.Array(Type.Number(), {
+                      minItems: 2,
+                      maxItems: 2,
+                      description: "Two numbers: [min, max].",
+                    }),
+                    Type.Literal("auto"),
+                  ],
+                  {
+                    // A tuple schema (`items: [A, B]`) is rejected by the model provider, so the
+                    // pair is described as a two-element array of numbers instead.
+                    description: 'Fixed y-axis range as [min, max], or "auto".',
+                  },
+                ),
               ),
               showTooltip: Type.Optional(
                 Type.Boolean({ description: "Show a tooltip on hover. Default false." }),
