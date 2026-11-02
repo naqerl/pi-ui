@@ -242,7 +242,7 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
     defineTool({
       name: "task_done",
       description:
-        "Mark one task done and say where a reviewer can check the work. Time, tokens and cost are measured from the tool calls tagged with the task's piuiTaskId, so do not report them. A task with an open subtask cannot be marked done. This cannot reopen a task or edit its title.",
+        "Mark one task done and say where a reviewer can check the work. Time, tokens and cost are measured from the calls made while the task was marked working, so do not report them. A task with an open subtask cannot be marked done. This cannot reopen a task or edit its title.",
       parameters: doneSchema,
       async execute(args) {
         const current = bridge.store.ledger().tasks.find((task) => task.id === args.id);

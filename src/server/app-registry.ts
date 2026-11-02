@@ -56,11 +56,11 @@ export interface AppRegistryOptions {
 
 /**
  * The registry the server boots with. MCP tools stay deferred; `tool_search`
- * is installed alongside them so loading a tool can expose it later. Every tool also takes the
- * optional `piuiTaskId` argument, stripped before it runs.
+ * is installed alongside them so loading a tool can expose it later. A legacy `piuiTaskId`
+ * argument is still stripped before a tool runs, but no tool advertises it.
  */
 export async function createAppRegistry(options: AppRegistryOptions): Promise<AppRegistryBoot> {
-  // Every tool the agent sees, MCP included, takes an optional task id; see task-attribution.
+  // Every tool accepts and strips the legacy task id; see task-attribution.
   const registry = attributeTools(createRegistry());
   const taskTools = createTaskTools(options.tasks);
   registry.install(

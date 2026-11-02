@@ -268,8 +268,8 @@ export class TaskStore {
   }
 
   /**
-   * Remember that a tool call tagged this task. Only open work is touched: a closed task keeps
-   * its empty stamp, and a tagged call that finishes after `task_done` must not revive it.
+   * Remember that a tool call was attributed to this task. Only open work is touched: a closed
+   * task keeps its empty stamp, and a call that finishes after `task_done` must not revive it.
    */
   noteWorked(id: string, at: number | string | Date = Date.now()): Promise<TaskLedger> {
     const date = at instanceof Date ? at : new Date(at);

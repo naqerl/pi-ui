@@ -11,7 +11,7 @@ import type {
   TaskRunOutcome,
   TaskTrace,
 } from "../shared/types.js";
-import { taggedTaskId } from "./task-attribution.js";
+import { noteLegacyTaskId } from "./task-attribution.js";
 
 const HISTORY_LIMIT = 50;
 /** Traces are kept for this many tasks; the oldest activity goes first. */
@@ -89,19 +89,21 @@ function readTrace(value: unknown): TaskTrace | null {
 }
 
 /**
- * What the agent's runs did per task, measured from tool calls tagged with `piuiTaskId`.
- * It never trusts the agent to report progress: a task is working because a live run is
- * calling tools for it, failed because that run errored, and its time, tokens and cost are
- * the sums of those runs. Calls without a tag are not attributed.
+ * What the agent's runs did per task, measured from calls made while the task was working.
+ * It never trusts the agent to report progress: a task is working because the ledger says so,
+ * failed because its run errored, and its time, tokens and cost are the sums of those runs.
+ * A call is attributed only when exactly one task is working; none or several mean nobody.
  */
 export class TaskActivityTracker {
   private traces = new Map<string, TaskTrace>();
   private seen = new Map<string, LedgerFacts>();
   private runId: string | null = null;
-  /** Tasks the live run touched, with their first and last tagged call. */
+  /** Tasks the live run touched, with their first and last attributed call. */
   private spans = new Map<string, RunSpan>();
-  /** Tasks a live model reply mentioned, even if no tagged tool call followed. */
+  /** Tasks a live model reply mentioned, even if no attributed tool call followed. */
   private mentioned = new Set<string>();
+  /** The one task whose status is working, or undefined when none or several are. */
+  private workingTaskId: string | undefined;
   /** A failure seen during the run, reported when it ends. */
   private failure: { outcome: "error" | "interrupted"; reason: string } | null = null;
   private listeners = new Set<() => void>();
@@ -110,8 +112,8 @@ export class TaskActivityTracker {
   constructor(
     private readonly path: string | undefined,
     private readonly clock: () => number = Date.now,
-    /** Records a tagged call in the ledger, so `lastWorkedAt` survives a restart. */
-    private readonly onTaggedCall?: (taskId: string, at: number) => void,
+    /** Records an attributed call in the ledger, so `lastWorkedAt` survives a restart. */
+    private readonly onWorkedCall?: (taskId: string, at: number) => void,
   ) {}
 
   async load(): Promise<void> {
@@ -240,14 +242,18 @@ export class TaskActivityTracker {
     return span.open > 0 ? Math.max(span.lastAt, now) : span.lastAt;
   }
 
-  /** A top-level tool call started. Its `piuiTaskId`, if any, says which task it serves. */
-  toolStarted(_name: string, args: unknown): void {
+  /**
+   * A top-level tool call started. It belongs to the one task whose status is working, if any,
+   * and the returned id is kept for the matching `toolEnded` even if that task closes meanwhile.
+   */
+  toolStarted(_name: string, args?: unknown): string | undefined {
+    noteLegacyTaskId(args);
     // Some tool calls arrive without a run_start we saw, e.g. right after a restart.
     if (this.runId === null) this.runStarted();
     const runId = this.runId as string;
     const now = this.clock();
-    const taskId = taggedTaskId(args);
-    if (taskId === undefined) return;
+    const taskId = this.workingTaskId;
+    if (taskId === undefined) return undefined;
     this.recordWork(taskId, now);
     const trace = this.trace(taskId);
     const span = this.spans.get(taskId);
@@ -267,11 +273,11 @@ export class TaskActivityTracker {
     trace.measured.calls += 1;
     trace.lastActivityAt = new Date(now).toISOString();
     this.changed();
+    return taskId;
   }
 
-  /** A tagged tool call finished; it keeps the task's activity fresh. */
-  toolEnded(args: unknown): void {
-    const taskId = taggedTaskId(args);
+  /** An attributed tool call finished; it keeps the task's activity fresh. */
+  toolEnded(taskId: string | undefined): void {
     if (taskId === undefined || this.runId === null) return;
     const span = this.spans.get(taskId);
     const trace = this.traces.get(taskId);
@@ -286,35 +292,31 @@ export class TaskActivityTracker {
 
   private recordWork(taskId: string, at: number): void {
     try {
-      this.onTaggedCall?.(taskId, at);
+      this.onWorkedCall?.(taskId, at);
     } catch (error) {
-      // A ledger write failure must not break the tool that was tagged.
+      // A ledger write failure must not break the tool that was attributed.
       console.error(`[pi] could not record work on task ${taskId}:`, error);
     }
   }
 
   /**
-   * A model reply ended. Its tokens and cost go to the tasks its tool calls were tagged with,
-   * split evenly; replies without tagged calls stay unattributed.
+   * A model reply ended. When it made tool calls and exactly one task is working, its tokens
+   * and cost go to that task; replies without tool calls stay unattributed.
    */
   modelCall(call: ModelCall): void {
-    const ids = call.toolCalls
-      .map((toolCall) => taggedTaskId(toolCall.arguments))
-      .filter((id): id is string => id !== undefined);
-    if (ids.length === 0) return;
-    const share = 1 / ids.length;
-    const at = this.iso();
-    for (const id of ids) {
-      const trace = this.trace(id);
-      trace.measured.tokens += Math.round(call.tokens * share);
-      trace.measured.cost += call.cost * share;
-      // A model reply that names the task is a mention that outlives this snapshot. It keeps
-      // the task working until the run it belongs to ends, even without a tagged tool call.
-      if (this.runId !== null && trace.lastRun?.id !== this.runId) {
-        trace.lastRun = { id: this.runId, outcome: "running", at };
-        this.mentioned.add(id);
-        this.push(trace, at, "run-start", "Run started");
-      }
+    for (const toolCall of call.toolCalls) noteLegacyTaskId(toolCall.arguments);
+    const id = call.toolCalls.length === 0 ? undefined : this.workingTaskId;
+    if (id === undefined) return;
+    const trace = this.trace(id);
+    trace.measured.tokens += Math.round(call.tokens);
+    trace.measured.cost += call.cost;
+    // A model reply made while the task is working is a mention that outlives this snapshot.
+    // It keeps the task working until the run it belongs to ends, even without a tool call.
+    if (this.runId !== null && trace.lastRun?.id !== this.runId) {
+      const at = this.iso();
+      trace.lastRun = { id: this.runId, outcome: "running", at };
+      this.mentioned.add(id);
+      this.push(trace, at, "run-start", "Run started");
     }
     this.changed();
   }
@@ -324,6 +326,8 @@ export class TaskActivityTracker {
     const at = this.iso();
     let touched = false;
     const ids = new Set<string>();
+    const working = tasks.filter((task) => task.status === "working");
+    this.workingTaskId = working.length === 1 ? working[0]?.id : undefined;
     for (const task of tasks) {
       ids.add(task.id);
       const facts: LedgerFacts = {

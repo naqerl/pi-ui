@@ -106,6 +106,8 @@ interface ActiveTool {
   name: string;
   args: unknown;
   timestamp: string;
+  /** The task this call was attributed to when it started, if any. */
+  taskId?: string;
 }
 
 interface QueuedRun {
@@ -565,7 +567,7 @@ export class ChatService {
   }
 
   /**
-   * A live run that has not called a tool for an hour on one of its tagged tasks gets
+   * A live run that has not called a tool for an hour on one of its working tasks gets
    * one status check. It uses the same notice chip and queue path as the idle nudge,
    * never a steer, and is silent for terminal, blocked or waiting runs.
    */
@@ -700,7 +702,7 @@ export class ChatService {
     this.eventFeed = feed;
   }
 
-  /** Measure which task each run works on from the tools' `piuiTaskId` tags. */
+  /** Measure which task each run works on from the single task marked working. */
   setTaskActivity(tracker: TaskActivityTracker): void {
     this.taskActivity = tracker;
     if (this.runState === "running") tracker.runStarted();
@@ -1884,12 +1886,13 @@ export class ChatService {
 
       case "tool_execution_start": {
         if (event.parentToolCallId !== undefined) return;
-        this.taskActivity?.toolStarted(event.toolName, event.args);
+        const taskId = this.taskActivity?.toolStarted(event.toolName, event.args);
         const timestamp = new Date().toISOString();
         this.activeTools.set(event.toolCallId, {
           name: event.toolName,
           args: event.args,
           timestamp,
+          ...(taskId === undefined ? {} : { taskId }),
         });
         this.toolsRevision += 1;
         this.hub.broadcast({
@@ -1909,7 +1912,7 @@ export class ChatService {
         if (event.parentToolCallId !== undefined) return;
         const active = this.activeTools.get(event.toolCallId);
         this.activeTools.delete(event.toolCallId);
-        this.taskActivity?.toolEnded(active?.args);
+        this.taskActivity?.toolEnded(active?.taskId);
         this.toolsRevision += 1;
         const activity = this.toolActivity(event, active);
         this.hub.broadcast({
@@ -2170,7 +2173,7 @@ export class ChatService {
     });
   }
 
-  /** Hand a finished model reply to the task tracker: its tagged tool calls, cost and failure. */
+  /** Hand a finished model reply to the task tracker: its attributed tool calls, cost and failure. */
   private measureModelCall(entry: EntryRecord): void {
     const tracker = this.taskActivity;
     if (tracker === undefined || !AssistantEntry.is(entry)) return;

@@ -312,8 +312,8 @@ export interface Task {
   /** Short project name such as `pi-ui`. Absent means no project. */
   project?: string;
   /**
-   * When a tool call last tagged this task with `piuiTaskId`, or null before the first one
-   * and after the task is closed or reopened. The badge stays until the task is finished.
+   * When a tool call was last attributed to this task while it was working, or null before the
+   * first one and after the task is closed or reopened. The badge stays until it is finished.
    */
   lastWorkedAt?: string | null;
   /** When task_working last moved this task to working; cleared when it closes or reopens. */
@@ -345,15 +345,15 @@ export type TaskState =
 /** How the run that last touched a task ended. `running` while it is still live. */
 export type TaskRunOutcome = "running" | "ok" | "error" | "interrupted";
 
-/** Totals from the runs whose tool calls were tagged with the task. */
+/** Totals from the runs whose calls were attributed to the task. */
 export interface TaskMeasured {
   /** Runs that touched the task. Zero means nothing was measured. */
   runs: number;
-  /** Tagged tool calls. */
+  /** Attributed tool calls. */
   calls: number;
-  /** Wall time from a run's first to last tagged call, summed over runs. */
+  /** Wall time from a run's first to last attributed call, summed over runs. */
   activeMs: number;
-  /** Input plus output tokens of the model calls that made tagged tool calls. */
+  /** Input plus output tokens of the model calls that made attributed tool calls. */
   tokens: number;
   /** Provider-reported cost of those model calls, in USD. */
   cost: number;
@@ -378,7 +378,7 @@ export interface TaskHistoryEvent {
 }
 
 export interface TaskTrace {
-  /** Last tagged tool call, start or end. */
+  /** Last attributed tool call, start or end. */
   lastActivityAt: string | null;
   lastRun: {
     id: string;

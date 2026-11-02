@@ -5,12 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { Registry, ToolRegistration } from "@earendil-works/pi-durable";
 import { TaskActivityTracker } from "../src/server/task-activity.js";
-import {
-  attributeTools,
-  TASK_ID_PARAM,
-  taggedTaskId,
-  withTaskParam,
-} from "../src/server/task-attribution.js";
+import { attributeTools, TASK_ID_PARAM, withTaskParam } from "../src/server/task-attribution.js";
 import { taskState } from "../src/shared/task-status.js";
 import type { Task } from "../src/shared/types.js";
 
@@ -47,25 +42,34 @@ function task(id: string, patch: Partial<Task> = {}): Task {
   };
 }
 
-test("every tool takes an optional piuiTaskId and never sees it", async () => {
+test("no tool advertises piuiTaskId, and a legacy tag is ignored and warned once", async () => {
   const seen: unknown[] = [];
   const tool = withTaskParam(fakeTool(seen));
   const schema = tool.parameters as unknown as {
     properties: Record<string, { type: string }>;
     required: string[];
   };
-  assert.equal(schema.properties[TASK_ID_PARAM]?.type, "string");
-  assert.deepEqual(schema.required, ["path"], "the tag stays optional");
+  assert.equal(TASK_ID_PARAM in schema.properties, false, "the tag is not offered to the model");
+  assert.deepEqual(schema.required, ["path"], "the tool's own schema is unchanged");
   assert.equal(tool.deferred, true, "other registration fields survive");
-  await tool.execute({ path: "a", [TASK_ID_PARAM]: "abcd" } as never, {} as never, {} as never);
-  await tool.execute({ path: "b" } as never, {} as never, {} as never);
-  assert.deepEqual(seen, [{ path: "a" }, { path: "b" }]);
-  assert.equal(taggedTaskId({ [TASK_ID_PARAM]: " abcd " }), "abcd");
-  assert.equal(taggedTaskId({ [TASK_ID_PARAM]: "" }), undefined);
-  assert.equal(taggedTaskId("text"), undefined);
+
+  const warnings: string[] = [];
+  const warn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map(String).join(" "));
+  };
+  try {
+    await tool.execute({ path: "a", [TASK_ID_PARAM]: "abcd" } as never, {} as never, {} as never);
+    await tool.execute({ path: "c", [TASK_ID_PARAM]: "efgh" } as never, {} as never, {} as never);
+    await tool.execute({ path: "b" } as never, {} as never, {} as never);
+  } finally {
+    console.warn = warn;
+  }
+  assert.deepEqual(seen, [{ path: "a" }, { path: "c" }, { path: "b" }]);
+  assert.deepEqual(warnings, ["[tasks] ignoring piuiTaskId; attribution follows the working task"]);
 });
 
-test("prepareArguments runs without the tag and gives it back", () => {
+test("prepareArguments runs without the legacy tag", () => {
   const tool = withTaskParam(
     fakeTool([], {
       prepareArguments(args: unknown) {
@@ -76,11 +80,10 @@ test("prepareArguments runs without the tag and gives it back", () => {
   );
   assert.deepEqual(tool.prepareArguments?.({ file: "x", [TASK_ID_PARAM]: "t1" }), {
     path: "x",
-    [TASK_ID_PARAM]: "t1",
   });
 });
 
-test("a registry installs every extension's tools with the tag", () => {
+test("a registry installs every extension's tools without the legacy tag", () => {
   const installed: ToolRegistration[][] = [];
   const registry = {
     install(extension: { tools?: readonly ToolRegistration[] }) {
@@ -90,20 +93,20 @@ test("a registry installs every extension's tools with the tag", () => {
   attributeTools(registry).install({ name: "mcp", tools: [fakeTool([])] } as never);
   const params = installed[0]?.[0]?.parameters as unknown as { properties: object } | undefined;
   const props = params?.properties ?? {};
-  assert.equal(TASK_ID_PARAM in props, true);
+  assert.equal(TASK_ID_PARAM in props, false);
 });
 
-test("tagged calls make a task's run, untagged ones are not attributed", () => {
+test("a call made while one task is working is charged to it", () => {
   let now = Date.parse("2026-10-31T12:00:00.000Z");
   const tracker = new TaskActivityTracker(undefined, () => now);
-  tracker.observeLedger([task("a"), task("b")]);
+  tracker.observeLedger([task("a", { status: "working" }), task("b")]);
   tracker.runStarted();
-  tracker.toolStarted("bash", { command: "ls", [TASK_ID_PARAM]: "a" });
+  assert.equal(tracker.toolStarted("bash", { command: "ls" }), "a");
   now += 60_000;
-  tracker.toolEnded({ [TASK_ID_PARAM]: "a" });
-  tracker.toolStarted("read", { path: "x" });
+  tracker.toolEnded("a");
+  assert.equal(tracker.toolStarted("read", { path: "x" }), "a");
   tracker.modelCall({
-    toolCalls: [{ arguments: { [TASK_ID_PARAM]: "a" } }, { arguments: { [TASK_ID_PARAM]: "b" } }],
+    toolCalls: [{ arguments: { command: "ls" } }, { arguments: { path: "x" } }],
     tokens: 1000,
     cost: 0.02,
   });
@@ -111,22 +114,45 @@ test("tagged calls make a task's run, untagged ones are not attributed", () => {
   assert.equal(view.running, true);
   assert.equal(view.traces.a?.lastRun?.outcome, "running");
   assert.equal(view.traces.a?.measured.activeMs, 60_000, "the live run counts already");
-  assert.equal(view.traces.a?.measured.tokens, 500);
-  assert.equal(view.traces.b?.measured.cost, 0.01);
-  assert.deepEqual(Object.keys(view.traces).sort(), ["a", "b"]);
+  assert.equal(view.traces.a?.measured.calls, 2);
+  assert.equal(view.traces.a?.measured.tokens, 1000);
+  assert.equal(view.traces.a?.measured.cost, 0.02);
+  assert.equal(view.traces.b?.measured.calls, 0, "the other task is not charged");
   tracker.runEnded();
   view = tracker.view();
   assert.equal(view.running, false);
   assert.equal(view.traces.a?.lastRun?.outcome, "ok");
   assert.equal(view.traces.a?.measured.runs, 1);
-  assert.equal(view.traces.a?.measured.calls, 1);
+  assert.equal(view.traces.a?.measured.calls, 2);
   assert.deepEqual(
     view.traces.a?.history.map((event) => event.kind),
     ["created", "run-start", "run-end"],
   );
 });
 
-test("a tagged call is handed to the ledger recorder at start and end", () => {
+test("calls are charged to nobody without exactly one working task", () => {
+  let now = Date.parse("2026-10-31T12:00:00.000Z");
+  const tracker = new TaskActivityTracker(undefined, () => now);
+  tracker.observeLedger([task("a"), task("b")]);
+  tracker.runStarted();
+  // An old tag is ignored: it no longer decides attribution.
+  assert.equal(tracker.toolStarted("bash", { command: "ls", [TASK_ID_PARAM]: "a" }), undefined);
+  tracker.modelCall({ toolCalls: [{ arguments: { [TASK_ID_PARAM]: "a" } }], tokens: 100, cost: 1 });
+  now += 1_000;
+  tracker.observeLedger([task("a", { status: "working" }), task("b", { status: "working" })]);
+  assert.equal(tracker.toolStarted("bash", { command: "ls" }), undefined);
+  tracker.modelCall({ toolCalls: [{ arguments: {} }], tokens: 200, cost: 2 });
+  const view = tracker.view();
+  for (const id of ["a", "b"]) {
+    assert.equal(view.traces[id]?.measured.runs, 0, `${id} has no run`);
+    assert.equal(view.traces[id]?.measured.calls, 0, `${id} has no calls`);
+    assert.equal(view.traces[id]?.measured.tokens, 0, `${id} has no tokens`);
+    assert.equal(view.traces[id]?.measured.cost, 0, `${id} has no cost`);
+  }
+  tracker.runEnded();
+});
+
+test("an attributed call is handed to the ledger recorder at start and end", () => {
   let now = Date.parse("2026-10-31T12:00:00.000Z");
   const seen: Array<[string, number]> = [];
   const tracker = new TaskActivityTracker(
@@ -134,47 +160,48 @@ test("a tagged call is handed to the ledger recorder at start and end", () => {
     () => now,
     (id, at) => seen.push([id, at]),
   );
-  tracker.observeLedger([task("a")]);
+  tracker.observeLedger([task("a", { status: "working" })]);
   tracker.runStarted();
-  tracker.toolStarted("bash", { [TASK_ID_PARAM]: "a" });
+  assert.equal(tracker.toolStarted("bash", {}), "a");
   now += 1_000;
-  tracker.toolEnded({ [TASK_ID_PARAM]: "a" });
-  tracker.toolStarted("read", { path: "untagged" });
+  tracker.toolEnded("a");
+  tracker.observeLedger([task("a")]);
+  assert.equal(tracker.toolStarted("read", { path: "untagged" }), undefined);
   assert.deepEqual(seen, [
     ["a", Date.parse("2026-10-31T12:00:00.000Z")],
     ["a", Date.parse("2026-10-31T12:00:01.000Z")],
   ]);
 });
 
-test("a live run keeps its task working through quiet time until it ends", () => {
+test("a working task keeps its measured time after it closes", () => {
   let now = Date.parse("2026-10-31T12:00:00.000Z");
   const tracker = new TaskActivityTracker(undefined, () => now);
-  const tasks = [task("a")];
+  const tasks = [task("a", { status: "working" })];
   tracker.observeLedger(tasks);
   tracker.runStarted();
-  tracker.toolStarted("bash", { command: "npm run build", [TASK_ID_PARAM]: "a" });
+  const taskId = tracker.toolStarted("bash", { command: "npm run build" });
+  assert.equal(taskId, "a");
   now += 25 * 60_000;
   let view = tracker.view();
   assert.equal(taskState(tasks, tasks[0] as Task, view), "working", "still inside a call");
   assert.equal(view.traces.a?.measured.activeMs, 25 * 60_000);
-  tracker.toolEnded({ [TASK_ID_PARAM]: "a" });
+  tracker.toolEnded(taskId);
   now += 15 * 60_000;
   view = tracker.view();
-  assert.equal(
-    taskState(tasks, tasks[0] as Task, view),
-    "working",
-    "the run is still live, so the badge stays",
-  );
   assert.equal(view.traces.a?.measured.activeMs, 25 * 60_000, "silence after the call is not work");
   tracker.runEnded();
-  assert.equal(taskState(tasks, tasks[0] as Task, tracker.view()), "ready", "run end clears it");
+  tracker.observeLedger([task("a", { status: "done" })]);
+  view = tracker.view();
+  assert.equal(view.traces.a?.lastRun?.outcome, "ok");
+  assert.equal(view.traces.a?.measured.calls, 1, "closing a task keeps its accounting");
+  assert.equal(view.traces.a?.measured.activeMs, 25 * 60_000);
 });
 
 test("a failed run marks the tasks it touched, and the ledger adds status history", () => {
   const tracker = new TaskActivityTracker(undefined);
-  tracker.observeLedger([task("a"), task("b", { status: "proposed" })]);
+  tracker.observeLedger([task("a", { status: "working" }), task("b", { status: "proposed" })]);
   tracker.runStarted();
-  tracker.toolStarted("bash", { [TASK_ID_PARAM]: "a" });
+  assert.equal(tracker.toolStarted("bash", {}), "a");
   tracker.runFailed("error", "rate limited");
   tracker.runFailed("interrupted", "aborted");
   tracker.runEnded();
@@ -200,9 +227,9 @@ test("a run that was live when pi-ui stopped loads as interrupted", async () => 
   try {
     const path = join(dir, "task-activity.json");
     const first = new TaskActivityTracker(path);
-    first.observeLedger([task("a")]);
+    first.observeLedger([task("a", { status: "working" })]);
     first.runStarted();
-    first.toolStarted("bash", { [TASK_ID_PARAM]: "a" });
+    first.toolStarted("bash", {});
     await first.flush();
     assert.match(await readFile(path, "utf8"), /"running"/);
     const second = new TaskActivityTracker(path);
