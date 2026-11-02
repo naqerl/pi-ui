@@ -1,3 +1,7 @@
+## 1.6.50 - 2026-11-02
+
+- feat(mcp): deliver a burst of queued MCP events as one message, so a flood arrives as one notice (kfgp).
+
 ## 1.6.49 - 2026-11-02
 
 - feat(tasks): edit the title and body in place, the title control growing with its content instead of collapsing into a one-line input, saving on blur (arwn).
