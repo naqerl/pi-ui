@@ -586,3 +586,158 @@ test("shows the single task list without filter tabs and groups done work by day
   await expect(screen.getByTestId("task-filter-proposed")).toHaveCount(0);
   await expect(screen.getByTestId("task-list")).toBeVisible();
 });
+
+test("uses one gap between every section header and the cards below it", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  const now = new Date();
+  const today = new Date(now);
+  today.setHours(12, 0, 0, 0);
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  const key = (date: Date) =>
+    `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+      date.getDate(),
+    ).padStart(2, "0")}`;
+  const at = (date: Date) => date.toISOString();
+  await browser.setViewport({ width: 390, height: 844 });
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({
+      json: {
+        conversationId: "task-spacing-e2e",
+        messages: [],
+        activity: [],
+        run: "idle",
+        queue: [],
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 },
+        context: { tokens: 0, window: null, percent: null },
+        tasks: {
+          revision: 1_000_000,
+          tasks: [
+            {
+              id: "alpha-task",
+              title: "First project work",
+              status: "open",
+              project: "Alpha",
+              parentId: null,
+              blockedBy: [],
+              createdAt: at(yesterday),
+              proposedAt: null,
+              completedAt: null,
+              completion: null,
+            },
+            {
+              id: "beta-task",
+              title: "Second project work",
+              status: "open",
+              project: "Beta",
+              parentId: null,
+              blockedBy: [],
+              createdAt: at(yesterday),
+              proposedAt: null,
+              completedAt: null,
+              completion: null,
+            },
+            {
+              id: "done-today",
+              title: "Finished today",
+              status: "done",
+              parentId: null,
+              blockedBy: [],
+              createdAt: at(today),
+              proposedAt: null,
+              completedAt: at(today),
+              completion: { evidence: "e2e/tasks-views.e2e.ts" },
+            },
+            {
+              id: "done-yesterday",
+              title: "Finished yesterday",
+              status: "done",
+              parentId: null,
+              blockedBy: [],
+              createdAt: at(yesterday),
+              proposedAt: null,
+              completedAt: at(yesterday),
+              completion: { evidence: "e2e/tasks-views.e2e.ts" },
+            },
+          ],
+        },
+      },
+    });
+  });
+  await app.open("/?page=tasks");
+  await expect(screen.getByTestId("task-project-Alpha")).toBeVisible();
+  await expect(screen.getByTestId("task-project-Beta")).toBeVisible();
+  await expect(screen.getByTestId("task-alpha-task")).toBeVisible();
+  await expect(screen.getByTestId("task-beta-task")).toBeVisible();
+
+  const yesterdayGroup = screen.getByTestId(`task-day-${key(yesterday)}`);
+  await expect(yesterdayGroup).toHaveAttribute("data-open", "false");
+  await screen.getByRole("button", { name: /Done yesterday/ }).tap();
+  await expect(yesterdayGroup).toHaveAttribute("data-open", "true");
+  await expect(screen.getByTestId("task-done-yesterday")).toBeVisible();
+
+  const gaps = await browser.evaluate(
+    (ids) => {
+      const trigger = (testId: string) => {
+        const element = document.querySelector<HTMLElement>(
+          `[data-testid="${testId}"] [data-slot="collapsible-trigger"]`,
+        );
+        return element?.getBoundingClientRect() ?? null;
+      };
+      const cards = (testId: string) => {
+        const group = document.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+        if (group === null) return null;
+        const boxes = [...group.querySelectorAll<HTMLElement>("[data-task-card]")].map((card) =>
+          card.getBoundingClientRect(),
+        );
+        return boxes.length === 0 ? null : { first: boxes[0], last: boxes[boxes.length - 1] };
+      };
+      const open = trigger("task-section-active");
+      const alpha = trigger(ids.alphaHeader);
+      const beta = trigger(ids.betaHeader);
+      const todayHeader = trigger(ids.todayHeader);
+      const yesterdayHeader = trigger(ids.yesterdayHeader);
+      const alphaCards = cards(ids.alphaHeader);
+      const betaCards = cards(ids.betaHeader);
+      const todayCards = cards(ids.todayHeader);
+      const yesterdayCards = cards(ids.yesterdayHeader);
+      if (
+        open === null ||
+        alpha === null ||
+        beta === null ||
+        todayHeader === null ||
+        yesterdayHeader === null ||
+        alphaCards === null ||
+        betaCards === null ||
+        todayCards === null ||
+        yesterdayCards === null
+      ) {
+        return null;
+      }
+      return {
+        openHeaderToProjectHeader: alpha.top - open.bottom,
+        projectHeaderToFirstCard: alphaCards.first.top - alpha.bottom,
+        lastCardToNextProjectHeader: beta.top - alphaCards.last.bottom,
+        secondProjectHeaderToFirstCard: betaCards.first.top - beta.bottom,
+        doneDayHeaderToFirstCard: todayCards.first.top - todayHeader.bottom,
+        lastCardToNextDoneDayHeader: yesterdayHeader.top - todayCards.last.bottom,
+        yesterdayHeaderToFirstCard: yesterdayCards.first.top - yesterdayHeader.bottom,
+      };
+    },
+    {
+      alphaHeader: "task-project-Alpha",
+      betaHeader: "task-project-Beta",
+      todayHeader: `task-day-${key(today)}`,
+      yesterdayHeader: `task-day-${key(yesterday)}`,
+    },
+  );
+  expect(gaps).not.toBeNull();
+  const values = Object.values(gaps ?? {});
+  expect(values).toHaveLength(7);
+  const gap = values[0] ?? 0;
+  expect(Math.abs(gap - 8)).toBeLessThanOrEqual(1);
+  for (const value of values) expect(Math.abs(value - gap)).toBeLessThanOrEqual(1);
+});
