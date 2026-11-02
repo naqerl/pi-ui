@@ -35,6 +35,8 @@ const LONG_PRESS_MS = 500;
 const WIDE_QUERY = "(min-width: 1024px)";
 /** Past days of the done list shown at first; "Show older days" adds this many more. */
 const DAY_PAGE = 7;
+/** One vertical rhythm for every header and card stack on the tasks page. */
+const TASK_STACK = "flex flex-col space-y-2";
 
 interface TasksViewProps {
   tasks: Task[];
@@ -189,7 +191,6 @@ function Section({
       <Collapsible
         open={open}
         onOpenChange={setOpen}
-        className="flex flex-col gap-2"
         data-testid={`task-section-${id}`}
         data-open={open ? "true" : "false"}
       >
@@ -212,16 +213,16 @@ function Section({
           )}
           <Chevron open={open} className={dark ? "text-background/80" : undefined} />
         </CollapsibleTrigger>
-        <CollapsibleContent className="pt-1">{children}</CollapsibleContent>
+        <CollapsibleContent className={`${TASK_STACK} pt-2`}>{children}</CollapsibleContent>
       </Collapsible>
     );
   }
   return (
-    <section className="flex flex-col gap-2" data-testid={`task-section-${id}`}>
+    <section className="flex flex-col" data-testid={`task-section-${id}`}>
       <Heading count={count} dark={dark}>
         {title}
       </Heading>
-      {children}
+      <div className={`${TASK_STACK} pt-2`}>{children}</div>
     </section>
   );
 }
@@ -461,10 +462,10 @@ export function TasksView({ tasks, activity, ready, footerClearance, onLedger }:
   );
 
   const list = (
-    <div className="flex min-w-0 flex-col gap-5" data-testid="task-list">
+    <div className={`${TASK_STACK} min-w-0`} data-testid="task-list">
       {(proposedTasks.length > 0 || failedTasks.length > 0) && (
         <Section title="Needs you" count={proposedTasks.length + failedTasks.length} id="needs">
-          <ul id="proposed-tasks" className="flex flex-col gap-2" data-testid="task-proposals">
+          <ul id="proposed-tasks" className={TASK_STACK} data-testid="task-proposals">
             {proposedTasks.map(proposal)}
             {failedTasks.map((task) => (
               <TaskRow key={task.id} task={task} depth={0} {...rowProps} flat />
@@ -490,7 +491,7 @@ export function TasksView({ tasks, activity, ready, footerClearance, onLedger }:
                 defaultOpen
                 dark
               >
-                <ul className="flex flex-col gap-2">
+                <ul className={TASK_STACK}>
                   {items.map((task) => (
                     <TaskRow
                       key={task.id}
@@ -504,7 +505,7 @@ export function TasksView({ tasks, activity, ready, footerClearance, onLedger }:
               </Group>
             ))
           ) : (
-            <ul className="flex flex-col gap-2">
+            <ul className={TASK_STACK}>
               {activeRoots.map((task) => (
                 <TaskRow key={task.id} task={task} depth={0} {...rowProps} />
               ))}
@@ -513,7 +514,7 @@ export function TasksView({ tasks, activity, ready, footerClearance, onLedger }:
         </Section>
       )}
       {days.length > 0 && (
-        <section className="flex flex-col gap-2" data-testid="task-section-done">
+        <section className={TASK_STACK} data-testid="task-section-done">
           {days.slice(0, dayLimit + 1).map(([key, items]) => (
             <Group
               key={key}
@@ -528,7 +529,7 @@ export function TasksView({ tasks, activity, ready, footerClearance, onLedger }:
                   Nothing done yet today.
                 </p>
               ) : (
-                <ul className="flex flex-col gap-2">
+                <ul className={TASK_STACK}>
                   {items.map((task) => (
                     <TaskRow key={task.id} task={task} depth={0} {...rowProps} history />
                   ))}
@@ -684,7 +685,7 @@ function Group({
           </>
         )}
       </CollapsibleTrigger>
-      <CollapsibleContent className="pt-1">{children}</CollapsibleContent>
+      <CollapsibleContent className={`${TASK_STACK} pt-2`}>{children}</CollapsibleContent>
     </Collapsible>
   );
 }
