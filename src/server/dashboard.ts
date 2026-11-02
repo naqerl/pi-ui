@@ -7,6 +7,8 @@ import {
   type BuiltinName,
   type BuiltinSession,
   builtinData,
+  CHART_TYPES,
+  type ChartType,
   type DashboardConfig,
   DashboardError,
   type DashboardLayout,
@@ -19,6 +21,7 @@ import {
   maskDeep,
   maskSecrets,
   renderWidget,
+  type SparklineChart,
   upgradeDashboard,
   validateMapping,
   viewNumber,
@@ -85,6 +88,9 @@ const MAX_SCRIPT = 20_000;
 const SAMPLE_CHARS = 2_000;
 const SECRET_NAME = /TOKEN|SECRET|PASSW|API_?KEY|PRIVATE|CREDENTIAL|AUTH|SESSION|COOKIE/i;
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$/;
+const CHART_KEYS = new Set(["type", "color", "height", "yDomain", "showTooltip"]);
+const SAFE_CHART_COLOR =
+  /^(?:[a-zA-Z]+|#[0-9a-fA-F]{3,8}|(?:var|rgb|rgba|hsl|hsla|oklch|oklab|color|color-mix)\([^;{}<>]*\))$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -143,6 +149,63 @@ function parseSource(input: unknown, minIntervalSec: number, notes: string[]): W
   }
 }
 
+/** Checks a sparkline's presentation block. Data stays in `mapping`. */
+export function parseChart(input: unknown): SparklineChart {
+  if (!isRecord(input)) throw new DashboardError("chart must be an object.");
+  for (const key of Object.keys(input)) {
+    if (!CHART_KEYS.has(key)) {
+      throw new DashboardError(`"${key}" is not a chart field; use ${[...CHART_KEYS].join(", ")}.`);
+    }
+  }
+  const type = input.type;
+  if (typeof type !== "string" || !(CHART_TYPES as readonly string[]).includes(type)) {
+    throw new DashboardError(`chart.type must be one of ${CHART_TYPES.join(", ")}.`);
+  }
+  const chart: SparklineChart = { type: type as ChartType };
+  if (input.color !== undefined) {
+    if (
+      typeof input.color !== "string" ||
+      input.color.trim() === "" ||
+      input.color.length > 80 ||
+      !SAFE_CHART_COLOR.test(input.color.trim())
+    ) {
+      throw new DashboardError("chart.color must be a CSS color or a var(--chart-N) token.");
+    }
+    chart.color = input.color.trim();
+  }
+  if (input.height !== undefined) {
+    if (
+      typeof input.height !== "number" ||
+      !Number.isFinite(input.height) ||
+      input.height < 12 ||
+      input.height > 400
+    ) {
+      throw new DashboardError("chart.height must be a number from 12 to 400.");
+    }
+    chart.height = Math.round(input.height);
+  }
+  if (input.yDomain !== undefined) {
+    if (input.yDomain === "auto") chart.yDomain = "auto";
+    else if (
+      Array.isArray(input.yDomain) &&
+      input.yDomain.length === 2 &&
+      input.yDomain.every((value) => typeof value === "number" && Number.isFinite(value)) &&
+      input.yDomain[0] <= input.yDomain[1]
+    ) {
+      chart.yDomain = [input.yDomain[0], input.yDomain[1]];
+    } else {
+      throw new DashboardError('chart.yDomain must be "auto" or [min, max].');
+    }
+  }
+  if (input.showTooltip !== undefined) {
+    if (typeof input.showTooltip !== "boolean") {
+      throw new DashboardError("chart.showTooltip must be true or false.");
+    }
+    chart.showTooltip = input.showTooltip;
+  }
+  return chart;
+}
+
 /** Checks and normalizes a widget from the agent or from disk. */
 export function parseWidget(input: unknown, minIntervalSec: number, notes: string[] = []): Widget {
   if (!isRecord(input)) throw new DashboardError("A widget must be an object.");
@@ -163,7 +226,21 @@ export function parseWidget(input: unknown, minIntervalSec: number, notes: strin
   if (!isRecord(mappingInput)) throw new DashboardError("mapping must be an object.");
   const mapping = mappingInput as WidgetMapping;
   validateMapping(kind as WidgetKind, mapping);
-  return { id, title, kind: kind as WidgetKind, source, mapping };
+  let chart: SparklineChart | undefined;
+  if (input.chart !== undefined) {
+    if (kind !== "sparkline") {
+      throw new DashboardError("chart is only valid on a sparkline widget.");
+    }
+    chart = parseChart(input.chart);
+  }
+  return {
+    id,
+    title,
+    kind: kind as WidgetKind,
+    source,
+    mapping,
+    ...(chart === undefined ? {} : { chart }),
+  };
 }
 
 /** Checks a layout against the widget ids; widgets it leaves out go in a last section. */

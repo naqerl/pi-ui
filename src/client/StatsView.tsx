@@ -1,9 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import { Area, AreaChart, Bar, BarChart, Line, LineChart, XAxis, YAxis } from "recharts";
 import {
   type BuiltinInputs,
   builtinData,
   type DashboardState,
   renderWidget,
+  type SparklineChart,
   type StatusState,
   type Widget,
   type WidgetSpan,
@@ -12,6 +22,12 @@ import {
 } from "../shared/dashboard";
 import { formatDateTime, formatTime } from "../shared/time";
 import type { ContextUsage, McpEventsState, McpStatus, UsageSummary } from "../shared/types";
+import {
+  type ChartConfig,
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+} from "./components/ui/chart";
 import { getDashboard, setDashboard, subscribeDashboard } from "./dashboard-store";
 import { haptic } from "./haptics";
 import { Markdown } from "./markdown";
@@ -103,30 +119,82 @@ function Value({ text }: { text: string }) {
   return <>{text}</>;
 }
 
-function Sparkline({ points }: { points: number[] }) {
+function WidgetSparkline({ points, chart }: { points: number[]; chart?: SparklineChart }) {
+  const gradientId = `spark-${useId().replace(/:/g, "")}`;
   if (points.length < 2) {
     return <div className="h-10 text-muted-foreground">collecting…</div>;
   }
-  const min = Math.min(...points);
-  const max = Math.max(...points);
-  const range = max - min || 1;
-  const step = 100 / (points.length - 1);
-  const path = points
-    .map(
-      (point, index) =>
-        `${(index * step).toFixed(2)},${(38 - ((point - min) / range) * 36).toFixed(2)}`,
-    )
-    .join(" ");
+  const type = chart?.type ?? "area";
+  const height = chart?.height ?? 40;
+  const color = chart?.color ?? "var(--chart-1)";
+  const showTooltip = chart?.showTooltip ?? false;
+  const domain: [number | string, number | string] =
+    chart?.yDomain === undefined || chart.yDomain === "auto"
+      ? ["dataMin", "dataMax"]
+      : chart.yDomain;
+  const data = points.map((value, index) => ({ index, value }));
+  const config: ChartConfig = { value: { label: "value", color } };
+  const plot = { data, margin: { top: 2, right: 0, bottom: 0, left: 0 } };
+  const gradient = (
+    <defs>
+      <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stopColor="var(--color-value)" stopOpacity={0.35} />
+        <stop offset="100%" stopColor="var(--color-value)" stopOpacity={0} />
+      </linearGradient>
+    </defs>
+  );
+  const axes = (
+    <>
+      <XAxis dataKey="index" hide />
+      <YAxis hide domain={domain} />
+    </>
+  );
+  const tooltip = showTooltip ? (
+    <ChartTooltip cursor={false} content={<ChartTooltipContent hideLabel indicator="line" />} />
+  ) : null;
   return (
-    <svg viewBox="0 0 100 40" preserveAspectRatio="none" className="h-10 w-full" aria-hidden="true">
-      <polyline
-        points={path}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        vectorEffect="non-scaling-stroke"
-      />
-    </svg>
+    <ChartContainer
+      config={config}
+      className="aspect-auto w-full min-w-0"
+      style={{ height }}
+      aria-hidden={showTooltip ? undefined : true}
+    >
+      {type === "bar" ? (
+        <BarChart {...plot}>
+          {axes}
+          {tooltip}
+          <Bar dataKey="value" fill="var(--color-value)" isAnimationActive={false} />
+        </BarChart>
+      ) : type === "line" ? (
+        <LineChart {...plot}>
+          {axes}
+          {tooltip}
+          <Line
+            type="monotone"
+            dataKey="value"
+            stroke="var(--color-value)"
+            strokeWidth={1.5}
+            dot={false}
+            isAnimationActive={false}
+          />
+        </LineChart>
+      ) : (
+        <AreaChart {...plot}>
+          {gradient}
+          {axes}
+          {tooltip}
+          <Area
+            type="monotone"
+            dataKey="value"
+            stroke="var(--color-value)"
+            strokeWidth={1.5}
+            fill={`url(#${gradientId})`}
+            dot={false}
+            isAnimationActive={false}
+          />
+        </AreaChart>
+      )}
+    </ChartContainer>
   );
 }
 
@@ -142,7 +210,7 @@ function rowClass(): string {
   return "flex min-w-0 flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5 py-2";
 }
 
-function ViewBody({ id, view }: { id: string; view: WidgetView }) {
+function ViewBody({ id, view, chart }: { id: string; view: WidgetView; chart?: SparklineChart }) {
   switch (view.kind) {
     case "stat":
       return (
@@ -277,7 +345,7 @@ function ViewBody({ id, view }: { id: string; view: WidgetView }) {
             <span className="text-muted-foreground">{view.label ?? ""}</span>
             <span data-testid={`stat-${id}`}>{view.value ?? ""}</span>
           </div>
-          <Sparkline points={view.points} />
+          <WidgetSparkline points={view.points} chart={chart} />
         </div>
       );
     case "markdown":
@@ -417,7 +485,7 @@ function WidgetCard({
         </div>
       ) : null}
       {view !== undefined ? (
-        <ViewBody id={widget.id} view={view} />
+        <ViewBody id={widget.id} view={view} chart={widget.chart} />
       ) : (
         <p className="py-2 text-muted-foreground [overflow-wrap:anywhere]">
           {error ??

@@ -1,5 +1,7 @@
+import assert from "node:assert/strict";
 import { test } from "@e2e-dev/web";
 import { expect, type JsonValue } from "e2e";
+import { parseWidget } from "../src/server/dashboard.js";
 
 // Poll scripts the fake model hands to dashboard_upsert. They call the fake
 // ExampleCloud API on the fake model server ({{FAKE_HTTP}}) with env.HCLOUD_TOKEN.
@@ -70,6 +72,28 @@ const createCalls = [
   },
 ];
 
+const sparkScript = `return { values: [2, 5, 3, 8, 6, 10, 7, 12] };`;
+
+const sparkAreaCall = {
+  name: "dashboard_upsert",
+  arguments: {
+    id: "spark-history",
+    title: "Spark history",
+    kind: "sparkline",
+    source: { type: "poll", script: sparkScript, intervalSec: 0.5 },
+    mapping: { series: "values", label: "=history" },
+    chart: { type: "area", height: 40, yDomain: "auto" },
+  },
+};
+
+const sparkBarCall = {
+  name: "dashboard_upsert",
+  arguments: {
+    ...sparkAreaCall.arguments,
+    chart: { type: "bar", color: "var(--chart-2)" },
+  },
+};
+
 const resetCalls = [
   { name: "dashboard_remove", arguments: { id: "example-cloud-servers" } },
   {
@@ -92,7 +116,7 @@ const resetCalls = [
 type DashboardRead = {
   polling: boolean;
   widgets: { id: string }[];
-  values: Record<string, { updatedAt?: string; error?: string }>;
+  values: Record<string, { updatedAt?: string; error?: string; view?: unknown }>;
 };
 
 async function readDashboard(browser: {
@@ -359,4 +383,98 @@ test("the MCP events widget shows at most 3 rows", async ({ app, browser, screen
   });
   expect(read.count).toBe(3);
   expect(read.ids).toEqual(["stat-mcp-event-e4", "stat-mcp-event-e3", "stat-mcp-event-e2"]);
+});
+
+test("sparkline widgets render through recharts and honor their chart config", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  const geometry = (id: string) =>
+    browser.evaluate((widgetId) => {
+      const card = document.querySelector(`[data-testid="widget-${widgetId}"]`);
+      const chart = card?.querySelector("[data-chart]");
+      const svg = card?.querySelector("svg.recharts-surface");
+      return {
+        svg: svg !== null && svg !== undefined,
+        chart: chart !== null && chart !== undefined,
+        paths: card?.querySelectorAll("path").length ?? 0,
+        rects: card?.querySelectorAll("rect").length ?? 0,
+        height:
+          chart instanceof HTMLElement ? Math.round(chart.getBoundingClientRect().height) : null,
+      };
+    }, id);
+
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/");
+  await seedDashboard(browser, [sparkAreaCall]);
+  await dashboardHas(browser, ["spark-history"]);
+  await app.open("/?page=stats");
+  await expect(screen.getByText("Spark history", { exact: true })).toBeVisible();
+  await expect
+    .poll(async () => (await readDashboard(browser)).values["spark-history"]?.view !== undefined)
+    .toBe(true);
+
+  const area = await geometry("spark-history");
+  expect(area.svg).toBe(true);
+  expect(area.chart).toBe(true);
+  expect(area.height).toBe(40);
+  expect(area.paths + area.rects).toBeGreaterThan(0);
+
+  await seedDashboard(browser, [sparkBarCall]);
+  await expect
+    .poll(async () => {
+      const next = await geometry("spark-history");
+      return next.paths + next.rects;
+    })
+    .toBeGreaterThan(area.paths + area.rects);
+  const bar = await geometry("spark-history");
+  expect(bar.svg).toBe(true);
+  expect(bar.paths + bar.rects).toBeGreaterThan(area.paths + area.rects);
+
+  await screen.getByRole("tab", "Chat").tap();
+  await seedDashboard(browser, resetCalls);
+  await dashboardHas(browser, ["context", "tokens", "mcp", "mcp-events"]);
+});
+
+test("the sparkline chart config rejects unknown keys", () => {
+  const parsed = parseWidget(
+    {
+      id: "spark-config",
+      title: "Spark config",
+      kind: "sparkline",
+      source: { type: "static" },
+      mapping: { value: "value" },
+      chart: {
+        type: "bar",
+        color: "var(--chart-2)",
+        height: 48,
+        yDomain: [0, 10],
+        showTooltip: true,
+      },
+    },
+    1,
+  );
+  assert.deepEqual(parsed.chart, {
+    type: "bar",
+    color: "var(--chart-2)",
+    height: 48,
+    yDomain: [0, 10],
+    showTooltip: true,
+  });
+  assert.throws(
+    () =>
+      parseWidget(
+        {
+          id: "spark-bad",
+          title: "Spark bad",
+          kind: "sparkline",
+          source: { type: "static" },
+          mapping: { value: "value" },
+          chart: { type: "area", glow: true },
+        },
+        1,
+      ),
+    /glow/,
+  );
 });
