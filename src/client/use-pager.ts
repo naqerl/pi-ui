@@ -13,9 +13,55 @@ interface Gesture {
   y: number;
   /** Last finger position. A cancelled touch can report clientX 0. */
   lastX: number;
-  locked: "undecided" | "h" | "v";
+  locked: "undecided" | "h" | "v" | "none";
+  scroller: HTMLElement | null;
   width: number;
   page: number;
+}
+
+/**
+ * A horizontal scroller is detected from behaviour, not from a class list. The
+ * optional `data-hscroll` attribute is only a hint for custom scroll surfaces:
+ * any value other than `false` marks one, while `false` opts an element out.
+ */
+function isHorizontalScroller(element: Element): boolean {
+  if (!(element instanceof HTMLElement)) return false;
+  const hint = element.getAttribute("data-hscroll");
+  if (hint === "false") return false;
+  if (hint !== null) return true;
+  const overflowX = getComputedStyle(element).overflowX;
+  return (
+    (overflowX === "auto" || overflowX === "scroll") && element.scrollWidth > element.clientWidth
+  );
+}
+
+/**
+ * The nearest horizontally scrollable element between a gesture's origin and
+ * the pager. The direction is decided on the first horizontal move, because
+ * the same scroller may own one direction and not the other.
+ */
+function horizontalScroller(target: EventTarget | null, root: HTMLElement): HTMLElement | null {
+  if (!(target instanceof Element)) return null;
+  let node: Element | null = target;
+  while (node !== null && node !== root) {
+    if (isHorizontalScroller(node)) return node as HTMLElement;
+    node = node.parentElement;
+  }
+  return null;
+}
+
+/**
+ * Whether the scroller owns a horizontal gesture. `direction` is 1 when the
+ * finger moves left (the content scrolls right) and -1 when it moves right. A
+ * scroller keeps the gesture while it can still move that way. At its right
+ * edge it also keeps the rest of the gesture (no hand-off); at its left edge a
+ * rightward gesture belongs to the pager because the scroller cannot consume
+ * it. Custom pan surfaces marked with `data-hscroll` always keep the gesture.
+ */
+function defersToScroller(element: HTMLElement, direction: 1 | -1): boolean {
+  if (element.getAttribute("data-hscroll") !== null) return true;
+  if (direction === 1) return true;
+  return element.scrollLeft > 0;
 }
 
 /** Stats, chat, and tasks share one horizontal pager. Touch swipes; a trackpad scrolls sideways. */
@@ -57,6 +103,7 @@ export function usePager(count: number, initial = 0) {
     let startX = 0;
     let startY = 0;
     let mode: "undecided" | "h" | "v" = "undecided";
+    let scroller: HTMLElement | null = null;
     let tracking = false;
 
     const onStart = (event: TouchEvent) => {
@@ -66,6 +113,9 @@ export function usePager(count: number, initial = 0) {
       }
       const touch = event.touches[0];
       if (touch === undefined) return;
+      // Resolve the target now, but decide on the first move whether it can
+      // consume the gesture's direction.
+      scroller = horizontalScroller(event.target, node);
       startX = touch.clientX;
       startY = touch.clientY;
       mode = "undecided";
@@ -83,7 +133,18 @@ export function usePager(count: number, initial = 0) {
         if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
         mode = Math.abs(dx) > Math.abs(dy) ? "h" : "v";
       }
-      if (mode === "h" && event.cancelable) event.preventDefault();
+      if (mode !== "h" || !event.cancelable) return;
+      if (scroller !== null) {
+        if (defersToScroller(scroller, dx > 0 ? -1 : 1)) {
+          // Leave preventDefault off so the element's native panning works.
+          tracking = false;
+          return;
+        }
+        // The pager has claimed this gesture, so keep claiming it even if the
+        // finger reverses direction.
+        scroller = null;
+      }
+      event.preventDefault();
     };
 
     node.addEventListener("touchstart", onStart, { capture: true, passive: true });
@@ -101,6 +162,11 @@ export function usePager(count: number, initial = 0) {
     const onWheel = (event: WheelEvent) => {
       if (Math.abs(event.deltaX) < 24) return;
       if (Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
+      // A horizontal trackpad gesture over a wide block scrolls the block
+      // while it can still move that way. At the block's left edge a further
+      // negative delta belongs to the pager.
+      const scroller = horizontalScroller(event.target, node);
+      if (scroller !== null && defersToScroller(scroller, event.deltaX > 0 ? 1 : -1)) return;
       event.preventDefault();
       const now = performance.now();
       if (now < lockedUntil) return;
@@ -119,6 +185,7 @@ export function usePager(count: number, initial = 0) {
       y: event.clientY,
       lastX: event.clientX,
       locked: "undecided",
+      scroller: horizontalScroller(event.target, event.currentTarget),
       width: event.currentTarget.getBoundingClientRect().width,
       page: pageRef.current,
     };
@@ -134,6 +201,10 @@ export function usePager(count: number, initial = 0) {
       if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
       if (Math.abs(dy) > Math.abs(dx)) {
         current.locked = "v";
+        return;
+      }
+      if (current.scroller !== null && defersToScroller(current.scroller, dx > 0 ? -1 : 1)) {
+        current.locked = "none";
         return;
       }
       current.locked = "h";

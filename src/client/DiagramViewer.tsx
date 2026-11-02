@@ -399,6 +399,7 @@ export function DiagramViewer({ id, revision, source, svg, onClose }: DiagramVie
         <div
           ref={stageRef}
           data-testid="diagram-viewer-stage"
+          data-hscroll="true"
           role="application"
           aria-label="Diagram canvas"
           className="relative min-h-0 flex-1 cursor-grab touch-none select-none overflow-hidden bg-background active:cursor-grabbing"
