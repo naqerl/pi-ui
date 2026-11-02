@@ -1,3 +1,7 @@
+## 1.6.59 - 2026-11-02
+
+- feat(ui): vibrate on user mutations (approve, send, task actions, settings) through one haptic helper that respects prefers-reduced-motion (7q9g).
+
 ## 1.6.58 - 2026-11-02
 
 - test(nudge): assert the actualize wording that 1.6.55 shipped, so the unit job stops failing.
