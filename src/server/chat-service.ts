@@ -19,8 +19,11 @@ import {
 } from "@earendil-works/pi-durable";
 import { parseMemoryToolDetails } from "../shared/memory.js";
 import {
+  isMcpEventEcho,
   MCP_EVENTS_HEAD,
+  MCP_EVENTS_TRAILER,
   type OperatorNoticeRecord,
+  parseMcpEventPayload,
   parseNotice,
   type TaskDecisionNoticeRecord,
   taskDecisionPrompt,
@@ -143,24 +146,20 @@ export function mcpEventEnvelope(text: string): McpEventEnvelope | null {
   if (!text.startsWith(MCP_EVENT_HEAD)) return null;
   const newline = text.indexOf("\n");
   if (newline < 0) return null;
-  try {
-    const payload: unknown = JSON.parse(text.slice(newline + 1));
-    if (!isRecord(payload) || !Array.isArray(payload.events)) return null;
-    return {
-      head: text.slice(0, newline),
-      items: payload.events,
-      dropped: typeof payload.dropped_events === "number" ? payload.dropped_events : 0,
-    };
-  } catch {
-    return null;
-  }
+  const payload = parseMcpEventPayload(text.slice(newline + 1));
+  if (payload === null || !Array.isArray(payload.events)) return null;
+  return {
+    head: text.slice(0, newline),
+    items: payload.events,
+    dropped: typeof payload.dropped_events === "number" ? payload.dropped_events : 0,
+  };
 }
 
 export function mcpEventText(envelope: McpEventEnvelope, items: readonly unknown[]): string {
   return `${envelope.head}\n${JSON.stringify({
     events: items,
     dropped_events: envelope.dropped,
-  })}`;
+  })}\n${MCP_EVENTS_TRAILER}`;
 }
 
 /** Longest merged MCP notice text before a second notice carries the rest. */
@@ -373,6 +372,8 @@ export class ChatService {
   private readonly mcpNotices = new NoticeCoalescer();
   /** Events shown by each open notice window, so an update carries the full text. */
   private readonly mcpNoticeEvents = new Map<string, unknown[]>();
+  /** The most recent MCP notice text delivered here, used to spot an assistant echo. */
+  private lastMcpNoticeText: string | null = null;
   /** Proposal ids whose decision already reached the conversation. */
   private readonly taskDecisions = new Set<string>();
   private readonly activeTools = new Map<string, ActiveTool>();
@@ -1561,6 +1562,7 @@ export class ChatService {
       this.mcpNoticeEvents.set(noticeId, notice.events);
       const at = new Date().toISOString();
       const latest = mcpEventText(envelope, notice.events);
+      this.lastMcpNoticeText = latest;
       if (firstNotices.has(noticeId)) {
         await this.submit(latest, "queue", {
           entry: {
@@ -1588,6 +1590,7 @@ export class ChatService {
 
     if (immediate.length > 0) {
       const text = mcpEventText(envelope, immediate);
+      this.lastMcpNoticeText = text;
       const at = new Date().toISOString();
       await this.submit(text, "queue", {
         entry: {
@@ -1805,6 +1808,11 @@ export class ChatService {
       case "message_end": {
         this.measureModelCall(event.entry);
         const message = assistantMessageFromEntry(event.entry);
+        if (event.entry.kind === MCP_NOTICE_ENTRY_KIND && isRecord(event.entry.data)) {
+          if (typeof event.entry.data.text === "string") {
+            this.lastMcpNoticeText = event.entry.data.text;
+          }
+        }
         this.currentText = "";
         this.currentThinking = "";
         const revision = this.bumpDraft();
@@ -1843,6 +1851,20 @@ export class ChatService {
             {
               event: "message.done",
               data: { message: placedMessage ?? null } satisfies StreamMessageDone,
+            },
+          ]);
+          return;
+        }
+        if (message !== null && isMcpEventEcho(message.text, this.lastMcpNoticeText)) {
+          console.warn("[chat] dropped an assistant echo of an MCP notice");
+          this.hub.broadcast([
+            {
+              event: "draft.sync",
+              data: { text: "", thinking: "", revision } satisfies StreamDraftSync,
+            },
+            {
+              event: "message.done",
+              data: { message: null } satisfies StreamMessageDone,
             },
           ]);
           return;
@@ -2006,6 +2028,7 @@ export class ChatService {
   private applySnapshot(snapshot: SnapshotEvent): void {
     this.currentText = "";
     this.currentThinking = "";
+    this.rememberLatestMcpNotice(snapshot.entries);
     const partial = snapshot.generation?.message;
     if (partial) {
       this.absorbMessage(partial);
@@ -2021,6 +2044,17 @@ export class ChatService {
       });
     }
     this.toolsRevision += 1;
+  }
+
+  /** Recover the latest delivered notice so an echo is caught after a restart too. */
+  private rememberLatestMcpNotice(entries: readonly EntryRecord[]): void {
+    let latestId = -1;
+    for (const entry of entries) {
+      if (entry.kind !== MCP_NOTICE_ENTRY_KIND || !isRecord(entry.data)) continue;
+      if (typeof entry.data.text !== "string" || entry.id < latestId) continue;
+      latestId = entry.id;
+      this.lastMcpNoticeText = entry.data.text;
+    }
   }
 
   private absorbMessage(message: AssistantMessage): void {

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
+import { MCP_EVENTS_HEAD, MCP_EVENTS_TRAILER } from "../src/shared/notices";
 
 type Page = { evaluate: <T, A = undefined>(fn: (arg: A) => T | Promise<T>, arg?: A) => Promise<T> };
 
@@ -766,6 +767,161 @@ test("an update for a queued burst subject cannot hide the merged notice", async
       .poll(
         async () =>
           (await mcpEvents(browser)).subscriptions.find((item) => item.name === "stub-burst-update")
+            ?.status,
+        { timeout: 20_000 },
+      )
+      .toBe("stopped");
+  }
+});
+
+const chatState = (browser: Page) =>
+  browser.evaluate(async () => {
+    const res = await fetch("/api/state");
+    const state = (await res.json()) as {
+      run?: string;
+      messages?: Array<{ role?: string; text?: string; notice?: { kind?: string } }>;
+    };
+    return {
+      run: state.run ?? "",
+      messages: (state.messages ?? []).map((message) => ({
+        role: message.role ?? "",
+        text: message.text ?? "",
+        noticeKind: message.notice?.kind ?? "",
+      })),
+    };
+  });
+
+test("an MCP notice is not a message and an assistant echo is dropped", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 1280, height: 900 });
+  await app.open("/");
+  const send = async (text: string) => {
+    await screen.getByRole("textbox", "Message").fill(text);
+    await screen.getByRole("button", "Send").tap();
+  };
+
+  // A normal answer gives the conversation a visible message before the notice.
+  const keep = `KEEP previous ${Date.now()}`;
+  await send(keep);
+  await expect
+    .poll(
+      async () =>
+        (await chatState(browser)).messages.some(
+          (message) => message.role === "assistant" && message.text.includes(keep),
+        ),
+      { timeout: 20_000 },
+    )
+    .toBe(true);
+
+  await send(
+    `TOOLCALLS ${JSON.stringify([{ name: "tool_search", arguments: { query: "mcp_events" } }])}`,
+  );
+  await expect.poll(async () => (await chatState(browser)).run, { timeout: 20_000 }).toBe("idle");
+
+  const tag = Date.now();
+  const prefix = `ECHO_MCP_NOTICE-${tag}`;
+  const release = join(tmpdir(), `pi-ui-mcp-echo-${tag}`);
+  try {
+    // Hold the stream closed until the subscription turn is fully idle, so the
+    // notice starts its own turn and the model's verbatim echo is the only reply.
+    await send(
+      `TOOLCALLS ${JSON.stringify([
+        {
+          name: "mcp_events",
+          arguments: {
+            action: "subscribe",
+            server: "stub",
+            name: "stub-burst-late",
+            arguments: { release, prefix },
+          },
+        },
+      ])}`,
+    );
+    await expect
+      .poll(
+        async () =>
+          (await mcpEvents(browser)).subscriptions.find((item) => item.name === "stub-burst-late")
+            ?.status,
+        { timeout: 20_000 },
+      )
+      .toBe("active");
+    await expect.poll(async () => (await chatState(browser)).run, { timeout: 20_000 }).toBe("idle");
+
+    writeFileSync(release, "");
+    await expect
+      .poll(
+        async () => {
+          const state = await chatState(browser);
+          const notice = state.messages.find(
+            (message) => message.noticeKind === "mcp" && message.text.includes(prefix),
+          );
+          const noticeText = notice?.text.trim() ?? "";
+          const last = state.messages.at(-1);
+          return {
+            run: state.run,
+            hasHead: notice?.text.startsWith(MCP_EVENTS_HEAD) ?? false,
+            hasTrailer: notice?.text.includes(MCP_EVENTS_TRAILER) ?? false,
+            echoed: state.messages.some(
+              (message) =>
+                message.role === "assistant" &&
+                (message.text.trim().startsWith(MCP_EVENTS_HEAD) ||
+                  (noticeText.length > 0 && message.text.trim() === noticeText)),
+            ),
+            lastRole: last?.role ?? "",
+            lastNotice: last?.noticeKind ?? "",
+          };
+        },
+        { timeout: 30_000 },
+      )
+      .toEqual({
+        run: "idle",
+        hasHead: true,
+        hasTrailer: true,
+        echoed: false,
+        lastRole: "user",
+        lastNotice: "mcp",
+      });
+  } finally {
+    writeFileSync(release, "");
+  }
+
+  // Mentioning MCP events in a normal answer is not an echo and still appears.
+  const mention = `MCP events are useful ${tag}`;
+  await send(mention);
+  await expect
+    .poll(
+      async () => {
+        const state = await chatState(browser);
+        return {
+          run: state.run,
+          visible: state.messages.some(
+            (message) => message.role === "assistant" && message.text.includes(mention),
+          ),
+        };
+      },
+      { timeout: 20_000 },
+    )
+    .toEqual({ run: "idle", visible: true });
+
+  const subscription = (await mcpEvents(browser)).subscriptions.find(
+    (item) => item.name === "stub-burst-late",
+  );
+  if (subscription !== undefined && subscription.id.length > 0) {
+    await send(
+      `TOOLCALLS ${JSON.stringify([
+        {
+          name: "mcp_events",
+          arguments: { action: "unsubscribe", subscription_id: subscription.id },
+        },
+      ])}`,
+    );
+    await expect
+      .poll(
+        async () =>
+          (await mcpEvents(browser)).subscriptions.find((item) => item.name === "stub-burst-late")
             ?.status,
         { timeout: 20_000 },
       )

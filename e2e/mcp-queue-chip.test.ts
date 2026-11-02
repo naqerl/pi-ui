@@ -11,7 +11,11 @@ import {
   JOB_NOTICE_ENTRY_KIND,
   MCP_NOTICE_ENTRY_KIND,
 } from "../src/server/session.js";
-import { MCP_EVENTS_HEAD } from "../src/shared/notices.js";
+import {
+  MCP_EVENTS_HEAD,
+  MCP_EVENTS_TRAILER,
+  parseMcpEventPayload,
+} from "../src/shared/notices.js";
 import type { QueuedMessageGroup } from "../src/shared/queue.js";
 import {
   groupQueuedMessages,
@@ -39,7 +43,7 @@ function mcpText(eventId = "evt-42"): string {
       },
     ],
     dropped_events: 0,
-  })}`;
+  })}\n${MCP_EVENTS_TRAILER}`;
 }
 
 /** A terminal event the policy delivers immediately instead of coalescing. */
@@ -47,7 +51,7 @@ function immediateText(runId = "r"): string {
   return `${MCP_EVENTS_HEAD}\n${JSON.stringify({
     events: [{ kind: "hub.run", runId, terminal: true }],
     dropped_events: 0,
-  })}`;
+  })}\n${MCP_EVENTS_TRAILER}`;
 }
 
 const JOB_TEXT = [
@@ -357,9 +361,10 @@ test("a bounded merge counts down the events still remaining", () => {
     assert.ok(match !== null);
     carried.push(Number(match[1]));
     remaining.push(Number(match[3]));
-    const payload = JSON.parse(text.slice(text.indexOf("\n") + 1)) as {
+    const payload = parseMcpEventPayload(text.slice(text.indexOf("\n") + 1)) as {
       events: Array<{ eventId: string }>;
-    };
+    } | null;
+    assert.ok(payload !== null);
     ids.push(...payload.events.map((event) => event.eventId));
   }
 

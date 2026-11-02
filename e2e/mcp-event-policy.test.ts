@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { EntryRecord } from "@earendil-works/pi-durable";
+import { AssistantEntry, type EntryRecord } from "@earendil-works/pi-durable";
 import { ChatService, mcpEventEnvelope, mcpEventText } from "../src/server/chat-service.js";
 import {
   classifyNotice,
@@ -8,7 +8,7 @@ import {
   NoticeCoalescer,
 } from "../src/server/mcp-event-policy.js";
 import { buildTranscript, MCP_NOTICE_ENTRY_KIND } from "../src/server/session.js";
-import { MCP_EVENTS_HEAD } from "../src/shared/notices.js";
+import { MCP_EVENTS_HEAD, MCP_EVENTS_TRAILER } from "../src/shared/notices.js";
 import { isQueuedNotice } from "../src/shared/queue.js";
 
 const START = Date.parse("2026-10-30T12:00:00.000Z");
@@ -59,12 +59,64 @@ test("rebuilding an event notice keeps the safety preamble and dropped count", (
 
   const rebuilt = mcpEventText(envelope, [envelope.items[0]]);
   assert.ok(rebuilt.startsWith(`${preamble}\n`));
-  const payload = JSON.parse(rebuilt.slice(preamble.length + 1)) as {
+  assert.ok(rebuilt.endsWith(`\n${MCP_EVENTS_TRAILER}`));
+  const payload = JSON.parse(
+    rebuilt.slice(preamble.length + 1, -(MCP_EVENTS_TRAILER.length + 1)),
+  ) as {
     events: unknown[];
     dropped_events: number;
   };
   assert.equal(payload.events.length, 1);
   assert.equal(payload.dropped_events, 7);
+});
+
+test("the envelope parser ignores the not-a-message trailer", () => {
+  const head = `${MCP_EVENTS_HEAD} @pi-ui`;
+  const written = mcpEventText(
+    {
+      head,
+      items: [event("github", "push", { ref: "main" })],
+      dropped: 2,
+    },
+    [event("github", "push", { ref: "main" })],
+  );
+  assert.ok(written.endsWith(`\n${MCP_EVENTS_TRAILER}`));
+
+  const envelope = mcpEventEnvelope(written);
+  assert.ok(envelope !== null);
+  assert.equal(envelope.head, head);
+  assert.equal(envelope.dropped, 2);
+  assert.equal(envelope.items.length, 1);
+});
+
+test("the transcript drops an assistant echo but keeps a message mentioning MCP events", () => {
+  const noticeText = mcpEventText(
+    { head: MCP_EVENTS_HEAD, items: [event("github", "push", { ref: "main" })], dropped: 0 },
+    [event("github", "push", { ref: "main" })],
+  );
+  const at = new Date(START).toISOString();
+  const assistant = (id: number, text: string) => ({
+    id,
+    conversationId: 1,
+    kind: AssistantEntry.kind,
+    model: [{ role: "assistant", content: [{ type: "text", text }], timestamp: START + id }],
+  });
+  const entries = [
+    {
+      id: 1,
+      conversationId: 1,
+      kind: MCP_NOTICE_ENTRY_KIND,
+      data: { noticeId: "notice-1", key: "github/push/main", text: noticeText, at, createdAt: at },
+    },
+    assistant(2, noticeText),
+    assistant(3, "MCP events are useful background here."),
+  ] as unknown as EntryRecord[];
+
+  const transcript = buildTranscript(entries);
+  assert.deepEqual(
+    transcript.messages.map((message) => message.text),
+    [noticeText, "MCP events are useful background here."],
+  );
 });
 
 test("an event key uses the payload kind and the first subject id", () => {
