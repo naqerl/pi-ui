@@ -1,3 +1,7 @@
+## 1.6.62 - 2026-11-02
+
+- fix(tools): describe the sparkline chart yDomain as a two-number array instead of a JSON-schema tuple, which some providers reject with "Invalid schema for function 'dashboard_upsert'".
+
 ## 1.6.61 - 2026-11-02
 
 - feat(stats): render sparkline widgets with shadcn charts and an optional chart config (23va).
