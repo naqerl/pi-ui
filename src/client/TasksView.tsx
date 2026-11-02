@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { projectsOf, sameProject } from "../shared/project";
 import { isStaleWorking, subtaskCount, taskState } from "../shared/task-status";
@@ -62,6 +62,14 @@ export function groupByProject<T extends { project?: string }>(
   }
   const named = [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
   return loose.length > 0 ? [...named, [null, loose]] : named;
+}
+
+type TaskDetailHistoryState = Record<string, unknown> & { piTaskDetailId?: string };
+
+/** The current history state, when it is an object we can add the detail marker to. */
+function taskDetailHistory(): TaskDetailHistoryState | null {
+  const state: unknown = window.history.state;
+  return state !== null && typeof state === "object" ? (state as TaskDetailHistoryState) : null;
 }
 
 function useWide(): boolean {
@@ -322,6 +330,40 @@ export function TasksView({ tasks, activity, ready, footerClearance, onLedger }:
   const menuTask = menu === null ? undefined : activeTasks.find((task) => task.id === menu.id);
   const openTask = openTaskId === null ? undefined : tasks.find((task) => task.id === openTaskId);
 
+  // A narrow detail is a history entry of its own, so the OS back gesture closes
+  // it. Replacing an open detail keeps one entry, not a stack of them.
+  const openDetail = useCallback(
+    (id: string) => {
+      if (!wide) {
+        const current = taskDetailHistory();
+        const next = { ...(current ?? {}), piTaskDetailId: id };
+        if (current?.piTaskDetailId !== undefined) {
+          window.history.replaceState(next, "", window.location.href);
+        } else {
+          window.history.pushState(next, "", window.location.href);
+        }
+      }
+      setOpenTaskId(id);
+    },
+    [wide],
+  );
+
+  const closeDetail = useCallback(() => {
+    if (!wide && taskDetailHistory()?.piTaskDetailId !== undefined) {
+      window.history.back();
+      return;
+    }
+    setOpenTaskId(null);
+  }, [wide]);
+
+  useEffect(() => {
+    const onPop = () => {
+      if (!wide) setOpenTaskId(null);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [wide]);
+
   // The first row the list shows, used when the desktop has nothing selected.
   const firstVisibleId =
     proposedTasks[0]?.id ??
@@ -369,11 +411,11 @@ export function TasksView({ tasks, activity, ready, footerClearance, onLedger }:
   useEffect(() => {
     if (openTaskId === null || menu !== null || wide) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpenTaskId(null);
+      if (event.key === "Escape") closeDetail();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [openTaskId, menu, wide]);
+  }, [closeDetail, openTaskId, menu, wide]);
 
   const openMenu = (id: string, x: number, y: number) => {
     setMenu({ id, x, y });
@@ -401,7 +443,7 @@ export function TasksView({ tasks, activity, ready, footerClearance, onLedger }:
     problem,
     menuTaskId: menu?.id ?? null,
     onOpenMenu: openMenu,
-    onOpen: setOpenTaskId,
+    onOpen: openDetail,
     showProject: true,
   };
 
@@ -412,7 +454,7 @@ export function TasksView({ tasks, activity, ready, footerClearance, onLedger }:
       showProject
       selected={openTaskId === task.id}
       notice={problem?.id === task.id ? problem.message : null}
-      onOpen={() => setOpenTaskId(task.id)}
+      onOpen={() => openDetail(task.id)}
       onApprove={() => void apply(task.id, updateTask(task.id, { status: "open" }))}
       onDismiss={() => void apply(task.id, removeTask(task.id))}
     />
@@ -524,8 +566,8 @@ export function TasksView({ tasks, activity, ready, footerClearance, onLedger }:
         wide={wide}
         statusPending={statusPending[openTask.id] === true}
         notice={problem?.id === openTask.id && menu === null ? problem.message : null}
-        onClose={() => setOpenTaskId(null)}
-        onOpen={setOpenTaskId}
+        onClose={closeDetail}
+        onOpen={openDetail}
         onStatus={setStatus}
         onApprove={() => void apply(openTask.id, updateTask(openTask.id, { status: "open" }))}
         onDismiss={() => void apply(openTask.id, removeTask(openTask.id))}

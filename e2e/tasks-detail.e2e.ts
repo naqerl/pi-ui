@@ -137,6 +137,29 @@ test("on a phone the task detail replaces the list and goes back with its button
   await expect(screen.getByTestId("task-detail")).toHaveCount(0);
 });
 
+test("on a phone the browser back closes the task detail and keeps the tasks route", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await openWith(browser, 390, 844);
+  await app.open("/?page=tasks");
+  await expect(screen.getByTestId("tasks-page")).toHaveAttribute("data-layout", "stack");
+
+  await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
+  await expect(screen.getByTestId("task-detail")).toBeVisible();
+  await browser.back();
+
+  await expect(screen.getByTestId("task-detail")).toHaveCount(0);
+  await expect(screen.getByTestId("task-list")).toBeVisible();
+  expect(
+    await browser.evaluate(() => ({
+      pathname: window.location.pathname,
+      page: new URLSearchParams(window.location.search).get("page"),
+    })),
+  ).toEqual({ pathname: "/", page: "tasks" });
+});
+
 test("on a desktop the first task is selected and the detail stays beside the list", async ({
   app,
   browser,
