@@ -1,3 +1,7 @@
+## 1.6.51 - 2026-11-02
+
+- test(display): keep the done-group fixture inside today so the browser suite cannot flake around midnight (tdfl).
+
 ## 1.6.50 - 2026-11-02
 
 - feat(mcp): deliver a burst of queued MCP events as one message, so a flood arrives as one notice (kfgp).
