@@ -1,3 +1,7 @@
+## 1.6.48 - 2026-11-02
+
+- test(jobs): poll for job output instead of sleeping, so the unit job stops failing on a slow runner (jfla).
+
 # Changelog
 
 Notable changes to pi-ui. Each `## <version>` section lists what changed in that release, newest first. On start, pi-ui compares its version with the last one it ran (`DATA_DIR/version.json`) and, after an update, hands the agent the sections it has not seen yet.
