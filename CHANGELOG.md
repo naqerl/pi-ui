@@ -1,3 +1,7 @@
+## 1.6.61 - 2026-11-02
+
+- feat(stats): render sparkline widgets with shadcn charts and an optional chart config (23va).
+
 ## 1.6.60 - 2026-11-02
 
 - fix(ui): a horizontally scrollable code block or diagram keeps its own gesture; the pager only takes over when the block has nowhere left to scroll (8mq6).
