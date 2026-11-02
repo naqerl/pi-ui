@@ -31,6 +31,7 @@ import { groupSummaryParts } from "./activity-format";
 import { Button } from "./components/ui/button";
 import { Textarea } from "./components/ui/textarea";
 import { DiagramPart } from "./DiagramPart";
+import { haptic } from "./haptics";
 import { DeferredMarkdown, loadMarkdown } from "./lazy-markdown";
 import { cn } from "./lib/utils";
 import { ATTACH_ACCEPT, mediaUrl, uploadMedia } from "./media-client";
@@ -173,6 +174,7 @@ function QueuedNoticeChip({
   const glyph = notice.glyph ?? queuedNoticeGlyph(notice.kind);
   const cancelAll = async () => {
     if (onCancelQueued === undefined) return;
+    haptic();
     for (const id of queueIds) await onCancelQueued(id);
   };
   return (
@@ -274,7 +276,10 @@ export function MessageBubble({
               type="button"
               title="Remove this queued message"
               className="shrink-0 font-mono text-[10px] normal-case tracking-normal text-foreground underline decoration-dotted underline-offset-2 hover:text-destructive"
-              onClick={() => onCancelQueued(message.queueId as string)}
+              onClick={() => {
+                haptic();
+                onCancelQueued(message.queueId as string);
+              }}
             >
               cancel
             </button>
@@ -871,6 +876,7 @@ function Composer({
         backlogPress.current = null;
         suppressAddClick.current = true;
         setBacklog((current) => !current);
+        haptic();
       }, BACKLOG_LONG_PRESS_MS),
     };
   };
@@ -961,6 +967,7 @@ function Composer({
       sent = await send(text, mode, ids);
     }
     if (!sent) return;
+    haptic();
     if (backlog) setBacklog(false);
     attachments.clear(sentKeys);
     // Keep a draft typed while the request was in flight; only clear the text we sent.
@@ -1170,7 +1177,10 @@ function Composer({
               size="icon"
               aria-label="Stop"
               className={ACTION_BUTTON_CLASS}
-              onClick={() => void stop()}
+              onClick={() => {
+                haptic([12, 40, 12]);
+                void stop();
+              }}
             >
               <StopIcon />
             </Button>
@@ -1316,7 +1326,7 @@ export function ChatView({
   useEffect(() => {
     if (lastVibratedPage.current === pager.page) return;
     lastVibratedPage.current = pager.page;
-    navigator.vibrate?.(10);
+    haptic(10);
   }, [pager.page]);
 
   // Keep the dock's blur off for the whole pager movement, including a drag that
@@ -1463,6 +1473,7 @@ export function ChatView({
       if (outcome.error !== null) setComposerError(outcome.error);
       return false;
     }
+    haptic();
     setComposerError(null);
     requestAnimationFrame(() => stick.scrollToBottom());
     return true;

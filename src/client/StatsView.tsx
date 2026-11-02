@@ -13,6 +13,7 @@ import {
 import { formatDateTime, formatTime } from "../shared/time";
 import type { ContextUsage, McpEventsState, McpStatus, UsageSummary } from "../shared/types";
 import { getDashboard, setDashboard, subscribeDashboard } from "./dashboard-store";
+import { haptic } from "./haptics";
 import { Markdown } from "./markdown";
 
 export interface ChatStats {
@@ -339,7 +340,7 @@ function WidgetCard({
         const timer = window.setTimeout(() => {
           press.current = null;
           setMenu(true);
-          navigator.vibrate?.(10);
+          haptic(10);
         }, 550);
         press.current = { timer, x: event.clientX, y: event.clientY };
       }}
@@ -477,7 +478,10 @@ export function StatsView({
     const response = await fetch(`/api/dashboard/widgets/${encodeURIComponent(id)}`, {
       method: "DELETE",
     }).catch(() => null);
-    if (response?.ok) setDashboard((await response.json()) as DashboardState);
+    if (response?.ok) {
+      haptic([12, 40, 12]);
+      setDashboard((await response.json()) as DashboardState);
+    }
   }, []);
 
   const inputs: BuiltinInputs = {

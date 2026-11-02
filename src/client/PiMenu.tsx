@@ -7,6 +7,7 @@ import type {
   OmarchyThemes,
   StreamTheme,
 } from "../shared/types";
+import { haptic } from "./haptics";
 import { PushSettings } from "./PushSettings";
 import { applyTheme } from "./theme";
 
@@ -166,12 +167,14 @@ export function PiMenu() {
   }, [menuId, open]);
 
   const choose = (theme: OmarchyTheme) => {
+    haptic();
     setSelected(theme.slug);
     applyTheme(theme.colors);
     persistTheme(theme.slug);
   };
 
   const chooseModel = (option: ModelOption) => {
+    haptic();
     const previous = model;
     setModel(option);
     void fetch("/api/model", {
