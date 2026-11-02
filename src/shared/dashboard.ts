@@ -22,6 +22,19 @@ export type BuiltinName = (typeof BUILTIN_SOURCES)[number];
 export const WIDGET_SPANS = ["full", "half", "third"] as const;
 export type WidgetSpan = (typeof WIDGET_SPANS)[number];
 
+export const CHART_TYPES = ["area", "line", "bar"] as const;
+export type ChartType = (typeof CHART_TYPES)[number];
+
+/** Presentation choices for a sparkline; data still comes only from its mapping. */
+export interface SparklineChart {
+  type: ChartType;
+  /** A CSS color, usually one of the shadcn `--chart-1` … `--chart-5` tokens. */
+  color?: string;
+  height?: number;
+  yDomain?: [number, number] | "auto";
+  showTooltip?: boolean;
+}
+
 export type WidgetSource =
   | { type: "builtin"; name: BuiltinName }
   | {
@@ -42,6 +55,8 @@ export interface Widget {
   kind: WidgetKind;
   source: WidgetSource;
   mapping: WidgetMapping;
+  /** Sparkline presentation only; rejected on every other kind. */
+  chart?: SparklineChart;
 }
 
 export interface LayoutSlot {

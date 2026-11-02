@@ -4,7 +4,7 @@ import {
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
-import { BUILTIN_SOURCES, WIDGET_KINDS, WIDGET_SPANS } from "../shared/dashboard.js";
+import { BUILTIN_SOURCES, CHART_TYPES, WIDGET_KINDS, WIDGET_SPANS } from "../shared/dashboard.js";
 import { DashboardError, type DashboardManager } from "./dashboard.js";
 
 function text(value: string, isError = false): ToolExecutionResult {
@@ -26,7 +26,7 @@ const KINDS_DOC = `Kinds and their mapping fields (* required):
 - stat: value*, label, delta (number or "+3"; shows a trend arrow), unit, progress (0-100 meter)
 - list: items* (array), key, label, value (paths relative to each item)
 - table: columns* ({"Header": "path"}), rows (array; column paths are then relative to each row; without rows, column paths are absolute arrays zipped together)
-- sparkline: value (a number; its poll/push history is drawn) or series (array of numbers), label
+- sparkline: value (a number; its poll/push history is drawn) or series (array of numbers), label. Optional chart {type: area|line|bar, color (CSS color or var(--chart-N)), height (12-400), yDomain ([min,max] or "auto"), showTooltip (boolean)}; leaves the data mapping unchanged and cannot run code.
 - markdown: text* (markdown; raw HTML is shown as text)
 - status: items (array) with label, state, detail, key per item; or a single state* and label. States: ok/running/up/healthy… = green, warn/starting/off/pending… = amber, anything else = red.
 list, table and status also take empty (text shown when there are no items).`;
@@ -106,6 +106,31 @@ ${MAPPING_DOC}`,
             description:
               "Widget field → path expression or =literal; table columns is header → path.",
           },
+        ),
+        chart: Type.Optional(
+          Type.Object(
+            {
+              type: Type.Union(
+                CHART_TYPES.map((type) => Type.Literal(type)),
+                { description: "Sparkline drawing: area, line or bar." },
+              ),
+              color: Type.Optional(
+                Type.String({
+                  description: "CSS color, usually a var(--chart-1…5) token. Default --chart-1.",
+                }),
+              ),
+              height: Type.Optional(
+                Type.Number({ description: "Chart height in pixels, 12-400. Default 40." }),
+              ),
+              yDomain: Type.Optional(
+                Type.Union([Type.Tuple([Type.Number(), Type.Number()]), Type.Literal("auto")]),
+              ),
+              showTooltip: Type.Optional(
+                Type.Boolean({ description: "Show a tooltip on hover. Default false." }),
+              ),
+            },
+            { description: "Sparkline presentation only; data still comes from mapping." },
+          ),
         ),
       }),
       async execute(args) {

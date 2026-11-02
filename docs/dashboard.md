@@ -24,13 +24,13 @@ is what the card menu calls.
 
 ## Tools
 
-| Tool               | Arguments                                      | Does                                                                                                                                                        |
-| ------------------ | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `dashboard_get`    | none                                           | Sections, widget configs, last values, errors and whether polling is on.                                                                                    |
-| `dashboard_upsert` | `id`, `title`, `kind`, `source`, `mapping`     | Adds or replaces a widget, runs it once and returns `{view, error, sample, logs, notes, polling}` so the agent can fix the mapping or script and try again. |
-| `dashboard_remove` | `id`                                           | Removes a widget and its slot.                                                                                                                              |
-| `dashboard_push`   | `id`, `data`                                   | Sends data to a `static` widget and renders it.                                                                                                             |
-| `dashboard_layout` | `sections: [{title?, widgets: [{id, span?}]}]` | Orders widgets into titled sections. `span` is `full`, `half` or `third` on wide screens; phones show one column. Widgets left out go to a final section.   |
+| Tool               | Arguments                                            | Does                                                                                                                                                                                                |
+| ------------------ | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dashboard_get`    | none                                                 | Sections, widget configs, last values, errors and whether polling is on.                                                                                                                            |
+| `dashboard_upsert` | `id`, `title`, `kind`, `source`, `mapping`, `chart?` | Adds or replaces a widget, runs it once and returns `{view, error, sample, logs, notes, polling}` so the agent can fix the mapping or script and try again. `chart` is sparkline presentation only. |
+| `dashboard_remove` | `id`                                                 | Removes a widget and its slot.                                                                                                                                                                      |
+| `dashboard_push`   | `id`, `data`                                         | Sends data to a `static` widget and renders it.                                                                                                                                                     |
+| `dashboard_layout` | `sections: [{title?, widgets: [{id, span?}]}]`       | Orders widgets into titled sections. `span` is `full`, `half` or `third` on wide screens; phones show one column. Widgets left out go to a final section.                                           |
 
 There is no refresh tool: poll widgets refresh on their own while someone looks
 at the page.
@@ -86,9 +86,27 @@ in `dashboard_upsert`.
 | `stat`      | `value`*, `label`, `delta` (number or `+3`, draws a trend arrow), `unit`, `progress` (0 to 100 meter)                                                         |
 | `list`      | `items`* (array), `key`, `label`, `value` (relative to each item), `empty`                                                                                    |
 | `table`     | `columns`* (`{"Header": "path"}`), `rows` (array; column paths are then relative to each row), `empty`                                                        |
-| `sparkline` | `value` (a number; its history is drawn) or `series` (array of numbers), `label`                                                                              |
+| `sparkline` | `value` (a number; its history is drawn) or `series` (array of numbers), `label`; optional `chart` below                                                      |
 | `markdown`  | `text`* (raw HTML shows as text)                                                                                                                              |
 | `status`    | `items` with `label`, `state`, `detail`, `key`; or one `state`* and `label`. `ok`/`running`/`up` are green, `warn`/`off`/`starting` amber, anything else red. |
+
+A sparkline also takes an optional data-only `chart` block:
+
+```json
+{
+  "type": "bar",
+  "color": "var(--chart-2)",
+  "height": 40,
+  "yDomain": [0, 100],
+  "showTooltip": true
+}
+```
+
+`type` is `area` (the default), `line` or `bar`. `color` is a CSS color, normally
+one of the `--chart-1` … `--chart-5` theme tokens. `height` is 12–400 px (default
+40), `yDomain` is `"auto"`, a fixed `[min, max]`, or omitted, and `showTooltip`
+defaults to `false`. Unknown keys are rejected. The chart block only changes how
+the mapped numbers are drawn; it cannot supply HTML, scripts or expressions.
 
 ## Example: live ExampleCloud servers
 
