@@ -29,6 +29,8 @@ import {
   type OperatorNoticeRecord,
   operatorNoticeSummary,
   parseNotice,
+  type TaskDecisionNoticeDetails,
+  taskDecisionSummary,
 } from "../shared/notices.js";
 import { QUEUE_ENTRY_KIND, queueKeyFromEntryData } from "../shared/queue.js";
 import { steerKeyFromEntryData } from "../shared/steers.js";
@@ -126,6 +128,21 @@ const IdleNudgeEntry = defineEntry<{
 }>("ui.idle-nudge");
 
 export const IDLE_NUDGE_ENTRY_KIND = IdleNudgeEntry.kind;
+
+/**
+ * A human's decision on a proposal. It carries the model prompt, so the agent
+ * learns the decision before its next response, and renders as a notice chip.
+ */
+const TaskDecisionEntry = defineEntry<{
+  proposalId: string;
+  taskId: string;
+  taskTitle: string;
+  decision: "approved" | "declined";
+  text: string;
+  createdAt: string;
+}>("ui.task-decision");
+
+export const TASK_DECISION_ENTRY_KIND = TaskDecisionEntry.kind;
 
 /** A notify_operator call. It carries no model message and shows as a chat chip. */
 const OperatorNoticeEntry = defineEntry<{
@@ -679,6 +696,44 @@ export function buildTranscript(
       if (!isRecord(entry.data) || typeof entry.data.text !== "string") continue;
       const notice = parseNotice(entry.data.text);
       if (notice === null || notice.kind !== "idle") continue;
+      messages.push({
+        id: entryMessageId(entry),
+        role: "system",
+        text: entry.data.text,
+        timestamp: entryTimestamp(entry.data),
+        order: entry.id * 10_000,
+        notice,
+      });
+      continue;
+    }
+    if (kind === TaskDecisionEntry.kind) {
+      if (
+        !isRecord(entry.data) ||
+        typeof entry.data.text !== "string" ||
+        typeof entry.data.proposalId !== "string" ||
+        typeof entry.data.taskId !== "string" ||
+        typeof entry.data.taskTitle !== "string" ||
+        (entry.data.decision !== "approved" && entry.data.decision !== "declined")
+      ) {
+        continue;
+      }
+      const proposalId = entry.data.proposalId;
+      const taskId = entry.data.taskId;
+      const taskTitle = entry.data.taskTitle;
+      const decision = entry.data.decision;
+      const title = decision === "approved" ? "Proposal approved" : "Proposal declined";
+      const notice: TaskDecisionNoticeDetails = {
+        kind: "decision",
+        proposalId,
+        taskId,
+        taskTitle,
+        decision,
+        title,
+        body: `${title}: ${taskTitle}`,
+        reason: "A human made this decision on the tasks page.",
+        text: entry.data.text,
+        summary: taskDecisionSummary({ proposalId, taskId, taskTitle, decision }),
+      };
       messages.push({
         id: entryMessageId(entry),
         role: "system",

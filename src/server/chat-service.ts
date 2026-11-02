@@ -17,7 +17,13 @@ import {
   type SubmissionId,
   watchEvents,
 } from "@earendil-works/pi-durable";
-import { MCP_EVENTS_HEAD, type OperatorNoticeRecord, parseNotice } from "../shared/notices.js";
+import {
+  MCP_EVENTS_HEAD,
+  type OperatorNoticeRecord,
+  parseNotice,
+  type TaskDecisionNoticeRecord,
+  taskDecisionPrompt,
+} from "../shared/notices.js";
 import { QUEUE_ENTRY_KIND, queuedNoticeGlyph } from "../shared/queue.js";
 import {
   QUIET_AFTER_MS as DEFAULT_QUIET_AFTER_MS,
@@ -82,6 +88,7 @@ import {
   MCP_NOTICE_ENTRY_KIND,
   SESSION_CONTEXT,
   summarizeUsage,
+  TASK_DECISION_ENTRY_KIND,
   toolActivityFromEntry,
 } from "./session.js";
 import type { SseFrame } from "./sse.js";
@@ -337,6 +344,7 @@ function entryNoticeLabel(kind: string, label?: string): string {
   if (kind === MCP_NOTICE_ENTRY_KIND) return "MCP events";
   if (kind === JOB_NOTICE_ENTRY_KIND) return "Background job";
   if (kind === IDLE_NUDGE_ENTRY_KIND) return "Idle nudge";
+  if (kind === TASK_DECISION_ENTRY_KIND) return "Proposal decision";
   const readable = kind
     .replace(/^ui[.-]/, "")
     .replace(/[-_.]+/g, " ")
@@ -364,6 +372,8 @@ export class ChatService {
   private readonly mcpNotices = new NoticeCoalescer();
   /** Events shown by each open notice window, so an update carries the full text. */
   private readonly mcpNoticeEvents = new Map<string, unknown[]>();
+  /** Proposal ids whose decision already reached the conversation. */
+  private readonly taskDecisions = new Set<string>();
   private readonly activeTools = new Map<string, ActiveTool>();
   private stream: AgentEventStream | undefined;
   private closed = false;
@@ -1628,6 +1638,46 @@ export class ChatService {
     const message = await appendOperatorNotice(this.conversation, record);
     if (message === undefined) return;
     this.hub.broadcast({ event: "notice", data: { message } satisfies StreamNotice });
+  }
+
+  /**
+   * Delivers a proposal decision to the model through the queue path, as one notice
+   * chip. An idle chat starts a turn with the decision; a running turn gets it as a
+   * follow-up. The proposal id makes a repeated delivery a no-op.
+   */
+  async recordTaskDecision(record: TaskDecisionNoticeRecord): Promise<void> {
+    const key = record.proposalId;
+    if (this.taskDecisions.has(key)) return;
+    this.taskDecisions.add(key);
+    try {
+      const context = await this.conversation.context(SESSION_CONTEXT);
+      const recorded = context.entries.some(
+        (entry) =>
+          entry.kind === TASK_DECISION_ENTRY_KIND &&
+          isRecord(entry.data) &&
+          entry.data.proposalId === key,
+      );
+      if (recorded) return;
+      const text = taskDecisionPrompt(record);
+      const createdAt = new Date().toISOString();
+      await this.submit(text, "queue", {
+        entry: {
+          kind: TASK_DECISION_ENTRY_KIND,
+          label: record.decision === "approved" ? "Proposal approved" : "Proposal declined",
+          data: {
+            proposalId: record.proposalId,
+            taskId: record.taskId,
+            taskTitle: record.taskTitle,
+            decision: record.decision,
+            text,
+            createdAt,
+          },
+        },
+      });
+    } catch (error) {
+      this.taskDecisions.delete(key);
+      throw error;
+    }
   }
 
   private async appendNoModelMessage(): Promise<void> {

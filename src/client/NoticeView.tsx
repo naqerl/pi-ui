@@ -8,6 +8,7 @@ import {
   type MemoryNoticeDetails,
   memoryUndoPrompt,
   type OperatorNoticeDetails,
+  type TaskDecisionNoticeDetails,
 } from "../shared/notices";
 import { formatDateTime, formatTime } from "../shared/time";
 import type { ChatMessage } from "../shared/types";
@@ -41,6 +42,7 @@ function noticeGlyph(notice: ChatNotice): string {
   if (notice.kind === "mcp") return "↯";
   if (notice.kind === "memory") return "✎";
   if (notice.kind === "idle") return "◷";
+  if (notice.kind === "decision") return notice.decision === "approved" ? "✓" : "✕";
   if (notice.kind === "operator") return "◇";
   return "⚠";
 }
@@ -157,11 +159,13 @@ function NoticeDialog({
                       ? notice.stale === true
                         ? "Status check"
                         : "Idle nudge"
-                      : notice.kind === "operator"
-                        ? "Operator request"
-                        : notice.stopped
-                          ? "Run stopped"
-                          : "Run interrupted"}
+                      : notice.kind === "decision"
+                        ? "Proposal decision"
+                        : notice.kind === "operator"
+                          ? "Operator request"
+                          : notice.stopped
+                            ? "Run stopped"
+                            : "Run interrupted"}
               {dateTime !== "" && ` · ${dateTime}`}
             </div>
             <h2 id={titleId} className="mt-0.5 font-mono text-sm [overflow-wrap:anywhere]">
@@ -187,6 +191,8 @@ function NoticeDialog({
             <MemoryDetails notice={notice} onSteer={onSteer} />
           ) : notice.kind === "idle" ? (
             <IdleDetails notice={notice} />
+          ) : notice.kind === "decision" ? (
+            <TaskDecisionDetails notice={notice} />
           ) : notice.kind === "operator" ? (
             <OperatorDetails notice={notice} />
           ) : (
@@ -220,6 +226,22 @@ function OperatorDetails({ notice }: { notice: OperatorNoticeDetails }) {
       <div className="mt-3">
         <Fields rows={[["Reason", notice.reason]]} />
       </div>
+    </>
+  );
+}
+
+function TaskDecisionDetails({ notice }: { notice: TaskDecisionNoticeDetails }) {
+  return (
+    <>
+      <Fields
+        rows={[
+          ["Decision", notice.decision],
+          ["Proposal", notice.proposalId],
+          ["Task", notice.taskId],
+          ["Title", notice.taskTitle],
+        ]}
+      />
+      <Block label="Prompt sent to the agent">{notice.text}</Block>
     </>
   );
 }
