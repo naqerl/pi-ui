@@ -1,3 +1,7 @@
+## 1.6.49 - 2026-11-02
+
+- feat(tasks): edit the title and body in place, the title control growing with its content instead of collapsing into a one-line input, saving on blur (arwn).
+
 ## 1.6.48 - 2026-11-02
 
 - test(jobs): poll for job output instead of sleeping, so the unit job stops failing on a slow runner (jfla).
