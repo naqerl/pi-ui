@@ -1142,6 +1142,7 @@ export function ChatView({
 }: ChatViewProps) {
   useViewportHeight();
   const pager = usePager(PAGES.length, pageFromLocation());
+  const lastVibratedPage = useRef(pager.page);
   const [composerError, setComposerError] = useState<string | null>(null);
   const [activityRun, setActivityRun] = useState<string | null | undefined>(
     activityRunFromLocation,
@@ -1166,6 +1167,14 @@ export function ChatView({
   useEffect(() => {
     if (statsPage) refreshStats?.();
   }, [statsPage, refreshStats]);
+
+  // A page change is the only thing worth a tap of haptics; a snap back to the
+  // same page, the first render, and layout-only renders all stay silent.
+  useEffect(() => {
+    if (lastVibratedPage.current === pager.page) return;
+    lastVibratedPage.current = pager.page;
+    navigator.vibrate?.(10);
+  }, [pager.page]);
 
   useLayoutEffect(() => {
     if (!statsPage) {
@@ -1531,8 +1540,10 @@ export function ChatView({
                 >
                   <span
                     className={cn(
-                      "block h-1.5 rounded-full",
-                      pager.page === index ? "w-4 bg-foreground" : "w-1.5 bg-foreground/40",
+                      "block rounded-full transition-[width,height,border-radius] duration-200 ease-out motion-reduce:transition-none",
+                      pager.page === index
+                        ? "size-3 rounded-[4px] bg-foreground"
+                        : "size-1.5 bg-foreground/40",
                     )}
                   />
                 </button>

@@ -365,6 +365,91 @@ test("keeps the composer body still under reduced motion", async ({ app, browser
   expect(await transition("composer-body")).toBe("none");
 });
 
+test("draws the active page marker as a square and settles the switch back to dots", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.emulateMedia({ reducedMotion: "no-preference" });
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/");
+
+  const marker = (id: string) =>
+    browser.evaluate((testId) => {
+      const span = document.querySelector(`[data-testid="${testId}"] span`);
+      if (span === null) return null;
+      const box = span.getBoundingClientRect();
+      const style = getComputedStyle(span);
+      return {
+        width: box.width,
+        height: box.height,
+        radius: Number.parseFloat(style.borderRadius),
+        transition: style.transitionProperty,
+      };
+    }, `page-dot-${id}`);
+
+  await expect(screen.getByRole("tab", "Chat")).toHaveAttribute("aria-selected", "true");
+  const initial = await marker("chat");
+  expect(initial === null ? -1 : Math.abs(initial.width - initial.height)).toBeLessThanOrEqual(1);
+  expect(initial?.transition ?? "").toContain("width");
+  expect(initial?.transition ?? "").toContain("height");
+  expect(initial?.transition ?? "").toContain("border-radius");
+
+  await screen.getByRole("tab", "Stats").tap();
+  await expect(screen.getByRole("tab", "Stats")).toHaveAttribute("aria-selected", "true");
+  await expect(screen.getByRole("tab", "Chat")).toHaveAttribute("aria-selected", "false");
+  await browser.evaluate(async () => {
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 360);
+    });
+    return true;
+  });
+
+  const square = await marker("stats");
+  const dot = await marker("chat");
+  expect(square === null ? -1 : Math.abs(square.width - square.height)).toBeLessThanOrEqual(1);
+  expect(square?.width ?? 0).toBeGreaterThan(dot?.width ?? 0);
+  expect(square?.radius ?? 99).toBeLessThanOrEqual(4);
+  expect(dot === null ? -1 : Math.abs(dot.width - dot.height)).toBeLessThanOrEqual(1);
+});
+
+test("vibrates once per page change and never on mount", async ({ app, browser, screen }) => {
+  await browser.addInitScript(() => {
+    let calls = 0;
+    Object.defineProperty(navigator, "vibrate", {
+      configurable: true,
+      value: () => {
+        calls += 1;
+        (window as unknown as { __vibrationCalls?: number }).__vibrationCalls = calls;
+        return true;
+      },
+    });
+  });
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/");
+  await expect(screen.getByRole("tab", "Chat")).toHaveAttribute("aria-selected", "true");
+
+  const calls = () =>
+    browser.evaluate(
+      () => (window as unknown as { __vibrationCalls?: number }).__vibrationCalls ?? 0,
+    );
+  expect(await calls()).toBe(0);
+
+  await screen.getByRole("tab", "Stats").tap();
+  await expect.poll(calls).toBe(1);
+  await screen.getByRole("tab", "Chat").tap();
+  await expect.poll(calls).toBe(2);
+
+  await screen.getByRole("tab", "Chat").tap();
+  await browser.evaluate(async () => {
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 80);
+    });
+    return true;
+  });
+  expect(await calls()).toBe(2);
+});
+
 test("swipes right from chat to stats", async ({ app, browser }) => {
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/");
