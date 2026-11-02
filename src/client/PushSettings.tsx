@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { haptic } from "./haptics";
 import { cn } from "./lib/utils";
 
 /**
@@ -161,6 +162,7 @@ export function PushSettings() {
       setState("unsupported");
       return;
     }
+    haptic();
     setBusy(true);
     try {
       const permission = await Notification.requestPermission();
@@ -203,6 +205,7 @@ export function PushSettings() {
   }, []);
 
   const disable = useCallback(async () => {
+    haptic();
     setBusy(true);
     try {
       const subscription = await currentSubscription();

@@ -561,6 +561,7 @@ test("vibrates once per page change and never on mount", async ({ app, browser, 
     });
   });
   await browser.setViewport({ width: 390, height: 844 });
+  await browser.emulateMedia({ reducedMotion: "no-preference" });
   await app.open("/");
   await expect(screen.getByRole("tab", "Chat")).toHaveAttribute("aria-selected", "true");
 

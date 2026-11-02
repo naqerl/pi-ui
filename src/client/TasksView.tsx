@@ -24,6 +24,7 @@ import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader } from "./components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
+import { haptic } from "./haptics";
 import { cn } from "./lib/utils";
 import { InlineMarkdown, Markdown, plainInline } from "./markdown";
 import { mediaUrl } from "./media-client";
@@ -318,6 +319,7 @@ export function TasksView({ tasks, activity, ready, footerClearance, onLedger }:
   if (days.length > 0 && days[0]?.[0] !== today) days.unshift([today, []]);
 
   const apply = async (id: string, outcome: Promise<TaskOutcome>) => {
+    haptic();
     const next = await outcome;
     if (!next.ok) {
       setProblem({ id, message: next.error });
@@ -1314,6 +1316,7 @@ export function TaskDetail({
       setEditingTitle(false);
       return;
     }
+    haptic();
     titleBusy.current = true;
     const outcome = await updateTask(task.id, { title: next });
     titleBusy.current = false;
@@ -1342,6 +1345,7 @@ export function TaskDetail({
       setEditingBody(false);
       return;
     }
+    haptic();
     bodyBusy.current = true;
     const outcome = await updateTask(task.id, { body: next });
     bodyBusy.current = false;
@@ -1375,6 +1379,7 @@ export function TaskDetail({
       setProjectOpen(false);
       return;
     }
+    haptic();
     projectBusy.current = true;
     const outcome = await updateTask(task.id, { project: next });
     projectBusy.current = false;
