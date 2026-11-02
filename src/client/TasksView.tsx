@@ -5,7 +5,6 @@ import { isStaleWorking, subtaskCount, taskState } from "../shared/task-status";
 import {
   compareTasks,
   formatActiveTime,
-  formatCost,
   formatTokenCount,
   hasOpenDescendant,
   isActiveStatus,
@@ -562,7 +561,6 @@ export function TasksView({ tasks, activity, ready, footerClearance, onLedger }:
         tasks={tasks}
         state={state(openTask)}
         trace={activity?.traces[openTask.id]}
-        subtree={subtreeMeasured(tasks, openTask.id, activity?.traces ?? {})}
         wide={wide}
         statusPending={statusPending[openTask.id] === true}
         notice={problem?.id === openTask.id && menu === null ? problem.message : null}
@@ -1183,7 +1181,6 @@ export function TaskDetail({
   tasks,
   state,
   trace,
-  subtree,
   wide,
   statusPending = false,
   notice,
@@ -1199,8 +1196,6 @@ export function TaskDetail({
   tasks: Task[];
   state: TaskState;
   trace: TaskTrace | undefined;
-  /** This task plus its subtasks, when the detail should show what the subtree cost. */
-  subtree?: TaskMeasured;
   wide: boolean;
   statusPending?: boolean;
   notice: string | null;
@@ -1416,16 +1411,6 @@ export function TaskDetail({
       ? { id, title: id, done: false }
       : { id, title: plainInline(blocker.title), done: blocker.status === "done" };
   });
-  // A parent's own runs are often none; its subtasks' runs are the work done for it.
-  const measured = subtree ?? trace?.measured;
-  const ran = measured !== undefined && measured.runs > 0;
-  const rolledUp = ran && measured.runs > (trace?.measured.runs ?? 0);
-  const stats: Array<[string, string]> = [
-    ["Active time", ran ? formatActiveTime(measured.activeMs) : "—"],
-    ["Tokens", ran ? formatTokenCount(measured.tokens) : "—"],
-    ["Cost", ran ? formatCost(measured.cost) : "—"],
-    [rolledUp ? "Runs with subtasks" : "Runs", ran ? String(measured.runs) : "—"],
-  ];
   const reason =
     state === "failed" && trace?.lastRun?.reason !== undefined ? trace.lastRun.reason : null;
   const badge = stateBadge(state, trace) ?? "Open";
@@ -1718,21 +1703,6 @@ export function TaskDetail({
               {task.rationale}
             </p>
           </div>
-        )}
-        {!proposed && (
-          <dl
-            data-testid="task-stats"
-            data-rollup={rolledUp ? "subtasks" : undefined}
-            title={rolledUp ? "Includes runs of its subtasks" : undefined}
-            className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4"
-          >
-            {stats.map(([name, value]) => (
-              <div key={name} className="flex min-w-0 flex-col gap-1">
-                <dt className="text-xs leading-4 text-muted-foreground">{name}</dt>
-                <dd className="text-sm font-medium leading-5 tabular-nums">{value}</dd>
-              </div>
-            ))}
-          </dl>
         )}
         {done && (
           <section className="flex flex-col gap-1" data-testid="task-modal-completion">

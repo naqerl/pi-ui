@@ -117,7 +117,8 @@ test("on a phone the task detail replaces the list and goes back with its button
   await expect(detail.getByRole("heading", { name: "Ship plan" })).toBeVisible();
   await expectProjectAboveBody(browser);
   await expect(screen.getByTestId("task-state")).toHaveText("Open");
-  await expect(screen.getByTestId("task-stats")).toBeVisible();
+  await expect(screen.getByTestId("task-stats")).toHaveCount(0);
+  await expect(detail.getByText("Active time", { exact: true })).toHaveCount(0);
 
   const fits = await browser.evaluate(() => {
     const node = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
