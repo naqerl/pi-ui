@@ -155,7 +155,7 @@ test("paints the composer dock and latest button apart from the page", async ({
   const widths = await browser.evaluate(() => {
     const dock = document.querySelector('[data-testid="composer-dock"]');
     const footer = document.querySelector("textarea")?.closest("form")?.parentElement ?? null;
-    const chromeRow = dock?.firstElementChild ?? null;
+    const chromeRow = dock?.querySelector(".ink-line") ?? null;
     const footerRow = document.querySelector("textarea")?.parentElement ?? null;
     if (dock === null || footer === null || chromeRow === null || footerRow === null) return null;
     const chromeStyle = getComputedStyle(chromeRow);

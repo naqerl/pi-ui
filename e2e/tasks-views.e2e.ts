@@ -15,7 +15,7 @@ test("switches to tasks with a horizontal swipe and back again", async ({
     const dots = document.querySelector("[data-testid=page-dots]");
     const header = document.querySelector("header");
     const dock = document.querySelector("[data-testid=composer-dock]");
-    const row = dock?.firstElementChild ?? null;
+    const row = dock?.querySelector(".ink-line") ?? null;
     const gear = document.querySelector("[data-pi-menu]");
     if (dots === null || dock === null || row === null || gear === null) return null;
     const dotsBox = dots.getBoundingClientRect();

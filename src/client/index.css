@@ -176,16 +176,26 @@
     padding-bottom: 0;
   }
 
+  /* One wrapper owns the page-switch movement, so the navigation row and the
+     body cannot separate while the composer slides. */
+  .composer-slide {
+    transform: translate3d(0, 0, 0);
+    will-change: transform;
+    transition: transform 220ms ease;
+  }
+
+  .composer-slide[data-instant="true"] {
+    transition: none;
+  }
+
   /* The stats page keeps the dock chrome but collapses the composer body.
-     The movement is transform/opacity only; the 0fr grid end state snaps in
-     after it, so no frame of the animation runs layout. */
+     The body only fades; its parent owns the slide, and the 0fr grid end state
+     snaps in after the movement, so no frame of the animation runs layout. */
   .composer-body {
     display: grid;
     grid-template-rows: 1fr;
     opacity: 1;
-    transform: translate3d(0, 0, 0) scaleY(1);
-    transform-origin: bottom center;
-    will-change: transform, opacity;
+    will-change: opacity;
     transition:
       transform 220ms ease,
       opacity 220ms ease;
@@ -193,7 +203,6 @@
 
   .composer-body[data-hidden="true"] {
     opacity: 0;
-    transform: translate3d(0, 0.75rem, 0) scaleY(0.96);
   }
 
   .composer-body[data-collapsed="true"] {
@@ -208,6 +217,8 @@
 
   @media (prefers-reduced-motion: reduce) {
     .float-footer,
+    .composer-slide,
+    .composer-slide[data-instant="true"],
     .composer-body,
     .composer-body[data-hidden="true"],
     .composer-body[data-collapsed="true"] {
