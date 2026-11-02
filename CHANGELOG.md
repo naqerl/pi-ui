@@ -1,3 +1,8 @@
+## 1.6.56 - 2026-11-02
+
+- fix(chat): animate the composer body height instead of snapping the grid at the end of the slide (shgf).
+- refactor(tasks): attribute tool calls to the working task instead of a piuiTaskId argument (om9j).
+
 ## 1.6.55 - 2026-11-02
 
 - feat(nudge): ask the agent to actualize stale working tasks as well as new work (mnok).
