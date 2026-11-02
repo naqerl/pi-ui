@@ -1,3 +1,7 @@
+## 1.6.54 - 2026-11-02
+
+- feat(chat): show a memory-search chip with hit counts, one chip per turn (2r8i).
+
 ## 1.6.53 - 2026-11-02
 
 - fix(chat): the whole composer slides on page switch, not only its text (por2).
