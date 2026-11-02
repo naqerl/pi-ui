@@ -270,7 +270,13 @@ test("shows created and closed times at the bottom right of a task card", async 
   browser,
   screen,
 }) => {
-  const at = (agoMs: number) => new Date(Date.now() - agoMs).toISOString();
+  const now = Date.now();
+  const at = (agoMs: number) => new Date(now - agoMs).toISOString();
+  // The done list keys groups by calendar day and only opens today's group, so
+  // keep the close inside today even when "ten minutes ago" crosses midnight.
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 1, 0, 0);
+  const closedToday = new Date(Math.min(startOfToday.getTime(), now)).toISOString();
   await browser.setViewport({ width: 1280, height: 800 });
   await browser.route("**/api/state**", async (route) => {
     await route.fulfill({
@@ -304,7 +310,7 @@ test("shows created and closed times at the bottom right of a task card", async 
               blockedBy: [],
               createdAt: at(7_200_000),
               proposedAt: null,
-              completedAt: at(600_000),
+              completedAt: closedToday,
               completion: { evidence: "e2e/tasks.e2e.ts" },
             },
           ],

@@ -132,6 +132,12 @@ test("a working task untouched for an hour is stale, while blockers and done sti
   await browser.setViewport({ width: 390, height: 844 });
   const now = Date.now();
   const ago = (ms: number) => new Date(now - ms).toISOString();
+  // The done list keys groups by calendar day and only opens today's group, so
+  // anchor the close inside today instead of letting "two hours ago" fall into
+  // a collapsed yesterday group around midnight.
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 1, 0, 0);
+  const closedToday = new Date(Math.min(startOfToday.getTime(), now)).toISOString();
   await browser.route("**/api/state**", async (route) => {
     await route.fulfill({
       json: snapshotWith([
@@ -169,7 +175,7 @@ test("a working task untouched for an hour is stale, while blockers and done sti
           parentId: null,
           blockedBy: [],
           createdAt: ago(3 * 60 * 60_000),
-          completedAt: ago(2 * 60 * 60_000),
+          completedAt: closedToday,
           completion: { evidence: "e2e/task-display.e2e.ts" },
           lastWorkedAt: ago(2 * 60 * 60_000),
         },
