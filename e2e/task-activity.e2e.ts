@@ -58,19 +58,23 @@ test("tagged tool calls show a task as working, untagged ones touch no task", as
   // Wait for the turn to end, then check the ledger still remembers the tagged call.
   await expect
     .poll(() =>
-      browser.evaluate(async (taskId) => {
+      browser.evaluate(async (taskId: string) => {
         const ledger = (await (await fetch("/api/tasks")).json()) as {
           tasks: Array<{ id: string; lastWorkedAt?: string | null }>;
-          activity?: { running: boolean };
+          activity?: {
+            running: boolean;
+            traces: Record<string, { measured?: { runs: number } }>;
+          };
         };
         const task = ledger.tasks.find((item) => item.id === taskId);
         return {
           running: ledger.activity?.running ?? null,
           lastWorkedAt: task?.lastWorkedAt ?? null,
+          runs: ledger.activity?.traces[taskId]?.measured?.runs ?? null,
         };
-      }, id),
+      }, id ?? ""),
     )
-    .toMatchObject({ running: false, lastWorkedAt: expect.any(String) });
+    .toMatchObject({ running: false, lastWorkedAt: expect.any(String), runs: 1 });
   await expect(screen.getByTestId(`task-${id}`)).toHaveAttribute("data-state", "working");
   await expect(screen.getByTestId(`task-${id}`)).toContainText("Working");
   await expect(screen.getByTestId(`task-stale-${id}`)).toHaveCount(0);
@@ -78,13 +82,6 @@ test("tagged tool calls show a task as working, untagged ones touch no task", as
   await screen.getByRole("button", { name: `Open ${title}` }).tap();
   await expect(screen.getByTestId("task-history")).toHaveCount(0);
   await expect(screen.getByTestId("task-detail")).not.toContainText("Run started");
-  const runs = await browser.evaluate(
-    () =>
-      [...document.querySelectorAll('[data-testid="task-stats"] dd')].map(
-        (node) => node.textContent,
-      )[3] ?? null,
-  );
-  expect(runs).toBe("1");
 
   // Finishing the task is what clears the badge; the run ending did not.
   await screen.getByTestId("task-detail-status").tap();

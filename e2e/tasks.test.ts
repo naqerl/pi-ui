@@ -185,8 +185,8 @@ test("the task modal shows the full rationale, blockers and completion record", 
   assert.match(markup, /Mark done/);
   assert.match(markup, /data-testid="task-state"[^>]*>Blocked</);
   assert.match(markup, /data-testid="task-detail-backlog"[^>]*>Backlog</);
-  // Nothing ran yet, so every measured stat is a dash rather than a zero.
-  assert.equal(markup.match(/>—</g)?.length, 4);
+  assert.doesNotMatch(markup, /data-testid="task-stats"/);
+  assert.doesNotMatch(markup, /Active time/);
   assert.doesNotMatch(markup, /data-testid="task-history"/);
   assert.doesNotMatch(markup, /History/);
   assert.doesNotMatch(markup, /earlier event/);
@@ -231,8 +231,8 @@ test("the completed task modal carries the evidence and the closed time", () => 
   assert.match(markup, /data-testid="task-modal-completion"/);
   assert.match(markup, /commit 9c58abc/);
   assert.match(markup, /Closed/);
-  assert.match(markup, /18m/);
-  assert.match(markup, /\$0\.42/);
+  assert.doesNotMatch(markup, /data-testid="task-stats"/);
+  assert.doesNotMatch(markup, /Active time/);
   assert.doesNotMatch(markup, /data-testid="task-history"/);
   assert.doesNotMatch(markup, /run started/);
   assert.doesNotMatch(markup, /earlier event/);
