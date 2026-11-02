@@ -11,14 +11,20 @@ import {
   DashboardError,
   type DashboardLayout,
   type DashboardState,
+  DEFAULT_WIDGET_ROWS,
   defaultDashboard,
+  GRID_COLUMNS,
   HISTORY_POINTS,
   type LayoutSection,
+  type LayoutSlot,
   MAX_POLL_WIDGETS,
+  MAX_SECTIONS,
   MAX_WIDGETS,
   maskDeep,
   maskSecrets,
+  packLayoutSlots,
   renderWidget,
+  spanForWidth,
   upgradeDashboard,
   validateMapping,
   viewNumber,
@@ -31,6 +37,7 @@ import {
   type WidgetSpan,
   type WidgetValue,
   type WidgetView,
+  widthForSpan,
 } from "../shared/dashboard.js";
 import { type PollOutcome, type PollRunner, runPollScript } from "./dashboard-runner.js";
 
@@ -166,6 +173,18 @@ export function parseWidget(input: unknown, minIntervalSec: number, notes: strin
   return { id, title, kind: kind as WidgetKind, source, mapping };
 }
 
+function integer(value: unknown, name: string, min: number, max: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value)) {
+    throw new DashboardError(`${name} must be a whole number.`);
+  }
+  if (value < min || value > max) throw new DashboardError(`${name} must be ${min}–${max}.`);
+  return value;
+}
+
+function packSlots(slots: LayoutSlot[]): LayoutSlot[] {
+  return packLayoutSlots(slots);
+}
+
 /** Checks a layout against the widget ids; widgets it leaves out go in a last section. */
 export function parseLayout(
   input: unknown,
@@ -173,9 +192,13 @@ export function parseLayout(
   notes: string[] = [],
 ): DashboardLayout {
   if (!isRecord(input) || !Array.isArray(input.sections)) {
-    throw new DashboardError("layout needs sections: [{ title?, widgets: [{ id, span? }] }].");
+    throw new DashboardError(
+      "layout needs sections: [{ title?, widgets: [{ id, span?, order?, x?, y?, w?, h? }] }].",
+    );
   }
-  if (input.sections.length > 12) throw new DashboardError("Use at most 12 sections.");
+  if (input.sections.length > MAX_SECTIONS) {
+    throw new DashboardError(`Use at most ${MAX_SECTIONS} sections.`);
+  }
   const known = new Set(ids);
   const placed = new Set<string>();
   const sections: LayoutSection[] = input.sections.map((section, index) => {
@@ -188,7 +211,7 @@ export function parseLayout(
         `Section ${index + 1} title must be a string of up to 60 characters.`,
       );
     }
-    const widgets = section.widgets.map((slot) => {
+    const entries = section.widgets.map((slot, slotIndex) => {
       const entry = typeof slot === "string" ? { id: slot } : slot;
       if (!isRecord(entry) || typeof entry.id !== "string") {
         throw new DashboardError(`Section ${index + 1} has a slot without an id.`);
@@ -203,14 +226,33 @@ export function parseLayout(
       if (typeof span !== "string" || !(WIDGET_SPANS as readonly string[]).includes(span)) {
         throw new DashboardError(`span must be ${WIDGET_SPANS.join(", ")}.`);
       }
-      return { id, span: span as WidgetSpan };
+      const order =
+        entry.order === undefined
+          ? slotIndex
+          : integer(entry.order, `Widget "${id}" order`, 0, 10_000);
+      const w =
+        entry.w === undefined
+          ? widthForSpan(span as WidgetSpan)
+          : integer(entry.w, `Widget "${id}" w`, 1, GRID_COLUMNS);
+      const slotValue: LayoutSlot = { id, span: spanForWidth(w), w };
+      if (entry.x !== undefined) slotValue.x = integer(entry.x, `Widget "${id}" x`, 0, 11);
+      if (entry.y !== undefined) slotValue.y = integer(entry.y, `Widget "${id}" y`, 0, 10_000);
+      if (entry.h !== undefined) slotValue.h = integer(entry.h, `Widget "${id}" h`, 1, 100);
+      return { order, slot: slotValue };
     });
+    const widgets = packSlots(entries.sort((a, b) => a.order - b.order).map((entry) => entry.slot));
     const trimmed = typeof title === "string" ? title.trim() : "";
     return trimmed === "" ? { widgets } : { title: trimmed, widgets };
   });
   const missing = ids.filter((id) => !placed.has(id));
   if (missing.length > 0) {
-    sections.push({ widgets: missing.map((id) => ({ id, span: "full" as const })) });
+    const slots = missing.map((id) => ({
+      id,
+      span: "full" as const,
+      w: GRID_COLUMNS,
+      h: DEFAULT_WIDGET_ROWS,
+    }));
+    sections.push({ widgets: packSlots(slots) });
     notes.push(`Not placed, so added at the end: ${missing.join(", ")}.`);
   }
   return { sections: sections.filter((section) => section.widgets.length > 0 || section.title) };

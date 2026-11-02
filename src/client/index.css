@@ -235,3 +235,38 @@
 .ink-line {
   border-color: color-mix(in srgb, var(--foreground) 28%, transparent);
 }
+
+/* The composable dashboard grid: a quiet placeholder, a visible resize grip
+   and a drag handle that works with touch without stealing page scrolling. */
+.dashboard-grid .react-grid-item {
+  min-width: 0;
+}
+
+.dashboard-grid .react-grid-item.react-grid-placeholder {
+  background: color-mix(in oklch, var(--foreground) 18%, transparent);
+  opacity: 1;
+  border: 1px solid color-mix(in oklch, var(--foreground) 35%, transparent);
+}
+
+.dashboard-grid .react-grid-item.react-draggable-dragging {
+  z-index: 20;
+}
+
+.dashboard-grid .react-grid-item > .react-resizable-handle {
+  opacity: 1;
+  width: 18px;
+  height: 18px;
+  z-index: 2;
+}
+
+.dashboard-grid .react-grid-item > .react-resizable-handle::after {
+  width: 7px;
+  height: 7px;
+  border-right-color: color-mix(in oklch, var(--foreground) 55%, transparent);
+  border-bottom-color: color-mix(in oklch, var(--foreground) 55%, transparent);
+}
+
+.dashboard-drag-handle,
+.dashboard-resize-handle {
+  touch-action: none;
+}

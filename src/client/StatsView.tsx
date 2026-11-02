@@ -1,14 +1,34 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import type { Layout } from "react-grid-layout";
+import GridLayout from "react-grid-layout";
+import "react-grid-layout/css/styles.css";
+import "react-resizable/css/styles.css";
 import {
   type BuiltinInputs,
   builtinData,
+  type DashboardLayout,
   type DashboardState,
+  DEFAULT_WIDGET_ROWS,
+  GRID_COLUMNS,
+  type LayoutSection,
+  type LayoutSlot,
+  MAX_SECTIONS,
+  packLayoutSlots,
   renderWidget,
   type StatusState,
+  spanForWidth,
   type Widget,
-  type WidgetSpan,
   type WidgetValue,
   type WidgetView,
+  widthForSpan,
 } from "../shared/dashboard";
 import { formatDateTime, formatTime } from "../shared/time";
 import type { ContextUsage, McpEventsState, McpStatus, UsageSummary } from "../shared/types";
@@ -23,17 +43,207 @@ export interface ChatStats {
   mcpEvents: McpEventsState;
 }
 
-const SPAN_CLASS: Record<WidgetSpan, string> = {
-  full: "sm:col-span-6",
-  half: "sm:col-span-3",
-  third: "sm:col-span-2",
-};
-
 const HEARTBEAT_MS = 20_000;
 
 /** Explains what the token rows count, shown above the token widget's rows. */
 const TOKENS_NOTE =
   "Totals cover this conversation. Input excludes cached tokens; cache hit is cache read over all prompt tokens.";
+
+const LAYOUT_DEBOUNCE_MS = 600;
+const GRID_MARGIN = 12;
+const GRID_ROW_HEIGHT = 44;
+
+interface GridGesture {
+  kind: "drag" | "resize";
+  pointerId: number;
+  sectionIndex: number;
+  widgetId: string;
+  startX: number;
+  startY: number;
+  gridWidth: number;
+  origin: LayoutSlot;
+  base: DashboardLayout;
+  moved: boolean;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function cardAtPoint(
+  point: { x: number; y: number },
+  excludeId: string,
+): { id: string; sectionIndex: number; element: HTMLElement } | null {
+  for (const target of document.elementsFromPoint(point.x, point.y)) {
+    const card = target.closest<HTMLElement>("[data-widget-id]");
+    const id = card?.dataset.widgetId;
+    if (card === null || card === undefined || id === undefined || id === excludeId) continue;
+    const section = card.closest<HTMLElement>("[data-section-index]");
+    const index = Number(section?.dataset.sectionIndex);
+    if (Number.isInteger(index)) return { id, sectionIndex: index, element: card };
+  }
+  return null;
+}
+
+function reorderInSection(
+  layout: DashboardLayout,
+  sectionIndex: number,
+  movedId: string,
+  targetId: string,
+  y: number,
+  target: HTMLElement,
+): DashboardLayout {
+  const next = structuredClone(layout);
+  const section = next.sections[sectionIndex];
+  if (section === undefined) return layout;
+  const from = section.widgets.findIndex((slot) => slot.id === movedId);
+  const targetIndex = section.widgets.findIndex((slot) => slot.id === targetId);
+  if (from < 0 || targetIndex < 0) return layout;
+  const box = target.getBoundingClientRect();
+  let at = targetIndex + (y > box.top + box.height / 2 ? 1 : 0);
+  const [moved] = section.widgets.splice(from, 1);
+  if (moved === undefined) return layout;
+  if (from < at) at -= 1;
+  section.widgets.splice(at, 0, moved);
+  section.widgets = packSection(section.widgets, true);
+  return next;
+}
+
+function moveBetweenSections(
+  layout: DashboardLayout,
+  sourceIndex: number,
+  destinationIndex: number,
+  widgetId: string,
+  target: HTMLElement,
+  y: number,
+): DashboardLayout {
+  const next = structuredClone(layout);
+  const source = next.sections[sourceIndex];
+  const destination = next.sections[destinationIndex];
+  if (source === undefined || destination === undefined) return layout;
+  const from = source.widgets.findIndex((slot) => slot.id === widgetId);
+  if (from < 0) return layout;
+  const [moved] = source.widgets.splice(from, 1);
+  if (moved === undefined) return layout;
+  const at = insertionIndex(target, destination.widgets, y);
+  destination.widgets.splice(at, 0, {
+    id: moved.id,
+    span: moved.span,
+    w: slotWidth(moved),
+    h: slotHeight(moved),
+  });
+  source.widgets = packSection(source.widgets, true);
+  destination.widgets = packSection(destination.widgets, true);
+  return next;
+}
+
+function useDesktopGrid(): boolean {
+  const query = "(min-width: 768px)";
+  const [desktop, setDesktop] = useState(
+    () => typeof window === "undefined" || window.matchMedia(query).matches,
+  );
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const sync = () => setDesktop(media.matches);
+    sync();
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
+  }, []);
+  return desktop;
+}
+
+function useGridWidth(enabled: boolean): {
+  ref: RefObject<HTMLDivElement | null>;
+  width: number;
+} {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [width, setWidth] = useState(960);
+  useEffect(() => {
+    if (!enabled) return;
+    const node = ref.current;
+    if (node === null) return;
+    const measure = () => {
+      const next = node.getBoundingClientRect().width;
+      if (next > 0) setWidth(next);
+    };
+    measure();
+    const observer = new ResizeObserver((entries) => {
+      const next = entries[0]?.contentRect.width ?? 0;
+      if (next > 0) setWidth(next);
+    });
+    observer.observe(node);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [enabled]);
+  return { ref, width };
+}
+
+function slotWidth(slot: LayoutSlot): number {
+  return Math.max(1, Math.min(GRID_COLUMNS, slot.w ?? widthForSpan(slot.span)));
+}
+
+function slotHeight(slot: LayoutSlot): number {
+  return Math.max(1, Math.min(100, slot.h ?? DEFAULT_WIDGET_ROWS));
+}
+
+/** Packs a section top-left. `reset` ignores stored coordinates, for structural moves. */
+function packSection(slots: LayoutSlot[], reset = false): LayoutSlot[] {
+  return packLayoutSlots(slots, reset);
+}
+
+function normalizeLayout(layout: DashboardLayout): DashboardLayout {
+  return {
+    sections: layout.sections.map((section) => ({
+      ...section,
+      widgets: packSection(section.widgets),
+    })),
+  };
+}
+
+function gridLayout(section: LayoutSection): Layout[] {
+  return section.widgets.map((slot) => ({
+    i: slot.id,
+    x: slot.x ?? 0,
+    y: slot.y ?? 0,
+    w: slotWidth(slot),
+    h: slotHeight(slot),
+    minW: 2,
+    minH: 2,
+    maxH: 24,
+  }));
+}
+
+/** The section under the pointer, ignoring the section the dragged card came from. */
+function sectionAtPoint(
+  point: { x: number; y: number },
+  sourceIndex: number,
+): { index: number; element: HTMLElement } | null {
+  for (const element of document.elementsFromPoint(point.x, point.y)) {
+    const section = element.closest<HTMLElement>("[data-section-index]");
+    if (section === null) continue;
+    const index = Number(section.dataset.sectionIndex);
+    if (Number.isInteger(index) && index !== sourceIndex) {
+      return { index, element: section };
+    }
+  }
+  return null;
+}
+
+function insertionIndex(element: HTMLElement, widgets: LayoutSlot[], y: number): number {
+  const cards = [...element.querySelectorAll<HTMLElement>("[data-widget-id]")];
+  for (const card of cards) {
+    const box = card.getBoundingClientRect();
+    if (y < box.top + box.height / 2) {
+      const id = card.dataset.widgetId;
+      const index = widgets.findIndex((slot) => slot.id === id);
+      if (index >= 0) return index;
+    }
+  }
+  return widgets.length;
+}
 
 function viewerId(): string {
   const key = "pi-dashboard-viewer";
@@ -293,11 +503,14 @@ function WidgetCard({
   widget,
   view,
   value,
+  draggable,
   onRemove,
 }: {
   widget: Widget;
   view: WidgetView | undefined;
   value: WidgetValue | undefined;
+  /** Desktop grids get a drag handle; phones stay a plain stack. */
+  draggable: boolean;
   onRemove: (id: string) => void;
 }) {
   const [menu, setMenu] = useState(false);
@@ -333,7 +546,7 @@ function WidgetCard({
       aria-label={widget.title}
       data-testid={`widget-${widget.id}`}
       data-kind={widget.kind}
-      className="theme-radius relative min-w-0 border border-border/70 bg-surface px-3 py-2 font-mono text-xs"
+      className="theme-radius relative flex h-full min-w-0 flex-col border border-border/70 bg-surface px-3 py-2 font-mono text-xs"
       onPointerDown={(event) => {
         if (event.pointerType !== "touch") return;
         cancelPress();
@@ -358,16 +571,30 @@ function WidgetCard({
       }}
     >
       <div className="flex items-start justify-between gap-2 pb-1">
-        <h2
-          className="min-w-0 text-[11px] uppercase tracking-wide text-muted-foreground [overflow-wrap:anywhere]"
-          title={
-            value?.updatedAt === undefined
-              ? undefined
-              : `updated ${formatDateTime(value.updatedAt)}`
-          }
-        >
-          {widget.title}
-        </h2>
+        <div className="flex min-w-0 items-start gap-1">
+          {draggable ? (
+            <button
+              type="button"
+              className="dashboard-drag-handle theme-radius -my-0.5 shrink-0 cursor-grab touch-none px-1 text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+              aria-label={`Move ${widget.title}`}
+              title="Drag to move; use the corner to resize"
+              data-testid={`widget-${widget.id}-drag`}
+              onClick={(event) => event.stopPropagation()}
+            >
+              ⠿
+            </button>
+          ) : null}
+          <h2
+            className="min-w-0 text-[11px] uppercase tracking-wide text-muted-foreground [overflow-wrap:anywhere]"
+            title={
+              value?.updatedAt === undefined
+                ? undefined
+                : `updated ${formatDateTime(value.updatedAt)}`
+            }
+          >
+            {widget.title}
+          </h2>
+        </div>
         <span className="flex shrink-0 items-center gap-1">
           {error === undefined ? null : (
             <span
@@ -390,14 +617,24 @@ function WidgetCard({
           </button>
         </span>
       </div>
-      {note === undefined ? null : (
-        <p
-          className="pb-1 text-[10px] leading-4 text-muted-foreground [overflow-wrap:anywhere]"
-          data-testid={`widget-${widget.id}-note`}
-        >
-          {note}
-        </p>
-      )}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {note === undefined ? null : (
+          <p
+            className="pb-1 text-[10px] leading-4 text-muted-foreground [overflow-wrap:anywhere]"
+            data-testid={`widget-${widget.id}-note`}
+          >
+            {note}
+          </p>
+        )}
+        {view !== undefined ? (
+          <ViewBody id={widget.id} view={view} />
+        ) : (
+          <p className="py-2 text-muted-foreground [overflow-wrap:anywhere]">
+            {error ??
+              (widget.source.type === "static" ? "waiting for data" : "waiting for the first poll")}
+          </p>
+        )}
+      </div>
       {menu ? (
         <div
           role="menu"
@@ -416,14 +653,6 @@ function WidgetCard({
           </button>
         </div>
       ) : null}
-      {view !== undefined ? (
-        <ViewBody id={widget.id} view={view} />
-      ) : (
-        <p className="py-2 text-muted-foreground [overflow-wrap:anywhere]">
-          {error ??
-            (widget.source.type === "static" ? "waiting for data" : "waiting for the first poll")}
-        </p>
-      )}
     </section>
   );
 }
@@ -444,6 +673,150 @@ function builtinView(widget: Widget, inputs: BuiltinInputs): { view?: WidgetView
   }
 }
 
+function sectionKey(index: number): string {
+  return `section-${index}`;
+}
+
+function SectionTitle({
+  title,
+  onRename,
+}: {
+  title: string | undefined;
+  onRename: (text: string) => void;
+}) {
+  const [draft, setDraft] = useState(title ?? "");
+  const cancel = useRef(false);
+  useEffect(() => {
+    setDraft(title ?? "");
+  }, [title]);
+  const field = (
+    <input
+      type="text"
+      className="min-w-0 flex-1 bg-transparent font-mono text-xs font-semibold text-foreground outline-none [overflow-wrap:anywhere]"
+      aria-label="Section title"
+      data-testid="section-title"
+      placeholder="Untitled section"
+      value={draft}
+      onChange={(event) => setDraft(event.currentTarget.value)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          event.currentTarget.blur();
+        } else if (event.key === "Escape") {
+          cancel.current = true;
+          setDraft(title ?? "");
+          event.currentTarget.blur();
+        }
+      }}
+      onBlur={(event) => {
+        if (cancel.current) {
+          cancel.current = false;
+          setDraft(title ?? "");
+          return;
+        }
+        onRename(event.currentTarget.value);
+      }}
+    />
+  );
+  const className =
+    "theme-radius flex items-center border border-border/70 bg-surface px-2 py-1 pr-20";
+  if (title === undefined) {
+    return <div className={`${className} text-muted-foreground`}>{field}</div>;
+  }
+  return (
+    <h2 className={className}>
+      <span className="sr-only">{title}</span>
+      {field}
+    </h2>
+  );
+}
+
+function SectionGrid({
+  index,
+  section,
+  byId,
+  values,
+  inputs,
+  desktop,
+  onRemove,
+}: {
+  index: number;
+  section: LayoutSection;
+  byId: Map<string, Widget>;
+  values: DashboardState["values"];
+  inputs: BuiltinInputs;
+  desktop: boolean;
+  onRemove: (id: string) => void;
+}) {
+  const { ref: gridRef, width } = useGridWidth(desktop);
+  const visible = section.widgets.filter((slot) => byId.has(slot.id));
+  const items = useMemo(() => gridLayout({ ...section, widgets: visible }), [section, visible]);
+  const cards = visible.map((slot) => {
+    const widget = byId.get(slot.id) as Widget;
+    const stored = values[widget.id];
+    const live = builtinView(widget, inputs);
+    const view = widget.source.type === "builtin" ? live.view : stored?.view;
+    const value =
+      widget.source.type === "builtin"
+        ? live.error === undefined
+          ? undefined
+          : { failures: 0, error: live.error }
+        : stored;
+    return (
+      <div
+        key={widget.id}
+        className="relative h-full min-w-0"
+        data-widget-id={widget.id}
+        data-span={slot.span}
+      >
+        <WidgetCard
+          widget={widget}
+          view={view}
+          value={value}
+          draggable={desktop}
+          onRemove={onRemove}
+        />
+        {desktop ? (
+          <button
+            type="button"
+            className="react-resizable-handle react-resizable-handle-se dashboard-resize-handle"
+            aria-label={`Resize ${widget.title}`}
+            title="Drag to resize"
+            data-testid={`widget-${widget.id}-resize`}
+            style={{ display: "block", opacity: 1 }}
+          />
+        ) : null}
+      </div>
+    );
+  });
+
+  if (!desktop) {
+    return (
+      <div className="grid grid-cols-1 gap-4" data-testid={`dashboard-stack-${index}`}>
+        {cards}
+      </div>
+    );
+  }
+
+  return (
+    <div ref={gridRef} className="dashboard-grid min-w-0" data-testid={`dashboard-grid-${index}`}>
+      <GridLayout
+        width={width}
+        layout={items}
+        cols={GRID_COLUMNS}
+        rowHeight={GRID_ROW_HEIGHT}
+        margin={[GRID_MARGIN, GRID_MARGIN]}
+        containerPadding={[0, 0]}
+        compactType={null}
+        isDraggable={false}
+        isResizable={false}
+      >
+        {cards}
+      </GridLayout>
+    </div>
+  );
+}
+
 /** The dashboard page: widgets the agent arranged, rendered from builtin stats, polls or pushed data. */
 export function StatsView({
   stats,
@@ -458,7 +831,23 @@ export function StatsView({
   footerClearance: number;
 }) {
   const dashboard = useSyncExternalStore(subscribeDashboard, getDashboard, getDashboard);
+  const desktop = useDesktopGrid();
   useViewerReport(active);
+  const pageRef = useRef<HTMLDivElement | null>(null);
+  const [layout, setLayout] = useState<DashboardLayout | null>(null);
+  const layoutJson = useRef("");
+  const confirmed = useRef<DashboardLayout | null>(null);
+  const dirty = useRef(false);
+  const pending = useRef<DashboardLayout | null>(null);
+  const saveTimer = useRef<number | undefined>(undefined);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!active) return;
@@ -474,6 +863,222 @@ export function StatsView({
     };
   }, [active]);
 
+  useEffect(() => {
+    if (dashboard === null) return;
+    const incoming = normalizeLayout(dashboard.layout);
+    const json = JSON.stringify(incoming);
+    if (!dirty.current && json !== layoutJson.current) {
+      layoutJson.current = json;
+      confirmed.current = incoming;
+      setLayout(incoming);
+    }
+  }, [dashboard]);
+
+  const flushPatch = useCallback(async (keepalive = false) => {
+    if (saveTimer.current !== undefined) {
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = undefined;
+    }
+    const body = pending.current;
+    if (body === null) return;
+    pending.current = null;
+    try {
+      const response = await fetch("/api/dashboard/layout", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sections: body.sections }),
+        keepalive,
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const state = (await response.json()) as DashboardState;
+      if (pending.current !== null || !mounted.current) return;
+      const saved = normalizeLayout(state.layout);
+      dirty.current = false;
+      confirmed.current = saved;
+      layoutJson.current = JSON.stringify(saved);
+      setLayout(saved);
+      setDashboard({ ...state, layout: saved });
+    } catch {
+      if (pending.current === null && mounted.current) {
+        dirty.current = false;
+        const fallback = confirmed.current;
+        if (fallback !== null) {
+          layoutJson.current = JSON.stringify(fallback);
+          setLayout(fallback);
+        }
+      }
+    }
+  }, []);
+
+  const commitLayout = useCallback(
+    (next: DashboardLayout) => {
+      const normalized = normalizeLayout(next);
+      dirty.current = true;
+      layoutJson.current = JSON.stringify(normalized);
+      setLayout(normalized);
+      pending.current = normalized;
+      if (saveTimer.current !== undefined) window.clearTimeout(saveTimer.current);
+      saveTimer.current = window.setTimeout(() => {
+        saveTimer.current = undefined;
+        void flushPatch();
+      }, LAYOUT_DEBOUNCE_MS);
+    },
+    [flushPatch],
+  );
+
+  useEffect(() => {
+    const flush = () => {
+      if (pending.current !== null) void flushPatch(true);
+    };
+    window.addEventListener("pagehide", flush);
+    return () => window.removeEventListener("pagehide", flush);
+  }, [flushPatch]);
+
+  const layoutRef = useRef<DashboardLayout | null>(null);
+  layoutRef.current = layout;
+
+  // Drag and resize are pointer-native, because the grid's drag handles must
+  // work with mouse, touch and the synthetic pointer events in the browser
+  // suite. No layout is persisted until the gesture ends.
+  useEffect(() => {
+    const root = pageRef.current;
+    if (root === null) return;
+    let gesture: GridGesture | null = null;
+    let removeListeners: (() => void) | null = null;
+
+    const endGesture = (event: PointerEvent) => {
+      const active = gesture;
+      if (active === null || event.pointerId !== active.pointerId) return;
+      event.preventDefault();
+      removeListeners?.();
+      gesture = null;
+      const current = layoutRef.current ?? active.base;
+      let next = current;
+      const point = { x: event.clientX, y: event.clientY };
+      if (active.kind === "drag") {
+        const otherSection = sectionAtPoint(point, active.sectionIndex);
+        if (otherSection !== null) {
+          next = moveBetweenSections(
+            current,
+            active.sectionIndex,
+            otherSection.index,
+            active.widgetId,
+            otherSection.element,
+            point.y,
+          );
+        } else {
+          const card = cardAtPoint(point, active.widgetId);
+          if (card !== null && card.sectionIndex === active.sectionIndex) {
+            next = reorderInSection(
+              current,
+              active.sectionIndex,
+              active.widgetId,
+              card.id,
+              point.y,
+              card.element,
+            );
+          }
+        }
+      }
+      commitLayout(next);
+    };
+
+    const moveGesture = (event: PointerEvent) => {
+      const active = gesture;
+      if (active === null || event.pointerId !== active.pointerId) return;
+      event.preventDefault();
+      const colPitch =
+        (active.gridWidth - GRID_MARGIN * (GRID_COLUMNS - 1)) / GRID_COLUMNS + GRID_MARGIN;
+      const rowPitch = GRID_ROW_HEIGHT + GRID_MARGIN;
+      const dx = Math.round((event.clientX - active.startX) / colPitch);
+      const dy = Math.round((event.clientY - active.startY) / rowPitch);
+      if (dx === 0 && dy === 0) return;
+      const next = structuredClone(active.base);
+      const section = next.sections[active.sectionIndex];
+      const slot = section?.widgets.find((item) => item.id === active.widgetId);
+      if (section === undefined || slot === undefined) return;
+      const originX = active.origin.x ?? 0;
+      const originY = active.origin.y ?? 0;
+      const originW = slotWidth(active.origin);
+      const originH = slotHeight(active.origin);
+      if (active.kind === "drag") {
+        const x = clamp(originX + dx, 0, GRID_COLUMNS - originW);
+        const y = Math.max(0, originY + dy);
+        if (slot.x === x && slot.y === y) return;
+        slot.x = x;
+        slot.y = y;
+      } else {
+        const rawWidth = clamp(originW + dx, 2, GRID_COLUMNS - originX);
+        // The page exposes three widths; snap a resize to the nearest one so
+        // the stored w and span never disagree.
+        const snapped = rawWidth >= 10 ? 12 : rawWidth >= 5 ? 6 : 4;
+        const w = Math.min(snapped, GRID_COLUMNS - originX);
+        const h = clamp(originH + dy, 2, 24);
+        if (slot.w === w && slot.h === h) return;
+        slot.w = w;
+        slot.h = h;
+        slot.span = spanForWidth(w);
+      }
+      active.moved = true;
+      layoutRef.current = next;
+      setLayout(next);
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.pointerType === "mouse" && event.button !== 0) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const dragHandle = target?.closest<HTMLElement>(".dashboard-drag-handle");
+      const resizeHandle = target?.closest<HTMLElement>(".dashboard-resize-handle");
+      const handle = dragHandle ?? resizeHandle;
+      if (handle === null || handle === undefined) return;
+      const card = handle.closest<HTMLElement>("[data-widget-id]");
+      const section = handle.closest<HTMLElement>("[data-section-index]");
+      const widgetId = card?.dataset.widgetId;
+      const sectionIndex = Number(section?.dataset.sectionIndex);
+      const current = layoutRef.current;
+      if (card === null || card === undefined || widgetId === undefined || current === null) return;
+      if (!Number.isInteger(sectionIndex)) return;
+      const slot = current.sections[sectionIndex]?.widgets.find((item) => item.id === widgetId);
+      const grid = section?.querySelector<HTMLElement>(".dashboard-grid");
+      if (slot === undefined || grid === null || grid === undefined) return;
+      event.preventDefault();
+      event.stopPropagation();
+      removeListeners?.();
+      gesture = {
+        kind: dragHandle !== null && dragHandle !== undefined ? "drag" : "resize",
+        pointerId: event.pointerId,
+        sectionIndex,
+        widgetId,
+        startX: event.clientX,
+        startY: event.clientY,
+        gridWidth: grid.getBoundingClientRect().width,
+        origin: { ...slot },
+        base: structuredClone(current),
+        moved: false,
+      };
+      window.addEventListener("pointermove", moveGesture, true);
+      window.addEventListener("pointerup", endGesture, true);
+      window.addEventListener("pointercancel", endGesture, true);
+      removeListeners = () => {
+        window.removeEventListener("pointermove", moveGesture, true);
+        window.removeEventListener("pointerup", endGesture, true);
+        window.removeEventListener("pointercancel", endGesture, true);
+        removeListeners = null;
+      };
+      try {
+        handle.setPointerCapture(event.pointerId);
+      } catch {
+        // Synthetic pointer events do not own a capturable pointer.
+      }
+    };
+
+    root.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      root.removeEventListener("pointerdown", onPointerDown, true);
+      removeListeners?.();
+    };
+  }, [commitLayout]);
+
   const remove = useCallback(async (id: string) => {
     const response = await fetch(`/api/dashboard/widgets/${encodeURIComponent(id)}`, {
       method: "DELETE",
@@ -484,6 +1089,48 @@ export function StatsView({
     }
   }, []);
 
+  const addSection = useCallback(() => {
+    const current = layout;
+    if (current === null || current.sections.length >= MAX_SECTIONS) return;
+    const next = structuredClone(current);
+    next.sections.push({ title: "New section", widgets: [] });
+    commitLayout(next);
+  }, [commitLayout, layout]);
+
+  const renameSection = useCallback(
+    (index: number, text: string) => {
+      const current = layout;
+      if (current === null) return;
+      const next = structuredClone(current);
+      const section = next.sections[index];
+      if (section === undefined) return;
+      const title = text.trim().slice(0, 60);
+      if (title === "") delete section.title;
+      else section.title = title;
+      if (JSON.stringify(next) === JSON.stringify(current)) return;
+      commitLayout(next);
+    },
+    [commitLayout, layout],
+  );
+
+  const deleteSection = useCallback(
+    (index: number) => {
+      const current = layout;
+      if (current === null || current.sections.length <= 1) return;
+      const next = structuredClone(current);
+      const [removed] = next.sections.splice(index, 1);
+      if (removed === undefined) return;
+      const target = index > 0 ? index - 1 : 0;
+      next.sections[target]?.widgets.push(...removed.widgets);
+      next.sections = next.sections.map((section) => ({
+        ...section,
+        widgets: packSection(section.widgets, true),
+      }));
+      commitLayout(next);
+    },
+    [commitLayout, layout],
+  );
+
   const inputs: BuiltinInputs = {
     usage: stats.usage,
     context: stats.context,
@@ -493,9 +1140,14 @@ export function StatsView({
     session: dashboard?.builtins.session ?? { conversationId: "", model: null, run: "idle" },
   };
   const byId = new Map((dashboard?.widgets ?? []).map((widget) => [widget.id, widget]));
+  const viewLayout = layout ?? (dashboard === null ? null : normalizeLayout(dashboard.layout));
 
   return (
-    <div className="h-full overflow-x-hidden overflow-y-auto" data-testid="stats-page">
+    <div
+      ref={pageRef}
+      className="h-full overflow-x-hidden overflow-y-auto"
+      data-testid="stats-page"
+    >
       <div
         className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-4"
         style={{ paddingTop: 16, paddingBottom: footerClearance + 16 }}
@@ -508,43 +1160,50 @@ export function StatsView({
             The dashboard is empty. Ask the agent to add widgets.
           </p>
         ) : null}
-        {dashboard?.layout.sections.map((section, index) => {
-          const slots = section.widgets.filter((slot) => byId.has(slot.id));
-          if (slots.length === 0) return null;
-          return (
-            // biome-ignore lint/suspicious/noArrayIndexKey: sections have no id
-            <div key={index} className="flex flex-col gap-2" data-testid="dashboard-section">
-              {section.title === undefined ? null : (
-                <h2 className="px-1 font-mono text-xs font-semibold text-foreground">
-                  {section.title}
-                </h2>
-              )}
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-6">
-                {slots.map((slot) => {
-                  const widget = byId.get(slot.id) as Widget;
-                  const stored = dashboard.values[widget.id];
-                  const live = builtinView(widget, inputs);
-                  const view = widget.source.type === "builtin" ? live.view : stored?.view;
-                  const value =
-                    widget.source.type === "builtin"
-                      ? live.error === undefined
-                        ? undefined
-                        : { failures: 0, error: live.error }
-                      : stored;
-                  return (
-                    <div
-                      key={widget.id}
-                      className={`min-w-0 ${SPAN_CLASS[slot.span]}`}
-                      data-span={slot.span}
-                    >
-                      <WidgetCard widget={widget} view={view} value={value} onRemove={remove} />
-                    </div>
-                  );
-                })}
-              </div>
+        {viewLayout === null ? null : (
+          <div className="flex justify-end">
+            <button
+              type="button"
+              className="theme-radius border border-border/70 bg-surface px-2 py-1 font-mono text-xs text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+              data-testid="dashboard-add-section"
+              disabled={viewLayout.sections.length >= MAX_SECTIONS}
+              onClick={addSection}
+            >
+              Add section
+            </button>
+          </div>
+        )}
+        {viewLayout?.sections.map((section, index) => (
+          <div
+            key={sectionKey(index)}
+            className="relative flex flex-col gap-2"
+            data-testid="dashboard-section"
+            data-section-index={index}
+          >
+            <SectionTitle title={section.title} onRename={(text) => renameSection(index, text)} />
+            <div className="absolute top-1 right-1 z-10 flex items-center gap-1">
+              <button
+                type="button"
+                className="theme-radius border border-border/70 bg-surface px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground hover:bg-foreground/10 hover:text-foreground disabled:opacity-40"
+                aria-label={`Delete section ${index + 1}`}
+                data-testid={`section-delete-${index}`}
+                disabled={viewLayout.sections.length <= 1}
+                onClick={() => deleteSection(index)}
+              >
+                ✕
+              </button>
             </div>
-          );
-        })}
+            <SectionGrid
+              index={index}
+              section={section}
+              byId={byId}
+              values={dashboard?.values ?? {}}
+              inputs={inputs}
+              desktop={desktop}
+              onRemove={remove}
+            />
+          </div>
+        ))}
       </div>
     </div>
   );

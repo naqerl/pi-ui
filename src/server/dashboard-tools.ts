@@ -168,7 +168,7 @@ ${MAPPING_DOC}`,
     }),
     defineTool({
       name: "dashboard_layout",
-      description: `Arrange the dashboard page: ordered sections with optional titles, each an ordered list of widget ids with a width. span is ${WIDGET_SPANS.join(", ")} of a row; on a phone every widget is full width. Every id must exist; widgets you leave out are added in a last section.`,
+      description: `Arrange the dashboard page: ordered sections with optional titles, each an ordered list of widget ids with a width. span is ${WIDGET_SPANS.join(", ")} of a row (full = 12, half = 6, third = 4 columns); on a phone every widget is full width. x, y, w and h are optional 12-column grid coordinates; the UI writes the same shape after a drag or resize, so omit them to let the server pack the section. Every id must exist; widgets you leave out are added in a last section.`,
       parameters: Type.Object({
         sections: Type.Array(
           Type.Object({
@@ -182,6 +182,17 @@ ${MAPPING_DOC}`,
                     { description: "Default full." },
                   ),
                 ),
+                order: Type.Optional(
+                  Type.Number({
+                    description: "Position inside the section; default is array order.",
+                  }),
+                ),
+                x: Type.Optional(
+                  Type.Number({ description: "Column 0-11 in the 12-column grid." }),
+                ),
+                y: Type.Optional(Type.Number({ description: "Row in the 12-column grid." })),
+                w: Type.Optional(Type.Number({ description: "Width in columns, 1-12." })),
+                h: Type.Optional(Type.Number({ description: "Height in grid rows." })),
               }),
             ),
           }),
