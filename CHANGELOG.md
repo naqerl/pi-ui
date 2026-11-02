@@ -1,3 +1,7 @@
+## 1.6.60 - 2026-11-02
+
+- fix(ui): a horizontally scrollable code block or diagram keeps its own gesture; the pager only takes over when the block has nowhere left to scroll (8mq6).
+
 ## 1.6.59 - 2026-11-02
 
 - feat(ui): vibrate on user mutations (approve, send, task actions, settings) through one haptic helper that respects prefers-reduced-motion (7q9g).
