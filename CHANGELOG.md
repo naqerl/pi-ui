@@ -1,3 +1,7 @@
+## 1.6.74 - 2026-11-03
+
+- feat(dashboard): a sparkline can map its headline to an explicit value instead of the derived last point (hetz).
+
 ## 1.6.73 - 2026-11-03
 
 - perf(chat): the thread scrolls itself, so the composer stops reflowing it (lift).
