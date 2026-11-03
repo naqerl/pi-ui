@@ -1,3 +1,7 @@
+## 1.6.71 - 2026-11-03
+
+- feat(theme): drive status colours from theme tokens (eeyz).
+
 ## 1.6.70 - 2026-11-03
 
 - perf(chat): the pending bubble is painted before the server round trip and reconciled by client key, marker writes are coalesced per tick, and submit timing is measured (fej6).
