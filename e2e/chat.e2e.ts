@@ -86,9 +86,49 @@ test("keeps the draft when a send is rejected", async ({ app, browser, screen })
 
   await screen.getByRole("button", "Send").tap();
   await expect(composer).toHaveValue("keep this draft\nwith two lines");
+  await expect(browser.locator('[data-pending-send="true"]')).toHaveCount(0);
 
   const after = await composer.boundingBox();
   expect(after?.height ?? 0).toBeCloseTo(before?.height ?? 0, 0);
+});
+
+test("paints the pending bubble before the message request returns", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await app.open("/");
+  const composer = screen.getByRole("textbox", "Message");
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let requests = 0;
+  await browser.route("**/api/message", async (route) => {
+    requests += 1;
+    // Hold the request open: a client that waits for 202 cannot paint this bubble.
+    await gate;
+    await route.continue();
+  });
+
+  const text = `painted before 202 ${Date.now()}`;
+  await composer.fill(text);
+  try {
+    await screen.getByRole("button", "Send").tap();
+    const pending = browser.locator('[data-pending-send="true"]').filter({ hasText: text });
+    await expect(pending).toBeVisible({ timeout: 1_500 });
+    expect(requests).toBe(1);
+    // The gate is still closed, so the bubble above was painted before any response.
+    await expect(pending).toBeVisible();
+  } finally {
+    release();
+  }
+
+  await expect(screen.getByText(`Echo: ${text}`, { exact: false })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(browser.locator('[data-pending-send="true"]')).toHaveCount(0);
+  await expect(browser.locator('[data-role="user"]').filter({ hasText: text })).toHaveCount(1);
 });
 
 test("renders assistant markdown without unsafe HTML", async ({ app, browser, screen }) => {

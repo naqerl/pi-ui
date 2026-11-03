@@ -52,6 +52,8 @@ export interface ChatMessage {
   pendingSteer?: boolean;
   /** A follow-up the server holds until the running turn ends. */
   pendingQueue?: boolean;
+  /** A user message painted optimistically, before the server has confirmed it. */
+  pendingSend?: boolean;
   /** Submission id of a pending queued message, so its bubble can cancel it. */
   queueId?: string;
   /** How many consecutive queued notices this pending chip stands for. */

@@ -3,6 +3,7 @@ import type { DashboardState } from "../shared/dashboard";
 import {
   groupQueuedMessages,
   isQueuedNotice,
+  PENDING_QUEUE_ORDER,
   pendingQueuedMessage,
   queuedMessageId,
 } from "../shared/queue";
@@ -63,6 +64,15 @@ const EMPTY_EVENTS: McpEventsState = {
 /** A send that failed for a reason worth showing carries it in `error`. */
 export type SendOutcome = { ok: true } | { ok: false; error: string | null };
 
+/** The optimistic copy of a send that is still waiting for the server to confirm it. */
+interface OptimisticSend {
+  key: string;
+  text: string;
+  mode: MessageMode;
+  createdAt: string;
+  attachments: string[];
+}
+
 export type TimelineItem =
   | { kind: "message"; order: number; message: ChatMessage }
   | { kind: "activity"; order: number; activity: ActivityItem };
@@ -108,6 +118,70 @@ function addJobActivity(current: ActivityItem[], extra: ActivityItem[]): Activit
   return [...current, ...extra.filter((item) => !held.has(item.id))];
 }
 
+/** A client key lets the optimistically painted bubble keep its id once the server confirms. */
+function newClientKey(): string {
+  const cryptoApi = globalThis.crypto;
+  if (typeof cryptoApi?.randomUUID === "function") return cryptoApi.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function markSendTiming(name: string, mode: MessageMode): void {
+  try {
+    performance.mark(name, { detail: { mode } });
+  } catch {
+    // Older browsers without custom mark details still get the plain mark.
+    try {
+      performance.mark(name);
+    } catch {
+      // Timing is a diagnostic; a failure must never affect sending.
+    }
+  }
+}
+
+function measureSendTiming(name: string, start: string, end: string): void {
+  try {
+    performance.measure(name, start, end);
+  } catch {
+    // The marks can be cleared by a devtools session; a missing measure is harmless.
+  }
+}
+
+/** The id a pending send already has, matching the queued item the server will confirm. */
+function optimisticId(item: OptimisticSend): string {
+  return item.mode === "steer" ? `steer-pending-${item.key}` : `m-${item.key}`;
+}
+
+function optimisticMessage(item: OptimisticSend): ChatMessage {
+  if (item.mode === "steer") {
+    return pendingSteerMessage({
+      id: item.key,
+      key: item.key,
+      text: item.text,
+      createdAt: item.createdAt,
+      ...(item.attachments.length === 0 ? {} : { attachments: item.attachments }),
+    });
+  }
+  return {
+    id: optimisticId(item),
+    role: "user",
+    text: item.text,
+    timestamp: item.createdAt,
+    order: PENDING_QUEUE_ORDER,
+    pendingSend: true,
+    ...(item.attachments.length === 0
+      ? {}
+      : { attachments: item.attachments.map((id) => ({ id, mimeType: "image/*" })) }),
+  };
+}
+
+/** A confirmed message retires the optimistic copy it replaces, by id, key, or (idle) text. */
+function confirmedOptimistic(item: OptimisticSend, message: ChatMessage): boolean {
+  if (message.role !== "user") return false;
+  if (message.id === optimisticId(item)) return true;
+  if (message.steerKey !== undefined && message.steerKey === item.key) return true;
+  return item.mode !== "steer" && item.text === message.text;
+}
+
 /** Messages fetched per scroll-up page. */
 const HISTORY_PAGE = 30;
 /** A failed state fetch retries from here, doubling up to the cap. */
@@ -144,6 +218,8 @@ export function useChat(options: UseChatOptions = {}) {
   const [context, setContext] = useState<ContextUsage | null>(null);
   const [mcpEvents, setMcpEvents] = useState<McpEventsState>(EMPTY_EVENTS);
   const [steers, setSteers] = useState<PendingSteer[]>([]);
+  /** Sends painted before the server answers; each leaves on confirmation or failure. */
+  const [optimistic, setOptimistic] = useState<OptimisticSend[]>([]);
   const [ready, setReady] = useState(false);
   const [hasEarlier, setHasEarlier] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
@@ -466,6 +542,7 @@ export function useChat(options: UseChatOptions = {}) {
           setMessages((current) =>
             current.some((item) => item.id === message.id) ? current : [...current, message],
           );
+          setOptimistic((current) => current.filter((item) => !confirmedOptimistic(item, message)));
           if (message.steerKey !== undefined) {
             setSteers((current) => consumeSteer(current, message.steerKey));
           }
@@ -624,8 +701,26 @@ export function useChat(options: UseChatOptions = {}) {
       items.push({ kind: "message", order: message.order, message });
     }
 
+    // A send paints here before the request leaves. Once the server's queue or a placed
+    // message carries the same id/key, the optimistic copy is skipped instead of doubled.
+    const queuedIds = new Set(queue.map(queuedMessageId));
+    const pendingSteerKeys = new Set(
+      steers.flatMap((steer) => (steer.key === undefined ? [] : [steer.key])),
+    );
+    for (const item of optimistic) {
+      if (
+        heldIds.has(optimisticId(item)) ||
+        queuedIds.has(optimisticId(item)) ||
+        (item.mode === "steer" && pendingSteerKeys.has(item.key))
+      ) {
+        continue;
+      }
+      const message = optimisticMessage(item);
+      items.push({ kind: "message", order: message.order, message });
+    }
+
     return items.sort((a, b) => a.order - b.order);
-  }, [messages, activity, liveTools, draftText, draftThinking, steers, queue]);
+  }, [messages, activity, liveTools, draftText, draftThinking, steers, queue, optimistic]);
 
   const send = useCallback(
     async (
@@ -636,6 +731,28 @@ export function useChat(options: UseChatOptions = {}) {
       const trimmed = text.trim();
       if (trimmed.length === 0 && attachments.length === 0) return { ok: false, error: null };
 
+      // Paint the bubble now; the request only confirms it. The stable key lets the
+      // queued/placed copy replace this one by id instead of remounting it.
+      const key = newClientKey();
+      const startMark = `pi.chat.send.start.${key}`;
+      markSendTiming(startMark, mode);
+      setOptimistic((current) => [
+        ...current,
+        {
+          key,
+          text: trimmed,
+          mode,
+          createdAt: new Date().toISOString(),
+          attachments: [...attachments],
+        },
+      ]);
+      requestAnimationFrame(() => {
+        const paintMark = `pi.chat.send.paint.${key}`;
+        markSendTiming(paintMark, mode);
+        measureSendTiming("pi.chat.send.paint", startMark, paintMark);
+      });
+      const retire = () => setOptimistic((current) => current.filter((item) => item.key !== key));
+
       try {
         const response = await fetch("/api/message", {
           method: "POST",
@@ -643,18 +760,27 @@ export function useChat(options: UseChatOptions = {}) {
           body: JSON.stringify({
             text: trimmed,
             mode,
+            queueKey: key,
             ...(attachments.length > 0 ? { attachments } : {}),
           }),
         });
+        const responseMark = `pi.chat.send.response.${key}`;
+        markSendTiming(responseMark, mode);
+        measureSendTiming("pi.chat.send.response", startMark, responseMark);
         if (response.status === 409) {
+          retire();
           await refreshState();
           return { ok: false, error: null };
         }
         if (!response.ok) {
+          retire();
           const reason = (await response.text()).trim();
           return { ok: false, error: reason.length > 0 ? reason : "Message was not sent" };
         }
         const data = (await response.json()) as SubmitMessageResponse;
+        // The queue and the place message use the same client key, so dropping the
+        // optimistic copy in this same batch never blanks the bubble.
+        retire();
         setQueue(data.queue);
         if (!data.queued && !(runState === "running")) {
           setRunState("running");
@@ -682,6 +808,7 @@ export function useChat(options: UseChatOptions = {}) {
         }
         return { ok: true };
       } catch {
+        retire();
         return { ok: false, error: "Message was not sent" };
       }
     },
