@@ -14,7 +14,12 @@ import {
   SnapshotController,
   tailTruncate,
 } from "../src/server/memory/snapshot.js";
-import { MemoryStore, todayIso } from "../src/server/memory/store.js";
+import {
+  frontMatterValue,
+  MemoryStore,
+  parseFrontMatter,
+  todayIso,
+} from "../src/server/memory/store.js";
 import { createMemoryTools } from "../src/server/memory/tools.js";
 
 async function freshStore(t: { after: (fn: () => Promise<void>) => void }): Promise<MemoryStore> {
@@ -331,6 +336,97 @@ test("a second topic write is a clean overwrite without duplication", async (t) 
   assert.equal(lines.length, 1);
 });
 
+test("appendTopic keeps existing text and front matter and appends in order", async (t) => {
+  const store = await freshStore(t);
+  const created = await store.createTopic({
+    title: "Widget service",
+    body: "# Widget service\n\nthe first fact stays put.",
+    scope: "projects",
+  });
+  const path = join(store.topicsDir, created.rel);
+  const before = await readFile(path, "utf8");
+  await writeFile(path, before.replace(/^updated: .*$/m, "updated: 2000-01-01"));
+
+  const appended = await store.appendTopic(
+    created.rel,
+    "# Widget service update\n\nthe second fact is new.",
+    { scope: "projects", create: true },
+  );
+  assert.equal(appended.updated, todayIso());
+  assert.match(appended.body, /the first fact stays put/);
+  assert.match(appended.body, /the second fact is new/);
+  assert.ok(appended.body.indexOf("first fact") < appended.body.indexOf("second fact"));
+  assert.match(appended.body, new RegExp(`## ${todayIso()} — Widget service update`));
+
+  const raw = await readFile(path, "utf8");
+  const parsed = parseFrontMatter(raw);
+  assert.equal((raw.match(/^---$/gm) ?? []).length, 2);
+  assert.equal(frontMatterValue(parsed.data, "updated"), todayIso());
+  assert.equal(frontMatterValue(parsed.data, "scope"), "projects");
+  assert.match(parsed.body, /the first fact stays put/);
+  assert.match(parsed.body, /the second fact is new/);
+});
+
+test("appendTopic creates a missing topic with one valid block", async (t) => {
+  const store = await freshStore(t);
+  const appended = await store.appendTopic(
+    "topics/projects/widget-cache.md",
+    "# Widget cache\n\nthe cache keeps the last 200 responses.",
+    { scope: "projects", create: true },
+  );
+  assert.equal(appended.rel, "projects/widget-cache.md");
+  assert.equal(appended.title, "Widget cache");
+  assert.match(appended.body, new RegExp(`^## ${todayIso()} — Widget cache`));
+  assert.match(appended.body, /the cache keeps the last 200 responses/);
+  assert.equal((appended.body.match(/^## /gm) ?? []).length, 1);
+
+  const raw = await readFile(join(store.topicsDir, appended.rel), "utf8");
+  const parsed = parseFrontMatter(raw);
+  assert.equal((raw.match(/^---$/gm) ?? []).length, 2);
+  assert.equal(frontMatterValue(parsed.data, "topic"), "Widget cache");
+  assert.equal(frontMatterValue(parsed.data, "scope"), "projects");
+  assert.match(parsed.body, /the cache keeps the last 200 responses/);
+});
+
+test("appendTopic twice produces three ordered blocks and one updated value", async (t) => {
+  const store = await freshStore(t);
+  const created = await store.createTopic({
+    title: "Widget service",
+    body: "# Widget service\n\nblock one.",
+    scope: "projects",
+  });
+  await store.appendTopic(created.rel, "# Widget service\n\nblock two.", { create: true });
+  const last = await store.appendTopic(created.rel, "# Widget service\n\nblock three.", {
+    create: true,
+  });
+  assert.ok(
+    last.body.indexOf("block one") < last.body.indexOf("block two") &&
+      last.body.indexOf("block two") < last.body.indexOf("block three"),
+  );
+  assert.equal((last.body.match(/^#/gm) ?? []).length, 3);
+  const raw = await readFile(join(store.topicsDir, created.rel), "utf8");
+  assert.equal((raw.match(/^updated:/gm) ?? []).length, 1);
+  assert.equal(
+    (raw.match(new RegExp(`^## ${todayIso()} — Widget service$`, "gm")) ?? []).length,
+    2,
+  );
+});
+
+test("appendTopic rebuilds the scope INDEX", async (t) => {
+  const store = await freshStore(t);
+  const created = await store.createTopic({
+    title: "Widget service",
+    body: "# Widget service\n\nfirst fact.",
+    scope: "projects",
+  });
+  const indexPath = join(store.topicsDir, "projects", "INDEX.md");
+  await writeFile(indexPath, "# projects — project notes\n\n");
+  await store.appendTopic(created.rel, "# Widget service\n\nsecond fact.", { create: true });
+  const index = await readFile(indexPath, "utf8");
+  assert.match(index, new RegExp(`\\[Widget service\\]\\(${created.file}\\)`));
+  assert.equal((index.match(new RegExp(`\\]\\(${created.file}\\)`, "g")) ?? []).length, 1);
+});
+
 test("the snapshot is byte-identical across calls without a checkpoint", async (t) => {
   const store = await freshStore(t);
   await writeMemory(store, FIXTURE);
@@ -502,6 +598,61 @@ test("a successful memory_write reports its path and written text", async (t) =>
   await run({ target: "scratchpad", body: "an open item" });
   assert.equal(writes[2]?.path, "SCRATCHPAD.md");
   assert.equal(writes[2]?.text, "an open item");
+});
+
+test("memory_write append adds a block and overwrite still replaces the body", async (t) => {
+  const store = await freshStore(t);
+  const writes: { path: string; text: string }[] = [];
+  const tools = new Map(
+    createMemoryTools(store, undefined, {
+      onWrite: (record) => {
+        writes.push(record);
+      },
+    }).map((tool) => [tool.name, tool]),
+  );
+  const write = tools.get("memory_write");
+  assert.ok(write);
+  const run = (args: Record<string, unknown>) =>
+    write.execute(args as never, {} as never, {} as never);
+
+  await run({
+    target: "long_term",
+    topic: "widget-cache",
+    scope: "projects",
+    body: "# Widget cache\n\nthe cache keeps 200 responses.",
+  });
+  const result = await run({
+    target: "long_term",
+    topic: "widget-cache",
+    scope: "projects",
+    mode: "append",
+    body: "# Widget cache\n\nthe cache now also keeps headers.",
+  });
+  const output = Array.isArray(result.output) ? result.output[0] : undefined;
+  assert.equal(output?.type, "text");
+  assert.match(
+    output?.type === "text" ? output.text : "",
+    /^appended \d+ chars to projects\/widget-cache\.md/,
+  );
+  assert.match(writes[1]?.text ?? "", new RegExp(`## ${todayIso()} — Widget cache`));
+  assert.match(writes[1]?.text ?? "", /the cache now also keeps headers/);
+  assert.doesNotMatch(writes[1]?.text ?? "", /the cache keeps 200 responses/);
+
+  const body = (await store.readTopic("projects/widget-cache.md")).body;
+  assert.match(body, /the cache keeps 200 responses/);
+  assert.match(body, /the cache now also keeps headers/);
+
+  await run({
+    target: "long_term",
+    topic: "widget-cache",
+    scope: "projects",
+    mode: "overwrite",
+    body: "# Widget cache\n\nthe cache was reset.",
+  });
+  const overwritten = (await store.readTopic("projects/widget-cache.md")).body;
+  assert.doesNotMatch(overwritten, /the cache keeps 200 responses/);
+  assert.doesNotMatch(overwritten, /the cache now also keeps headers/);
+  assert.match(overwritten, /the cache was reset/);
 });
 
 test("the memory tool set is the five documented tools", async (t) => {

@@ -100,6 +100,22 @@ export function firstHeading(body: string): string | undefined {
   return heading !== undefined && heading.length > 0 ? heading : undefined;
 }
 
+/** Builds one dated block, using the body's first heading as its label. */
+export function topicAppendBlock(body: string, date = todayIso()): string {
+  const cleanBody = body.trim();
+  const headingMatch = /^#{1,3} (.+)$/m.exec(cleanBody);
+  const heading = headingMatch?.[1]?.trim();
+  const withoutHeading =
+    headingMatch === null
+      ? cleanBody
+      : `${cleanBody.slice(0, headingMatch.index)}${cleanBody.slice(
+          headingMatch.index + headingMatch[0].length,
+        )}`.trim();
+  if (heading === undefined || heading.length === 0) return withoutHeading;
+  const label = `## ${date} — ${heading}`;
+  return withoutHeading.length > 0 ? `${label}\n\n${withoutHeading}` : label;
+}
+
 function descriptionOf(body: string): string {
   const line =
     body
@@ -276,6 +292,68 @@ export class MemoryStore {
       }
     }
     return topics;
+  }
+
+  /** One dated append block, using the body's first heading as its label. */
+  async appendTopic(
+    rel: string,
+    body: string,
+    options: { scope?: string; title?: string; create?: boolean } = {},
+  ): Promise<TopicRecord> {
+    return this.queue.run(() => this.appendTopicUnlocked(rel, body, options));
+  }
+
+  private async appendTopicUnlocked(
+    rel: string,
+    body: string,
+    options: { scope?: string; title?: string; create?: boolean },
+  ): Promise<TopicRecord> {
+    const normalized = this.topicRel(rel);
+    const parts = normalized.split("/");
+    if (!normalized.startsWith("topics/") || parts.length !== 3 || !normalized.endsWith(".md")) {
+      throw new Error(`topic path must be topics/<scope>/<slug>.md: ${rel}`);
+    }
+    const pathScope = parts[1] as string;
+    if (options.scope !== undefined && options.scope !== pathScope) {
+      throw new Error(
+        `scope ${options.scope} does not match the topic path scope ${pathScope}: ${rel}`,
+      );
+    }
+    const file = this.resolvePath(normalized);
+    const exists = await fileExists(file);
+    if (!exists && options.create === false) {
+      throw new Error(`unknown topic: ${normalized}`);
+    }
+    let data = new Map<string, string>();
+    let previousBody = "";
+    let previousTitle: string | undefined;
+    if (exists) {
+      const parsed = parseFrontMatter(await readFile(file, "utf8"));
+      data = parsed.data;
+      previousBody = parsed.body.trim();
+      previousTitle = frontMatterValue(parsed.data, "topic") ?? firstHeading(parsed.body);
+    }
+    const cleanBody = body.trim();
+    if (cleanBody.length === 0) throw new Error("refusing to append an empty topic");
+    const updated = todayIso();
+    const block = topicAppendBlock(cleanBody, updated);
+    const heading = firstHeading(cleanBody);
+    const title = options.title ?? previousTitle ?? heading ?? basename(file, ".md");
+    const bodyWithBlock = previousBody.length > 0 ? `${previousBody}\n\n${block}` : block;
+    data.set("topic", jsonString(title));
+    data.set("scope", pathScope);
+    data.set("updated", updated);
+    await this.atomicWrite(file, serializeFrontMatter(data, bodyWithBlock));
+    await this.syncScopeIndex(pathScope, basename(file), title, bodyWithBlock);
+    this.longTermRevision += 1;
+    return {
+      scope: pathScope,
+      file: basename(file),
+      rel: normalized.replace(/^topics\//, ""),
+      title,
+      updated,
+      body: bodyWithBlock,
+    };
   }
 
   /**

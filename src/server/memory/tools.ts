@@ -9,7 +9,13 @@ import { dreamMemory, summarizeDream } from "./dream.js";
 import { findMemory } from "./find.js";
 import { scopeOf, slugify } from "./scopes.js";
 import type { SnapshotCache } from "./snapshot.js";
-import { isMissing, type MemoryStore, type TopicRecord, todayIso } from "./store.js";
+import {
+  isMissing,
+  type MemoryStore,
+  type TopicRecord,
+  todayIso,
+  topicAppendBlock,
+} from "./store.js";
 
 function text(value: string, isError = false, details?: MemoryToolDetails): ToolExecutionResult {
   return {
@@ -82,13 +88,19 @@ export function createMemoryTools(
     defineTool({
       name: "memory_write",
       description:
-        "Write durable memory. target=long_term writes one topic body (front matter is kept, updated is restamped, the scope INDEX is updated, and the injected snapshot is invalidated). target=daily appends one journalled block; target=scratchpad appends one open '- [ ]' item. Daily and scratchpad writes do not invalidate the snapshot.",
+        "Write durable memory. target=long_term writes one topic body (front matter is kept, updated is restamped, the scope INDEX is updated, and the injected snapshot is invalidated); mode=append adds a dated block while mode=overwrite replaces the body. target=daily appends one journalled block; target=scratchpad appends one open '- [ ]' item. Daily and scratchpad writes do not invalidate the snapshot.",
       parameters: Type.Object({
         target: Type.Union([
           Type.Literal("long_term"),
           Type.Literal("daily"),
           Type.Literal("scratchpad"),
         ]),
+        mode: Type.Optional(
+          Type.Union([Type.Literal("append"), Type.Literal("overwrite")], {
+            description:
+              "For long_term, append adds a dated block to the existing topic body (creating the topic if missing) and overwrite replaces it; default overwrite (today's behaviour). daily and scratchpad always append.",
+          }),
+        ),
         body: Type.String({ description: "Markdown content to write." }),
         topic: Type.Optional(
           Type.String({
@@ -120,16 +132,20 @@ export function createMemoryTools(
           }
           if (args.body.trim().length === 0) return text("Refusing to write an empty topic.", true);
           let written: TopicRecord;
+          let appended: string | undefined;
           if (args.topic !== undefined) {
-            written = await store.writeTopic(
-              topicPath(args.topic, args.scope, args.title),
-              args.body,
-              {
-                ...(args.scope === undefined ? {} : { scope: args.scope }),
-                ...(args.title === undefined ? {} : { title: args.title }),
-                create: true,
-              },
-            );
+            const rel = topicPath(args.topic, args.scope, args.title);
+            const options = {
+              ...(args.scope === undefined ? {} : { scope: args.scope }),
+              ...(args.title === undefined ? {} : { title: args.title }),
+              create: true,
+            } as const;
+            if (args.mode === "append") {
+              appended = topicAppendBlock(args.body);
+              written = await store.appendTopic(rel, args.body, options);
+            } else {
+              written = await store.writeTopic(rel, args.body, options);
+            }
           } else {
             const title = args.title ?? args.body.match(/^#{1,3} (.+)$/m)?.[1] ?? "Untitled";
             written = await store.createTopic({
@@ -139,7 +155,12 @@ export function createMemoryTools(
             });
           }
           snapshot?.invalidate();
-          await recordWrite({ path: `topics/${written.rel}`, text: written.body });
+          await recordWrite({ path: `topics/${written.rel}`, text: appended ?? written.body });
+          if (appended !== undefined) {
+            return text(
+              `appended ${appended.length} chars to ${written.rel} (now ${written.body.length} chars, updated ${written.updated})`,
+            );
+          }
           return text(
             `wrote ${written.rel} (${written.body.length} chars, updated ${written.updated})`,
           );
