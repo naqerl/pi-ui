@@ -1,3 +1,8 @@
+## 1.6.81 - 2026-11-03
+
+- fix(mcp): drop restored subscriptions the server no longer knows, and drop backlog from a stale cursor (mbav).
+- chore(deps): upgrade pi-durable to 1.5.0 (u4j7).
+
 ## 1.6.80 - 2026-11-03
 
 - feat(chat): alt-1/2/3 jump to a page and ctrl-j focuses the composer (8g7p).
