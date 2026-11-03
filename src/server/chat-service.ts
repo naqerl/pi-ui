@@ -122,7 +122,7 @@ interface SubmitOptions {
   attachments?: string[];
   /** Place an input as this application entry instead of a normal user entry. */
   entry?: InputEntry & { label?: string };
-  /** Stable key to reuse when restoring a queued message after a restart. */
+  /** Stable key from the client (or a restart) so a pending bubble keeps its id. */
   queueKey?: string;
 }
 
@@ -333,6 +333,34 @@ function positiveEnv(name: string): number | undefined {
   return Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
+/** Debug-gated submit breakdown: cheap enough to leave on for every send. */
+function logSubmitTiming(timing: {
+  mediaMs: number;
+  beforeTurnMs: number;
+  markerMs: number;
+  conversationMs: number;
+  statusMs: number;
+  broadcastMs: number;
+  totalMs: number;
+  queueDepth: number;
+}): void {
+  if (!submitTimingEnabled()) return;
+  console.debug(
+    `[pi] submit timing mediaMs=${timing.mediaMs} beforeTurnMs=${timing.beforeTurnMs} ` +
+      `markerMs=${timing.markerMs} conversationMs=${timing.conversationMs} ` +
+      `statusMs=${timing.statusMs} broadcastMs=${timing.broadcastMs} ` +
+      `totalMs=${timing.totalMs} queueDepth=${timing.queueDepth}`,
+  );
+}
+
+function submitTimingEnabled(): boolean {
+  const flag = process.env.PI_UI_DEBUG;
+  if (flag === "1" || flag === "true") return true;
+  return (process.env.DEBUG ?? "")
+    .split(",")
+    .some((part) => part === "pi" || part === "pi:*" || part === "*");
+}
+
 /** The queued application entry, carrying a stable key so its chip and placed notice share an id. */
 function entryWithQueueKey(entry: InputEntry, key: string | undefined): InputEntry {
   if (key === undefined) return entry;
@@ -399,6 +427,8 @@ export class ChatService {
   private readonly steers = new Map<string, QueuedMessage>();
   private marker: RunMarker | undefined;
   private markerWrites: Promise<void> = Promise.resolve();
+  /** Coalesced state writes: many queue mutations in one tick become one marker write. */
+  private markerTimer: ReturnType<typeof setTimeout> | undefined;
   private shuttingDown = false;
   private modelWindow: number | undefined;
   /** First retry of the current episode; the budget is measured from here. */
@@ -498,6 +528,7 @@ export class ChatService {
     unregisterMcpQueueMerger(this.conversation.id, this.mergeMcpQueue);
     if (this.watchdog !== undefined) clearInterval(this.watchdog);
     if (this.idleNudgeTimer !== undefined) clearInterval(this.idleNudgeTimer);
+    await this.flushMarkerState();
     await this.stream?.stop();
   }
 
@@ -897,23 +928,37 @@ export class ChatService {
     mode: MessageMode = "queue",
     options: SubmitOptions = {},
   ): Promise<SubmittedMessage> {
+    const timingStart = Date.now();
+    const timing = {
+      mediaMs: 0,
+      beforeTurnMs: 0,
+      markerMs: 0,
+      conversationMs: 0,
+      statusMs: 0,
+      broadcastMs: 0,
+    };
     this.idleNudge.noteActivity();
     const steer = mode === "steer";
     const attachments = options.attachments ?? [];
     if (attachments.length > 0) this.assertAcceptsImages();
     // Read the images first, so an unknown id fails before the run state changes.
-    const images = await this.media.images(attachments);
+    const mediaStart = Date.now();
+    const images = attachments.length === 0 ? [] : await this.media.images(attachments);
+    timing.mediaMs = Date.now() - mediaStart;
     const content =
       images.length === 0
         ? text
         : [...(text.length > 0 ? [{ type: "text" as const, text }] : []), ...images];
     // The memory snapshot is keyed on a stable prefix. Refresh it at the turn
     // boundary: a day rollover or long-term write reconfigures instructions;
-    // daily and scratchpad writes leave the cached block untouched.
+    // daily and scratchpad writes leave the cached block untouched. Deployments
+    // pass memoryCheckpoints.refresh here, so time the real callback.
+    const beforeTurnStart = Date.now();
     await this.beforeTurn();
+    timing.beforeTurnMs = Date.now() - beforeTurnStart;
     const startsRun = this.runState !== "running" && this.queued.size === 0;
     const startedAt = new Date().toISOString();
-    const steerKey = steer ? randomUUID() : undefined;
+    const steerKey = steer ? (options.queueKey ?? randomUUID()) : undefined;
     // A queued follow-up gets an application entry with a stable key, so its pending bubble
     // and the placed transcript message share one id instead of remounting at the handoff.
     const queueKey =
@@ -924,7 +969,14 @@ export class ChatService {
       !steer && !startsRun && options.entry !== undefined
         ? (options.queueKey ?? randomUUID())
         : undefined;
-    const pendingKey = queueKey ?? entryKey;
+    // An idle client send also carries its key into the placed entry, so the optimistic
+    // bubble and its transcript message share one id even though nothing is queued.
+    const placedKey =
+      !steer && startsRun && options.entry === undefined ? options.queueKey : undefined;
+    // A submit that checked startsRun before another one won the run can still be queued
+    // by durable. Reuse the placed key there too, or the chip and the optimistic bubble
+    // would get different ids and render the same message twice.
+    const pendingKey = queueKey ?? entryKey ?? placedKey;
     const notice =
       options.entry === undefined
         ? undefined
@@ -946,12 +998,15 @@ export class ChatService {
         updatedAt: new Date().toISOString(),
       };
       this.marker = marker;
+      const markerStart = Date.now();
       await this.writeMarker(marker);
+      timing.markerMs += Date.now() - markerStart;
       this.setRunState("running");
     }
 
     let submission: Submission;
     this.submitting += 1;
+    const conversationStart = Date.now();
     try {
       submission = await this.conversation.submit(
         {
@@ -977,7 +1032,14 @@ export class ChatService {
                   },
                 }
               : options.entry === undefined
-                ? {}
+                ? placedKey === undefined
+                  ? {}
+                  : {
+                      entry: {
+                        kind: QUEUE_ENTRY_KIND,
+                        data: { key: placedKey, createdAt: startedAt },
+                      },
+                    }
                 : { entry: entryWithQueueKey(options.entry, entryKey) }),
         },
         SESSION_CONTEXT,
@@ -986,6 +1048,7 @@ export class ChatService {
       if (startsRun) this.setRunState(this.marker === undefined ? "idle" : "interrupted");
       throw error;
     } finally {
+      timing.conversationMs = Date.now() - conversationStart;
       this.submitting -= 1;
     }
 
@@ -1004,8 +1067,12 @@ export class ChatService {
         },
         submission,
       });
+      const markerStart = Date.now();
       await this.persistMarkerState();
+      timing.markerMs += Date.now() - markerStart;
+      const broadcastStart = Date.now();
       this.broadcastQueue();
+      timing.broadcastMs += Date.now() - broadcastStart;
     }
     if (steer) {
       this.steers.set(id, {
@@ -1018,6 +1085,7 @@ export class ChatService {
       });
     }
 
+    const statusStart = Date.now();
     const { message, placed } = await this.submittedMessage(
       submission,
       text,
@@ -1025,10 +1093,15 @@ export class ChatService {
       attachments,
       steerKey,
     );
+    timing.statusMs = Date.now() - statusStart;
     // An idle steer is already in the transcript; the response carries it, so no pending bubble
     // is left behind. A queued steer stays tracked until its entry is actually appended.
     if (steer && placed) this.steers.delete(id);
-    if (steer) this.broadcastQueue();
+    if (steer) {
+      const broadcastStart = Date.now();
+      this.broadcastQueue();
+      timing.broadcastMs += Date.now() - broadcastStart;
+    }
     const queued = queueMode && !placed;
     if (queued && !queuedInitially) {
       this.queued.set(id, {
@@ -1042,14 +1115,27 @@ export class ChatService {
         },
         submission,
       });
+      const markerStart = Date.now();
       await this.persistMarkerState();
+      timing.markerMs += Date.now() - markerStart;
+      const broadcastStart = Date.now();
       this.broadcastQueue();
+      timing.broadcastMs += Date.now() - broadcastStart;
     } else if (!queued && queuedInitially && this.queued.delete(id)) {
+      const markerStart = Date.now();
       await this.persistMarkerState();
+      timing.markerMs += Date.now() - markerStart;
+      const broadcastStart = Date.now();
       this.broadcastQueue();
+      timing.broadcastMs += Date.now() - broadcastStart;
     }
 
     void this.monitorSubmission(submission, startsRun, queued ? id : undefined);
+    logSubmitTiming({
+      ...timing,
+      totalMs: Date.now() - timingStart,
+      queueDepth: this.queued.size + this.steers.size,
+    });
     return { message, mode, queued, placed, queue: this.queueItems(), steers: this.steerItems() };
   }
 
@@ -1153,13 +1239,35 @@ export class ChatService {
   private async persistMarkerState(): Promise<void> {
     const marker = this.marker;
     if (marker === undefined) return;
-    const next: RunMarker = {
+    this.marker = {
       ...marker,
       queue: this.queueItems(),
       updatedAt: new Date().toISOString(),
     };
-    this.marker = next;
-    await this.writeMarker(next);
+    // The in-memory marker is authoritative and last-write-wins; one disk write per
+    // tick is enough, and the caller no longer waits for it before broadcasting.
+    this.scheduleMarkerWrite();
+  }
+
+  private scheduleMarkerWrite(): void {
+    if (this.markerTimer !== undefined) return;
+    this.markerTimer = setTimeout(() => {
+      this.markerTimer = undefined;
+      const marker = this.marker;
+      if (marker !== undefined) void this.writeMarker(marker);
+    }, 0);
+    this.markerTimer.unref?.();
+  }
+
+  /** Writes the newest marker before the process closes, without reviving a cleared one. */
+  private async flushMarkerState(): Promise<void> {
+    if (this.markerTimer !== undefined) {
+      clearTimeout(this.markerTimer);
+      this.markerTimer = undefined;
+    }
+    const marker = this.marker;
+    if (marker !== undefined) await this.writeMarker(marker);
+    else await this.markerWrites;
   }
 
   private async writeMarker(marker: RunMarker): Promise<void> {
@@ -1173,6 +1281,10 @@ export class ChatService {
 
   private async clearMarker(): Promise<void> {
     this.marker = undefined;
+    if (this.markerTimer !== undefined) {
+      clearTimeout(this.markerTimer);
+      this.markerTimer = undefined;
+    }
     this.markerWrites = this.markerWrites
       .then(() => this.markerStore.clear())
       .catch((error: unknown) => {

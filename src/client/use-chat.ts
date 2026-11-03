@@ -174,12 +174,11 @@ function optimisticMessage(item: OptimisticSend): ChatMessage {
   };
 }
 
-/** A confirmed message retires the optimistic copy it replaces, by id, key, or (idle) text. */
+/** A confirmed message retires the optimistic copy it replaces by the id/key it shares. */
 function confirmedOptimistic(item: OptimisticSend, message: ChatMessage): boolean {
   if (message.role !== "user") return false;
   if (message.id === optimisticId(item)) return true;
-  if (message.steerKey !== undefined && message.steerKey === item.key) return true;
-  return item.mode !== "steer" && item.text === message.text;
+  return message.steerKey !== undefined && message.steerKey === item.key;
 }
 
 /** Messages fetched per scroll-up page. */
@@ -629,6 +628,21 @@ export function useChat(options: UseChatOptions = {}) {
     return () => clearInterval(timer);
   }, [runState, refreshState]);
 
+  // A snapshot, SSE message, queue update or older page can confirm a pending send at any
+  // time. Retire the optimistic copy then, not only when its own fetch response arrives.
+  useEffect(() => {
+    if (optimistic.length === 0) return;
+    setOptimistic((current) => {
+      const next = current.filter(
+        (item) =>
+          !messages.some((message) => confirmedOptimistic(item, message)) &&
+          !queue.some((item2) => queuedMessageId(item2) === optimisticId(item)) &&
+          !(item.mode === "steer" && steers.some((steer) => steer.key === item.key)),
+      );
+      return next.length === current.length ? current : next;
+    });
+  }, [messages, queue, steers, optimistic]);
+
   if (draftThinking.length === 0) draftThinkingAt.current = null;
   else if (draftThinkingAt.current === null) draftThinkingAt.current = new Date().toISOString();
 
@@ -709,7 +723,7 @@ export function useChat(options: UseChatOptions = {}) {
     );
     for (const item of optimistic) {
       if (
-        heldIds.has(optimisticId(item)) ||
+        messages.some((message) => confirmedOptimistic(item, message)) ||
         queuedIds.has(optimisticId(item)) ||
         (item.mode === "steer" && pendingSteerKeys.has(item.key))
       ) {

@@ -131,6 +131,92 @@ test("paints the pending bubble before the message request returns", async ({
   await expect(browser.locator('[data-role="user"]').filter({ hasText: text })).toHaveCount(1);
 });
 
+test("keeps one user bubble when the server places a send before its response returns", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  // Hold the page's response only after the server has answered, so a snapshot can see the
+  // placed entry while the optimistic bubble is still pending. Patching fetch keeps the
+  // browser's shard cookie and let us release the response once the snapshot is checked.
+  await browser.addInitScript(`
+    (() => {
+      const original = window.fetch.bind(window);
+      let release = null;
+      window.__releaseMessageResponse = () => {
+        const resume = release;
+        release = null;
+        window.__messageResponseHeld = false;
+        if (resume) resume();
+      };
+      window.fetch = async (...args) => {
+        const response = await original(...args);
+        if (String(args[0]).includes("/api/message")) {
+          await new Promise((resolve) => {
+            release = resolve;
+            window.__messageResponseHeld = true;
+          });
+        }
+        return response;
+      };
+    })();
+  `);
+  await app.open("/");
+  const composer = screen.getByRole("textbox", "Message");
+  const text = `placed before response ${Date.now()}`;
+  const users = browser.locator('[data-role="user"]').filter({ hasText: text });
+  const pending = browser.locator('[data-pending-send="true"]').filter({ hasText: text });
+  await composer.fill(text);
+  try {
+    await screen.getByRole("button", "Send").tap();
+    const held = await browser.evaluate(async () => {
+      const state = window as unknown as { __messageResponseHeld?: boolean };
+      const deadline = performance.now() + 10_000;
+      while (state.__messageResponseHeld !== true && performance.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      return state.__messageResponseHeld === true;
+    });
+    expect(held).toBe(true);
+
+    const placed = await browser.evaluate(async (needle: string) => {
+      const deadline = performance.now() + 10_000;
+      while (performance.now() < deadline) {
+        const response = await fetch("/api/state", { cache: "no-store" });
+        if (response.ok) {
+          const state = (await response.json()) as {
+            messages?: { role?: string; text?: string }[];
+          };
+          if (
+            state.messages?.some((message) => message.role === "user" && message.text === needle)
+          ) {
+            // Force the same snapshot path a tab focus or SSE reconnect uses.
+            window.dispatchEvent(new Event("focus"));
+            return true;
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return false;
+    }, text);
+    expect(placed).toBe(true);
+    // The HTTP response is still held; the snapshot must have retired the optimistic copy.
+    await expect(pending).toHaveCount(0, { timeout: 3_000 });
+    await expect(users).toHaveCount(1);
+  } finally {
+    await browser.evaluate(() => {
+      (window as unknown as { __releaseMessageResponse?: () => void }).__releaseMessageResponse?.();
+      return null;
+    });
+  }
+
+  await expect(screen.getByText(`Echo: ${text}`, { exact: false })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(users).toHaveCount(1);
+  await expect(pending).toHaveCount(0);
+});
+
 test("renders assistant markdown without unsafe HTML", async ({ app, browser, screen }) => {
   await app.open("/");
   const composer = screen.getByRole("textbox", "Message");
