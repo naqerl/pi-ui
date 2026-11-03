@@ -2,20 +2,21 @@ import { randomUUID } from "node:crypto";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
-  type AgentEvent,
-  type AgentEventStream,
   AssistantEntry,
+  CompactionEntry,
   type Conversation,
+  type ConversationView,
+  type ConversationWatch,
   type EntryRecord,
   type Harness,
   InboxDoc,
   type InboxItem,
   type InputEntry,
+  type LiveState,
   type SettledSubmissionRecord,
-  type SnapshotEvent,
   type Submission,
   type SubmissionId,
-  watchEvents,
+  type ToolSlot,
 } from "@earendil-works/pi-durable";
 import { parseMemoryToolDetails } from "../shared/memory.js";
 import {
@@ -109,6 +110,53 @@ interface ActiveTool {
   /** The task this call was attributed to when it started, if any. */
   taskId?: string;
 }
+
+/** A view revision as the event handlers below consume it; watches replaced the event stream in 1.5. */
+type ViewMessageChange = { type: "message"; message: AssistantMessage };
+
+type ViewSnapshot = {
+  type: "snapshot";
+  entries: readonly EntryRecord[];
+  run?: { inputs: readonly SubmissionId[] };
+  generation?: { attempt: number; message?: AssistantMessage };
+  tools: readonly ToolSlot[];
+  inbox: readonly unknown[];
+};
+
+type ViewToolEndResult = {
+  output?: string;
+  details?: unknown;
+  isError?: boolean;
+  durationMs?: number;
+};
+
+type ViewEvent =
+  | ViewSnapshot
+  | { type: "run_start" }
+  | { type: "run_end" }
+  | { type: "message_update"; changes: readonly ViewMessageChange[] }
+  | { type: "message_end"; entry: EntryRecord }
+  | {
+      type: "tool_execution_start";
+      toolCallId: string;
+      toolName: string;
+      args: unknown;
+      parentToolCallId?: string;
+    }
+  | {
+      type: "tool_execution_end";
+      toolCallId: string;
+      toolName: string;
+      parentToolCallId?: string;
+      args?: unknown;
+      entry?: EntryRecord;
+      result?: ViewToolEndResult;
+    }
+  | { type: "entry_appended"; entry: EntryRecord }
+  | { type: "compaction_start"; reason: string }
+  | { type: "compaction_end"; reason: string; error?: string }
+  | { type: "auto_retry_start"; attempt: number; at: number; errorMessage: string }
+  | { type: "auto_retry_end"; attempt: number };
 
 interface QueuedRun {
   item: QueuedMessage;
@@ -407,9 +455,15 @@ export class ChatService {
   /** Proposal ids whose decision already reached the conversation. */
   private readonly taskDecisions = new Set<string>();
   private readonly activeTools = new Map<string, ActiveTool>();
-  private stream: AgentEventStream | undefined;
+  private stream: ConversationWatch | undefined;
   private closed = false;
-  /** When the agent's event stream last delivered anything; see `QUIET_AFTER_MS`. */
+  /** The newest entry in the attached view, so a later revision only reports what it appended. */
+  private lastViewEntryId: EntryRecord["id"] | undefined;
+  /** The last view's live state, diffed to recover run, tool, retry, and compaction changes. */
+  private viewLive: LiveState | undefined;
+  /** Compaction tasks whose checkpoint already refreshed the turn memory. */
+  private readonly compactionRefreshes = new Set<string>();
+  /** When the conversation watch last delivered anything; see `QUIET_AFTER_MS`. */
   private lastEventAt = Date.now();
   /** Submissions sent to durable that it has not recorded yet. */
   private submitting = 0;
@@ -505,13 +559,14 @@ export class ChatService {
   private readonly mediaRef = (data: string, mimeType: string) => this.media.refFor(data, mimeType);
 
   async start(): Promise<void> {
-    const stream = await watchEvents(this.harness, this.conversation.id, SESSION_CONTEXT);
+    const stream = await this.conversation.watch(SESSION_CONTEXT);
     this.stream = stream;
-    this.applySnapshot(stream.snapshot);
-    if (stream.snapshot.run !== undefined) {
+    const snapshot = this.resetView(stream.value);
+    this.applySnapshot(snapshot);
+    if (snapshot.run !== undefined) {
       this.setRunState("running");
     }
-    stream.start((events) => this.handleEvents(events));
+    this.listenToView(stream);
     this.watchStreamEnd(stream);
     this.watchdog = setInterval(() => void this.checkQuietRun(), WATCHDOG_INTERVAL_MS);
     this.watchdog.unref?.();
@@ -632,17 +687,31 @@ export class ChatService {
   }
 
   /**
-   * The event stream is the only thing that ends a run in this server. When durable ends it
-   * (a failed Session, a listener error), attach a new one; its snapshot settles the run state.
+   * The conversation view is the only thing that ends a run in this server. When durable ends
+   * it (a failed Session, a listener error), attach a new one; its snapshot settles the run state.
    */
-  private watchStreamEnd(stream: AgentEventStream): void {
+  private watchStreamEnd(stream: ConversationWatch): void {
     void stream.closed.then((end) => {
       if (this.closed || stream !== this.stream) return;
       console.error(
-        `[pi] agent event stream ended (${end.reason}); reattaching`,
-        "error" in end ? end.error : "",
+        `[pi] conversation watch ended (${end.kind}); reattaching`,
+        end.kind === "failed" || end.kind === "listener_error" ? end.error : "",
       );
       void this.reattachStream();
+    });
+  }
+
+  private listenToView(stream: ConversationWatch): void {
+    stream.start(async (call) => {
+      if (call.kind === "failed") {
+        console.error("[pi] conversation view failed", call.error);
+        return;
+      }
+      try {
+        await this.handleView(call.value);
+      } catch (error) {
+        console.error("[pi] view handling failed", error);
+      }
     });
   }
 
@@ -651,15 +720,15 @@ export class ChatService {
       await new Promise((resolve) => setTimeout(resolve, STREAM_RETRY_MS));
       if (this.closed) return;
       try {
-        const stream = await watchEvents(this.harness, this.conversation.id, SESSION_CONTEXT);
+        const stream = await this.conversation.watch(SESSION_CONTEXT);
         this.stream = stream;
-        await this.handleEvent(stream.snapshot);
-        stream.start((events) => this.handleEvents(events));
+        await this.handleEvent(this.resetView(stream.value));
+        this.listenToView(stream);
         this.watchStreamEnd(stream);
-        console.log("[pi] agent event stream reattached");
+        console.log("[pi] conversation view reattached");
         return;
       } catch (error) {
-        console.error("[pi] could not reattach the agent event stream", error);
+        console.error("[pi] could not reattach the conversation view", error);
       }
     }
   }
@@ -697,18 +766,14 @@ export class ChatService {
   }
 
   private async durableRunFacts(): Promise<DurableRunFacts> {
-    const state = await this.conversation.viewState(SESSION_CONTEXT);
-    try {
-      const live = state.value.docs["pi.live"] as { run?: unknown } | undefined;
-      const inbox = state.value.docs["pi.inbox"] as { items?: unknown[] } | undefined;
-      return {
-        run: live?.run !== undefined && live.run !== null,
-        inbox: inbox?.items?.length ?? 0,
-        submitting: this.submitting,
-      };
-    } finally {
-      state.dispose();
-    }
+    const view = await this.readView();
+    const live = view.docs["pi.live"] as { run?: unknown } | undefined;
+    const inbox = view.docs["pi.inbox"] as { items?: unknown[] } | undefined;
+    return {
+      run: live?.run !== undefined && live.run !== null,
+      inbox: inbox?.items?.length ?? 0,
+      submitting: this.submitting,
+    };
   }
 
   private reconcileRun(facts: DurableRunFacts): void {
@@ -1370,7 +1435,7 @@ export class ChatService {
       if (this.steers.has(steerId)) {
         if (final?.status === "unanswered") {
           this.dropSteer(steerId, steerDropReason(final.reason, final.detail));
-        } else if (final?.status === "done") {
+        } else if (final?.type === "input" && final.status === "done") {
           await this.consumeSteerEntry(final.entry, steerId);
           if (this.steers.has(steerId)) {
             this.dropSteer(steerId, "The run ended before the steer was delivered.");
@@ -1815,19 +1880,329 @@ export class ChatService {
     }
   }
 
-  private async handleEvents(events: readonly AgentEvent[]): Promise<void> {
+  /** Start a view revision's diff from a fresh attachment: no history is replayed. */
+  private resetView(view: ConversationView): ViewSnapshot {
+    let newest: EntryRecord["id"] | undefined;
+    for (const entry of view.entries) {
+      if (newest === undefined || entry.id > newest) newest = entry.id;
+    }
+    this.lastViewEntryId = newest;
+    this.viewLive = view.docs["pi.live"] as LiveState | undefined;
+    return this.viewSnapshot(view);
+  }
+
+  private viewSnapshot(view: ConversationView): ViewSnapshot {
+    const live = view.docs["pi.live"] as LiveState | undefined;
+    const inbox = view.docs["pi.inbox"] as { items?: readonly unknown[] } | undefined;
+    const message = live?.generation?.message as AssistantMessage | undefined;
+    return {
+      type: "snapshot",
+      entries: view.entries,
+      ...(live?.run === undefined ? {} : { run: { inputs: live.run.inputs } }),
+      ...(live?.generation === undefined
+        ? {}
+        : {
+            generation: {
+              attempt: live.generation.attempt,
+              ...(message === undefined ? {} : { message }),
+            },
+          }),
+      tools: live?.tools ?? [],
+      inbox: inbox?.items ?? [],
+    };
+  }
+
+  /**
+   * Turns one conversation view revision into the events the handlers below already understand.
+   * Durable 1.5 removed `watchEvents()`; the view carries the same run, partial, tool, retry,
+   * compaction, and transcript information, so the diff keeps the UI behaviour intact.
+   */
+  private async handleView(view: ConversationView): Promise<void> {
     this.lastEventAt = Date.now();
-    for (const event of events) {
+    const live = view.docs["pi.live"] as LiveState | undefined;
+    const previousLive = this.viewLive;
+    this.viewLive = live;
+
+    const newEntries: EntryRecord[] = [];
+    let newest = this.lastViewEntryId;
+    for (const entry of view.entries) {
+      if (this.lastViewEntryId === undefined || entry.id > this.lastViewEntryId) {
+        newEntries.push(entry);
+      }
+      if (newest === undefined || entry.id > newest) newest = entry.id;
+    }
+    this.lastViewEntryId = newest;
+    newEntries.sort((left, right) => left.id - right.id);
+
+    const partial = live?.generation?.message as AssistantMessage | undefined;
+    if (
+      partial !== undefined &&
+      partial !== (previousLive?.generation?.message as AssistantMessage | undefined)
+    ) {
+      await this.handleEvent({
+        type: "message_update",
+        changes: [{ type: "message", message: partial }],
+      });
+    }
+
+    const retryBefore = previousLive?.generation?.retry;
+    const retry = live?.generation?.retry;
+    if (retry !== undefined && retryBefore === undefined) {
+      await this.handleEvent({
+        type: "auto_retry_start",
+        attempt: live?.generation?.attempt ?? 0,
+        at: retry.at,
+        errorMessage: retry.error,
+      });
+    } else if (retry === undefined && retryBefore !== undefined) {
+      await this.handleEvent({
+        type: "auto_retry_end",
+        attempt: previousLive?.generation?.attempt ?? 0,
+      });
+    }
+
+    await this.dispatchToolEvents(view, previousLive);
+
+    for (const entry of newEntries) {
       if (this.closed) return;
       try {
-        await this.handleEvent(event);
+        await this.handleEvent(
+          entry.model?.[0] === undefined
+            ? { type: "entry_appended", entry }
+            : { type: "message_end", entry },
+        );
+        await this.releasePlacedQueueEntry(entry);
       } catch (error) {
-        console.error("[pi] event handling failed", error);
+        console.error("[pi] view entry handling failed", error);
       }
+    }
+    if (newEntries.length > 0) {
+      try {
+        await this.retireSettledQueueEntries();
+      } catch (error) {
+        console.error("[pi] queued settlement handling failed", error);
+      }
+    }
+
+    const compactionsBefore = previousLive?.compactions ?? [];
+    const compactions = live?.compactions ?? [];
+    for (const compaction of compactionsBefore) {
+      if (compactions.some((current) => current.taskId === compaction.taskId)) continue;
+      const failure = live?.compactionFailure;
+      await this.handleEvent({
+        type: "compaction_end",
+        reason: compaction.trigger,
+        ...(failure?.taskId === compaction.taskId ? { error: failure.error } : {}),
+      });
+    }
+    for (const compaction of compactions) {
+      if (compactionsBefore.some((previous) => previous.taskId === compaction.taskId)) continue;
+      this.compactionRefreshes.add(String(compaction.taskId));
+      await this.handleEvent({ type: "compaction_start", reason: compaction.trigger });
+    }
+
+    // A compaction that started and ended between two view revisions never appeared in
+    // `pi.live.compactions`; its failure or summary entry is the only trace of it.
+    const failure = live?.compactionFailure;
+    const failureBefore = previousLive?.compactionFailure;
+    const shortFailure =
+      failure !== undefined &&
+      failure.taskId !== failureBefore?.taskId &&
+      !compactions.some((compaction) => compaction.taskId === failure.taskId) &&
+      !compactionsBefore.some((compaction) => compaction.taskId === failure.taskId);
+    if (shortFailure) {
+      this.compactionRefreshes.add(String(failure.taskId));
+      await this.beforeTurn("compaction");
+      console.error(`[pi] compaction failed: ${failure.error}`);
+    }
+    const shortSummary = newEntries.find((entry) => {
+      if (entry.kind !== CompactionEntry.kind) return false;
+      return entry.byTaskId === undefined || !this.compactionRefreshes.has(String(entry.byTaskId));
+    });
+    if (shortSummary !== undefined && !shortFailure) {
+      if (shortSummary.byTaskId !== undefined) {
+        this.compactionRefreshes.add(String(shortSummary.byTaskId));
+      }
+      await this.beforeTurn("compaction");
+      const reason =
+        CompactionEntry.is(shortSummary) && isRecord(shortSummary.data)
+          ? shortSummary.data.reason
+          : "unknown";
+      console.log(`[pi] compaction finished (${String(reason)})`);
+    }
+
+    const wasRunning = previousLive?.run !== undefined;
+    const running = live?.run !== undefined;
+    if (running && !wasRunning) await this.handleEvent({ type: "run_start" });
+    else if (!running && wasRunning) await this.handleEvent({ type: "run_end" });
+  }
+
+  private async dispatchToolEvents(
+    view: ConversationView,
+    previousLive: LiveState | undefined,
+  ): Promise<void> {
+    const previous = new Map((previousLive?.tools ?? []).map((slot) => [slot.callId, slot]));
+    const current = new Map(
+      ((view.docs["pi.live"] as LiveState | undefined)?.tools ?? []).map((slot) => [
+        slot.callId,
+        slot,
+      ]),
+    );
+    const argumentsByCall = this.toolArguments(view.entries);
+    for (const slot of current.values()) {
+      const before = previous.get(slot.callId);
+      const args = argumentsByCall.get(slot.callId)?.arguments ?? {};
+      if (slot.status === "running" && before?.status !== "running") {
+        await this.handleEvent({
+          type: "tool_execution_start",
+          toolCallId: slot.callId,
+          toolName: slot.name,
+          args,
+        });
+      }
+      if (slot.status === "done" && before?.status !== "done") {
+        // A call that went pending (or appeared and finished) between two view revisions
+        // never got its start event; send one so the client has a chip to update.
+        if (before?.status !== "running") {
+          await this.handleEvent({
+            type: "tool_execution_start",
+            toolCallId: slot.callId,
+            toolName: slot.name,
+            args,
+          });
+        }
+        const entry = this.entryById(view.entries, slot.entry);
+        const result = this.toolResultFromSlot(slot);
+        await this.handleEvent({
+          type: "tool_execution_end",
+          toolCallId: slot.callId,
+          toolName: slot.name,
+          args,
+          ...(entry === undefined ? {} : { entry }),
+          ...(result === undefined ? {} : { result }),
+        });
+      }
+    }
+    for (const before of previous.values()) {
+      if (before.status === "done" || current.has(before.callId)) continue;
+      const entry = this.findToolResultEntry(view.entries, before.callId);
+      const result = this.toolResultFromSlot(before);
+      await this.handleEvent({
+        type: "tool_execution_end",
+        toolCallId: before.callId,
+        toolName: before.name,
+        args: argumentsByCall.get(before.callId)?.arguments ?? {},
+        ...(entry === undefined ? {} : { entry }),
+        ...(result === undefined ? {} : { result }),
+      });
     }
   }
 
-  private async handleEvent(event: AgentEvent): Promise<void> {
+  /** What a done tool slot still has when its result entry is missing (faulted, orphaned, or folded away). */
+  private toolResultFromSlot(slot: ToolSlot): ViewToolEndResult | undefined {
+    if (slot.output === undefined && slot.details === undefined) return undefined;
+    return {
+      ...(slot.output === undefined ? {} : { output: slot.output }),
+      ...(slot.details === undefined ? {} : { details: slot.details }),
+      isError: (slot.diagnostics?.length ?? 0) > 0,
+    };
+  }
+
+  private toolArguments(
+    entries: readonly EntryRecord[],
+  ): Map<string, { name: string; arguments: unknown }> {
+    const calls = new Map<string, { name: string; arguments: unknown }>();
+    for (const entry of entries) {
+      if (!AssistantEntry.is(entry)) continue;
+      const content = entry.model?.[0]?.content;
+      if (!Array.isArray(content)) continue;
+      for (const block of content) {
+        if (!isRecord(block) || block.type !== "toolCall" || typeof block.id !== "string") continue;
+        calls.set(block.id, {
+          name: typeof block.name === "string" ? block.name : "tool",
+          arguments: block.arguments,
+        });
+      }
+    }
+    return calls;
+  }
+
+  private entryById(
+    entries: readonly EntryRecord[],
+    id: EntryRecord["id"] | undefined,
+  ): EntryRecord | undefined {
+    return id === undefined ? undefined : entries.find((entry) => entry.id === id);
+  }
+
+  private findToolResultEntry(
+    entries: readonly EntryRecord[],
+    toolCallId: string,
+  ): EntryRecord | undefined {
+    return entries.find((entry) => {
+      const message = entry.model?.[0];
+      return message !== undefined && "toolCallId" in message && message.toolCallId === toolCallId;
+    });
+  }
+
+  /** A queued bubble retires when its entry is placed, after the placed message is published. */
+  private async releasePlacedQueueEntry(entry: EntryRecord): Promise<void> {
+    const data = isRecord(entry.data) ? entry.data : undefined;
+    const key =
+      typeof data?.queueKey === "string" && data.queueKey.length > 0
+        ? data.queueKey
+        : entry.kind === QUEUE_ENTRY_KIND && typeof data?.key === "string" && data.key.length > 0
+          ? data.key
+          : undefined;
+    if (key === undefined) return;
+    const removed = this.removeQueuedByKeys(new Set([key]));
+    if (removed) await this.publishQueueRetirement();
+  }
+
+  /**
+   * Retires queued bubbles whose submissions left `queued` even when their entry carried no
+   * matching key, such as the start-race path or an MCP merge replacement. Runs after the
+   * view's entries, so a placed message is already on screen before its bubble goes.
+   */
+  private async retireSettledQueueEntries(): Promise<void> {
+    if (this.queued.size === 0) return;
+    let removed = false;
+    for (const [id, queued] of [...this.queued]) {
+      const record = await queued.submission.status(SESSION_CONTEXT).catch(() => undefined);
+      if (record === undefined || record.status === "queued") continue;
+      // Do not retire before the placed entry is in the view, or the pending bubble would
+      // disappear for a frame while its transcript message is still in flight.
+      if (
+        record.entry !== undefined &&
+        (this.lastViewEntryId === undefined || record.entry > this.lastViewEntryId)
+      ) {
+        continue;
+      }
+      this.queued.delete(id);
+      removed = true;
+    }
+    if (removed) await this.publishQueueRetirement();
+  }
+
+  private removeQueuedByKeys(keys: ReadonlySet<string>): boolean {
+    let removed = false;
+    for (const [id, queued] of this.queued) {
+      if (queued.item.key === undefined || !keys.has(queued.item.key)) continue;
+      this.queued.delete(id);
+      removed = true;
+    }
+    return removed;
+  }
+
+  private async publishQueueRetirement(): Promise<void> {
+    await this.persistMarkerState();
+    this.broadcastQueue();
+    this.hub.broadcast({
+      event: "message.done",
+      data: { message: null } satisfies StreamMessageDone,
+    });
+  }
+
+  private async handleEvent(event: ViewEvent): Promise<void> {
     switch (event.type) {
       case "snapshot": {
         this.applySnapshot(event);
@@ -1875,49 +2250,12 @@ export class ChatService {
         this.setRunState("idle");
         return;
 
-      case "message_start":
-        if (event.message.role === "assistant") {
-          const previousText = this.currentText;
-          const previousThinking = this.currentThinking;
-          this.currentText = "";
-          this.currentThinking = "";
-          this.absorbMessage(event.message);
-          this.publishDraft(previousText, previousThinking);
-        }
-        return;
-
       case "message_update":
         for (const change of event.changes) {
-          if (change.type === "text_delta") {
-            this.currentText += change.delta;
-            this.broadcastText();
-          } else if (change.type === "thinking_delta") {
-            this.currentThinking += change.delta;
-            this.broadcastThinking();
-          } else if (change.type === "text_start") {
-            if (change.block.type === "text" && change.block.text.length > 0) {
-              this.currentText += change.block.text;
-              this.broadcastText();
-            }
-          } else if (change.type === "thinking_start") {
-            if (change.block.type === "thinking" && change.block.thinking.length > 0) {
-              this.currentThinking += change.block.thinking;
-              this.broadcastThinking();
-            }
-          } else if (change.type === "block") {
-            if (change.block.type === "text") {
-              this.currentText = change.block.text;
-              this.broadcastText();
-            } else if (change.block.type === "thinking") {
-              this.currentThinking = change.block.thinking;
-              this.broadcastThinking();
-            }
-          } else if (change.type === "message") {
-            const previousText = this.currentText;
-            const previousThinking = this.currentThinking;
-            this.absorbMessage(change.message);
-            this.publishDraft(previousText, previousThinking);
-          }
+          const previousText = this.currentText;
+          const previousThinking = this.currentThinking;
+          this.absorbMessage(change.message);
+          this.publishDraft(previousText, previousThinking);
         }
         return;
 
@@ -2045,45 +2383,6 @@ export class ChatService {
         return;
       }
 
-      case "submission": {
-        const id = String(event.record.id);
-        if (event.record.type !== "input") return;
-        if (event.record.status === "placed") {
-          const wasQueued = this.queued.delete(id);
-          if (wasQueued) {
-            await this.persistMarkerState();
-            this.broadcastQueue();
-            this.hub.broadcast({
-              event: "message.done",
-              data: { message: null } satisfies StreamMessageDone,
-            });
-          }
-          // The entry event normally consumes the steer first. If it did not, read the entry
-          // now: the pending bubble must stay until the transcript message can replace it.
-          if (this.steers.has(id)) await this.consumeSteerEntry(event.record.entry, id);
-        } else if (event.record.status === "done") {
-          if (this.queued.delete(id)) {
-            await this.persistMarkerState();
-            this.broadcastQueue();
-          }
-          if (this.steers.has(id) && !(await this.consumeSteerEntry(event.record.entry, id))) {
-            this.dropSteer(id, "The run ended before the steer was delivered.");
-          }
-        } else if (event.record.status === "unanswered") {
-          if (this.queued.delete(id)) {
-            await this.persistMarkerState();
-            this.broadcastQueue();
-          }
-          this.dropSteer(id, steerDropReason(event.record.reason, event.record.detail));
-        }
-        return;
-      }
-
-      case "inbox_update":
-        // The inbox only says which steers are still waiting. Placement and settlement events
-        // retire them once their transcript entry exists, so a disappearance here is not enough.
-        return;
-
       case "entry_appended":
         if (event.entry.kind === JOB_NOTICE_ENTRY_KIND) {
           const activity = buildTranscript([event.entry]).activity[0];
@@ -2102,10 +2401,6 @@ export class ChatService {
             data: { message: null } satisfies StreamMessageDone,
           });
         }
-        return;
-
-      case "task_failed":
-        console.error(`[pi] ${event.kind} task ${event.taskId} failed: ${event.message}`);
         return;
 
       case "compaction_start":
@@ -2142,7 +2437,7 @@ export class ChatService {
     }
   }
 
-  private applySnapshot(snapshot: SnapshotEvent): void {
+  private applySnapshot(snapshot: ViewSnapshot): void {
     this.currentText = "";
     this.currentThinking = "";
     this.rememberLatestMcpNotice(snapshot.entries);
@@ -2186,7 +2481,7 @@ export class ChatService {
   }
 
   private toolActivity(
-    event: Extract<AgentEvent, { type: "tool_execution_end" }>,
+    event: Extract<ViewEvent, { type: "tool_execution_end" }>,
     active: ActiveTool | undefined,
   ): ToolActivity {
     if (event.entry) {
@@ -2200,8 +2495,8 @@ export class ChatService {
       kind: "tool",
       id: `local-${event.toolCallId}`,
       name: event.toolName,
-      arguments: formatToolArguments(active?.args),
-      output: result ? formatToolResult(result) : "The tool did not finish.",
+      arguments: formatToolArguments(active?.args ?? event.args),
+      output: result?.output === undefined ? "The tool did not finish." : formatToolResult(result),
       details: formatToolDetails(result?.details),
       ...(memory === undefined ? {} : { memory }),
       isError: result?.isError ?? true,
@@ -2222,28 +2517,34 @@ export class ChatService {
   /** After a restart, steers still in durable's inbox are listed again, so they can be taken back. */
   private async restorePendingSteers(): Promise<void> {
     try {
-      const state = await this.conversation.viewState(SESSION_CONTEXT);
-      try {
-        const inbox = state.value.docs["pi.inbox"] as
-          | {
-              items?: {
-                id?: unknown;
-                mode?: unknown;
-                content?: unknown;
-                entry?: { data?: unknown };
-              }[];
-            }
-          | undefined;
-        for (const item of inbox?.items ?? []) {
-          const steer = steerFromInboxItem(item);
-          if (steer === undefined || this.steers.has(steer.id)) continue;
-          this.steers.set(steer.id, steer);
-        }
-      } finally {
-        state.dispose();
+      const view = await this.readView();
+      const inbox = view.docs["pi.inbox"] as
+        | {
+            items?: {
+              id?: unknown;
+              mode?: unknown;
+              content?: unknown;
+              entry?: { data?: unknown };
+            }[];
+          }
+        | undefined;
+      for (const item of inbox?.items ?? []) {
+        const steer = steerFromInboxItem(item);
+        if (steer === undefined || this.steers.has(steer.id)) continue;
+        this.steers.set(steer.id, steer);
       }
     } catch (error) {
       console.error("[pi] could not read pending steers", error);
+    }
+  }
+
+  /** Reads one conversation view and releases its watch; for the watchdog and restart recovery. */
+  private async readView(): Promise<ConversationView> {
+    const watch = await this.conversation.watch(SESSION_CONTEXT);
+    try {
+      return watch.value;
+    } finally {
+      await watch.stop();
     }
   }
 
