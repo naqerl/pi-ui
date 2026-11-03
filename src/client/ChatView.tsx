@@ -1383,7 +1383,6 @@ export function ChatView({
     [timeline],
   );
   const footerRef = useRef<HTMLDivElement | null>(null);
-  const [footerClearance, setFooterClearance] = useState(0);
 
   useEffect(() => {
     if (!statsPage) return;
@@ -1392,29 +1391,9 @@ export function ChatView({
     if (footer !== null && active instanceof HTMLElement && footer.contains(active)) active.blur();
   }, [statsPage]);
 
-  useLayoutEffect(() => {
-    const footer = footerRef.current;
-    const container = footer?.parentElement;
-    if (footer === null || container == null) return;
-    const measure = () => {
-      const footerBox = footer.getBoundingClientRect();
-      // The composer body collapses on the stats page, but the dock chrome stays and the
-      // transcript still reserves the whole dock so its bottom edge does not move.
-      const nextFooter = footerBox.height;
-      setFooterClearance((current) =>
-        Math.abs(current - nextFooter) < 0.5 ? current : nextFooter,
-      );
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(footer);
-    observer.observe(container);
-    return () => observer.disconnect();
-  }, []);
-
-  // Re-run the stick sync when the transcript or the composer dock changes height.
-  // The composer grows with the draft, and the body collapses on the stats page.
-  const stick = useStickToBottom(`${timeline.length}:${footerClearance}`);
+  // Re-run the stick sync when the transcript changes. The scroller's own
+  // ResizeObserver keeps the end pinned while the dock animates below it.
+  const stick = useStickToBottom(timeline.length);
 
   // When a reply finishes, show it from its start (with the run info row above it) instead of
   // leaving the reader at its last line. Only when the reader is still following the end:
@@ -1531,7 +1510,7 @@ export function ChatView({
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="chat-shell min-h-0">
       {interrupted && (
         <div
           role="status"
@@ -1566,26 +1545,22 @@ export function ChatView({
               inert={pager.page !== STATS_PAGE && !pager.dragging ? true : undefined}
             >
               <Suspense fallback={null}>
-                <StatsView
-                  stats={stats}
-                  ready={ready}
-                  active={statsPage}
-                  footerClearance={footerClearance}
-                />
+                <StatsView stats={stats} ready={ready} active={statsPage} footerClearance={0} />
               </Suspense>
             </section>
             <section
-              className="h-full min-w-0 shrink-0 grow-0 basis-full"
+              className="flex h-full min-h-0 min-w-0 shrink-0 grow-0 basis-full flex-col"
               aria-hidden={pager.page !== CHAT_PAGE && !pager.dragging}
               inert={pager.page !== CHAT_PAGE && !pager.dragging ? true : undefined}
             >
-              <main ref={stick.containerRef} className="h-full overflow-x-hidden overflow-y-auto">
+              <main ref={stick.containerRef} data-testid="chat-scroller" className="chat-scroller">
                 <div
                   ref={stick.contentRef}
+                  data-testid="chat-content"
                   className="mx-auto flex w-full max-w-[72ch] flex-col gap-4 px-4"
                   style={{
                     paddingTop: TRANSCRIPT_END_GAP,
-                    paddingBottom: footerClearance + TRANSCRIPT_END_GAP,
+                    paddingBottom: TRANSCRIPT_END_GAP,
                   }}
                 >
                   {!ready && (
@@ -1644,91 +1619,17 @@ export function ChatView({
                   tasks={tasks}
                   activity={taskActivity}
                   ready={ready}
-                  footerClearance={footerClearance}
+                  footerClearance={0}
                   onLedger={applyTasks}
                 />
               </Suspense>
             </section>
           </div>
         </div>
-        <div
-          ref={footerRef}
-          data-testid="composer-dock"
-          data-transitioning={pager.dragging || pageAnimating ? "true" : undefined}
-          className="float-footer absolute z-20 theme-radius"
-        >
-          <div data-testid="composer-slide">
-            <div className="ink-line flex items-center gap-3 border-b py-1.5 pr-1.5 pl-[18px]">
-              <div
-                data-testid="working-status"
-                data-open={running ? "true" : "false"}
-                aria-live="polite"
-                className="min-w-0 flex-1 truncate font-mono text-[11px] leading-4 text-muted-foreground"
-              >
-                {running ? (
-                  <WorkingIndicator running={running} thinking={thinking} />
-                ) : (
-                  <span>idle</span>
-                )}
-              </div>
-              <div
-                role="tablist"
-                aria-label="Pages"
-                data-testid="page-dots"
-                className="flex shrink-0 items-center justify-center"
-              >
-                {PAGES.map((item, index) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    role="tab"
-                    aria-selected={pager.page === index}
-                    aria-label={item.label}
-                    data-testid={`page-dot-${item.id}`}
-                    className="grid h-6 w-6 place-items-center"
-                    onClick={() => selectPage(index)}
-                  >
-                    <span
-                      className={cn(
-                        "block rounded-full transition-[width,height,border-radius] duration-200 ease-out motion-reduce:transition-none",
-                        pager.page === index
-                          ? "size-3 rounded-[4px] bg-foreground"
-                          : "size-1.5 bg-foreground/40",
-                      )}
-                    />
-                  </button>
-                ))}
-              </div>
-              <PiMenu />
-            </div>
-            <div
-              data-testid="composer-body"
-              data-hidden={statsPage ? "true" : "false"}
-              data-collapsed={statsPage ? "true" : "false"}
-              aria-hidden={statsPage ? true : undefined}
-              inert={statsPage ? true : undefined}
-              className="composer-body"
-            >
-              <div>
-                <Composer
-                  tasksPage={tasksPage}
-                  running={running}
-                  send={handleSend}
-                  stop={stop}
-                  unsendSteer={!tasksPage && pendingSteers > 0 ? unsendSteer : undefined}
-                  addTask={addTask}
-                  projects={projects}
-                  error={composerError}
-                  onDismissError={() => setComposerError(null)}
-                />
-              </div>
-            </div>
-          </div>
-        </div>
         {ready && groups.length === 0 && pager.page === CHAT_PAGE && (
           <p
             className="pointer-events-none absolute inset-x-0 z-10 -translate-y-1/2 px-4 text-center font-mono text-xs text-muted-foreground"
-            style={{ top: `calc((100% - ${footerClearance}px) / 2)` }}
+            style={{ top: "50%" }}
           >
             Send a message to start.
           </p>
@@ -1736,7 +1637,7 @@ export function ChatView({
         {!stick.attached && pager.page === CHAT_PAGE && (
           <div
             className="pointer-events-none absolute inset-x-0 z-20 flex justify-center"
-            style={{ bottom: footerClearance + 8 }}
+            style={{ bottom: 8 }}
           >
             <button
               type="button"
@@ -1747,6 +1648,80 @@ export function ChatView({
             </button>
           </div>
         )}
+      </div>
+      <div
+        ref={footerRef}
+        data-testid="composer-dock"
+        data-transitioning={pager.dragging || pageAnimating ? "true" : undefined}
+        className="float-footer relative z-20 theme-radius"
+      >
+        <div data-testid="composer-slide">
+          <div className="ink-line flex items-center gap-3 border-b py-1.5 pr-1.5 pl-[18px]">
+            <div
+              data-testid="working-status"
+              data-open={running ? "true" : "false"}
+              aria-live="polite"
+              className="min-w-0 flex-1 truncate font-mono text-[11px] leading-4 text-muted-foreground"
+            >
+              {running ? (
+                <WorkingIndicator running={running} thinking={thinking} />
+              ) : (
+                <span>idle</span>
+              )}
+            </div>
+            <div
+              role="tablist"
+              aria-label="Pages"
+              data-testid="page-dots"
+              className="flex shrink-0 items-center justify-center"
+            >
+              {PAGES.map((item, index) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={pager.page === index}
+                  aria-label={item.label}
+                  data-testid={`page-dot-${item.id}`}
+                  className="grid h-6 w-6 place-items-center"
+                  onClick={() => selectPage(index)}
+                >
+                  <span
+                    className={cn(
+                      "block rounded-full transition-[width,height,border-radius] duration-200 ease-out motion-reduce:transition-none",
+                      pager.page === index
+                        ? "size-3 rounded-[4px] bg-foreground"
+                        : "size-1.5 bg-foreground/40",
+                    )}
+                  />
+                </button>
+              ))}
+            </div>
+            <PiMenu />
+          </div>
+          <div
+            data-testid="composer-body"
+            data-hidden={statsPage ? "true" : "false"}
+            data-collapsed={statsPage ? "true" : "false"}
+            aria-hidden={statsPage ? true : undefined}
+            inert={statsPage ? true : undefined}
+            className="composer-body"
+          >
+            <div>
+              <Composer
+                tasksPage={tasksPage}
+                running={running}
+                send={handleSend}
+                stop={stop}
+                unsendSteer={!tasksPage && pendingSteers > 0 ? unsendSteer : undefined}
+                addTask={addTask}
+                projects={projects}
+                error={composerError}
+                onDismissError={() => setComposerError(null)}
+              />
+            </div>
+          </div>
+        </div>
       </div>
       {activityRun !== undefined && (
         <Suspense fallback={null}>
