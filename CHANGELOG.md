@@ -1,3 +1,7 @@
+## 1.6.78 - 2026-11-03
+
+- feat(chat): preview a task from its 4-character id and open it on click (c3fc).
+
 ## 1.6.77 - 2026-11-03
 
 - feat(tasks): create tasks directly and paint them before the response (2div).
