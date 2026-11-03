@@ -88,14 +88,28 @@ export function usePager(count: number, initial = 0) {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      // IME candidate keys are text, not shortcuts.
+      if (event.isComposing) return;
       if (!event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        setPage(pageRef.current + (event.key === "ArrowRight" ? 1 : -1));
+        return;
+      }
+      // Use the physical digit so Alt+1 still pages when the layout makes the
+      // character "¡" (macOS and latin-american layouts).
+      const match = /^(?:Digit|Numpad)([1-9])$/.exec(event.code);
+      const digit = match?.[1] ?? (/^[1-9]$/.test(event.key) ? event.key : null);
+      if (digit === null) return;
+      const index = Number(digit) - 1;
+      if (index >= count) return;
+      // preventDefault first: this key must never reach a focused composer.
       event.preventDefault();
-      setPage(pageRef.current + (event.key === "ArrowRight" ? 1 : -1));
+      setPage(index);
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [setPage]);
+  }, [count, setPage]);
 
   useEffect(() => {
     const node = pagerRef.current;
