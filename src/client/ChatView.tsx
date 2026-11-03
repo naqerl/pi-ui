@@ -1,6 +1,7 @@
 import {
   lazy,
   type PointerEvent as ReactPointerEvent,
+  type RefObject,
   Suspense,
   useCallback,
   useEffect,
@@ -792,6 +793,7 @@ function Composer({
   projects,
   error,
   onDismissError,
+  textareaRef,
 }: {
   tasksPage: boolean;
   running: boolean;
@@ -809,6 +811,7 @@ function Composer({
   projects: string[];
   error: string | null;
   onDismissError: () => void;
+  textareaRef: RefObject<HTMLTextAreaElement | null>;
 }) {
   const [value, setValue] = useState("");
   const [caret, setCaret] = useState<number | null>(null);
@@ -830,7 +833,6 @@ function Composer({
   const readyIds = attachments.items.flatMap((item) =>
     item.status === "ready" && item.id !== undefined ? [item.id] : [],
   );
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
   const rowWidthRef = useRef<number | null>(null);
@@ -930,7 +932,7 @@ function Composer({
     element.style.height = `${nextHeight}px`;
     element.style.overflowY = contentHeight > maxHeight ? "auto" : "hidden";
     if (singleLine) element.scrollTop = 0;
-  }, []);
+  }, [textareaRef]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: value drives the autosize and caret reset
   useLayoutEffect(() => {
@@ -1337,6 +1339,7 @@ export function ChatView({
 }: ChatViewProps) {
   useViewportHeight();
   const pager = usePager(PAGES.length, pageFromLocation());
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const lastVibratedPage = useRef(pager.page);
   const [composerError, setComposerError] = useState<string | null>(null);
   const [optimisticTasks, setOptimisticTasks] = useState<OptimisticTask[]>([]);
@@ -1410,6 +1413,32 @@ export function ChatView({
     const timer = window.setTimeout(() => setPageAnimating(false), PAGE_SETTLE_MS);
     return () => window.clearTimeout(timer);
   }, [pager.page, pager.dragging]);
+
+  // Ctrl+J is the composer shortcut from every page. Switching pages first
+  // keeps the focus attempt out of the slide's first frame.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.isComposing) return;
+      if (!event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
+      if (event.code !== "KeyJ" && event.key.toLowerCase() !== "j") return;
+      event.preventDefault();
+      const focusComposer = () => {
+        const element = composerRef.current;
+        if (element === null) return;
+        element.focus({ preventScroll: true });
+        const end = element.value.length;
+        element.setSelectionRange(end, end);
+      };
+      if (pager.page === CHAT_PAGE) {
+        focusComposer();
+        return;
+      }
+      pager.setPage(CHAT_PAGE);
+      requestAnimationFrame(focusComposer);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [pager.page, pager.setPage]);
 
   useEffect(() => {
     const id = PAGES[pager.page]?.id;
@@ -1816,6 +1845,7 @@ export function ChatView({
                 projects={projects}
                 error={composerError}
                 onDismissError={() => setComposerError(null)}
+                textareaRef={composerRef}
               />
             </div>
           </div>

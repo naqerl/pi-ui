@@ -368,3 +368,147 @@ test("lets a horizontal wheel scroll the block but pages at its left edge", asyn
   expect(back?.page).toBe("stats");
   expect(back?.scrollLeft).toBe(0);
 });
+
+test("jumps between pages with alt+1/2/3 and keeps alt+arrow paging", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({ json: snapshot });
+  });
+  await app.open("/");
+  await expect(screen.getByText("Here is a wide block:", { exact: false })).toBeVisible();
+
+  const page = async () => {
+    await browser.evaluate(async () => {
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+      return true;
+    });
+    return browser.evaluate(
+      () => document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
+    );
+  };
+
+  expect(await page()).toBe("chat");
+  await browser.keyboard.press("Alt+1");
+  expect(await page()).toBe("stats");
+  await browser.keyboard.press("Alt+2");
+  expect(await page()).toBe("chat");
+  await browser.keyboard.press("Alt+3");
+  expect(await page()).toBe("tasks");
+
+  await browser.keyboard.press("Alt+ArrowLeft");
+  expect(await page()).toBe("chat");
+  await browser.keyboard.press("Alt+ArrowRight");
+  expect(await page()).toBe("tasks");
+});
+
+test("ctrl+j returns to chat and focuses the end of the draft", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({ json: snapshot });
+  });
+  await app.open("/");
+  const composer = screen.getByRole("textbox", "Message");
+  await composer.fill("a draft");
+  await browser.keyboard.press("Alt+1");
+  await browser.evaluate(async () => {
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+    return true;
+  });
+  expect(
+    await browser.evaluate(
+      () => document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
+    ),
+  ).toBe("stats");
+
+  await browser.keyboard.press("Control+j");
+  await browser.evaluate(async () => {
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+    return true;
+  });
+  const result = await browser.evaluate(() => {
+    const pager = document.querySelector("[data-testid=pager]");
+    const textarea = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
+    return {
+      page: pager?.getAttribute("data-page") ?? null,
+      active: document.activeElement === textarea,
+      value: textarea?.value ?? null,
+      caret: textarea?.selectionStart ?? null,
+      end: textarea?.value.length ?? null,
+    };
+  });
+  expect(result.page).toBe("chat");
+  expect(result.active).toBe(true);
+  expect(result.value).toBe("a draft");
+  expect(result.caret).toBe(result.end);
+
+  // A plain digit is text for the composer, not a page shortcut.
+  await browser.keyboard.type("1");
+  await browser.evaluate(async () => {
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+    return true;
+  });
+  const typed = await browser.evaluate(() => {
+    const pager = document.querySelector("[data-testid=pager]");
+    const textarea = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
+    return {
+      page: pager?.getAttribute("data-page") ?? null,
+      value: textarea?.value ?? null,
+    };
+  });
+  expect(typed.page).toBe("chat");
+  expect(typed.value).toBe("a draft1");
+});
+
+test("alt+1 uses the digit's physical key when the layout produces a symbol", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({ json: snapshot });
+  });
+  await app.open("/");
+  await expect(screen.getByText("Here is a wide block:", { exact: false })).toBeVisible();
+  const prevented = await browser.evaluate(() => {
+    const textarea = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
+    if (textarea === null) return false;
+    const event = new KeyboardEvent("keydown", {
+      key: "¡",
+      code: "Digit1",
+      altKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    textarea.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(prevented).toBe(true);
+  await browser.evaluate(async () => {
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+    return true;
+  });
+  expect(
+    await browser.evaluate(
+      () => document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
+    ),
+  ).toBe("stats");
+});
