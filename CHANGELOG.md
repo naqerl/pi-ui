@@ -1,3 +1,7 @@
+## 1.6.67 - 2026-11-03
+
+- feat(stats): the dashboard becomes a composable grid — widgets drag, resize and group into sections, layout persists through the same `dashboard_layout` payload the agent writes, and mobile keeps the single-column stack (w3mg).
+
 ## 1.6.66 - 2026-11-03
 
 - `sops` is pinned to 3.13.3 and its SHA-256 is verified before the binary is installed, so a re-tagged or tampered GitHub release cannot enter the image; `pinentry-curses` is installed alongside `gnupg` so a passphrase-protected key has a prompt when a terminal exists.
