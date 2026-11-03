@@ -535,15 +535,24 @@ test("pins the last bubble at the bottom while the composer animates and leaves 
       if (running) requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
+    const startedAt = performance.now();
     stats.click();
     await new Promise((resolve) => setTimeout(resolve, 340));
     running = false;
     await nextFrame();
-    return { max: Math.max(...samples), samples: samples.length };
+    return {
+      max: Math.max(...samples),
+      samples: samples.length,
+      elapsedMs: performance.now() - startedAt,
+    };
   });
 
   expect(pinned).not.toBeNull();
-  expect(pinned?.samples ?? 0).toBeGreaterThan(6);
+  // A busy CI runner paints far fewer frames than 60 Hz over the same span, so
+  // judge the sampling window by time and require only a handful of frames: the
+  // pin assertion below is what actually encodes the behaviour.
+  expect(pinned?.elapsedMs ?? 0).toBeGreaterThanOrEqual(330);
+  expect(pinned?.samples ?? 0).toBeGreaterThanOrEqual(3);
   expect(pinned?.max ?? 99).toBeLessThanOrEqual(2);
 
   const detached = await browser.evaluate(async () => {
