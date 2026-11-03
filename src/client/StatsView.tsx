@@ -70,10 +70,6 @@ export interface ChatStats {
 
 const HEARTBEAT_MS = 20_000;
 
-/** Explains what the token rows count, shown above the token widget's rows. */
-const TOKENS_NOTE =
-  "Totals cover this conversation. Input excludes cached tokens; cache hit is cache read over all prompt tokens.";
-
 const LAYOUT_DEBOUNCE_MS = 600;
 const GRID_MARGIN = 12;
 const GRID_ROW_HEIGHT = 44;
@@ -812,8 +808,6 @@ function WidgetCard({
   const press = useRef<{ timer: number; x: number; y: number } | null>(null);
   const cardRef = useRef<HTMLElement | null>(null);
   const error = value?.error;
-  const note =
-    widget.source.type === "builtin" && widget.source.name === "tokens" ? TOKENS_NOTE : undefined;
 
   useEffect(() => {
     if (!menu) return;
@@ -913,14 +907,6 @@ function WidgetCard({
         </span>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {note === undefined ? null : (
-          <p
-            className="pb-1 text-[10px] leading-4 text-muted-foreground [overflow-wrap:anywhere]"
-            data-testid={`widget-${widget.id}-note`}
-          >
-            {note}
-          </p>
-        )}
         {view !== undefined ? (
           <ViewBody id={widget.id} view={view} chart={widget.chart} />
         ) : (

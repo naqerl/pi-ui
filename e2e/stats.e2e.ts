@@ -98,8 +98,8 @@ for (const width of [390, 1280]) {
       };
     });
     expect(read).toEqual({
-      note: "Totals cover this conversation. Input excludes cached tokens; cache hit is cache read over all prompt tokens.",
-      noteBeforeRows: true,
+      note: null,
+      noteBeforeRows: false,
       context: expect.stringContaining("52,700 / 200,000 · 26.4%"),
       input: "12,000",
       output: "4,700",
