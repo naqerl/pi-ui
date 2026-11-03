@@ -22,21 +22,28 @@ async function readDashboard(browser: {
   });
 }
 
-/** Drives the page's pointer shim with the same synthetic events a touch or mouse test uses. */
+/** Drives the page's hold-to-drag pointer shim with the same synthetic events a touch or mouse test uses. */
 async function dragPointer(
   browser: {
     evaluate<T>(
-      fn: (input: { from: string; to: string; dx: number; dy: number }) => T,
-      input: { from: string; to: string; dx: number; dy: number },
+      fn: (input: {
+        from: string;
+        to: string;
+        dx: number;
+        dy: number;
+        holdMs: number;
+      }) => Promise<T> | T,
+      input: { from: string; to: string; dx: number; dy: number; holdMs: number },
     ): Promise<T>;
   },
   from: string,
   to: string,
   dx = 0,
   dy = 0,
+  holdMs = 400,
 ) {
   await browser.evaluate(
-    ({ from, to, dx, dy }) => {
+    async ({ from, to, dx, dy, holdMs }) => {
       const source = document.querySelector<HTMLElement>(from);
       const target = document.querySelector<HTMLElement>(to);
       if (source === null || target === null) throw new Error("missing drag element");
@@ -63,14 +70,51 @@ async function dragPointer(
         );
       };
       fire("pointerdown", x0, y0, 1);
+      if (holdMs > 0) await new Promise((resolve) => setTimeout(resolve, holdMs));
       for (let step = 1; step <= 6; step += 1) {
         fire("pointermove", x0 + ((x1 - x0) * step) / 6, y0 + ((y1 - y0) * step) / 6, 1);
       }
       fire("pointerup", x1, y1, 0);
       return true;
     },
-    { from, to, dx, dy },
+    { from, to, dx, dy, holdMs },
   );
+}
+
+/** A press that ends before the hold delay must stay a tap. */
+async function tapPointer(
+  browser: {
+    evaluate<T>(fn: (selector: string) => Promise<T> | T, selector: string): Promise<T>;
+  },
+  selector: string,
+) {
+  await browser.evaluate(async (selector) => {
+    const source = document.querySelector<HTMLElement>(selector);
+    if (source === null) throw new Error("missing tap element");
+    const box = source.getBoundingClientRect();
+    const x = box.left + box.width / 2;
+    const y = box.top + box.height / 2;
+    const fire = (type: string, buttons: number) => {
+      source.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          pointerId: 13,
+          pointerType: "mouse",
+          isPrimary: true,
+          clientX: x,
+          clientY: y,
+          button: 0,
+          buttons,
+        }),
+      );
+    };
+    fire("pointerdown", 1);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    fire("pointerup", 0);
+    return true;
+  }, selector);
 }
 
 test("drags a widget to the top, resizes it to half, and keeps both after reload", async ({
@@ -89,15 +133,15 @@ test("drags a widget to the top, resizes it to half, and keeps both after reload
   await app.open("/?page=stats");
   await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
   await expect(screen.getByTestId("widget-tokens")).toBeVisible({ timeout: 30_000 });
-  await expect(screen.getByTestId("widget-tokens-drag")).toBeVisible({ timeout: 30_000 });
+  expect(
+    await browser.evaluate(() => ({
+      add: document.querySelectorAll('[data-testid="dashboard-add-section"]').length,
+      sections: document.querySelectorAll('[data-testid="dashboard-section"]').length,
+      widgets: document.querySelectorAll("[data-widget-id]").length,
+    })),
+  ).toEqual({ add: 0, sections: 1, widgets: 4 });
 
-  await dragPointer(
-    browser,
-    '[data-testid="widget-tokens-drag"]',
-    '[data-testid="widget-context"]',
-    0,
-    -18,
-  );
+  await dragPointer(browser, '[data-widget-id="tokens"]', '[data-widget-id="context"]', 0, -18);
   await expect
     .poll(
       () =>
@@ -201,87 +245,212 @@ test("drags a widget to the top, resizes it to half, and keeps both after reload
   await browser.unroute("**/api/dashboard/layout");
 });
 
-test("renames, adds and deletes sections, and moves a widget between them", async ({
+test("creates a section through the agent, then renames and deletes it", async ({
   app,
   browser,
   screen,
 }) => {
-  await browser.setViewport({ width: 1280, height: 1000 });
-  await app.open("/?page=stats");
-  await expect(screen.getByTestId("dashboard-add-section")).toBeVisible({ timeout: 30_000 });
+  await browser.setViewport({ width: 1280, height: 1600 });
+  const calls = [
+    {
+      name: "dashboard_upsert",
+      arguments: {
+        id: "agent-note",
+        title: "Agent note",
+        kind: "markdown",
+        source: { type: "static" },
+        mapping: { text: "=Created by the agent" },
+      },
+    },
+    {
+      name: "dashboard_layout",
+      arguments: {
+        sections: [
+          {
+            widgets: [
+              { id: "context", span: "full" },
+              { id: "tokens", span: "full" },
+              { id: "mcp", span: "full" },
+              { id: "mcp-events", span: "full" },
+            ],
+          },
+          { title: "Agent", widgets: [{ id: "agent-note", span: "full" }] },
+        ],
+      },
+    },
+  ];
+  await app.open("/");
+  await screen.getByRole("textbox", "Message").fill(`TOOLCALLS ${JSON.stringify(calls)}`);
+  await screen.getByRole("button", "Send").tap();
+  await expect
+    .poll(async () => (await readDashboard(browser)).layout.sections.length, { timeout: 30_000 })
+    .toBe(2);
+  await screen.getByRole("tab", "Stats").tap();
+  await expect(screen.getByTestId("widget-agent-note")).toBeVisible({ timeout: 30_000 });
 
-  const title = screen.getByRole("textbox", "Section title");
+  expect(
+    await browser.evaluate(() => ({
+      add: document.querySelectorAll('[data-testid="dashboard-add-section"]').length,
+      titles: [...document.querySelectorAll<HTMLInputElement>('[data-testid="section-title"]')].map(
+        (input) => input.value || null,
+      ),
+      widgets: [...document.querySelectorAll<HTMLElement>("[data-widget-id]")].map(
+        (card) => card.dataset.widgetId ?? "",
+      ),
+    })),
+  ).toEqual({
+    add: 0,
+    titles: [null, "Agent"],
+    widgets: ["context", "tokens", "mcp", "mcp-events", "agent-note"],
+  });
+
+  const title = screen.getByRole("textbox", "Section title").first();
   await title.fill("Runtime");
   await title.press("Enter");
   await expect
     .poll(async () => (await readDashboard(browser)).layout.sections[0]?.title)
     .toBe("Runtime");
 
-  await screen.getByTestId("dashboard-add-section").tap();
-  await expect
-    .poll(async () => (await readDashboard(browser)).layout.sections.length, { timeout: 5_000 })
-    .toBe(2);
-  await browser.evaluate(() => {
-    const inputs = document.querySelectorAll<HTMLInputElement>('[data-testid="section-title"]');
-    const second = inputs[1];
-    if (second === undefined) throw new Error("missing second section title");
-    second.focus();
-    second.value = "Agent";
-    second.blur();
-    return true;
-  });
-  await expect
-    .poll(async () => (await readDashboard(browser)).layout.sections[1]?.title)
-    .toBe("Agent");
-
-  await dragPointer(browser, '[data-testid="widget-mcp-drag"]', '[data-section-index="1"]');
+  await dragPointer(browser, '[data-widget-id="mcp"]', '[data-section-index="1"]');
   await expect
     .poll(async () => {
       const dashboard = await readDashboard(browser);
-      return dashboard.layout.sections.map((section) => section.widgets.map((slot) => slot.id));
+      return dashboard.layout.sections.map((section) =>
+        section.widgets.map((slot) => slot.id).sort(),
+      );
     })
-    .toEqual([["context", "tokens", "mcp-events"], ["mcp"]]);
+    .toEqual([
+      ["context", "mcp-events", "tokens"],
+      ["agent-note", "mcp"],
+    ]);
 
   await screen.getByTestId("section-delete-1").tap();
   await expect
     .poll(async () => {
       const dashboard = await readDashboard(browser);
-      return dashboard.layout.sections.map((section) => section.widgets.map((slot) => slot.id));
+      return {
+        sections: dashboard.layout.sections.map((section) =>
+          section.widgets.map((slot) => slot.id).sort(),
+        ),
+        titles: dashboard.layout.sections.map((section) => section.title),
+      };
     })
-    .toEqual([["context", "tokens", "mcp-events", "mcp"]]);
+    .toEqual({
+      sections: [["agent-note", "context", "mcp", "mcp-events", "tokens"]],
+      titles: ["Runtime"],
+    });
+});
 
-  // Deleting the first section reuses its DOM slot. The surviving title must
-  // replace it instead of leaving the removed section's draft behind.
-  await screen.getByTestId("dashboard-add-section").tap();
-  await expect
-    .poll(async () => (await readDashboard(browser)).layout.sections.length, { timeout: 5_000 })
-    .toBe(2);
-  await browser.evaluate(() => {
-    const inputs = document.querySelectorAll<HTMLInputElement>('[data-testid="section-title"]');
-    const second = inputs[1];
-    if (second === undefined) throw new Error("missing second section title");
-    second.focus();
-    second.value = "Survivor";
-    second.blur();
-    return true;
+test("hold-drags a card body but leaves a short tap alone", async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 1000 });
+  const patches: PatchBody[] = [];
+  await browser.route("**/api/dashboard/layout", async (route) => {
+    if (route.request.method === "PATCH") {
+      patches.push(JSON.parse(route.request.postData ?? "{}") as PatchBody);
+    }
+    await route.continue();
   });
+  await app.open("/?page=stats");
+  await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
+
+  const status = await browser.evaluate(async () => {
+    const response = await fetch("/api/dashboard/layout", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sections: [
+          {
+            widgets: [
+              { id: "context", span: "half", x: 0, y: 0, w: 6, h: 4 },
+              { id: "tokens", span: "full", x: 0, y: 4, w: 12, h: 4 },
+              { id: "mcp", span: "full", x: 0, y: 8, w: 12, h: 4 },
+              { id: "mcp-events", span: "full", x: 0, y: 12, w: 12, h: 4 },
+            ],
+          },
+        ],
+      }),
+    });
+    return response.status;
+  });
+  expect(status).toBe(200);
   await expect
-    .poll(async () => (await readDashboard(browser)).layout.sections[1]?.title)
-    .toBe("Survivor");
-  await screen.getByTestId("section-delete-0").tap();
+    .poll(() =>
+      browser.evaluate(
+        () =>
+          document.querySelector<HTMLElement>('[data-widget-id="context"]')?.dataset.span ?? null,
+      ),
+    )
+    .toBe("half");
+  patches.length = 0;
+  const left = await browser.evaluate(
+    () =>
+      document.querySelector<HTMLElement>('[data-widget-id="context"]')?.getBoundingClientRect()
+        .left ?? null,
+  );
+  await dragPointer(browser, '[data-widget-id="context"]', '[data-widget-id="context"]', 120, 0);
+  await expect.poll(() => patches.length, { timeout: 5_000 }).toBeGreaterThan(0);
   await expect
     .poll(async () => {
       const dashboard = await readDashboard(browser);
-      return {
-        titles: dashboard.layout.sections.map((section) => section.title),
-        inputs: await browser.evaluate(() =>
-          [...document.querySelectorAll<HTMLInputElement>('[data-testid="section-title"]')].map(
-            (input) => input.value,
-          ),
-        ),
-      };
+      const slot = dashboard.layout.sections
+        .flatMap((section) => section.widgets)
+        .find((item) => item.id === "context");
+      return slot?.x ?? null;
     })
-    .toEqual({ titles: ["Survivor"], inputs: ["Survivor"] });
+    .toBeGreaterThan(0);
+  expect(
+    await browser.evaluate(
+      () =>
+        document.querySelector<HTMLElement>('[data-widget-id="context"]')?.getBoundingClientRect()
+          .left ?? null,
+    ),
+  ).toBeGreaterThan(left ?? 0);
+
+  const patched = patches.length;
+  const tapped = await browser.evaluate(() => {
+    const card = document.querySelector<HTMLElement>('[data-widget-id="mcp"]');
+    return card === null ? null : [card.dataset.widgetId ?? "", card.getBoundingClientRect().top];
+  });
+  await tapPointer(browser, '[data-widget-id="mcp"]');
+  await browser.evaluate(
+    () => new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 900)),
+  );
+  expect(patches.length).toBe(patched);
+  expect(
+    await browser.evaluate(() => {
+      const card = document.querySelector<HTMLElement>('[data-widget-id="mcp"]');
+      return card === null ? null : [card.dataset.widgetId ?? "", card.getBoundingClientRect().top];
+    }),
+  ).toEqual(tapped);
+
+  await browser.unroute("**/api/dashboard/layout");
+});
+
+test("shows the resize corner only while its card is hovered", async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 1000 });
+  await app.open("/?page=stats");
+  await expect
+    .poll(() =>
+      browser.evaluate(
+        () => document.querySelector('[data-testid="widget-context-resize"]') !== null,
+      ),
+    )
+    .toBe(true);
+  expect(
+    await browser.evaluate(() => {
+      const handle = document.querySelector<HTMLElement>('[data-testid="widget-context-resize"]');
+      return handle === null ? null : getComputedStyle(handle).opacity;
+    }),
+  ).toBe("0");
+  await screen.getByTestId("widget-context").hover();
+  await expect
+    .poll(() =>
+      browser.evaluate(() => {
+        const handle = document.querySelector<HTMLElement>('[data-testid="widget-context-resize"]');
+        return handle === null ? null : getComputedStyle(handle).opacity;
+      }),
+    )
+    .toBe("1");
 });
 
 test("applies an external PATCH title and y spacing while the page is open", async ({
@@ -354,34 +523,9 @@ test("packs a free drag collision into the persisted layout", async ({ app, brow
   });
   expect(patched).toBe(200);
   await app.open("/?page=stats");
-  await expect(screen.getByTestId("widget-tokens-drag")).toBeVisible({ timeout: 30_000 });
+  await expect(screen.getByTestId("widget-tokens")).toBeVisible({ timeout: 30_000 });
 
-  await browser.evaluate(() => {
-    const handle = document.querySelector<HTMLElement>('[data-testid="widget-tokens-drag"]');
-    if (handle === null) throw new Error("missing drag handle");
-    const start = handle.getBoundingClientRect();
-    const x = start.left + start.width / 2;
-    const y = start.top + start.height / 2;
-    const fire = (type: string, clientY: number, buttons: number) =>
-      handle.dispatchEvent(
-        new PointerEvent(type, {
-          bubbles: true,
-          cancelable: true,
-          composed: true,
-          pointerId: 31,
-          pointerType: "mouse",
-          isPrimary: true,
-          clientX: x,
-          clientY,
-          button: 0,
-          buttons,
-        }),
-      );
-    fire("pointerdown", y, 1);
-    fire("pointermove", y + 56, 1);
-    fire("pointerup", y + 56, 0);
-    return true;
-  });
+  await dragPointer(browser, '[data-widget-id="tokens"]', '[data-widget-id="tokens"]', 0, 56);
 
   await expect
     .poll(async () =>
@@ -503,7 +647,7 @@ test("PATCH /api/dashboard/layout rejects an unknown widget id", async ({ app, b
   expect(result.text).toContain("not-a-widget");
 });
 
-test("a phone-width viewport keeps the single-column stack and no drag handles", async ({
+test("a phone-width viewport keeps the single-column stack and no drag grips", async ({
   app,
   browser,
   screen,
@@ -514,11 +658,12 @@ test("a phone-width viewport keeps the single-column stack and no drag handles",
   await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
   expect(
     await browser.evaluate(() => ({
-      handles: document.querySelectorAll(".dashboard-drag-handle").length,
+      grips: document.querySelectorAll(".dashboard-drag-handle").length,
+      add: document.querySelectorAll('[data-testid="dashboard-add-section"]').length,
       grids: document.querySelectorAll(".dashboard-grid").length,
       stacks: document.querySelectorAll('[data-testid^="dashboard-stack-"]').length,
     })),
-  ).toEqual({ handles: 0, grids: 0, stacks: 1 });
+  ).toEqual({ grips: 0, add: 0, grids: 0, stacks: 1 });
   expect(
     await browser.evaluate(() => {
       const cards = [...document.querySelectorAll("[data-widget-id]")];
@@ -552,6 +697,9 @@ test("a phone-width viewport keeps the single-column stack and no drag handles",
     )
     .toEqual({ grid: 768, card: 768, inside: true, overflow: false });
   expect(
-    await browser.evaluate(() => document.querySelectorAll(".dashboard-drag-handle").length),
-  ).toBeGreaterThan(0);
+    await browser.evaluate(() => ({
+      grips: document.querySelectorAll(".dashboard-drag-handle").length,
+      resize: document.querySelectorAll(".dashboard-resize-handle").length,
+    })),
+  ).toEqual({ grips: 0, resize: 4 });
 });

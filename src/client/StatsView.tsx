@@ -35,7 +35,6 @@ import {
   GRID_COLUMNS,
   type LayoutSection,
   type LayoutSlot,
-  MAX_SECTIONS,
   packLayoutSlots,
   renderWidget,
   type SparklineChart,
@@ -73,6 +72,9 @@ const HEARTBEAT_MS = 20_000;
 const LAYOUT_DEBOUNCE_MS = 600;
 const GRID_MARGIN = 12;
 const GRID_ROW_HEIGHT = 44;
+const DRAG_HOLD_MS = 350;
+const DRAG_HOLD_SLOP_PX = 6;
+const DRAG_BLOCKERS = 'button, a, input, textarea, select, [role="button"], [data-no-drag]';
 
 interface GridGesture {
   kind: "drag" | "resize";
@@ -794,14 +796,11 @@ function WidgetCard({
   widget,
   view,
   value,
-  draggable,
   onRemove,
 }: {
   widget: Widget;
   view: WidgetView | undefined;
   value: WidgetValue | undefined;
-  /** Desktop grids get a drag handle; phones stay a plain stack. */
-  draggable: boolean;
   onRemove: (id: string) => void;
 }) {
   const [menu, setMenu] = useState(false);
@@ -861,18 +860,6 @@ function WidgetCard({
     >
       <div className="flex items-start justify-between gap-2 pb-1">
         <div className="flex min-w-0 items-start gap-1">
-          {draggable ? (
-            <button
-              type="button"
-              className="dashboard-drag-handle theme-radius -my-0.5 shrink-0 cursor-grab touch-none px-1 text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
-              aria-label={`Move ${widget.title}`}
-              title="Drag to move; use the corner to resize"
-              data-testid={`widget-${widget.id}-drag`}
-              onClick={(event) => event.stopPropagation()}
-            >
-              ⠿
-            </button>
-          ) : null}
           <h2
             className="min-w-0 text-[11px] uppercase tracking-wide text-muted-foreground [overflow-wrap:anywhere]"
             title={
@@ -1046,25 +1033,18 @@ function SectionGrid({
     return (
       <div
         key={widget.id}
-        className="relative h-full min-w-0"
+        className="group relative h-full min-w-0"
         data-widget-id={widget.id}
         data-span={slot.span}
       >
-        <WidgetCard
-          widget={widget}
-          view={view}
-          value={value}
-          draggable={desktop}
-          onRemove={onRemove}
-        />
+        <WidgetCard widget={widget} view={view} value={value} onRemove={onRemove} />
         {desktop ? (
           <button
             type="button"
-            className="react-resizable-handle react-resizable-handle-se dashboard-resize-handle"
+            className="react-resizable-handle react-resizable-handle-se dashboard-resize-handle opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
             aria-label={`Resize ${widget.title}`}
             title="Drag to resize"
             data-testid={`widget-${widget.id}-resize`}
-            style={{ display: "block", opacity: 1 }}
           />
         ) : null}
       </div>
@@ -1227,14 +1207,45 @@ export function StatsView({
   const layoutRef = useRef<DashboardLayout | null>(null);
   layoutRef.current = layout;
 
-  // Drag and resize are pointer-native, because the grid's drag handles must
-  // work with mouse, touch and the synthetic pointer events in the browser
-  // suite. No layout is persisted until the gesture ends.
+  // Drag and resize are pointer-native, because the grid must work with mouse,
+  // touch and the synthetic pointer events in the browser suite. A card body
+  // arms a short hold before a drag starts, so taps and links stay taps. No
+  // layout is persisted until the gesture ends.
   useEffect(() => {
     const root = pageRef.current;
     if (root === null) return;
     let gesture: GridGesture | null = null;
     let removeListeners: (() => void) | null = null;
+    let hold: {
+      timer: number;
+      pointerId: number;
+      startX: number;
+      startY: number;
+      card: HTMLElement;
+      section: HTMLElement;
+      event: PointerEvent;
+    } | null = null;
+    let removeHoldListeners: (() => void) | null = null;
+    let touchTarget: HTMLElement | null = null;
+
+    const clearTouchTarget = () => {
+      if (touchTarget !== null) {
+        touchTarget.style.touchAction = "";
+        touchTarget = null;
+      }
+    };
+
+    const detachHold = () => {
+      if (hold !== null) window.clearTimeout(hold.timer);
+      hold = null;
+      removeHoldListeners?.();
+      removeHoldListeners = null;
+    };
+
+    const cancelHold = () => {
+      detachHold();
+      clearTouchTarget();
+    };
 
     const endGesture = (event: PointerEvent) => {
       const active = gesture;
@@ -1242,6 +1253,7 @@ export function StatsView({
       event.preventDefault();
       removeListeners?.();
       gesture = null;
+      clearTouchTarget();
       const current = layoutRef.current ?? active.base;
       let next = current;
       const point = { x: event.clientX, y: event.clientY };
@@ -1314,34 +1326,36 @@ export function StatsView({
       setLayout(next);
     };
 
-    const onPointerDown = (event: PointerEvent) => {
-      if (event.pointerType === "mouse" && event.button !== 0) return;
-      const target = event.target instanceof Element ? event.target : null;
-      const dragHandle = target?.closest<HTMLElement>(".dashboard-drag-handle");
-      const resizeHandle = target?.closest<HTMLElement>(".dashboard-resize-handle");
-      const handle = dragHandle ?? resizeHandle;
-      if (handle === null || handle === undefined) return;
-      const card = handle.closest<HTMLElement>("[data-widget-id]");
-      const section = handle.closest<HTMLElement>("[data-section-index]");
-      const widgetId = card?.dataset.widgetId;
-      const sectionIndex = Number(section?.dataset.sectionIndex);
+    const beginGesture = (
+      event: PointerEvent,
+      kind: GridGesture["kind"],
+      card: HTMLElement,
+      section: HTMLElement,
+      captureTarget: HTMLElement,
+    ): boolean => {
+      const widgetId = card.dataset.widgetId;
+      const sectionIndex = Number(section.dataset.sectionIndex);
       const current = layoutRef.current;
-      if (card === null || card === undefined || widgetId === undefined || current === null) return;
-      if (!Number.isInteger(sectionIndex)) return;
+      if (widgetId === undefined || current === null || !Number.isInteger(sectionIndex)) {
+        return false;
+      }
       const slot = current.sections[sectionIndex]?.widgets.find((item) => item.id === widgetId);
-      const grid = section?.querySelector<HTMLElement>(".dashboard-grid");
-      if (slot === undefined || grid === null || grid === undefined) return;
+      if (slot === undefined) return false;
+      const grid = section.querySelector<HTMLElement>(".dashboard-grid");
+      const gridWidth =
+        grid?.getBoundingClientRect().width ?? section.getBoundingClientRect().width;
+      if (!(gridWidth > 0)) return false;
       event.preventDefault();
       event.stopPropagation();
       removeListeners?.();
       gesture = {
-        kind: dragHandle !== null && dragHandle !== undefined ? "drag" : "resize",
+        kind,
         pointerId: event.pointerId,
         sectionIndex,
         widgetId,
         startX: event.clientX,
         startY: event.clientY,
-        gridWidth: grid.getBoundingClientRect().width,
+        gridWidth,
         origin: { ...slot },
         base: structuredClone(current),
         moved: false,
@@ -1356,16 +1370,81 @@ export function StatsView({
         removeListeners = null;
       };
       try {
-        handle.setPointerCapture(event.pointerId);
+        captureTarget.setPointerCapture(event.pointerId);
       } catch {
         // Synthetic pointer events do not own a capturable pointer.
       }
+      return true;
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.pointerType === "mouse" && event.button !== 0) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target === null) return;
+      const card = target.closest<HTMLElement>("[data-widget-id]");
+      const section = target.closest<HTMLElement>("[data-section-index]");
+      if (card === null || section === null) return;
+      const resizeHandle = target.closest<HTMLElement>(".dashboard-resize-handle");
+      if (resizeHandle !== null) {
+        cancelHold();
+        beginGesture(event, "resize", card, section, resizeHandle);
+        return;
+      }
+      if (target.closest(DRAG_BLOCKERS) !== null) return;
+      if (gesture !== null) return;
+      cancelHold();
+      // Keep the page from scrolling while the hold is armed, but restore
+      // normal scrolling as soon as this press ends without a drag.
+      event.stopPropagation();
+      touchTarget = card;
+      card.style.touchAction = "none";
+      const armed = {
+        timer: 0,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        card,
+        section,
+        event,
+      };
+      hold = armed;
+      const onHoldMove = (move: PointerEvent) => {
+        if (hold === null || move.pointerId !== hold.pointerId) return;
+        if (
+          Math.hypot(move.clientX - hold.startX, move.clientY - hold.startY) > DRAG_HOLD_SLOP_PX
+        ) {
+          cancelHold();
+        }
+      };
+      const onHoldEnd = (end: PointerEvent) => {
+        if (hold === null || end.pointerId !== hold.pointerId) return;
+        cancelHold();
+      };
+      window.addEventListener("pointermove", onHoldMove, true);
+      window.addEventListener("pointerup", onHoldEnd, true);
+      window.addEventListener("pointercancel", onHoldEnd, true);
+      removeHoldListeners = () => {
+        window.removeEventListener("pointermove", onHoldMove, true);
+        window.removeEventListener("pointerup", onHoldEnd, true);
+        window.removeEventListener("pointercancel", onHoldEnd, true);
+        removeHoldListeners = null;
+      };
+      armed.timer = window.setTimeout(() => {
+        if (hold !== armed) return;
+        hold = null;
+        removeHoldListeners?.();
+        removeHoldListeners = null;
+        if (!beginGesture(armed.event, "drag", armed.card, armed.section, armed.card)) {
+          clearTouchTarget();
+        }
+      }, DRAG_HOLD_MS);
     };
 
     root.addEventListener("pointerdown", onPointerDown, true);
     return () => {
       root.removeEventListener("pointerdown", onPointerDown, true);
       removeListeners?.();
+      cancelHold();
     };
   }, [commitLayout]);
 
@@ -1378,14 +1457,6 @@ export function StatsView({
       setDashboard((await response.json()) as DashboardState);
     }
   }, []);
-
-  const addSection = useCallback(() => {
-    const current = layout;
-    if (current === null || current.sections.length >= MAX_SECTIONS) return;
-    const next = structuredClone(current);
-    next.sections.push({ title: "New section", widgets: [] });
-    commitLayout(next);
-  }, [commitLayout, layout]);
 
   const renameSection = useCallback(
     (index: number, text: string) => {
@@ -1450,19 +1521,6 @@ export function StatsView({
             The dashboard is empty. Ask the agent to add widgets.
           </p>
         ) : null}
-        {viewLayout === null ? null : (
-          <div className="flex justify-end">
-            <button
-              type="button"
-              className="theme-radius border border-border/70 bg-surface px-2 py-1 font-mono text-xs text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
-              data-testid="dashboard-add-section"
-              disabled={viewLayout.sections.length >= MAX_SECTIONS}
-              onClick={addSection}
-            >
-              Add section
-            </button>
-          </div>
-        )}
         {viewLayout?.sections.map((section, index) => (
           <div
             key={sectionKey(index)}

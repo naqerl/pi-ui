@@ -301,8 +301,8 @@
   border-color: color-mix(in srgb, var(--foreground) 28%, transparent);
 }
 
-/* The composable dashboard grid: a quiet placeholder, a visible resize grip
-   and a drag handle that works with touch without stealing page scrolling. */
+/* The composable dashboard grid: a quiet placeholder and a resize grip that
+   only appears while its card is hovered or focused. */
 .dashboard-grid .react-grid-item {
   min-width: 0;
   /* Layout changes are applied by the pointer shim; animating them makes the
@@ -321,10 +321,16 @@
 }
 
 .dashboard-grid .react-grid-item > .react-resizable-handle {
-  opacity: 1;
+  display: block;
   width: 18px;
   height: 18px;
   z-index: 2;
+}
+
+@media (hover: none) {
+  .dashboard-grid .react-grid-item > .react-resizable-handle {
+    display: none;
+  }
 }
 
 .dashboard-grid .react-grid-item > .react-resizable-handle::after {
@@ -334,7 +340,6 @@
   border-bottom-color: color-mix(in oklch, var(--foreground) 55%, transparent);
 }
 
-.dashboard-drag-handle,
 .dashboard-resize-handle {
   touch-action: none;
 }
