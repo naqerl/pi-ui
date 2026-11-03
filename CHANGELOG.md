@@ -1,3 +1,7 @@
+## 1.6.82 - 2026-11-03
+
+- test(chat): judge the scroll-pin sampling window by elapsed time and a handful of frames, so a busy CI runner stops failing it (pinb).
+
 ## 1.6.81 - 2026-11-03
 
 - fix(mcp): drop restored subscriptions the server no longer knows, and drop backlog from a stale cursor (mbav).
