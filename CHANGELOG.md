@@ -1,3 +1,7 @@
+## 1.6.77 - 2026-11-03
+
+- feat(tasks): create tasks directly and paint them before the response (2div).
+
 ## 1.6.76 - 2026-11-03
 
 - test(chat): assert the memory chip outcome instead of the optimistic id, so the e2e suite is green again (mchip).
