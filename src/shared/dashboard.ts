@@ -433,7 +433,13 @@ function stringField(mapping: WidgetMapping, name: string): string | undefined {
   return value;
 }
 
-/** Required mapping fields per kind; the rest are optional. */
+/**
+ * Required mapping fields per kind; the rest are optional.
+ *
+ * A sparkline normally derives its headline from the last point of its first
+ * series. When `value` is mapped, its resolved non-empty string or number is
+ * shown verbatim instead; `value: "="` suppresses the headline entirely.
+ */
 export const KIND_FIELDS: Record<WidgetKind, { required: string[][]; optional: string[] }> = {
   stat: { required: [["value"]], optional: ["label", "delta", "unit", "progress"] },
   list: { required: [["items"]], optional: ["key", "label", "value", "empty"] },
@@ -548,6 +554,16 @@ export function renderWidget(widget: Widget, data: unknown, history: number[] = 
     case "sparkline": {
       const seriesPath = stringField(mapping, "series");
       const labelsPath = stringField(mapping, "labels");
+      const valuePath = stringField(mapping, "value");
+      const mappedValue = valuePath === undefined ? undefined : resolveField(data, valuePath);
+      const mappedText =
+        typeof mappedValue === "string"
+          ? mappedValue === ""
+            ? undefined
+            : formatValue(mappedValue)
+          : typeof mappedValue === "number"
+            ? formatValue(mappedValue)
+            : undefined;
       const label = optionalText(data, stringField(mapping, "label"));
       if (seriesPath !== undefined) {
         const raw = resolveField(data, seriesPath);
@@ -567,33 +583,44 @@ export function renderWidget(widget: Widget, data: unknown, history: number[] = 
             .filter((point): point is number => point !== undefined)
             .slice(-MAX_ROWS);
           const last = points.at(-1);
+          const headline =
+            valuePath === undefined
+              ? last === undefined
+                ? undefined
+                : formatValue(last)
+              : mappedText;
           return {
             ...shared,
             points,
             ...(labels === undefined || labels.length === 0
               ? {}
               : { labels: labels.slice(0, points.length) }),
-            ...(last === undefined ? {} : { value: formatValue(last) }),
+            ...(headline === undefined ? {} : { value: headline }),
           };
         }
         const series = namedSeries(raw, seriesPath);
         const longest = Math.max(0, ...series.map((item) => item.points.length));
         const last = lastPoint(series[0]?.points);
+        const headline =
+          valuePath === undefined
+            ? last === undefined
+              ? undefined
+              : formatValue(last)
+            : mappedText;
         return {
           ...shared,
           series,
           ...(labels === undefined || labels.length === 0
             ? {}
             : { labels: labels.slice(0, longest) }),
-          ...(last === undefined ? {} : { value: formatValue(last) }),
+          ...(headline === undefined ? {} : { value: headline }),
         };
       }
-      const raw = resolveField(data, stringField(mapping, "value"));
-      const current = asNumber(raw);
+      const current = asNumber(mappedValue);
       return {
         kind: "sparkline",
         points: [...history, ...(current === undefined ? [] : [current])].slice(-HISTORY_POINTS),
-        value: formatValue(raw),
+        ...(mappedValue === "" ? {} : { value: formatValue(mappedValue) }),
         ...(label === undefined ? {} : { label }),
       };
     }

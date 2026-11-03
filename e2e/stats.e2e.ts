@@ -3,6 +3,39 @@ import { expect } from "e2e";
 
 type SeedServer = { name: string; available: boolean; authRejected: boolean; tools: string[] };
 
+type DashboardSnapshot = {
+  widgets: { id: string }[];
+  values: Record<string, { view?: unknown }>;
+};
+
+async function readDashboard(browser: {
+  evaluate<T>(fn: () => Promise<T> | T): Promise<T>;
+}): Promise<DashboardSnapshot> {
+  return browser.evaluate(async () => {
+    const response = await fetch("/api/dashboard");
+    return (await response.json()) as DashboardSnapshot;
+  });
+}
+
+/** Runs dashboard tool calls through the real message route. */
+async function seedDashboard(
+  browser: { evaluate<T>(fn: (text: string) => Promise<T> | T, text: string): Promise<T> },
+  calls: unknown[],
+) {
+  await browser.evaluate(
+    async (text) => {
+      const response = await fetch("/api/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!response.ok) throw new Error(`message failed: ${response.status}`);
+      return null;
+    },
+    `TOOLCALLS ${JSON.stringify(calls)}`,
+  );
+}
+
 function snapshot(options: {
   usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
   context: { tokens: number; window: number | null; percent: number | null };
@@ -777,4 +810,49 @@ test("resolves status dot colours from the active theme", async ({ app, browser,
     .toBe(true);
   const light = await colors();
   expect(light.ok).not.toBe(light.error);
+});
+
+test("a sparkline headline can be a mapped string instead of the derived number", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  const headline = "€1.70 accrued · €20.44 projected";
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/");
+  await seedDashboard(browser, [
+    {
+      name: "dashboard_upsert",
+      arguments: {
+        id: "spend-headline",
+        title: "Spend",
+        kind: "sparkline",
+        source: {
+          type: "poll",
+          script: `return { series: { actual: [1, 2, 3] }, headline: ${JSON.stringify(headline)} };`,
+          intervalSec: 0.5,
+        },
+        mapping: { series: "series", value: "headline", label: "=Spend" },
+      },
+    },
+  ]);
+  await expect
+    .poll(
+      async () => {
+        const dashboard = await readDashboard(browser);
+        return (
+          dashboard.widgets.some((widget) => widget.id === "spend-headline") &&
+          dashboard.values["spend-headline"]?.view !== undefined
+        );
+      },
+      { timeout: 30_000 },
+    )
+    .toBe(true);
+  await app.open("/?page=stats");
+  await expect(screen.getByTestId("stat-spend-headline")).toBeVisible();
+  const read = await browser.evaluate(() => {
+    const text = document.querySelector('[data-testid="stat-spend-headline"]')?.textContent ?? null;
+    return { text, numeric: text !== null && /^-?[\d.,]+$/.test(text) };
+  });
+  expect(read).toEqual({ text: headline, numeric: false });
 });
