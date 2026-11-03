@@ -1,3 +1,7 @@
+## 1.6.76 - 2026-11-03
+
+- test(chat): assert the memory chip outcome instead of the optimistic id, so the e2e suite is green again (mchip).
+
 ## 1.6.75 - 2026-11-03
 
 - feat(stats): click a chart to pin a crosshair, its dots and the values at that point (xhair).
