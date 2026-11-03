@@ -1,3 +1,7 @@
+## 1.6.72 - 2026-11-03
+
+- refactor(stats): drop the tokens footnote (4hh4).
+
 ## 1.6.71 - 2026-11-03
 
 - feat(theme): drive status colours from theme tokens (eeyz).
