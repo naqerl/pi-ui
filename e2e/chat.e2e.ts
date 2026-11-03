@@ -517,43 +517,105 @@ test("pins the last bubble at the bottom while the composer animates and leaves 
   const pinned = await browser.evaluate(async () => {
     const scroller = document.querySelector<HTMLElement>('[data-testid="chat-scroller"]');
     const stats = document.querySelector<HTMLElement>('[data-testid="page-dot-stats"]');
+    const shader = document.querySelector<HTMLElement>('[data-testid="shader-bg"]');
     const bubbles = [...document.querySelectorAll<HTMLElement>("[data-role]")];
     const last = bubbles.at(-1);
     if (scroller === null || stats === null || last === undefined) return null;
+    // The drifting shader is not part of the pin. Hiding it keeps the sampling
+    // loop from being paced by a software-rendered background at ~8fps.
+    if (shader !== null) shader.style.display = "none";
     const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const nextFrameWithin = (timeoutMs: number) =>
+      new Promise<boolean>((resolve) => {
+        let settled = false;
+        let frame = 0;
+        const timer = setTimeout(
+          () => {
+            settled = true;
+            cancelAnimationFrame(frame);
+            resolve(false);
+          },
+          Math.max(0, timeoutMs),
+        );
+        frame = requestAnimationFrame(() => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(true);
+        });
+      });
     scroller.scrollTop = scroller.scrollHeight;
     await nextFrame();
     await nextFrame();
 
+    // Count frames rather than wall time: a loaded headless runner can paint far
+    // below 60fps, so "340ms" alone is not enough samples to prove the pin held.
+    // The hard stop is deliberately far beyond 12 frames at 8fps (~1.5s) so it
+    // only ends a stalled rAF loop, never preempts the sample-count invariant.
+    const hardStopMs = 5000;
     const samples: number[] = [];
-    let running = true;
-    const tick = () => {
+    const start = performance.now();
+    stats.click();
+    let elapsedMs = 0;
+    while (true) {
+      const framed = await nextFrameWithin(hardStopMs - elapsedMs);
+      if (!framed) break;
       const scrollerBox = scroller.getBoundingClientRect();
       const bubbleBox = last.getBoundingClientRect();
       // The transcript keeps its 16px end gap, so measure against that stop.
       samples.push(Math.abs(bubbleBox.bottom - (scrollerBox.bottom - 16)));
-      if (running) requestAnimationFrame(tick);
+      elapsedMs = performance.now() - start;
+      if (samples.length >= 12 && elapsedMs >= 340) break;
+    }
+    return {
+      max: Math.max(...samples),
+      samples: samples.length,
+      frames: samples.length,
+      elapsedMs,
     };
-    requestAnimationFrame(tick);
-    stats.click();
-    await new Promise((resolve) => setTimeout(resolve, 340));
-    running = false;
-    await nextFrame();
-    return { max: Math.max(...samples), samples: samples.length };
   });
 
-  expect(pinned).not.toBeNull();
-  expect(pinned?.samples ?? 0).toBeGreaterThan(6);
-  expect(pinned?.max ?? 99).toBeLessThanOrEqual(2);
+  const pinMeasure = `${pinned?.frames ?? 0} frames in ${Math.round(pinned?.elapsedMs ?? 0)} ms`;
+  console.log(`scroll-pin sampling: ${pinMeasure} (${pinned?.samples ?? 0} samples)`);
+  expect(pinned, `scroll-pin sampling captured ${pinMeasure}`).not.toBeNull();
+  expect(pinned?.samples ?? 0, `scroll-pin sampling captured ${pinMeasure}`).toBeGreaterThanOrEqual(
+    12,
+  );
+  expect(
+    pinned?.max ?? 99,
+    `scroll-pin drift after ${pinMeasure}: ${pinned?.max ?? "n/a"}px`,
+  ).toBeLessThanOrEqual(2);
 
   const detached = await browser.evaluate(async () => {
     const scroller = document.querySelector<HTMLElement>('[data-testid="chat-scroller"]');
     const chat = document.querySelector<HTMLElement>('[data-testid="page-dot-chat"]');
     const stats = document.querySelector<HTMLElement>('[data-testid="page-dot-stats"]');
+    const shader = document.querySelector<HTMLElement>('[data-testid="shader-bg"]');
     const bubbles = [...document.querySelectorAll<HTMLElement>("[data-role]")];
     const last = bubbles.at(-1);
     if (scroller === null || chat === null || stats === null || last === undefined) return null;
+    // Keep this window frame-counted as well, and out of the shader's paint path.
+    if (shader !== null) shader.style.display = "none";
     const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const nextFrameWithin = (timeoutMs: number) =>
+      new Promise<boolean>((resolve) => {
+        let settled = false;
+        let frame = 0;
+        const timer = setTimeout(
+          () => {
+            settled = true;
+            cancelAnimationFrame(frame);
+            resolve(false);
+          },
+          Math.max(0, timeoutMs),
+        );
+        frame = requestAnimationFrame(() => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(true);
+        });
+      });
     chat.click();
     await new Promise((resolve) => setTimeout(resolve, 350));
     scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight - 200);
@@ -562,13 +624,28 @@ test("pins the last bubble at the bottom while the composer animates and leaves 
     await nextFrame();
     const before = last.getBoundingClientRect().top;
     stats.click();
-    await new Promise((resolve) => setTimeout(resolve, 340));
+    // Let the composer animate for a fixed number of frames as well as a fixed
+    // duration, so the "up-thread stays put" check is not a frame-rate assumption.
+    const hardStopMs = 5000;
+    let frames = 0;
+    const start = performance.now();
+    let elapsedMs = 0;
+    while (frames < 12 || elapsedMs < 340) {
+      const framed = await nextFrameWithin(hardStopMs - elapsedMs);
+      if (!framed) break;
+      frames += 1;
+      elapsedMs = performance.now() - start;
+    }
     await nextFrame();
-    return { before, after: last.getBoundingClientRect().top };
+    return { before, after: last.getBoundingClientRect().top, frames, elapsedMs };
   });
 
-  expect(detached).not.toBeNull();
-  expect(Math.abs((detached?.after ?? 0) - (detached?.before ?? -1))).toBeLessThanOrEqual(2);
+  const detachMeasure = `${detached?.frames ?? 0} frames in ${Math.round(detached?.elapsedMs ?? 0)} ms`;
+  expect(detached, `detached-scroll sampling captured ${detachMeasure}`).not.toBeNull();
+  expect(
+    Math.abs((detached?.after ?? 0) - (detached?.before ?? -1)),
+    `detached bubble moved after ${detachMeasure}`,
+  ).toBeLessThanOrEqual(2);
 });
 
 test("turns the pager from a horizontal swipe started inside the thread", async ({
