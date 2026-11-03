@@ -688,3 +688,93 @@ test("lists MCP events newest first in the default widget, not the composer chro
   await app.screenshot("mcp-events-widget");
   await screen.getByRole("tab", "Chat").tap();
 });
+
+test("resolves status dot colours from the active theme", async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({ json: busy });
+  });
+  await browser.route("**/api/themes", async (route) => {
+    await route.fulfill({
+      json: {
+        current: "midnight",
+        selected: "midnight",
+        themes: [
+          {
+            slug: "midnight",
+            name: "Midnight",
+            colors: {
+              mode: "dark",
+              background: "#101315",
+              foreground: "#cacccc",
+              surface: "#0c0e10",
+              muted: "#080a0b",
+              mutedForeground: "#4b4e55",
+              border: "#343d41",
+              accent: "#798186",
+              destructive: "#de6145",
+              selection: "#343d41",
+              radius: 6,
+            },
+          },
+          {
+            slug: "latte",
+            name: "Latte",
+            colors: {
+              mode: "light",
+              background: "#eff1f5",
+              foreground: "#4c4f69",
+              surface: "#e3e4e8",
+              muted: "#dce0e8",
+              mutedForeground: "#6c6f85",
+              border: "#ccd0da",
+              accent: "#1e66f5",
+              destructive: "#d20f39",
+              selection: "#ccd0da",
+              radius: 6,
+            },
+          },
+        ],
+      },
+    });
+  });
+  await browser.route("**/api/theme", async (route) => {
+    if (route.request.method === "POST") {
+      await route.fulfill({ json: { slug: "latte" } });
+      return;
+    }
+    await route.continue();
+  });
+  await app.open("/?page=stats");
+  await expect(screen.getByTestId("stat-mcp-web")).toBeVisible();
+  await expect
+    .poll(() => browser.evaluate(() => document.documentElement.dataset.mode ?? null))
+    .toBe("dark");
+
+  const colors = () =>
+    browser.evaluate(() => {
+      const dot = (id: string) => {
+        const row = document.querySelector(`[data-testid="stat-mcp-${id}"]`);
+        const element = row?.querySelector<HTMLElement>('[role="img"]') ?? null;
+        return element === null ? null : getComputedStyle(element).backgroundColor;
+      };
+      return { ok: dot("web"), error: dot("a-server-with-a-really-long-name-that-should-wrap") };
+    });
+  const dark = await colors();
+  expect(dark.ok).not.toBeNull();
+  expect(dark.error).not.toBeNull();
+  expect(dark.ok).not.toBe(dark.error);
+
+  await screen.getByRole("button", "Settings").tap();
+  await screen.getByRole("menuitem", { name: /^Theme/ }).tap();
+  await screen.getByRole("menuitemradio", { name: "Latte" }).tap();
+
+  await expect
+    .poll(async () => {
+      const light = await colors();
+      return light.ok !== dark.ok && light.error !== dark.error;
+    })
+    .toBe(true);
+  const light = await colors();
+  expect(light.ok).not.toBe(light.error);
+});

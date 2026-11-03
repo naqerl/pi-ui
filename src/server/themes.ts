@@ -221,8 +221,8 @@ export function injectTheme(html: string, theme: OmarchyTheme | null): string {
   const style = themeStyle(theme.colors);
   if (style === null) return html;
   const opened = html.replace(/<html\b([^>]*)>/i, (_match, attrs: string) => {
-    const cleaned = attrs.replace(/\sstyle="[^"]*"/i, "");
-    return `<html${cleaned} style="${style}">`;
+    const cleaned = attrs.replace(/\sstyle="[^"]*"/i, "").replace(/\sdata-mode="[^"]*"/i, "");
+    return `<html${cleaned} data-mode="${theme.colors.mode}" style="${style}">`;
   });
   // `\b` after the closing quote never matches: `"` and the following space are both non-words.
   const withoutThemeColor = opened.replace(

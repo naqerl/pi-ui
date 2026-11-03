@@ -325,7 +325,7 @@ test("an interrupted run keeps its partial reply and shows a warning-toned chip"
     );
     if (node === null) return null;
     const probe = document.createElement("div");
-    probe.className = "border border-amber-500/40 bg-amber-500/10 text-amber-500";
+    probe.className = "border border-status-warn/40 bg-status-warn/10 text-status-warn";
     document.body.appendChild(probe);
     const style = getComputedStyle(node);
     const warning = getComputedStyle(probe);

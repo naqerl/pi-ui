@@ -18,7 +18,9 @@ function SubscriptionRow({ subscription }: { subscription: McpSubscriptionView }
       data-state={health}
     >
       <span
-        className={warning ? "text-amber-600" : live ? "text-foreground" : "text-muted-foreground"}
+        className={
+          warning ? "text-status-warn" : live ? "text-foreground" : "text-muted-foreground"
+        }
       >
         {subscription.server}
       </span>
@@ -39,13 +41,13 @@ function SubscriptionRow({ subscription }: { subscription: McpSubscriptionView }
         </span>
       )}
       <span
-        className={warning ? "shrink-0 text-amber-600" : "shrink-0 text-muted-foreground"}
+        className={warning ? "shrink-0 text-status-warn" : "shrink-0 text-muted-foreground"}
         data-testid="subscription-state"
       >
         {health}
       </span>
       {warning && reason !== undefined && (
-        <span className="min-w-0 text-amber-600" data-testid="subscription-reason" title={reason}>
+        <span className="min-w-0 text-status-warn" data-testid="subscription-reason" title={reason}>
           {reason}
         </span>
       )}

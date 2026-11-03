@@ -16,6 +16,7 @@ export function applyTheme(colors: ThemeColors): void {
   ];
   for (const [name, value] of pairs) root.style.setProperty(name, value);
   root.style.setProperty("--radius", `${colors.radius}px`);
+  root.dataset.mode = colors.mode;
   root.style.colorScheme = colors.mode;
   root.style.backgroundColor = colors.background;
   root.style.color = colors.foreground;

@@ -322,9 +322,9 @@ function useViewerReport(active: boolean): void {
 }
 
 const DOT: Record<StatusState, string> = {
-  ok: "bg-emerald-500",
-  warn: "bg-amber-500",
-  error: "bg-red-500",
+  ok: "bg-status-ok",
+  warn: "bg-status-warn",
+  error: "bg-status-bad",
 };
 
 function Value({ text }: { text: string }) {
@@ -664,9 +664,9 @@ function ViewBody({ id, view, chart }: { id: string; view: WidgetView; chart?: S
                   <span
                     className={
                       view.trend === "up"
-                        ? "text-emerald-600"
+                        ? "text-status-ok"
                         : view.trend === "down"
-                          ? "text-red-600"
+                          ? "text-status-bad"
                           : "text-muted-foreground"
                     }
                     data-testid={`stat-${id}-delta`}
@@ -893,7 +893,7 @@ function WidgetCard({
         <span className="flex shrink-0 items-center gap-1">
           {error === undefined ? null : (
             <span
-              className="theme-radius border border-red-500/50 px-1 text-[10px] text-red-600"
+              className="theme-radius border border-status-bad/50 px-1 text-[10px] text-status-bad"
               title={error}
               data-testid={`widget-${widget.id}-error`}
             >
@@ -938,7 +938,7 @@ function WidgetCard({
           <button
             type="button"
             role="menuitem"
-            className="block w-full px-3 py-1.5 text-left text-red-600 hover:bg-foreground/10"
+            className="block w-full px-3 py-1.5 text-left text-destructive hover:bg-foreground/10"
             onClick={() => {
               setMenu(false);
               onRemove(widget.id);

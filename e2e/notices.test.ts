@@ -213,9 +213,9 @@ test("an interrupted run becomes one warning chip after the partial reply", () =
   assert.match(markup, /data-notice-kind="interrupted"/);
   assert.match(markup, /⚠/);
   assert.match(markup, /class="[^"]*\bbackdrop-blur-md\b/);
-  assert.match(markup, /class="[^"]*\bborder-amber-500\/40\b/);
-  assert.match(markup, /class="[^"]*\bbg-amber-500\/10\b/);
-  assert.match(markup, /class="[^"]*\btext-amber-500\b/);
+  assert.match(markup, /class="[^"]*\bborder-status-warn\/40\b/);
+  assert.match(markup, /class="[^"]*\bbg-status-warn\/10\b/);
+  assert.match(markup, /class="[^"]*\btext-status-warn\b/);
   // The neutral chip surface must not compete with the warning tone in CSS order.
   assert.doesNotMatch(markup, /class="[^"]*\bbg-surface\/90\b/);
   assert.doesNotMatch(markup, /class="[^"]*\btext-muted-foreground\b/);
