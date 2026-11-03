@@ -999,7 +999,12 @@ export function TaskRow({
           <span className="flex items-center justify-end gap-1.5">
             {badge !== null && (
               <Badge
-                variant={current === "working" || current === "failed" ? "default" : "outline"}
+                data-testid={`task-badge-${task.id}`}
+                variant={
+                  current === "working" || current === "failed" || current === "backlog"
+                    ? "default"
+                    : "outline"
+                }
               >
                 {badge}
               </Badge>
