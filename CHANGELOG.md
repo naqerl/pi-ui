@@ -1,6 +1,9 @@
 ## 1.6.65 - 2026-11-03
 
-- chore(image): ship `gnupg`, `age` and the `sops` binary in the runtime image so the agent can decrypt SOPS-encrypted secrets; no key material is baked in.
+- The image ships `gpg`, `gpg-agent` and `sops` (a pinned static release, checksum-verified), so a SOPS file encrypted to a PGP key can be decrypted in place — no plaintext copy on the host, no round-trip. No key is baked in: the keyring lives in a mounted `/home/pi/.gnupg`.
+- New optional read-write mount `GNUPGHOME_DIR` (default `~/.pi-ui/gnupg` in the compose file) holds the container's own GnuPG home. It cannot be the host's live `~/.gnupg`: GnuPG 2.4 writes a keybox (`pubring.db`) that bookworm's gpg 2.2 cannot read, and two live agents would share one socket. The README's new **SOPS and GPG keys** section exports a key on the host and imports it into that home with one throwaway container.
+- `pinentry-curses` is installed for completeness, but an unprotected key needs no prompt at all; the agent's bash tool has no terminal, so passphrase-protected keys need a preseeded agent.
+- `docker-compose.yml` and the README's `docker run` example carry the new mount, and the README's mount table explains the read-write requirement (gpg writes trustdb, locks and its agent socket there).
 
 ## 1.6.64 - 2026-11-03
 

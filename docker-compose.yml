@@ -1,10 +1,10 @@
 # Documentation that runs: the host paths below are the complete runtime state.
 # The image itself contains no credentials and no extensions. It is stateless
-# apart from these three mutable, host-backed paths: data/ (the durable
+# apart from these mutable, host-backed paths: data/ (the durable
 # conversation and the memory tree), PI_CODING_AGENT_DIR (pi credentials and
-# model catalog), and billion-context (compression fold state). One further
-# read-only file mount supplies the hub bearer token; the container never sees
-# the rest of the zeroshot configuration.
+# model catalog), billion-context (compression fold state), and the GnuPG home
+# below. One further read-only file mount supplies the hub bearer token; the
+# container never sees the rest of the zeroshot configuration.
 services:
   pi-ui:
     image: ghcr.io/naqerl/pi-ui:${PI_UI_TAG:-latest}
@@ -47,4 +47,11 @@ services:
       # same as a normal host user, so ssh enforces the mode. Override with
       # SSH_KEY_FILE when the key lives elsewhere (e.g. an agent-specific identity).
       - "${SSH_KEY_FILE:-$HOME/.ssh/id_ed25519}:/home/pi/.ssh/id_ed25519:ro"
+      # Read-write, a directory: a GnuPG home the container owns, so `sops` can
+      # decrypt SOPS-encrypted files with a key imported into it. gpg writes
+      # trustdb, lock files and its agent socket here, hence read-write. Do not
+      # point this at a live host ~/.gnupg written by GnuPG >= 2.4: keyboxd stores
+      # pubring.db, which bookworm's gpg 2.2 cannot read. Export from the host and
+      # import into this directory instead (README: SOPS and GPG keys).
+      - "${GNUPGHOME_DIR:-$HOME/.pi-ui/gnupg}:/home/pi/.gnupg"
     restart: unless-stopped

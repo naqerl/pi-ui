@@ -2,7 +2,7 @@
 
 A minimal, single-conversation web UI for the [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) coding agent, with one durable conversation and no session management. It installs as a PWA and accepts text, titles, and URLs from the native share sheet on platforms that support Web Share Target.
 
-It ships as `ghcr.io/naqerl/pi-ui`. The container has no credentials baked in: your real pi agent directory is bind-mounted at runtime, so the UI uses your `auth.json` and the model catalog configured there. The conversation is stored in SQLite by `@earendil-works/pi-durable`; the workspace host directory holds pi's working tree together with that database and a small durable run marker, so a whole session survives container replacement and a process restart mid-run. Context compression runs in-process through `billion-context`; its fold state lives in a third host directory, `~/.local/share/billion-context`, which must also be writable and persistent. Those three host paths are the only mutable state; the image is otherwise stateless. A fourth, read-only mount supplies one file — the zeroshot hub bearer token at `/run/secrets/zeroshot-hub-token` — which the `mcp.json` `bearerToken` command reads. Nothing else from the hub's configuration directory enters the container. A fifth read-only mount holds a single file as well: an SSH private key, so the agent can reach other machines ([SSH to other hosts](#ssh-to-other-hosts)).
+It ships as `ghcr.io/naqerl/pi-ui`. The container has no credentials baked in: your real pi agent directory is bind-mounted at runtime, so the UI uses your `auth.json` and the model catalog configured there. The conversation is stored in SQLite by `@earendil-works/pi-durable`; the workspace host directory holds pi's working tree together with that database and a small durable run marker, so a whole session survives container replacement and a process restart mid-run. Context compression runs in-process through `billion-context`; its fold state lives in a third host directory, `~/.local/share/billion-context`, which must also be writable and persistent. Those three host paths are the only mutable state; the image is otherwise stateless. A fourth, read-only mount supplies one file — the zeroshot hub bearer token at `/run/secrets/zeroshot-hub-token` — which the `mcp.json` `bearerToken` command reads. Nothing else from the hub's configuration directory enters the container. A fifth read-only mount holds a single file as well: an SSH private key, so the agent can reach other machines ([SSH to other hosts](#ssh-to-other-hosts)). A sixth mount is a writable GnuPG home, so `sops` can decrypt SOPS-encrypted files in place ([SOPS and GPG keys](#sops-and-gpg-keys)).
 
 ## Quick start (local)
 
@@ -26,6 +26,7 @@ docker run -d --name pi-ui --restart unless-stopped \
   -v "${BILI_DATA_DIR:-$HOME/.local/share/billion-context}:/home/pi/.local/share/billion-context" \
   -v "${ZEROSHOT_HUB_TOKEN_FILE:-$HOME/.config/zeroshot/hub/api-token}:/run/secrets/zeroshot-hub-token:ro" \
   -v "${SSH_KEY_FILE:-$HOME/.ssh/id_ed25519}:/home/pi/.ssh/id_ed25519:ro" \
+  -v "${GNUPGHOME_DIR:-$HOME/.pi-ui/gnupg}:/home/pi/.gnupg" \
   ghcr.io/naqerl/pi-ui:v1.4.1
 ```
 
@@ -54,10 +55,11 @@ PI_WORK_DIR=$HOME/pi-session PI_AGENT_DIR=$HOME/.pi/agent PORT=9000 docker compo
 | `${BILI_DATA_DIR:-$HOME/.local/share/billion-context}`             | `/home/pi/.local/share/billion-context` | billion-context's in-process fold state: session files, `index.db`, and logs. Must be writable by uid 1000 and persistent.                                                                                                                                                                                                                                            |
 | `${ZEROSHOT_HUB_TOKEN_FILE:-$HOME/.config/zeroshot/hub/api-token}` | `/run/secrets/zeroshot-hub-token`       | One read-only file: the hub bearer token. `mcp.json` reads it with `"bearerToken": "!cat /run/secrets/zeroshot-hub-token"`, which the loader prefixes with `Bearer ` itself. The rest of `~/.config/zeroshot` (the Hetzner token, the gateway key in `hub-daemon.env`, the GitHub token) stays on the host.                                                           |
 | `${SSH_KEY_FILE:-$HOME/.ssh/id_ed25519}`                           | `/home/pi/.ssh/id_ed25519`              | One read-only file: your SSH private key, so the agent's `ssh`/`scp`/`sftp` can reach other machines. Skip the mount and the container simply has no identity. See [SSH to other hosts](#ssh-to-other-hosts).                                                                                                                                                         |
+| `${GNUPGHOME_DIR:-$HOME/.pi-ui/gnupg}`                             | `/home/pi/.gnupg`                       | A writable GnuPG home for the container's own `gpg`, so `sops` can decrypt with a PGP key. Read-write because gpg writes `trustdb.gpg`, lock files and its agent socket here. Do not point it at a live host `~/.gnupg` written by GnuPG 2.4 (keyboxd) — import your keys into it instead. See [SOPS and GPG keys](#sops-and-gpg-keys).                               |
 
 `data/` is not a separate mount: it lives inside the workspace mount, so replacing the container keeps both the files pi worked on and the conversation that produced them. The memory tree lives there too (`data/memory/` — `MEMORY.md`, `topics/`, `daily/`, `SCRATCHPAD.md`), which is why memory survives a container restart without a mount of its own. The compose file sets `DATA_DIR=/workspace/data` explicitly for the same reason.
 
-These three are the only mutable paths, and the image is otherwise stateless. The token mount is read-only and holds a single secret; the SSH key mount is read-only and holds a single credential, and is optional — without it the container has no identity at all. The image contains no `auth.json`, no `web-search.json`, no `models-store.json`, and no API keys; that state reaches the process only through the agent-directory mount. The workspace and billion-context mounts hold session data, not credentials.
+These three are the only mutable paths, and the image is otherwise stateless. The token mount is read-only and holds a single secret; the SSH key mount is read-only and holds a single credential, and is optional — without it the container has no identity at all. The GnuPG home is writable and holds key material, and is optional too — without it `gpg` starts with an empty keyring and `sops` cannot decrypt anything. The image contains no `auth.json`, no `web-search.json`, no `models-store.json`, and no API keys; that state reaches the process only through the agent-directory mount. The workspace and billion-context mounts hold session data, not credentials.
 
 ### SSH to other hosts
 
@@ -68,6 +70,27 @@ Read-only means the container cannot rewrite, rotate, or copy the key out throug
 The mount keeps the host uid and mode. When the container uid matches the host uid (both 1000), OpenSSH enforces the mode and refuses a key readable by group or others, so the source must stay `0600`. When the uids differ, OpenSSH skips the mode check because the file belongs to another user.
 
 `known_hosts` and `config` are not mounted. Inside the container they live at `/home/pi/.ssh/`, which is part of the image unless you also mount `/home/pi`, so a fresh container starts with neither: an unknown host asks for confirmation, and a non-interactive session fails outright. Pass `-o StrictHostKeyChecking=accept-new` to record a host key on first use, `-o UserKnownHostsFile=/workspace/.ssh/known_hosts` to keep that file inside the workspace mount, and spell out `Host` aliases on the command line (`ssh -p 23 u490196@u490196.your-storagebox.de`) instead of relying on `~/.ssh/config`. The same goes for the login name: the container's user is `pi`, not the user you are on the host, so a host reachable as `ssh example.com` from the host answers `Permission denied (publickey)` here until you pass `-l <user>` or set a `Host * User <user>` default in the container's own config.
+
+### SOPS and GPG keys
+
+The image ships `gpg`, `gpg-agent` and the `sops` binary (a pinned static release; it is not in Debian's archive), so a file encrypted to a PGP key can be decrypted in place — no plaintext copy, no host round-trip:
+
+```sh
+sops -d clusters/lab/tls/cloudflare-api-token.enc.yaml
+```
+
+`sops` shells out to `gpg`, so the key has to be in the container's GnuPG home, `/home/pi/.gnupg`. No key is baked in: that path is the `GNUPGHOME_DIR` mount. Pointing it at the host's live `~/.gnupg` usually does **not** work, for two reasons — GnuPG 2.4 writes a keybox (`pubring.db` plus `public-keys.d/`) that bookworm's `gpg` 2.2 cannot read (it looks for `pubring.kbx`), and two running agents sharing one home fight over the same socket and lock files. Give the container its own home and import the keys once:
+
+```sh
+GNUPGHOME_DIR=${GNUPGHOME_DIR:-$HOME/.pi-ui/gnupg}
+mkdir -p -m 700 "$GNUPGHOME_DIR" && sudo chown 1000:1000 "$GNUPGHOME_DIR"
+gpg --batch --armor --export-secret-keys <FINGERPRINT> \
+  | docker run --rm -i -u pi -e GNUPGHOME=/home/pi/.gnupg \
+      -v "$GNUPGHOME_DIR:/home/pi/.gnupg" --entrypoint gpg \
+      ghcr.io/naqerl/pi-ui:latest --batch --import
+```
+
+The mount must be read-write: gpg writes `trustdb.gpg`, lock files and its agent socket (`S.gpg-agent`) into the home. On protected keys, that socket is also how a passphrase is asked for, and the agent's `bash` tool has no terminal — decrypt with an **unprotected** key, or preload the passphrase into an agent (`gpg-preset-passphrase`). `gpg --export-secret-keys` prints an unprotected private key in clear, so pipe it rather than writing it to a file. Re-import after adding a key on the host; the import is idempotent.
 
 ### Why host networking
 

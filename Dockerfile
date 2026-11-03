@@ -20,29 +20,33 @@ ENV NODE_ENV=production \
     PORT=8787
 
 # Only what pi's bash tool needs to be useful. No compilers, Python, or package managers.
-# gnupg + age + sops so secrets can be decrypted on the fly (SOPS files in the
-# gitops repo are PGP-encrypted; the private key arrives as a file mount, never baked in).
 # openssh-client (ssh, scp, sftp, ssh-keygen, ssh-keyscan) lets the agent reach other
 # machines. The identity itself is not baked in: it arrives as one read-only file mount.
-
-ARG SOPS_VERSION=3.10.2
-
+# gpg + gpg-agent decrypt with a PGP key, and sops (below) reads SOPS-encrypted files;
+# the keys are not baked in either, they live in the mounted /home/pi/.gnupg.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        age \
         ca-certificates \
         curl \
         git \
-        gnupg \
+        gpg \
+        gpg-agent \
         openssh-client \
+        pinentry-curses \
         procps \
         ripgrep \
-    && curl -fsSL --retry 3 \
-        "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64" \
-        -o /usr/local/bin/sops \
-    && chmod 0755 /usr/local/bin/sops \
-    && sops --version \
     && rm -rf /var/lib/apt/lists/*
+
+# sops is not in Debian bookworm's archive; getsops publishes static binaries. Pin both
+# the version and its checksum so a re-tagged or tampered release cannot enter the
+# image silently. The release workflow builds linux/amd64 only, so the asset is fixed.
+ARG SOPS_VERSION=3.13.3
+ARG SOPS_SHA256=e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b
+RUN curl -fsSLo /usr/local/bin/sops \
+        "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64" \
+    && echo "${SOPS_SHA256}  /usr/local/bin/sops" | sha256sum -c - \
+    && chmod 0755 /usr/local/bin/sops \
+    && sops --version
 
 # The node image already ships a uid 1000 "node" account; replace it with "pi".
 RUN set -eux; \
