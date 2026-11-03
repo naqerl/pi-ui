@@ -1,3 +1,7 @@
+## 1.6.79 - 2026-11-03
+
+- fix(stats): pin the chart crosshair on a real click instead of a synthetic pointer, so the e2e suite is green again (xhair2).
+
 ## 1.6.78 - 2026-11-03
 
 - feat(chat): preview a task from its 4-character id and open it on click (c3fc).
