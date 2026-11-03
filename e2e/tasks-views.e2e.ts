@@ -529,14 +529,17 @@ test("shows the single task list without filter tabs and groups done work by day
       '[data-testid="task-section-active"] [data-slot="collapsible-trigger"]',
     );
     const openCount = open?.querySelectorAll<HTMLElement>("span")[1];
-    if (open == null || openCount == null) return null;
+    const openChevron = open?.querySelector("svg");
+    if (open == null || openCount == null || !(openChevron instanceof SVGElement)) return null;
     const openBox = open.getBoundingClientRect();
     return {
       countRight: openCount.getBoundingClientRect().right > openBox.left + openBox.width / 2,
-      chevron: open.querySelector("svg") !== null,
+      chevron: true,
+      chevronBeforeCount:
+        (openChevron.compareDocumentPosition(openCount) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
     };
   });
-  expect(openHeader).toEqual({ countRight: true, chevron: true });
+  expect(openHeader).toEqual({ countRight: true, chevron: true, chevronBeforeCount: true });
 
   await screen.getByRole("tab", "Chat").tap();
   await expect(screen.getByRole("textbox", "Message")).toBeVisible();
@@ -564,8 +567,14 @@ test("shows the single task list without filter tabs and groups done work by day
     if (group === null || trigger == null) return null;
     const label = trigger.firstElementChild;
     const chevron = trigger.querySelector("svg");
-    const count = trigger.lastElementChild;
-    if (!(label instanceof HTMLElement) || !(chevron instanceof SVGElement) || count === null) {
+    const count = [...trigger.querySelectorAll<HTMLElement>("span")].find(
+      (span) => span !== label && /^\d+$/.test(span.textContent?.trim() ?? ""),
+    );
+    if (
+      !(label instanceof HTMLElement) ||
+      !(chevron instanceof SVGElement) ||
+      count === undefined
+    ) {
       return null;
     }
     const labelBox = label.getBoundingClientRect();
@@ -575,9 +584,16 @@ test("shows the single task list without filter tabs and groups done work by day
       dark: getComputedStyle(trigger).backgroundColor === getComputedStyle(document.body).color,
       labelLeft: labelBox.right <= chevronBox.left + 1,
       chevronLeftOfCount: chevronBox.right <= countBox.left + 1,
+      chevronBeforeCount:
+        (chevron.compareDocumentPosition(count) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
     };
   });
-  expect(header).toEqual({ dark: true, labelLeft: true, chevronLeftOfCount: true });
+  expect(header).toEqual({
+    dark: true,
+    labelLeft: true,
+    chevronLeftOfCount: true,
+    chevronBeforeCount: true,
+  });
 
   await browser.setViewport({ width: 360, height: 800 });
   await expect(screen.getByTestId("task-filters")).toHaveCount(0);
