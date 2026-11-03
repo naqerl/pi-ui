@@ -11,6 +11,7 @@ type PatchBody = {
 type DashboardRead = {
   layout: PatchBody;
   widgets: { id: string }[];
+  values: Record<string, { error?: string; view?: unknown }>;
 };
 
 async function readDashboard(browser: {
@@ -20,6 +21,130 @@ async function readDashboard(browser: {
     const response = await fetch("/api/dashboard");
     return (await response.json()) as DashboardRead;
   });
+}
+
+async function callDashboard(
+  browser: {
+    evaluate<T>(fn: (text: string) => Promise<T> | T, text: string): Promise<T>;
+  },
+  calls: unknown[],
+) {
+  await browser.evaluate(
+    async (text) => {
+      const response = await fetch("/api/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!response.ok) throw new Error(`message failed: ${response.status}`);
+      return null;
+    },
+    `TOOLCALLS ${JSON.stringify(calls)}`,
+  );
+}
+
+const pinValues = [10, 20, 30, 40, 50, 60, 70, 80];
+
+function pinChartCall(id: string) {
+  return {
+    name: "dashboard_upsert",
+    arguments: {
+      id,
+      title: id === "pin-touch" ? "Touch chart" : "Pinned chart",
+      kind: "sparkline",
+      source: {
+        type: "poll",
+        script: `return { values: ${JSON.stringify(pinValues)} };`,
+        intervalSec: 0.5,
+      },
+      mapping: { series: "values" },
+      chart: {
+        height: 160,
+        showTooltip: true,
+        y: { format: "currency", ticks: 4 },
+        x: { labels: pinValues.map((_, index) => String(index)) },
+        series: [{ key: "values", label: "Value", color: "var(--chart-1)", type: "line" }],
+      },
+    },
+  };
+}
+
+async function waitForChart(
+  browser: {
+    evaluate<T>(fn: () => Promise<T> | T): Promise<T>;
+  },
+  id: string,
+) {
+  await expect
+    .poll(async () => (await readDashboard(browser)).values[id]?.view !== undefined, {
+      timeout: 30_000,
+    })
+    .toBe(true);
+}
+
+function readPin(
+  browser: {
+    evaluate<T>(fn: (id: string) => T, id: string): Promise<T>;
+  },
+  id: string,
+) {
+  return browser.evaluate((widgetId) => {
+    const card = document.querySelector(`[data-testid="widget-${widgetId}"]`);
+    const chart = document.querySelector<HTMLElement>(`[data-chart-widget="${widgetId}"]`);
+    const caption = card?.querySelector<HTMLElement>('[data-testid="chart-pin-caption"]');
+    const status = card?.querySelector<HTMLElement>('[data-testid="chart-pin-status"]');
+    const box = chart?.getBoundingClientRect();
+    return {
+      height: box === undefined ? 0 : Math.round(box.height),
+      line: card?.querySelector('[data-testid="chart-pin"]') !== null,
+      dots: card?.querySelectorAll('[data-testid="chart-pin-dot"]').length ?? 0,
+      caption: caption?.textContent ?? null,
+      status: status?.textContent ?? null,
+    };
+  }, id);
+}
+
+function pointerAt(
+  browser: {
+    evaluate<T>(
+      fn: (input: { id: string; ratio: number; pointerType: string }) => T,
+      input: { id: string; ratio: number; pointerType: string },
+    ): Promise<T>;
+  },
+  id: string,
+  ratio: number,
+  pointerType = "touch",
+) {
+  return browser.evaluate(
+    ({ id: widgetId, ratio: where, pointerType: kind }) => {
+      const chart = document.querySelector<HTMLElement>(`[data-chart-widget="${widgetId}"]`);
+      if (chart === null) throw new Error("missing chart");
+      chart.scrollIntoView({ block: "center" });
+      const box = chart.getBoundingClientRect();
+      const x = box.left + box.width * where;
+      const y = box.top + box.height / 2;
+      const fire = (type: string, buttons: number) => {
+        chart.dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            pointerId: 41,
+            pointerType: kind,
+            isPrimary: true,
+            clientX: x,
+            clientY: y,
+            button: 0,
+            buttons,
+          }),
+        );
+      };
+      fire("pointerdown", 1);
+      fire("pointerup", 0);
+      return { x, y };
+    },
+    { id, ratio, pointerType },
+  );
 }
 
 /** Drives the page's hold-to-drag pointer shim with the same synthetic events a touch or mouse test uses. */
@@ -702,4 +827,135 @@ test("a phone-width viewport keeps the single-column stack and no drag grips", a
       resize: document.querySelectorAll(".dashboard-resize-handle").length,
     })),
   ).toEqual({ grips: 0, resize: 4 });
+});
+
+test("clicking a chart pins its row, a second click or Escape clears it, and a drag does not pin", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 1280, height: 1000 });
+  await app.open("/?page=stats");
+  await expect(screen.getByTestId("stats-page")).toBeVisible({ timeout: 30_000 });
+  await callDashboard(browser, [pinChartCall("pin-chart")]);
+  try {
+    await expect(screen.getByText("Pinned chart", { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    await waitForChart(browser, "pin-chart");
+
+    const center = await browser.evaluate(() => {
+      const chart = document.querySelector<HTMLElement>('[data-chart-widget="pin-chart"]');
+      if (chart === null) return null;
+      chart.scrollIntoView({ block: "center" });
+      const box = chart.getBoundingClientRect();
+      return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+    });
+    expect(center).not.toBeNull();
+    if (center === null) throw new Error("missing chart box");
+    await browser.mouse.move(center.x, center.y);
+    await expect
+      .poll(() =>
+        browser.evaluate(
+          () =>
+            document.querySelector('[data-testid="widget-pin-chart"] .recharts-tooltip-wrapper')
+              ?.textContent ?? "",
+        ),
+      )
+      .toContain("Value");
+
+    await pointerAt(browser, "pin-chart", 0.5, "mouse");
+    await expect
+      .poll(() => readPin(browser, "pin-chart"))
+      .toEqual({
+        height: 160,
+        line: true,
+        dots: 1,
+        caption: "4\nValue: €50",
+        status: "4\nValue: €50",
+      });
+
+    await pointerAt(browser, "pin-chart", 0.5, "mouse");
+    await expect
+      .poll(() => readPin(browser, "pin-chart"))
+      .toEqual({ height: 160, line: false, dots: 0, caption: null, status: "" });
+
+    await pointerAt(browser, "pin-chart", 0.5, "mouse");
+    await expect.poll(() => readPin(browser, "pin-chart").then((state) => state.line)).toBe(true);
+    await browser.keyboard.press("Escape");
+    await expect.poll(() => readPin(browser, "pin-chart").then((state) => state.line)).toBe(false);
+
+    await browser.evaluate(() => {
+      const chart = document.querySelector<HTMLElement>('[data-chart-widget="pin-chart"]');
+      if (chart === null) throw new Error("missing chart");
+      const box = chart.getBoundingClientRect();
+      const y = box.top + box.height / 2;
+      const x0 = box.left + box.width * 0.25;
+      const x1 = box.left + box.width * 0.75;
+      const fire = (type: string, x: number, buttons: number) => {
+        chart.dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            pointerId: 42,
+            pointerType: "touch",
+            isPrimary: true,
+            clientX: x,
+            clientY: y,
+            button: 0,
+            buttons,
+          }),
+        );
+      };
+      fire("pointerdown", x0, 1);
+      fire("pointermove", x0 + 30, 1);
+      fire("pointermove", x1, 1);
+      fire("pointerup", x1, 0);
+      return true;
+    });
+    await expect.poll(() => readPin(browser, "pin-chart").then((state) => state.line)).toBe(false);
+  } finally {
+    await callDashboard(browser, [{ name: "dashboard_remove", arguments: { id: "pin-chart" } }]);
+    await expect
+      .poll(async () => (await readDashboard(browser)).widgets.map((widget) => widget.id))
+      .not.toContain("pin-chart");
+  }
+});
+
+test("a tap on a phone viewport pins the same row without a hover", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/?page=stats");
+  await expect(screen.getByTestId("stats-page")).toBeVisible({ timeout: 30_000 });
+  await callDashboard(browser, [pinChartCall("pin-touch")]);
+  try {
+    await expect(screen.getByText("Touch chart", { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    await waitForChart(browser, "pin-touch");
+
+    await pointerAt(browser, "pin-touch", 0.5);
+    await expect
+      .poll(() => readPin(browser, "pin-touch"))
+      .toEqual({
+        height: 160,
+        line: true,
+        dots: 1,
+        caption: "4\nValue: €50",
+        status: "4\nValue: €50",
+      });
+    expect((await readPin(browser, "pin-touch")).height).toBeGreaterThanOrEqual(24);
+
+    await pointerAt(browser, "pin-touch", 0.5);
+    await expect.poll(() => readPin(browser, "pin-touch").then((state) => state.line)).toBe(false);
+  } finally {
+    await callDashboard(browser, [{ name: "dashboard_remove", arguments: { id: "pin-touch" } }]);
+    await expect
+      .poll(async () => (await readDashboard(browser)).widgets.map((widget) => widget.id))
+      .not.toContain("pin-touch");
+  }
 });

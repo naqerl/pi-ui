@@ -1,4 +1,6 @@
 import {
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   type RefObject,
   useCallback,
   useEffect,
@@ -18,6 +20,7 @@ import {
   ComposedChart,
   Line,
   LineChart,
+  ReferenceDot,
   ReferenceLine,
   XAxis,
   YAxis,
@@ -423,9 +426,59 @@ function resolveSeries(view: SparklineView, chart: SparklineChart | undefined): 
     .filter((series) => series.points.length >= 2);
 }
 
-function WidgetSparkline({ view, chart }: { view: SparklineView; chart?: SparklineChart }) {
+function WidgetSparkline({
+  id,
+  view,
+  chart,
+}: {
+  id: string;
+  view: SparklineView;
+  chart?: SparklineChart;
+}) {
   const chartId = useId().replace(/:/g, "");
+  const chartRef = useRef<HTMLDivElement | null>(null);
+  const pressRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
+  const [pinned, setPinned] = useState<number | null>(null);
   const series = resolveSeries(view, chart);
+  const longest = series.length === 0 ? 0 : Math.max(...series.map((item) => item.points.length));
+  const sourceLabels = view.labels ?? chart?.x?.labels;
+  const labels = sourceLabels?.slice(0, longest);
+  const data =
+    longest === 0
+      ? []
+      : Array.from({ length: longest }, (_, index) => {
+          const row: Record<string, string | number | null> = {
+            label: labels?.[index] ?? String(index),
+          };
+          for (const item of series) row[item.id] = item.points[index] ?? null;
+          return row;
+        });
+
+  // Polling swaps the view object every tick; the component's own state keeps
+  // the pin while only clearing it if the new data no longer has that row.
+  useEffect(() => {
+    if (pinned !== null && pinned >= data.length) setPinned(null);
+  }, [pinned, data.length]);
+
+  useEffect(() => {
+    if (pinned === null) return;
+    const clear = (event: Event) => {
+      if (event instanceof KeyboardEvent) {
+        if (event.key === "Escape") setPinned(null);
+        return;
+      }
+      const target = event.target;
+      if (target instanceof Node && chartRef.current?.contains(target)) return;
+      setPinned(null);
+    };
+    document.addEventListener("pointerdown", clear);
+    document.addEventListener("keydown", clear);
+    return () => {
+      document.removeEventListener("pointerdown", clear);
+      document.removeEventListener("keydown", clear);
+    };
+  }, [pinned]);
+
   if (series.length === 0) {
     return <div className="h-10 text-muted-foreground">collecting…</div>;
   }
@@ -435,16 +488,6 @@ function WidgetSparkline({ view, chart }: { view: SparklineView; chart?: Sparkli
     chart?.yDomain === undefined || chart.yDomain === "auto"
       ? ["dataMin", "dataMax"]
       : chart.yDomain;
-  const sourceLabels = view.labels ?? chart?.x?.labels;
-  const longest = Math.max(...series.map((item) => item.points.length));
-  const labels = sourceLabels?.slice(0, longest);
-  const data = Array.from({ length: longest }, (_, index) => {
-    const row: Record<string, string | number | null> = {
-      label: labels?.[index] ?? String(index),
-    };
-    for (const item of series) row[item.id] = item.points[index] ?? null;
-    return row;
-  });
   const config: ChartConfig = Object.fromEntries(
     series.map((item) => [item.id, { label: item.label, color: item.color }]),
   );
@@ -515,6 +558,62 @@ function WidgetSparkline({ view, chart }: { view: SparklineView; chart?: Sparkli
   ) : null;
   const legend =
     (chart?.legend ?? series.length > 1) ? <ChartLegend content={<ChartLegendContent />} /> : null;
+  const format = chart?.y?.format;
+  const currency = chart?.y?.currency ?? "€";
+  const formatValue = (value: unknown): string => {
+    if (value === null || value === undefined) return "–";
+    if (format === undefined) {
+      const number = typeof value === "number" ? value : Number(value);
+      return Number.isFinite(number) ? number.toLocaleString() : String(value);
+    }
+    return formatChartValue(value, format, currency);
+  };
+  const pinnedRow = pinned === null ? undefined : data[pinned];
+  const pinnedValues =
+    pinnedRow === undefined
+      ? []
+      : series.map((item) => ({
+          id: item.id,
+          label: item.label,
+          value: formatValue(pinnedRow[item.id]),
+        }));
+  const captionText =
+    pinnedRow === undefined
+      ? ""
+      : [
+          String(pinnedRow.label),
+          ...pinnedValues.map((item) => `${item.label}: ${item.value}`),
+        ].join("\n");
+  const markers =
+    pinnedRow === undefined
+      ? []
+      : [
+          <ReferenceLine
+            key="chart-pin"
+            data-testid="chart-pin"
+            x={String(pinnedRow.label)}
+            stroke="var(--muted-foreground)"
+            strokeDasharray="3 3"
+            ifOverflow="extendDomain"
+          />,
+          ...pinnedValues.map((item) => {
+            const value = pinnedRow[item.id];
+            if (typeof value !== "number" || !Number.isFinite(value)) return null;
+            return (
+              <ReferenceDot
+                key={`pin-${item.id}`}
+                data-testid="chart-pin-dot"
+                x={String(pinnedRow.label)}
+                y={value}
+                r={4}
+                fill={`var(--color-${item.id})`}
+                stroke="var(--background)"
+                strokeWidth={1}
+                isFront
+              />
+            );
+          }),
+        ];
   const references = (chart?.reference ?? []).map((reference) => {
     const color = reference.color ?? "var(--chart-4)";
     return (
@@ -584,52 +683,121 @@ function WidgetSparkline({ view, chart }: { view: SparklineView; chart?: Sparkli
     margin: { top: 2, right: 0, bottom: 0, left: 0 },
   };
   const hasReference = (chart?.reference?.length ?? 0) > 0;
+  const pinIndexAt = (clientX: number) => {
+    const element = chartRef.current;
+    if (element === null || longest <= 1) return 0;
+    const box = element.getBoundingClientRect();
+    if (box.width <= 0) return 0;
+    const ratio = (clientX - box.left) / box.width;
+    return clamp(Math.round(ratio * (longest - 1)), 0, longest - 1);
+  };
+  const pinAt = (clientX: number) => {
+    const index = pinIndexAt(clientX);
+    setPinned((current) => (current === index ? null : index));
+  };
+  const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    pressRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+  };
+  const onPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const start = pressRef.current;
+    pressRef.current = null;
+    if (start === null || start.pointerId !== event.pointerId) return;
+    if (Math.hypot(event.clientX - start.x, event.clientY - start.y) >= 6) return;
+    pinAt(event.clientX);
+  };
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      if (pinned === null) return;
+      event.preventDefault();
+      setPinned(null);
+      return;
+    }
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const delta = event.key === "ArrowRight" ? 1 : -1;
+    setPinned((current) => {
+      const base = current ?? (delta > 0 ? -1 : longest);
+      return clamp(base + delta, 0, longest - 1);
+    });
+  };
+  const plotLabel = `Chart: ${series.map((item) => item.label).join(", ")}. Use the arrow keys to pin a point; Escape clears it.`;
   return (
-    <ChartContainer
-      config={config}
-      className="aspect-auto w-full min-w-0"
-      style={{ height }}
-      aria-hidden={showTooltip ? undefined : true}
-    >
-      {hasReference || types.size > 1 ? (
-        <ComposedChart {...props}>
-          {gradient}
-          {xAxis}
-          {yAxis}
-          {tooltip}
-          {legend}
-          {references}
-          {parts}
-        </ComposedChart>
-      ) : type === "bar" ? (
-        <BarChart {...props}>
-          {gradient}
-          {xAxis}
-          {yAxis}
-          {tooltip}
-          {legend}
-          {parts}
-        </BarChart>
-      ) : type === "line" ? (
-        <LineChart {...props}>
-          {gradient}
-          {xAxis}
-          {yAxis}
-          {tooltip}
-          {legend}
-          {parts}
-        </LineChart>
-      ) : (
-        <AreaChart {...props}>
-          {gradient}
-          {xAxis}
-          {yAxis}
-          {tooltip}
-          {legend}
-          {parts}
-        </AreaChart>
+    <>
+      <ChartContainer
+        ref={chartRef}
+        config={config}
+        className="aspect-auto w-full min-w-0"
+        style={{ height, minHeight: 24 }}
+        role="group"
+        tabIndex={0}
+        aria-label={plotLabel}
+        data-chart-widget={id}
+        onPointerDown={onPointerDown}
+        onPointerUp={onPointerUp}
+        onPointerCancel={() => {
+          pressRef.current = null;
+        }}
+        onPointerLeave={() => {
+          pressRef.current = null;
+        }}
+        onKeyDown={onKeyDown}
+      >
+        {hasReference || types.size > 1 ? (
+          <ComposedChart {...props}>
+            {gradient}
+            {xAxis}
+            {yAxis}
+            {tooltip}
+            {legend}
+            {references}
+            {markers}
+            {parts}
+          </ComposedChart>
+        ) : type === "bar" ? (
+          <BarChart {...props}>
+            {gradient}
+            {xAxis}
+            {yAxis}
+            {tooltip}
+            {legend}
+            {markers}
+            {parts}
+          </BarChart>
+        ) : type === "line" ? (
+          <LineChart {...props}>
+            {gradient}
+            {xAxis}
+            {yAxis}
+            {tooltip}
+            {legend}
+            {markers}
+            {parts}
+          </LineChart>
+        ) : (
+          <AreaChart {...props}>
+            {gradient}
+            {xAxis}
+            {yAxis}
+            {tooltip}
+            {legend}
+            {markers}
+            {parts}
+          </AreaChart>
+        )}
+      </ChartContainer>
+      {pinnedRow === undefined ? null : (
+        <div
+          className="theme-radius mt-1 border border-border/70 bg-surface px-2 py-1 text-[10px] leading-4 whitespace-pre-line"
+          data-testid="chart-pin-caption"
+        >
+          {captionText}
+        </div>
       )}
-    </ChartContainer>
+      <p role="status" className="sr-only" data-testid="chart-pin-status">
+        {captionText}
+      </p>
+    </>
   );
 }
 
@@ -780,7 +948,7 @@ function ViewBody({ id, view, chart }: { id: string; view: WidgetView; chart?: S
             <span className="text-muted-foreground">{view.label ?? ""}</span>
             <span data-testid={`stat-${id}`}>{view.value ?? ""}</span>
           </div>
-          <WidgetSparkline view={view} chart={chart} />
+          <WidgetSparkline id={id} view={view} chart={chart} />
         </div>
       );
     case "markdown":
