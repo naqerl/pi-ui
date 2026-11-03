@@ -35,6 +35,8 @@ export interface McpSubscriptionWatchdogRuntime {
   ): Promise<unknown>;
   reopenSubscription?(record: McpSubscriptionRecord, cursor: string | null): Promise<unknown>;
   cancelSubscription?(stableId: string, liveIds?: string | readonly string[]): Promise<unknown>;
+  /** Restored rows the server rejected are terminal for this process. */
+  isSubscriptionDropped?(stableId: string): boolean;
   protocolConnection?(server: string): Promise<{
     connection: {
       client: {
@@ -303,6 +305,7 @@ export class McpSubscriptionWatchdog {
       if (this.closed) return;
       if (!shouldWatch(record)) return;
       const stableId = recordStableId(record);
+      if (this.runtime?.isSubscriptionDropped?.(stableId) === true) return;
 
       let response: unknown;
       let pollError: string | undefined;

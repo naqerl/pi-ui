@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { FAKE_HCLOUD_TOKEN, startFakeModelServer } from "./fake-model.mjs";
 
 const dataDir = process.env.PI_E2E_DATA_DIR ?? mkdtempSync(join(tmpdir(), "pi-ui-e2e-data-"));
-const agentDir = mkdtempSync(join(tmpdir(), "pi-ui-e2e-agent-"));
+const suppliedAgentDir = process.env.PI_E2E_AGENT_DIR;
+const agentDir = suppliedAgentDir ?? mkdtempSync(join(tmpdir(), "pi-ui-e2e-agent-"));
 mkdirSync(dataDir, { recursive: true });
 mkdirSync(agentDir, { recursive: true });
 
@@ -52,26 +53,28 @@ if (!live) {
       2,
     ),
   );
-  writeFileSync(
-    join(agentDir, "mcp.json"),
-    JSON.stringify(
-      {
-        mcpServers: {
-          stub: {
-            command: process.execPath,
-            args: [join(import.meta.dirname, "stub-mcp.mjs")],
+  if (suppliedAgentDir === undefined) {
+    writeFileSync(
+      join(agentDir, "mcp.json"),
+      JSON.stringify(
+        {
+          mcpServers: {
+            stub: {
+              command: process.execPath,
+              args: [join(import.meta.dirname, "stub-mcp.mjs")],
+            },
+            // Loopback port 1 is closed, so this HTTP server fails at boot while
+            // the stdio stub above stays reachable.
+            ...(allMcpReachable
+              ? {}
+              : { unreachable: { url: "http://127.0.0.1:1/mcp", requestTimeoutMs: 2000 } }),
           },
-          // Loopback port 1 is closed, so this HTTP server fails at boot while
-          // the stdio stub above stays reachable.
-          ...(allMcpReachable
-            ? {}
-            : { unreachable: { url: "http://127.0.0.1:1/mcp", requestTimeoutMs: 2000 } }),
         },
-      },
-      null,
-      2,
-    ),
-  );
+        null,
+        2,
+      ),
+    );
+  }
   process.env.PI_CODING_AGENT_DIR = agentDir;
   process.env.PI_MODEL = "e2e/e2e-model";
   process.env.PI_OFFLINE = "1";

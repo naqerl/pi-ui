@@ -212,6 +212,30 @@ export function mcpEventText(envelope: McpEventEnvelope, items: readonly unknown
   })}\n${MCP_EVENTS_TRAILER}`;
 }
 
+/**
+ * Remove events stamped before this process started from an extension batch.
+ * The feed already marks them replay; this keeps a mixed batch from naming
+ * them in the chat notice the new event still needs.
+ */
+export function dropMcpEventsBefore(text: string, startedAt: number): string | null {
+  const envelope = mcpEventEnvelope(text);
+  if (envelope === null) return text;
+  let dropped = 0;
+  const kept = envelope.items.filter((item) => {
+    if (!isRecord(item)) return true;
+    const event = isRecord(item.event) ? item.event : item;
+    const raw = event.timestamp;
+    const timestamp =
+      typeof raw === "number" ? raw : typeof raw === "string" ? Date.parse(raw) : NaN;
+    if (!Number.isFinite(timestamp) || timestamp >= startedAt) return true;
+    dropped += 1;
+    return false;
+  });
+  if (dropped === 0) return text;
+  if (kept.length === 0) return null;
+  return mcpEventText({ ...envelope, dropped: envelope.dropped + dropped }, kept);
+}
+
 /** Longest merged MCP notice text before a second notice carries the rest. */
 export const MCP_MERGED_NOTICE_TEXT_LIMIT = 20_000;
 

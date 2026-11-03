@@ -26,9 +26,16 @@ treated as an empty registry, never as a boot failure.
 
 Once the MCP adapter is ready, and before the first turn, every entry whose
 status is `active` or `reconnecting` is subscribed again through the
-extension's own subscribe path with its stored cursor. Each success logs one
-line, `mcp: restored subscription <server>/<name> at <cursor>`. If a server is
-unavailable, its entry stays in the registry and is retried when that server
+extension's own subscribe path with its stored cursor. Before opening a stream,
+pi-ui asks the server whether that cursor still belongs to a live subscription
+with an `events/poll` probe; a server that does not implement the probe is
+checked through `events/list`. A `NotFound` (`-32023`) or unknown stream marks
+the row `cancelled`, persists it, logs `mcp: dropped restored subscription …`,
+and never retries it in this process. A server that still knows the stream but
+would replay from before this process started keeps the subscription at the
+fresh cursor it returned, dropping that backlog. Each successful restore logs
+one line, `mcp: restored subscription <server>/<name> at <cursor>`. If a server
+is unavailable, its entry stays in the registry and is retried when that server
 answers again.
 
 A restart therefore starts from the last cursor instead of `null` ("start from
@@ -36,7 +43,11 @@ now" for a fresh subscription). If the hub still re-delivers part of its
 retained window, the feed first checks the persisted event ids for the stable
 id. An id already delivered before this process started is stored with
 `replayed: true`, does not change the chat notice, and is not submitted to the
-model. For an upgraded or cursor-only entry the feed also treats an event at or
+model. The feed also records the process boot time once and treats any event
+whose timestamp predates it as replay even when the adapter reports
+`replayed: false`, which covers a cursor the server no longer honours.
+
+For an upgraded or cursor-only entry the feed also treats an event at or
 below the restored subscription's `hub:<n>` high-water mark as a replay.
 `hub:snapshot:a:b` and other cursors are opaque: they are stored, never
 compared. A duplicate of an event first delivered live is dropped after that
