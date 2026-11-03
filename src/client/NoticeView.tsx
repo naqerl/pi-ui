@@ -83,7 +83,7 @@ export function ChipButton({
       className={cn(
         "flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-mono text-[11px] leading-5 shadow-sm backdrop-blur-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
         tone === "warning"
-          ? "border-amber-500/40 bg-amber-500/10 text-amber-500 hover:border-amber-500/60 hover:text-amber-500"
+          ? "border-status-warn/40 bg-status-warn/10 text-status-warn hover:border-status-warn/60 hover:text-status-warn"
           : tone === "destructive"
             ? "border-destructive/40 bg-surface/90 text-destructive hover:border-foreground/25 hover:text-destructive"
             : "border-foreground/10 bg-surface/90 text-muted-foreground hover:border-foreground/25 hover:text-foreground",

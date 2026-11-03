@@ -17,6 +17,10 @@
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
+  --status-ok: oklch(0.596 0.145 163.225);
+  --status-warn: oklch(0.666 0.179 58.318);
+  --status-bad: oklch(0.577 0.245 27.325);
+  --status-idle: oklch(0.556 0 0);
   color-scheme: light;
 }
 
@@ -35,8 +39,28 @@
     --chart-3: oklch(0.769 0.188 70.08);
     --chart-4: oklch(0.627 0.265 303.9);
     --chart-5: oklch(0.645 0.246 16.439);
+    --status-ok: oklch(0.765 0.177 163.223);
+    --status-warn: oklch(0.828 0.189 84.429);
+    --status-bad: oklch(0.704 0.191 22.216);
+    --status-idle: oklch(0.708 0 0);
     color-scheme: dark;
   }
+}
+
+/* An installed Omarchy theme owns its mode, which need not match the desktop
+   preference. The marker makes status colours follow the chosen theme. */
+:root[data-mode="light"] {
+  --status-ok: oklch(0.596 0.145 163.225);
+  --status-warn: oklch(0.666 0.179 58.318);
+  --status-bad: oklch(0.577 0.245 27.325);
+  --status-idle: oklch(0.556 0 0);
+}
+
+:root[data-mode="dark"] {
+  --status-ok: oklch(0.765 0.177 163.223);
+  --status-warn: oklch(0.828 0.189 84.429);
+  --status-bad: oklch(0.704 0.191 22.216);
+  --status-idle: oklch(0.708 0 0);
 }
 
 @theme inline {
@@ -53,6 +77,10 @@
   --color-chart-3: var(--chart-3);
   --color-chart-4: var(--chart-4);
   --color-chart-5: var(--chart-5);
+  --color-status-ok: var(--status-ok);
+  --color-status-warn: var(--status-warn);
+  --color-status-bad: var(--status-bad);
+  --color-status-idle: var(--status-idle);
   --radius-sm: var(--radius);
   --radius-md: var(--radius);
   --radius-lg: var(--radius);
