@@ -35,7 +35,8 @@ test("a long press on Send parks the next task in the backlog", { timeout: 300_0
   const liveTitle = `Live ${tag}`;
   const parkedTitle = `Parked ${tag}`;
   const parkedOnlyTitle = `Parked elsewhere ${tag}`;
-  const titles = [liveTitle, parkedTitle, parkedOnlyTitle];
+  const workingTitle = `Working ${tag}`;
+  const titles = [liveTitle, parkedTitle, parkedOnlyTitle, workingTitle];
 
   // A project whose only task is parked, sorted before the live project by name.
   await browser.evaluate(
@@ -49,6 +50,31 @@ test("a long press on Send parks the next task in the backlog", { timeout: 300_0
     },
     { title: parkedOnlyTitle, project: parkedProject },
   );
+
+  // A parked badge must read as a filled chip, while a working badge keeps the
+  // filled look it already had.
+  const workingStatus = await browser.evaluate(
+    async ({ title, project }) => {
+      await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, project }),
+      });
+      const ledger = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
+        tasks: Array<{ id: string; title: string }>;
+      };
+      const task = ledger.tasks.find((item) => item.title === title);
+      if (task === undefined) return null;
+      const patched = await fetch(`/api/tasks/${encodeURIComponent(task.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "working" }),
+      });
+      return patched.status;
+    },
+    { title: workingTitle, project: liveProject },
+  );
+  expect(workingStatus).toBe(200);
 
   // A short press still makes a normal task in a project.
   await composer.fill(`@${liveProject} ${liveTitle}`);
@@ -111,14 +137,23 @@ test("a long press on Send parks the next task in the backlog", { timeout: 300_0
   expect(parked?.project).toBe(liveProject);
 
   const page = await browser.evaluate(
-    ({ parkedName, liveName, liveGroup, parkedGroup }) => {
+    ({ parkedName, liveName, workingName, liveGroup, parkedGroup }) => {
       const card = (name: string) =>
         [...document.querySelectorAll<HTMLElement>("[data-task-card]")].find(
           (item) => item.getAttribute("aria-label") === `Open ${name}`,
         );
+      const badgeStyle = (name: string) => {
+        const badge = card(name)?.querySelector<HTMLElement>('[data-testid^="task-badge-"]');
+        if (badge === undefined || badge === null) return null;
+        const style = getComputedStyle(badge);
+        return { background: style.backgroundColor, color: style.color };
+      };
       const parkedCard = card(parkedName);
       const liveCard = card(liveName);
       if (parkedCard === undefined || liveCard === undefined) return null;
+      const parkedBadge = badgeStyle(parkedName);
+      const workingBadge = badgeStyle(workingName);
+      if (parkedBadge === null || workingBadge === null) return null;
       const parkedStyle = getComputedStyle(parkedCard);
       const liveStyle = getComputedStyle(liveCard);
       const group = document.querySelector<HTMLElement>(
@@ -137,11 +172,13 @@ test("a long press on Send parks the next task in the backlog", { timeout: 300_0
         parkedGroupLast:
           groups.indexOf(`task-project-${parkedGroup}`) >
           groups.indexOf(`task-project-${liveGroup}`),
+        badges: { parked: parkedBadge, working: workingBadge },
       };
     },
     {
       parkedName: parkedTitle,
       liveName: liveTitle,
+      workingName: workingTitle,
       liveGroup: liveProject,
       parkedGroup: parkedProject,
     },
@@ -151,7 +188,18 @@ test("a long press on Send parks the next task in the backlog", { timeout: 300_0
     filtered: true,
     parkedLast: true,
     parkedGroupLast: true,
+    badges: { parked: expect.any(Object), working: expect.any(Object) },
   });
+
+  // The parked badge is a solid filled chip whose text contrasts with its fill;
+  // the working badge keeps the same default fill it already used.
+  const transparent = ["transparent", "rgba(0, 0, 0, 0)"];
+  const badges = page?.badges ?? { parked: null, working: null };
+  expect(transparent).not.toContain(badges.parked?.background);
+  expect(badges.parked?.color).not.toBe(badges.parked?.background);
+  expect(transparent).not.toContain(badges.working?.background);
+  expect(badges.working?.color).not.toBe(badges.working?.background);
+  expect(badges.parked?.background).toBe(badges.working?.background);
 
   // The agent's real ledger tools hide the parked task and refuse its id.
   await screen.getByRole("tab", "Chat").tap();
