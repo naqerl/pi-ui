@@ -131,6 +131,111 @@ test("paints the pending bubble before the message request returns", async ({
   await expect(browser.locator('[data-role="user"]').filter({ hasText: text })).toHaveCount(1);
 });
 
+test("clears the composer while the pending bubble is still waiting for the server", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await app.open("/");
+  const composer = screen.getByRole("textbox", "Message");
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await browser.route("**/api/message", async (route) => {
+    // Hold the request past the 1500 ms delay, then let the assertions run while it is pending.
+    await Promise.all([gate, new Promise((resolve) => setTimeout(resolve, 1_500))]);
+    await route.continue();
+  });
+
+  const text = `cleared before response ${Date.now()}`;
+  await composer.fill(text);
+  try {
+    await composer.press("Enter");
+    const pending = browser.locator('[data-pending-send="true"]').filter({ hasText: text });
+    await expect(pending).toBeVisible({ timeout: 1_500 });
+    await expect(composer).toHaveValue("");
+    // The request is still gated, so the bubble above was painted before any response.
+    await expect(pending).toBeVisible();
+  } finally {
+    release();
+  }
+
+  await expect(screen.getByText(`Echo: ${text}`, { exact: false })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(composer).toHaveValue("");
+});
+
+test("restores a rejected draft with the caret at the end", async ({ app, browser, screen }) => {
+  await browser.route("**/api/message", async (route) => {
+    await route.fulfill({ status: 500, body: "send failed" });
+  });
+  await app.open("/");
+  const composer = screen.getByRole("textbox", "Message");
+  const text = `restore rejected draft ${Date.now()}`;
+  await composer.fill(text);
+  await composer.press("Enter");
+
+  await expect(composer).toHaveValue(text);
+  await expect(screen.getByTestId("composer-error")).toContainText("send failed");
+  await expect(browser.locator('[data-pending-send="true"]')).toHaveCount(0);
+
+  const state = await browser.evaluate(() => {
+    const element = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
+    if (element === null) return null;
+    return {
+      length: element.value.length,
+      selectionStart: element.selectionStart,
+      selectionEnd: element.selectionEnd,
+      focused: document.activeElement === element,
+    };
+  });
+  expect(state).not.toBeNull();
+  expect(state?.selectionStart).toBe(text.length);
+  expect(state?.selectionEnd).toBe(text.length);
+  expect(state?.focused).toBe(true);
+});
+
+test("keeps a new draft when an earlier send fails", async ({ app, browser, screen }) => {
+  await app.open("/");
+  const composer = screen.getByRole("textbox", "Message");
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let requests = 0;
+  await browser.route("**/api/message", async (route) => {
+    requests += 1;
+    if (requests === 1) {
+      await gate;
+      await route.fulfill({ status: 500, body: "first send failed" });
+      return;
+    }
+    await route.continue();
+  });
+
+  const first = `fails while typing ${Date.now()}`;
+  const second = `second draft survives ${Date.now()}`;
+  await composer.fill(first);
+  try {
+    await composer.press("Enter");
+    await expect(
+      browser.locator('[data-pending-send="true"]').filter({ hasText: first }),
+    ).toBeVisible({ timeout: 1_500 });
+    await expect(composer).toHaveValue("");
+
+    await composer.fill(second);
+  } finally {
+    release();
+  }
+
+  await expect(screen.getByTestId("composer-error")).toContainText("first send failed");
+  await expect(composer).toHaveValue(second);
+  await expect(browser.locator('[data-pending-send="true"]')).toHaveCount(0);
+  await expect(screen.getByText(first, { exact: true })).toHaveCount(0);
+});
+
 test("keeps one user bubble when the server places a send before its response returns", async ({
   app,
   browser,
