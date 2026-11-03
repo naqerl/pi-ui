@@ -36,9 +36,15 @@ test("a memory chip opens the written text and steers the undo prompt", async ({
   browser,
   screen,
 }) => {
-  let sent: unknown = null;
+  let sent: { text?: string; mode?: string; queueKey?: string } | null = null;
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   await browser.route("**/api/message", async (route) => {
     sent = JSON.parse(route.request.postData ?? "null");
+    // Hold the response so the optimistic steer bubble stays on screen for the assertion.
+    await gate;
     await route.fulfill({ status: 503, body: "offline" });
   });
   await browser.route("**/api/state**", async (route) => {
@@ -52,5 +58,13 @@ test("a memory chip opens the written text and steers the undo prompt", async ({
   await expect(screen.getByText(text, { exact: true })).toBeVisible();
 
   await screen.getByTestId("memory-undo").tap();
-  await expect.poll(() => sent).toEqual({ text: memoryUndoPrompt(path), mode: "steer" });
+  const prompt = memoryUndoPrompt(path);
+  const pending = browser.locator('[data-pending-steer="true"]').filter({ hasText: prompt });
+  try {
+    await expect(pending).toBeVisible();
+    // The generated queueKey reconciles the optimistic bubble; only the prompt and mode are ours.
+    await expect.poll(() => sent).toMatchObject({ text: prompt, mode: "steer" });
+  } finally {
+    release();
+  }
 });
