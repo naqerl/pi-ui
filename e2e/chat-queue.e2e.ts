@@ -150,7 +150,7 @@ test("keeps the client key on a send that loses the start race", async ({
   await expect(screen.getByRole("button", { name: "Send" })).toBeVisible({ timeout: 15_000 });
 });
 
-test("blurs the composer after send on a coarse-pointer mobile viewport", async ({
+test("keeps the composer focused after send on a coarse-pointer mobile viewport", async ({
   app,
   browser,
   screen,
@@ -183,7 +183,7 @@ test("blurs the composer after send on a coarse-pointer mobile viewport", async 
     timeout: 15_000,
   });
   const activeTag = await browser.evaluate(() => document.activeElement?.tagName ?? "");
-  expect(activeTag).not.toBe("TEXTAREA");
+  expect(activeTag).toBe("TEXTAREA");
 });
 
 test("keeps the composer height and bottom edge when the viewport height changes", async ({

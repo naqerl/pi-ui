@@ -577,11 +577,6 @@ function computedLineHeight(element: HTMLElement): number {
   return (Number.isFinite(fontSize) && fontSize > 0 ? fontSize : 16) * 1.25;
 }
 
-function usesCoarsePointer(): boolean {
-  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
-  return window.matchMedia("(pointer: coarse)").matches;
-}
-
 function useViewportHeight() {
   useEffect(() => {
     const root = document.documentElement;
@@ -807,6 +802,8 @@ function Composer({
   const [backlog, setBacklog] = useState(false);
   const backlogPress = useRef<{ timer: number; x: number; y: number } | null>(null);
   const suppressAddClick = useRef(false);
+  // Bumped by every user edit, so a failed send can tell an untouched composer from a new draft.
+  const draftRevision = useRef(0);
   const mention = tasksPage && caret !== null ? mentionAt(value, caret) : null;
   const suggestions = mention === null ? [] : projectSuggestions(projects, mention.query);
   const suggesting = mention !== null && dismissedAt !== mention.start && suggestions.length > 0;
@@ -826,6 +823,15 @@ function Composer({
   const hasText = value.trim().length > 0;
   // A task still needs a title; a chat message can be images alone.
   const canSend = !uploading && !failed && (hasText || (!tasksPage && readyIds.length > 0));
+
+  const addAttachments = (files: Iterable<File>) => {
+    draftRevision.current += 1;
+    attachments.add(files);
+  };
+  const removeAttachment = (key: string) => {
+    draftRevision.current += 1;
+    attachments.remove(key);
+  };
 
   const clearBacklogPress = useCallback(() => {
     const press = backlogPress.current;
@@ -953,12 +959,24 @@ function Composer({
     if (!canSend) return;
     const element = textareaRef.current;
     const text = value;
-    const coarse = usesCoarsePointer();
     const ids = readyIds;
     const sentKeys = attachments.items.map((item) => item.key);
+    const parsed = tasksPage ? parseProjectToken(text, projects) : null;
+    const sentRevision = draftRevision.current;
+
+    // Clear the draft when the send starts: the optimistic bubble is the only feedback
+    // while the request is in flight. Snapshot the text and attachments for a rejection.
+    setValue("");
+    attachments.clear(sentKeys);
+    if (element !== null) {
+      element.value = "";
+      resizeTextarea();
+      element.focus({ preventScroll: true });
+      element.setSelectionRange(0, 0);
+    }
+
     let sent: boolean;
-    if (tasksPage) {
-      const parsed = parseProjectToken(text, projects);
+    if (parsed !== null) {
       sent = await addTask(
         parsed.title,
         ids,
@@ -968,20 +986,21 @@ function Composer({
     } else {
       sent = await send(text, mode, ids);
     }
-    if (!sent) return;
+    if (!sent) {
+      // A draft typed while the request was pending wins over the rejected text.
+      if (draftRevision.current !== sentRevision) return;
+      setValue(text);
+      attachments.restore(ids);
+      if (element !== null) {
+        element.value = text;
+        resizeTextarea();
+        element.focus({ preventScroll: true });
+        element.setSelectionRange(text.length, text.length);
+      }
+      return;
+    }
     haptic();
     if (backlog) setBacklog(false);
-    attachments.clear(sentKeys);
-    // Keep a draft typed while the request was in flight; only clear the text we sent.
-    if (element !== null && element.value !== text) return;
-    setValue("");
-    if (element === null) return;
-    if (coarse) {
-      element.blur();
-    } else {
-      element.focus({ preventScroll: true });
-      element.setSelectionRange(0, 0);
-    }
   };
 
   const accept = (name: string) => {
@@ -1026,7 +1045,7 @@ function Composer({
           {error}
         </p>
       )}
-      <AttachmentStrip items={attachments.items} onRemove={attachments.remove} />
+      <AttachmentStrip items={attachments.items} onRemove={removeAttachment} />
       <div ref={rowRef} className="flex w-full items-end gap-1 p-1.5">
         <input
           ref={fileRef}
@@ -1037,7 +1056,7 @@ function Composer({
           data-testid="attach-input"
           onChange={(event) => {
             const files = event.target.files;
-            if (files !== null) attachments.add([...files]);
+            if (files !== null) addAttachments([...files]);
             event.target.value = "";
           }}
         />
@@ -1070,6 +1089,7 @@ function Composer({
           onBlur={() => setCaret(null)}
           placeholder={tasksPage ? (backlog ? "New backlog task" : "New task") : "Message pi"}
           onChange={(event) => {
+            draftRevision.current += 1;
             setValue(event.target.value);
             if (tasksPage) {
               setCaret(event.target.selectionStart);
@@ -1084,7 +1104,7 @@ function Composer({
             );
             if (files.length === 0) return;
             event.preventDefault();
-            attachments.add(files);
+            addAttachments(files);
           }}
           onKeyDown={(event) => {
             if (suggesting && !event.nativeEvent.isComposing) {
@@ -1122,6 +1142,7 @@ function Composer({
               event.preventDefault();
               void unsendSteer().then((steer) => {
                 if (steer === null) return;
+                draftRevision.current += 1;
                 setValue(steer.text);
                 if (steer.attachments !== undefined) attachments.restore(steer.attachments);
                 const element = textareaRef.current;
