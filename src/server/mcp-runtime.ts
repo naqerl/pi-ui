@@ -29,6 +29,7 @@ import {
   recordStableId,
   subscriptionEnabled,
 } from "./mcp-subscriptions.js";
+import { polledEventCursor } from "./mcp-subscriptions-watchdog.js";
 
 const require = createRequire(import.meta.url);
 const ADAPTER_ENTRY = pathToFileURL(require.resolve("@realmikekelly/pi-mcp-adapter")).href;
@@ -627,6 +628,56 @@ export interface RestoredMcpSubscription extends McpSubscriptionRecord {
   readonly id: string;
 }
 
+interface RestoreProbe {
+  readonly missing: boolean;
+  readonly cursor: string | null;
+  readonly stale: boolean;
+  readonly reason?: string;
+}
+
+function errorCode(error: unknown): number | undefined {
+  if (!isRecord(error)) return undefined;
+  if (typeof error.code === "number") return error.code;
+  return errorCode(error.cause);
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** A JSON-RPC -32023 (NotFound) or an explicit unknown-subscription reply. */
+function isUnknownSubscriptionError(error: unknown): boolean {
+  if (errorCode(error) === -32023) return true;
+  const text = errorText(error);
+  if (/method not found/i.test(text)) return false;
+  return /(?:unknown|not found|no such|missing|expired)[^.]{0,32}subscription|subscription[^.]{0,32}(?:unknown|not found|no such|missing|expired)/i.test(
+    text,
+  );
+}
+
+function pollEvent(item: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(item)) return undefined;
+  return isRecord(item.event) ? item.event : item;
+}
+
+/** True when the server's poll answer still points at events from before this process. */
+function pollHasOldBacklog(response: unknown, startedAt: number): boolean {
+  if (!isRecord(response)) return false;
+  if (response.truncated === true) return true;
+  const events = Array.isArray(response.events)
+    ? response.events
+    : response.event === undefined
+      ? []
+      : [response.event];
+  for (const item of events) {
+    const event = pollEvent(item);
+    const raw = event?.timestamp;
+    const parsed = typeof raw === "number" ? raw : typeof raw === "string" ? Date.parse(raw) : NaN;
+    if (Number.isFinite(parsed) && parsed < startedAt) return true;
+  }
+  return false;
+}
+
 /**
  * Bridges the host-managed MCP adapter and pi-mcp-events into the durable
  * registry. There is no extension loader: the shim has exactly the surface
@@ -637,6 +688,8 @@ export class McpRuntime {
   readonly serverNames: readonly string[];
   readonly failedServers: ServerFailure[];
   readonly protocol: McpProtocol;
+  /** Process start time; no event from before it may become a chat notice. */
+  readonly startedAt: number;
   private readonly servers: Record<string, HostManagedMcpServer>;
   private readonly adapters: HostManagedMcpAdapter[] = [];
   private readonly protocolConnections = new Set<ProtocolConnection>();
@@ -645,6 +698,8 @@ export class McpRuntime {
   private readonly restored = new Map<string, McpSubscriptionRecord>();
   /** Entries whose server was not available yet; kept until a later connection. */
   private readonly pendingRestore = new Map<string, McpSubscriptionRecord>();
+  /** Restored entries the server rejected; never retried by this process. */
+  private readonly dropped = new Set<string>();
   private readonly restoring = new Set<string>();
   /** Direct fallback streams, used only when the mcp_events tool is not registered. */
   private readonly directSubscriptions = new Map<string, EventsStreamConnection>();
@@ -661,6 +716,7 @@ export class McpRuntime {
     failedServers: ServerFailure[],
     protocol: McpProtocol,
     subscriptionStore: McpSubscriptionRegistry | undefined,
+    startedAt: number,
   ) {
     this.shim = shim;
     this.servers = servers;
@@ -668,9 +724,11 @@ export class McpRuntime {
     this.failedServers = [...failedServers];
     this.protocol = protocol;
     this.subscriptionStore = subscriptionStore;
+    this.startedAt = startedAt;
   }
 
   static async start(options: McpRuntimeOptions = {}): Promise<McpRuntime> {
+    const startedAt = Date.now();
     const shim = new DurableExtensionShim();
     shim.setMessageSink(options.submit);
     const subscriptionStore =
@@ -740,6 +798,7 @@ export class McpRuntime {
       failures,
       protocol,
       subscriptionStore,
+      startedAt,
     );
     resolveProtocol = (name) => runtime.protocolConnection(name);
     // pi-mcp-events constructs EventConnection with only reconnect/onClose
@@ -800,14 +859,59 @@ export class McpRuntime {
     cursor: string | null,
     maxEvents = 1,
   ): Promise<unknown> {
+    const session = await this.pollSession(server);
+    try {
+      return await session.request("events/poll", { name, cursor, maxEvents });
+    } catch (error) {
+      if (session.signal.aborted) {
+        session.close();
+        if (this.pollSessions.get(server) === session) this.pollSessions.delete(server);
+      }
+      throw error;
+    }
+  }
+
+  private async pollSession(server: string): Promise<ProtocolSession> {
     let session = this.pollSessions.get(server);
     if (session === undefined || session.signal.aborted) {
       session?.close();
       session = await this.protocol.connect(server);
       this.pollSessions.set(server, session);
     }
+    return session;
+  }
+
+  /** The event catalog, used only when a server cannot answer the cursor probe. */
+  private async listEventNames(server: string, wanted: string): Promise<string[]> {
+    const session = await this.pollSession(server);
     try {
-      return await session.request("events/poll", { name, cursor, maxEvents });
+      const names: string[] = [];
+      const cursors = new Set<string>();
+      let cursor: string | undefined;
+      for (;;) {
+        const result = await session.request("events/list", cursor === undefined ? {} : { cursor });
+        if (!isRecord(result) || !Array.isArray(result.events)) {
+          throw new Error("events/list returned no catalog");
+        }
+        for (const item of result.events) {
+          if (isRecord(item) && typeof item.name === "string" && item.name.length > 0) {
+            names.push(item.name);
+          }
+        }
+        // Stop at the first page that names the stream we are restoring.
+        if (names.includes(wanted)) return names;
+        const next =
+          typeof result.nextCursor === "string" && result.nextCursor.length > 0
+            ? result.nextCursor
+            : undefined;
+        if (next === undefined) return names;
+        // Match pi-mcp-events: reject a repeated cursor or an endless catalog.
+        if (cursors.has(next) || cursors.size >= 100) {
+          throw new Error("events/list pagination did not terminate");
+        }
+        cursors.add(next);
+        cursor = next;
+      }
     } catch (error) {
       if (session.signal.aborted) {
         session.close();
@@ -986,13 +1090,18 @@ export class McpRuntime {
       if (!subscriptionEnabled(record.status) || record.enabled === false) continue;
       if (record.status !== "active" && record.status !== "reconnecting") continue;
       const key = recordKey(record);
-      if (already.has(key)) continue;
+      if (already.has(key) || this.isSubscriptionDropped(recordStableId(record))) continue;
       this.pendingRestore.set(key, record);
     }
     await Promise.all(
       [...this.pendingRestore.values()].map((record) => this.restoreSubscription(record)),
     );
     return this.restoredSubscriptions;
+  }
+
+  /** A rejected restore is terminal for this process, including watchdog retries. */
+  isSubscriptionDropped(stableId: string): boolean {
+    return this.dropped.has(stableId);
   }
 
   /**
@@ -1052,17 +1161,94 @@ export class McpRuntime {
     }
   }
 
+  /** Ask the server whether the persisted cursor still belongs to a live subscription. */
+  private async probeRestore(record: McpSubscriptionRecord): Promise<RestoreProbe> {
+    let probeFailure: unknown;
+    try {
+      const response = await this.pollEvents(record.server, record.name, record.cursor, 1);
+      return {
+        missing: false,
+        cursor: polledEventCursor(response) ?? record.cursor,
+        stale: pollHasOldBacklog(response, this.startedAt),
+      };
+    } catch (error) {
+      if (isUnknownSubscriptionError(error)) {
+        return { missing: true, cursor: record.cursor, stale: false, reason: errorText(error) };
+      }
+      probeFailure = error;
+    }
+    // Older servers may not implement events/poll. Their catalog still tells us
+    // whether the stream name itself disappeared.
+    try {
+      const names = await this.listEventNames(record.server, record.name);
+      if (!names.includes(record.name)) {
+        return {
+          missing: true,
+          cursor: record.cursor,
+          stale: false,
+          reason: `event ${record.name} is not in the server catalog`,
+        };
+      }
+      return { missing: false, cursor: record.cursor, stale: false };
+    } catch (error) {
+      if (isUnknownSubscriptionError(error)) {
+        return { missing: true, cursor: record.cursor, stale: false, reason: errorText(error) };
+      }
+      throw probeFailure ?? error;
+    }
+  }
+
+  private async dropRestoredSubscription(
+    record: McpSubscriptionRecord,
+    key: string,
+    reason: string,
+  ): Promise<void> {
+    const stableId = recordStableId(record);
+    this.dropped.add(key);
+    this.dropped.add(stableId);
+    this.pendingRestore.delete(key);
+    await this.subscriptionStore?.cancel(stableId).catch(() => {});
+    console.warn(`mcp: dropped restored subscription ${record.server}/${record.name}: ${reason}`);
+  }
+
   private async restoreSubscription(record: McpSubscriptionRecord): Promise<boolean> {
     const key = recordKey(record);
-    if (this.restoring.has(key)) return false;
+    const stableId = recordStableId(record);
+    if (this.isSubscriptionDropped(stableId) || this.restoring.has(key)) return false;
     this.restoring.add(key);
     try {
+      const probe = await this.probeRestore(record);
+      if (probe.missing) {
+        await this.dropRestoredSubscription(
+          record,
+          key,
+          probe.reason ?? "the server no longer knows this subscription",
+        );
+        return false;
+      }
+      let cursor = record.cursor;
+      if (probe.stale && probe.cursor !== null) {
+        // The server would replay from before this process began. Keep the
+        // subscription, but resume at its fresh cursor and drop the backlog.
+        cursor = probe.cursor;
+        const advanced: McpSubscriptionRecord = {
+          ...record,
+          cursor,
+          updatedAt: new Date().toISOString(),
+        };
+        this.pendingRestore.set(key, advanced);
+        await this.subscriptionStore?.record(advanced).catch(() => {});
+        record = advanced;
+        console.log(
+          `mcp: dropped pre-restart backlog for ${record.server}/${record.name} at ${cursor}`,
+        );
+      }
       const result = await this.shim.callTool("mcp_events", {
         action: "subscribe",
         server: record.server,
         name: record.name,
         arguments: record.arguments,
-        cursor: record.cursor,
+        cursor,
       });
       const details = isRecord(result.details) ? result.details : undefined;
       if (result.isError === true) {
@@ -1083,9 +1269,8 @@ export class McpRuntime {
         name: typeof raw.name === "string" ? raw.name : record.name,
         status: typeof raw.status === "string" ? raw.status : record.status,
         arguments: isRecord(raw.arguments) ? raw.arguments : record.arguments,
-        cursor: typeof raw.cursor === "string" ? raw.cursor : record.cursor,
+        cursor: typeof raw.cursor === "string" ? raw.cursor : cursor,
       };
-      const stableId = recordStableId(record);
       const restored: McpSubscriptionRecord = {
         ...record,
         stableId,
@@ -1108,7 +1293,7 @@ export class McpRuntime {
             server: record.server,
             name: record.name,
             arguments: record.arguments,
-            cursor: record.cursor,
+            cursor,
             restored: true,
           },
           result: {
@@ -1133,6 +1318,10 @@ export class McpRuntime {
   private async restorePendingFor(server: string): Promise<void> {
     for (const record of [...this.pendingRestore.values()]) {
       if (record.server !== server) continue;
+      if (this.isSubscriptionDropped(recordStableId(record))) {
+        this.pendingRestore.delete(recordKey(record));
+        continue;
+      }
       await this.restoreSubscription(record);
     }
   }

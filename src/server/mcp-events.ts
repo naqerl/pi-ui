@@ -16,6 +16,23 @@ export interface ExtensionNotice {
   details?: unknown;
 }
 
+export interface McpEventFeedOptions {
+  /** Process start time; events stamped before it are replay, never news. */
+  readonly startedAt?: number | string | Date;
+}
+
+function startedAtOf(value: number | string | Date | undefined): number {
+  // A standalone feed has no process bundle; the server always passes its boot time.
+  if (value === undefined) return 0;
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : 0;
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
+
 const LIVE_STATUS = new Set(["opening", "active", "reconnecting"]);
 const EVENT_LIMIT = 100;
 
@@ -168,8 +185,13 @@ export class McpEventFeed {
   private events: McpEventView[] = [];
   private notice: string | null = null;
   private revision = 0;
+  private readonly startedAt: number;
 
-  constructor(private readonly registry?: McpSubscriptionRegistry) {
+  constructor(
+    private readonly registry?: McpSubscriptionRegistry,
+    options: McpEventFeedOptions = {},
+  ) {
+    this.startedAt = startedAtOf(options.startedAt);
     // A registry that was read during boot already knows the durable rows.
     this.seedRecords(registry?.list() ?? []);
   }
@@ -344,6 +366,12 @@ export class McpEventFeed {
       const stableId = recordStableId(record);
       this.restored.add(stableId);
       this.seedDelivered(stableId, record.deliveredEventIds ?? [], true);
+      // A restore rejected by the server has no live adapter session, but the
+      // durable cancellation must still be visible in /api/state.
+      if (record.status === "cancelled" || record.state === "cancelled") {
+        const view = subscriptionFrom({ ...record, id: record.id ?? stableId });
+        if (view !== null) this.storeView(view);
+      }
     }
   }
 
@@ -496,11 +524,15 @@ export class McpEventFeed {
         subscriptionId === undefined ? undefined : this.viewForAdapter(subscriptionId);
       const stableId =
         current?.stableId ?? deriveStableId(item.server, streamName, current?.arguments ?? {});
-      const historical = this.isHistorical(stableId, eventId);
+      // An adapter may ignore its replay flag. The process boot time is the
+      // independent boundary: an event stamped before it is history.
+      const timestampMs = Date.parse(timestamp);
+      const beforeBoot = Number.isFinite(timestampMs) && timestampMs < this.startedAt;
+      const historical = beforeBoot || this.isHistorical(stableId, eventId);
       const liveDuplicate = this.isLiveDuplicate(stableId, eventId);
       // Event ids are the replay key. A cursor is opaque, so it is stored but
       // never used to decide whether a frame is old.
-      const replay = !liveDuplicate && historical && this.restored.has(stableId);
+      const replay = beforeBoot || (!liveDuplicate && historical && this.restored.has(stableId));
 
       if (replay) {
         // A restored stream may redeliver an event whose id we already stored

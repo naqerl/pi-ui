@@ -12,7 +12,7 @@ import { MCP_EVENTS_HEAD } from "../shared/notices.js";
 import { parseCompletion, TASK_BODY_MAX_LENGTH } from "../shared/tasks.js";
 import type { TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
-import { ChatService } from "./chat-service.js";
+import { ChatService, dropMcpEventsBefore } from "./chat-service.js";
 import { DashboardError, DashboardManager } from "./dashboard.js";
 import type { DiagramBridge } from "./diagram-tools.js";
 import { DiagramStore } from "./diagrams.js";
@@ -247,7 +247,9 @@ memoryWrites.current = (record) => {
     console.error("[pi] memory write notice failed", error);
   });
 };
-const events = new McpEventFeed(boot.mcp.subscriptionRegistry);
+const events = new McpEventFeed(boot.mcp.subscriptionRegistry, {
+  startedAt: boot.mcp.startedAt,
+});
 await events.hydrate();
 chat.setEventFeed(events);
 chat.setTaskActivity(taskActivity);
@@ -355,9 +357,13 @@ jobs.setQuietNotifier((job, tail) => {
 });
 boot.mcp.setSubmit((text, options) => {
   const deliverAs = options.deliverAs === "steer" ? "steer" : "queue";
-  const submission = text.startsWith(MCP_EVENTS_HEAD)
-    ? chat.submitMcpEventNotice(text, options.deliverAs)
-    : chat.submit(text, deliverAs);
+  const filtered = text.startsWith(MCP_EVENTS_HEAD)
+    ? dropMcpEventsBefore(text, boot.mcp.startedAt)
+    : text;
+  if (filtered === null) return;
+  const submission = filtered.startsWith(MCP_EVENTS_HEAD)
+    ? chat.submitMcpEventNotice(filtered, options.deliverAs)
+    : chat.submit(filtered, deliverAs);
   void submission.catch((error: unknown) => {
     console.error("[pi] MCP event message failed", error);
   });
