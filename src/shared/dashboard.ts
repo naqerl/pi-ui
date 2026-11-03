@@ -25,14 +25,53 @@ export type WidgetSpan = (typeof WIDGET_SPANS)[number];
 export const CHART_TYPES = ["area", "line", "bar"] as const;
 export type ChartType = (typeof CHART_TYPES)[number];
 
-/** Presentation choices for a sparkline; data still comes only from its mapping. */
-export interface SparklineChart {
-  type: ChartType;
+export const CHART_FORMATS = ["number", "currency", "percent", "bytes"] as const;
+export type ChartFormat = (typeof CHART_FORMATS)[number];
+
+/** One drawn series in a sparkline. `key` indexes the mapped series data. */
+export interface ChartSeries {
+  key: string;
+  label?: string;
   /** A CSS color, usually one of the shadcn `--chart-1` … `--chart-5` tokens. */
   color?: string;
+  type?: ChartType;
+  dashed?: boolean;
+  /** Area only, 0..1; default 0.35. */
+  fillOpacity?: number;
+  stack?: string;
+}
+
+/** A horizontal line at a fixed y value. */
+export interface ChartReference {
+  value: number;
+  label?: string;
+  /** Defaults to var(--chart-4). */
+  color?: string;
+  /** Default true. */
+  dashed?: boolean;
+}
+
+/** Presentation choices for a sparkline; data still comes only from its mapping. */
+export interface SparklineChart {
+  /** Default for every series; default "area". */
+  type?: ChartType;
+  /** Legacy single-series colour; `series[i].color` wins. */
+  color?: string;
   height?: number;
-  yDomain?: [number, number] | "auto";
+  /** Default: true when there is more than one series. */
+  legend?: boolean;
   showTooltip?: boolean;
+  yDomain?: [number, number] | "auto";
+  y?: { format?: ChartFormat; ticks?: number; currency?: string };
+  x?: { labels?: string[]; format?: string };
+  series?: ChartSeries[];
+  reference?: ChartReference[];
+}
+
+export interface SparklineSeries {
+  key: string;
+  label?: string;
+  points: (number | null)[];
 }
 
 export type WidgetSource =
@@ -99,7 +138,16 @@ export type WidgetView =
     }
   | { kind: "list"; items: { key?: string; label: string; value?: string }[]; empty?: string }
   | { kind: "table"; columns: string[]; rows: string[][]; empty?: string }
-  | { kind: "sparkline"; points: number[]; value?: string; label?: string }
+  | {
+      kind: "sparkline";
+      /** Legacy single unnamed series. */
+      points?: (number | null)[];
+      /** Named series, in source order. */
+      series?: SparklineSeries[];
+      labels?: string[];
+      value?: string;
+      label?: string;
+    }
   | { kind: "markdown"; text: string }
   | {
       kind: "status";
@@ -318,7 +366,7 @@ export const KIND_FIELDS: Record<WidgetKind, { required: string[][]; optional: s
   stat: { required: [["value"]], optional: ["label", "delta", "unit", "progress"] },
   list: { required: [["items"]], optional: ["key", "label", "value", "empty"] },
   table: { required: [["columns"]], optional: ["rows", "empty"] },
-  sparkline: { required: [["value", "series"]], optional: ["label"] },
+  sparkline: { required: [["value", "series"]], optional: ["label", "labels"] },
   markdown: { required: [["text"]], optional: [] },
   status: { required: [["items", "state"]], optional: ["key", "label", "detail", "empty"] },
 };
@@ -427,18 +475,45 @@ export function renderWidget(widget: Widget, data: unknown, history: number[] = 
     }
     case "sparkline": {
       const seriesPath = stringField(mapping, "series");
+      const labelsPath = stringField(mapping, "labels");
       const label = optionalText(data, stringField(mapping, "label"));
       if (seriesPath !== undefined) {
-        const points = asArray(resolveField(data, seriesPath), "series", seriesPath)
-          .map(asNumber)
-          .filter((point): point is number => point !== undefined)
-          .slice(-MAX_ROWS);
-        const last = points.at(-1);
-        return {
-          kind: "sparkline",
-          points,
-          ...(last === undefined ? {} : { value: formatValue(last) }),
+        const raw = resolveField(data, seriesPath);
+        const labels =
+          labelsPath === undefined
+            ? undefined
+            : asArray(resolveField(data, labelsPath), "labels", labelsPath)
+                .map((item) => formatValue(item))
+                .slice(-MAX_ROWS);
+        const shared = {
+          kind: "sparkline" as const,
           ...(label === undefined ? {} : { label }),
+        };
+        if (Array.isArray(raw) && raw.every((item) => !isRecord(item))) {
+          const points = raw
+            .map(asNumber)
+            .filter((point): point is number => point !== undefined)
+            .slice(-MAX_ROWS);
+          const last = points.at(-1);
+          return {
+            ...shared,
+            points,
+            ...(labels === undefined || labels.length === 0
+              ? {}
+              : { labels: labels.slice(0, points.length) }),
+            ...(last === undefined ? {} : { value: formatValue(last) }),
+          };
+        }
+        const series = namedSeries(raw, seriesPath);
+        const longest = Math.max(0, ...series.map((item) => item.points.length));
+        const last = lastPoint(series[0]?.points);
+        return {
+          ...shared,
+          series,
+          ...(labels === undefined || labels.length === 0
+            ? {}
+            : { labels: labels.slice(0, longest) }),
+          ...(last === undefined ? {} : { value: formatValue(last) }),
         };
       }
       const raw = resolveField(data, stringField(mapping, "value"));
@@ -489,6 +564,57 @@ export function renderWidget(widget: Widget, data: unknown, history: number[] = 
       };
     }
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function namedSeries(raw: unknown, path: string): SparklineSeries[] {
+  if (Array.isArray(raw)) {
+    return raw.map((item, index) => {
+      if (!isRecord(item) || typeof item.key !== "string" || !Array.isArray(item.points)) {
+        throw new DashboardError(
+          `series "${path}"[${index}] must be { key, label?, points: (number | null)[] }.`,
+        );
+      }
+      const key = item.key.trim();
+      if (key === "") throw new DashboardError(`series "${path}"[${index}].key is empty.`);
+      return {
+        key,
+        ...(typeof item.label === "string" && item.label.trim() !== ""
+          ? { label: item.label.trim() }
+          : {}),
+        points: item.points
+          .map((point: unknown) => (point === null ? null : (asNumber(point) ?? null)))
+          .slice(-MAX_ROWS),
+      };
+    });
+  }
+  if (isRecord(raw)) {
+    return Object.entries(raw).map(([key, value]) => {
+      if (!Array.isArray(value)) {
+        throw new DashboardError(`series "${path}.${key}" must be an array of numbers.`);
+      }
+      return {
+        key,
+        points: value
+          .map(asNumber)
+          .filter((point): point is number => point !== undefined)
+          .slice(-MAX_ROWS),
+      };
+    });
+  }
+  throw new DashboardError(`series "${path}" must point at an array or an object of arrays.`);
+}
+
+function lastPoint(points: (number | null)[] | undefined): number | undefined {
+  if (points === undefined) return undefined;
+  for (let index = points.length - 1; index >= 0; index -= 1) {
+    const point = points[index];
+    if (point !== null && point !== undefined) return point;
+  }
+  return undefined;
 }
 
 function withDetail(detail: string | undefined): { detail?: string } {

@@ -7,13 +7,27 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { Area, AreaChart, Bar, BarChart, Line, LineChart, XAxis, YAxis } from "recharts";
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  ComposedChart,
+  Line,
+  LineChart,
+  ReferenceLine,
+  XAxis,
+  YAxis,
+} from "recharts";
 import {
   type BuiltinInputs,
   builtinData,
+  type ChartFormat,
+  type ChartSeries,
   type DashboardState,
   renderWidget,
   type SparklineChart,
+  type SparklineSeries,
   type StatusState,
   type Widget,
   type WidgetSpan,
@@ -25,6 +39,8 @@ import type { ContextUsage, McpEventsState, McpStatus, UsageSummary } from "../s
 import {
   type ChartConfig,
   ChartContainer,
+  ChartLegend,
+  ChartLegendContent,
   ChartTooltip,
   ChartTooltipContent,
 } from "./components/ui/chart";
@@ -119,39 +135,254 @@ function Value({ text }: { text: string }) {
   return <>{text}</>;
 }
 
-function WidgetSparkline({ points, chart }: { points: number[]; chart?: SparklineChart }) {
-  const gradientId = `spark-${useId().replace(/:/g, "")}`;
-  if (points.length < 2) {
+const CHART_COLORS = [
+  "var(--chart-1)",
+  "var(--chart-2)",
+  "var(--chart-3)",
+  "var(--chart-4)",
+  "var(--chart-5)",
+];
+
+type SparklineView = Extract<WidgetView, { kind: "sparkline" }>;
+
+interface DrawnSeries {
+  /** A CSS-safe key, never the user-supplied series key. */
+  id: string;
+  label: string;
+  color: string;
+  type: "area" | "line" | "bar";
+  dashed: boolean;
+  fillOpacity: number;
+  stack?: string;
+  points: (number | null)[];
+}
+
+function formatChartValue(
+  value: unknown,
+  format: ChartFormat | undefined,
+  currency: string,
+): string {
+  const number = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(number)) return String(value);
+  switch (format) {
+    case "currency":
+      return `${number < 0 ? "-" : ""}${currency}${Math.round(Math.abs(number)).toLocaleString()}`;
+    case "percent": {
+      const scaled = number !== 0 && Math.abs(number) <= 1 ? number * 100 : number;
+      return `${Math.round(scaled).toLocaleString()}%`;
+    }
+    case "bytes": {
+      const units = ["B", "KB", "MB", "GB", "TB"];
+      let scaled = Math.abs(number);
+      let unit = 0;
+      while (scaled >= 1024 && unit < units.length - 1) {
+        scaled /= 1024;
+        unit += 1;
+      }
+      const text =
+        unit === 0 ? Math.round(scaled).toLocaleString() : scaled.toFixed(1).replace(/\.0$/, "");
+      return `${number < 0 ? "-" : ""}${text} ${units[unit]}`;
+    }
+    default:
+      return number.toLocaleString();
+  }
+}
+
+function resolveSeries(view: SparklineView, chart: SparklineChart | undefined): DrawnSeries[] {
+  const dataSeries: SparklineSeries[] =
+    view.series !== undefined && view.series.length > 0
+      ? view.series
+      : view.points === undefined
+        ? []
+        : [{ key: "value", points: view.points }];
+  const specs: ChartSeries[] =
+    chart?.series !== undefined && chart.series.length > 0
+      ? chart.series
+      : dataSeries.map((series) => ({ key: series.key, label: series.label }));
+  return specs
+    .map((spec, index) => {
+      const data =
+        dataSeries.find((series) => series.key === spec.key) ??
+        (dataSeries.length === 1 && specs.length === 1 ? dataSeries[0] : undefined);
+      const single = dataSeries.length === 1 && specs.length === 1;
+      return {
+        id: `s${index}`,
+        label: spec.label ?? data?.label ?? spec.key,
+        color:
+          spec.color ??
+          (single ? chart?.color : undefined) ??
+          CHART_COLORS[index % CHART_COLORS.length],
+        type: spec.type ?? chart?.type ?? "area",
+        dashed: spec.dashed ?? false,
+        fillOpacity: spec.fillOpacity ?? 0.35,
+        ...(spec.stack === undefined ? {} : { stack: spec.stack }),
+        points: data?.points ?? [],
+      };
+    })
+    .filter((series) => series.points.length >= 2);
+}
+
+function WidgetSparkline({ view, chart }: { view: SparklineView; chart?: SparklineChart }) {
+  const chartId = useId().replace(/:/g, "");
+  const series = resolveSeries(view, chart);
+  if (series.length === 0) {
     return <div className="h-10 text-muted-foreground">collecting…</div>;
   }
-  const type = chart?.type ?? "area";
   const height = chart?.height ?? 40;
-  const color = chart?.color ?? "var(--chart-1)";
   const showTooltip = chart?.showTooltip ?? false;
   const domain: [number | string, number | string] =
     chart?.yDomain === undefined || chart.yDomain === "auto"
       ? ["dataMin", "dataMax"]
       : chart.yDomain;
-  const data = points.map((value, index) => ({ index, value }));
-  const config: ChartConfig = { value: { label: "value", color } };
-  const plot = { data, margin: { top: 2, right: 0, bottom: 0, left: 0 } };
+  const sourceLabels = view.labels ?? chart?.x?.labels;
+  const longest = Math.max(...series.map((item) => item.points.length));
+  const labels = sourceLabels?.slice(0, longest);
+  const data = Array.from({ length: longest }, (_, index) => {
+    const row: Record<string, string | number | null> = {
+      label: labels?.[index] ?? String(index),
+    };
+    for (const item of series) row[item.id] = item.points[index] ?? null;
+    return row;
+  });
+  const config: ChartConfig = Object.fromEntries(
+    series.map((item) => [item.id, { label: item.label, color: item.color }]),
+  );
+  const gradientId = (index: number) => `spark-${chartId}-${index}`;
   const gradient = (
     <defs>
-      <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stopColor="var(--color-value)" stopOpacity={0.35} />
-        <stop offset="100%" stopColor="var(--color-value)" stopOpacity={0} />
-      </linearGradient>
+      {series.map((item, index) =>
+        item.type === "area" ? (
+          <linearGradient key={item.id} id={gradientId(index)} x1="0" y1="0" x2="0" y2="1">
+            <stop
+              offset="0%"
+              stopColor={`var(--color-${item.id})`}
+              stopOpacity={item.fillOpacity}
+            />
+            <stop offset="100%" stopColor={`var(--color-${item.id})`} stopOpacity={0} />
+          </linearGradient>
+        ) : null,
+      )}
     </defs>
   );
-  const axes = (
-    <>
-      <XAxis dataKey="index" hide />
+  const xAxis =
+    labels === undefined || labels.length === 0 ? (
+      <XAxis dataKey="label" hide />
+    ) : (
+      <XAxis dataKey="label" tickLine={false} axisLine={false} fontSize={10} />
+    );
+  const yAxis =
+    chart?.y?.ticks === undefined ? (
       <YAxis hide domain={domain} />
-    </>
-  );
+    ) : (
+      <YAxis
+        domain={domain}
+        tickCount={chart.y.ticks}
+        tickFormatter={(value: number) =>
+          formatChartValue(value, chart.y?.format, chart.y?.currency ?? "€")
+        }
+        tickLine={false}
+        axisLine={false}
+        fontSize={10}
+      />
+    );
   const tooltip = showTooltip ? (
-    <ChartTooltip cursor={false} content={<ChartTooltipContent hideLabel indicator="line" />} />
+    <ChartTooltip
+      cursor={false}
+      content={
+        <ChartTooltipContent
+          hideLabel
+          indicator="line"
+          {...(chart?.y?.format === undefined
+            ? {}
+            : {
+                formatter: (value: unknown, name: string | number) => {
+                  const key = String(name);
+                  const item = series.find((entry) => entry.id === key || entry.label === key);
+                  return (
+                    <div className="flex w-full items-center justify-between gap-3">
+                      <span className="text-muted-foreground">{item?.label ?? key}</span>
+                      <span className="font-mono font-medium tabular-nums text-foreground">
+                        {formatChartValue(value, chart.y?.format, chart.y?.currency ?? "€")}
+                      </span>
+                    </div>
+                  );
+                },
+              })}
+        />
+      }
+    />
   ) : null;
+  const legend =
+    (chart?.legend ?? series.length > 1) ? <ChartLegend content={<ChartLegendContent />} /> : null;
+  const references = (chart?.reference ?? []).map((reference) => {
+    const color = reference.color ?? "var(--chart-4)";
+    return (
+      <ReferenceLine
+        key={`reference-${reference.value}-${reference.label ?? ""}-${color}`}
+        y={reference.value}
+        stroke={color}
+        strokeDasharray={reference.dashed === false ? undefined : "4 3"}
+        label={
+          reference.label === undefined
+            ? undefined
+            : { value: reference.label, position: "insideTopRight", fill: color, fontSize: 10 }
+        }
+      />
+    );
+  });
+  const types = new Set(series.map((item) => item.type));
+  const type = types.size === 1 ? series[0]?.type : undefined;
+  const parts = series.map((item, index) => {
+    const color = `var(--color-${item.id})`;
+    if (item.type === "bar") {
+      return (
+        <Bar
+          key={item.id}
+          dataKey={item.id}
+          name={item.label}
+          fill={color}
+          {...(item.stack === undefined ? {} : { stackId: item.stack })}
+          isAnimationActive={false}
+        />
+      );
+    }
+    if (item.type === "line") {
+      return (
+        <Line
+          key={item.id}
+          type="monotone"
+          dataKey={item.id}
+          name={item.label}
+          stroke={color}
+          strokeWidth={1.5}
+          dot={false}
+          strokeDasharray={item.dashed ? "4 3" : undefined}
+          {...(item.stack === undefined ? {} : { stackId: item.stack })}
+          isAnimationActive={false}
+        />
+      );
+    }
+    return (
+      <Area
+        key={item.id}
+        type="monotone"
+        dataKey={item.id}
+        name={item.label}
+        stroke={color}
+        strokeWidth={1.5}
+        fill={`url(#${gradientId(index)})`}
+        dot={false}
+        strokeDasharray={item.dashed ? "4 3" : undefined}
+        {...(item.stack === undefined ? {} : { stackId: item.stack })}
+        isAnimationActive={false}
+      />
+    );
+  });
+  const props = {
+    data,
+    margin: { top: 2, right: 0, bottom: 0, left: 0 },
+  };
+  const hasReference = (chart?.reference?.length ?? 0) > 0;
   return (
     <ChartContainer
       config={config}
@@ -159,39 +390,42 @@ function WidgetSparkline({ points, chart }: { points: number[]; chart?: Sparklin
       style={{ height }}
       aria-hidden={showTooltip ? undefined : true}
     >
-      {type === "bar" ? (
-        <BarChart {...plot}>
-          {axes}
+      {hasReference || types.size > 1 ? (
+        <ComposedChart {...props}>
+          {gradient}
+          {xAxis}
+          {yAxis}
           {tooltip}
-          <Bar dataKey="value" fill="var(--color-value)" isAnimationActive={false} />
+          {legend}
+          {references}
+          {parts}
+        </ComposedChart>
+      ) : type === "bar" ? (
+        <BarChart {...props}>
+          {gradient}
+          {xAxis}
+          {yAxis}
+          {tooltip}
+          {legend}
+          {parts}
         </BarChart>
       ) : type === "line" ? (
-        <LineChart {...plot}>
-          {axes}
+        <LineChart {...props}>
+          {gradient}
+          {xAxis}
+          {yAxis}
           {tooltip}
-          <Line
-            type="monotone"
-            dataKey="value"
-            stroke="var(--color-value)"
-            strokeWidth={1.5}
-            dot={false}
-            isAnimationActive={false}
-          />
+          {legend}
+          {parts}
         </LineChart>
       ) : (
-        <AreaChart {...plot}>
+        <AreaChart {...props}>
           {gradient}
-          {axes}
+          {xAxis}
+          {yAxis}
           {tooltip}
-          <Area
-            type="monotone"
-            dataKey="value"
-            stroke="var(--color-value)"
-            strokeWidth={1.5}
-            fill={`url(#${gradientId})`}
-            dot={false}
-            isAnimationActive={false}
-          />
+          {legend}
+          {parts}
         </AreaChart>
       )}
     </ChartContainer>
@@ -345,7 +579,7 @@ function ViewBody({ id, view, chart }: { id: string; view: WidgetView; chart?: S
             <span className="text-muted-foreground">{view.label ?? ""}</span>
             <span data-testid={`stat-${id}`}>{view.value ?? ""}</span>
           </div>
-          <WidgetSparkline points={view.points} chart={chart} />
+          <WidgetSparkline view={view} chart={chart} />
         </div>
       );
     case "markdown":
