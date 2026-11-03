@@ -1,6 +1,9 @@
 // biome-ignore-all lint/suspicious/noArrayIndexKey: Markdown tokens have no ids; their order is the identity.
 import { Lexer, lexer, type Token, type Tokens } from "marked";
-import { Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import type { Task } from "../shared/types";
+import { taskForCode, useTaskLink } from "./task-link";
 
 const headingClasses: Record<number, string> = {
   1: "mt-4 mb-1 text-base font-semibold tracking-tight first:mt-0",
@@ -57,14 +60,7 @@ function inlineToken(token: Token, key: string, edge: boolean, mode: InlineMode)
         </del>
       );
     case "codespan":
-      return (
-        <code
-          key={key}
-          className="bg-foreground/[0.06] px-1 py-px font-mono text-[0.85em] [overflow-wrap:anywhere] [box-decoration-break:clone] [-webkit-box-decoration-break:clone]"
-        >
-          {token.text}
-        </code>
-      );
+      return <CodeSpan key={key} text={token.text} mode={mode} />;
     case "link": {
       const href = safeHref(token.href);
       if (href === undefined)
@@ -367,6 +363,161 @@ function normalize(text: string): string {
     .replace(/[ \t\u00a0\u200b]+$/gm, "")
     .replace(/^\n+/, "")
     .replace(/\n+$/, "");
+}
+
+const codeSpanClass =
+  "bg-foreground/[0.06] px-1 py-px font-mono text-[0.85em] [overflow-wrap:anywhere] [box-decoration-break:clone] [-webkit-box-decoration-break:clone]";
+
+const TASK_PREVIEW_DELAY_MS = 150;
+const TASK_STATUS: Record<Task["status"], string> = {
+  open: "Open",
+  working: "Working",
+  done: "Done",
+  proposed: "Proposed",
+  backlog: "Backlog",
+};
+
+type PreviewPosition = { left: number; width: number; top?: number; bottom?: number };
+
+function lastBodyLine(body: string | undefined): string | null {
+  if (body === undefined) return null;
+  const lines = body
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const last = lines.at(-1);
+  return last === undefined ? null : plainInline(last);
+}
+
+function TaskCodeChip({ task, openTask }: { task: Task; openTask: (id: string) => void }) {
+  const previewId = useId();
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const timerRef = useRef<number | undefined>(undefined);
+  const [position, setPosition] = useState<PreviewPosition | null>(null);
+
+  const hide = () => {
+    if (timerRef.current !== undefined) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = undefined;
+    }
+    setPosition(null);
+  };
+
+  const show = () => {
+    if (timerRef.current !== undefined) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = undefined;
+      const box = buttonRef.current?.getBoundingClientRect();
+      if (box === undefined) return;
+      const width = Math.min(288, Math.max(0, window.innerWidth - 16));
+      const left = Math.min(Math.max(8, box.left), Math.max(8, window.innerWidth - width - 8));
+      const below = box.bottom + 8;
+      const above = below + 140 > window.innerHeight && box.top > 140;
+      setPosition(
+        above
+          ? { left, width, bottom: window.innerHeight - box.top + 8 }
+          : { left, width, top: below },
+      );
+    }, TASK_PREVIEW_DELAY_MS);
+  };
+
+  useEffect(
+    () => () => {
+      if (timerRef.current !== undefined) window.clearTimeout(timerRef.current);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (position === null) return;
+    const dismiss = () => setPosition(null);
+    window.addEventListener("scroll", dismiss, true);
+    window.addEventListener("resize", dismiss);
+    return () => {
+      window.removeEventListener("scroll", dismiss, true);
+      window.removeEventListener("resize", dismiss);
+    };
+  }, [position]);
+
+  const label = `Open task ${plainInline(task.title)}`;
+  const line = lastBodyLine(task.body);
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        data-task-chip={task.id}
+        data-testid={`task-chip-${task.id}`}
+        aria-label={label}
+        aria-describedby={position === null ? undefined : previewId}
+        className="cursor-pointer text-inherit underline decoration-foreground/50 decoration-dotted underline-offset-2 hover:decoration-solid focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground"
+        onPointerEnter={show}
+        onPointerLeave={hide}
+        onFocus={show}
+        onBlur={hide}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          hide();
+          openTask(task.id);
+        }}
+      >
+        {task.id.slice(0, 4)}
+      </button>
+      {position === null
+        ? null
+        : createPortal(
+            <div
+              role="tooltip"
+              id={previewId}
+              data-testid="task-chip-preview"
+              className="theme-radius fixed z-50 border border-border bg-surface/95 p-2.5 text-left shadow-lg backdrop-blur-md"
+              style={position}
+            >
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span
+                  title={task.id}
+                  className="theme-radius shrink-0 border border-border px-1.5 py-px font-mono text-[10px] leading-4 text-muted-foreground"
+                >
+                  {task.id.slice(0, 4)}
+                </span>
+                <span className="min-w-0 truncate font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                  {TASK_STATUS[task.status]}
+                </span>
+              </div>
+              <div className="mt-1 min-w-0 text-sm font-medium leading-5 text-foreground [overflow-wrap:anywhere]">
+                <InlineMarkdown text={task.title} />
+              </div>
+              <div className="mt-1 flex min-w-0 items-baseline gap-2 text-[11px] leading-4">
+                <span className="shrink-0 text-muted-foreground">Project</span>
+                <span className="min-w-0 truncate text-foreground">
+                  {task.project ?? "No project"}
+                </span>
+              </div>
+              {line === null ? null : (
+                <p className="mt-1.5 border-t border-border/70 pt-1.5 text-xs leading-4 text-muted-foreground [overflow-wrap:anywhere]">
+                  {line}
+                </p>
+              )}
+            </div>,
+            document.body,
+          )}
+    </>
+  );
+}
+
+function CodeSpan({ text, mode }: { text: string; mode: InlineMode }) {
+  const link = useTaskLink();
+  const task = link === null ? undefined : taskForCode(text, link.tasks);
+  if (task === undefined || mode === "static" || link === null) {
+    return <code className={codeSpanClass}>{text}</code>;
+  }
+  return (
+    <code className={`${codeSpanClass} select-text`}>
+      <TaskCodeChip task={task} openTask={link.openTask} />
+    </code>
+  );
 }
 
 export function Markdown({ text }: { text: string }) {
