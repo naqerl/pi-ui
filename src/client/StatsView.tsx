@@ -1135,6 +1135,7 @@ export function StatsView({
   const dirty = useRef(false);
   const pending = useRef<DashboardLayout | null>(null);
   const saveTimer = useRef<number | undefined>(undefined);
+  const saving = useRef(false);
   const mounted = useRef(true);
 
   useEffect(() => {
@@ -1174,8 +1175,10 @@ export function StatsView({
       window.clearTimeout(saveTimer.current);
       saveTimer.current = undefined;
     }
+    if (saving.current) return;
     const body = pending.current;
     if (body === null) return;
+    saving.current = true;
     pending.current = null;
     try {
       const response = await fetch("/api/dashboard/layout", {
@@ -1202,6 +1205,12 @@ export function StatsView({
           setLayout(fallback);
         }
       }
+    } finally {
+      saving.current = false;
+      // A newer layout was committed while this request was in flight. Send it
+      // only after the previous one settles, so the server cannot apply the
+      // writes out of order and leave an older section title or span behind.
+      if (pending.current !== null && mounted.current) void flushPatch(keepalive);
     }
   }, []);
 

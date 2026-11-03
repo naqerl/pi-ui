@@ -195,6 +195,10 @@ test("drags a widget to the top, resizes it to half, and keeps both after reload
         .slice(0, 2);
     }),
   ).toEqual(["tokens", "context"]);
+
+  // The route is only for this test's PATCH assertions; leaving it registered
+  // would intercept layout writes in every later test in the file.
+  await browser.unroute("**/api/dashboard/layout");
 });
 
 test("renames, adds and deletes sections, and moves a widget between them", async ({
