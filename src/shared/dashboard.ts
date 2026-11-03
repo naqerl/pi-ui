@@ -74,6 +74,72 @@ export interface SparklineSeries {
   points: (number | null)[];
 }
 
+/** Widths in the dashboard's 12-column desktop grid. */
+export const SPAN_COLUMNS: Record<WidgetSpan, number> = { full: 12, half: 6, third: 4 };
+export const GRID_COLUMNS = 12;
+export const DEFAULT_WIDGET_ROWS = 4;
+
+export function widthForSpan(span: WidgetSpan): number {
+  return SPAN_COLUMNS[span];
+}
+
+/** The span a resized widget keeps, so arbitrary drag widths stay representable. */
+export function spanForWidth(width: number): WidgetSpan {
+  if (width >= 10) return "full";
+  if (width >= 5) return "half";
+  return "third";
+}
+
+/**
+ * Packs a section into the 12-column grid. Existing, non-overlapping positions
+ * survive; missing coordinates and collisions take the first free cell at or
+ * below the requested row. Both the server and the page use this, so stored
+ * coordinates always describe the layout that is actually rendered.
+ */
+export function packLayoutSlots(slots: readonly LayoutSlot[], reset = false): LayoutSlot[] {
+  const occupied = new Set<string>();
+  const placed: LayoutSlot[] = [];
+  const fits = (x: number, y: number, w: number, h: number): boolean => {
+    for (let row = y; row < y + h; row += 1) {
+      for (let column = x; column < x + w; column += 1) {
+        if (occupied.has(`${column}:${row}`)) return false;
+      }
+    }
+    return true;
+  };
+  const take = (x: number, y: number, w: number, h: number): void => {
+    for (let row = y; row < y + h; row += 1) {
+      for (let column = x; column < x + w; column += 1) occupied.add(`${column}:${row}`);
+    }
+  };
+  const firstFit = (fromY: number, w: number, h: number): { x: number; y: number } => {
+    for (let row = Math.max(0, Math.round(fromY)); row < 10_000; row += 1) {
+      for (let column = 0; column <= GRID_COLUMNS - w; column += 1) {
+        if (fits(column, row, w, h)) return { x: column, y: row };
+      }
+    }
+    return { x: 0, y: Math.max(0, Math.round(fromY)) };
+  };
+  for (const slot of slots) {
+    const w = Math.max(1, Math.min(GRID_COLUMNS, slot.w ?? widthForSpan(slot.span)));
+    const h = Math.max(1, Math.min(100, slot.h ?? DEFAULT_WIDGET_ROWS));
+    let x = reset ? undefined : slot.x;
+    let y = reset ? undefined : slot.y;
+    if (x !== undefined && y !== undefined) {
+      x = Math.max(0, Math.min(GRID_COLUMNS - w, Math.round(x)));
+      y = Math.max(0, Math.round(y));
+    }
+    if (x === undefined || y === undefined || !fits(x, y, w, h)) {
+      const next = firstFit(y ?? 0, w, h);
+      x = next.x;
+      y = next.y;
+    }
+    take(x, y, w, h);
+    placed.push({ ...slot, span: spanForWidth(w), x, y, w, h });
+  }
+  return placed.sort((a, b) => (a.y ?? 0) - (b.y ?? 0) || (a.x ?? 0) - (b.x ?? 0));
+}
+
 export type WidgetSource =
   | { type: "builtin"; name: BuiltinName }
   | {
@@ -101,6 +167,11 @@ export interface Widget {
 export interface LayoutSlot {
   id: string;
   span: WidgetSpan;
+  /** Grid coordinates, in the 12-column desktop grid. */
+  x?: number;
+  y?: number;
+  w?: number;
+  h?: number;
 }
 
 export interface LayoutSection {
@@ -190,6 +261,7 @@ export interface DashboardState {
 
 export const MAX_WIDGETS = 40;
 export const MAX_POLL_WIDGETS = 10;
+export const MAX_SECTIONS = 12;
 export const MAX_ROWS = 200;
 export const MAX_COLUMNS = 12;
 export const MAX_CELL = 400;
@@ -1054,10 +1126,10 @@ export function defaultDashboard(): DashboardConfig {
       sections: [
         {
           widgets: [
-            { id: "context", span: "full" },
-            { id: "tokens", span: "full" },
-            { id: "mcp", span: "full" },
-            { id: "mcp-events", span: "full" },
+            { id: "context", span: "full", x: 0, y: 0, w: 12, h: DEFAULT_WIDGET_ROWS },
+            { id: "tokens", span: "full", x: 0, y: 4, w: 12, h: DEFAULT_WIDGET_ROWS },
+            { id: "mcp", span: "full", x: 0, y: 8, w: 12, h: DEFAULT_WIDGET_ROWS },
+            { id: "mcp-events", span: "full", x: 0, y: 12, w: 12, h: DEFAULT_WIDGET_ROWS },
           ],
         },
       ],
@@ -1069,27 +1141,39 @@ export function defaultDashboard(): DashboardConfig {
  * Gives a dashboard seeded by an older pi-ui the defaults added since, once.
  * Seed 2 adds the MCP events list after the MCP widget. A widget the user or
  * agent removed after its seed is not brought back, because `seeded` already
- * covers it. Returns whether anything changed.
+ * covers it. Coordinates are backfilled independently, so an already-current
+ * dashboard from before the grid existed gains them too.
  */
 export function upgradeDashboard(config: DashboardConfig): boolean {
-  if (config.seeded >= DASHBOARD_SEED) return false;
-  if (config.seeded < 2 && !config.widgets.some((widget) => widget.id === MCP_EVENTS_WIDGET.id)) {
-    if (config.widgets.length < MAX_WIDGETS) {
-      config.widgets.push(structuredClone(MCP_EVENTS_WIDGET));
-      const slot = { id: MCP_EVENTS_WIDGET.id, span: "full" as const };
-      const home = config.layout.sections.find((section) =>
-        section.widgets.some((item) => item.id === "mcp"),
-      );
-      if (home !== undefined) {
-        const after = home.widgets.findIndex((item) => item.id === "mcp");
-        home.widgets.splice(after + 1, 0, slot);
-      } else if (config.layout.sections.length > 0) {
-        config.layout.sections[config.layout.sections.length - 1]?.widgets.push(slot);
-      } else {
-        config.layout.sections.push({ widgets: [slot] });
+  let changed = false;
+  if (config.seeded < DASHBOARD_SEED) {
+    if (config.seeded < 2 && !config.widgets.some((widget) => widget.id === MCP_EVENTS_WIDGET.id)) {
+      if (config.widgets.length < MAX_WIDGETS) {
+        config.widgets.push(structuredClone(MCP_EVENTS_WIDGET));
+        const slot = { id: MCP_EVENTS_WIDGET.id, span: "full" as const };
+        const home = config.layout.sections.find((section) =>
+          section.widgets.some((item) => item.id === "mcp"),
+        );
+        if (home !== undefined) {
+          const after = home.widgets.findIndex((item) => item.id === "mcp");
+          home.widgets.splice(after + 1, 0, slot);
+        } else if (config.layout.sections.length > 0) {
+          config.layout.sections[config.layout.sections.length - 1]?.widgets.push(slot);
+        } else {
+          config.layout.sections.push({ widgets: [slot] });
+        }
       }
     }
+    config.seeded = DASHBOARD_SEED;
+    changed = true;
   }
-  config.seeded = DASHBOARD_SEED;
-  return true;
+  const sections = config.layout.sections.map((section) => ({
+    ...section,
+    widgets: packLayoutSlots(section.widgets),
+  }));
+  if (JSON.stringify(sections) !== JSON.stringify(config.layout.sections)) {
+    config.layout = { sections };
+    changed = true;
+  }
+  return changed;
 }
