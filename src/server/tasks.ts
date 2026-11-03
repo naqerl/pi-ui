@@ -144,6 +144,7 @@ function isTask(value: unknown): value is Task {
     (task.rationale === undefined || typeof task.rationale === "string") &&
     (task.body === undefined || typeof task.body === "string") &&
     (task.project === undefined || typeof task.project === "string") &&
+    (task.createdBy === undefined || task.createdBy === "operator" || task.createdBy === "agent") &&
     (task.lastWorkedAt === undefined ||
       task.lastWorkedAt === null ||
       typeof task.lastWorkedAt === "string") &&
@@ -305,13 +306,17 @@ export class TaskStore {
       typeof revision === "number" && Number.isInteger(revision) && revision >= 0 ? revision : 0;
   }
 
-  create(
+  private insertTask(
     title: string,
     parentId: string | null,
-    attachments: readonly string[] = [],
-    project?: string | null,
-    body?: string | null,
-    mode?: TaskStatus | { status?: TaskStatus; backlog?: boolean } | boolean,
+    attachments: readonly string[],
+    project: string | null | undefined,
+    body: string | null | undefined,
+    options: {
+      status: TaskStatus;
+      rationale?: string;
+      createdBy: NonNullable<Task["createdBy"]>;
+    },
   ): Promise<TaskLedger> {
     const text = title.trim();
     if (text.length === 0) return Promise.reject(new TaskError("Task title is required", 400));
@@ -321,33 +326,65 @@ export class TaskStore {
     } catch (error) {
       return Promise.reject(error);
     }
+    const reason = typeof options.rationale === "string" ? options.rationale.trim() : "";
+    if (options.status === "proposed" && reason.length < 20) {
+      return Promise.reject(
+        new TaskError(
+          "A proposal needs a rationale of at least 20 characters so a human can judge why it is worth doing",
+          400,
+        ),
+      );
+    }
     return this.commit((tasks) => {
       if (tasks.length >= TASK_LIMIT) throw new TaskError("Task list is full", 400);
+      let parent: Task | undefined;
       if (parentId !== null) {
-        const parent = tasks.find((task) => task.id === parentId);
+        parent = tasks.find((task) => task.id === parentId);
         if (parent === undefined) throw new TaskError("Unknown task", 404);
         if (parent.status === "done") throw new TaskError("Task is done", 409);
         if (parent.status === "proposed") {
           throw new TaskError("Task is not open; a proposal must be approved first", 409);
         }
       }
-      const parent = parentId === null ? undefined : tasks.find((item) => item.id === parentId);
-      const name = chooseProject(project, tasks, parent?.project);
-      const status = createStatus(mode);
+      const now = new Date().toISOString();
+      const proposed = options.status === "proposed";
+      const name = chooseProject(project, tasks, proposed ? undefined : parent?.project);
       const task: Task = {
         id: newId(new Set(tasks.map((item) => item.id))),
         title: text,
-        status,
-        parentId,
+        status: options.status,
+        parentId: proposed ? null : parentId,
         blockedBy: [],
-        createdAt: new Date().toISOString(),
+        createdAt: now,
+        ...(proposed ? { proposedAt: now, rationale: reason } : {}),
         completedAt: null,
         completion: null,
         ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
         ...(name === undefined ? {} : { project: name }),
         ...(content === undefined ? {} : { body: content }),
+        createdBy: options.createdBy,
       };
       return [...tasks, task];
+    });
+  }
+
+  create(
+    title: string,
+    parentId: string | null,
+    attachments: readonly string[] = [],
+    project?: string | null,
+    body?: string | null,
+    mode?: TaskStatus | { status?: TaskStatus; backlog?: boolean } | boolean,
+  ): Promise<TaskLedger> {
+    let status: TaskStatus;
+    try {
+      status = createStatus(mode);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    return this.insertTask(title, parentId, attachments, project, body, {
+      status,
+      createdBy: "operator",
     });
   }
 
@@ -358,44 +395,12 @@ export class TaskStore {
     attachments: readonly string[] = [],
     project?: string | null,
     body?: string | null,
+    createdBy: NonNullable<Task["createdBy"]> = "agent",
   ): Promise<TaskLedger> {
-    const text = title.trim();
-    if (text.length === 0) return Promise.reject(new TaskError("Task title is required", 400));
-    const reason = typeof rationale === "string" ? rationale.trim() : "";
-    let content: string | undefined;
-    try {
-      content = body === undefined || body === null ? undefined : normalizeBody(body);
-    } catch (error) {
-      return Promise.reject(error);
-    }
-    if (reason.length < 20) {
-      return Promise.reject(
-        new TaskError(
-          "A proposal needs a rationale of at least 20 characters so a human can judge why it is worth doing",
-          400,
-        ),
-      );
-    }
-    return this.commit((tasks) => {
-      if (tasks.length >= TASK_LIMIT) throw new TaskError("Task list is full", 400);
-      const now = new Date().toISOString();
-      const name = chooseProject(project, tasks);
-      const task: Task = {
-        id: newId(new Set(tasks.map((item) => item.id))),
-        title: text,
-        status: "proposed",
-        parentId: null,
-        blockedBy: [],
-        createdAt: now,
-        proposedAt: now,
-        rationale: reason,
-        completedAt: null,
-        completion: null,
-        ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
-        ...(name === undefined ? {} : { project: name }),
-        ...(content === undefined ? {} : { body: content }),
-      };
-      return [...tasks, task];
+    return this.insertTask(title, null, attachments, project, body, {
+      status: "proposed",
+      rationale,
+      createdBy,
     });
   }
 
@@ -431,6 +436,7 @@ export class TaskStore {
         completion: null,
         ...(name === undefined ? {} : { project: name }),
         ...(content === undefined ? {} : { body: content }),
+        createdBy: "agent",
       };
       const withBlocker = [...tasks, blocker];
       const next = {

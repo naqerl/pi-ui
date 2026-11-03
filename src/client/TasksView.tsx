@@ -909,7 +909,12 @@ export function TaskRow({
   }, []);
 
   return (
-    <li className="min-w-0" data-testid={`task-${task.id}`} data-state={current}>
+    <li
+      className="min-w-0"
+      data-testid={`task-${task.id}`}
+      data-state={current}
+      data-pending-task={task.id.startsWith("pending-") ? "true" : undefined}
+    >
       {/* biome-ignore lint/a11y/useSemanticElements: the card is a row of block content. */}
       <div
         data-task-card=""
@@ -1700,6 +1705,14 @@ export function TaskDetail({
         )}
       >
         <TaskTimes task={task} />
+        {task.createdBy !== undefined && (
+          <p
+            data-testid="task-created-by"
+            className="font-mono text-xs leading-4 text-muted-foreground"
+          >
+            {task.createdBy === "agent" ? "Created by the agent" : "Created by the operator"}
+          </p>
+        )}
         {reason !== null && (
           <p data-testid="task-failure" className="text-sm leading-5 text-muted-foreground">
             {reason}
