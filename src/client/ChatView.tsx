@@ -256,13 +256,15 @@ export function MessageBubble({
       data-role={message.role}
       data-pending-steer={message.pendingSteer ? "true" : undefined}
       data-pending-queue={message.pendingQueue ? "true" : undefined}
+      data-pending-send={message.pendingSend ? "true" : undefined}
       data-steer-error={message.steerError === undefined ? undefined : "true"}
       className={cn(
         "theme-radius w-fit min-w-0 max-w-[85%] bg-surface px-3 py-2 text-sm leading-relaxed [overflow-wrap:anywhere]",
         mine ? "ml-auto" : "mr-auto",
         framed && "border",
         mine && "border-foreground/15",
-        (message.pendingSteer || message.pendingQueue) && "border-dashed opacity-70",
+        (message.pendingSteer || message.pendingQueue || message.pendingSend) &&
+          "border-dashed opacity-70",
         message.isError && "border-destructive text-destructive",
         message.partial && "border-dashed",
         message.partial && !message.isError && "border-muted-foreground/70",
@@ -1270,7 +1272,8 @@ function lastUserMessageOrder(timeline: TimelineItem[]): number {
       item.kind === "message" &&
       item.message.role === "user" &&
       !item.message.pendingSteer &&
-      !item.message.pendingQueue
+      !item.message.pendingQueue &&
+      !item.message.pendingSend
     ) {
       order = Math.max(order, item.message.order);
     }
@@ -1468,7 +1471,10 @@ export function ChatView({
   }, [groups, running, timeline]);
 
   const handleSend = async (text: string, mode: MessageMode = "queue", attachments?: string[]) => {
-    const outcome = await send(text, mode, attachments);
+    // `send` paints the optimistic bubble before its first await; scroll it into view now.
+    const pending = send(text, mode, attachments);
+    requestAnimationFrame(() => stick.scrollToBottom());
+    const outcome = await pending;
     if (!outcome.ok) {
       if (outcome.error !== null) setComposerError(outcome.error);
       return false;

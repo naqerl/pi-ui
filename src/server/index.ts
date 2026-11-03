@@ -762,9 +762,26 @@ app.post("/api/message", async (c) => {
     return c.text('Mode must be "queue" or "steer"', 400);
   }
   const mode = rawMode === "steer" ? "steer" : "queue";
+  const rawQueueKey =
+    typeof body === "object" && body !== null && "queueKey" in body ? body.queueKey : undefined;
+  if (
+    rawQueueKey !== undefined &&
+    (typeof rawQueueKey !== "string" ||
+      rawQueueKey.length === 0 ||
+      rawQueueKey.length > 128 ||
+      !/^[A-Za-z0-9._:-]+$/.test(rawQueueKey))
+  ) {
+    return c.text("queueKey must be a short stable identifier", 400);
+  }
 
   try {
-    return c.json(await chat.submit(text, mode, { attachments }), 202);
+    return c.json(
+      await chat.submit(text, mode, {
+        attachments,
+        ...(typeof rawQueueKey === "string" ? { queueKey: rawQueueKey } : {}),
+      }),
+      202,
+    );
   } catch (error) {
     if (error instanceof MediaError)
       return c.text(error.status === 404 ? "Unknown attachment" : error.message, 400);
