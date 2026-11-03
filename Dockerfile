@@ -22,15 +22,15 @@ ENV NODE_ENV=production \
 # Only what pi's bash tool needs to be useful. No compilers, Python, or package managers.
 # openssh-client (ssh, scp, sftp, ssh-keygen, ssh-keyscan) lets the agent reach other
 # machines. The identity itself is not baked in: it arrives as one read-only file mount.
-# gpg + gpg-agent decrypt with a PGP key, and sops (below) reads SOPS-encrypted files;
-# the keys are not baked in either, they live in the mounted /home/pi/.gnupg.
+# gnupg + age + sops decrypt secrets on the fly (the gitops repo's SOPS files are
+# PGP-encrypted); no key material is baked in, the keys live in a mounted GnuPG home.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        age \
         ca-certificates \
         curl \
         git \
-        gpg \
-        gpg-agent \
+        gnupg \
         openssh-client \
         pinentry-curses \
         procps \

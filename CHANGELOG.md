@@ -1,9 +1,11 @@
+## 1.6.66 - 2026-11-03
+
+- `sops` is pinned to 3.13.3 and its SHA-256 is verified before the binary is installed, so a re-tagged or tampered GitHub release cannot enter the image; `pinentry-curses` is installed alongside `gnupg` so a passphrase-protected key has a prompt when a terminal exists.
+- The image's GnuPG home is now documented and wired: `/home/pi/.gnupg` is an optional read-write mount (`GNUPGHOME_DIR`, default `~/.pi-ui/gnupg`). It cannot be the host's live `~/.gnupg` — GnuPG 2.4 writes a keybox (`pubring.db`) that bookworm's gpg 2.2 cannot read, and two live agents would share one socket. The README's new **SOPS and GPG keys** section exports a key on the host and imports it into that home with one throwaway container; `docker-compose.yml`, the `docker run` example and the mount table carry the same change.
+
 ## 1.6.65 - 2026-11-03
 
-- The image ships `gpg`, `gpg-agent` and `sops` (a pinned static release, checksum-verified), so a SOPS file encrypted to a PGP key can be decrypted in place — no plaintext copy on the host, no round-trip. No key is baked in: the keyring lives in a mounted `/home/pi/.gnupg`.
-- New optional read-write mount `GNUPGHOME_DIR` (default `~/.pi-ui/gnupg` in the compose file) holds the container's own GnuPG home. It cannot be the host's live `~/.gnupg`: GnuPG 2.4 writes a keybox (`pubring.db`) that bookworm's gpg 2.2 cannot read, and two live agents would share one socket. The README's new **SOPS and GPG keys** section exports a key on the host and imports it into that home with one throwaway container.
-- `pinentry-curses` is installed for completeness, but an unprotected key needs no prompt at all; the agent's bash tool has no terminal, so passphrase-protected keys need a preseeded agent.
-- `docker-compose.yml` and the README's `docker run` example carry the new mount, and the README's mount table explains the read-write requirement (gpg writes trustdb, locks and its agent socket there).
+- chore(image): ship `gnupg`, `age` and the `sops` binary in the runtime image so the agent can decrypt SOPS-encrypted secrets; no key material is baked in.
 
 ## 1.6.64 - 2026-11-03
 
