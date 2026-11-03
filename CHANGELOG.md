@@ -1,3 +1,7 @@
+## 1.6.64 - 2026-11-03
+
+- feat(dashboard): a general chart spec — multiple series with their own colour, type and dash style, x labels, a formatted y axis, a legend and reference lines; the old five-key sparkline input still renders (kab7).
+
 ## 1.6.63 - 2026-11-02
 
 - test(tools): reject tool schemas the model provider refuses — the tuple schema that broke every request is now a lint test (g8ix).
