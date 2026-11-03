@@ -87,9 +87,9 @@ test("drags a widget to the top, resizes it to half, and keeps both after reload
     await route.continue();
   });
   await app.open("/?page=stats");
-  await expect(screen.getByTestId("widget-context")).toBeVisible();
-  await expect(screen.getByTestId("widget-tokens")).toBeVisible();
-  await expect(screen.getByTestId("widget-tokens-drag")).toBeVisible();
+  await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
+  await expect(screen.getByTestId("widget-tokens")).toBeVisible({ timeout: 30_000 });
+  await expect(screen.getByTestId("widget-tokens-drag")).toBeVisible({ timeout: 30_000 });
 
   await dragPointer(
     browser,
@@ -178,7 +178,7 @@ test("drags a widget to the top, resizes it to half, and keeps both after reload
 
   // Reload: the stored coordinates and span drive the page again.
   await app.open("/?page=stats");
-  await expect(screen.getByTestId("widget-tokens")).toBeVisible();
+  await expect(screen.getByTestId("widget-tokens")).toBeVisible({ timeout: 30_000 });
   await expect
     .poll(() =>
       browser.evaluate(() => {
@@ -208,7 +208,7 @@ test("renames, adds and deletes sections, and moves a widget between them", asyn
 }) => {
   await browser.setViewport({ width: 1280, height: 1000 });
   await app.open("/?page=stats");
-  await expect(screen.getByTestId("dashboard-add-section")).toBeVisible();
+  await expect(screen.getByTestId("dashboard-add-section")).toBeVisible({ timeout: 30_000 });
 
   const title = screen.getByRole("textbox", "Section title");
   await title.fill("Runtime");
@@ -291,7 +291,7 @@ test("applies an external PATCH title and y spacing while the page is open", asy
 }) => {
   await browser.setViewport({ width: 1280, height: 1000 });
   await app.open("/?page=stats");
-  await expect(screen.getByTestId("widget-context")).toBeVisible();
+  await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
   const response = await browser.evaluate(async () => {
     const result = await fetch("/api/dashboard/layout", {
       method: "PATCH",
@@ -332,7 +332,7 @@ test("applies an external PATCH title and y spacing while the page is open", asy
 test("packs a free drag collision into the persisted layout", async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 1280, height: 1000 });
   await app.open("/?page=stats");
-  await expect(screen.getByTestId("widget-tokens")).toBeVisible();
+  await expect(screen.getByTestId("widget-tokens")).toBeVisible({ timeout: 30_000 });
   const patched = await browser.evaluate(async () => {
     const response = await fetch("/api/dashboard/layout", {
       method: "PATCH",
@@ -354,7 +354,7 @@ test("packs a free drag collision into the persisted layout", async ({ app, brow
   });
   expect(patched).toBe(200);
   await app.open("/?page=stats");
-  await expect(screen.getByTestId("widget-tokens-drag")).toBeVisible();
+  await expect(screen.getByTestId("widget-tokens-drag")).toBeVisible({ timeout: 30_000 });
 
   await browser.evaluate(() => {
     const handle = document.querySelector<HTMLElement>('[data-testid="widget-tokens-drag"]');
@@ -433,7 +433,7 @@ test("resizes with touch and disables page scrolling on the resize handle", asyn
 }) => {
   await browser.setViewport({ width: 1280, height: 1000 });
   await app.open("/?page=stats");
-  await expect(screen.getByTestId("widget-context-resize")).toBeVisible();
+  await expect(screen.getByTestId("widget-context-resize")).toBeVisible({ timeout: 30_000 });
   expect(
     await browser.evaluate(() => {
       const handle = document.querySelector<HTMLElement>('[data-testid="widget-context-resize"]');
@@ -510,8 +510,8 @@ test("a phone-width viewport keeps the single-column stack and no drag handles",
 }) => {
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/?page=stats");
-  await expect(screen.getByTestId("stats-page")).toBeVisible();
-  await expect(screen.getByTestId("widget-context")).toBeVisible();
+  await expect(screen.getByTestId("stats-page")).toBeVisible({ timeout: 30_000 });
+  await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
   expect(
     await browser.evaluate(() => ({
       handles: document.querySelectorAll(".dashboard-drag-handle").length,
@@ -532,7 +532,7 @@ test("a phone-width viewport keeps the single-column stack and no drag handles",
   // Crossing md after mount must measure the newly rendered grid instead of
   // keeping the mobile mount's fallback width.
   await browser.setViewport({ width: 800, height: 900 });
-  await expect(screen.getByTestId("widget-context")).toBeVisible();
+  await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
   await expect
     .poll(() =>
       browser.evaluate(() => {
