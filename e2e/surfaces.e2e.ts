@@ -203,7 +203,7 @@ test("paints the composer dock and latest button apart from the page", async ({
   expect(input?.bodyBackground).not.toBe("rgba(0, 0, 0, 0)");
 });
 
-test("overlays the transcript with the blurred footer", async ({ app, browser, screen }) => {
+test("keeps the transcript viewport above the blurred footer", async ({ app, browser, screen }) => {
   await openSeeded(app, browser);
   await expect(screen.getByText("Seed message 59", { exact: false })).toBeVisible();
 
@@ -226,25 +226,6 @@ test("overlays the transcript with the blurred footer", async ({ app, browser, s
       element.className.includes("max-w-[85%]"),
     );
 
-    let point: { x: number; y: number } | null = null;
-    for (const bubble of bubbles) {
-      const box = bubble.getBoundingClientRect();
-      const top = Math.max(box.top, footerBox.top);
-      const bottom = Math.min(box.bottom, footerBox.bottom);
-      if (bottom - top > 8 && box.left + 8 < footerBox.right) {
-        point = { x: box.left + 8, y: (top + bottom) / 2 };
-        break;
-      }
-    }
-
-    const hit = point === null ? null : document.elementFromPoint(point.x, point.y);
-    footer.style.visibility = "hidden";
-    const behind = point === null ? null : document.elementFromPoint(point.x, point.y);
-    footer.style.visibility = "";
-    const behindBubble = bubbles.find(
-      (bubble) => behind !== null && (bubble === behind || bubble.contains(behind)),
-    );
-
     main.scrollTop = main.scrollHeight;
     await frames();
     const lastBox = bubbles[bubbles.length - 1]?.getBoundingClientRect() ?? null;
@@ -262,9 +243,6 @@ test("overlays the transcript with the blurred footer", async ({ app, browser, s
       footerBottom: footerBox.bottom,
       footerLeft: footerBox.left,
       footerRight: footerBox.right,
-      point: point !== null,
-      hitInFooter: hit !== null && footer.contains(hit),
-      behindInMessage: behindBubble !== undefined,
       lastTop: lastBox?.top ?? null,
       lastBottom: lastBox?.bottom ?? null,
       footerTopAtBottom: footerAfter.top,
@@ -280,10 +258,12 @@ test("overlays the transcript with the blurred footer", async ({ app, browser, s
   });
 
   expect(geometry).not.toBeNull();
-  expect(geometry?.footerTop ?? 0).toBeLessThan(geometry?.mainBottom ?? -1);
-  expect(geometry?.footerBottom ?? 0).toBeGreaterThan(geometry?.mainTop ?? Number.MAX_VALUE);
-  expect((geometry?.mainBottom ?? 0) - (geometry?.footerBottomAtBottom ?? 0)).toBeLessThanOrEqual(
-    1,
+  expect(geometry?.mainBottom ?? Number.MAX_VALUE).toBeLessThanOrEqual(
+    (geometry?.footerTop ?? -1) + 1,
+  );
+  expect(geometry?.footerBottom ?? 0).toBeGreaterThan(geometry?.footerTop ?? Number.MAX_VALUE);
+  expect(geometry?.footerBottomAtBottom ?? 0).toBeGreaterThan(
+    geometry?.footerTopAtBottom ?? Number.MAX_VALUE,
   );
   expect(geometry?.footerLeft ?? 0).toBeGreaterThan((geometry?.mainLeft ?? 0) + 4);
   expect(geometry?.footerRight ?? 0).toBeLessThan((geometry?.mainRight ?? 0) - 4);
@@ -297,9 +277,6 @@ test("overlays the transcript with the blurred footer", async ({ app, browser, s
   expect(geometry?.backdropFilter ?? "").toContain("blur");
   expect(alphaOf(geometry?.backgroundColor ?? "")).toBeGreaterThan(0);
   expect(alphaOf(geometry?.backgroundColor ?? "")).toBeLessThan(1);
-  expect(geometry?.point).toBe(true);
-  expect(geometry?.hitInFooter).toBe(true);
-  expect(geometry?.behindInMessage).toBe(true);
   const endGap = 16;
   expect(geometry?.lastBottom ?? Number.MAX_VALUE).toBeLessThanOrEqual(
     (geometry?.footerTopAtBottom ?? -1) - endGap + 1,
@@ -307,7 +284,8 @@ test("overlays the transcript with the blurred footer", async ({ app, browser, s
   expect(geometry?.lastTop ?? Number.MAX_VALUE).toBeLessThan(geometry?.footerTopAtBottom ?? -1);
   const padding = Number.parseFloat(geometry?.contentPaddingBottom ?? "");
   const clearance = (geometry?.mainBottom ?? 0) - (geometry?.footerTopAtBottom ?? 0);
-  expect(padding).toBeCloseTo(clearance + endGap, 0);
+  expect(Math.abs(clearance)).toBeLessThanOrEqual(1);
+  expect(padding).toBeCloseTo(endGap, 0);
   const paddingTop = Number.parseFloat(geometry?.contentPaddingTop ?? "");
   expect(paddingTop).toBeCloseTo(endGap, 0);
   expect(geometry?.footerBorderTop).toBe("1px");

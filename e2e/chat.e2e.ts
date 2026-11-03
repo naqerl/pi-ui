@@ -1,5 +1,29 @@
-import { test } from "@e2e-dev/web";
+import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
+
+const longThread = {
+  conversationId: "chat-scroller-e2e",
+  messages: Array.from({ length: 72 }, (_, index) => ({
+    id: `thread-${index}`,
+    role: index % 2 === 0 ? "user" : "assistant",
+    text: `Thread message ${index}: a transcript row whose layout must survive the composer animation.`,
+    timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+    order: index + 1,
+  })),
+  activity: [],
+  run: "idle",
+  queue: [],
+  usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 },
+  context: { tokens: 0, window: null, percent: null },
+};
+
+async function openLongThread(app: { open: (path: string) => Promise<void> }, browser: Browser) {
+  await browser.setViewport({ width: 390, height: 844 });
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({ json: longThread });
+  });
+  await app.open("/");
+}
 
 test("resets the composer to one line with the caret at the start after send", async ({
   app,
@@ -266,4 +290,238 @@ test("keeps the composer geometry stable across run start and stop", async ({ ap
   const idle = await composer.boundingBox();
   expect(idle?.width ?? 0).toBeCloseTo(initial?.width ?? 0, 0);
   expect(idle?.height ?? 0).toBeCloseTo(initial?.height ?? 0, 0);
+});
+
+test("keeps every frame inside the budget while the composer body animates", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.emulateMedia({ reducedMotion: "no-preference" });
+  await openLongThread(app, browser);
+  await expect(screen.getByText("Thread message 71", { exact: false })).toBeVisible();
+
+  // Warm the stats chunk and settle on the collapsed composer so the sample measures
+  // only the expansion, not the first mount of the stats page.
+  await screen.getByRole("tab", "Stats").tap();
+  await screen.getByRole("tab", "Chat").tap();
+  await expect(screen.getByText("Thread message 71", { exact: false })).toBeVisible();
+  await screen.getByRole("tab", "Stats").tap();
+  await new Promise((resolve) => setTimeout(resolve, 450));
+
+  const result = await browser.evaluate(async () => {
+    const scroller = document.querySelector<HTMLElement>('[data-testid="chat-scroller"]');
+    const body = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
+    const chat = document.querySelector<HTMLElement>('[data-testid="page-dot-chat"]');
+    const shader = document.querySelector<HTMLElement>('[data-testid="shader-bg"]');
+    if (scroller === null || body === null || chat === null) return null;
+    // The drifting shader is not part of this transition; its normal-motion paint
+    // would otherwise cap the software-rendered bot at 30 fps.
+    if (shader !== null) shader.style.display = "none";
+    const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    scroller.scrollTop = scroller.scrollHeight;
+    await nextFrame();
+    await nextFrame();
+
+    const frames: number[] = [];
+    let running = true;
+    let previous = 0;
+    let first = true;
+    const tick = (time: number) => {
+      if (first) {
+        first = false;
+        previous = time;
+      } else {
+        frames.push(time - previous);
+        previous = time;
+      }
+      if (running) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    const start = body.getBoundingClientRect().height;
+    chat.click();
+    await new Promise((resolve) => setTimeout(resolve, 340));
+    running = false;
+    await nextFrame();
+    return {
+      frames,
+      start,
+      end: body.getBoundingClientRect().height,
+      collapsed: body.getAttribute("data-collapsed"),
+    };
+  });
+
+  expect(result).not.toBeNull();
+  expect(result?.collapsed).toBe("false");
+  expect(result?.end ?? 0).toBeGreaterThan((result?.start ?? 0) + 20);
+  expect((result?.frames.length ?? 0) > 6).toBe(true);
+  expect(Math.max(...(result?.frames ?? [0]))).toBeLessThanOrEqual(24);
+});
+
+test("does not re-lay-out transcript content while the composer animates", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.emulateMedia({ reducedMotion: "no-preference" });
+  await openLongThread(app, browser);
+  await expect(screen.getByText("Thread message 71", { exact: false })).toBeVisible();
+
+  const result = await browser.evaluate(async () => {
+    const scroller = document.querySelector<HTMLElement>('[data-testid="chat-scroller"]');
+    const content = document.querySelector<HTMLElement>('[data-testid="chat-content"]');
+    const stats = document.querySelector<HTMLElement>('[data-testid="page-dot-stats"]');
+    if (scroller === null || content === null || stats === null) return null;
+    scroller.scrollTop = scroller.scrollHeight;
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+    let contentResizes = 0;
+    const observer = new ResizeObserver(() => {
+      contentResizes += 1;
+    });
+    observer.observe(content);
+    const contentHeight = content.getBoundingClientRect().height;
+    const contentWidth = content.getBoundingClientRect().width;
+    stats.click();
+    await new Promise((resolve) => setTimeout(resolve, 340));
+    observer.disconnect();
+    return {
+      contentResizes,
+      contentHeight,
+      afterHeight: content.getBoundingClientRect().height,
+      contentWidth,
+      afterWidth: content.getBoundingClientRect().width,
+    };
+  });
+
+  expect(result).not.toBeNull();
+  expect(result?.contentResizes ?? 99).toBeLessThanOrEqual(2);
+  expect(Math.abs((result?.afterHeight ?? 0) - (result?.contentHeight ?? -1))).toBeLessThan(1);
+  expect(Math.abs((result?.afterWidth ?? 0) - (result?.contentWidth ?? -1))).toBeLessThan(1);
+});
+
+test("pins the last bubble at the bottom while the composer animates and leaves it alone up-thread", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.emulateMedia({ reducedMotion: "no-preference" });
+  await openLongThread(app, browser);
+  await expect(screen.getByText("Thread message 71", { exact: false })).toBeVisible();
+
+  const pinned = await browser.evaluate(async () => {
+    const scroller = document.querySelector<HTMLElement>('[data-testid="chat-scroller"]');
+    const stats = document.querySelector<HTMLElement>('[data-testid="page-dot-stats"]');
+    const bubbles = [...document.querySelectorAll<HTMLElement>("[data-role]")];
+    const last = bubbles.at(-1);
+    if (scroller === null || stats === null || last === undefined) return null;
+    const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    scroller.scrollTop = scroller.scrollHeight;
+    await nextFrame();
+    await nextFrame();
+
+    const samples: number[] = [];
+    let running = true;
+    const tick = () => {
+      const scrollerBox = scroller.getBoundingClientRect();
+      const bubbleBox = last.getBoundingClientRect();
+      // The transcript keeps its 16px end gap, so measure against that stop.
+      samples.push(Math.abs(bubbleBox.bottom - (scrollerBox.bottom - 16)));
+      if (running) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    stats.click();
+    await new Promise((resolve) => setTimeout(resolve, 340));
+    running = false;
+    await nextFrame();
+    return { max: Math.max(...samples), samples: samples.length };
+  });
+
+  expect(pinned).not.toBeNull();
+  expect(pinned?.samples ?? 0).toBeGreaterThan(6);
+  expect(pinned?.max ?? 99).toBeLessThanOrEqual(2);
+
+  const detached = await browser.evaluate(async () => {
+    const scroller = document.querySelector<HTMLElement>('[data-testid="chat-scroller"]');
+    const chat = document.querySelector<HTMLElement>('[data-testid="page-dot-chat"]');
+    const stats = document.querySelector<HTMLElement>('[data-testid="page-dot-stats"]');
+    const bubbles = [...document.querySelectorAll<HTMLElement>("[data-role]")];
+    const last = bubbles.at(-1);
+    if (scroller === null || chat === null || stats === null || last === undefined) return null;
+    const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    chat.click();
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight - 200);
+    scroller.dispatchEvent(new Event("scroll"));
+    await nextFrame();
+    await nextFrame();
+    const before = last.getBoundingClientRect().top;
+    stats.click();
+    await new Promise((resolve) => setTimeout(resolve, 340));
+    await nextFrame();
+    return { before, after: last.getBoundingClientRect().top };
+  });
+
+  expect(detached).not.toBeNull();
+  expect(Math.abs((detached?.after ?? 0) - (detached?.before ?? -1))).toBeLessThanOrEqual(2);
+});
+
+test("turns the pager from a horizontal swipe started inside the thread", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await openLongThread(app, browser);
+  await expect(screen.getByText("Thread message 71", { exact: false })).toBeVisible();
+
+  const result = await browser.evaluate(async () => {
+    const pager = document.querySelector<HTMLElement>('[data-testid="pager"]');
+    const scroller = document.querySelector<HTMLElement>('[data-testid="chat-scroller"]');
+    const chat = document.querySelector<HTMLElement>('[data-testid="page-dot-chat"]');
+    const bubbles = [...document.querySelectorAll<HTMLElement>("[data-role]")];
+    const last = bubbles.at(-1);
+    if (pager === null || scroller === null || chat === null || last === undefined) return null;
+    chat.click();
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+    const before = pager.getAttribute("data-page");
+    scroller.scrollTop = scroller.scrollHeight;
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const box = last.getBoundingClientRect();
+    const x = box.left + box.width / 2;
+    const y = box.top + box.height / 2;
+    const fire = (type: string, clientX: number) => {
+      last.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          pointerId: 21,
+          pointerType: "touch",
+          isPrimary: true,
+          clientX,
+          clientY: y,
+          button: 0,
+          buttons: type === "pointerup" ? 0 : 1,
+        }),
+      );
+    };
+    fire("pointerdown", x);
+    fire("pointermove", x - 96);
+    fire("pointerup", x - 96);
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+    return {
+      before,
+      page: pager.getAttribute("data-page"),
+      touchAction: getComputedStyle(scroller).touchAction,
+    };
+  });
+
+  expect(result).not.toBeNull();
+  expect(result?.before).toBe("chat");
+  expect(result?.touchAction).toBe("pan-y");
+  expect(result?.page).toBe("tasks");
 });

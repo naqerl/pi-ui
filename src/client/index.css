@@ -185,19 +185,41 @@
     -webkit-font-smoothing: antialiased;
   }
 
+  /* One shell owns the viewport height. The transcript is the flexible child and
+     the dock grows below it, so a composer animation resizes the scroll viewport
+     instead of relaying out every message. */
+  .chat-shell {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    max-height: 100%;
+    overflow: hidden;
+  }
+
+  .chat-scroller {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    /* The stick hook owns the offset while the viewport resizes. */
+    overflow-anchor: none;
+    /* Vertical panning stays native; a horizontal swipe belongs to the pager. */
+    touch-action: pan-y;
+  }
+
   /* Floating chrome. On a wide screen the dock is a little wider than the
      transcript column. On a narrow screen that cap is the full width.
      The composer fills solid while the field is focused. */
   .float-footer {
-    left: 50%;
+    flex: 0 0 auto;
     width: min(100%, calc(72ch + 2rem));
-    transform: translateX(-50%);
+    margin-inline: auto;
     background-color: color-mix(in srgb, var(--surface) 72%, transparent);
     -webkit-backdrop-filter: blur(18px);
     backdrop-filter: blur(18px);
     border-left: 1px solid color-mix(in srgb, var(--foreground) 28%, transparent);
     border-right: 1px solid color-mix(in srgb, var(--foreground) 28%, transparent);
-    bottom: 0;
     padding-bottom: env(safe-area-inset-bottom);
     border-top: 1px solid color-mix(in srgb, var(--foreground) 28%, transparent);
     transition: background-color 280ms ease;

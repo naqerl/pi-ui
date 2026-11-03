@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
-const NEAR_BOTTOM_PX = 48;
+const NEAR_BOTTOM_PX = 8;
 
 interface Anchor {
   element: HTMLElement;
@@ -123,7 +123,9 @@ export function useStickToBottom(dependency: unknown) {
     const content = contentRef.current;
     if (!container || !content) return;
 
-    const observer = new ResizeObserver(scheduleSync);
+    // ResizeObserver runs after layout but before paint, so correcting the offset here
+    // keeps the end pinned on the very frame the viewport (or content) changes size.
+    const observer = new ResizeObserver(sync);
     observer.observe(container);
     observer.observe(content);
     const observeChildren = () => {
@@ -145,7 +147,7 @@ export function useStickToBottom(dependency: unknown) {
       if (syncFrameRef.current !== null) cancelAnimationFrame(syncFrameRef.current);
       if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
     };
-  }, [handleScroll, scheduleSync]);
+  }, [handleScroll, scheduleSync, sync]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: dependency is only the trigger for a post-commit sync
   useLayoutEffect(() => {
