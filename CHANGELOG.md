@@ -1,3 +1,7 @@
+## 1.6.75 - 2026-11-03
+
+- feat(stats): click a chart to pin a crosshair, its dots and the values at that point (xhair).
+
 ## 1.6.74 - 2026-11-03
 
 - feat(dashboard): a sparkline can map its headline to an explicit value instead of the derived last point (hetz).
