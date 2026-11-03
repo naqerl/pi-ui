@@ -1,3 +1,7 @@
+## 1.6.80 - 2026-11-03
+
+- feat(chat): alt-1/2/3 jump to a page and ctrl-j focuses the composer (8g7p).
+
 ## 1.6.79 - 2026-11-03
 
 - fix(stats): pin the chart crosshair on a real click instead of a synthetic pointer, so the e2e suite is green again (xhair2).
