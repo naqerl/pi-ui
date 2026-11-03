@@ -40,6 +40,7 @@ import { PiMenu } from "./PiMenu";
 import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
 import type { ChatStats } from "./StatsView";
 import { createTask } from "./task-client";
+import { TaskLinkProvider } from "./task-link";
 import { groupTimeline, type TimelineGroup } from "./timeline-groups";
 import type { SendOutcome, TimelineItem } from "./use-chat";
 import { usePager } from "./use-pager";
@@ -1354,6 +1355,7 @@ export function ChatView({
     [tasks],
   );
   const [pageAnimating, setPageAnimating] = useState(false);
+  const [taskSelection, setTaskSelection] = useState<{ id: string; request: number } | null>(null);
   const lastPagerState = useRef({ page: pager.page, dragging: pager.dragging });
   const shownTasks = useMemo(
     () =>
@@ -1596,7 +1598,15 @@ export function ChatView({
     pager.setPage(index);
   };
 
-  return (
+  const openTaskFromChat = useCallback(
+    (id: string) => {
+      pager.setPage(TASKS_PAGE);
+      setTaskSelection((current) => ({ id, request: (current?.request ?? 0) + 1 }));
+    },
+    [pager.setPage],
+  );
+
+  const content = (
     <div className="chat-shell min-h-0">
       {interrupted && (
         <div
@@ -1708,6 +1718,7 @@ export function ChatView({
                   ready={ready}
                   footerClearance={0}
                   onLedger={applyTasks}
+                  selection={taskSelection}
                 />
               </Suspense>
             </section>
@@ -1821,5 +1832,11 @@ export function ChatView({
         </Suspense>
       )}
     </div>
+  );
+
+  return (
+    <TaskLinkProvider tasks={shownTasks} openTask={openTaskFromChat}>
+      {content}
+    </TaskLinkProvider>
   );
 }

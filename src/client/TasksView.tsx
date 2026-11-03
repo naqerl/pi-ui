@@ -30,6 +30,7 @@ import { InlineMarkdown, Markdown, plainInline } from "./markdown";
 import { mediaUrl } from "./media-client";
 import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
 import { removeTask, type TaskOutcome, updateTask } from "./task-client";
+import { TaskLinkProvider } from "./task-link";
 
 const LONG_PRESS_MS = 500;
 const WIDE_QUERY = "(min-width: 1024px)";
@@ -44,6 +45,8 @@ interface TasksViewProps {
   ready: boolean;
   footerClearance: number;
   onLedger: (ledger: TaskLedger) => void;
+  /** A task id another page asked to open, with a request count so repeats still open it. */
+  selection?: { id: string; request: number } | null;
 }
 
 /** Root tasks split into one group per project, A–Z, with "No project" (null) last. */
@@ -269,7 +272,14 @@ function Chevron({ open, className }: { open: boolean; className?: string }) {
   );
 }
 
-export function TasksView({ tasks, activity, ready, footerClearance, onLedger }: TasksViewProps) {
+export function TasksView({
+  tasks,
+  activity,
+  ready,
+  footerClearance,
+  onLedger,
+  selection = null,
+}: TasksViewProps) {
   const wide = useWide();
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [problem, setProblem] = useState<{ id: string; message: string } | null>(null);
@@ -277,6 +287,7 @@ export function TasksView({ tasks, activity, ready, footerClearance, onLedger }:
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
   const [dayLimit, setDayLimit] = useState(DAY_PAGE);
   const ignoreNextCardClick = useRef(false);
+  const lastSelectionRequest = useRef<number | null>(null);
   const now = new Date();
 
   const stateOf = new Map<string, TaskState>();
@@ -349,6 +360,14 @@ export function TasksView({ tasks, activity, ready, footerClearance, onLedger }:
     },
     [wide],
   );
+
+  // The chat asks for a task by id after moving the pager to this page. The request count
+  // lets the same id open again without the wide layout's first-row default replacing it.
+  useEffect(() => {
+    if (selection === null || lastSelectionRequest.current === selection.request) return;
+    lastSelectionRequest.current = selection.request;
+    openDetail(selection.id);
+  }, [openDetail, selection]);
 
   const closeDetail = useCallback(() => {
     if (!wide && taskDetailHistory()?.piTaskDetailId !== undefined) {
@@ -582,7 +601,7 @@ export function TasksView({ tasks, activity, ready, footerClearance, onLedger }:
       />
     );
 
-  return (
+  const content = (
     <div
       className={cn(
         "h-full overflow-x-hidden overscroll-x-none",
@@ -638,6 +657,12 @@ export function TasksView({ tasks, activity, ready, footerClearance, onLedger }:
           document.body,
         )}
     </div>
+  );
+
+  return (
+    <TaskLinkProvider tasks={tasks} openTask={openDetail}>
+      {content}
+    </TaskLinkProvider>
   );
 }
 
