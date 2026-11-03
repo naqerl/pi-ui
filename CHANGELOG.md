@@ -1,3 +1,7 @@
+## 1.6.69 - 2026-11-03
+
+- feat(tasks): the section chevron sits before the task count, matching the block headers above it (9eky).
+
 ## 1.6.68 - 2026-11-03
 
 - fix(tasks): the backlog badge gets a filled background instead of the only outline badge on the page (8efd).
