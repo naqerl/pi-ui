@@ -1,3 +1,7 @@
+## 1.6.83 - 2026-11-03
+
+- feat(memory): memory_write can append to a long_term topic instead of rewriting it (k4ec).
+
 ## 1.6.82 - 2026-11-03
 
 - test(chat): judge the scroll-pin sampling window by elapsed time and a handful of frames, so a busy CI runner stops failing it (pinb).
