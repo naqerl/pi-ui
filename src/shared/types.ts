@@ -313,6 +313,8 @@ export interface Task {
   attachments?: string[];
   /** Short project name such as `pi-ui`. Absent means no project. */
   project?: string;
+  /** Who put this task in the ledger. Absent on ledgers written before this field existed. */
+  createdBy?: "operator" | "agent";
   /**
    * When a tool call was last attributed to this task while it was working, or null before the
    * first one and after the task is closed or reopened. The badge stays until it is finished.

@@ -275,3 +275,154 @@ test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300
     "chat",
   );
 });
+
+test("paints a task card before the create response and reconciles it to the ledger id", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await app.open("/?page=tasks");
+  const composer = screen.getByRole("textbox", "New task");
+  const list = screen.getByTestId("task-list");
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let requests = 0;
+  await browser.route("**/api/tasks", async (route) => {
+    if (route.request.method !== "POST") {
+      await route.continue();
+      return;
+    }
+    requests += 1;
+    // Hold the request open: the card below must be painted before the response exists.
+    await gate;
+    await route.continue();
+  });
+
+  const title = `Painted task ${Date.now()}`;
+  await composer.fill(title);
+  try {
+    await screen.getByRole("button", "Add task").tap();
+    await expect(list.getByText(title, { exact: true })).toBeVisible({ timeout: 1_500 });
+    expect(requests).toBe(1);
+    // Still no response, so the visible card is the optimistic one.
+    await expect(
+      browser.locator('[data-pending-task="true"]').filter({ hasText: title }),
+    ).toBeVisible();
+  } finally {
+    release();
+  }
+
+  await expect(composer).toHaveValue("");
+  const final = await browser.evaluate(async (needle) => {
+    const deadline = performance.now() + 10_000;
+    while (performance.now() < deadline) {
+      const ledger = (await (await fetch("/api/tasks")).json()) as {
+        tasks: Array<{ id: string; title: string }>;
+      };
+      const task = ledger.tasks.find((item) => item.title === needle);
+      const card = [...document.querySelectorAll("[data-task-card]")].find((item) =>
+        item.textContent?.includes(needle),
+      );
+      const id = card?.closest("li")?.getAttribute("data-testid") ?? null;
+      if (task !== undefined && id === `task-${task.id}`) return id;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return null;
+  }, title);
+  expect(final).toMatch(/^task-[a-z0-9]+$/);
+  await expect(browser.locator('[data-pending-task="true"]')).toHaveCount(0);
+});
+
+test("retires an optimistic task card when the create fails and keeps the draft", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await app.open("/?page=tasks");
+  await browser.route("**/api/tasks", async (route) => {
+    if (route.request.method !== "POST") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({ status: 500, body: "Task list is full" });
+  });
+  const composer = screen.getByRole("textbox", "New task");
+  const list = screen.getByTestId("task-list");
+  const title = `Rejected task ${Date.now()}`;
+  await composer.fill(title);
+  await screen.getByRole("button", "Add task").tap();
+
+  await expect(screen.getByTestId("composer-error")).toHaveText("Task list is full");
+  await expect(composer).toHaveValue(title);
+  await expect(list.getByText(title, { exact: true })).toHaveCount(0);
+});
+
+test("create and propose share the insert and differ only in their proposal fields", async ({
+  app,
+  browser,
+}) => {
+  await app.open("/?page=tasks");
+  const rowsJson = await browser.evaluate(async () => {
+    const title = `Shared insert ${Date.now()}`;
+    const body = "Same body for both rows.";
+    const rationale = "The same insert should make both rows, differing only in proposal fields.";
+    const create = await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, parentId: null, project: "shared-insert", body }),
+    });
+    const propose = await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title,
+        propose: true,
+        rationale,
+        project: "shared-insert",
+        body,
+      }),
+    });
+    const created = (await create.json()) as {
+      tasks: Array<Record<string, unknown>>;
+    };
+    const proposed = (await propose.json()) as {
+      tasks: Array<Record<string, unknown>>;
+    };
+    const open = created.tasks.find((task) => task.title === title && task.status === "open");
+    const idea = proposed.tasks.find((task) => task.title === title && task.status === "proposed");
+    if (open === undefined || idea === undefined) return "null";
+    const shared = (task: Record<string, unknown>) => {
+      const copy = { ...task };
+      for (const key of ["id", "status", "proposedAt", "rationale", "createdBy", "createdAt"]) {
+        delete copy[key];
+      }
+      return copy;
+    };
+    await fetch(`/api/tasks/${encodeURIComponent(String(open.id))}`, { method: "DELETE" });
+    await fetch(`/api/tasks/${encodeURIComponent(String(idea.id))}`, { method: "DELETE" });
+    return JSON.stringify({
+      open: shared(open),
+      proposed: shared(idea),
+      openAuthor: open.createdBy,
+      proposedAuthor: idea.createdBy,
+      proposedAt: idea.proposedAt,
+      rationale: idea.rationale,
+    });
+  });
+  const rows = JSON.parse(rowsJson) as {
+    open: Record<string, unknown>;
+    proposed: Record<string, unknown>;
+    openAuthor: unknown;
+    proposedAuthor: unknown;
+    proposedAt: unknown;
+    rationale: unknown;
+  } | null;
+  expect(rows).not.toBeNull();
+  expect(rows?.open).toEqual(rows?.proposed);
+  expect(rows?.openAuthor).toBe("operator");
+  expect(rows?.proposedAuthor).toBe("operator");
+  expect(rows?.rationale).toContain("same insert");
+  expect(typeof rows?.proposedAt).toBe("string");
+});
