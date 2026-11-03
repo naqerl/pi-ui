@@ -224,6 +224,51 @@ test("sparkline mappings render legacy, named and gapped series with labels", ()
   );
 });
 
+test("sparkline headlines can be mapped explicitly or suppressed", () => {
+  const data = {
+    values: [2, 5, 3],
+    series: { actual: [1, 2], projection: [3, 4, 5] },
+    headline: "€1.70 accrued · €20.44 projected",
+    total: 1234.5,
+  };
+  const series = [
+    { key: "actual", points: [1, 2] },
+    { key: "projection", points: [3, 4, 5] },
+  ];
+  assert.deepEqual(
+    renderWidget(
+      widget({
+        kind: "sparkline",
+        mapping: { series: "series", value: "headline", label: "=Spend" },
+      }),
+      data,
+    ),
+    { kind: "sparkline", label: "Spend", series, value: "€1.70 accrued · €20.44 projected" },
+  );
+  assert.deepEqual(
+    renderWidget(
+      widget({ kind: "sparkline", mapping: { series: "series", value: "total" } }),
+      data,
+    ),
+    { kind: "sparkline", series, value: "1,234.5" },
+  );
+  assert.deepEqual(
+    renderWidget(widget({ kind: "sparkline", mapping: { series: "series" } }), data),
+    { kind: "sparkline", series, value: "2" },
+  );
+  assert.deepEqual(
+    renderWidget(
+      widget({ kind: "sparkline", mapping: { series: "series", value: "=", label: "=Spend" } }),
+      data,
+    ),
+    { kind: "sparkline", label: "Spend", series },
+  );
+  assert.deepEqual(
+    renderWidget(widget({ kind: "sparkline", mapping: { value: "=" } }), data, [1, 2]),
+    { kind: "sparkline", points: [1, 2] },
+  );
+});
+
 test("parseChart accepts the general spec and keeps the legacy shape valid", () => {
   assert.deepEqual(
     parseChart({
