@@ -98,6 +98,58 @@ test("shows queued follow-ups immediately, cancels one, and keeps the survivor's
   expect(gap).toBe(false);
 });
 
+test("keeps the client key on a send that loses the start race", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await app.open("/");
+  await expect(screen.getByRole("button", { name: "Send" })).toBeVisible({ timeout: 15_000 });
+  const tag = Date.now();
+  const first = { text: `parallel A ${tag}`, queueKey: `race-a-${tag}` };
+  const second = { text: `parallel B ${tag}`, queueKey: `race-b-${tag}` };
+  const answers = await browser.evaluate(
+    async ({ requests }: { requests: { text: string; queueKey: string }[] }) => {
+      return Promise.all(
+        requests.map(async (request) => {
+          const response = await fetch("/api/message", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: request.text, mode: "queue", queueKey: request.queueKey }),
+          });
+          return {
+            request,
+            body: (await response.json()) as {
+              queued: boolean;
+              placed: boolean;
+              queue: { id: string; text: string; key?: string }[];
+            },
+          };
+        }),
+      );
+    },
+    { requests: [first, second] },
+  );
+
+  const queued = answers.filter((answer) => answer.body.queued);
+  expect(queued.length).toBeGreaterThanOrEqual(1);
+  for (const answer of queued) {
+    const item = answer.body.queue.find((candidate) => candidate.text === answer.request.text);
+    expect(item?.key).toBe(answer.request.queueKey);
+  }
+  for (const request of [first, second]) {
+    await expect(
+      browser.locator('[data-role="user"]').filter({ hasText: request.text }),
+    ).toHaveCount(1);
+  }
+
+  await browser.evaluate(async () => {
+    await fetch("/api/stop", { method: "POST" });
+    return true;
+  });
+  await expect(screen.getByRole("button", { name: "Send" })).toBeVisible({ timeout: 15_000 });
+});
+
 test("blurs the composer after send on a coarse-pointer mobile viewport", async ({
   app,
   browser,

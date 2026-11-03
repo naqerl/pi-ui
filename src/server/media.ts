@@ -82,6 +82,7 @@ export class MediaStore {
   async images(
     ids: readonly string[],
   ): Promise<{ type: "image"; data: string; mimeType: string }[]> {
+    if (ids.length === 0) return [];
     const blocks = [];
     for (const id of ids) {
       const { bytes, mimeType } = await this.read(id);
