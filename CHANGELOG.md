@@ -1,3 +1,7 @@
+## 1.6.68 - 2026-11-03
+
+- fix(tasks): the backlog badge gets a filled background instead of the only outline badge on the page (8efd).
+
 ## 1.6.67 - 2026-11-03
 
 - feat(stats): the dashboard becomes a composable grid — widgets drag, resize and group into sections, layout persists through the same `dashboard_layout` payload the agent writes, and mobile keeps the single-column stack (w3mg).
