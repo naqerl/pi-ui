@@ -251,7 +251,7 @@ export async function openDurableSession(
         // instead of one per boundary, which pushed later steers past the run's end.
         steeringMode: "all",
       },
-      onReport: (error) => console.error("[pi] harness report", error),
+      onReport: (report) => console.error(`[pi] harness report (${report.kind})`, report.error),
     },
     SESSION_CONTEXT,
   );
