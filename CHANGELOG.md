@@ -1,3 +1,9 @@
+## 1.6.73 - 2026-11-03
+
+- perf(chat): the thread scrolls itself, so the composer stops reflowing it (lift).
+- fix(chat): clear the composer when the bubble is painted (cwb1).
+- refactor(stats): drop the section button and drag grip, hold to drag (n7yg).
+
 ## 1.6.72 - 2026-11-03
 
 - refactor(stats): drop the tokens footnote (4hh4).
