@@ -48,6 +48,7 @@ const MEMORY_WRITE_TOOLS = new Set(["memory_write", "memory_long_term"]);
 interface LedgerFacts {
   status: Task["status"];
   blocked: boolean;
+  createdBy?: Task["createdBy"];
 }
 
 function emptyMeasured(): TaskMeasured {
@@ -350,6 +351,7 @@ export class TaskActivityTracker {
       const facts: LedgerFacts = {
         status: task.status,
         blocked: task.status === "open" && liveBlockerIds(tasks, task).length > 0,
+        ...(task.createdBy === undefined ? {} : { createdBy: task.createdBy }),
       };
       const before = this.seen.get(task.id);
       this.seen.set(task.id, facts);
@@ -436,9 +438,21 @@ function ledgerEvent(
   after: LedgerFacts,
 ): { kind: TaskHistoryKind; text: string } | null {
   if (before === undefined) {
-    return after.status === "proposed"
-      ? { kind: "created", text: "Proposed by the agent" }
-      : { kind: "created", text: "Created" };
+    if (after.status === "proposed") {
+      return {
+        kind: "created",
+        text: after.createdBy === "operator" ? "Proposed by the operator" : "Proposed by the agent",
+      };
+    }
+    return {
+      kind: "created",
+      text:
+        after.createdBy === "agent"
+          ? "Created by the agent"
+          : after.createdBy === "operator"
+            ? "Created by the operator"
+            : "Created",
+    };
   }
   if (before.status === "proposed" && after.status === "open") {
     return { kind: "approved", text: "Approved" };

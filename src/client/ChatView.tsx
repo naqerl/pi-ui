@@ -102,6 +102,20 @@ function pageFromLocation(): number {
   return index < 0 ? CHAT_PAGE : index;
 }
 
+/** A stable client key lets an optimistic task card be replaced by its ledger row. */
+function newTaskKey(): string {
+  const cryptoApi = globalThis.crypto;
+  if (typeof cryptoApi?.randomUUID === "function") return cryptoApi.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+interface OptimisticTask {
+  key: string;
+  task: Task;
+  /** Ids already in the ledger when this card was painted, so only a new row can replace it. */
+  knownIds: Set<string>;
+}
+
 /** The deep link /activity?run=... opens the chat with that run's activity already showing. */
 function activityRunFromLocation(): string | null | undefined {
   const path = window.location.pathname.replace(/\/+$/, "");
@@ -1324,6 +1338,7 @@ export function ChatView({
   const pager = usePager(PAGES.length, pageFromLocation());
   const lastVibratedPage = useRef(pager.page);
   const [composerError, setComposerError] = useState<string | null>(null);
+  const [optimisticTasks, setOptimisticTasks] = useState<OptimisticTask[]>([]);
   const [activityRun, setActivityRun] = useState<string | null | undefined>(
     activityRunFromLocation,
   );
@@ -1340,6 +1355,32 @@ export function ChatView({
   );
   const [pageAnimating, setPageAnimating] = useState(false);
   const lastPagerState = useRef({ page: pager.page, dragging: pager.dragging });
+  const shownTasks = useMemo(
+    () =>
+      optimisticTasks.length === 0
+        ? tasks
+        : [...tasks, ...optimisticTasks.map((item) => item.task)],
+    [tasks, optimisticTasks],
+  );
+
+  // A task event can land before the create response. Retire the painted card as soon as
+  // a row that was not already in the ledger at paint time carries the same title.
+  useEffect(() => {
+    if (optimisticTasks.length === 0) return;
+    setOptimisticTasks((current) => {
+      const next = current.filter(
+        (item) =>
+          !tasks.some(
+            (task) =>
+              !item.knownIds.has(task.id) &&
+              task.title === item.task.title &&
+              task.parentId === item.task.parentId &&
+              (task.project ?? null) === (item.task.project ?? null),
+          ),
+      );
+      return next.length === current.length ? current : next;
+    });
+  }, [tasks, optimisticTasks]);
 
   useEffect(() => {
     if (statsPage) refreshStats?.();
@@ -1491,11 +1532,36 @@ export function ChatView({
     project?: string,
     options?: { backlog?: boolean },
   ) => {
-    const outcome = await createTask(text, null, attachments, project, options);
+    const title = text.trim();
+    const key = newTaskKey();
+    const created: OptimisticTask = {
+      key,
+      knownIds: new Set(tasks.map((task) => task.id)),
+      task: {
+        id: `pending-${key}`,
+        title,
+        status: options?.backlog === true ? "backlog" : "open",
+        parentId: null,
+        blockedBy: [],
+        createdAt: new Date().toISOString(),
+        completedAt: null,
+        completion: null,
+        ...(project === undefined ? {} : { project }),
+        createdBy: "operator",
+      },
+    };
+    const retire = () =>
+      setOptimisticTasks((current) => current.filter((item) => item.key !== key));
+    // Paint the card in this frame; the create request only confirms it.
+    if (title.length > 0) setOptimisticTasks((current) => [...current, created]);
+    const outcome = await createTask(title, null, attachments, project, options);
     if (!outcome.ok) {
+      retire();
       setComposerError(outcome.error);
       return false;
     }
+    // Drop the painted copy and take the server's ledger in one render, keyed by its id.
+    retire();
     setComposerError(null);
     applyTasks(outcome.ledger);
     return true;
@@ -1637,7 +1703,7 @@ export function ChatView({
             >
               <Suspense fallback={null}>
                 <TasksView
-                  tasks={tasks}
+                  tasks={shownTasks}
                   activity={taskActivity}
                   ready={ready}
                   footerClearance={0}

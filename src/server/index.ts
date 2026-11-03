@@ -634,7 +634,9 @@ app.post("/api/tasks", async (c) => {
     for (const id of attachments) await media.read(id);
     if (proposed) {
       return c.json(
-        publishTasks(await taskStore.propose(title, rationale, attachments, project, taskBody)),
+        publishTasks(
+          await taskStore.propose(title, rationale, attachments, project, taskBody, "operator"),
+        ),
         201,
       );
     }

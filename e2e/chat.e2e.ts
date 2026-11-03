@@ -630,3 +630,47 @@ test("turns the pager from a horizontal swipe started inside the thread", async 
   expect(result?.touchAction).toBe("pan-y");
   expect(result?.page).toBe("tasks");
 });
+
+test("paints the queued steer chip before the steer request returns", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await app.open("/");
+  const composer = screen.getByRole("textbox", "Message");
+  await composer.fill("SLOW response please");
+  await screen.getByRole("button", "Send").tap();
+  await expect(screen.getByRole("button", "Stop")).toBeVisible();
+
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let requests = 0;
+  await browser.route("**/api/message", async (route) => {
+    const body = JSON.parse(route.request.postData ?? "{}") as { mode?: string };
+    if (body.mode !== "steer") {
+      await route.continue();
+      return;
+    }
+    requests += 1;
+    await gate;
+    await route.continue();
+  });
+
+  const text = `steer painted before response ${Date.now()}`;
+  await composer.fill(text);
+  try {
+    await screen.getByRole("button", "Steer").tap();
+    const pending = browser.locator('[data-pending-steer="true"]').filter({ hasText: text });
+    await expect(pending).toBeVisible({ timeout: 1_500 });
+    expect(requests).toBe(1);
+    // The gate is still closed, so the chip above was painted before the response.
+    await expect(pending).toBeVisible();
+  } finally {
+    release();
+  }
+  await expect(composer).toHaveValue("");
+  const stop = screen.getByRole("button", "Stop");
+  if ((await stop.count()) > 0) await stop.tap();
+});
