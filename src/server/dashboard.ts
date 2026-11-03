@@ -7,7 +7,11 @@ import {
   type BuiltinName,
   type BuiltinSession,
   builtinData,
+  CHART_FORMATS,
   CHART_TYPES,
+  type ChartFormat,
+  type ChartReference,
+  type ChartSeries,
   type ChartType,
   type DashboardConfig,
   DashboardError,
@@ -88,7 +92,32 @@ const MAX_SCRIPT = 20_000;
 const SAMPLE_CHARS = 2_000;
 const SECRET_NAME = /TOKEN|SECRET|PASSW|API_?KEY|PRIVATE|CREDENTIAL|AUTH|SESSION|COOKIE/i;
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$/;
-const CHART_KEYS = new Set(["type", "color", "height", "yDomain", "showTooltip"]);
+const CHART_KEYS = new Set([
+  "type",
+  "color",
+  "height",
+  "legend",
+  "showTooltip",
+  "yDomain",
+  "y",
+  "x",
+  "series",
+  "reference",
+]);
+const CHART_Y_KEYS = new Set(["format", "ticks", "currency"]);
+const CHART_X_KEYS = new Set(["labels", "format"]);
+const CHART_SERIES_KEYS = new Set([
+  "key",
+  "label",
+  "color",
+  "type",
+  "dashed",
+  "fillOpacity",
+  "stack",
+]);
+const CHART_REFERENCE_KEYS = new Set(["value", "label", "color", "dashed"]);
+const MAX_CHART_SERIES = 6;
+const MAX_CHART_REFERENCES = 4;
 const SAFE_CHART_COLOR =
   /^(?:[a-zA-Z]+|#[0-9a-fA-F]{3,8}|(?:var|rgb|rgba|hsl|hsla|oklch|oklab|color|color-mix)\([^;{}<>]*\))$/;
 
@@ -157,22 +186,17 @@ export function parseChart(input: unknown): SparklineChart {
       throw new DashboardError(`"${key}" is not a chart field; use ${[...CHART_KEYS].join(", ")}.`);
     }
   }
-  const type = input.type;
-  if (typeof type !== "string" || !(CHART_TYPES as readonly string[]).includes(type)) {
-    throw new DashboardError(`chart.type must be one of ${CHART_TYPES.join(", ")}.`);
-  }
-  const chart: SparklineChart = { type: type as ChartType };
-  if (input.color !== undefined) {
+  const chart: SparklineChart = {};
+  if (input.type !== undefined) {
     if (
-      typeof input.color !== "string" ||
-      input.color.trim() === "" ||
-      input.color.length > 80 ||
-      !SAFE_CHART_COLOR.test(input.color.trim())
+      typeof input.type !== "string" ||
+      !(CHART_TYPES as readonly string[]).includes(input.type)
     ) {
-      throw new DashboardError("chart.color must be a CSS color or a var(--chart-N) token.");
+      throw new DashboardError(`chart.type must be one of ${CHART_TYPES.join(", ")}.`);
     }
-    chart.color = input.color.trim();
+    chart.type = input.type as ChartType;
   }
+  if (input.color !== undefined) chart.color = parseColor(input.color, "chart.color");
   if (input.height !== undefined) {
     if (
       typeof input.height !== "number" ||
@@ -183,6 +207,12 @@ export function parseChart(input: unknown): SparklineChart {
       throw new DashboardError("chart.height must be a number from 12 to 400.");
     }
     chart.height = Math.round(input.height);
+  }
+  if (input.legend !== undefined) {
+    if (typeof input.legend !== "boolean") {
+      throw new DashboardError("chart.legend must be true or false.");
+    }
+    chart.legend = input.legend;
   }
   if (input.yDomain !== undefined) {
     if (input.yDomain === "auto") chart.yDomain = "auto";
@@ -203,7 +233,209 @@ export function parseChart(input: unknown): SparklineChart {
     }
     chart.showTooltip = input.showTooltip;
   }
+  if (input.y !== undefined) chart.y = parseChartY(input.y);
+  if (input.x !== undefined) chart.x = parseChartX(input.x);
+  if (input.series !== undefined) chart.series = parseChartSeries(input.series);
+  if (input.reference !== undefined) chart.reference = parseChartReference(input.reference);
   return chart;
+}
+
+function parseColor(value: unknown, field: string): string {
+  if (
+    typeof value !== "string" ||
+    value.trim() === "" ||
+    value.length > 80 ||
+    !SAFE_CHART_COLOR.test(value.trim())
+  ) {
+    throw new DashboardError(`${field} must be a CSS color or a var(--chart-N) token.`);
+  }
+  return value.trim();
+}
+
+function parseChartY(input: unknown): NonNullable<SparklineChart["y"]> {
+  if (!isRecord(input)) throw new DashboardError("chart.y must be an object.");
+  for (const key of Object.keys(input)) {
+    if (!CHART_Y_KEYS.has(key)) {
+      throw new DashboardError(
+        `"${key}" is not a chart.y field; use ${[...CHART_Y_KEYS].join(", ")}.`,
+      );
+    }
+  }
+  const y: NonNullable<SparklineChart["y"]> = {};
+  if (input.format !== undefined) {
+    if (
+      typeof input.format !== "string" ||
+      !(CHART_FORMATS as readonly string[]).includes(input.format)
+    ) {
+      throw new DashboardError(`chart.y.format must be one of ${CHART_FORMATS.join(", ")}.`);
+    }
+    y.format = input.format as ChartFormat;
+  }
+  if (input.ticks !== undefined) {
+    if (
+      typeof input.ticks !== "number" ||
+      !Number.isInteger(input.ticks) ||
+      input.ticks < 0 ||
+      input.ticks > 10
+    ) {
+      throw new DashboardError("chart.y.ticks must be an integer from 0 to 10.");
+    }
+    y.ticks = input.ticks;
+  }
+  if (input.currency !== undefined) {
+    if (
+      typeof input.currency !== "string" ||
+      input.currency.trim() === "" ||
+      input.currency.length > 8
+    ) {
+      throw new DashboardError("chart.y.currency must be a short currency symbol.");
+    }
+    y.currency = input.currency.trim();
+  }
+  return y;
+}
+
+function parseChartX(input: unknown): NonNullable<SparklineChart["x"]> {
+  if (!isRecord(input)) throw new DashboardError("chart.x must be an object.");
+  for (const key of Object.keys(input)) {
+    if (!CHART_X_KEYS.has(key)) {
+      throw new DashboardError(
+        `"${key}" is not a chart.x field; use ${[...CHART_X_KEYS].join(", ")}.`,
+      );
+    }
+  }
+  const x: NonNullable<SparklineChart["x"]> = {};
+  if (input.labels !== undefined) {
+    if (
+      !Array.isArray(input.labels) ||
+      input.labels.length === 0 ||
+      !input.labels.every((label) => typeof label === "string" && label.length <= 80)
+    ) {
+      throw new DashboardError("chart.x.labels must be an array of short strings.");
+    }
+    x.labels = input.labels;
+  }
+  if (input.format !== undefined) {
+    if (typeof input.format !== "string" || input.format.length > 40) {
+      throw new DashboardError("chart.x.format must be a short string.");
+    }
+    x.format = input.format;
+  }
+  return x;
+}
+
+function parseChartSeries(input: unknown): ChartSeries[] {
+  if (!Array.isArray(input) || input.length < 1 || input.length > MAX_CHART_SERIES) {
+    throw new DashboardError(`chart.series must have 1 to ${MAX_CHART_SERIES} entries.`);
+  }
+  return input.map((item, index) => {
+    const field = `chart.series[${index}]`;
+    if (!isRecord(item)) throw new DashboardError(`${field} must be an object.`);
+    for (const key of Object.keys(item)) {
+      if (!CHART_SERIES_KEYS.has(key)) {
+        throw new DashboardError(
+          `"${key}" is not a ${field} field; use ${[...CHART_SERIES_KEYS].join(", ")}.`,
+        );
+      }
+    }
+    const key = item.key;
+    if (typeof key !== "string" || key.trim() === "" || key.length > 64) {
+      throw new DashboardError(`${field}.key must be 1-64 characters.`);
+    }
+    const series: ChartSeries = { key: key.trim() };
+    if (item.label !== undefined) {
+      if (typeof item.label !== "string" || item.label.length > 40) {
+        throw new DashboardError(`${field}.label must be up to 40 characters.`);
+      }
+      series.label = item.label;
+    }
+    if (item.color !== undefined) series.color = parseColor(item.color, `${field}.color`);
+    if (item.type !== undefined) {
+      if (
+        typeof item.type !== "string" ||
+        !(CHART_TYPES as readonly string[]).includes(item.type)
+      ) {
+        throw new DashboardError(`${field}.type must be one of ${CHART_TYPES.join(", ")}.`);
+      }
+      series.type = item.type as ChartType;
+    }
+    if (item.dashed !== undefined) {
+      if (typeof item.dashed !== "boolean") {
+        throw new DashboardError(`${field}.dashed must be true or false.`);
+      }
+      series.dashed = item.dashed;
+    }
+    if (item.fillOpacity !== undefined) {
+      if (
+        typeof item.fillOpacity !== "number" ||
+        !Number.isFinite(item.fillOpacity) ||
+        item.fillOpacity < 0 ||
+        item.fillOpacity > 1
+      ) {
+        throw new DashboardError(`${field}.fillOpacity must be a number from 0 to 1.`);
+      }
+      series.fillOpacity = item.fillOpacity;
+    }
+    if (item.stack !== undefined) {
+      if (typeof item.stack !== "string" || item.stack.length > 24) {
+        throw new DashboardError(`${field}.stack must be up to 24 characters.`);
+      }
+      series.stack = item.stack;
+    }
+    return series;
+  });
+}
+
+function chartLabelNotes(widget: Widget, view: WidgetView | undefined, notes: string[]): void {
+  const labels = widget.chart?.x?.labels;
+  if (labels === undefined || view?.kind !== "sparkline") return;
+  const lengths =
+    view.series?.map((series) => series.points.length) ??
+    (view.points === undefined ? [] : [view.points.length]);
+  if (lengths.length === 0) return;
+  const longest = Math.max(...lengths);
+  if (labels.length > longest) {
+    notes.push(
+      `chart.x.labels has ${labels.length} labels but the longest series has ${longest}; the extra labels are dropped.`,
+    );
+  } else if (lengths.some((length) => length < labels.length)) {
+    notes.push("A series is shorter than chart.x.labels; its missing points are gaps.");
+  }
+}
+
+function parseChartReference(input: unknown): ChartReference[] {
+  if (!Array.isArray(input) || input.length > MAX_CHART_REFERENCES) {
+    throw new DashboardError(`chart.reference must have 0 to ${MAX_CHART_REFERENCES} entries.`);
+  }
+  return input.map((item, index) => {
+    const field = `chart.reference[${index}]`;
+    if (!isRecord(item)) throw new DashboardError(`${field} must be an object.`);
+    for (const key of Object.keys(item)) {
+      if (!CHART_REFERENCE_KEYS.has(key)) {
+        throw new DashboardError(
+          `"${key}" is not a ${field} field; use ${[...CHART_REFERENCE_KEYS].join(", ")}.`,
+        );
+      }
+    }
+    if (typeof item.value !== "number" || !Number.isFinite(item.value)) {
+      throw new DashboardError(`${field}.value must be a number.`);
+    }
+    const reference: ChartReference = { value: item.value };
+    if (item.label !== undefined) {
+      if (typeof item.label !== "string" || item.label.length > 40) {
+        throw new DashboardError(`${field}.label must be up to 40 characters.`);
+      }
+      reference.label = item.label;
+    }
+    if (item.color !== undefined) reference.color = parseColor(item.color, `${field}.color`);
+    if (item.dashed !== undefined) {
+      if (typeof item.dashed !== "boolean") {
+        throw new DashboardError(`${field}.dashed must be true or false.`);
+      }
+      reference.dashed = item.dashed;
+    }
+    return reference;
+  });
 }
 
 /** Checks and normalizes a widget from the agent or from disk. */
@@ -608,6 +840,7 @@ export class DashboardManager {
         notes,
         polling: this.polling(),
       };
+      chartLabelNotes(widget, result.view, notes);
       if (!this.polling()) notes.push("Polling is paused until someone opens the dashboard page.");
       this.schedule(widget.id);
     } else if (widget.source.type === "static") {
@@ -621,6 +854,7 @@ export class DashboardManager {
         notes,
         polling: this.polling(),
       };
+      chartLabelNotes(widget, result.view, notes);
     } else {
       const inputs = this.host === undefined ? undefined : await this.host.builtinInputs();
       const value = this.builtinValue(widget, inputs);
@@ -633,6 +867,7 @@ export class DashboardManager {
         notes,
         polling: this.polling(),
       };
+      chartLabelNotes(widget, result.view, notes);
     }
     this.broadcast();
     return result;
@@ -707,7 +942,9 @@ export class DashboardManager {
     this.values.set(widget.id, value);
     this.saveStateSoon();
     this.broadcast();
-    return { widget, ...this.valueFields(value), notes: [], polling: this.polling() };
+    const notes: string[] = [];
+    chartLabelNotes(widget, value.view, notes);
+    return { widget, ...this.valueFields(value), notes, polling: this.polling() };
   }
 
   async setLayout(input: unknown): Promise<{ layout: DashboardLayout; notes: string[] }> {

@@ -94,6 +94,47 @@ const sparkBarCall = {
   },
 };
 
+// A source key that would end the generated custom property and inject a CSS rule
+// if it were used verbatim by ChartStyle.
+const unsafeSeriesKey = "x: red; } body { visibility: hidden } .zz";
+
+const spendScript = `return {
+  series: {
+    ${JSON.stringify(unsafeSeriesKey)}: [42, 68, 91, 118, 132, 149],
+    projection: [55, 82, 110, 140, 171, 206],
+  },
+};`;
+
+const spendChartCall = {
+  name: "dashboard_upsert",
+  arguments: {
+    id: "spend-chart",
+    title: "Spend by day",
+    kind: "sparkline",
+    source: { type: "poll", script: spendScript, intervalSec: 0.5 },
+    mapping: { series: "series" },
+    chart: {
+      height: 180,
+      showTooltip: true,
+      y: { format: "currency", ticks: 4 },
+      x: { labels: ["1", "8", "15", "22", "29", "30"] },
+      series: [
+        { key: unsafeSeriesKey, label: "Actual", color: "var(--chart-1)", type: "line" },
+        {
+          key: "projection",
+          label: "Projection",
+          color: "var(--chart-2)",
+          type: "line",
+          dashed: true,
+        },
+      ],
+      reference: [{ value: 175, label: "Budget", color: "var(--chart-4)" }],
+    },
+  },
+};
+
+const spendResetCalls = [{ name: "dashboard_remove", arguments: { id: "spend-chart" } }];
+
 const resetCalls = [
   { name: "dashboard_remove", arguments: { id: "example-cloud-servers" } },
   {
@@ -435,6 +476,50 @@ test("sparkline widgets render through recharts and honor their chart config", a
   await screen.getByRole("tab", "Chat").tap();
   await seedDashboard(browser, resetCalls);
   await dashboardHas(browser, ["context", "tokens", "mcp", "mcp-events"]);
+});
+
+test("a chart draws two coloured series, a dashed projection, a reference line and x labels", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/");
+  await seedDashboard(browser, [spendChartCall]);
+  await dashboardHas(browser, ["spend-chart"]);
+  await app.open("/?page=stats");
+  await expect(screen.getByText("Spend by day", { exact: true })).toBeVisible();
+  await expect
+    .poll(async () => (await readDashboard(browser)).values["spend-chart"]?.view !== undefined)
+    .toBe(true);
+
+  const read = await browser.evaluate(() => {
+    const card = document.querySelector('[data-testid="widget-spend-chart"]');
+    const paths = [...(card?.querySelectorAll("path") ?? [])];
+    const strokes = paths
+      .map((path) => path.getAttribute("stroke"))
+      .filter((stroke): stroke is string => stroke?.startsWith("var(--color-") === true);
+    return {
+      strokes: [...new Set(strokes)],
+      dashed: paths.filter((path) => path.getAttribute("stroke-dasharray") !== null).length,
+      texts: [...(card?.querySelectorAll("text") ?? [])].map((text) => text.textContent),
+      content: card?.textContent ?? "",
+      bodyVisibility: getComputedStyle(document.body).visibility,
+    };
+  });
+  expect(read.strokes.sort()).toEqual(["var(--color-s0)", "var(--color-s1)"]);
+  expect(read.bodyVisibility).toBe("visible");
+  expect(read.dashed).toBeGreaterThan(0);
+  expect(read.content).toContain("Actual");
+  expect(read.content).toContain("Projection");
+  expect(read.content).toContain("Budget");
+  expect(read.texts).toContain("15");
+
+  await screen.getByRole("tab", "Chat").tap();
+  await seedDashboard(browser, spendResetCalls);
+  await expect
+    .poll(async () => (await readDashboard(browser)).widgets.map((widget) => widget.id))
+    .not.toContain("spend-chart");
 });
 
 test("the sparkline chart config rejects unknown keys", () => {

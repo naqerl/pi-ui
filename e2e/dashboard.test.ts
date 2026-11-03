@@ -8,7 +8,12 @@ import { after, before, test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { EventsView } from "../src/client/EventsView.js";
-import { type DashboardHost, DashboardManager, parseWidget } from "../src/server/dashboard.js";
+import {
+  type DashboardHost,
+  DashboardManager,
+  parseChart,
+  parseWidget,
+} from "../src/server/dashboard.js";
 import { type PollOutcome, type PollRun, runPollScript } from "../src/server/dashboard-runner.js";
 import { createDashboardTools } from "../src/server/dashboard-tools.js";
 import {
@@ -174,6 +179,160 @@ test("mappings are checked against the kind", () => {
   assert.throws(() => validateMapping("table", { columns: "name" }), /columns/);
   assert.throws(() => validateMapping("list", { items: "x", colour: "red" }), /colour/);
   validateMapping("status", { state: "status" });
+  validateMapping("sparkline", { series: "series", labels: "labels" });
+});
+
+test("sparkline mappings render legacy, named and gapped series with labels", () => {
+  assert.deepEqual(
+    renderWidget(widget({ kind: "sparkline", mapping: { series: "values" } }), {
+      values: [2, 5, 3],
+    }),
+    { kind: "sparkline", points: [2, 5, 3], value: "3" },
+  );
+  assert.deepEqual(
+    renderWidget(widget({ kind: "sparkline", mapping: { series: "series", labels: "labels" } }), {
+      series: { actual: [1, 2], projection: [3, 4, 5] },
+      labels: ["Mon", "Tue", "Wed", "Thu"],
+    }),
+    {
+      kind: "sparkline",
+      labels: ["Mon", "Tue", "Wed"],
+      series: [
+        { key: "actual", points: [1, 2] },
+        { key: "projection", points: [3, 4, 5] },
+      ],
+      value: "2",
+    },
+  );
+  assert.deepEqual(
+    renderWidget(widget({ kind: "sparkline", mapping: { series: "series", labels: "labels" } }), {
+      series: [
+        { key: "actual", label: "Actual", points: [1, null, 3] },
+        { key: "estimate", points: [2, 4, null] },
+      ],
+      labels: ["a", "b", "c"],
+    }),
+    {
+      kind: "sparkline",
+      labels: ["a", "b", "c"],
+      series: [
+        { key: "actual", label: "Actual", points: [1, null, 3] },
+        { key: "estimate", points: [2, 4, null] },
+      ],
+      value: "3",
+    },
+  );
+});
+
+test("parseChart accepts the general spec and keeps the legacy shape valid", () => {
+  assert.deepEqual(
+    parseChart({
+      color: "var(--chart-2)",
+      height: 48,
+      legend: false,
+      showTooltip: true,
+      yDomain: [0, 10],
+      y: { format: "currency", ticks: 4, currency: "$" },
+      x: { labels: ["Mon", "Tue"], format: "day" },
+      series: [
+        {
+          key: "actual",
+          label: "Actual",
+          color: "var(--chart-1)",
+          type: "line",
+          dashed: true,
+          fillOpacity: 0.5,
+          stack: "cost",
+        },
+      ],
+      reference: [{ value: 5, label: "Budget", color: "var(--chart-4)", dashed: false }],
+    }),
+    {
+      color: "var(--chart-2)",
+      height: 48,
+      legend: false,
+      showTooltip: true,
+      yDomain: [0, 10],
+      y: { format: "currency", ticks: 4, currency: "$" },
+      x: { labels: ["Mon", "Tue"], format: "day" },
+      series: [
+        {
+          key: "actual",
+          label: "Actual",
+          color: "var(--chart-1)",
+          type: "line",
+          dashed: true,
+          fillOpacity: 0.5,
+          stack: "cost",
+        },
+      ],
+      reference: [{ value: 5, label: "Budget", color: "var(--chart-4)", dashed: false }],
+    },
+  );
+  assert.deepEqual(parseChart({ type: "area", color: "var(--chart-1)" }), {
+    type: "area",
+    color: "var(--chart-1)",
+  });
+  assert.deepEqual(parseChart({}), {});
+});
+
+test("parseChart rejects unknown keys, bad colours, counts and ranges", () => {
+  assert.throws(() => parseChart({ glow: true }), /glow/);
+  assert.throws(() => parseChart({ color: "url(javascript:1)" }), /chart.color/);
+  assert.throws(
+    () => parseChart({ series: [{ key: "a", color: "url(javascript:1)" }] }),
+    /series\[0\]\.color/,
+  );
+  assert.throws(
+    () => parseChart({ reference: [{ value: 1, color: "url(javascript:1)" }] }),
+    /reference\[0\]\.color/,
+  );
+  assert.throws(() => parseChart({ series: [] }), /series/);
+  assert.throws(
+    () => parseChart({ series: Array.from({ length: 7 }, (_, index) => ({ key: `s${index}` })) }),
+    /series/,
+  );
+  assert.throws(
+    () => parseChart({ reference: Array.from({ length: 5 }, (_, index) => ({ value: index })) }),
+    /reference/,
+  );
+  assert.throws(() => parseChart({ series: [{ key: "" }] }), /key/);
+  assert.throws(() => parseChart({ series: [{ key: "a", fillOpacity: 1.1 }] }), /fillOpacity/);
+  assert.throws(() => parseChart({ series: [{ key: "a", fillOpacity: -0.1 }] }), /fillOpacity/);
+  assert.throws(() => parseChart({ y: { ticks: 11 } }), /ticks/);
+  assert.throws(() => parseChart({ y: { ticks: -1 } }), /ticks/);
+});
+
+test("chart labels longer than the longest series are trimmed with a note", async () => {
+  const dashboard = new DashboardManager(await tempDir(), {
+    runner: countingRunner(() => ({ ok: true, value: {}, bytes: 2, logs: [], ms: 0 })),
+  });
+  await dashboard.load();
+  dashboard.setHost(fakeHost());
+  await dashboard.upsert({
+    id: "labels",
+    title: "Labels",
+    kind: "sparkline",
+    source: { type: "static" },
+    mapping: { series: "series" },
+    chart: {
+      x: { labels: ["a", "b", "c", "d"] },
+      series: [{ key: "a" }, { key: "b" }],
+    },
+  });
+  const pushed = await dashboard.push("labels", { series: { a: [1, 2], b: [2, 3, 4] } });
+  const view = pushed.view as {
+    kind: string;
+    series: { key: string; points: (number | null)[] }[];
+  };
+  assert.equal(view.kind, "sparkline");
+  assert.deepEqual(
+    view.series.map((item) => item.points.length),
+    [2, 3],
+  );
+  assert.ok(pushed.notes.some((note) => /extra labels/.test(note)));
+  dashboard.dispose();
+  await dashboard.flush();
 });
 
 test("the default dashboard is the old stats page as builtin widgets", () => {

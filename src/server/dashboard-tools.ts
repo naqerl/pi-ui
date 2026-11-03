@@ -4,7 +4,13 @@ import {
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
-import { BUILTIN_SOURCES, CHART_TYPES, WIDGET_KINDS, WIDGET_SPANS } from "../shared/dashboard.js";
+import {
+  BUILTIN_SOURCES,
+  CHART_FORMATS,
+  CHART_TYPES,
+  WIDGET_KINDS,
+  WIDGET_SPANS,
+} from "../shared/dashboard.js";
 import { DashboardError, type DashboardManager } from "./dashboard.js";
 
 function text(value: string, isError = false): ToolExecutionResult {
@@ -26,10 +32,18 @@ const KINDS_DOC = `Kinds and their mapping fields (* required):
 - stat: value*, label, delta (number or "+3"; shows a trend arrow), unit, progress (0-100 meter)
 - list: items* (array), key, label, value (paths relative to each item)
 - table: columns* ({"Header": "path"}), rows (array; column paths are then relative to each row; without rows, column paths are absolute arrays zipped together)
-- sparkline: value (a number; its poll/push history is drawn) or series (array of numbers), label. Optional chart {type: area|line|bar, color (CSS color or var(--chart-N)), height (12-400), yDomain ([min,max] or "auto"), showTooltip (boolean)}; leaves the data mapping unchanged and cannot run code.
+- sparkline: value (a number; its poll/push history is drawn) or series (an array of numbers, an object of named number arrays, or [{key, label?, points: (number|null)[]}]), labels (optional x tick labels), label. Optional chart below; it leaves the data mapping unchanged and cannot run code.
 - markdown: text* (markdown; raw HTML is shown as text)
 - status: items (array) with label, state, detail, key per item; or a single state* and label. States: ok/running/up/healthy… = green, warn/starting/off/pending… = amber, anything else = red.
 list, table and status also take empty (text shown when there are no items).`;
+
+const CHART_DOC = `Sparkline chart spec (all keys except series/reference are optional):
+{type (area|line|bar, default area for every series), color (legacy single-series colour), height (12-400, default 40), legend (default true when more than one series), showTooltip, yDomain ([min,max] or "auto"), y {format: number|currency|percent|bytes, ticks: 0-10, currency: symbol (default €)}, x {labels: string[], format}, series: [{key (1-64 chars), label (≤40), color, type, dashed, fillOpacity (0-1, area default 0.35), stack (≤24)}] (1-6), reference: [{value, label, color, dashed}] (0-4)}.
+Colours default to var(--chart-1) through var(--chart-5), cycling by series index. A reference line defaults to var(--chart-4) and dashed. Series keys index the mapped series data.
+Examples:
+- two curves, projection dashed: mapping {series:"series", labels:"labels"}, data {series:{actual:[1,4,7], projection:[2,5,9]}, labels:["Mon","Tue","Wed"]}, chart {type:"line", x:{labels:["Mon","Tue","Wed"]}, series:[{key:"actual",label:"Actual",color:"var(--chart-1)"},{key:"projection",label:"Projection",color:"var(--chart-2)",dashed:true}]}
+- stacked bars: mapping {series:"series"}, data {series:{used:[2,3],free:[5,4]}}, chart {type:"bar", series:[{key:"used",label:"Used",stack:"cost"},{key:"free",label:"Free",stack:"cost"}]}
+- threshold line: mapping {series:"spend"}, data {spend:[12,18,31]}, chart {type:"area", y:{format:"currency",ticks:4}, reference:[{value:25,label:"Budget",color:"var(--chart-4)"}]}`;
 
 const MAPPING_DOC = `Mapping values are path expressions into the source data: "a.b", "servers[].name" (one value per element), "items[0]", "items[-1]", "$" for the whole value, "list.length". A value starting with "=" is a literal: "label": "=servers".`;
 
@@ -61,6 +75,8 @@ export function createDashboardTools(dashboard: DashboardManager): ToolRegistrat
 ${SOURCE_DOC}
 
 ${KINDS_DOC}
+
+${CHART_DOC}
 
 ${MAPPING_DOC}`,
       parameters: Type.Object({
@@ -110,31 +126,130 @@ ${MAPPING_DOC}`,
         chart: Type.Optional(
           Type.Object(
             {
-              type: Type.Union(
-                CHART_TYPES.map((type) => Type.Literal(type)),
-                { description: "Sparkline drawing: area, line or bar." },
+              type: Type.Optional(
+                Type.Union(
+                  CHART_TYPES.map((type) => Type.Literal(type)),
+                  { description: "Default series type: area, line or bar. Default area." },
+                ),
               ),
               color: Type.Optional(
                 Type.String({
-                  description: "CSS color, usually a var(--chart-1…5) token. Default --chart-1.",
+                  description:
+                    "Legacy single-series colour; series[i].color wins. Usually var(--chart-1…5).",
                 }),
               ),
               height: Type.Optional(
                 Type.Number({ description: "Chart height in pixels, 12-400. Default 40." }),
               ),
-              yDomain: Type.Optional(
-                Type.Union([
-                  Type.Array(Type.Number(), {
-                    minItems: 2,
-                    maxItems: 2,
-                    description: "Two numbers: [min, max].",
-                  }),
-                  Type.Literal("auto"),
-                ], {
-                  // A tuple schema (`items: [A, B]`) is rejected by the model provider, so the
-                  // pair is described as a two-element array of numbers instead.
-                  description: 'Fixed y-axis range as [min, max], or "auto".',
+              legend: Type.Optional(
+                Type.Boolean({
+                  description: "Show a legend. Default true when there is more than one series.",
                 }),
+              ),
+              yDomain: Type.Optional(
+                Type.Union(
+                  [
+                    Type.Array(Type.Number(), {
+                      minItems: 2,
+                      maxItems: 2,
+                      description: "Two numbers: [min, max].",
+                    }),
+                    Type.Literal("auto"),
+                  ],
+                  {
+                    // A tuple schema (`items: [A, B]`) is rejected by the model provider, so the
+                    // pair is described as a two-element array of numbers instead.
+                    description: 'Fixed y-axis range as [min, max], or "auto".',
+                  },
+                ),
+              ),
+              y: Type.Optional(
+                Type.Object(
+                  {
+                    format: Type.Optional(
+                      Type.Union(
+                        CHART_FORMATS.map((format) => Type.Literal(format)),
+                        { description: "number, currency, percent or bytes." },
+                      ),
+                    ),
+                    ticks: Type.Optional(
+                      Type.Number({
+                        minimum: 0,
+                        maximum: 10,
+                        description: "Show the y axis with this many ticks.",
+                      }),
+                    ),
+                    currency: Type.Optional(
+                      Type.String({
+                        description: "Currency symbol for format currency. Default €.",
+                      }),
+                    ),
+                  },
+                  { description: "Y-axis formatting and ticks." },
+                ),
+              ),
+              x: Type.Optional(
+                Type.Object(
+                  {
+                    labels: Type.Optional(
+                      Type.Array(Type.String(), {
+                        description: "X tick labels, index-aligned with the points.",
+                      }),
+                    ),
+                    format: Type.Optional(
+                      Type.String({ description: "Optional x label format name." }),
+                    ),
+                  },
+                  { description: "X-axis labels." },
+                ),
+              ),
+              series: Type.Optional(
+                Type.Array(
+                  Type.Object({
+                    key: Type.String({ description: "Key in the mapped series data." }),
+                    label: Type.Optional(
+                      Type.String({ description: "Legend and tooltip name; defaults to key." }),
+                    ),
+                    color: Type.Optional(
+                      Type.String({ description: "CSS color or var(--chart-N)." }),
+                    ),
+                    type: Type.Optional(
+                      Type.Union(
+                        CHART_TYPES.map((type) => Type.Literal(type)),
+                        { description: "This series' type; defaults to chart.type." },
+                      ),
+                    ),
+                    dashed: Type.Optional(
+                      Type.Boolean({ description: "Draw this series dashed." }),
+                    ),
+                    fillOpacity: Type.Optional(
+                      Type.Number({
+                        minimum: 0,
+                        maximum: 1,
+                        description: "Area fill opacity, 0-1. Default 0.35.",
+                      }),
+                    ),
+                    stack: Type.Optional(
+                      Type.String({ description: "Equal stack ids stack together." }),
+                    ),
+                  }),
+                  { minItems: 1, maxItems: 6, description: "One to six series." },
+                ),
+              ),
+              reference: Type.Optional(
+                Type.Array(
+                  Type.Object({
+                    value: Type.Number({ description: "Y value of the line." }),
+                    label: Type.Optional(Type.String({ description: "Text beside the line." })),
+                    color: Type.Optional(
+                      Type.String({ description: "CSS color. Default var(--chart-4)." }),
+                    ),
+                    dashed: Type.Optional(
+                      Type.Boolean({ description: "Draw dashed. Default true." }),
+                    ),
+                  }),
+                  { minItems: 0, maxItems: 4, description: "Zero to four reference lines." },
+                ),
               ),
               showTooltip: Type.Optional(
                 Type.Boolean({ description: "Show a tooltip on hover. Default false." }),

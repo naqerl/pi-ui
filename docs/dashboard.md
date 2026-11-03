@@ -81,16 +81,18 @@ value. A value starting with `=` is a literal: `"label": "=servers"`. A path
 that matches nothing is an error, with a sample of the data, so a typo shows up
 in `dashboard_upsert`.
 
-| Kind        | Fields (* required)                                                                                                                                           |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `stat`      | `value`*, `label`, `delta` (number or `+3`, draws a trend arrow), `unit`, `progress` (0 to 100 meter)                                                         |
-| `list`      | `items`* (array), `key`, `label`, `value` (relative to each item), `empty`                                                                                    |
-| `table`     | `columns`* (`{"Header": "path"}`), `rows` (array; column paths are then relative to each row), `empty`                                                        |
-| `sparkline` | `value` (a number; its history is drawn) or `series` (array of numbers), `label`; optional `chart` below                                                      |
-| `markdown`  | `text`* (raw HTML shows as text)                                                                                                                              |
-| `status`    | `items` with `label`, `state`, `detail`, `key`; or one `state`* and `label`. `ok`/`running`/`up` are green, `warn`/`off`/`starting` amber, anything else red. |
+| Kind        | Fields (* required)                                                                                                                                                                                                           |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stat`      | `value`*, `label`, `delta` (number or `+3`, draws a trend arrow), `unit`, `progress` (0 to 100 meter)                                                                                                                         |
+| `list`      | `items`* (array), `key`, `label`, `value` (relative to each item), `empty`                                                                                                                                                    |
+| `table`     | `columns`* (`{"Header": "path"}`), `rows` (array; column paths are then relative to each row), `empty`                                                                                                                        |
+| `sparkline` | `value` (a number; its history is drawn) or `series` (a number array, an object of named number arrays, or `[{key, label?, points: (number \| null)[]}]`), `labels` (optional x tick labels), `label`; optional `chart` below |
+| `markdown`  | `text`* (raw HTML shows as text)                                                                                                                                                                                              |
+| `status`    | `items` with `label`, `state`, `detail`, `key`; or one `state`* and `label`. `ok`/`running`/`up` are green, `warn`/`off`/`starting` amber, anything else red.                                                                 |
 
-A sparkline also takes an optional data-only `chart` block:
+A sparkline also takes an optional data-only `chart` block. The original
+five-key shape (`type`, `color`, `height`, `yDomain`, `showTooltip`) still works
+and becomes a one-series chart with the same rendering as before:
 
 ```json
 {
@@ -102,11 +104,151 @@ A sparkline also takes an optional data-only `chart` block:
 }
 ```
 
-`type` is `area` (the default), `line` or `bar`. `color` is a CSS color, normally
-one of the `--chart-1` … `--chart-5` theme tokens. `height` is 12–400 px (default
-40), `yDomain` is `"auto"`, a fixed `[min, max]`, or omitted, and `showTooltip`
-defaults to `false`. Unknown keys are rejected. The chart block only changes how
-the mapped numbers are drawn; it cannot supply HTML, scripts or expressions.
+The general shape is:
+
+```json
+{
+  "type": "area",
+  "color": "var(--chart-1)",
+  "height": 120,
+  "legend": true,
+  "showTooltip": true,
+  "yDomain": [0, 250],
+  "y": { "format": "currency", "ticks": 4, "currency": "€" },
+  "x": { "labels": ["Mon", "Tue", "Wed", "Thu"] },
+  "series": [
+    {
+      "key": "actual",
+      "label": "Actual",
+      "color": "var(--chart-1)",
+      "type": "line",
+      "dashed": false
+    }
+  ],
+  "reference": [{ "value": 200, "label": "Budget", "color": "var(--chart-4)", "dashed": true }]
+}
+```
+
+- `type` is `area` (default), `line` or `bar` and is the default for every
+  series. `color` is the legacy single-series colour; `series[i].color` wins.
+  Colours default to `var(--chart-1)` … `var(--chart-5)` cycling by series
+  index.
+- `height` is 12–400 px (default 40). `legend` defaults to true when there is
+  more than one series. `yDomain` is `"auto"`, a fixed `[min, max]`, or omitted.
+- `y.format` is `number`, `currency` (whole units, default symbol `€`),
+  `percent` (`NN%`) or `bytes` (`1.2 MB`); `y.ticks` (0–10) shows the y axis
+  with that many formatted ticks. Without `y.ticks` the y axis stays hidden.
+- `x.labels` are tick labels aligned with the points; without them the x axis
+  stays hidden. Labels beyond the longest series are dropped, and a shorter
+  series simply has a gap there.
+- `series` has 1–6 entries. `key` indexes the mapped series data, `label`
+  defaults to the key, `dashed` draws a dashed line, `fillOpacity` (0–1,
+  default 0.35) applies to areas, and equal `stack` ids stack together.
+- `reference` has 0–4 horizontal lines. Each is drawn at `y={value}`, defaults
+  to `var(--chart-4)` and dashed.
+- Unknown keys are rejected. The chart block only changes how the mapped
+  numbers are drawn; it cannot supply HTML, scripts or expressions.
+
+### Series data shapes
+
+The sparkline mapping reads any of these:
+
+```json
+{ "series": [12, 18, 14, 25] }
+```
+
+```json
+{ "series": { "actual": [12, 18, 14], "projection": [16, 22, 27] } }
+```
+
+```json
+{
+  "series": [
+    { "key": "actual", "label": "Actual", "points": [12, 18, null, 25] },
+    { "key": "projection", "points": [16, 22, 27, 30] }
+  ],
+  "labels": ["Mon", "Tue", "Wed", "Thu"]
+}
+```
+
+`null` draws a gap. Use mapping `{ "series": "series", "labels": "labels" }`
+to pass the named shapes through; the legacy `{ "series": "values" }` number
+array keeps working.
+
+### Worked examples
+
+Two curves with a dashed month-end projection:
+
+```json
+{
+  "id": "spend-by-day",
+  "title": "Spend by day",
+  "kind": "sparkline",
+  "source": { "type": "static" },
+  "mapping": { "series": "series", "labels": "labels" },
+  "chart": {
+    "height": 160,
+    "showTooltip": true,
+    "y": { "format": "currency", "ticks": 4 },
+    "series": [
+      { "key": "actual", "label": "Actual", "color": "var(--chart-1)", "type": "line" },
+      {
+        "key": "projection",
+        "label": "Projection",
+        "color": "var(--chart-2)",
+        "type": "line",
+        "dashed": true
+      }
+    ]
+  }
+}
+```
+
+Pushed data for it:
+
+```json
+{
+  "series": { "actual": [40, 72, 91, 128], "projection": [48, 80, 120, 174] },
+  "labels": ["1", "8", "15", "22"]
+}
+```
+
+Stacked bars:
+
+```json
+{
+  "id": "spend-stack",
+  "title": "Spend by kind",
+  "kind": "sparkline",
+  "source": { "type": "static" },
+  "mapping": { "series": "series" },
+  "chart": {
+    "type": "bar",
+    "y": { "format": "currency", "ticks": 3 },
+    "series": [
+      { "key": "servers", "label": "Servers", "stack": "cost" },
+      { "key": "volumes", "label": "Volumes", "stack": "cost" }
+    ]
+  }
+}
+```
+
+A reference line:
+
+```json
+{
+  "id": "spend-threshold",
+  "title": "Spend against budget",
+  "kind": "sparkline",
+  "source": { "type": "static" },
+  "mapping": { "series": "spend" },
+  "chart": {
+    "type": "area",
+    "y": { "format": "currency", "ticks": 4 },
+    "reference": [{ "value": 120, "label": "Budget", "color": "var(--chart-4)" }]
+  }
+}
+```
 
 ## Example: live ExampleCloud servers
 
