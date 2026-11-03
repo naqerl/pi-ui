@@ -1,5 +1,6 @@
 import {
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
   useCallback,
@@ -437,7 +438,7 @@ function WidgetSparkline({
 }) {
   const chartId = useId().replace(/:/g, "");
   const chartRef = useRef<HTMLDivElement | null>(null);
-  const pressRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
+  const pressRef = useRef<{ x: number; y: number } | null>(null);
   const [pinned, setPinned] = useState<number | null>(null);
   const series = resolveSeries(view, chart);
   const longest = series.length === 0 ? 0 : Math.max(...series.map((item) => item.points.length));
@@ -695,14 +696,16 @@ function WidgetSparkline({
     const index = pinIndexAt(clientX);
     setPinned((current) => (current === index ? null : index));
   };
+  // The dashboard's drag capture listener stops pointerdown at the page root,
+  // so the capture phase is the only place a chart press is visible to us.
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.pointerType === "mouse" && event.button !== 0) return;
-    pressRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+    pressRef.current = { x: event.clientX, y: event.clientY };
   };
-  const onPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+  const onClick = (event: ReactMouseEvent<HTMLDivElement>) => {
     const start = pressRef.current;
     pressRef.current = null;
-    if (start === null || start.pointerId !== event.pointerId) return;
+    if (start === null) return;
     if (Math.hypot(event.clientX - start.x, event.clientY - start.y) >= 6) return;
     pinAt(event.clientX);
   };
@@ -733,8 +736,8 @@ function WidgetSparkline({
         tabIndex={0}
         aria-label={plotLabel}
         data-chart-widget={id}
-        onPointerDown={onPointerDown}
-        onPointerUp={onPointerUp}
+        onPointerDownCapture={onPointerDown}
+        onClick={onClick}
         onPointerCancel={() => {
           pressRef.current = null;
         }}

@@ -104,47 +104,27 @@ function readPin(
   }, id);
 }
 
-function pointerAt(
-  browser: {
-    evaluate<T>(
-      fn: (input: { id: string; ratio: number; pointerType: string }) => T,
-      input: { id: string; ratio: number; pointerType: string },
-    ): Promise<T>;
-  },
+type ChartLocator = {
+  scrollIntoView(): Promise<void>;
+  boundingBox(): Promise<{ x: number; y: number; width: number; height: number } | null>;
+  click(options: { position: { x: number; y: number } }): Promise<void>;
+  tap(options: { position: { x: number; y: number } }): Promise<void>;
+};
+
+async function clickChart(
+  browser: { locator(selector: string): ChartLocator },
   id: string,
   ratio: number,
-  pointerType = "touch",
+  pointerType: "mouse" | "touch" = "touch",
 ) {
-  return browser.evaluate(
-    ({ id: widgetId, ratio: where, pointerType: kind }) => {
-      const chart = document.querySelector<HTMLElement>(`[data-chart-widget="${widgetId}"]`);
-      if (chart === null) throw new Error("missing chart");
-      chart.scrollIntoView({ block: "center" });
-      const box = chart.getBoundingClientRect();
-      const x = box.left + box.width * where;
-      const y = box.top + box.height / 2;
-      const fire = (type: string, buttons: number) => {
-        chart.dispatchEvent(
-          new PointerEvent(type, {
-            bubbles: true,
-            cancelable: true,
-            composed: true,
-            pointerId: 41,
-            pointerType: kind,
-            isPrimary: true,
-            clientX: x,
-            clientY: y,
-            button: 0,
-            buttons,
-          }),
-        );
-      };
-      fire("pointerdown", 1);
-      fire("pointerup", 0);
-      return { x, y };
-    },
-    { id, ratio, pointerType },
-  );
+  const chart = browser.locator(`[data-chart-widget="${id}"]`);
+  await chart.scrollIntoView();
+  const box = await chart.boundingBox();
+  if (box === null) throw new Error("missing chart");
+  // Click the center of the row rather than the boundary between two rows.
+  const position = { x: box.width * ratio, y: box.height / 2 };
+  if (pointerType === "mouse") await chart.click({ position });
+  else await chart.tap({ position });
 }
 
 /** Drives the page's hold-to-drag pointer shim with the same synthetic events a touch or mouse test uses. */
@@ -864,7 +844,7 @@ test("clicking a chart pins its row, a second click or Escape clears it, and a d
       )
       .toContain("Value");
 
-    await pointerAt(browser, "pin-chart", 0.5, "mouse");
+    await clickChart(browser, "pin-chart", 4 / 7, "mouse");
     await expect
       .poll(() => readPin(browser, "pin-chart"))
       .toEqual({
@@ -875,45 +855,28 @@ test("clicking a chart pins its row, a second click or Escape clears it, and a d
         status: "4\nValue: €50",
       });
 
-    await pointerAt(browser, "pin-chart", 0.5, "mouse");
+    await clickChart(browser, "pin-chart", 4 / 7, "mouse");
     await expect
       .poll(() => readPin(browser, "pin-chart"))
       .toEqual({ height: 160, line: false, dots: 0, caption: null, status: "" });
 
-    await pointerAt(browser, "pin-chart", 0.5, "mouse");
+    await clickChart(browser, "pin-chart", 4 / 7, "mouse");
     await expect.poll(() => readPin(browser, "pin-chart").then((state) => state.line)).toBe(true);
     await browser.keyboard.press("Escape");
     await expect.poll(() => readPin(browser, "pin-chart").then((state) => state.line)).toBe(false);
 
-    await browser.evaluate(() => {
-      const chart = document.querySelector<HTMLElement>('[data-chart-widget="pin-chart"]');
-      if (chart === null) throw new Error("missing chart");
-      const box = chart.getBoundingClientRect();
-      const y = box.top + box.height / 2;
-      const x0 = box.left + box.width * 0.25;
-      const x1 = box.left + box.width * 0.75;
-      const fire = (type: string, x: number, buttons: number) => {
-        chart.dispatchEvent(
-          new PointerEvent(type, {
-            bubbles: true,
-            cancelable: true,
-            composed: true,
-            pointerId: 42,
-            pointerType: "touch",
-            isPrimary: true,
-            clientX: x,
-            clientY: y,
-            button: 0,
-            buttons,
-          }),
-        );
-      };
-      fire("pointerdown", x0, 1);
-      fire("pointermove", x0 + 30, 1);
-      fire("pointermove", x1, 1);
-      fire("pointerup", x1, 0);
-      return true;
-    });
+    const dragChart = browser.locator('[data-chart-widget="pin-chart"]');
+    await dragChart.scrollIntoView();
+    const box = await dragChart.boundingBox();
+    if (box === null) throw new Error("missing chart");
+    const y = box.y + box.height / 2;
+    const x0 = box.x + box.width * 0.25;
+    const x1 = box.x + box.width * 0.75;
+    await browser.mouse.move(x0, y);
+    await browser.mouse.down();
+    await browser.mouse.move(x0 + 30, y);
+    await browser.mouse.move(x1, y);
+    await browser.mouse.up();
     await expect.poll(() => readPin(browser, "pin-chart").then((state) => state.line)).toBe(false);
   } finally {
     await callDashboard(browser, [{ name: "dashboard_remove", arguments: { id: "pin-chart" } }]);
@@ -938,7 +901,7 @@ test("a tap on a phone viewport pins the same row without a hover", async ({
     });
     await waitForChart(browser, "pin-touch");
 
-    await pointerAt(browser, "pin-touch", 0.5);
+    await clickChart(browser, "pin-touch", 4 / 7);
     await expect
       .poll(() => readPin(browser, "pin-touch"))
       .toEqual({
@@ -950,7 +913,7 @@ test("a tap on a phone viewport pins the same row without a hover", async ({
       });
     expect((await readPin(browser, "pin-touch")).height).toBeGreaterThanOrEqual(24);
 
-    await pointerAt(browser, "pin-touch", 0.5);
+    await clickChart(browser, "pin-touch", 4 / 7);
     await expect.poll(() => readPin(browser, "pin-touch").then((state) => state.line)).toBe(false);
   } finally {
     await callDashboard(browser, [{ name: "dashboard_remove", arguments: { id: "pin-touch" } }]);
