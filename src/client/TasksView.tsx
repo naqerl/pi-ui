@@ -155,6 +155,7 @@ function Heading({
       )}
     >
       <span className="min-w-0 flex-1 truncate">{children}</span>
+      {chevron}
       {count !== undefined && (
         <span
           className={cn(
@@ -165,7 +166,6 @@ function Heading({
           {count}
         </span>
       )}
-      {chevron}
     </h2>
   );
 }
@@ -201,6 +201,7 @@ function Section({
           )}
         >
           <span className="min-w-0 flex-1 truncate">{title}</span>
+          <Chevron open={open} className={dark ? "text-background/80" : undefined} />
           {count !== undefined && (
             <span
               className={cn(
@@ -211,7 +212,6 @@ function Section({
               {count}
             </span>
           )}
-          <Chevron open={open} className={dark ? "text-background/80" : undefined} />
         </CollapsibleTrigger>
         <CollapsibleContent className={`${TASK_STACK} pt-2`}>{children}</CollapsibleContent>
       </Collapsible>
@@ -680,8 +680,8 @@ function Group({
           </>
         ) : (
           <>
-            <Badge variant="secondary">{count}</Badge>
             <Chevron open={open} />
+            <Badge variant="secondary">{count}</Badge>
           </>
         )}
       </CollapsibleTrigger>
