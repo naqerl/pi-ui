@@ -20,16 +20,28 @@ ENV NODE_ENV=production \
     PORT=8787
 
 # Only what pi's bash tool needs to be useful. No compilers, Python, or package managers.
+# gnupg + age + sops so secrets can be decrypted on the fly (SOPS files in the
+# gitops repo are PGP-encrypted; the private key arrives as a file mount, never baked in).
 # openssh-client (ssh, scp, sftp, ssh-keygen, ssh-keyscan) lets the agent reach other
 # machines. The identity itself is not baked in: it arrives as one read-only file mount.
+
+ARG SOPS_VERSION=3.10.2
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        age \
         ca-certificates \
         curl \
         git \
+        gnupg \
         openssh-client \
         procps \
         ripgrep \
+    && curl -fsSL --retry 3 \
+        "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64" \
+        -o /usr/local/bin/sops \
+    && chmod 0755 /usr/local/bin/sops \
+    && sops --version \
     && rm -rf /var/lib/apt/lists/*
 
 # The node image already ships a uid 1000 "node" account; replace it with "pi".

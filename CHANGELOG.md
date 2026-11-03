@@ -1,3 +1,7 @@
+## 1.6.65 - 2026-11-03
+
+- chore(image): ship `gnupg`, `age` and the `sops` binary in the runtime image so the agent can decrypt SOPS-encrypted secrets; no key material is baked in.
+
 ## 1.6.64 - 2026-11-03
 
 - feat(dashboard): a general chart spec — multiple series with their own colour, type and dash style, x labels, a formatted y axis, a legend and reference lines; the old five-key sparkline input still renders (kab7).
