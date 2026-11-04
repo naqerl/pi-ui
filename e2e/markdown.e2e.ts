@@ -458,11 +458,81 @@ const taskChipSnapshot = {
   },
 };
 
-async function openTaskChip(browser: Browser) {
-  await browser.setViewport({ width: 1280, height: 800 });
+async function openTaskChip(
+  browser: Browser,
+  viewport: { width: number; height: number } = { width: 1280, height: 800 },
+) {
+  await browser.setViewport(viewport);
   await browser.route("**/api/state**", async (route) => {
     await route.fulfill({ json: JSON.parse(JSON.stringify(taskChipSnapshot)) });
   });
+}
+
+type ChipPoint = { x: number; y: number };
+
+async function chipCenter(browser: Browser): Promise<ChipPoint | null> {
+  return browser.evaluate(() => {
+    const chip = document.querySelector<HTMLElement>("main [data-task-chip]");
+    if (chip === null) return null;
+    chip.scrollIntoView({ block: "center" });
+    const box = chip.getBoundingClientRect();
+    return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+  });
+}
+
+async function touchChip(
+  browser: Browser,
+  point: ChipPoint,
+  options: { holdMs: number; moveX?: number; click: boolean },
+) {
+  return browser.evaluate(
+    async ({ x, y, holdMs, moveX, click }) => {
+      const chip = document.querySelector<HTMLElement>("main [data-task-chip]");
+      if (chip === null) return false;
+      const fire = (type: string, clientX: number) => {
+        chip.dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            pointerId: 13,
+            pointerType: "touch",
+            isPrimary: true,
+            clientX,
+            clientY: y,
+            button: 0,
+            buttons: type === "pointerup" ? 0 : 1,
+          }),
+        );
+      };
+      fire("pointerdown", x);
+      await new Promise<void>((resolve) => {
+        window.setTimeout(resolve, holdMs);
+      });
+      if (moveX !== 0) fire("pointermove", x + moveX);
+      fire("pointerup", x + moveX);
+      if (click) chip.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      return true;
+    },
+    {
+      x: point.x,
+      y: point.y,
+      holdMs: options.holdMs,
+      moveX: options.moveX ?? 0,
+      click: options.click,
+    },
+  );
+}
+
+async function clickChip(browser: Browser, point: ChipPoint) {
+  return browser.evaluate(({ x, y }) => {
+    const chip = document.querySelector<HTMLElement>("main [data-task-chip]");
+    if (chip === null) return false;
+    chip.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true, clientX: x, clientY: y }),
+    );
+    return true;
+  }, point);
 }
 
 test("previews a task id on hover and opens that task on click", async ({
@@ -489,6 +559,66 @@ test("previews a task id on hover and opens that task on click", async ({
   const detail = screen.getByTestId("task-detail");
   await expect(detail).toHaveAttribute("aria-label", "Ship the chip");
   await expect(detail.getByTestId("task-detail-id")).toHaveText("abc1");
+});
+
+test("opens a task on a quick touch tap on a phone", async ({ app, browser, screen }) => {
+  await openTaskChip(browser, { width: 390, height: 844 });
+  await app.open("/");
+  const chip = screen.getByTestId("task-chip-abc1");
+  await expect(chip).toBeVisible({ timeout: 15_000 });
+  const point = await chipCenter(browser);
+  expect(point).not.toBeNull();
+  if (point === null) return;
+
+  expect(await touchChip(browser, point, { holdMs: 40, click: true })).toBe(true);
+  await expect(browser.locator('[data-testid="pager"]')).toHaveAttribute("data-page", "tasks");
+  const detail = screen.getByTestId("task-detail");
+  await expect(detail).toHaveAttribute("aria-label", "Ship the chip");
+  await expect(detail.getByTestId("task-detail-id")).toHaveText("abc1");
+  await expect(screen.getByTestId("task-chip-preview")).toHaveCount(0);
+});
+
+test("previews a task on a touch hold without opening it", async ({ app, browser, screen }) => {
+  await openTaskChip(browser, { width: 390, height: 844 });
+  await app.open("/");
+  const chip = screen.getByTestId("task-chip-abc1");
+  await expect(chip).toBeVisible({ timeout: 15_000 });
+  const point = await chipCenter(browser);
+  expect(point).not.toBeNull();
+  if (point === null) return;
+
+  expect(await touchChip(browser, point, { holdMs: 600, click: false })).toBe(true);
+  const preview = screen.getByTestId("task-chip-preview");
+  await expect(preview).toBeVisible({ timeout: 2_000 });
+  await expect(preview.getByText("Ship the chip", { exact: true })).toBeVisible();
+  await expect(browser.locator('[data-testid="pager"]')).toHaveAttribute("data-page", "chat");
+  await expect(screen.getByTestId("task-detail")).toHaveCount(0);
+
+  // The click after the release dismisses the preview instead of opening the task.
+  expect(await clickChip(browser, point)).toBe(true);
+  await expect(screen.getByTestId("task-chip-preview")).toHaveCount(0);
+  await expect(browser.locator('[data-testid="pager"]')).toHaveAttribute("data-page", "chat");
+});
+
+test("cancels a touch hold when the finger moves", async ({ app, browser, screen }) => {
+  await openTaskChip(browser, { width: 390, height: 844 });
+  await app.open("/");
+  const chip = screen.getByTestId("task-chip-abc1");
+  await expect(chip).toBeVisible({ timeout: 15_000 });
+  const point = await chipCenter(browser);
+  expect(point).not.toBeNull();
+  if (point === null) return;
+
+  expect(await touchChip(browser, point, { holdMs: 100, moveX: 40, click: true })).toBe(true);
+  await browser.evaluate(
+    () =>
+      new Promise<boolean>((resolve) => {
+        window.setTimeout(() => resolve(true), 500);
+      }),
+  );
+  await expect(screen.getByTestId("task-chip-preview")).toHaveCount(0);
+  await expect(browser.locator('[data-testid="pager"]')).toHaveAttribute("data-page", "chat");
+  await expect(screen.getByTestId("task-detail")).toHaveCount(0);
 });
 
 test("leaves ordinary codespans and fenced code alone", async ({ app, browser, screen }) => {
