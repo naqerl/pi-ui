@@ -31,10 +31,9 @@ const EXTRA_DEFAULT_IDS = [
   "hetzner-cost",
   "go-usage",
   "bg-jobs",
-  "task-reopens",
 ];
 
-/** This file's older grid assertions use the four-widget Session board. */
+/** This file's older grid assertions use the five-widget Session board. */
 type GridBrowser = {
   evaluate<T>(fn: (ids: string[]) => Promise<T> | T, ids: string[]): Promise<T>;
   evaluate<T>(fn: () => Promise<T> | T): Promise<T>;
@@ -61,6 +60,7 @@ async function resetMinimalDashboard(browser: GridBrowser) {
               { id: "tokens", span: "full" },
               { id: "mcp", span: "full" },
               { id: "mcp-events", span: "full" },
+              { id: "task-reopens", span: "full" },
             ],
           },
         ],
@@ -72,7 +72,7 @@ async function resetMinimalDashboard(browser: GridBrowser) {
   await expect.poll(async () => (await readDashboard(browser)).layout.sections.length).toBe(1);
   await expect
     .poll(async () => (await readDashboard(browser)).widgets.map((widget) => widget.id))
-    .toEqual(["context", "tokens", "mcp", "mcp-events"]);
+    .toEqual(["context", "tokens", "mcp", "mcp-events", "task-reopens"]);
 }
 
 /** Drives the page's hold-to-drag pointer shim with the same synthetic events a touch or mouse test uses. */
