@@ -1,3 +1,7 @@
+## 1.6.95 - 2026-11-04
+
+- fix(pager): a swipe that starts on a widget card now changes the page for good. 1.6.93 made cards stop claiming the gesture, but the rule underneath still handed **every leftward touch** to any horizontally scrollable element without asking whether it could still scroll — at its right edge it could not, so the gesture was dropped and swipes worked only on empty background. The hand-off is now edge-aware per direction (`scrollLeft + clientWidth < scrollWidth - 1` leftward, `scrollLeft > 0` rightward), `data-hscroll` surfaces still always own their gesture, and a sub-pixel overflow no longer turns a card into a gesture sink (km8w).
+
 ## 1.6.94 - 2026-11-04
 
 - fix(tasks): a single tap on a task card opens its details on a phone. The menu-scoped click suppression now remembers which pointer sequence it belongs to and expires, a plain tap no longer cancels its own click, and the detail survives the history state it pushed itself (ye5r).
