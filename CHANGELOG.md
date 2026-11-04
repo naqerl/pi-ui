@@ -1,3 +1,7 @@
+## 1.6.90 - 2026-11-04
+
+- feat(chat): a press-and-hold on a task chip shows its preview on a touch screen and the release no longer opens the task, while a quick tap still opens it and a moving finger cancels (ihtn).
+
 ## 1.6.89 - 2026-11-04
 
 - test(tasks): poll for the create request the optimistic task card precedes, instead of reading the route counter once and racing the fetch on a loaded runner.
