@@ -1,3 +1,7 @@
+## 1.6.89 - 2026-11-04
+
+- test(tasks): poll for the create request the optimistic task card precedes, instead of reading the route counter once and racing the fetch on a loaded runner.
+
 ## 1.6.88 - 2026-11-04
 
 - fix(dashboard): the grid specs seed the five-widget board they patch, so the layout endpoint no longer rejects a widget the reset had just tombstoned (69rjb).
