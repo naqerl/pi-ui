@@ -389,6 +389,7 @@ test("the default dashboard is the old stats page as builtin widgets", () => {
       ["tokens", "list", { type: "builtin", name: "tokens" }],
       ["mcp", "status", { type: "builtin", name: "mcp" }],
       ["mcp-events", "list", { type: "builtin", name: "mcp_events" }],
+      ["task-reopens", "list", { type: "builtin", name: "task_reopens" }],
     ],
   );
   assert.equal(config.seeded, DASHBOARD_SEED);
@@ -609,6 +610,12 @@ test("an older dashboard.json gets the MCP events widget once", async () => {
     first.layout().sections[0]?.widgets.map((slot) => slot.id),
     ["mcp", "mcp-events"],
   );
+  assert.ok(
+    first
+      .layout()
+      .sections.at(-1)
+      ?.widgets.some((slot) => slot.id === "task-reopens"),
+  );
   const saved = JSON.parse(await readFile(join(dir, "dashboard.json"), "utf8"));
   assert.equal(saved.seeded, DASHBOARD_SEED);
   assert.ok(saved.widgets.some((item: { id: string }) => item.id === "mcp-events"));
@@ -824,7 +831,7 @@ test("upsert, push, layout and remove validate and persist", async () => {
   dashboard.setHost(host);
   assert.deepEqual(
     dashboard.widgets().map((item) => item.id),
-    ["context", "tokens", "mcp", "mcp-events"],
+    ["context", "tokens", "mcp", "mcp-events", "task-reopens"],
   );
   await assert.rejects(
     dashboard.upsert({
@@ -865,7 +872,7 @@ test("upsert, push, layout and remove validate and persist", async () => {
   });
   assert.deepEqual(
     layout.layout.sections.at(-1)?.widgets.map((slot) => slot.id),
-    ["mcp", "mcp-events"],
+    ["mcp", "mcp-events", "task-reopens"],
   );
   assert.ok(layout.notes.some((note) => /mcp/.test(note)));
   await dashboard.remove("tokens");
@@ -883,7 +890,7 @@ test("upsert, push, layout and remove validate and persist", async () => {
       ]),
     [
       ["Money", ["cost:half", "context:half"]],
-      [undefined, ["mcp:full", "mcp-events:full"]],
+      [undefined, ["mcp:full", "mcp-events:full", "task-reopens:full"]],
     ],
   );
   const state = again.state();
@@ -1002,7 +1009,7 @@ test("the tools return the first render so the agent can iterate", async () => {
   const got = JSON.parse((await call("dashboard_get", {})).text);
   assert.deepEqual(
     got.widgets.map((item: { id: string }) => item.id),
-    ["context", "tokens", "mcp", "mcp-events", "servers"],
+    ["context", "tokens", "mcp", "mcp-events", "task-reopens", "servers"],
   );
   assert.equal((await call("dashboard_remove", { id: "ghost" })).isError, true);
   dashboard.dispose();

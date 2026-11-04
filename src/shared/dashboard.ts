@@ -3,7 +3,13 @@
  * source data into a widget's view, token masking, and the builtin sources.
  * Shared by the server (poll and static widgets) and the client (builtins).
  */
-import type { ContextUsage, McpEventsState, McpStatus, UsageSummary } from "./types.js";
+import type {
+  ContextUsage,
+  McpEventsState,
+  McpStatus,
+  TaskReopenStats,
+  UsageSummary,
+} from "./types.js";
 
 export const WIDGET_KINDS = ["stat", "list", "table", "sparkline", "markdown", "status"] as const;
 export type WidgetKind = (typeof WIDGET_KINDS)[number];
@@ -16,6 +22,7 @@ export const BUILTIN_SOURCES = [
   "mcp_events",
   "jobs",
   "session",
+  "task_reopens",
 ] as const;
 export type BuiltinName = (typeof BUILTIN_SOURCES)[number];
 
@@ -254,7 +261,11 @@ export interface DashboardState {
   widgets: Widget[];
   layout: DashboardLayout;
   values: Record<string, WidgetValue>;
-  builtins: { jobs: BuiltinJob[]; session: BuiltinSession };
+  builtins: {
+    jobs: BuiltinJob[];
+    session: BuiltinSession;
+    taskReopens?: TaskReopenStats;
+  };
   /** True while some client has the dashboard open, so polls run. */
   polling: boolean;
 }
@@ -792,6 +803,7 @@ export interface BuiltinInputs {
   mcpEvents: McpEventsState;
   jobs: BuiltinJob[];
   session: BuiltinSession;
+  taskReopens?: TaskReopenStats;
 }
 
 /** Client-only display hooks; the server deliberately leaves these values untouched. */
@@ -1084,6 +1096,42 @@ export function builtinData(
         })),
       };
     }
+    case "task_reopens": {
+      const summary = inputs.taskReopens ?? {
+        totalReopenedTasks: 0,
+        totalReopens: 0,
+        reopensThisWeek: 0,
+        projects: [],
+      };
+      const projects = summary.projects.map((item) => ({
+        key: item.project ?? "none",
+        project: item.project ?? "No project",
+        label: item.project ?? "No project",
+        reopenedTasks: item.reopenedTasks,
+        reopens: item.reopens,
+        reopensThisWeek: item.reopensThisWeek,
+        value: `${item.reopenedTasks} task${item.reopenedTasks === 1 ? "" : "s"} · ${item.reopensThisWeek} this week`,
+      }));
+      return {
+        totalReopenedTasks: summary.totalReopenedTasks,
+        totalReopened: summary.totalReopenedTasks,
+        totalReopens: summary.totalReopens,
+        reopensThisWeek: summary.reopensThisWeek,
+        rows: [
+          {
+            key: "all",
+            project: "All projects",
+            label: "All projects",
+            reopenedTasks: summary.totalReopenedTasks,
+            reopens: summary.totalReopens,
+            reopensThisWeek: summary.reopensThisWeek,
+            value: `${summary.totalReopenedTasks} task${summary.totalReopenedTasks === 1 ? "" : "s"} · ${summary.reopensThisWeek} this week`,
+          },
+          ...projects,
+        ],
+        projects,
+      };
+    }
     case "session":
       return {
         ...inputs.session,
@@ -1098,7 +1146,7 @@ export function builtinData(
 
 /** The stats page as widgets: what a new dashboard starts with. */
 /** Bump when a default widget is added; see `upgradeDashboard`. */
-export const DASHBOARD_SEED = 2;
+export const DASHBOARD_SEED = 3;
 
 const MCP_EVENTS_WIDGET: Widget = {
   id: "mcp-events",
@@ -1111,6 +1159,20 @@ const MCP_EVENTS_WIDGET: Widget = {
     label: "label",
     value: "value",
     empty: "=no MCP events yet",
+  },
+};
+
+const TASK_REOPENS_WIDGET: Widget = {
+  id: "task-reopens",
+  title: "Task reopens",
+  kind: "list",
+  source: { type: "builtin", name: "task_reopens" },
+  mapping: {
+    items: "rows",
+    key: "key",
+    label: "label",
+    value: "value",
+    empty: "=no tasks reopened yet",
   },
 };
 
@@ -1148,6 +1210,7 @@ export function defaultDashboard(): DashboardConfig {
         },
       },
       MCP_EVENTS_WIDGET,
+      TASK_REOPENS_WIDGET,
     ],
     layout: {
       sections: [
@@ -1157,6 +1220,7 @@ export function defaultDashboard(): DashboardConfig {
             { id: "tokens", span: "full", x: 0, y: 4, w: 12, h: DEFAULT_WIDGET_ROWS },
             { id: "mcp", span: "full", x: 0, y: 8, w: 12, h: DEFAULT_WIDGET_ROWS },
             { id: "mcp-events", span: "full", x: 0, y: 12, w: 12, h: DEFAULT_WIDGET_ROWS },
+            { id: "task-reopens", span: "full", x: 0, y: 16, w: 12, h: DEFAULT_WIDGET_ROWS },
           ],
         },
       ],
@@ -1166,7 +1230,8 @@ export function defaultDashboard(): DashboardConfig {
 
 /**
  * Gives a dashboard seeded by an older pi-ui the defaults added since, once.
- * Seed 2 adds the MCP events list after the MCP widget. A widget the user or
+ * Seed 2 adds the MCP events list after the MCP widget; seed 3 adds the task
+ * reopen counts after it. A widget the user or
  * agent removed after its seed is not brought back, because `seeded` already
  * covers it. Coordinates are backfilled independently, so an already-current
  * dashboard from before the grid existed gains them too.
@@ -1189,6 +1254,25 @@ export function upgradeDashboard(config: DashboardConfig): boolean {
         } else {
           config.layout.sections.push({ widgets: [slot] });
         }
+      }
+    }
+    if (
+      config.seeded < 3 &&
+      !config.widgets.some((widget) => widget.id === TASK_REOPENS_WIDGET.id) &&
+      config.widgets.length < MAX_WIDGETS
+    ) {
+      config.widgets.push(structuredClone(TASK_REOPENS_WIDGET));
+      const slot = { id: TASK_REOPENS_WIDGET.id, span: "full" as const };
+      const home = config.layout.sections.find((section) =>
+        section.widgets.some((item) => item.id === "mcp-events"),
+      );
+      if (home !== undefined) {
+        const after = home.widgets.findIndex((item) => item.id === "mcp-events");
+        home.widgets.splice(after + 1, 0, slot);
+      } else if (config.layout.sections.length > 0) {
+        config.layout.sections[config.layout.sections.length - 1]?.widgets.push(slot);
+      } else {
+        config.layout.sections.push({ widgets: [slot] });
       }
     }
     config.seeded = DASHBOARD_SEED;

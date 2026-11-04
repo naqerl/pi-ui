@@ -8,9 +8,18 @@ import {
   descendantIds,
   hasOpenDescendant,
   isActiveStatus,
+  parseReopenReason,
   TASK_BODY_MAX_LENGTH,
 } from "../shared/tasks.js";
-import type { Task, TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
+import type {
+  Task,
+  TaskCompletion,
+  TaskLedger,
+  TaskReopen,
+  TaskReopenProjectStats,
+  TaskReopenStats,
+  TaskStatus,
+} from "../shared/types.js";
 import { clampPushText, MAX_BODY_CHARS, notify, type PushNotification } from "./push.js";
 
 const ALPHABET = "abcdefghijkmnopqrstuvwxyz23456789";
@@ -37,13 +46,36 @@ function readCompletion(value: unknown): TaskCompletion | null {
   return typeof evidence === "string" ? { evidence } : null;
 }
 
+function readReopens(value: unknown): TaskReopen[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value
+    .filter(
+      (item): item is TaskReopen =>
+        typeof item === "object" &&
+        item !== null &&
+        typeof (item as Record<string, unknown>).at === "string" &&
+        typeof (item as Record<string, unknown>).reason === "string" &&
+        ((item as Record<string, unknown>).by === "operator" ||
+          (item as Record<string, unknown>).by === "agent"),
+    )
+    .map((item) => ({ at: item.at, reason: item.reason, by: item.by }));
+}
+
 function cloneTask(task: Task): Task {
+  const reopens = readReopens(task.reopens);
   return {
     ...task,
     blockedBy: [...task.blockedBy],
     ...(task.attachments === undefined ? {} : { attachments: [...task.attachments] }),
     completedAt: typeof task.completedAt === "string" ? task.completedAt : null,
     completion: readCompletion(task.completion),
+    ...(reopens === undefined ? {} : { reopens }),
+    reopenedAt:
+      typeof task.reopenedAt === "string"
+        ? task.reopenedAt
+        : reopens === undefined || reopens.length === 0
+          ? null
+          : reopens[reopens.length - 1]?.at,
   };
 }
 
@@ -157,7 +189,12 @@ function isTask(value: unknown): value is Task {
       typeof task.completedAt === "string") &&
     (task.completion === undefined ||
       task.completion === null ||
-      readCompletion(task.completion) !== null)
+      readCompletion(task.completion) !== null) &&
+    (task.reopens === undefined ||
+      (Array.isArray(task.reopens) && readReopens(task.reopens)?.length === task.reopens.length)) &&
+    (task.reopenedAt === undefined ||
+      task.reopenedAt === null ||
+      typeof task.reopenedAt === "string")
   );
 }
 
@@ -167,9 +204,17 @@ function sanitize(tasks: Task[]): Task[] {
     const proposed = task.status === "proposed";
     const project = normalizeProject(task.project) ?? undefined;
     const body = typeof task.body === "string" ? task.body.trim() : "";
+    const reopens = readReopens(task.reopens);
     return withBody(
       {
         ...withProject(task, project),
+        ...(reopens === undefined ? {} : { reopens }),
+        reopenedAt:
+          typeof task.reopenedAt === "string"
+            ? task.reopenedAt
+            : reopens === undefined || reopens.length === 0
+              ? null
+              : reopens[reopens.length - 1]?.at,
         parentId: proposed
           ? null
           : task.parentId !== null && ids.has(task.parentId)
@@ -461,6 +506,10 @@ export class TaskStore {
       completion?: TaskCompletion;
       /** A new project name, or null to clear it. */
       project?: string | null;
+      /** Why a done task is coming back; required only when moving done to open. */
+      reopenReason?: string;
+      /** Who reopened it. The tool passes "agent"; the HTTP API defaults to the operator. */
+      reopenedBy?: TaskReopen["by"];
     },
   ): Promise<TaskLedger> {
     if (
@@ -496,6 +545,10 @@ export class TaskStore {
             400,
           );
         }
+        // A finished task can only come back through the audited open-plus-reason path.
+        if (current.status === "done" && patch.status !== "done" && patch.status !== "open") {
+          throw new TaskError("Task is done; use task_reopen with a reason to reopen it", 409);
+        }
         if (patch.status === "working" && current.status === "backlog") {
           throw new TaskError("Unknown task", 404);
         }
@@ -512,7 +565,25 @@ export class TaskStore {
         if (patch.status === "done" && hasOpenDescendant(tasks, id)) {
           throw new TaskError("Open subtasks", 409);
         }
-        if (patch.status === "done") {
+        if (patch.status === "open" && current.status === "done") {
+          const parsed = parseReopenReason(patch.reopenReason);
+          if (!parsed.ok) throw new TaskError(parsed.error, 400);
+          const at = new Date().toISOString();
+          next = {
+            ...next,
+            status: "open",
+            completedAt: null,
+            // The old report stays as history until the task is closed again.
+            completion: current.completion,
+            lastWorkedAt: null,
+            reopens: [
+              ...(current.reopens ?? []),
+              { at, reason: parsed.reason, by: patch.reopenedBy ?? "operator" },
+            ],
+            reopenedAt: at,
+          };
+          next = withoutWorkingSince(next);
+        } else if (patch.status === "done") {
           next = {
             ...next,
             status: "done",
@@ -538,7 +609,6 @@ export class TaskStore {
             blockedBy: [],
             proposedAt: current.proposedAt ?? new Date().toISOString(),
             completedAt: null,
-            completion: null,
             lastWorkedAt: null,
           };
           next = withoutWorkingSince(next);
@@ -548,7 +618,6 @@ export class TaskStore {
             ...next,
             status: "working",
             completedAt: null,
-            completion: null,
             // Repeating the call keeps the original start; moving back starts a new one.
             workingSince:
               current.status === "working" && typeof current.workingSince === "string"
@@ -562,7 +631,6 @@ export class TaskStore {
             ...next,
             status: patch.status,
             completedAt: null,
-            completion: null,
             // Reopening starts an untouched task; an already-open task keeps its stamp.
             ...(current.status === "open" ? {} : { lastWorkedAt: null }),
             ...(current.status === "proposed" ? { proposedAt: null } : {}),
@@ -841,4 +909,54 @@ function normalizeBlockers(
     next.push(entry);
   }
   return next;
+}
+
+/** Start of the current week, Monday 00:00 UTC, so stats do not depend on the browser. */
+function startOfWeek(now: number): number {
+  const date = new Date(now);
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCDate(date.getUTCDate() - ((date.getUTCDay() + 6) % 7));
+  return date.getTime();
+}
+
+/** Count reopened tasks and this week's reopens, grouped by the task's project. */
+export function taskReopenStats(tasks: readonly Task[], now: number = Date.now()): TaskReopenStats {
+  const weekStart = startOfWeek(now);
+  const projects = new Map<string, TaskReopenProjectStats>();
+  let totalReopenedTasks = 0;
+  let totalReopens = 0;
+  let reopensThisWeek = 0;
+  for (const task of tasks) {
+    const reopens = task.reopens ?? [];
+    if (reopens.length === 0) continue;
+    totalReopenedTasks += 1;
+    totalReopens += reopens.length;
+    const key = task.project?.toLocaleLowerCase("en-US") ?? "";
+    const row = projects.get(key) ?? {
+      project: task.project ?? null,
+      reopenedTasks: 0,
+      reopens: 0,
+      reopensThisWeek: 0,
+    };
+    row.reopenedTasks += 1;
+    row.reopens += reopens.length;
+    for (const reopen of reopens) {
+      const at = Date.parse(reopen.at);
+      if (!Number.isFinite(at) || at < weekStart) continue;
+      reopensThisWeek += 1;
+      row.reopensThisWeek += 1;
+    }
+    projects.set(key, row);
+  }
+  return {
+    totalReopenedTasks,
+    totalReopens,
+    reopensThisWeek,
+    projects: [...projects.values()].sort(
+      (a, b) =>
+        b.reopensThisWeek - a.reopensThisWeek ||
+        b.reopenedTasks - a.reopenedTasks ||
+        (a.project ?? "").localeCompare(b.project ?? ""),
+    ),
+  };
 }

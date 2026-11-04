@@ -148,3 +148,23 @@ export function parseCompletion(input: unknown): CompletionParseResult {
   }
   return { ok: true, completion: { evidence } };
 }
+
+/** The longest reopen reason the ledger, the tool and the API accept, in characters. */
+export const TASK_REOPEN_REASON_MAX_LENGTH = 500;
+
+export type ReopenReasonParseResult = { ok: true; reason: string } | { ok: false; error: string };
+
+/** Validate the reason a finished task is coming back: trimmed, 1–500 characters. */
+export function parseReopenReason(input: unknown): ReopenReasonParseResult {
+  if (typeof input !== "string" || input.trim().length === 0) {
+    return { ok: false, error: "A reopen needs a reason" };
+  }
+  const reason = input.trim();
+  if (reason.length > TASK_REOPEN_REASON_MAX_LENGTH) {
+    return {
+      ok: false,
+      error: `reason must be at most ${TASK_REOPEN_REASON_MAX_LENGTH} characters`,
+    };
+  }
+  return { ok: true, reason };
+}

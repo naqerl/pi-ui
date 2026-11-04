@@ -54,6 +54,7 @@ test("task tools list, mark done, and create a blocker", async () => {
       "task_proposals",
       "task_view",
       "task_done",
+      "task_reopen",
       "task_working",
       "task_edit",
       "propose_task",
@@ -157,4 +158,58 @@ test("agent task tools set and edit a body without touching the rationale", asyn
   const blankTitle = text(await call("task_edit", { id: task.id, title: "   " }));
   assert.equal(blankTitle.isError, true);
   assert.match(blankTitle.text, /title/i);
+});
+
+test("task_reopen needs a reason, only reopens done work, and counts each reopen", async () => {
+  const created = (await bridge.store.create("Reopen the report", null)).tasks.find(
+    (task) => task.title === "Reopen the report",
+  );
+  assert.ok(created);
+  const evidence = { evidence: "e2e/task-tools.test.ts" };
+  assert.equal(text(await call("task_done", { id: created.id, ...evidence })).isError, false);
+
+  const blank = text(await call("task_reopen", { id: created.id, reason: "   " }));
+  assert.equal(blank.isError, true);
+  assert.match(blank.text, /A reopen needs a reason/);
+
+  const first = text(
+    await call("task_reopen", { id: created.id, reason: "The report still shows the old total" }),
+  );
+  assert.equal(first.isError, false);
+  assert.match(first.text, new RegExp(`${created.id} open Reopen the report`));
+  assert.match(first.text, /reopened: The report still shows the old total/);
+  assert.match(first.text, /reopen #1/);
+  const reopened = bridge.store.ledger().tasks.find((task) => task.id === created.id);
+  assert.equal(reopened?.status, "open");
+  assert.equal(reopened?.completedAt, null);
+  assert.deepEqual(reopened?.completion, evidence);
+  assert.equal(reopened?.reopens?.[0]?.by, "agent");
+
+  assert.equal(text(await call("task_done", { id: created.id, ...evidence })).isError, false);
+  const second = text(
+    await call("task_reopen", { id: created.id, reason: "It regressed a second time" }),
+  );
+  assert.equal(second.isError, false);
+  assert.match(second.text, /reopen #2/);
+
+  const refused = text(await call("task_reopen", { id: created.id, reason: "Not done any more" }));
+  assert.equal(refused.isError, true);
+  assert.match(refused.text, /Only a done task can be reopened/);
+});
+
+test("task_working refuses a done task and points at task_reopen", async () => {
+  const created = (await bridge.store.create("Finished but not reopened", null)).tasks.find(
+    (task) => task.title === "Finished but not reopened",
+  );
+  assert.ok(created);
+  const completion = { evidence: "e2e/task-tools.test.ts finished" };
+  assert.equal(text(await call("task_done", { id: created.id, ...completion })).isError, false);
+
+  const refused = text(await call("task_working", { id: created.id, note: "keep going" }));
+  assert.equal(refused.isError, true);
+  assert.match(refused.text, /task_reopen/);
+  const task = bridge.store.ledger().tasks.find((item) => item.id === created.id);
+  assert.equal(task?.status, "done");
+  assert.deepEqual(task?.completion, completion);
+  assert.equal(task?.reopens, undefined);
 });

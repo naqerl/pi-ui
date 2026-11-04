@@ -308,7 +308,7 @@ test("the agent builds dashboard widgets that render at 1280px and 390px", async
   await expect.poll(async () => (await readDashboard(browser)).polling).toBe(false);
   // Leave the default dashboard behind for whichever isolated session runs next.
   await seedDashboard(browser, resetCalls);
-  await dashboardHas(browser, ["context", "tokens", "mcp", "mcp-events"]);
+  await dashboardHas(browser, ["context", "tokens", "mcp", "mcp-events", "task-reopens"]);
 });
 
 test("polls run only while the dashboard is visible, and widgets can be removed", async ({
@@ -381,7 +381,7 @@ test("polls run only while the dashboard is visible, and widgets can be removed"
     .poll(async () => (await readDashboard(browser)).widgets.map((w) => w.id), {
       timeout: 20_000,
     })
-    .toEqual(["context", "tokens", "mcp", "mcp-events"]);
+    .toEqual(["context", "tokens", "mcp", "mcp-events", "task-reopens"]);
 });
 
 test("the MCP events widget shows at most 3 rows", async ({ app, browser, screen }) => {
@@ -395,7 +395,7 @@ test("the MCP events widget shows at most 3 rows", async ({ app, browser, screen
   }));
   await app.open("/");
   await seedDashboard(browser, resetCalls);
-  await dashboardHas(browser, ["context", "tokens", "mcp", "mcp-events"]);
+  await dashboardHas(browser, ["context", "tokens", "mcp", "mcp-events", "task-reopens"]);
   const state = await browser.evaluate(async () => {
     const res = await fetch("/api/state");
     return (await res.json()) as { [key: string]: JsonValue };
@@ -475,7 +475,7 @@ test("sparkline widgets render through recharts and honor their chart config", a
 
   await screen.getByRole("tab", "Chat").tap();
   await seedDashboard(browser, resetCalls);
-  await dashboardHas(browser, ["context", "tokens", "mcp", "mcp-events"]);
+  await dashboardHas(browser, ["context", "tokens", "mcp", "mcp-events", "task-reopens"]);
 });
 
 test("a chart draws two coloured series, a dashed projection, a reference line and x labels", async ({

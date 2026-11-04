@@ -8,6 +8,7 @@ import {
   compareTasks,
   liveBlockerIds,
   parseCompletion,
+  parseReopenReason,
   TASK_BODY_MAX_LENGTH,
 } from "../shared/tasks.js";
 import { formatDateTime } from "../shared/time.js";
@@ -80,6 +81,14 @@ const doneSchema = Type.Object({
   id: Type.String({ description: "Task id from task_list." }),
   evidence: Type.String({
     description: "A commit sha, file path, screenshot path or sentence a reviewer can check.",
+  }),
+});
+
+const reopenSchema = Type.Object({
+  id: Type.String({ description: "Task id from task_list." }),
+  reason: Type.String({
+    description:
+      "What the operator said is still wrong, in one or two sentences, up to 500 characters.",
   }),
 });
 
@@ -242,7 +251,7 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
     defineTool({
       name: "task_done",
       description:
-        "Mark one task done and say where a reviewer can check the work. Time, tokens and cost are measured from the calls made while the task was marked working, so do not report them. A task with an open subtask cannot be marked done. This cannot reopen a task or edit its title.",
+        "Mark one task done and say where a reviewer can check the work. Time, tokens and cost are measured from the calls made while the task was marked working, so do not report them. A task with an open subtask cannot be marked done. This cannot reopen a task or edit its title; use task_reopen to reopen a done task with a reason.",
       parameters: doneSchema,
       async execute(args) {
         const current = bridge.store.ledger().tasks.find((task) => task.id === args.id);
@@ -260,14 +269,54 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
       },
     }),
     defineTool({
+      name: "task_reopen",
+      description:
+        "Reopen a done task with the reason it is coming back. Use this only when the operator asks to reopen a task or reports that a completed task is still wrong, regressed or misbehaving. Never reopen a task on your own initiative to undo a review verdict or to keep working on something you consider unfinished — propose a new task instead.",
+      parameters: reopenSchema,
+      async execute(args) {
+        const current = bridge.store.ledger().tasks.find((task) => task.id === args.id);
+        if (current === undefined) return failure(new TaskError("Unknown task", 404));
+        const parsed = parseReopenReason(args.reason);
+        if (!parsed.ok) return failure(new TaskError(parsed.error, 400));
+        if (current.status !== "done") {
+          return failure(new TaskError("Only a done task can be reopened", 409));
+        }
+        try {
+          const ledger = await bridge.store.update(args.id, {
+            status: "open",
+            reopenReason: parsed.reason,
+            reopenedBy: "agent",
+          });
+          bridge.publish(ledger);
+          const task = ledger.tasks.find((item) => item.id === args.id);
+          const count = task?.reopens?.length ?? 1;
+          return {
+            output: [
+              {
+                type: "text",
+                text: `${args.id} open ${task?.title ?? current.title}\nreopened: ${parsed.reason}\nreopen #${count}`,
+              },
+            ],
+          };
+        } catch (error) {
+          return failure(error);
+        }
+      },
+    }),
+    defineTool({
       name: "task_working",
       description:
-        "Mark one task working before starting it. Sets its status to working, records when the work began and stamps lastWorkedAt. Pass an optional short note about what you are doing; it is echoed back but not stored. A proposal or backlog task cannot be marked working.",
+        "Mark one task working before starting it. Sets its status to working, records when the work began and stamps lastWorkedAt. Pass an optional short note about what you are doing; it is echoed back but not stored. A proposal or backlog task cannot be marked working, and a done task must be reopened with task_reopen first.",
       parameters: workingSchema,
       async execute(args) {
         const current = bridge.store.ledger().tasks.find((task) => task.id === args.id);
         if (current === undefined || current.status === "backlog") {
           return failure(new TaskError("Unknown task", 404));
+        }
+        if (current.status === "done") {
+          return failure(
+            new TaskError("Task is done; use task_reopen with a reason to reopen it", 409),
+          );
         }
         if (current.status === "proposed") {
           return failure(new TaskError("Task is not open; a proposal must be approved first", 409));

@@ -46,6 +46,7 @@ import {
   type WidgetView,
   widthForSpan,
 } from "../shared/dashboard.js";
+import type { TaskReopenStats } from "../shared/types.js";
 import { type PollOutcome, type PollRunner, runPollScript } from "./dashboard-runner.js";
 
 export { DashboardError };
@@ -53,7 +54,11 @@ export { DashboardError };
 /** What the dashboard needs from the rest of the server. Set once the chat is up. */
 export interface DashboardHost {
   builtinInputs(): Promise<BuiltinInputs>;
-  builtinsLite(): { jobs: BuiltinJob[]; session: BuiltinSession };
+  builtinsLite(): {
+    jobs: BuiltinJob[];
+    session: BuiltinSession;
+    taskReopens?: TaskReopenStats;
+  };
   notify(text: string): void;
   broadcast(state: DashboardState): void;
 }

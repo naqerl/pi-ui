@@ -1,5 +1,6 @@
-import { test } from "@e2e-dev/web";
+import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
+import { IdleNudge } from "../src/server/idle-nudge.js";
 
 test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300_000 }, async ({
   app,
@@ -425,4 +426,297 @@ test("create and propose share the insert and differ only in their proposal fiel
   expect(rows?.proposedAuthor).toBe("operator");
   expect(rows?.rationale).toContain("same insert");
   expect(typeof rows?.proposedAt).toBe("string");
+});
+
+type ReopenTaskRead = {
+  id: string;
+  title: string;
+  status: "open" | "working" | "done" | "proposed" | "backlog";
+  completedAt: string | null;
+  completion: { evidence: string } | null;
+  reopens?: { at: string; reason: string; by: "operator" | "agent" }[];
+  reopenedAt?: string | null;
+  project?: string;
+};
+
+async function deleteReopenTasks(browser: Browser, titles: readonly string[]) {
+  const left = await browser.evaluate(async (names) => {
+    const matching = async () =>
+      (
+        (await (await fetch("/api/tasks")).json()).tasks as Array<{ id: string; title: string }>
+      ).filter((task) => names.includes(task.title));
+    for (const task of await matching()) {
+      await fetch(`/api/tasks/${encodeURIComponent(task.id)}`, { method: "DELETE" });
+    }
+    return (await matching()).length;
+  }, titles);
+  expect(left).toBe(0);
+}
+
+async function createReopenTask(
+  browser: Browser,
+  title: string,
+  options: { done?: boolean; project?: string; propose?: boolean; backlog?: boolean } = {},
+): Promise<string> {
+  return browser.evaluate(
+    async (args) => {
+      const response = await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          title: args.title,
+          ...(args.project === undefined ? {} : { project: args.project }),
+          ...(args.propose === true
+            ? {
+                propose: true,
+                rationale: "A proposal cannot be reopened because it is not finished.",
+              }
+            : {}),
+          ...(args.backlog === true ? { backlog: true } : {}),
+        }),
+      });
+      const ledger = (await response.json()) as { tasks: ReopenTaskRead[] };
+      const task = ledger.tasks.find((item) => item.title === args.title);
+      if (task === undefined) return "";
+      if (args.done === true) {
+        await fetch(`/api/tasks/${encodeURIComponent(task.id)}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            status: "done",
+            completion: { evidence: `e2e/tasks.e2e.ts ${args.title}` },
+          }),
+        });
+      }
+      return task.id;
+    },
+    { ...options, title },
+  );
+}
+
+async function readReopenTask(browser: Browser, id: string): Promise<ReopenTaskRead | null> {
+  return browser.evaluate(async (taskId) => {
+    const ledger = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
+      tasks: ReopenTaskRead[];
+    };
+    return ledger.tasks.find((task) => task.id === taskId) ?? null;
+  }, id);
+}
+
+async function runToolCalls(
+  browser: Browser,
+  calls: Array<{ name: string; arguments: Record<string, string> }>,
+) {
+  await browser.evaluate(async (toolCalls) => {
+    await fetch("/api/message", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: `TOOLCALLS ${JSON.stringify(toolCalls)}` }),
+    });
+    return null;
+  }, calls);
+}
+
+async function toolOutputs(browser: Browser, name: string): Promise<string[]> {
+  return browser.evaluate(async (toolName) => {
+    const state = (await (await fetch("/api/state", { cache: "no-store" })).json()) as {
+      activity?: Array<{ name?: string; output?: string }>;
+    };
+    return (state.activity ?? [])
+      .filter((entry) => entry.name === toolName && typeof entry.output === "string")
+      .map((entry) => entry.output as string);
+  }, name);
+}
+
+test("reopens a done task with a reason and keeps the old completion", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  const tag = Date.now();
+  const title = `Reopen the regression ${tag}`;
+  const project = `Zr${tag}`;
+  const reason = "The operator says the fix regressed on the next run";
+  await app.open("/?page=tasks");
+  const id = await createReopenTask(browser, title, { done: true, project });
+  expect(id).not.toBe("");
+
+  try {
+    await runToolCalls(browser, [{ name: "task_reopen", arguments: { id, reason } }]);
+    await expect
+      .poll(
+        async () => {
+          const outputs = await toolOutputs(browser, "task_reopen");
+          return outputs.some((output) => output.includes(id) && output.includes("reopen #1"));
+        },
+        { timeout: 20_000 },
+      )
+      .toBe(true);
+    const output = (await toolOutputs(browser, "task_reopen")).find((text) => text.includes(id));
+    expect(output).toContain(`${id} open ${title}`);
+    expect(output).toContain(`reopened: ${reason}`);
+    expect(output).toContain("reopen #1");
+
+    const reopened = await readReopenTask(browser, id);
+    expect(reopened?.status).toBe("open");
+    expect(reopened?.completedAt).toBeNull();
+    expect(reopened?.completion?.evidence).toContain("e2e/tasks.e2e.ts");
+    expect(reopened?.reopens?.length).toBe(1);
+    expect(reopened?.reopens?.[0]?.reason).toBe(reason);
+    expect(reopened?.reopens?.[0]?.by).toBe("agent");
+    expect(reopened?.reopenedAt).toBe(reopened?.reopens?.[0]?.at);
+
+    // The nudge selector sees the reopened ledger task as open work, without a synthetic copy.
+    if (reopened === null) throw new Error("the reopened task is missing");
+    const nudge = new IdleNudge(1_000, 0, "");
+    const prompt = nudge.maybeNudge({ active: false, queued: 0, tasks: [reopened] }, Date.now());
+    expect(prompt).toContain(id);
+
+    await app.open("/?page=tasks");
+    const card = screen.getByTestId(`task-${id}`);
+    await expect(card).toHaveAttribute("data-state", "ready");
+    await expect(screen.getByTestId(`task-reopens-${id}`)).toHaveText("↻ 1");
+    await expect(screen.getByTestId(`task-detail-reopens-${id}`)).toHaveText("↻ 1");
+    await screen.getByRole("button", { name: `Open ${title}` }).tap();
+    const reopenBlock = screen.getByTestId("task-reopen");
+    await expect(reopenBlock).toContainText(reason);
+    await expect(screen.getByTestId("task-modal-completion")).toHaveCount(0);
+  } finally {
+    await deleteReopenTasks(browser, [title]);
+  }
+});
+
+test("refuses a reopen without a reason and counts the second reopen", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  const tag = Date.now();
+  const title = `Reopen twice ${tag}`;
+  await app.open("/?page=tasks");
+  const id = await createReopenTask(browser, title, { done: true });
+  expect(id).not.toBe("");
+
+  try {
+    await runToolCalls(browser, [{ name: "task_reopen", arguments: { id, reason: "   " } }]);
+    await expect
+      .poll(
+        async () => {
+          const outputs = await toolOutputs(browser, "task_reopen");
+          return outputs.some((output) => output.includes("A reopen needs a reason"));
+        },
+        { timeout: 20_000 },
+      )
+      .toBe(true);
+    expect((await readReopenTask(browser, id))?.status).toBe("done");
+
+    const firstReason = "The first report was not the whole problem";
+    await runToolCalls(browser, [{ name: "task_reopen", arguments: { id, reason: firstReason } }]);
+    await expect
+      .poll(async () => (await readReopenTask(browser, id))?.reopens?.length ?? 0, {
+        timeout: 20_000,
+      })
+      .toBe(1);
+
+    await browser.evaluate(async (taskId) => {
+      await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          status: "done",
+          completion: { evidence: "e2e/tasks.e2e.ts second close" },
+        }),
+      });
+      return null;
+    }, id);
+
+    await app.open("/?page=tasks");
+    await expect(screen.getByRole("button", { name: `Open ${title}` })).toBeVisible();
+    await browser.evaluate((taskTitle) => {
+      const card = [...document.querySelectorAll("[data-task-card]")].find((item) =>
+        item.textContent?.includes(taskTitle),
+      );
+      if (!(card instanceof HTMLElement)) return null;
+      const box = card.getBoundingClientRect();
+      card.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: box.left + 16,
+          clientY: box.top + box.height / 2,
+        }),
+      );
+      return null;
+    }, title);
+    await expect(screen.getByTestId("task-menu")).toBeVisible();
+    await screen.getByRole("menuitem", { name: `Reopen ${title}` }).tap();
+    const prompt = screen.getByTestId("task-reopen-prompt");
+    await expect(prompt).toBeVisible();
+    const submit = screen.getByTestId("task-reopen-submit");
+    expect(
+      await browser.evaluate(() => {
+        const button = document.querySelector<HTMLButtonElement>(
+          '[data-testid="task-reopen-submit"]',
+        );
+        return button?.disabled ?? null;
+      }),
+    ).toBe(true);
+    const secondReason = "It regressed again after the second close";
+    await screen.getByRole("textbox", "Reopen reason").fill(secondReason);
+    expect(
+      await browser.evaluate(() => {
+        const button = document.querySelector<HTMLButtonElement>(
+          '[data-testid="task-reopen-submit"]',
+        );
+        return button?.disabled ?? null;
+      }),
+    ).toBe(false);
+    await submit.tap();
+    await expect.poll(async () => (await readReopenTask(browser, id))?.status).toBe("open");
+    const reopened = await readReopenTask(browser, id);
+    expect(reopened?.reopens?.length).toBe(2);
+    expect(reopened?.reopens?.[1]?.reason).toBe(secondReason);
+    expect(reopened?.reopens?.[1]?.by).toBe("operator");
+    await expect(screen.getByTestId(`task-reopens-${id}`)).toHaveText("↻ 2");
+  } finally {
+    await deleteReopenTasks(browser, [title]);
+  }
+});
+
+test("a proposed or backlog task cannot be reopened", async ({ app, browser }) => {
+  const tag = Date.now();
+  const proposedTitle = `Proposed reopen ${tag}`;
+  const backlogTitle = `Backlog reopen ${tag}`;
+  await app.open("/?page=tasks");
+  const proposedId = await createReopenTask(browser, proposedTitle, { propose: true });
+  const backlogId = await createReopenTask(browser, backlogTitle, { backlog: true });
+  expect(proposedId).not.toBe("");
+  expect(backlogId).not.toBe("");
+
+  try {
+    await runToolCalls(browser, [
+      {
+        name: "task_reopen",
+        arguments: { id: proposedId, reason: "A proposal is not finished" },
+      },
+      {
+        name: "task_reopen",
+        arguments: { id: backlogId, reason: "A parked task is not finished" },
+      },
+    ]);
+    await expect
+      .poll(
+        async () => {
+          const outputs = await toolOutputs(browser, "task_reopen");
+          return outputs.filter((output) => output.includes("Only a done task can be reopened"))
+            .length;
+        },
+        { timeout: 20_000 },
+      )
+      .toBe(2);
+    expect((await readReopenTask(browser, proposedId))?.status).toBe("proposed");
+    expect((await readReopenTask(browser, backlogId))?.status).toBe("backlog");
+  } finally {
+    await deleteReopenTasks(browser, [proposedTitle, backlogTitle]);
+  }
 });

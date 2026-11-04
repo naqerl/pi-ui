@@ -2,7 +2,8 @@
 
 The page left of the chat (`?page=stats`) is a dashboard the agent can edit. It
 starts with the old stats cards (context, tokens, MCP servers) plus an MCP events
-list, and the agent adds, moves and removes widgets with five tools. The chat
+list and the per-project task reopen counts, and the agent adds, moves and removes
+widgets with five tools. The chat
 header shows no MCP status; these two widgets replace it. Widgets only show data: the page never
 renders HTML or JS from a widget and there are no action buttons.
 
@@ -10,10 +11,11 @@ renders HTML or JS from a widget and there are no action buttons.
 
 - `DATA_DIR/dashboard.json`: widgets and layout. It holds scripts, never tokens.
   Missing or invalid JSON falls back to the default stats widgets. `seeded`
-  records which set of default widgets the file has been given (currently `2`).
+  records which set of default widgets the file has been given (currently `3`).
   A file from an older pi-ui gets the defaults added since then once, on load:
-  seed 2 adds `mcp-events` after the `mcp` widget. A default removed after that
-  stays removed, because `seeded` already covers it.
+  seed 2 adds `mcp-events` after the `mcp` widget, and seed 3 adds
+  `task-reopens` after it. A default removed after that stays removed, because
+  `seeded` already covers it.
 - `DATA_DIR/dashboard-state.json`: the last value, error and history of each
   poll and static widget, so the page shows something right after a restart.
 
