@@ -1,3 +1,8 @@
+## 1.6.93 - 2026-11-04
+
+- feat(dashboard): a task duration widget showing p50, p90 and the average time between a task being created and completed (vc85).
+- fix(stats): a swipe that starts on a card now pages the dashboard instead of being eaten by the widget (km8w).
+
 ## 1.6.92 - 2026-11-04
 
 - feat(ui): every control answers a press with a compositor-only scale (0.97) under `prefers-reduced-motion: no-preference`, with a `data-no-press` escape hatch for drag handles and resize corners; the rule is written into AGENTS.md (uroi).
