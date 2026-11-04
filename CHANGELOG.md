@@ -1,3 +1,7 @@
+## 1.6.94 - 2026-11-04
+
+- fix(tasks): a single tap on a task card opens its details on a phone. The menu-scoped click suppression now remembers which pointer sequence it belongs to and expires, a plain tap no longer cancels its own click, and the detail survives the history state it pushed itself (ye5r).
+
 ## 1.6.93 - 2026-11-04
 
 - feat(dashboard): a task duration widget showing p50, p90 and the average time between a task being created and completed (vc85).
