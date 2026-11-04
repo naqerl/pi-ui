@@ -475,6 +475,74 @@ test("ctrl+j returns to chat and focuses the end of the draft", async ({
   expect(typed.value).toBe("a draft1");
 });
 
+test("ctrl+j focuses the composer in place on the tasks page", async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({ json: snapshot });
+  });
+  await app.open("/");
+  const composer = screen.getByRole("textbox", "Message");
+  await composer.fill("a draft");
+
+  const waitFrames = async () => {
+    await browser.evaluate(async () => {
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+      return true;
+    });
+  };
+  const page = () =>
+    browser.evaluate(
+      () => document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
+    );
+
+  await browser.keyboard.press("Alt+3");
+  await waitFrames();
+  expect(await page()).toBe("tasks");
+
+  await browser.keyboard.press("Control+j");
+  await waitFrames();
+  const tasks = await browser.evaluate(() => {
+    const textarea = document.querySelector<HTMLTextAreaElement>(
+      '[data-testid="composer-body"] textarea',
+    );
+    return {
+      page: document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
+      active: document.activeElement === textarea,
+      value: textarea?.value ?? null,
+      caret: textarea?.selectionStart ?? null,
+      end: textarea?.value.length ?? null,
+    };
+  });
+  expect(tasks.page).toBe("tasks");
+  expect(tasks.active).toBe(true);
+  expect(tasks.value).toBe("a draft");
+  expect(tasks.caret).toBe(tasks.end);
+
+  // The stats page keeps the composer mounted but collapsed, so the shortcut
+  // still has to page to chat before focusing it there.
+  await browser.keyboard.press("Alt+1");
+  await waitFrames();
+  expect(await page()).toBe("stats");
+  await browser.keyboard.press("Control+j");
+  await waitFrames();
+  const stats = await browser.evaluate(() => {
+    const textarea = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
+    return {
+      page: document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
+      active: document.activeElement === textarea,
+      value: textarea?.value ?? null,
+      caret: textarea?.selectionStart ?? null,
+      end: textarea?.value.length ?? null,
+    };
+  });
+  expect(stats.page).toBe("chat");
+  expect(stats.active).toBe(true);
+  expect(stats.value).toBe("a draft");
+  expect(stats.caret).toBe(stats.end);
+});
+
 test("alt+1 uses the digit's physical key when the layout produces a symbol", async ({
   app,
   browser,
