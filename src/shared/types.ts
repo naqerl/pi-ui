@@ -220,6 +220,10 @@ export interface McpEventView {
   name: string;
   timestamp: string;
   summary: string;
+  /** The adapter subscription that delivered the event, when one is known. */
+  subscriptionId?: string;
+  /** The subscription's `arguments.topic`, when it names one. */
+  topic?: string;
   /** The stable subscription already delivered this event before a restart. */
   replayed?: boolean;
 }

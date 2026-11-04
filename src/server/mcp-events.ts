@@ -66,6 +66,12 @@ function serverCursor(current: string | null, incoming: string | null): string |
   return incoming ?? current;
 }
 
+/** The topic a subscription names in its arguments, if any. */
+function subscriptionTopic(subscription: McpSubscriptionView | undefined): string | undefined {
+  const topic = subscription?.arguments.topic;
+  return typeof topic === "string" && topic.trim().length > 0 ? topic : undefined;
+}
+
 function sameArguments(first: Record<string, unknown>, second: Record<string, unknown>): boolean {
   return JSON.stringify(first) === JSON.stringify(second);
 }
@@ -522,6 +528,7 @@ export class McpEventFeed {
         typeof item.subscription_id === "string" ? item.subscription_id : undefined;
       const current =
         subscriptionId === undefined ? undefined : this.viewForAdapter(subscriptionId);
+      const topic = subscriptionTopic(current);
       const stableId =
         current?.stableId ?? deriveStableId(item.server, streamName, current?.arguments ?? {});
       // An adapter may ignore its replay flag. The process boot time is the
@@ -549,6 +556,8 @@ export class McpEventFeed {
               name,
               timestamp,
               summary: summarize(event.data),
+              ...(subscriptionId === undefined ? {} : { subscriptionId }),
+              ...(topic === undefined ? {} : { topic }),
               replayed: true,
             },
           ].slice(-EVENT_LIMIT);
@@ -603,6 +612,8 @@ export class McpEventFeed {
             name,
             timestamp,
             summary: summarize(event.data),
+            ...(subscriptionId === undefined ? {} : { subscriptionId }),
+            ...(topic === undefined ? {} : { topic }),
           },
         ].slice(-EVENT_LIMIT);
       } else {

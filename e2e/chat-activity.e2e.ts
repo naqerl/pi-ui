@@ -1,5 +1,6 @@
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
+import type { McpEventsState, McpSubscriptionView } from "../src/shared/types";
 
 const activityAt = (second: number) => new Date(Date.UTC(2026, 0, 1, 12, 0, second)).toISOString();
 const activitySnapshot = {
@@ -203,4 +204,148 @@ test("opens a run activity deep link over the chat and keeps /events a page", as
   await app.open("/events");
   await expect(screen.getByRole("heading", { name: "MCP subscriptions", level: 1 })).toBeVisible();
   await expect(screen.getByTestId("activity-dialog")).toHaveCount(0);
+});
+
+test("the events page names each event's subscription and filters by topic", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  const eventsAt = (second: number) => new Date(Date.UTC(2026, 0, 2, 12, 0, second)).toISOString();
+  const subscriptions: McpSubscriptionView[] = [
+    {
+      id: "sub-hub",
+      stableId: "stub-hub",
+      server: "stub",
+      name: "hub-stream",
+      title: "Hub topic",
+      status: "active",
+      state: "active",
+      arguments: { topic: "hub" },
+      cursor: "hub:1",
+    },
+    {
+      id: "sub-alerts",
+      stableId: "stub-alerts",
+      server: "stub",
+      name: "alerts-stream",
+      title: "Alerts topic",
+      status: "active",
+      state: "active",
+      arguments: { topic: "alerts" },
+      cursor: "alerts:1",
+    },
+  ];
+  const initialEvents: McpEventsState = {
+    subscriptions,
+    events: [
+      {
+        id: "hub-1",
+        server: "stub",
+        name: "hub.job",
+        timestamp: eventsAt(1),
+        summary: "hub update",
+        subscriptionId: "sub-hub",
+        topic: "hub",
+      },
+      {
+        id: "alerts-1",
+        server: "stub",
+        name: "alerts.event",
+        timestamp: eventsAt(2),
+        summary: "alerts update",
+        subscriptionId: "sub-alerts",
+        topic: "alerts",
+      },
+    ],
+    notice: "new event from stub",
+    revision: 41,
+  };
+  let snapshot = {
+    ...activitySnapshot,
+    mcp: { servers: [], unavailable: [] },
+    mcpEvents: initialEvents,
+  };
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({ json: JSON.parse(JSON.stringify(snapshot)) });
+  });
+  await app.open("/events");
+  await expect(screen.getByRole("heading", { name: "Updates", level: 2 })).toBeVisible();
+
+  const cards = () =>
+    browser.evaluate(() =>
+      [...document.querySelectorAll<HTMLElement>('[data-testid="mcp-event-card"]')].map((card) => {
+        const label = card.querySelector<HTMLElement>('[data-testid="mcp-event-label"]');
+        return {
+          label: label?.textContent?.trim() ?? "",
+          name:
+            card.querySelector<HTMLElement>('[data-testid="mcp-event-name"]')?.textContent ?? "",
+          title: label?.getAttribute("title") ?? null,
+        };
+      }),
+    );
+  const chips = () =>
+    browser.evaluate(() =>
+      [...document.querySelectorAll<HTMLButtonElement>('[data-testid="mcp-topic-filter"]')].map(
+        (button) => ({
+          text: (button.textContent ?? "").replace(/\s+/g, " ").trim(),
+          pressed: button.getAttribute("aria-pressed"),
+        }),
+      ),
+    );
+
+  // Each card names its subscription, and the topic is available on hover.
+  await expect.poll(cards).toEqual([
+    { label: "Alerts topic", name: "alerts.event", title: "topic: alerts" },
+    { label: "Hub topic", name: "hub.job", title: "topic: hub" },
+  ]);
+  const groups = await browser.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>('[data-testid="mcp-event-group"]')].map((group) => ({
+      label:
+        group
+          .querySelector<HTMLElement>('[data-testid="mcp-event-group-label"]')
+          ?.textContent?.trim() ?? "",
+      count: group.querySelectorAll('[data-testid="mcp-event-card"]').length,
+    })),
+  );
+  expect(groups).toEqual([
+    { label: "Alerts topic", count: 1 },
+    { label: "Hub topic", count: 1 },
+  ]);
+  expect(await chips()).toEqual([
+    { text: "All 2", pressed: "true" },
+    { text: "Hub topic 1", pressed: "false" },
+    { text: "Alerts topic 1", pressed: "false" },
+  ]);
+
+  // Filtering is local: one chip selects its subscription and flips aria-pressed.
+  await screen.getByRole("button", { name: "Hub topic 1" }).tap();
+  await expect.poll(cards).toEqual([{ label: "Hub topic", name: "hub.job", title: "topic: hub" }]);
+  expect(await chips()).toEqual([
+    { text: "All 2", pressed: "false" },
+    { text: "Hub topic 1", pressed: "true" },
+    { text: "Alerts topic 1", pressed: "false" },
+  ]);
+
+  // An id that no longer resolves falls back to the event's server name.
+  snapshot = {
+    ...snapshot,
+    mcpEvents: {
+      subscriptions: [],
+      events: [
+        {
+          id: "orphan-1",
+          server: "stub",
+          name: "orphan.event",
+          timestamp: eventsAt(3),
+          summary: "orphan update",
+          subscriptionId: "gone",
+        },
+      ],
+      notice: "new event from stub",
+      revision: 42,
+    } satisfies McpEventsState,
+  };
+  await app.open("/events");
+  await expect.poll(cards).toEqual([{ label: "stub", name: "orphan.event", title: null }]);
 });

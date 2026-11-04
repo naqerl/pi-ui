@@ -165,7 +165,8 @@ test("an MCP notice, the events page and the events widget render hh:mm for one 
   const eventsMarkup = inZone("UTC", () =>
     renderToStaticMarkup(createElement(EventsView, { events: inputs.mcpEvents, ready: true })),
   );
-  assert.match(eventsMarkup, />12:34 · new event from hub</);
+  assert.match(eventsMarkup, />12:34 · <span[^>]*>new event from hub<\/span>/);
+  assert.match(eventsMarkup, /<span[^>]*data-testid="mcp-event-name"[^>]*>hub\.job<\/span>/);
 
   const feed = await inZoneAsync("UTC", () =>
     readSource("mcp_events", {
