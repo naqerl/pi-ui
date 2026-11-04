@@ -239,6 +239,7 @@ const chat = new ChatService(
     });
   },
   dataDir,
+  boot.repairDurableState,
 );
 operatorNotices.current = (record) => chat.recordOperatorNotice(record);
 taskNotices.current = (record) => chat.recordTaskDecision(record);

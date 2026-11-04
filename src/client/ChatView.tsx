@@ -245,6 +245,18 @@ export function MessageBubble({
     return <NoticeLine message={message} notice={message.notice} onSteer={onSteer} />;
   }
   if (message.role === "system") {
+    if (message.repair !== undefined) {
+      return (
+        <div
+          data-message-id={message.id}
+          data-role={message.role}
+          data-testid="durable-repair"
+          className="theme-radius mx-auto w-fit min-w-0 max-w-[92%] border border-foreground/10 bg-surface/90 px-3 py-1 text-center font-mono text-[11px] leading-5 text-muted-foreground backdrop-blur-md [overflow-wrap:anywhere]"
+        >
+          {message.text}
+        </div>
+      );
+    }
     if (isVersionUpdate(message)) {
       return (
         <div

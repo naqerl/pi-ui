@@ -60,6 +60,7 @@ import {
   type TranscriptHistory,
 } from "../shared/types.js";
 import type { BillionContextInline } from "./billion-context.js";
+import type { DurableDoctorReport } from "./durable-doctor.js";
 import {
   type IdleNudge,
   IdleNudge as IdleNudgeImpl,
@@ -91,6 +92,7 @@ import {
   IDLE_NUDGE_ENTRY_KIND,
   JOB_NOTICE_ENTRY_KIND,
   MCP_NOTICE_ENTRY_KIND,
+  recordDurableRepairNotice,
   SESSION_CONTEXT,
   summarizeUsage,
   TASK_DECISION_ENTRY_KIND,
@@ -129,6 +131,15 @@ type ViewToolEndResult = {
   isError?: boolean;
   durationMs?: number;
 };
+
+/** A repaired slot uses `interrupted`, which is terminal even though durable's ToolSlot type omits it. */
+function isInterruptedSlot(slot: Pick<ToolSlot, "status"> | undefined): boolean {
+  return (slot?.status as string | undefined) === "interrupted";
+}
+
+function isTerminalSlot(slot: Pick<ToolSlot, "status">): boolean {
+  return slot.status === "done" || isInterruptedSlot(slot);
+}
 
 type ViewEvent =
   | ViewSnapshot
@@ -546,6 +557,8 @@ export class ChatService {
     idleTasks: IdleTaskSource = () => [],
     /** The app data directory, so the nudged task set survives a restart. */
     idleNudgeDataDirOrTasks?: string | IdleTaskSource,
+    /** Re-run the durable doctor when a view read throws; it repairs and the read is retried. */
+    private readonly repairDurableState?: () => Promise<DurableDoctorReport>,
   ) {
     this.mcpStatus = typeof mcpStatus === "function" ? mcpStatus : () => mcpStatus;
     let idleTasksSource: IdleTaskSource;
@@ -583,7 +596,14 @@ export class ChatService {
   private readonly mediaRef = (data: string, mimeType: string) => this.media.refFor(data, mimeType);
 
   async start(): Promise<void> {
-    const stream = await this.conversation.watch(SESSION_CONTEXT);
+    if (this.repairDurableState !== undefined) {
+      try {
+        await recordDurableRepairNotice(this.conversation, await this.repairDurableState());
+      } catch (error) {
+        console.error("[durable] pre-resume doctor failed", error);
+      }
+    }
+    const stream = await this.watchConversation();
     this.stream = stream;
     const snapshot = this.resetView(stream.value);
     this.applySnapshot(snapshot);
@@ -744,7 +764,7 @@ export class ChatService {
       await new Promise((resolve) => setTimeout(resolve, STREAM_RETRY_MS));
       if (this.closed) return;
       try {
-        const stream = await this.conversation.watch(SESSION_CONTEXT);
+        const stream = await this.watchConversation();
         this.stream = stream;
         await this.handleEvent(this.resetView(stream.value));
         this.listenToView(stream);
@@ -2076,6 +2096,21 @@ export class ChatService {
     for (const slot of current.values()) {
       const before = previous.get(slot.callId);
       const args = argumentsByCall.get(slot.callId)?.arguments ?? {};
+      if (isInterruptedSlot(slot)) {
+        if (before !== undefined && !isTerminalSlot(before)) {
+          const entry = this.entryById(view.entries, slot.entry);
+          const result = this.toolResultFromSlot(slot);
+          await this.handleEvent({
+            type: "tool_execution_end",
+            toolCallId: slot.callId,
+            toolName: slot.name,
+            args,
+            ...(entry === undefined ? {} : { entry }),
+            ...(result === undefined ? {} : { result }),
+          });
+        }
+        continue;
+      }
       if (slot.status === "running" && before?.status !== "running") {
         await this.handleEvent({
           type: "tool_execution_start",
@@ -2472,7 +2507,7 @@ export class ChatService {
 
     this.activeTools.clear();
     for (const slot of snapshot.tools) {
-      if (slot.status === "done") continue;
+      if (isTerminalSlot(slot)) continue;
       this.activeTools.set(slot.callId, {
         name: slot.name,
         args: {},
@@ -2564,11 +2599,30 @@ export class ChatService {
 
   /** Reads one conversation view and releases its watch; for the watchdog and restart recovery. */
   private async readView(): Promise<ConversationView> {
-    const watch = await this.conversation.watch(SESSION_CONTEXT);
+    const watch = await this.watchConversation();
     try {
       return watch.value;
     } finally {
       await watch.stop();
+    }
+  }
+
+  /**
+   * A torn durable view throws while it materialises. Repair the store and retry once instead of
+   * ending the turn; if the doctor cannot help, the original failure still reaches the caller.
+   */
+  private async watchConversation(): Promise<ConversationWatch> {
+    try {
+      return await this.conversation.watch(SESSION_CONTEXT);
+    } catch (error) {
+      if (this.repairDurableState === undefined) throw error;
+      console.error("[pi] conversation view is unreadable; running the durable doctor", error);
+      const report = await this.repairDurableState();
+      if (report.repaired) {
+        console.warn(`[durable] ${report.lines.join("; ")}`);
+        await recordDurableRepairNotice(this.conversation, report);
+      }
+      return await this.conversation.watch(SESSION_CONTEXT);
     }
   }
 

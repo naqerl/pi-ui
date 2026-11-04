@@ -71,6 +71,8 @@ export interface ChatMessage {
   notice?: ChatNotice | QueuedNotice;
   /** Set on the pi-ui version-update note, so the chat can paint it with the theme accent. */
   version?: { from: string | null; to: string };
+  /** Set on a durable-repair system line, so it gets its own carded row instead of a warning. */
+  repair?: { baseRevision: number };
   /** True when a server restart cut off this assistant response. */
   partial?: boolean;
   /** Input and output tokens for this assistant call. Omitted when the call also produced activity. */
