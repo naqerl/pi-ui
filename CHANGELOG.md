@@ -1,3 +1,7 @@
+## 1.6.91 - 2026-11-04
+
+- feat(events): every MCP event names its subscription and topic, the list groups by topic with counts and can be filtered by chips; events now carry `subscriptionId`/`topic` from the collector (5qr8).
+
 ## 1.6.89 - 2026-11-04
 
 - test(tasks): poll for the create request the optimistic task card precedes, instead of reading the route counter once and racing the fetch on a loaded runner.
