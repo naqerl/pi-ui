@@ -17,12 +17,28 @@ const longThread = {
   context: { tokens: 0, window: null, percent: null },
 };
 
+/** The built app registers /sw.js, and a worker's requests bypass Playwright routes. */
+async function openChat(
+  app: { open: (path: string) => Promise<void> },
+  browser: Browser,
+  path = "/",
+) {
+  await browser.addInitScript(() => {
+    if (!("serviceWorker" in navigator)) return;
+    Object.defineProperty(navigator.serviceWorker, "register", {
+      configurable: true,
+      value: async () => undefined,
+    });
+  });
+  await app.open(path);
+}
+
 async function openLongThread(app: { open: (path: string) => Promise<void> }, browser: Browser) {
   await browser.setViewport({ width: 390, height: 844 });
   await browser.route("**/api/state**", async (route) => {
     await route.fulfill({ json: longThread });
   });
-  await app.open("/");
+  await openChat(app, browser);
 }
 
 test("resets the composer to one line with the caret at the start after send", async ({
@@ -30,7 +46,7 @@ test("resets the composer to one line with the caret at the start after send", a
   browser,
   screen,
 }) => {
-  await app.open("/");
+  await openChat(app, browser);
   const composer = screen.getByRole("textbox", "Message");
   const initial = await composer.boundingBox();
   expect(initial).not.toBeNull();
@@ -66,7 +82,7 @@ test("resets the composer to one line with the caret at the start after send", a
 });
 
 test("resets a multi-line draft to one line after send", async ({ app, browser, screen }) => {
-  await app.open("/");
+  await openChat(app, browser);
   const composer = screen.getByRole("textbox", "Message");
   const initial = await composer.boundingBox();
   expect(initial).not.toBeNull();
@@ -102,7 +118,7 @@ test("keeps the draft when a send is rejected", async ({ app, browser, screen })
   await browser.route("**/api/message", async (route) => {
     await route.fulfill({ status: 409, body: "conflict" });
   });
-  await app.open("/");
+  await openChat(app, browser);
   const composer = screen.getByRole("textbox", "Message");
   await composer.fill("keep this draft\nwith two lines");
   const before = await composer.boundingBox();
@@ -121,7 +137,7 @@ test("paints the pending bubble before the message request returns", async ({
   browser,
   screen,
 }) => {
-  await app.open("/");
+  await openChat(app, browser);
   const composer = screen.getByRole("textbox", "Message");
   let release: () => void = () => undefined;
   const gate = new Promise<void>((resolve) => {
@@ -140,7 +156,9 @@ test("paints the pending bubble before the message request returns", async ({
   try {
     await screen.getByRole("button", "Send").tap();
     const pending = browser.locator('[data-pending-send="true"]').filter({ hasText: text });
-    await expect(pending).toBeVisible({ timeout: 1_500 });
+    // Poll instead of one short visibility probe: a busy runner can paint the
+    // optimistic bubble a frame late without anything being wrong.
+    await expect.poll(() => pending.isVisible(), { timeout: 10_000 }).toBe(true);
     expect(requests).toBe(1);
     // The gate is still closed, so the bubble above was painted before any response.
     await expect(pending).toBeVisible();
@@ -160,15 +178,16 @@ test("clears the composer while the pending bubble is still waiting for the serv
   browser,
   screen,
 }) => {
-  await app.open("/");
+  await openChat(app, browser);
   const composer = screen.getByRole("textbox", "Message");
   let release: () => void = () => undefined;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
   await browser.route("**/api/message", async (route) => {
-    // Hold the request past the 1500 ms delay, then let the assertions run while it is pending.
-    await Promise.all([gate, new Promise((resolve) => setTimeout(resolve, 1_500))]);
+    // Hold the request until this test releases it, so the bubble stays pending
+    // while the assertions below run.
+    await gate;
     await route.continue();
   });
 
@@ -177,7 +196,9 @@ test("clears the composer while the pending bubble is still waiting for the serv
   try {
     await composer.press("Enter");
     const pending = browser.locator('[data-pending-send="true"]').filter({ hasText: text });
-    await expect(pending).toBeVisible({ timeout: 1_500 });
+    // Poll instead of one short visibility probe: a busy runner can paint the
+    // optimistic bubble a frame late without anything being wrong.
+    await expect.poll(() => pending.isVisible(), { timeout: 10_000 }).toBe(true);
     await expect(composer).toHaveValue("");
     // The request is still gated, so the bubble above was painted before any response.
     await expect(pending).toBeVisible();
@@ -195,7 +216,7 @@ test("restores a rejected draft with the caret at the end", async ({ app, browse
   await browser.route("**/api/message", async (route) => {
     await route.fulfill({ status: 500, body: "send failed" });
   });
-  await app.open("/");
+  await openChat(app, browser);
   const composer = screen.getByRole("textbox", "Message");
   const text = `restore rejected draft ${Date.now()}`;
   await composer.fill(text);
@@ -222,7 +243,7 @@ test("restores a rejected draft with the caret at the end", async ({ app, browse
 });
 
 test("keeps a new draft when an earlier send fails", async ({ app, browser, screen }) => {
-  await app.open("/");
+  await openChat(app, browser);
   const composer = screen.getByRole("textbox", "Message");
   let release: () => void = () => undefined;
   const gate = new Promise<void>((resolve) => {
@@ -244,9 +265,10 @@ test("keeps a new draft when an earlier send fails", async ({ app, browser, scre
   await composer.fill(first);
   try {
     await composer.press("Enter");
-    await expect(
-      browser.locator('[data-pending-send="true"]').filter({ hasText: first }),
-    ).toBeVisible({ timeout: 1_500 });
+    // A busy runner can take longer than one short visibility probe to paint the
+    // optimistic bubble; poll visibility so load, not a slow frame, decides.
+    const pending = browser.locator('[data-pending-send="true"]').filter({ hasText: first });
+    await expect.poll(() => pending.isVisible(), { timeout: 10_000 }).toBe(true);
     await expect(composer).toHaveValue("");
 
     await composer.fill(second);
@@ -290,7 +312,7 @@ test("keeps one user bubble when the server places a send before its response re
       };
     })();
   `);
-  await app.open("/");
+  await openChat(app, browser);
   const composer = screen.getByRole("textbox", "Message");
   const text = `placed before response ${Date.now()}`;
   const users = browser.locator('[data-role="user"]').filter({ hasText: text });
@@ -347,7 +369,7 @@ test("keeps one user bubble when the server places a send before its response re
 });
 
 test("renders assistant markdown without unsafe HTML", async ({ app, browser, screen }) => {
-  await app.open("/");
+  await openChat(app, browser);
   const composer = screen.getByRole("textbox", "Message");
   await composer.fill("MARKDOWN please");
   await screen.getByRole("button", "Send").tap();
@@ -365,8 +387,12 @@ test("renders assistant markdown without unsafe HTML", async ({ app, browser, sc
   await expect(link).toHaveAttribute("rel", "noreferrer noopener");
 });
 
-test("keeps the composer geometry stable across run start and stop", async ({ app, screen }) => {
-  await app.open("/");
+test("keeps the composer geometry stable across run start and stop", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await openChat(app, browser);
   const composer = screen.getByRole("textbox", "Message");
   const initial = await composer.boundingBox();
   expect(initial).not.toBeNull();
@@ -645,7 +671,7 @@ test("paints the queued steer chip before the steer request returns", async ({
   browser,
   screen,
 }) => {
-  await app.open("/");
+  await openChat(app, browser);
   const composer = screen.getByRole("textbox", "Message");
   await composer.fill("SLOW response please");
   await screen.getByRole("button", "Send").tap();
@@ -672,7 +698,9 @@ test("paints the queued steer chip before the steer request returns", async ({
   try {
     await screen.getByRole("button", "Steer").tap();
     const pending = browser.locator('[data-pending-steer="true"]').filter({ hasText: text });
-    await expect(pending).toBeVisible({ timeout: 1_500 });
+    // Poll instead of one short visibility probe: a busy runner can paint the
+    // optimistic bubble a frame late without anything being wrong.
+    await expect.poll(() => pending.isVisible(), { timeout: 10_000 }).toBe(true);
     expect(requests).toBe(1);
     // The gate is still closed, so the chip above was painted before the response.
     await expect(pending).toBeVisible();

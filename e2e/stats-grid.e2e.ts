@@ -140,7 +140,7 @@ test("drags a widget to the top, resizes it to half, and keeps both after reload
       sections: document.querySelectorAll('[data-testid="dashboard-section"]').length,
       widgets: document.querySelectorAll("[data-widget-id]").length,
     })),
-  ).toEqual({ add: 0, sections: 1, widgets: 4 });
+  ).toEqual({ add: 0, sections: 1, widgets: 5 });
 
   await dragPointer(browser, '[data-widget-id="tokens"]', '[data-widget-id="context"]', 0, -18);
   await expect
@@ -154,7 +154,7 @@ test("drags a widget to the top, resizes it to half, and keeps both after reload
         }),
       { timeout: 5_000 },
     )
-    .toEqual(["tokens", "context", "mcp", "mcp-events"]);
+    .toEqual(["tokens", "context", "mcp", "mcp-events", "task-reopens"]);
 
   await expect.poll(() => patches.length, { timeout: 5_000 }).toBeGreaterThan(0);
   const first = patches.at(-1);
@@ -273,6 +273,7 @@ test("creates a section through the agent, then renames and deletes it", async (
               { id: "tokens", span: "full" },
               { id: "mcp", span: "full" },
               { id: "mcp-events", span: "full" },
+              { id: "task-reopens", span: "full" },
             ],
           },
           { title: "Agent", widgets: [{ id: "agent-note", span: "full" }] },
@@ -302,7 +303,7 @@ test("creates a section through the agent, then renames and deletes it", async (
   ).toEqual({
     add: 0,
     titles: [null, "Agent"],
-    widgets: ["context", "tokens", "mcp", "mcp-events", "agent-note"],
+    widgets: ["context", "tokens", "mcp", "mcp-events", "task-reopens", "agent-note"],
   });
 
   const title = screen.getByRole("textbox", "Section title").first();
@@ -321,7 +322,7 @@ test("creates a section through the agent, then renames and deletes it", async (
       );
     })
     .toEqual([
-      ["context", "mcp-events", "tokens"],
+      ["context", "mcp-events", "task-reopens", "tokens"],
       ["agent-note", "mcp"],
     ]);
 
@@ -337,7 +338,7 @@ test("creates a section through the agent, then renames and deletes it", async (
       };
     })
     .toEqual({
-      sections: [["agent-note", "context", "mcp", "mcp-events", "tokens"]],
+      sections: [["agent-note", "context", "mcp", "mcp-events", "task-reopens", "tokens"]],
       titles: ["Runtime"],
     });
 });
@@ -366,6 +367,7 @@ test("hold-drags a card body but leaves a short tap alone", async ({ app, browse
               { id: "tokens", span: "full", x: 0, y: 4, w: 12, h: 4 },
               { id: "mcp", span: "full", x: 0, y: 8, w: 12, h: 4 },
               { id: "mcp-events", span: "full", x: 0, y: 12, w: 12, h: 4 },
+              { id: "task-reopens", span: "full", x: 0, y: 16, w: 12, h: 4 },
             ],
           },
         ],
@@ -475,6 +477,7 @@ test("applies an external PATCH title and y spacing while the page is open", asy
               { id: "tokens", span: "full", x: 0, y: 10, w: 12, h: 4 },
               { id: "mcp", span: "full", x: 0, y: 20, w: 12, h: 4 },
               { id: "mcp-events", span: "full", x: 0, y: 30, w: 12, h: 4 },
+              { id: "task-reopens", span: "full", x: 0, y: 40, w: 12, h: 4 },
             ],
           },
         ],
@@ -515,6 +518,7 @@ test("packs a free drag collision into the persisted layout", async ({ app, brow
               { id: "tokens", span: "full", x: 0, y: 4, w: 12, h: 4 },
               { id: "mcp", span: "full", x: 0, y: 8, w: 12, h: 4 },
               { id: "mcp-events", span: "full", x: 0, y: 12, w: 12, h: 4 },
+              { id: "task-reopens", span: "full", x: 0, y: 30, w: 12, h: 4 },
             ],
           },
         ],
@@ -566,7 +570,7 @@ test("packs a free drag collision into the persisted layout", async ({ app, brow
     )
     .toEqual({
       overlap: false,
-      stored: { context: 0, tokens: 5, mcp: 9, "mcp-events": 13 },
-      rendered: { context: 0, tokens: 5, mcp: 9, "mcp-events": 13 },
+      stored: { context: 0, tokens: 5, mcp: 9, "mcp-events": 13, "task-reopens": 30 },
+      rendered: { context: 0, tokens: 5, mcp: 9, "mcp-events": 13, "task-reopens": 30 },
     });
 });
