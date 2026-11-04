@@ -42,6 +42,15 @@ export function formatDateTime(value: TimestampValue): string {
   return formatter({ dateStyle: "medium", timeStyle: "medium" }).format(date);
 }
 
+/** A compact whole-minute duration such as "3h 12m" or "48m". */
+export function formatDurationMinutes(minutes: number): string {
+  const total = Math.max(0, Math.round(minutes));
+  const hours = Math.floor(total / 60);
+  const rest = total % 60;
+  if (hours === 0) return `${rest}m`;
+  return rest === 0 ? `${hours}h` : `${hours}h ${rest}m`;
+}
+
 /** A short local date such as "Thu, Oct 29", with the year only when it is not `thisYear`. */
 export function formatDay(value: TimestampValue, thisYear?: number): string {
   const date = asDate(value);

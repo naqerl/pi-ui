@@ -14,6 +14,8 @@ import {
 import type {
   Task,
   TaskCompletion,
+  TaskDurationProjectStats,
+  TaskDurationStats,
   TaskLedger,
   TaskReopen,
   TaskReopenProjectStats,
@@ -958,5 +960,71 @@ export function taskReopenStats(tasks: readonly Task[], now: number = Date.now()
         b.reopenedTasks - a.reopenedTasks ||
         (a.project ?? "").localeCompare(b.project ?? ""),
     ),
+  };
+}
+
+/** The ledger spell for a task's close time; `completedAt` is the current field. */
+function taskClosedAt(task: Task): string | null {
+  const legacy = (task as Task & { closedAt?: unknown }).closedAt;
+  if (typeof legacy === "string") return legacy;
+  return typeof task.completedAt === "string" ? task.completedAt : null;
+}
+
+/**
+ * Nearest-rank percentile over an ascending list: rank = ceil(p * n), then the
+ * value at that one-based rank. With no samples the result is zero.
+ */
+function nearestRank(sorted: readonly number[], fraction: number): number {
+  if (sorted.length === 0) return 0;
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(fraction * sorted.length) - 1));
+  return sorted[index] ?? 0;
+}
+
+/** Closed-task durations and their p50/p90/average, grouped by the task's project. */
+export function taskDurationStats(
+  tasks: readonly Task[],
+  now: number = Date.now(),
+): TaskDurationStats {
+  // Mirrors taskReopenStats' clock argument; a duration does not depend on when it is read.
+  void now;
+  const durations: number[] = [];
+  const projects = new Map<string, { project: string; durations: number[] }>();
+  for (const task of tasks) {
+    if (task.status !== "done") continue;
+    const closed = taskClosedAt(task);
+    if (closed === null) continue;
+    const created = Date.parse(task.createdAt);
+    const finished = Date.parse(closed);
+    if (!Number.isFinite(created) || !Number.isFinite(finished)) continue;
+    const minutes = (finished - created) / 60_000;
+    if (!(minutes > 0)) continue;
+    durations.push(minutes);
+    const project = task.project?.trim() ? task.project : "(none)";
+    const key = project.toLocaleLowerCase("en-US");
+    const row = projects.get(key) ?? { project, durations: [] };
+    row.durations.push(minutes);
+    projects.set(key, row);
+  }
+  durations.sort((a, b) => a - b);
+  const total = durations.reduce((sum, value) => sum + value, 0);
+  const projectRows: TaskDurationProjectStats[] = [...projects.values()]
+    .map((row) => {
+      row.durations.sort((a, b) => a - b);
+      const sum = row.durations.reduce((acc, value) => acc + value, 0);
+      return {
+        project: row.project,
+        count: row.durations.length,
+        avgMinutes: sum / row.durations.length,
+        p90Minutes: nearestRank(row.durations, 0.9),
+      };
+    })
+    .sort((a, b) => b.count - a.count || a.project.localeCompare(b.project));
+  return {
+    count: durations.length,
+    avgMinutes: durations.length === 0 ? 0 : total / durations.length,
+    p50Minutes: nearestRank(durations, 0.5),
+    p90Minutes: nearestRank(durations, 0.9),
+    longestMinutes: durations.at(-1) ?? 0,
+    projects: projectRows,
   };
 }

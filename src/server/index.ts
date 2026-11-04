@@ -39,7 +39,7 @@ import { type DurableSessionOptions, openDurableSession, SESSION_CONTEXT } from 
 import { StreamHub } from "./stream-hub.js";
 import { TaskActivityTracker } from "./task-activity.js";
 import type { TaskBridge } from "./task-tools.js";
-import { TaskError, TaskStore, taskReopenStats } from "./tasks.js";
+import { TaskError, TaskStore, taskDurationStats, taskReopenStats } from "./tasks.js";
 import { liveDataDirInTestError } from "./test-mode.js";
 import { injectTheme, resolveTheme, themeManifest, writeThemeSlug } from "./themes.js";
 import { windowRequestFromQuery } from "./transcript-window.js";
@@ -339,12 +339,14 @@ dashboard.setHost({
       jobs: builtinJobs(),
       session: builtinSession(),
       taskReopens: taskReopenStats(taskStore.ledger().tasks),
+      taskDurations: taskDurationStats(taskStore.ledger().tasks),
     };
   },
   builtinsLite: () => ({
     jobs: builtinJobs(),
     session: builtinSession(),
     taskReopens: taskReopenStats(taskStore.ledger().tasks),
+    taskDurations: taskDurationStats(taskStore.ledger().tasks),
   }),
   notify(text) {
     void chat.submit(text, "queue").catch((error: unknown) => {

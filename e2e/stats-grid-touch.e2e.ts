@@ -51,6 +51,7 @@ const EXTRA_DEFAULT_IDS = [
   "hetzner-cost",
   "go-usage",
   "bg-jobs",
+  "task-durations",
 ];
 
 type GridBrowser = {

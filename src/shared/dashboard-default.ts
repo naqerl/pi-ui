@@ -13,7 +13,7 @@ import {
 } from "./dashboard.js";
 
 /** Bump when the default board changes; older files surface it for reset. */
-export const DEFAULT_DASHBOARD_VERSION = 2;
+export const DEFAULT_DASHBOARD_VERSION = 3;
 
 const MCP_STATUS: Widget = {
   id: "mcp",
@@ -55,6 +55,20 @@ const TASK_REOPENS: Widget = {
     label: "label",
     value: "value",
     empty: "=no tasks reopened yet",
+  },
+};
+
+const TASK_DURATIONS: Widget = {
+  id: "task-durations",
+  title: "Task duration",
+  kind: "list",
+  source: { type: "builtin", name: "task_durations" },
+  mapping: {
+    items: "rows",
+    key: "key",
+    label: "label",
+    value: "value",
+    empty: "=no closed tasks yet",
   },
 };
 
@@ -110,6 +124,7 @@ export const DEFAULT_DASHBOARD: {
     MCP_STATUS,
     MCP_EVENTS,
     TASK_REOPENS,
+    TASK_DURATIONS,
     {
       id: "hetzner",
       title: "Hetzner",
@@ -165,6 +180,7 @@ export const DEFAULT_DASHBOARD: {
         { id: "mcp", span: "full", x: 0, y: 4, w: 12, h: DEFAULT_WIDGET_ROWS },
         { id: "mcp-events", span: "full", x: 0, y: 8, w: 12, h: DEFAULT_WIDGET_ROWS },
         { id: "task-reopens", span: "full", x: 0, y: 12, w: 12, h: DEFAULT_WIDGET_ROWS },
+        { id: "task-durations", span: "full", x: 0, y: 16, w: 12, h: DEFAULT_WIDGET_ROWS },
       ],
     },
     {

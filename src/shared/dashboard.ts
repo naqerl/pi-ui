@@ -4,7 +4,7 @@
  * and the client.
  */
 import type { BuiltinName } from "./dashboard-sources.js";
-import type { TaskReopenStats, UsageSummary } from "./types.js";
+import type { TaskDurationStats, TaskReopenStats, UsageSummary } from "./types.js";
 
 export const WIDGET_KINDS = ["stat", "list", "table", "sparkline", "markdown", "status"] as const;
 export type WidgetKind = (typeof WIDGET_KINDS)[number];
@@ -247,6 +247,7 @@ export interface DashboardState {
     jobs: BuiltinJob[];
     session: BuiltinSession;
     taskReopens?: TaskReopenStats;
+    taskDurations?: TaskDurationStats;
   };
   /** True while some client has the dashboard open, so polls run. */
   polling: boolean;

@@ -1262,6 +1262,9 @@ export function StatsView({
       ...(dashboard?.builtins.taskReopens === undefined
         ? {}
         : { taskReopens: dashboard.builtins.taskReopens }),
+      ...(dashboard?.builtins.taskDurations === undefined
+        ? {}
+        : { taskDurations: dashboard.builtins.taskDurations }),
     }),
     [
       stats.usage,
@@ -1271,6 +1274,7 @@ export function StatsView({
       dashboard?.builtins.jobs,
       dashboard?.builtins.session,
       dashboard?.builtins.taskReopens,
+      dashboard?.builtins.taskDurations,
     ],
   );
   const [builtinValues, setBuiltinValues] = useState<

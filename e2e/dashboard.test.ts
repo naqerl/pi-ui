@@ -16,6 +16,7 @@ import {
 } from "../src/server/dashboard.js";
 import { type PollOutcome, type PollRun, runPollScript } from "../src/server/dashboard-runner.js";
 import { createDashboardTools } from "../src/server/dashboard-tools.js";
+import { taskDurationStats } from "../src/server/tasks.js";
 import {
   type DashboardState,
   evalPath,
@@ -34,6 +35,7 @@ import {
   readSource,
 } from "../src/shared/dashboard-sources.js";
 import { formatTime } from "../src/shared/time.js";
+import type { Task } from "../src/shared/types.js";
 
 const dirs: string[] = [];
 let http: Server;
@@ -397,6 +399,7 @@ test("the committed default dashboard is the operator board", () => {
       "mcp",
       "mcp-events",
       "task-reopens",
+      "task-durations",
       "hetzner",
       "hetzner-cost",
       "go-usage",
@@ -412,6 +415,109 @@ test("the committed default dashboard is the operator board", () => {
     config.widgets.map((item) => item.id),
   );
   assert.deepEqual(config.tombstones, []);
+});
+
+test("task durations render p50, p90 and average rows from closed tasks", async () => {
+  const base = {
+    status: "done" as const,
+    parentId: null,
+    blockedBy: [],
+    completion: null,
+  };
+  const tasks: Task[] = [
+    {
+      ...base,
+      id: "t30",
+      title: "Thirty",
+      project: "pi-ui",
+      createdAt: "2026-11-04T09:00:00.000Z",
+      completedAt: "2026-11-04T09:30:00.000Z",
+    },
+    {
+      ...base,
+      id: "t60",
+      title: "Sixty",
+      project: "PI-UI",
+      createdAt: "2026-11-04T09:00:00.000Z",
+      completedAt: "2026-11-04T10:00:00.000Z",
+    },
+    {
+      ...base,
+      id: "t180",
+      title: "Three hours",
+      project: "pi-ui",
+      createdAt: "2026-11-04T09:00:00.000Z",
+      completedAt: "2026-11-04T12:00:00.000Z",
+    },
+    {
+      ...base,
+      id: "open",
+      title: "Still open",
+      status: "open",
+      project: "pi-ui",
+      createdAt: "2026-11-04T09:00:00.000Z",
+      completedAt: null,
+    },
+    {
+      ...base,
+      id: "negative",
+      title: "Closed before it opened",
+      project: "pi-ui",
+      createdAt: "2026-11-04T12:00:00.000Z",
+      completedAt: "2026-11-04T09:00:00.000Z",
+    },
+  ];
+  const inputs = {
+    usage: null,
+    context: null,
+    mcp: { unavailable: [], servers: [] },
+    mcpEvents: { subscriptions: [], events: [], notice: null, revision: 0 },
+    jobs: [],
+    session: { conversationId: "c", model: null, run: "idle" },
+    taskDurations: taskDurationStats(tasks),
+  } as unknown as BuiltinInputs;
+  const data = (await readSource("task_durations", inputs)) as {
+    total: number;
+    p50: number;
+    p90: number;
+    avg: number;
+    rows: { key: string; label: string; value: string }[];
+  };
+  assert.equal(data.total, 3);
+  assert.deepEqual({ p50: data.p50, p90: data.p90, avg: data.avg }, { p50: 60, p90: 180, avg: 90 });
+  assert.deepEqual(
+    data.rows.map((row) => [row.label, row.value]),
+    [
+      ["p50", "1h"],
+      ["p90", "3h"],
+      ["avg", "1h 30m"],
+      ["pi-ui", "3 tasks · avg 1h 30m · p90 3h"],
+    ],
+  );
+  const widget = DEFAULT_DASHBOARD.widgets.find((item) => item.id === "task-durations");
+  assert.ok(widget);
+  const view = renderWidget(widget, data) as {
+    kind: string;
+    items: { label: string; value: string }[];
+    empty?: string;
+  };
+  assert.equal(view.kind, "list");
+  assert.deepEqual(
+    view.items.map((item) => [item.label, item.value]),
+    [
+      ["p50", "1h"],
+      ["p90", "3h"],
+      ["avg", "1h 30m"],
+      ["pi-ui", "3 tasks · avg 1h 30m · p90 3h"],
+    ],
+  );
+  const emptyData = await readSource("task_durations", {
+    ...inputs,
+    taskDurations: taskDurationStats([]),
+  });
+  const emptyView = renderWidget(widget, emptyData) as { items: unknown[]; empty?: string };
+  assert.deepEqual(emptyView.items, []);
+  assert.equal(emptyView.empty, "no closed tasks yet");
 });
 
 test("every registered source is described, has a sample and the default names it", () => {
