@@ -1,4 +1,4 @@
-import { test } from "@e2e-dev/web";
+import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
 const longLine = `const value = "${"x".repeat(480)}";`;
@@ -43,6 +43,31 @@ const tableSnapshot = {
     },
   ],
 };
+
+/** Wait until the pager and its wide code block are laid out before dispatching input. */
+async function waitForCodeBlock(browser: Browser) {
+  await expect
+    .poll(
+      () =>
+        browser.evaluate(() => {
+          const pager = document.querySelector("[data-testid=pager]");
+          const pre = document.querySelector("main pre");
+          const code = pre?.querySelector("code") ?? null;
+          if (
+            !(pager instanceof HTMLElement) ||
+            !(pre instanceof HTMLElement) ||
+            !(code instanceof HTMLElement)
+          ) {
+            return false;
+          }
+          const box = pager.getBoundingClientRect();
+          const blockBox = pre.getBoundingClientRect();
+          return box.width > 0 && box.height > 0 && blockBox.width > 0 && blockBox.height > 0;
+        }),
+      { timeout: 5_000 },
+    )
+    .toBe(true);
+}
 
 test("a wide markdown table hands a leftward swipe to the pager at its right edge", async ({
   app,
@@ -112,6 +137,7 @@ test("lets a wide code block keep a horizontal touch gesture", async ({ app, bro
   });
   await app.open("/");
   await expect(screen.getByText("Here is a wide block:", { exact: false })).toBeVisible();
+  await waitForCodeBlock(browser);
 
   const result = await browser.evaluate(async () => {
     const pager = document.querySelector("[data-testid=pager]");
@@ -249,6 +275,7 @@ test("lets a rightward swipe from a code block's left edge page back", async ({
   });
   await app.open("/");
   await expect(screen.getByText("Here is a wide block:", { exact: false })).toBeVisible();
+  await waitForCodeBlock(browser);
 
   const result = await browser.evaluate(async () => {
     const pager = document.querySelector("[data-testid=pager]");
@@ -341,11 +368,14 @@ test("still pages when the same gesture starts over empty chat space", async ({
   });
   await app.open("/");
   await expect(screen.getByText("Here is a wide block:", { exact: false })).toBeVisible();
+  // The code block can still be mounting while the message text is on screen;
+  // wait for both the pager and the laid-out block before dispatching the swipe.
+  await waitForCodeBlock(browser);
 
-  const page = await browser.evaluate(async () => {
+  const dispatched = await browser.evaluate(() => {
     const pager = document.querySelector("[data-testid=pager]");
     const pre = document.querySelector("main pre");
-    if (!(pager instanceof HTMLElement) || !(pre instanceof HTMLElement)) return null;
+    if (!(pager instanceof HTMLElement) || !(pre instanceof HTMLElement)) return false;
     const box = pager.getBoundingClientRect();
     const blockBox = pre.getBoundingClientRect();
     const startX = box.left + box.width * 0.8;
@@ -383,12 +413,20 @@ test("still pages when the same gesture starts over empty chat space", async ({
     fire("pointermove", startX - 24);
     fire("pointermove", endX);
     fire("pointerup", endX);
-    await new Promise<void>((resolve) => {
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-    });
-    return pager.getAttribute("data-page");
+    return true;
   });
-  expect(page).toBe("tasks");
+  expect(dispatched).toBe(true);
+  // The gesture settles through React's state flush, which a loaded runner can
+  // delay past the evaluate block; poll instead of sampling one frame.
+  await expect
+    .poll(
+      () =>
+        browser.evaluate(
+          () => document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
+        ),
+      { timeout: 5_000 },
+    )
+    .toBe("tasks");
 });
 
 test("lets a horizontal wheel scroll the block but pages at its left edge", async ({
@@ -402,6 +440,7 @@ test("lets a horizontal wheel scroll the block but pages at its left edge", asyn
   });
   await app.open("/");
   await expect(screen.getByText("Here is a wide block:", { exact: false })).toBeVisible();
+  await waitForCodeBlock(browser);
 
   const box = await browser.evaluate(() => {
     const pre = document.querySelector("main pre");
