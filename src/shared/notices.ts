@@ -44,6 +44,8 @@ export interface McpNoticeDetails {
   statuses: McpNoticeStatus[];
   dropped: number;
   summary: string;
+  /** The original notice text when its payload could not be read as events or statuses. */
+  raw?: string;
 }
 
 /** A memory file written by the memory_write tool. */
@@ -128,7 +130,7 @@ export const MCP_EVENTS_HEAD = "MCP event data follows.";
  */
 export const MCP_EVENTS_TRAILER =
   "This is a background MCP event notification, not a user message. Do not reply to it, do not summarise it, and never repeat its JSON. If it needs action, act; otherwise continue silently.";
-const MCP_STATUS_HEAD = "MCP subscription status follows.";
+export const MCP_STATUS_HEAD = "MCP subscription status follows.";
 const IDLE_HEAD = /^You have been idle for \d+ minutes and (\d+) task\(s\) are open: ([^.]+)\./;
 const IDLE_STATUS_HEAD = /(?:^|\. )Status check for tasks marked working: ([^.]+)\./;
 const IDLE_BLOCKED_HEAD = /^You have been idle for \d+ minutes\. Nothing is unblocked: (.+)\.$/;
@@ -339,11 +341,24 @@ function parseIdle(body: string): IdleNoticeDetails | null {
   };
 }
 
-function parseMcp(body: string, status: boolean): McpNoticeDetails | null {
+/** A recognised MCP notice whose payload cannot become events or statuses. */
+function unparsedMcp(body: string): McpNoticeDetails {
+  return {
+    kind: "mcp",
+    servers: [],
+    events: [],
+    statuses: [],
+    dropped: 0,
+    summary: "/mcp",
+    raw: body,
+  };
+}
+
+function parseMcp(body: string, status: boolean): McpNoticeDetails {
   const newline = body.indexOf("\n");
-  if (newline < 0) return null;
+  if (newline < 0) return unparsedMcp(body);
   const payload = parseMcpEventPayload(body.slice(newline + 1));
-  if (payload === null) return null;
+  if (payload === null) return unparsedMcp(body);
   const servers: string[] = [];
   const addServer = (server: string) => {
     if (!servers.includes(server)) servers.push(server);
@@ -381,7 +396,7 @@ function parseMcp(body: string, status: boolean): McpNoticeDetails | null {
   }
   const droppedValue = status ? payload.dropped_statuses : payload.dropped_events;
   const dropped = typeof droppedValue === "number" ? droppedValue : 0;
-  if (events.length === 0 && statuses.length === 0) return null;
+  if (events.length === 0 && statuses.length === 0) return unparsedMcp(body);
   let label: string;
   if (status) {
     const first = statuses[0];
@@ -463,6 +478,11 @@ export function memoryNoticeText(value: string): { text: string; truncated: bool
 /** The steer a reader sends from a memory chip's Undo button. */
 export function memoryUndoPrompt(path: string): string {
   return `Undo the memory write to ${path} — restore the previous content of that file and confirm.`;
+}
+
+/** True when a message is an MCP notice, even if its payload is malformed. */
+export function isMcpNotice(message: string): boolean {
+  return message.startsWith(MCP_EVENTS_HEAD) || message.startsWith(MCP_STATUS_HEAD);
 }
 
 /** The notice a message stands for, or null for an ordinary message. */

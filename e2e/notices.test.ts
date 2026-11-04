@@ -18,6 +18,7 @@ import {
 } from "../src/server/session.js";
 import {
   type ChatNotice,
+  isMcpNotice,
   MEMORY_NOTICE_TEXT_LIMIT,
   memoryUndoPrompt,
   parseNotice,
@@ -118,6 +119,13 @@ test("an MCP subscription status becomes a notice", () => {
   assert.ok(notice?.kind === "mcp");
   assert.equal(notice.summary, "MCP github: repo failed");
   assert.equal(notice.statuses[0]?.error, "401");
+});
+
+test("MCP recognition covers both notice heads, before their payload is parsed", () => {
+  assert.equal(isMcpNotice(EVENTS), true);
+  assert.equal(isMcpNotice(STATUS), true);
+  assert.equal(isMcpNotice("hello"), false);
+  assert.equal(isMcpNotice("[background job j1 started]"), false);
 });
 
 function chipMarkup(notice: ChatNotice): string {
@@ -257,11 +265,23 @@ test("a memory write becomes a persistent chip with an undo steer", async () => 
   );
 });
 
-test("ordinary messages and broken payloads are not notices", () => {
+test("ordinary messages are not notices, while a broken MCP payload is a raw chip", () => {
   assert.equal(parseNotice("hello"), null);
   assert.equal(parseNotice("[background job j1 started]"), null);
-  assert.equal(parseNotice(`${EVENTS}{not json`), null);
-  assert.equal(parseNotice(`${EVENTS}${JSON.stringify({ events: [] })}`), null);
+
+  const broken = parseNotice(`${EVENTS}{not json`);
+  assert.ok(broken?.kind === "mcp");
+  assert.equal(broken.summary, "/mcp");
+  assert.equal(broken.raw, `${EVENTS}{not json`);
+  assert.equal(broken.events.length, 0);
+
+  const empty = parseNotice(`${EVENTS}${JSON.stringify({ events: [] })}`);
+  assert.ok(empty?.kind === "mcp");
+  assert.equal(empty.summary, "/mcp");
+
+  const status = parseNotice(`${STATUS}{not json`);
+  assert.ok(status?.kind === "mcp");
+  assert.equal(status.summary, "/mcp");
 });
 
 const stoppedNote =

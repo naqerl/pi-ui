@@ -8,7 +8,7 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { OperatorNoticeRecord, TaskDecisionNoticeRecord } from "../shared/notices.js";
-import { MCP_EVENTS_HEAD } from "../shared/notices.js";
+import { isMcpNotice, MCP_EVENTS_HEAD } from "../shared/notices.js";
 import { parseCompletion, parseReopenReason, TASK_BODY_MAX_LENGTH } from "../shared/tasks.js";
 import type { TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
@@ -374,7 +374,7 @@ boot.mcp.setSubmit((text, options) => {
     ? dropMcpEventsBefore(text, boot.mcp.startedAt)
     : text;
   if (filtered === null) return;
-  const submission = filtered.startsWith(MCP_EVENTS_HEAD)
+  const submission = isMcpNotice(filtered)
     ? chat.submitMcpEventNotice(filtered, options.deliverAs)
     : chat.submit(filtered, deliverAs);
   void submission.catch((error: unknown) => {
