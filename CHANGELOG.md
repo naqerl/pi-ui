@@ -1,3 +1,9 @@
+## 1.6.87 - 2026-11-04
+
+- feat(dashboard): every builtin widget source now goes through the same registry as poll widgets, with a committed default board, tombstones for deleted widgets and a reset that restores the default (69rj).
+- fix(durable): detect and repair a torn live document instead of failing the turn, plus a `durable-doctor` CLI to inspect and heal one by hand (3zed).
+- fix(e2e): restore the five specs 1.6.86 broke — the widget counts and the theme polls — so CI is green again (xfw2b).
+
 ## 1.6.86 - 2026-11-04
 
 - feat(stats): drive plot and status colours from the theme palette, so charts follow the active theme instead of fixed hues (xfw2).
