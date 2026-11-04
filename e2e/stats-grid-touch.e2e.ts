@@ -51,7 +51,6 @@ const EXTRA_DEFAULT_IDS = [
   "hetzner-cost",
   "go-usage",
   "bg-jobs",
-  "task-reopens",
 ];
 
 type GridBrowser = {
@@ -59,7 +58,7 @@ type GridBrowser = {
   evaluate<T>(fn: () => Promise<T> | T): Promise<T>;
 };
 
-/** Keep the four-widget Session board these grid assertions were written for. */
+/** Keep the five-widget Session board these grid assertions were written for. */
 async function resetMinimalDashboard(browser: GridBrowser) {
   await browser.evaluate(async (ids) => {
     const reset = await fetch("/api/dashboard/reset", { method: "POST" });
@@ -81,6 +80,7 @@ async function resetMinimalDashboard(browser: GridBrowser) {
               { id: "tokens", span: "full" },
               { id: "mcp", span: "full" },
               { id: "mcp-events", span: "full" },
+              { id: "task-reopens", span: "full" },
             ],
           },
         ],
@@ -92,7 +92,7 @@ async function resetMinimalDashboard(browser: GridBrowser) {
   await expect.poll(async () => (await readDashboard(browser)).layout.sections.length).toBe(1);
   await expect
     .poll(async () => (await readDashboard(browser)).widgets.map((widget) => widget.id))
-    .toEqual(["context", "tokens", "mcp", "mcp-events"]);
+    .toEqual(["context", "tokens", "mcp", "mcp-events", "task-reopens"]);
 }
 
 const pinValues = [10, 20, 30, 40, 50, 60, 70, 80];
