@@ -51,6 +51,7 @@ import { createAppRegistry } from "./app-registry.js";
 import type { BillionContextInline } from "./billion-context.js";
 import type { DashboardManager } from "./dashboard.js";
 import type { DiagramBridge } from "./diagram-tools.js";
+import { type DurableDoctorReport, durableDoctor, durableRepairNotice } from "./durable-doctor.js";
 import type { JobManager } from "./jobs.js";
 import type { McpRuntime } from "./mcp-runtime.js";
 import type { SnapshotCache } from "./memory/snapshot.js";
@@ -156,6 +157,15 @@ const OperatorNoticeEntry = defineEntry<{
 
 export const OPERATOR_NOTICE_ENTRY_KIND = OperatorNoticeEntry.kind;
 
+/** A repaired durable document, shown once in the transcript rather than as a per-request error. */
+const DurableRepairEntry = defineEntry<{
+  text: string;
+  kind: string;
+  baseRevision: number;
+  droppedToolCalls: number;
+  createdAt: string;
+}>("ui.durable-repair");
+
 export interface DurableSessionOptions {
   readonly cwd: string;
   readonly models: Parameters<typeof HarnessImpl.open>[1]["models"];
@@ -200,6 +210,8 @@ export interface DurableSessionBoot {
   readonly model: ModelRef | undefined;
   /** pi-ui's own version from package.json. */
   readonly version: string;
+  /** Re-run the durable doctor against this boot's store (used before a view is resumed). */
+  readonly repairDurableState: () => Promise<DurableDoctorReport>;
 }
 
 export async function openDurableSession(
@@ -209,6 +221,19 @@ export async function openDurableSession(
   const databasePath = join(dataDir, "pi.sqlite3");
   const currentPath = join(dataDir, "current.json");
   await mkdir(dataDir, { recursive: true });
+
+  // Repair a torn materialised view before the harness reads it. This is best-effort: a busy or
+  // locked store must not make the server unbootable; ChatService's watch rescue retries later.
+  const repairDurableState = () => durableDoctor({ databasePath, repair: true });
+  let durableReport: DurableDoctorReport | undefined;
+  try {
+    durableReport = await repairDurableState();
+    if (durableReport.repaired) {
+      console.warn(`[durable] ${durableReport.lines.join("; ")}`);
+    }
+  } catch (error) {
+    console.error("[durable] boot doctor failed; continuing", error);
+  }
 
   const storage = await openNodeSqliteStorage(databasePath);
   const {
@@ -306,6 +331,7 @@ export async function openDurableSession(
     await appendInterruptionNote(conversation, runMarker);
   }
   const version = await recordVersion(conversation, dataDir, resumed);
+  if (durableReport !== undefined) await recordDurableRepairNotice(conversation, durableReport);
 
   return {
     harness,
@@ -327,7 +353,51 @@ export async function openDurableSession(
     operatorTools,
     model,
     version,
+    repairDurableState,
   };
+}
+
+/** Put one system line in the chat for a repair that happened at boot. */
+export async function recordDurableRepairNotice(
+  conversation: Conversation,
+  report: DurableDoctorReport,
+): Promise<void> {
+  const text = durableRepairNotice(report, conversation.id);
+  if (text === undefined) return;
+  const repairedFor = (kind: string) =>
+    report.documents.find(
+      (document) =>
+        document.repaired && document.kind === kind && document.conversationId === conversation.id,
+    );
+  const repaired = repairedFor("pi.live") ?? repairedFor("pi.agent") ?? repairedFor("pi.inbox");
+  if (repaired === undefined) return;
+  try {
+    const context = await conversation.context(SESSION_CONTEXT);
+    const already = context.entries.some(
+      (entry) =>
+        entry.kind === DurableRepairEntry.kind &&
+        isRecord(entry.data) &&
+        entry.data.text === text &&
+        entry.data.baseRevision === repaired.baseRevision,
+    );
+    if (already) return;
+    await conversation.commit(
+      (tx) =>
+        tx.appendEntry(DurableRepairEntry, conversation.id, {
+          data: {
+            text,
+            kind: repaired.kind,
+            baseRevision: repaired.baseRevision,
+            droppedToolCalls: repaired.residueDropped.length,
+            createdAt: new Date().toISOString(),
+          },
+        }),
+      SESSION_CONTEXT,
+    );
+    console.log(`[durable] ${text}`);
+  } catch (error) {
+    console.error("[durable] could not record the repair notice", error);
+  }
 }
 
 /**
@@ -765,6 +835,20 @@ export function buildTranscript(
             typeof entry.data.stopped === "boolean"
               ? entry.data.stopped
               : note.startsWith("The previous run was stopped"),
+        },
+      });
+      continue;
+    }
+    if (kind === DurableRepairEntry.kind) {
+      if (!isRecord(entry.data) || typeof entry.data.text !== "string") continue;
+      messages.push({
+        id: `m-${entry.id}`,
+        role: "system",
+        text: entry.data.text,
+        timestamp: entryTimestamp(entry.data),
+        order: entry.id * 10_000,
+        repair: {
+          baseRevision: typeof entry.data.baseRevision === "number" ? entry.data.baseRevision : 0,
         },
       });
       continue;
