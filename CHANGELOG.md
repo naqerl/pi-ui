@@ -1,3 +1,8 @@
+## 1.6.88 - 2026-11-04
+
+- fix(dashboard): the grid specs seed the five-widget board they patch, so the layout endpoint no longer rejects a widget the reset had just tombstoned (69rjb).
+- fix(composer): C-j focuses the composer on the tasks page instead of paging to chat, keeping the draft and the caret (bmk3).
+
 ## 1.6.87 - 2026-11-04
 
 - feat(dashboard): every builtin widget source now goes through the same registry as poll widgets, with a committed default board, tombstones for deleted widgets and a reset that restores the default (69rj).
