@@ -1,23 +1,13 @@
 /**
  * The agent-editable dashboard: widget config, the path mapper that turns
- * source data into a widget's view, token masking, and the builtin sources.
- * Shared by the server (poll and static widgets) and the client (builtins).
+ * source data into a widget's view, and token masking. Shared by the server
+ * and the client.
  */
-import type { ContextUsage, McpEventsState, McpStatus, UsageSummary } from "./types.js";
+import type { BuiltinName } from "./dashboard-sources.js";
+import type { UsageSummary } from "./types.js";
 
 export const WIDGET_KINDS = ["stat", "list", "table", "sparkline", "markdown", "status"] as const;
 export type WidgetKind = (typeof WIDGET_KINDS)[number];
-
-export const BUILTIN_SOURCES = [
-  "tokens",
-  "context",
-  "cache",
-  "mcp",
-  "mcp_events",
-  "jobs",
-  "session",
-] as const;
-export type BuiltinName = (typeof BUILTIN_SOURCES)[number];
 
 export const WIDGET_SPANS = ["full", "half", "third"] as const;
 export type WidgetSpan = (typeof WIDGET_SPANS)[number];
@@ -184,12 +174,11 @@ export interface DashboardLayout {
 }
 
 export interface DashboardConfig {
-  version: 1;
-  /**
-   * The last set of default widgets this file was given. A newer pi-ui adds the
-   * defaults introduced since then once; a default removed later stays removed.
-   */
-  seeded: number;
+  version: number;
+  /** Ids the user deleted; seeding never brings them back. */
+  tombstones: string[];
+  /** Set when the file was written by an older default; lets the UI offer reset. */
+  defaultVersion?: number;
   widgets: Widget[];
   layout: DashboardLayout;
 }
@@ -257,6 +246,8 @@ export interface DashboardState {
   builtins: { jobs: BuiltinJob[]; session: BuiltinSession };
   /** True while some client has the dashboard open, so polls run. */
   polling: boolean;
+  /** Present when a newer default board is available; offer reset. */
+  defaultVersion?: number;
 }
 
 export const MAX_WIDGETS = 40;
@@ -785,26 +776,10 @@ export function maskView(view: WidgetView): WidgetView {
 
 // ---------- builtin sources ----------
 
-export interface BuiltinInputs {
-  usage: UsageSummary | null;
-  context: ContextUsage | null;
-  mcp: McpStatus;
-  mcpEvents: McpEventsState;
-  jobs: BuiltinJob[];
-  session: BuiltinSession;
-}
-
-/** Client-only display hooks; the server deliberately leaves these values untouched. */
-export interface BuiltinRenderOptions {
-  /** Formats an event's UTC timestamp in the browser's timezone. */
-  formatTime?: (timestamp: string) => string;
-}
-
 /** Kept for compatibility with code and tests that size the MCP event feed. */
 export const MCP_EVENT_LIMIT = 20;
 /** Recent MCP events the `mcp_events` builtin lists, newest first. */
 export const MCP_EVENT_WIDGET_LIMIT = 3;
-const LIVE_SUBSCRIPTION = new Set(["opening", "active", "reconnecting"]);
 
 /** The public watchdog state, derived from the adapter status for older rows. */
 export function subscriptionHealth(item: {
@@ -828,11 +803,6 @@ export function subscriptionHealth(item: {
   return "active";
 }
 
-function subscriptionState(status: string): StatusState {
-  if (LIVE_SUBSCRIPTION.has(status)) return status === "active" ? "ok" : "warn";
-  return status === "stopped" ? "warn" : "error";
-}
-
 /** A title wins; with arguments the stable id is the only copyable identity. */
 export function subscriptionLabel(item: {
   title?: string;
@@ -845,362 +815,9 @@ export function subscriptionLabel(item: {
   return item.name;
 }
 
-function exact(count: number): string {
-  return Math.max(0, Math.round(count)).toLocaleString("en-US");
-}
-
-function percent(value: number): string {
-  const scaled = value * 100;
-  return `${scaled >= 10 || scaled === 0 ? Math.round(scaled) : scaled.toFixed(1)}%`;
-}
-
-const unavailable = (reason: string) => `unavailable · ${reason}`;
-
 /** Share of prompt tokens served from the provider cache. Null before any model call. */
 export function cacheHitRate(usage: UsageSummary): number | null {
   const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
   if (prompt <= 0) return null;
   return usage.cacheRead / prompt;
-}
-
-function costText(usage: UsageSummary | null): string {
-  const called = usage !== null && usage.input + usage.output + usage.cacheRead > 0;
-  if (usage === null || !called) return unavailable("no model call yet");
-  if (usage.cost > 0) return `$${usage.cost.toFixed(usage.cost < 1 ? 4 : 2)}`;
-  return unavailable("provider reports no price");
-}
-
-function jobState(job: BuiltinJob): StatusState {
-  if (job.status === "running") return "ok";
-  if (job.status === "exited") return job.exitCode === 0 ? "ok" : "error";
-  if (job.status === "failed") return "error";
-  return "warn";
-}
-
-/** Live data pi-ui already has, as plain JSON a widget mapping can read. */
-export function builtinData(
-  name: BuiltinName,
-  inputs: BuiltinInputs,
-  options: BuiltinRenderOptions = {},
-): unknown {
-  const { usage, context, mcp } = inputs;
-  switch (name) {
-    case "tokens": {
-      const none = unavailable("no snapshot yet");
-      const hit = usage === null ? null : cacheHitRate(usage);
-      return {
-        input: usage?.input ?? null,
-        output: usage?.output ?? null,
-        cacheRead: usage?.cacheRead ?? null,
-        cacheWrite: usage?.cacheWrite ?? null,
-        totalTokens: usage?.totalTokens ?? null,
-        cost: usage?.cost ?? null,
-        costText: costText(usage),
-        rows: [
-          { key: "input", label: "in", value: usage === null ? none : exact(usage.input) },
-          { key: "output", label: "out", value: usage === null ? none : exact(usage.output) },
-          {
-            key: "cache-read",
-            label: "cache read",
-            value: usage === null ? none : exact(usage.cacheRead),
-          },
-          {
-            key: "cache-write",
-            label: "cache write",
-            value: usage === null ? none : exact(usage.cacheWrite),
-          },
-          {
-            key: "cache-hit",
-            label: "cache hit",
-            value: hit === null ? unavailable("no model call yet") : percent(hit),
-          },
-          { key: "cost", label: "cost", value: costText(usage) },
-        ],
-      };
-    }
-    case "context": {
-      let text: string;
-      if (context === null) text = unavailable("no snapshot yet");
-      else if (context.tokens === 0) text = unavailable("no model call yet");
-      else if (context.window === null || context.percent === null) {
-        text = `${exact(context.tokens)} tokens · ${unavailable("model window unknown")}`;
-      } else text = `${exact(context.tokens)} / ${exact(context.window)} · ${context.percent}%`;
-      return {
-        tokens: context?.tokens ?? null,
-        window: context?.window ?? null,
-        percent: context !== null && context.tokens > 0 ? context.percent : null,
-        text,
-      };
-    }
-    case "cache": {
-      const hit = usage === null ? null : cacheHitRate(usage);
-      return {
-        read: usage?.cacheRead ?? null,
-        write: usage?.cacheWrite ?? null,
-        hitRate: hit,
-        hitPercent: hit === null ? null : Math.round(hit * 1000) / 10,
-        text: hit === null ? unavailable("no model call yet") : percent(hit),
-      };
-    }
-    case "mcp": {
-      const subscriptions = inputs.mcpEvents.subscriptions.map((item) => ({
-        item,
-        health: subscriptionHealth(item),
-      }));
-      const live = subscriptions.filter(({ health }) => health === "active");
-      const problems = subscriptions.filter(
-        ({ health }) => health === "stalled" || health === "recovering" || health === "dead",
-      );
-      return {
-        count: mcp.servers.length,
-        unavailable: mcp.unavailable,
-        servers: mcp.servers.map((server) => {
-          const subscribed = live
-            .filter(({ item }) => item.server === server.name)
-            .map(({ item }) => subscriptionLabel(item));
-          const broken = problems
-            .filter(({ item }) => item.server === server.name)
-            .map(({ item, health }) => {
-              const label = subscriptionLabel(item);
-              const reason = item.lastError ?? item.lastReconnectReason ?? item.endReason;
-              return `${label}: ${health}${reason === undefined ? "" : ` · ${reason}`}`;
-            });
-          const base = server.available
-            ? server.tools.length === 0
-              ? "no tools"
-              : `${server.tools.length} tool${server.tools.length === 1 ? "" : "s"}`
-            : server.authRejected
-              ? "auth rejected"
-              : unavailable("server unreachable");
-          const detail =
-            server.available && broken.length > 0
-              ? `${base} · ${broken.join(", ")}`
-              : subscribed.length === 0
-                ? base
-                : `${base} · subscribed: ${subscribed.join(", ")}`;
-          return {
-            key: `mcp-${server.name}`,
-            name: server.name,
-            available: server.available,
-            authRejected: server.authRejected,
-            tools: server.tools.length,
-            subscriptions: subscribed,
-            problems: broken,
-            state: server.available
-              ? broken.length > 0
-                ? "warn"
-                : "ok"
-              : server.authRejected
-                ? "warn"
-                : "error",
-            detail,
-          };
-        }),
-      };
-    }
-    case "mcp_events": {
-      const { events, subscriptions } = inputs.mcpEvents;
-      const recent = events.slice(-MCP_EVENT_WIDGET_LIMIT).reverse();
-      const health = subscriptions.map((item) => subscriptionHealth(item));
-      return {
-        total: events.length,
-        live: [
-          ...new Set(
-            subscriptions
-              .filter((_item, index) => health[index] === "active")
-              .map((item) => item.server),
-          ),
-        ],
-        problems: subscriptions
-          .filter((_item, index) => {
-            const state = health[index];
-            return state === "stalled" || state === "recovering" || state === "dead";
-          })
-          .map((item) => ({
-            server: item.server,
-            label: subscriptionLabel(item),
-            state: subscriptionHealth(item),
-            reason: item.lastError ?? item.lastReconnectReason ?? item.endReason ?? null,
-          })),
-        latest: recent[0] === undefined ? null : `new event from ${recent[0].server}`,
-        events: recent.map((event) => {
-          const formatted = options.formatTime?.(event.timestamp);
-          const clock = formatted === undefined || formatted === "" ? null : formatted;
-          return {
-            key: `mcp-event-${event.id}`,
-            id: event.id,
-            server: event.server,
-            name: event.name,
-            timestamp: event.timestamp,
-            time: clock ?? event.timestamp,
-            summary: event.summary,
-            ...(event.replayed === true ? { replayed: true } : {}),
-            label: `${event.server} · ${event.name}`,
-            value:
-              clock === null
-                ? event.summary
-                : event.summary.length > 0
-                  ? `${clock} · ${event.summary}`
-                  : clock,
-          };
-        }),
-        subscriptions: subscriptions.map((item) => {
-          const health = subscriptionHealth(item);
-          const warning = health === "stalled" || health === "recovering" || health === "dead";
-          const reason = item.lastError ?? item.lastReconnectReason ?? item.endReason;
-          const cursor = item.cursor ?? null;
-          return {
-            key: `mcp-sub-${item.id}`,
-            id: item.id,
-            stableId: item.stableId,
-            server: item.server,
-            name: item.name,
-            title: item.title ?? null,
-            status: item.status,
-            state: warning ? "warn" : subscriptionState(item.status),
-            cursor,
-            label: subscriptionLabel(item),
-            detail: warning
-              ? `${health}${reason === undefined ? "" : ` · ${reason}`}`
-              : cursor === null
-                ? item.status
-                : `${item.status} · cursor ${cursor}`,
-          };
-        }),
-      };
-    }
-
-    case "jobs": {
-      const jobs = [...inputs.jobs].reverse();
-      return {
-        total: jobs.length,
-        running: jobs.filter((job) => job.status === "running").length,
-        jobs: jobs.map((job) => ({
-          ...job,
-          key: `job-${job.id}`,
-          label: `${job.id} ${job.name}`,
-          state: jobState(job),
-          detail: job.status === "exited" ? `exited ${job.exitCode ?? "?"}` : job.status,
-        })),
-      };
-    }
-    case "session":
-      return {
-        ...inputs.session,
-        rows: [
-          { key: "session-model", label: "model", value: inputs.session.model ?? "unknown" },
-          { key: "session-run", label: "run", value: inputs.session.run },
-          { key: "session-id", label: "conversation", value: inputs.session.conversationId },
-        ],
-      };
-  }
-}
-
-/** The stats page as widgets: what a new dashboard starts with. */
-/** Bump when a default widget is added; see `upgradeDashboard`. */
-export const DASHBOARD_SEED = 2;
-
-const MCP_EVENTS_WIDGET: Widget = {
-  id: "mcp-events",
-  title: "MCP events",
-  kind: "list",
-  source: { type: "builtin", name: "mcp_events" },
-  mapping: {
-    items: "events",
-    key: "key",
-    label: "label",
-    value: "value",
-    empty: "=no MCP events yet",
-  },
-};
-
-export function defaultDashboard(): DashboardConfig {
-  return {
-    version: 1,
-    seeded: DASHBOARD_SEED,
-    widgets: [
-      {
-        id: "context",
-        title: "Context",
-        kind: "stat",
-        source: { type: "builtin", name: "context" },
-        mapping: { value: "text", label: "=size", progress: "percent" },
-      },
-      {
-        id: "tokens",
-        title: "Tokens",
-        kind: "list",
-        source: { type: "builtin", name: "tokens" },
-        mapping: { items: "rows", key: "key", label: "label", value: "value" },
-      },
-      {
-        id: "mcp",
-        title: "MCP",
-        kind: "status",
-        source: { type: "builtin", name: "mcp" },
-        mapping: {
-          items: "servers",
-          key: "key",
-          label: "name",
-          state: "state",
-          detail: "detail",
-          empty: "=no MCP servers configured",
-        },
-      },
-      MCP_EVENTS_WIDGET,
-    ],
-    layout: {
-      sections: [
-        {
-          widgets: [
-            { id: "context", span: "full", x: 0, y: 0, w: 12, h: DEFAULT_WIDGET_ROWS },
-            { id: "tokens", span: "full", x: 0, y: 4, w: 12, h: DEFAULT_WIDGET_ROWS },
-            { id: "mcp", span: "full", x: 0, y: 8, w: 12, h: DEFAULT_WIDGET_ROWS },
-            { id: "mcp-events", span: "full", x: 0, y: 12, w: 12, h: DEFAULT_WIDGET_ROWS },
-          ],
-        },
-      ],
-    },
-  };
-}
-
-/**
- * Gives a dashboard seeded by an older pi-ui the defaults added since, once.
- * Seed 2 adds the MCP events list after the MCP widget. A widget the user or
- * agent removed after its seed is not brought back, because `seeded` already
- * covers it. Coordinates are backfilled independently, so an already-current
- * dashboard from before the grid existed gains them too.
- */
-export function upgradeDashboard(config: DashboardConfig): boolean {
-  let changed = false;
-  if (config.seeded < DASHBOARD_SEED) {
-    if (config.seeded < 2 && !config.widgets.some((widget) => widget.id === MCP_EVENTS_WIDGET.id)) {
-      if (config.widgets.length < MAX_WIDGETS) {
-        config.widgets.push(structuredClone(MCP_EVENTS_WIDGET));
-        const slot = { id: MCP_EVENTS_WIDGET.id, span: "full" as const };
-        const home = config.layout.sections.find((section) =>
-          section.widgets.some((item) => item.id === "mcp"),
-        );
-        if (home !== undefined) {
-          const after = home.widgets.findIndex((item) => item.id === "mcp");
-          home.widgets.splice(after + 1, 0, slot);
-        } else if (config.layout.sections.length > 0) {
-          config.layout.sections[config.layout.sections.length - 1]?.widgets.push(slot);
-        } else {
-          config.layout.sections.push({ widgets: [slot] });
-        }
-      }
-    }
-    config.seeded = DASHBOARD_SEED;
-    changed = true;
-  }
-  const sections = config.layout.sections.map((section) => ({
-    ...section,
-    widgets: packLayoutSlots(section.widgets),
-  }));
-  if (JSON.stringify(sections) !== JSON.stringify(config.layout.sections)) {
-    config.layout = { sections };
-    changed = true;
-  }
-  return changed;
 }

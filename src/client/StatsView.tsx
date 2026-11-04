@@ -29,8 +29,6 @@ import {
 import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
 import {
-  type BuiltinInputs,
-  builtinData,
   type ChartFormat,
   type ChartSeries,
   type DashboardLayout,
@@ -50,6 +48,7 @@ import {
   type WidgetView,
   widthForSpan,
 } from "../shared/dashboard";
+import { type BuiltinInputs, readSource } from "../shared/dashboard-sources";
 import { formatDateTime, formatTime } from "../shared/time";
 import type { ContextUsage, McpEventsState, McpStatus, UsageSummary } from "../shared/types";
 import {
@@ -1096,22 +1095,6 @@ function WidgetCard({
   );
 }
 
-function builtinView(widget: Widget, inputs: BuiltinInputs): { view?: WidgetView; error?: string } {
-  if (widget.source.type !== "builtin") return {};
-  try {
-    return {
-      view: renderWidget(
-        widget,
-        builtinData(widget.source.name, inputs, {
-          formatTime: (timestamp) => formatTime(timestamp),
-        }),
-      ),
-    };
-  } catch (error) {
-    return { error: error instanceof Error ? error.message : String(error) };
-  }
-}
-
 function sectionKey(index: number): string {
   return `section-${index}`;
 }
@@ -1175,7 +1158,7 @@ function SectionGrid({
   section,
   byId,
   values,
-  inputs,
+  builtinValues,
   desktop,
   onRemove,
 }: {
@@ -1183,7 +1166,7 @@ function SectionGrid({
   section: LayoutSection;
   byId: Map<string, Widget>;
   values: DashboardState["values"];
-  inputs: BuiltinInputs;
+  builtinValues: Record<string, { view?: WidgetView; error?: string }>;
   desktop: boolean;
   onRemove: (id: string) => void;
 }) {
@@ -1193,11 +1176,11 @@ function SectionGrid({
   const cards = visible.map((slot) => {
     const widget = byId.get(slot.id) as Widget;
     const stored = values[widget.id];
-    const live = builtinView(widget, inputs);
-    const view = widget.source.type === "builtin" ? live.view : stored?.view;
+    const live = builtinValues[widget.id];
+    const view = widget.source.type === "builtin" ? live?.view : stored?.view;
     const value =
       widget.source.type === "builtin"
-        ? live.error === undefined
+        ? live?.error === undefined
           ? undefined
           : { failures: 0, error: live.error }
         : stored;
@@ -1265,6 +1248,59 @@ export function StatsView({
   const dashboard = useSyncExternalStore(subscribeDashboard, getDashboard, getDashboard);
   const desktop = useDesktopGrid();
   useViewerReport(active);
+  const inputs: BuiltinInputs = useMemo(
+    () => ({
+      usage: stats.usage,
+      context: stats.context,
+      mcp: stats.mcp,
+      mcpEvents: stats.mcpEvents,
+      jobs: dashboard?.builtins.jobs ?? [],
+      session: dashboard?.builtins.session ?? { conversationId: "", model: null, run: "idle" },
+    }),
+    [
+      stats.usage,
+      stats.context,
+      stats.mcp,
+      stats.mcpEvents,
+      dashboard?.builtins.jobs,
+      dashboard?.builtins.session,
+    ],
+  );
+  const [builtinValues, setBuiltinValues] = useState<
+    Record<string, { view?: WidgetView; error?: string }>
+  >({});
+  // Builtin sources are registry readers like any other source. They are async,
+  // so render their mapped views just after the live inputs change.
+  useEffect(() => {
+    let cancelled = false;
+    const widgets = (dashboard?.widgets ?? []).filter((widget) => widget.source.type === "builtin");
+    if (widgets.length === 0) {
+      setBuiltinValues({});
+      return;
+    }
+    void Promise.all(
+      widgets.map(async (widget) => {
+        if (widget.source.type !== "builtin") return [widget.id, {}] as const;
+        try {
+          const data = await readSource(widget.source.name, {
+            ...inputs,
+            formatTime: (timestamp) => formatTime(timestamp),
+          });
+          return [widget.id, { view: renderWidget(widget, data) }] as const;
+        } catch (error) {
+          return [
+            widget.id,
+            { error: error instanceof Error ? error.message : String(error) },
+          ] as const;
+        }
+      }),
+    ).then((entries) => {
+      if (!cancelled) setBuiltinValues(Object.fromEntries(entries));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [dashboard?.widgets, inputs]);
   const pageRef = useRef<HTMLDivElement | null>(null);
   const [layout, setLayout] = useState<DashboardLayout | null>(null);
   const layoutJson = useRef("");
@@ -1619,6 +1655,14 @@ export function StatsView({
     };
   }, [commitLayout]);
 
+  const reset = useCallback(async () => {
+    const response = await fetch("/api/dashboard/reset", { method: "POST" }).catch(() => null);
+    if (response?.ok) {
+      haptic([12, 40, 12]);
+      setDashboard((await response.json()) as DashboardState);
+    }
+  }, []);
+
   const remove = useCallback(async (id: string) => {
     const response = await fetch(`/api/dashboard/widgets/${encodeURIComponent(id)}`, {
       method: "DELETE",
@@ -1663,14 +1707,6 @@ export function StatsView({
     [commitLayout, layout],
   );
 
-  const inputs: BuiltinInputs = {
-    usage: stats.usage,
-    context: stats.context,
-    mcp: stats.mcp,
-    mcpEvents: stats.mcpEvents,
-    jobs: dashboard?.builtins.jobs ?? [],
-    session: dashboard?.builtins.session ?? { conversationId: "", model: null, run: "idle" },
-  };
   const byId = new Map((dashboard?.widgets ?? []).map((widget) => [widget.id, widget]));
   const viewLayout = layout ?? (dashboard === null ? null : normalizeLayout(dashboard.layout));
 
@@ -1691,6 +1727,23 @@ export function StatsView({
           <p className="px-1 font-mono text-xs text-muted-foreground" data-testid="dashboard-empty">
             The dashboard is empty. Ask the agent to add widgets.
           </p>
+        ) : null}
+        {dashboard?.defaultVersion !== undefined ? (
+          <div
+            className="theme-radius flex flex-wrap items-center gap-3 border border-border/70 bg-surface px-3 py-2 font-mono text-xs text-muted-foreground"
+            data-testid="dashboard-default-notice"
+          >
+            <span className="min-w-0 flex-1">
+              A newer default dashboard (v{dashboard.defaultVersion}) is available.
+            </span>
+            <button
+              type="button"
+              className="theme-radius border border-border/70 bg-background px-2 py-1 text-foreground hover:bg-foreground/10"
+              onClick={() => void reset()}
+            >
+              Reset to default
+            </button>
+          </div>
         ) : null}
         {viewLayout?.sections.map((section, index) => (
           <div
@@ -1717,7 +1770,7 @@ export function StatsView({
               section={section}
               byId={byId}
               values={dashboard?.values ?? {}}
-              inputs={inputs}
+              builtinValues={builtinValues}
               desktop={desktop}
               onRemove={remove}
             />

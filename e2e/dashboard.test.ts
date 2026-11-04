@@ -17,10 +17,7 @@ import {
 import { type PollOutcome, type PollRun, runPollScript } from "../src/server/dashboard-runner.js";
 import { createDashboardTools } from "../src/server/dashboard-tools.js";
 import {
-  builtinData,
-  DASHBOARD_SEED,
   type DashboardState,
-  defaultDashboard,
   evalPath,
   MCP_EVENT_LIMIT,
   MCP_EVENT_WIDGET_LIMIT,
@@ -29,6 +26,13 @@ import {
   validateMapping,
   type Widget,
 } from "../src/shared/dashboard.js";
+import { DEFAULT_DASHBOARD, defaultDashboardConfig } from "../src/shared/dashboard-default.js";
+import {
+  type BuiltinInputs,
+  type BuiltinName,
+  listSources,
+  readSource,
+} from "../src/shared/dashboard-sources.js";
 import { formatTime } from "../src/shared/time.js";
 
 const dirs: string[] = [];
@@ -380,33 +384,65 @@ test("chart labels longer than the longest series are trimmed with a note", asyn
   await dashboard.flush();
 });
 
-test("the default dashboard is the old stats page as builtin widgets", () => {
-  const config = defaultDashboard();
+test("the committed default dashboard is the operator board", () => {
+  const config = defaultDashboardConfig();
   assert.deepEqual(
-    config.widgets.map((item) => [item.id, item.kind, item.source]),
+    config.widgets.map((item) => item.id),
     [
-      ["context", "stat", { type: "builtin", name: "context" }],
-      ["tokens", "list", { type: "builtin", name: "tokens" }],
-      ["mcp", "status", { type: "builtin", name: "mcp" }],
-      ["mcp-events", "list", { type: "builtin", name: "mcp_events" }],
+      "host-usage",
+      "prefix-moments",
+      "prefix-cost",
+      "context",
+      "tokens",
+      "mcp",
+      "mcp-events",
+      "hetzner",
+      "hetzner-cost",
+      "go-usage",
+      "bg-jobs",
     ],
   );
-  assert.equal(config.seeded, DASHBOARD_SEED);
-  const inputs = {
-    usage: null,
-    context: null,
-    mcp: { servers: [] },
-    mcpEvents: { subscriptions: [], events: [], notice: null, revision: 0 },
-    jobs: [],
-    session: { conversationId: "c", model: null, run: "idle" },
-  } as unknown as Parameters<typeof builtinData>[1];
-  for (const item of config.widgets) {
-    if (item.source.type !== "builtin") continue;
-    renderWidget(item, builtinData(item.source.name, inputs));
+  assert.deepEqual(
+    config.layout.sections.map((section) => section.title),
+    [undefined, "Cache & prefix", "Session", "Infrastructure"],
+  );
+  assert.deepEqual(
+    config.layout.sections.flatMap((section) => section.widgets.map((slot) => slot.id)),
+    config.widgets.map((item) => item.id),
+  );
+  assert.deepEqual(config.tombstones, []);
+});
+
+test("every registered source is described, has a sample and the default names it", () => {
+  const sources = listSources();
+  assert.ok(sources.length > 0);
+  for (const spec of sources) {
+    assert.notEqual(spec.describe.trim(), "", `${spec.name} has a description`);
+    assert.notEqual(spec.sample, undefined, `${spec.name} has a sample`);
+    assert.doesNotThrow(
+      () =>
+        renderWidget(
+          {
+            id: "sample",
+            title: "Sample",
+            kind: "stat",
+            source: { type: "builtin", name: spec.name as BuiltinName },
+            mapping: { value: "$" },
+          },
+          spec.sample,
+        ),
+      `${spec.name}'s sample renders`,
+    );
+  }
+  const names = new Set(sources.map((spec) => spec.name));
+  for (const widget of DEFAULT_DASHBOARD.widgets) {
+    if (widget.source.type === "builtin") {
+      assert.ok(names.has(widget.source.name), `${widget.id} names ${widget.source.name}`);
+    }
   }
 });
 
-test("MCP builtins list recent events newest first and subscriptions per server", () => {
+test("MCP builtins list recent events newest first and subscriptions per server", async () => {
   const events = Array.from({ length: MCP_EVENT_LIMIT + 5 }, (_, index) => ({
     id: `e${index}`,
     server: "stub",
@@ -435,10 +471,11 @@ test("MCP builtins list recent events newest first and subscriptions per server"
     },
     jobs: [],
     session: { conversationId: "c", model: null, run: "idle" },
-  } as unknown as Parameters<typeof builtinData>[1];
-  const feed = builtinData("mcp_events", inputs, {
+  } as unknown as BuiltinInputs;
+  const feed = (await readSource("mcp_events", {
+    ...inputs,
     formatTime: (timestamp) => formatTime(timestamp),
-  }) as {
+  })) as {
     total: number;
     live: string[];
     events: { id: string; label: string; value: string }[];
@@ -450,19 +487,21 @@ test("MCP builtins list recent events newest first and subscriptions per server"
   assert.equal(feed.events.at(-1)?.id, "e22");
   assert.equal(feed.events[0]?.label, "stub · ticks");
   assert.match(feed.events[0]?.value ?? "", /\d\d:\d\d · tick 24$/);
-  const status = builtinData("mcp", inputs) as { servers: { name: string; detail: string }[] };
+  const status = (await readSource("mcp", inputs)) as {
+    servers: { name: string; detail: string }[];
+  };
   assert.deepEqual(
     status.servers.map((server) => server.detail),
     ["1 tool · subscribed: ticks", "unavailable · server unreachable"],
   );
-  const widget = defaultDashboard().widgets.find((item) => item.id === "mcp-events");
+  const widget = DEFAULT_DASHBOARD.widgets.find((item) => item.id === "mcp-events");
   assert.ok(widget);
   const view = renderWidget(widget, feed) as { kind: string; items: unknown[] };
   assert.equal(view.kind, "list");
   assert.equal(view.items.length, MCP_EVENT_WIDGET_LIMIT);
 });
 
-test("title-less argument subscriptions expose their stable id in both MCP widgets", () => {
+test("title-less argument subscriptions expose their stable id in both MCP widgets", async () => {
   const stableId = "stub/ticks#a1b2c3d4";
   const subscription = {
     id: "s1",
@@ -488,13 +527,13 @@ test("title-less argument subscriptions expose their stable id in both MCP widge
     },
     jobs: [],
     session: { conversationId: "c", model: null, run: "idle" },
-  } as unknown as Parameters<typeof builtinData>[1];
-  const status = builtinData("mcp", inputs) as {
+  } as unknown as BuiltinInputs;
+  const status = (await readSource("mcp", inputs)) as {
     servers: { subscriptions: string[]; detail: string }[];
   };
   assert.deepEqual(status.servers[0]?.subscriptions, [stableId]);
   assert.equal(status.servers[0]?.detail, `no tools · subscribed: ${stableId}`);
-  const feed = builtinData("mcp_events", inputs) as {
+  const feed = (await readSource("mcp_events", inputs)) as {
     subscriptions: { stableId: string; label: string; title: string | null }[];
   };
   assert.equal(feed.subscriptions[0]?.stableId, stableId);
@@ -512,8 +551,8 @@ test("title-less argument subscriptions expose their stable id in both MCP widge
       ...inputs.mcpEvents,
       subscriptions: [{ ...subscription, title: "Nightly jobs" }],
     },
-  } as unknown as Parameters<typeof builtinData>[1];
-  const titledFeed = builtinData("mcp_events", titled) as {
+  } as unknown as BuiltinInputs;
+  const titledFeed = (await readSource("mcp_events", titled)) as {
     subscriptions: { label: string }[];
   };
   assert.equal(titledFeed.subscriptions[0]?.label, "Nightly jobs");
@@ -524,7 +563,7 @@ test("title-less argument subscriptions expose their stable id in both MCP widge
   assert.doesNotMatch(titledMarkup, /stub\/ticks#a1b2c3d4/);
 });
 
-test("the MCP events widget shows the last 3 events and keeps the full total", () => {
+test("the MCP events widget shows the last 3 events and keeps the full total", async () => {
   const events = Array.from({ length: 5 }, (_, index) => ({
     id: `e${index}`,
     server: "stub",
@@ -539,8 +578,8 @@ test("the MCP events widget shows the last 3 events and keeps the full total", (
     mcpEvents: { subscriptions: [], events, notice: null, revision: 5 },
     jobs: [],
     session: { conversationId: "c", model: null, run: "idle" },
-  } as unknown as Parameters<typeof builtinData>[1];
-  const feed = builtinData("mcp_events", inputs) as {
+  } as unknown as BuiltinInputs;
+  const feed = (await readSource("mcp_events", inputs)) as {
     total: number;
     events: {
       key: string;
@@ -578,20 +617,20 @@ test("the MCP events widget shows the last 3 events and keeps the full total", (
     "timestamp",
     "value",
   ]);
-  const widget = defaultDashboard().widgets.find((item) => item.id === "mcp-events");
+  const widget = DEFAULT_DASHBOARD.widgets.find((item) => item.id === "mcp-events");
   assert.ok(widget);
   const view = renderWidget(widget, feed) as { kind: string; items: unknown[] };
   assert.equal(view.kind, "list");
   assert.equal(view.items.length, MCP_EVENT_WIDGET_LIMIT);
 });
 
-test("an older dashboard.json gets the MCP events widget once", async () => {
+test("an older dashboard.json is not overwritten and records defaultVersion", async () => {
   const dir = await tempDir();
-  const old = defaultDashboard() as unknown as Record<string, unknown>;
-  delete old.seeded;
-  const config = old as unknown as ReturnType<typeof defaultDashboard>;
-  config.widgets = config.widgets.filter((item) => item.id !== "mcp-events");
-  config.layout = {
+  const old = defaultDashboardConfig();
+  old.version = 1;
+  delete old.defaultVersion;
+  old.widgets = old.widgets.filter((item) => item.id !== "mcp-events");
+  old.layout = {
     sections: [
       { title: "Infra", widgets: [{ id: "mcp", span: "half" }] },
       {
@@ -602,24 +641,17 @@ test("an older dashboard.json gets the MCP events widget once", async () => {
       },
     ],
   };
-  await writeFile(join(dir, "dashboard.json"), JSON.stringify(config));
+  await writeFile(join(dir, "dashboard.json"), JSON.stringify(old));
   const first = new DashboardManager(dir);
   await first.load();
-  assert.deepEqual(
-    first.layout().sections[0]?.widgets.map((slot) => slot.id),
-    ["mcp", "mcp-events"],
-  );
+  assert.ok(!first.widgets().some((item) => item.id === "mcp-events"));
+  assert.equal(first.state().defaultVersion, DEFAULT_DASHBOARD.version);
   const saved = JSON.parse(await readFile(join(dir, "dashboard.json"), "utf8"));
-  assert.equal(saved.seeded, DASHBOARD_SEED);
-  assert.ok(saved.widgets.some((item: { id: string }) => item.id === "mcp-events"));
-
-  await first.remove("mcp-events");
-  await first.flush();
-  const second = new DashboardManager(dir);
-  await second.load();
-  assert.ok(!second.widgets().some((item) => item.id === "mcp-events"));
-  second.dispose();
+  assert.equal(saved.version, 1);
+  assert.equal(saved.defaultVersion, DEFAULT_DASHBOARD.version);
+  assert.deepEqual(saved.tombstones, []);
   first.dispose();
+  await first.flush();
 });
 
 // ── masking ──────────────────────────────────────────────────────────────
@@ -824,7 +856,7 @@ test("upsert, push, layout and remove validate and persist", async () => {
   dashboard.setHost(host);
   assert.deepEqual(
     dashboard.widgets().map((item) => item.id),
-    ["context", "tokens", "mcp", "mcp-events"],
+    DEFAULT_DASHBOARD.widgets.map((item) => item.id),
   );
   await assert.rejects(
     dashboard.upsert({
@@ -863,9 +895,12 @@ test("upsert, push, layout and remove validate and persist", async () => {
       { widgets: [{ id: "tokens", span: "third" }] },
     ],
   });
+  const missing = DEFAULT_DASHBOARD.widgets
+    .map((item) => item.id)
+    .filter((id) => id !== "context" && id !== "tokens");
   assert.deepEqual(
     layout.layout.sections.at(-1)?.widgets.map((slot) => slot.id),
-    ["mcp", "mcp-events"],
+    missing,
   );
   assert.ok(layout.notes.some((note) => /mcp/.test(note)));
   await dashboard.remove("tokens");
@@ -883,13 +918,129 @@ test("upsert, push, layout and remove validate and persist", async () => {
       ]),
     [
       ["Money", ["cost:half", "context:half"]],
-      [undefined, ["mcp:full", "mcp-events:full"]],
+      [
+        undefined,
+        missing.map((id) => {
+          const slot = layout.layout.sections.at(-1)?.widgets.find((item) => item.id === id);
+          return `${id}:${slot?.span ?? "full"}`;
+        }),
+      ],
     ],
   );
   const state = again.state();
   assert.deepEqual(state.values.cost?.view, { kind: "stat", value: "12.5", unit: "€/mo" });
   const saved = JSON.parse(await readFile(join(dir, "dashboard.json"), "utf8"));
-  assert.equal(saved.version, 1);
+  assert.equal(saved.version, DEFAULT_DASHBOARD.version);
+  assert.ok(saved.tombstones.includes("tokens"));
+  assert.ok(!again.widgets().some((item) => item.id === "tokens"));
+});
+
+test("replace keeps a builtin id with a poll source across a reload", async () => {
+  const dir = await tempDir();
+  const runner = countingRunner(() => ({
+    ok: true,
+    value: { value: "poll value" },
+    bytes: 20,
+    logs: [],
+    ms: 1,
+  }));
+  const dashboard = new DashboardManager(dir, { runner });
+  await dashboard.load();
+  dashboard.setHost(fakeHost());
+  const result = await dashboard.upsert({
+    id: "context",
+    replace: true,
+    title: "Context replacement",
+    kind: "stat",
+    source: { type: "poll", script: "return { value: 'poll value' }", intervalSec: 0.5 },
+    mapping: { value: "value" },
+  });
+  assert.deepEqual(result.view, { kind: "stat", value: "poll value" });
+  assert.equal(dashboard.widgets().find((item) => item.id === "context")?.source.type, "poll");
+  await dashboard.flush();
+
+  const again = new DashboardManager(dir, { runner });
+  await again.load();
+  const widget = again.widgets().find((item) => item.id === "context");
+  assert.equal(widget?.source.type, "poll");
+  assert.equal(widget?.title, "Context replacement");
+  assert.deepEqual(again.state().values.context?.view, {
+    kind: "stat",
+    value: "poll value",
+  });
+  again.dispose();
+  dashboard.dispose();
+});
+
+test("deleting a default widget tombstones it and re-adding the id clears it", async () => {
+  const dir = await tempDir();
+  const dashboard = new DashboardManager(dir);
+  await dashboard.load();
+  await dashboard.remove("mcp");
+  await dashboard.flush();
+  let saved = JSON.parse(await readFile(join(dir, "dashboard.json"), "utf8"));
+  assert.ok(saved.tombstones.includes("mcp"));
+
+  const again = new DashboardManager(dir);
+  await again.load();
+  assert.ok(!again.widgets().some((item) => item.id === "mcp"));
+  assert.equal(again.state().defaultVersion, undefined);
+  await again.upsert({
+    id: "mcp",
+    title: "MCP replacement",
+    kind: "stat",
+    source: { type: "static" },
+    mapping: { value: "$" },
+  });
+  await again.flush();
+  saved = JSON.parse(await readFile(join(dir, "dashboard.json"), "utf8"));
+  assert.ok(!saved.tombstones.includes("mcp"));
+
+  const third = new DashboardManager(dir);
+  await third.load();
+  const widget = third.widgets().find((item) => item.id === "mcp");
+  assert.equal(widget?.source.type, "static");
+  assert.equal(widget?.title, "MCP replacement");
+  third.dispose();
+  again.dispose();
+  dashboard.dispose();
+});
+
+test("a fresh DATA_DIR seeds DEFAULT_DASHBOARD and reset restores it", async () => {
+  const dir = await tempDir();
+  const dashboard = new DashboardManager(dir);
+  await dashboard.load();
+  assert.deepEqual(
+    dashboard.widgets().map((item) => item.id),
+    DEFAULT_DASHBOARD.widgets.map((item) => item.id),
+  );
+  assert.deepEqual(
+    dashboard.layout().sections.map((section) => section.title),
+    DEFAULT_DASHBOARD.sections.map((section) => section.title),
+  );
+  await dashboard.remove("context");
+  await dashboard.upsert({
+    id: "extra",
+    title: "Extra",
+    kind: "stat",
+    source: { type: "static" },
+    mapping: { value: "$" },
+  });
+  const state = await dashboard.reset();
+  assert.deepEqual(
+    state.widgets.map((item) => item.id),
+    DEFAULT_DASHBOARD.widgets.map((item) => item.id),
+  );
+  assert.equal(state.defaultVersion, undefined);
+  await dashboard.flush();
+  const saved = JSON.parse(await readFile(join(dir, "dashboard.json"), "utf8"));
+  assert.equal(saved.version, DEFAULT_DASHBOARD.version);
+  assert.deepEqual(saved.tombstones, []);
+  assert.deepEqual(
+    saved.widgets.map((item: { id: string }) => item.id),
+    DEFAULT_DASHBOARD.widgets.map((item) => item.id),
+  );
+  dashboard.dispose();
 });
 
 test("poll scripts never leave the server and intervals are clamped", async () => {
@@ -1002,14 +1153,14 @@ test("the tools return the first render so the agent can iterate", async () => {
   const got = JSON.parse((await call("dashboard_get", {})).text);
   assert.deepEqual(
     got.widgets.map((item: { id: string }) => item.id),
-    ["context", "tokens", "mcp", "mcp-events", "servers"],
+    [...DEFAULT_DASHBOARD.widgets.map((item) => item.id), "servers"],
   );
   assert.equal((await call("dashboard_remove", { id: "ghost" })).isError, true);
   dashboard.dispose();
   await dashboard.flush();
 });
 
-test("MCP details show tool counts and never the connected label", () => {
+test("MCP details show tool counts and never the connected label", async () => {
   const inputs = {
     usage: null,
     context: null,
@@ -1026,8 +1177,8 @@ test("MCP details show tool counts and never the connected label", () => {
     mcpEvents: { subscriptions: [], events: [], notice: null, revision: 0 },
     jobs: [],
     session: { conversationId: "c", model: null, run: "idle" },
-  } as unknown as Parameters<typeof builtinData>[1];
-  const data = builtinData("mcp", inputs) as {
+  } as unknown as BuiltinInputs;
+  const data = (await readSource("mcp", inputs)) as {
     servers: {
       name: string;
       available: boolean;

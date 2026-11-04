@@ -4,13 +4,8 @@ import {
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
-import {
-  BUILTIN_SOURCES,
-  CHART_FORMATS,
-  CHART_TYPES,
-  WIDGET_KINDS,
-  WIDGET_SPANS,
-} from "../shared/dashboard.js";
+import { CHART_FORMATS, CHART_TYPES, WIDGET_KINDS, WIDGET_SPANS } from "../shared/dashboard.js";
+import { BUILTIN_SOURCES, listSources } from "../shared/dashboard-sources.js";
 import { DashboardError, type DashboardManager } from "./dashboard.js";
 
 function text(value: string, isError = false): ToolExecutionResult {
@@ -48,7 +43,11 @@ Examples:
 const MAPPING_DOC = `Mapping values are path expressions into the source data: "a.b", "servers[].name" (one value per element), "items[0]", "items[-1]", "$" for the whole value, "list.length". A value starting with "=" is a literal: "label": "=servers".`;
 
 const SOURCE_DOC = `Sources:
-- {"type":"builtin","name":one of ${BUILTIN_SOURCES.join(", ")}}: live pi-ui data. Call dashboard_upsert with a builtin source to see its fields in "sample".
+- {"type":"builtin","name":one of ${listSources()
+  .map((spec) => spec.name)
+  .join(
+    ", ",
+  )}}: live pi-ui data. GET /api/dashboard/sources describes each one and shows a real sample payload. Call dashboard_upsert with a builtin source to see its fields in "sample" too.
 - {"type":"poll","script":"…","intervalSec":60,"timeoutSec":10}: script is the body of an async function (fetch, env, prev, log) that returns JSON. env is the read-only server environment: read tokens from it (e.g. env.HCLOUD_TOKEN), never write them into the script. prev is the last result; log(...) lines come back from dashboard_upsert. Runs in an isolated worker, at least every 30s, only while the dashboard page is open; 10 poll widgets at most, results capped at 128 KB, so return only what the widget shows. A failure keeps the last good value with an error badge; after 5 failures in a row polling backs off and you get one message.
 - {"type":"static"}: data you send with dashboard_push.`;
 
@@ -70,7 +69,7 @@ export function createDashboardTools(dashboard: DashboardManager): ToolRegistrat
     }),
     defineTool({
       name: "dashboard_upsert",
-      description: `Add a widget to the dashboard page or replace one with the same id, then render it once and return the view, any error, a sample of the source data and the script's log lines, so you can fix the mapping or script and call again. New widgets go at the end of the last section; place them with dashboard_layout. Widgets show data only: no buttons, no custom HTML or JS in the page.
+      description: `Add a widget to the dashboard page or replace one with the same id, then render it once and return the view, any error, a sample of the source data and the script's log lines, so you can fix the mapping or script and call again. Pass replace:true to deliberately take over an id that a builtin widget occupies, changing its source while keeping the id; the builtin does not return on restart. Re-adding an id clears its tombstone. New widgets go at the end of the last section; place them with dashboard_layout. Widgets show data only: no buttons, no custom HTML or JS in the page.
 
 ${SOURCE_DOC}
 
@@ -81,6 +80,12 @@ ${CHART_DOC}
 ${MAPPING_DOC}`,
       parameters: Type.Object({
         id: Type.String({ description: "Stable id: letters, digits, - or _." }),
+        replace: Type.Optional(
+          Type.Boolean({
+            description:
+              "Replace a widget already stored under this id, including a builtin one, and keep its place.",
+          }),
+        ),
         title: Type.String({ description: "Card title." }),
         kind: Type.Union(
           WIDGET_KINDS.map((kind) => Type.Literal(kind)),

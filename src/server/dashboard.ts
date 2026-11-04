@@ -1,12 +1,8 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
-  BUILTIN_SOURCES,
-  type BuiltinInputs,
   type BuiltinJob,
-  type BuiltinName,
   type BuiltinSession,
-  builtinData,
   CHART_FORMATS,
   CHART_TYPES,
   type ChartFormat,
@@ -18,7 +14,6 @@ import {
   type DashboardLayout,
   type DashboardState,
   DEFAULT_WIDGET_ROWS,
-  defaultDashboard,
   GRID_COLUMNS,
   HISTORY_POINTS,
   type LayoutSection,
@@ -32,7 +27,6 @@ import {
   renderWidget,
   type SparklineChart,
   spanForWidth,
-  upgradeDashboard,
   validateMapping,
   viewNumber,
   WIDGET_KINDS,
@@ -46,6 +40,18 @@ import {
   type WidgetView,
   widthForSpan,
 } from "../shared/dashboard.js";
+import {
+  DEFAULT_DASHBOARD,
+  defaultDashboardConfig,
+  seedDashboard,
+} from "../shared/dashboard-default.js";
+import {
+  type BuiltinInputs,
+  type BuiltinName,
+  hasSource,
+  listSources,
+  readSource,
+} from "../shared/dashboard-sources.js";
 import { type PollOutcome, type PollRunner, runPollScript } from "./dashboard-runner.js";
 
 export { DashboardError };
@@ -142,10 +148,9 @@ function parseSource(input: unknown, minIntervalSec: number, notes: string[]): W
   switch (source.type) {
     case "builtin": {
       const name = source.name;
-      if (typeof name !== "string" || !(BUILTIN_SOURCES as readonly string[]).includes(name)) {
-        throw new DashboardError(
-          `builtin source name must be one of ${BUILTIN_SOURCES.join(", ")}.`,
-        );
+      if (typeof name !== "string" || !hasSource(name)) {
+        const names = listSources().map((spec) => spec.name);
+        throw new DashboardError(`builtin source name must be one of ${names.join(", ")}.`);
       }
       return { type: "builtin", name: name as BuiltinName };
     }
@@ -584,7 +589,7 @@ function publicValue(value: RuntimeValue | undefined): WidgetValue {
 
 /** Widget config, poll scheduling and last values for the dashboard page. */
 export class DashboardManager {
-  private config: DashboardConfig = defaultDashboard();
+  private config: DashboardConfig = defaultDashboardConfig();
   private readonly values = new Map<string, RuntimeValue>();
   private readonly viewers = new Map<string, number>();
   private readonly timers = new Map<string, NodeJS.Timeout>();
@@ -629,7 +634,7 @@ export class DashboardManager {
     return Math.max(0.001, this.minIntervalMs / 1000);
   }
 
-  /** Reads dashboard.json, or seeds it with the builtin stats widgets. */
+  /** Reads dashboard.json, or seeds it from DEFAULT_DASHBOARD when it is absent. */
   async load(): Promise<void> {
     await mkdir(dirname(this.configPath), { recursive: true });
     let raw: string | undefined;
@@ -639,15 +644,16 @@ export class DashboardManager {
       raw = undefined;
     }
     if (raw === undefined) {
-      this.config = defaultDashboard();
+      this.config = defaultDashboardConfig();
       await this.saveConfig();
     } else {
-      let upgraded = false;
       try {
         const parsed = JSON.parse(raw) as {
+          version?: unknown;
           widgets?: unknown[];
           layout?: unknown;
-          seeded?: unknown;
+          tombstones?: unknown;
+          defaultVersion?: unknown;
         };
         const widgets: Widget[] = [];
         for (const item of Array.isArray(parsed.widgets) ? parsed.widgets : []) {
@@ -669,16 +675,38 @@ export class DashboardManager {
             widgets.map((widget) => widget.id),
           );
         }
-        // Files from before the seed marker hold the first set of defaults.
-        const seeded =
-          typeof parsed.seeded === "number" && Number.isInteger(parsed.seeded) ? parsed.seeded : 1;
-        this.config = { version: 1, seeded, widgets, layout };
-        upgraded = upgradeDashboard(this.config);
+        const version =
+          typeof parsed.version === "number" &&
+          Number.isInteger(parsed.version) &&
+          parsed.version > 0
+            ? parsed.version
+            : 1;
+        const tombstones = Array.isArray(parsed.tombstones)
+          ? [
+              ...new Set(
+                parsed.tombstones
+                  .filter((id): id is string => typeof id === "string")
+                  .map((id) => id.trim())
+                  .filter((id) => id !== ""),
+              ),
+            ]
+          : [];
+        this.config = { version, tombstones, widgets, layout };
+        let changed = typeof parsed.version !== "number" || !Array.isArray(parsed.tombstones);
+        if (version < DEFAULT_DASHBOARD.version) {
+          if (this.config.defaultVersion !== DEFAULT_DASHBOARD.version) {
+            this.config.defaultVersion = DEFAULT_DASHBOARD.version;
+            changed = true;
+          }
+        } else {
+          if (parsed.defaultVersion !== undefined) changed = true;
+          if (seedDashboard(this.config)) changed = true;
+        }
+        if (changed) await this.saveConfig();
       } catch (error) {
         console.error("[pi] dashboard.json is not valid JSON; using the default dashboard", error);
-        this.config = defaultDashboard();
+        this.config = defaultDashboardConfig();
       }
-      if (upgraded) await this.saveConfig();
     }
     try {
       const state = JSON.parse(await readFile(this.statePath, "utf8")) as {
@@ -762,6 +790,9 @@ export class DashboardManager {
         session: { conversationId: "", model: null, run: "idle" },
       },
       polling: this.polling(),
+      ...(this.config.defaultVersion === undefined
+        ? {}
+        : { defaultVersion: this.config.defaultVersion }),
     };
   }
 
@@ -786,23 +817,22 @@ export class DashboardManager {
       for (const slot of section.widgets)
         placement.set(slot.id, { span: slot.span, section: index });
     });
-    const widgets = this.config.widgets
-      .map((widget) => {
-        const place = placement.get(widget.id) ?? { span: "full" as const, section: -1 };
-        let value: WidgetValue;
-        if (widget.source.type === "builtin") {
-          value = this.builtinValue(widget, inputs);
-        } else value = publicValue(this.values.get(widget.id));
-        return {
-          ...structuredClone(widget),
-          ...place,
-          failures: value.failures,
-          ...(value.view === undefined ? {} : { value: value.view }),
-          ...(value.error === undefined ? {} : { error: value.error }),
-          ...(value.updatedAt === undefined ? {} : { updatedAt: value.updatedAt }),
-        };
-      })
-      .sort((a, b) => this.order(a.id) - this.order(b.id));
+    const widgets = (
+      await Promise.all(
+        this.config.widgets.map(async (widget) => {
+          const place = placement.get(widget.id) ?? { span: "full" as const, section: -1 };
+          const value = await this.sourceValue(widget, inputs);
+          return {
+            ...structuredClone(widget),
+            ...place,
+            failures: value.failures,
+            ...(value.view === undefined ? {} : { value: value.view }),
+            ...(value.error === undefined ? {} : { error: value.error }),
+            ...(value.updatedAt === undefined ? {} : { updatedAt: value.updatedAt }),
+          };
+        }),
+      )
+    ).sort((a, b) => this.order(a.id) - this.order(b.id));
     return { polling: this.polling(), layout: this.layout(), widgets };
   }
 
@@ -817,14 +847,22 @@ export class DashboardManager {
     return Number.MAX_SAFE_INTEGER;
   }
 
-  private builtinValue(widget: Widget, inputs: BuiltinInputs | undefined): WidgetValue {
-    if (widget.source.type !== "builtin" || inputs === undefined) {
-      return { failures: 0, error: "no live data yet" };
+  private async sourceValue(
+    widget: Widget,
+    inputs: BuiltinInputs | undefined,
+  ): Promise<WidgetValue> {
+    if (widget.source.type !== "builtin") return publicValue(this.values.get(widget.id));
+    if (inputs === undefined) return { failures: 0, error: "no live data yet" };
+    let data: unknown;
+    try {
+      data = await readSource(widget.source.name, inputs);
+    } catch (error) {
+      return { failures: 0, error: messageOf(error) };
     }
     try {
       return {
         failures: 0,
-        view: renderWidget(widget, builtinData(widget.source.name, inputs)),
+        view: renderWidget(widget, data),
         updatedAt: new Date(this.now()).toISOString(),
       };
     } catch (error) {
@@ -857,6 +895,8 @@ export class DashboardManager {
       existing === undefined ||
       existing.kind !== widget.kind ||
       JSON.stringify(existing.source) !== JSON.stringify(widget.source);
+    const tombstone = this.config.tombstones.indexOf(widget.id);
+    if (tombstone >= 0) this.config.tombstones.splice(tombstone, 1);
     if (existing === undefined) {
       this.config.widgets.push(widget);
       const sections = this.config.layout.sections;
@@ -899,13 +939,30 @@ export class DashboardManager {
       chartLabelNotes(widget, result.view, notes);
     } else {
       const inputs = this.host === undefined ? undefined : await this.host.builtinInputs();
-      const value = this.builtinValue(widget, inputs);
+      let value: WidgetValue = { failures: 0, error: "no live data yet" };
+      let data: unknown;
+      if (widget.source.type === "builtin" && inputs !== undefined) {
+        try {
+          data = await readSource(widget.source.name, inputs);
+        } catch (error) {
+          value = { failures: 0, error: messageOf(error) };
+        }
+        if (data !== undefined) {
+          try {
+            value = {
+              failures: 0,
+              view: renderWidget(widget, data),
+              updatedAt: new Date(this.now()).toISOString(),
+            };
+          } catch (error) {
+            value = { failures: 0, error: `mapping: ${messageOf(error)}` };
+          }
+        }
+      }
       result = {
         widget,
         ...this.valueFields({ ...value, history: [] }),
-        ...(inputs === undefined
-          ? {}
-          : { sample: sampleOf(builtinData(widget.source.name, inputs)) }),
+        ...(data === undefined ? {} : { sample: sampleOf(data) }),
         notes,
         polling: this.polling(),
       };
@@ -946,6 +1003,7 @@ export class DashboardManager {
     this.config.layout.sections = this.config.layout.sections.filter(
       (section) => section.widgets.length > 0,
     );
+    if (!this.config.tombstones.includes(key)) this.config.tombstones.push(key);
     this.clearTimer(key);
     this.bump(key);
     this.values.delete(key);
@@ -1000,6 +1058,53 @@ export class DashboardManager {
     await this.saveConfig();
     this.broadcast();
     return { layout: this.layout(), notes };
+  }
+
+  /** Discovery: every registered source, its description and a live sample. */
+  async sources(): Promise<Array<{ name: string; description: string; sample: unknown }>> {
+    let inputs: BuiltinInputs | undefined;
+    if (this.host !== undefined) {
+      try {
+        inputs = await this.host.builtinInputs();
+      } catch {
+        inputs = undefined;
+      }
+    }
+    return Promise.all(
+      listSources().map(async (spec) => {
+        let sample = spec.sample;
+        if (inputs !== undefined) {
+          try {
+            sample = await readSource(spec.name, inputs);
+          } catch {
+            sample = spec.sample;
+          }
+        }
+        return {
+          name: spec.name,
+          description: spec.describe,
+          sample: maskDeep(smallSample(sample), this.secrets),
+        };
+      }),
+    );
+  }
+
+  /** Restores DEFAULT_DASHBOARD, including an empty tombstone list. */
+  async reset(): Promise<DashboardState> {
+    for (const widget of this.config.widgets) {
+      this.clearTimer(widget.id);
+      this.bump(widget.id);
+    }
+    this.values.clear();
+    this.config = defaultDashboardConfig();
+    await this.saveConfig();
+    if (this.stateTimer !== undefined) {
+      clearTimeout(this.stateTimer);
+      this.stateTimer = undefined;
+    }
+    await this.queueWrite(this.statePath, () => this.serializeState());
+    this.broadcast();
+    return this.state();
   }
 
   /** Re-sends the frame, e.g. when jobs or the session change. */
@@ -1183,4 +1288,23 @@ function sampleOf(data: unknown): string | undefined {
   return json.length > SAMPLE_CHARS
     ? `${json.slice(0, SAMPLE_CHARS)}\n… (${json.length} chars)`
     : json;
+}
+
+/** Keeps a discovery sample small without changing its shape. */
+function smallSample(value: unknown, depth = 0): unknown {
+  if (typeof value === "string") {
+    return value.length > 400 ? `${value.slice(0, 400)}…` : value;
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, 20).map((item) => smallSample(item, depth + 1));
+  }
+  if (value !== null && typeof value === "object") {
+    if (depth > 5) return "…";
+    return Object.fromEntries(
+      Object.entries(value)
+        .slice(0, 40)
+        .map(([key, item]) => [key, smallSample(item, depth + 1)]),
+    );
+  }
+  return value;
 }
