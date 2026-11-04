@@ -1,3 +1,6 @@
+import type { Dirent } from "node:fs";
+import { readdir, readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
 import {
   defineTool,
   type ToolExecutionResult,
@@ -17,7 +20,32 @@ import {
   topicAppendBlock,
 } from "./store.js";
 
-function text(value: string, isError = false, details?: MemoryToolDetails): ToolExecutionResult {
+const GREP_DEFAULT_LIMIT = 40;
+const GREP_MAX_LIMIT = 200;
+const GREP_MAX_LINE_CHARS = 240;
+const GREP_MAX_FILE_BYTES = 512 * 1024;
+const READ_MAX_LIMIT = 400;
+
+/** One matching line from memory_grep. */
+export interface MemoryGrepHit {
+  readonly path: string;
+  readonly line: number;
+  readonly text: string;
+}
+
+/** The structured result memory_grep reports alongside its text summary. */
+export interface MemoryGrepDetails {
+  readonly hits: MemoryGrepHit[];
+  readonly topics: number;
+  readonly paths: string[];
+  readonly chars: number;
+}
+
+function text(
+  value: string,
+  isError = false,
+  details?: MemoryToolDetails | MemoryGrepDetails,
+): ToolExecutionResult {
   return {
     output: [{ type: "text", text: value }],
     ...(isError ? { isError: true } : {}),
@@ -27,13 +55,21 @@ function text(value: string, isError = false, details?: MemoryToolDetails): Tool
   };
 }
 
-function lineCount(content: string): number {
+function splitLines(content: string): string[] {
   const lines = content.split(/\r?\n/);
   while (lines.length > 1 && lines.at(-1) === "") lines.pop();
-  return lines.length;
+  return lines;
 }
 
-function readDetails(path: string, content: string): MemoryToolDetails {
+function lineCount(content: string): number {
+  return splitLines(content).length;
+}
+
+function readDetails(
+  path: string,
+  content: string,
+  range?: { readonly from: number; readonly to: number },
+): MemoryToolDetails {
   return {
     kind: "memory",
     operation: "read",
@@ -41,8 +77,50 @@ function readDetails(path: string, content: string): MemoryToolDetails {
     topics: 0,
     paths: [],
     chars: content.length,
-    reads: [{ path, from: 1, to: Math.max(1, lineCount(content)) }],
+    reads: [{ path, from: range?.from ?? 1, to: range?.to ?? Math.max(1, lineCount(content)) }],
   };
+}
+
+function clampLimit(value: number | undefined, fallback: number, max: number): number {
+  if (value === undefined || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(1, Math.trunc(value)));
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Every .md file under topics/, recursively, including INDEX.md. */
+async function listTopicFiles(store: MemoryStore): Promise<string[]> {
+  const files: string[] = [];
+  const walk = async (directory: string, prefix: string): Promise<void> => {
+    let entries: Dirent[];
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const rel = prefix.length === 0 ? entry.name : `${prefix}/${entry.name}`;
+      if (entry.isDirectory()) await walk(join(directory, entry.name), rel);
+      else if (entry.isFile() && entry.name.endsWith(".md")) files.push(`topics/${rel}`);
+    }
+  };
+  await walk(store.topicsDir, "");
+  return files;
+}
+
+/** Reads one grep candidate, skipping anything too large or unreadable. */
+async function readGrepFile(store: MemoryStore, path: string): Promise<string | undefined> {
+  try {
+    const file = store.resolvePath(path);
+    const info = await stat(file);
+    if (!info.isFile() || info.size > GREP_MAX_FILE_BYTES) return undefined;
+    return await readFile(file, "utf8");
+  } catch {
+    return undefined;
+  }
 }
 
 function failure(error: unknown): ToolExecutionResult {
@@ -172,30 +250,56 @@ export function createMemoryTools(
     defineTool({
       name: "memory_read",
       description:
-        "Read one memory file: a topic body (topics/<scope>/<slug>.md), MEMORY.md, SCRATCHPAD.md, or daily/YYYY-MM-DD.md.",
+        "Read one memory file (a topic body, MEMORY.md, SCRATCHPAD.md, or daily/YYYY-MM-DD.md), optionally only a line window with offset and limit.",
       parameters: Type.Object({
         path: Type.String({ description: "Memory-relative path." }),
+        offset: Type.Optional(
+          Type.Number({ description: "1-based first line for a window. Default 1." }),
+        ),
+        limit: Type.Optional(
+          Type.Number({
+            description: "Number of lines in a window, 1..400. Default the whole file.",
+          }),
+        ),
       }),
       async execute(args) {
         try {
           const requested = args.path.trim().replace(/^\/+/, "");
+          let path = requested;
+          let content: string;
           if (requested === "MEMORY.md") {
-            const content = await store.readMemory();
-            return text(content, false, readDetails(requested, content));
+            content = await store.readMemory();
+          } else if (requested === "SCRATCHPAD.md") {
+            content = (await store.readScratchpad()) || "(empty)";
+          } else {
+            const daily = /^daily\/(\d{4}-\d{2}-\d{2})\.md$/.exec(requested);
+            if (daily?.[1] !== undefined) {
+              content = (await store.readDaily(daily[1])) || "(empty)";
+            } else {
+              const topic = await store.readTopic(requested);
+              path = `topics/${topic.rel}`;
+              content = `${path} — ${topic.title}${topic.updated ? ` · ${topic.updated}` : ""}\n\n${topic.body.trim()}`;
+            }
           }
-          if (requested === "SCRATCHPAD.md") {
-            const content = (await store.readScratchpad()) || "(empty)";
-            return text(content, false, readDetails(requested, content));
+          const wantsWindow = args.offset !== undefined || args.limit !== undefined;
+          if (!wantsWindow) return text(content, false, readDetails(path, content));
+
+          const lines = splitLines(content);
+          const total = lines.length;
+          const offset = args.offset;
+          const from =
+            offset === undefined || !Number.isFinite(offset) ? 1 : Math.max(1, Math.trunc(offset));
+          const count =
+            args.limit === undefined ? total : clampLimit(args.limit, total, READ_MAX_LIMIT);
+          const to = from > total ? from + count - 1 : Math.min(from + count - 1, total);
+          const selected = from > total ? [] : lines.slice(from - 1, from - 1 + count);
+          const parts = [`${path} — lines ${from}–${to} of ${total}`];
+          if (selected.length > 0) parts.push(selected.join("\n"));
+          if (to < total) {
+            parts.push(`${total - to} more lines (call memory_read with offset=${to + 1})`);
           }
-          const daily = /^daily\/(\d{4}-\d{2}-\d{2})\.md$/.exec(requested);
-          if (daily?.[1] !== undefined) {
-            const content = (await store.readDaily(daily[1])) || "(empty)";
-            return text(content, false, readDetails(requested, content));
-          }
-          const topic = await store.readTopic(requested);
-          const path = `topics/${topic.rel}`;
-          const content = `${path} — ${topic.title}${topic.updated ? ` · ${topic.updated}` : ""}\n\n${topic.body.trim()}`;
-          return text(content, false, readDetails(path, content));
+          const window = parts.join("\n\n");
+          return text(window, false, readDetails(path, window, { from, to }));
         } catch (error) {
           if (isMissing(error)) return text(`no such memory file: ${args.path}`, true);
           return failure(error);
@@ -203,9 +307,77 @@ export function createMemoryTools(
       },
     }),
     defineTool({
+      name: "memory_grep",
+      description:
+        "Search the memory tree case-insensitively for a literal string or JavaScript regular expression, returning each file, 1-based line and matching text.",
+      parameters: Type.Object({
+        pattern: Type.String({ description: "Literal string or JavaScript regular expression." }),
+        fixed: Type.Optional(
+          Type.Boolean({ description: "Treat pattern as literal text. Default false (regex)." }),
+        ),
+        limit: Type.Optional(Type.Number({ description: "Maximum hits, 1..200. Default 40." })),
+      }),
+      async execute(args) {
+        const limit = clampLimit(args.limit, GREP_DEFAULT_LIMIT, GREP_MAX_LIMIT);
+        let expression: RegExp;
+        try {
+          expression = new RegExp(
+            args.fixed === true ? escapeRegExp(args.pattern) : args.pattern,
+            "i",
+          );
+        } catch (error) {
+          return text(
+            `invalid regular expression: ${args.pattern} (${
+              error instanceof Error ? error.message : String(error)
+            })`,
+            true,
+          );
+        }
+
+        const paths: string[] = [];
+        const hits: MemoryGrepHit[] = [];
+        const files = [
+          ...(await listTopicFiles(store)),
+          "MEMORY.md",
+          "SCRATCHPAD.md",
+          ...(await store.dailyDates()).slice(-7).map((date) => `daily/${date}.md`),
+        ];
+        for (const path of files) {
+          if (hits.length >= limit) break;
+          const file = await readGrepFile(store, path);
+          if (file === undefined) continue;
+          let recorded = false;
+          const lines = file.split(/\r?\n/);
+          for (let index = 0; index < lines.length && hits.length < limit; index += 1) {
+            const line = lines[index] ?? "";
+            if (!expression.test(line)) continue;
+            if (!recorded) {
+              paths.push(path);
+              recorded = true;
+            }
+            hits.push({
+              path,
+              line: index + 1,
+              text: line.trim().slice(0, GREP_MAX_LINE_CHARS),
+            });
+          }
+        }
+
+        const details: MemoryGrepDetails = {
+          hits,
+          topics: paths.length,
+          paths,
+          chars: hits.reduce((total, hit) => total + hit.text.length, 0),
+        };
+        if (hits.length === 0) return text(`no matches for ${args.pattern}`, false, details);
+        const summary = hits.map((hit) => `${hit.path}:${hit.line} — ${hit.text}`).join("\n");
+        return text(`${summary}\n\n${hits.length} hits in ${paths.length} files`, false, details);
+      },
+    }),
+    defineTool({
       name: "memory_find",
       description:
-        "Search topic bodies with TF-IDF (exact terms, prefix matching, title/filename bonus, recency and recall). Returns ranked paths, titles, dates and a short snippet. INDEX.md files are never searched.",
+        "Search topic bodies with TF-IDF (exact terms, prefix matching, title/filename bonus, recency and recall) and return ranked paths, titles, dates and a short snippet, never INDEX.md; use memory_grep for literal or regex text search.",
       parameters: Type.Object({
         query: Type.String({ description: "What you half-remember; a few distinctive terms." }),
         limit: Type.Optional(Type.Number({ description: "Maximum results. Default 6." })),
