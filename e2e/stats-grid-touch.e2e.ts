@@ -96,6 +96,97 @@ async function resetMinimalDashboard(browser: GridBrowser) {
     .toEqual(["context", "tokens", "mcp", "mcp-events", "task-reopens"]);
 }
 
+type SwipeInput = {
+  target: string;
+  dx: number;
+  dy: number;
+  scroll: boolean;
+  pointerEcho: boolean;
+};
+
+/** Dispatch a real touch gesture at a card element and report the pager outcome. */
+async function swipeCard(
+  browser: {
+    evaluate<T>(fn: (input: SwipeInput) => Promise<T> | T, input: SwipeInput): Promise<T>;
+  },
+  input: SwipeInput,
+) {
+  return browser.evaluate(async ({ target, dx, dy, scroll, pointerEcho }) => {
+    const pager = document.querySelector<HTMLElement>('[data-testid="pager"]');
+    const element = document.querySelector<HTMLElement>(target);
+    const page = document.querySelector<HTMLElement>('[data-testid="stats-page"]');
+    if (pager === null || element === null) return null;
+    const box = element.getBoundingClientRect();
+    const startX = box.left + box.width * 0.6;
+    const startY = box.top + Math.min(28, box.height / 2);
+    const point = (x: number, y: number) =>
+      new Touch({ identifier: 71, target: element, clientX: x, clientY: y });
+    const fire = (type: string, x: number, y: number) => {
+      const touch = point(x, y);
+      const event = new TouchEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        touches: type === "touchend" ? [] : [touch],
+        targetTouches: type === "touchend" ? [] : [touch],
+        changedTouches: [touch],
+      });
+      element.dispatchEvent(event);
+      return event;
+    };
+    let lastY = startY;
+    const nativeScroll = (event: TouchEvent) => {
+      if (!scroll || event.defaultPrevented || page === null) return;
+      const touch = event.touches[0];
+      if (touch === undefined) return;
+      page.scrollTop += lastY - touch.clientY;
+      lastY = touch.clientY;
+    };
+    page?.addEventListener("touchmove", nativeScroll, { passive: true });
+    const pageBefore = pager.getAttribute("data-page");
+    let prevented = false;
+    const send = (type: string, x: number, y: number) => {
+      const event = fire(type, x, y);
+      prevented ||= event.defaultPrevented;
+    };
+    send("touchstart", startX, startY);
+    send("touchmove", startX + dx / 2, startY + dy / 2);
+    send("touchmove", startX + dx, startY + dy);
+    send("touchend", startX + dx, startY + dy);
+    if (pointerEcho) {
+      const sendPointer = (type: string, x: number, y: number) => {
+        element.dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            pointerId: 72,
+            pointerType: "touch",
+            isPrimary: true,
+            clientX: x,
+            clientY: y,
+            button: 0,
+            buttons: type === "pointerup" ? 0 : 1,
+          }),
+        );
+      };
+      sendPointer("pointerdown", startX, startY);
+      sendPointer("pointermove", startX + dx / 2, startY + dy / 2);
+      sendPointer("pointermove", startX + dx, startY + dy);
+      sendPointer("pointerup", startX + dx, startY + dy);
+    }
+    page?.removeEventListener("touchmove", nativeScroll);
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+    return {
+      pageBefore,
+      page: pager.getAttribute("data-page"),
+      prevented,
+      scrollTop: page?.scrollTop ?? 0,
+    };
+  }, input);
+}
+
 const pinValues = [10, 20, 30, 40, 50, 60, 70, 80];
 
 function pinChartCall(id: string) {
@@ -258,7 +349,7 @@ test("PATCH /api/dashboard/layout rejects an unknown widget id", async ({ app, b
   expect(result.text).toContain("not-a-widget");
 });
 
-test("a phone-width viewport keeps the single-column stack and no drag grips", async ({
+test("a phone-width viewport keeps the single-column stack with drag handles", async ({
   app,
   browser,
   screen,
@@ -270,12 +361,12 @@ test("a phone-width viewport keeps the single-column stack and no drag grips", a
   await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
   expect(
     await browser.evaluate(() => ({
-      grips: document.querySelectorAll(".dashboard-drag-handle").length,
+      grips: document.querySelectorAll('[data-testid="dashboard-drag-handle"]').length,
       add: document.querySelectorAll('[data-testid="dashboard-add-section"]').length,
       grids: document.querySelectorAll(".dashboard-grid").length,
       stacks: document.querySelectorAll('[data-testid^="dashboard-stack-"]').length,
     })),
-  ).toEqual({ grips: 0, add: 0, grids: 0, stacks: 1 });
+  ).toEqual({ grips: 5, add: 0, grids: 0, stacks: 1 });
   expect(
     await browser.evaluate(() => {
       const cards = [...document.querySelectorAll("[data-widget-id]")];
@@ -310,10 +401,219 @@ test("a phone-width viewport keeps the single-column stack and no drag grips", a
     .toEqual({ grid: 768, card: 768, inside: true, overflow: false });
   expect(
     await browser.evaluate(() => ({
-      grips: document.querySelectorAll(".dashboard-drag-handle").length,
+      grips: document.querySelectorAll('[data-testid="dashboard-drag-handle"]').length,
       resize: document.querySelectorAll(".dashboard-resize-handle").length,
     })),
-  ).toEqual({ grips: 0, resize: 5 });
+  ).toEqual({ grips: 5, resize: 5 });
+});
+
+test("a card-body swipe pages both ways, while a vertical pan only scrolls", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  // Short enough that the five stacked cards overflow and can actually scroll.
+  await browser.setViewport({ width: 390, height: 480 });
+  await app.open("/?page=stats");
+  await resetMinimalDashboard(browser);
+  await expect(screen.getByTestId("stats-page")).toBeVisible({ timeout: 30_000 });
+  await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
+
+  const forward = await swipeCard(browser, {
+    target: '[data-widget-id="context"] h2',
+    dx: -170,
+    dy: 0,
+    scroll: false,
+    pointerEcho: true,
+  });
+  expect(forward).toEqual({ pageBefore: "stats", page: "chat", prevented: true, scrollTop: 0 });
+
+  await screen.getByRole("tab", "Tasks").tap();
+  await expect
+    .poll(() =>
+      browser.evaluate(
+        () => document.querySelector('[data-testid="pager"]')?.getAttribute("data-page") ?? null,
+      ),
+    )
+    .toBe("tasks");
+  const back = await swipeCard(browser, {
+    target: '[data-widget-id="context"] h2',
+    dx: 170,
+    dy: 0,
+    scroll: false,
+    pointerEcho: true,
+  });
+  expect(back?.page).toBe("chat");
+
+  await screen.getByRole("tab", "Stats").tap();
+  await expect
+    .poll(() =>
+      browser.evaluate(
+        () => document.querySelector('[data-testid="pager"]')?.getAttribute("data-page") ?? null,
+      ),
+    )
+    .toBe("stats");
+  const vertical = await swipeCard(browser, {
+    target: '[data-widget-id="context"] h2',
+    dx: 0,
+    dy: -180,
+    scroll: true,
+    pointerEcho: false,
+  });
+  expect(vertical?.page).toBe("stats");
+  expect(vertical?.prevented).toBe(false);
+  expect(vertical?.scrollTop ?? 0).toBeGreaterThan(0);
+});
+
+test("a long hold on a card starts the drag without opening its menu", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/?page=stats");
+  await resetMinimalDashboard(browser);
+  await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
+  const held = await browser.evaluate(async () => {
+    const card = document.querySelector<HTMLElement>('[data-widget-id="context"]');
+    const target = card?.querySelector<HTMLElement>("h2") ?? null;
+    if (card === null || target === null) throw new Error("missing card");
+    const box = card.getBoundingClientRect();
+    const x = box.left + box.width * 0.6;
+    const y = box.top + Math.min(28, box.height / 2);
+    const fire = (type: string, buttons: number) =>
+      target.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          pointerId: 43,
+          pointerType: "touch",
+          isPrimary: true,
+          clientX: x,
+          clientY: y,
+          button: 0,
+          buttons,
+        }),
+      );
+    fire("pointerdown", 1);
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    const result = {
+      lock: card.closest("[data-pager-lock]") !== null,
+      menu: document.querySelector('[role="menu"]') !== null,
+      page: document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
+    };
+    fire("pointerup", 0);
+    return result;
+  });
+  expect(held).toEqual({ lock: true, menu: false, page: "stats" });
+});
+
+test("holding a card drag handle moves the card without paging", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/?page=stats");
+  await resetMinimalDashboard(browser);
+  await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
+  const before = await browser.evaluate(async () => {
+    const response = await fetch("/api/dashboard");
+    const dashboard = (await response.json()) as DashboardRead;
+    return dashboard.layout.sections[0]?.widgets.map((widget) => widget.id) ?? [];
+  });
+  const start = await browser.evaluate(() => {
+    const handle = document.querySelector<HTMLElement>(
+      '[data-widget-id="tokens"] [data-testid="dashboard-drag-handle"]',
+    );
+    const target = document.querySelector<HTMLElement>('[data-widget-id="context"]');
+    if (handle === null || target === null) return null;
+    const from = handle.getBoundingClientRect();
+    const to = target.getBoundingClientRect();
+    return {
+      x0: from.left + from.width / 2,
+      y0: from.top + from.height / 2,
+      x1: to.left + to.width / 2,
+      y1: to.top + to.height * 0.25,
+    };
+  });
+  expect(start).not.toBeNull();
+  if (start === null) throw new Error("missing drag handle");
+  await browser.evaluate(async ({ x0, y0, x1, y1 }) => {
+    const handle = document.querySelector<HTMLElement>(
+      '[data-widget-id="tokens"] [data-testid="dashboard-drag-handle"]',
+    );
+    if (handle === null) throw new Error("missing drag handle");
+    const fire = (type: string, x: number, y: number, buttons: number) =>
+      handle.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          pointerId: 41,
+          pointerType: "touch",
+          isPrimary: true,
+          clientX: x,
+          clientY: y,
+          button: 0,
+          buttons,
+        }),
+      );
+    fire("pointerdown", x0, y0, 1);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    for (let step = 1; step <= 6; step += 1) {
+      fire("pointermove", x0 + ((x1 - x0) * step) / 6, y0 + ((y1 - y0) * step) / 6, 1);
+    }
+    fire("pointerup", x1, y1, 0);
+    return true;
+  }, start);
+  await expect
+    .poll(async () => {
+      const dashboard = await readDashboard(browser);
+      return dashboard.layout.sections[0]?.widgets.map((widget) => widget.id) ?? [];
+    })
+    .not.toEqual(before);
+  expect(
+    await browser.evaluate(
+      () => document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
+    ),
+  ).toBe("stats");
+});
+
+test("a horizontal swipe over a chart pages instead of pinning it", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/?page=stats");
+  await expect(screen.getByTestId("stats-page")).toBeVisible({ timeout: 30_000 });
+  await callDashboard(browser, [pinChartCall("pin-swipe")]);
+  try {
+    await expect(screen.getByText("Pinned chart", { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    await waitForChart(browser, "pin-swipe");
+    const swipe = await swipeCard(browser, {
+      target: '[data-chart-widget="pin-swipe"]',
+      dx: -170,
+      dy: 0,
+      scroll: false,
+      pointerEcho: false,
+    });
+    expect(swipe?.page).toBe("chat");
+    expect(swipe?.prevented).toBe(true);
+    expect(
+      await browser.evaluate(
+        () =>
+          document.querySelector('[data-testid="widget-pin-swipe"] [data-testid="chart-pin"]') !==
+          null,
+      ),
+    ).toBe(false);
+  } finally {
+    await callDashboard(browser, [{ name: "dashboard_remove", arguments: { id: "pin-swipe" } }]);
+  }
 });
 
 test("clicking a chart pins its row, a second click or Escape clears it, and a drag does not pin", async ({

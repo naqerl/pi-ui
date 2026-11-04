@@ -78,6 +78,7 @@ const GRID_ROW_HEIGHT = 44;
 const DRAG_HOLD_MS = 350;
 const DRAG_HOLD_SLOP_PX = 6;
 const DRAG_BLOCKERS = 'button, a, input, textarea, select, [role="button"], [data-no-drag]';
+const DRAG_HANDLE = ".dashboard-drag-handle";
 
 interface GridGesture {
   kind: "drag" | "resize";
@@ -1011,6 +1012,9 @@ function WidgetCard({
         cancelPress();
         const timer = window.setTimeout(() => {
           press.current = null;
+          // A hold long enough to start a grid drag owns the press. The menu
+          // timer runs later, so suppress it while that drag is still active.
+          if (cardRef.current?.closest("[data-pager-lock]") !== null) return;
           setMenu(true);
           haptic(10);
         }, 550);
@@ -1031,6 +1035,18 @@ function WidgetCard({
     >
       <div className="flex items-start justify-between gap-2 pb-1">
         <div className="flex min-w-0 items-start gap-1">
+          {/* The grip owns the drag gesture, so a press scale would fight it. */}
+          <button
+            type="button"
+            className="dashboard-drag-handle theme-radius -my-0.5 shrink-0 cursor-grab touch-none px-1 text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+            aria-label={`Move ${widget.title}`}
+            title="Drag to move; you can also hold the card"
+            data-testid="dashboard-drag-handle"
+            data-no-press
+            onClick={(event) => event.stopPropagation()}
+          >
+            ⠿
+          </button>
           <h2
             className="min-w-0 text-[11px] uppercase tracking-wide text-muted-foreground [overflow-wrap:anywhere]"
             title={
@@ -1444,14 +1460,6 @@ export function StatsView({
       event: PointerEvent;
     } | null = null;
     let removeHoldListeners: (() => void) | null = null;
-    let touchTarget: HTMLElement | null = null;
-
-    const clearTouchTarget = () => {
-      if (touchTarget !== null) {
-        touchTarget.style.touchAction = "";
-        touchTarget = null;
-      }
-    };
 
     const detachHold = () => {
       if (hold !== null) window.clearTimeout(hold.timer);
@@ -1462,7 +1470,6 @@ export function StatsView({
 
     const cancelHold = () => {
       detachHold();
-      clearTouchTarget();
     };
 
     const endGesture = (event: PointerEvent) => {
@@ -1471,7 +1478,7 @@ export function StatsView({
       event.preventDefault();
       removeListeners?.();
       gesture = null;
-      clearTouchTarget();
+      root.removeAttribute("data-pager-lock");
       const current = layoutRef.current ?? active.base;
       let next = current;
       const point = { x: event.clientX, y: event.clientY };
@@ -1578,6 +1585,9 @@ export function StatsView({
         base: structuredClone(current),
         moved: false,
       };
+      // An explicit lock is more reliable than racing the pager's own
+      // direction decision, especially for a hold that starts before a move.
+      root.setAttribute("data-pager-lock", kind);
       window.addEventListener("pointermove", moveGesture, true);
       window.addEventListener("pointerup", endGesture, true);
       window.addEventListener("pointercancel", endGesture, true);
@@ -1608,14 +1618,17 @@ export function StatsView({
         beginGesture(event, "resize", card, section, resizeHandle);
         return;
       }
+      const dragHandle = target.closest<HTMLElement>(DRAG_HANDLE);
+      if (dragHandle !== null) {
+        cancelHold();
+        beginGesture(event, "drag", card, section, dragHandle);
+        return;
+      }
       if (target.closest(DRAG_BLOCKERS) !== null) return;
       if (gesture !== null) return;
       cancelHold();
-      // Keep the page from scrolling while the hold is armed, but restore
-      // normal scrolling as soon as this press ends without a drag.
-      event.stopPropagation();
-      touchTarget = card;
-      card.style.touchAction = "none";
+      // Let the pager see the same pointerdown: a plain swipe over the card
+      // body must still page. The hold only takes over once it is armed.
       const armed = {
         timer: 0,
         pointerId: event.pointerId,
@@ -1652,9 +1665,7 @@ export function StatsView({
         hold = null;
         removeHoldListeners?.();
         removeHoldListeners = null;
-        if (!beginGesture(armed.event, "drag", armed.card, armed.section, armed.card)) {
-          clearTouchTarget();
-        }
+        beginGesture(armed.event, "drag", armed.card, armed.section, armed.card);
       }, DRAG_HOLD_MS);
     };
 
@@ -1663,6 +1674,7 @@ export function StatsView({
       root.removeEventListener("pointerdown", onPointerDown, true);
       removeListeners?.();
       cancelHold();
+      root.removeAttribute("data-pager-lock");
     };
   }, [commitLayout]);
 
