@@ -1,3 +1,17 @@
+## 1.6.96 - 2026-11-04
+
+- test(e2e): stop the two specs that failed on 1.6.94 from failing on timing.
+  The MCP-events widget test installed its `/api/state` mock *after* the first
+  page had already fetched it, so whether three rows appeared depended on a
+  later refresh landing inside the assertion window; it now installs the route
+  before the stats reload, retires any in-flight fetch through the existing
+  focus refresh, and polls the row count until it is exactly 3. The composer
+  test asserted a fixed 300 ms settle against a 220 ms transition and could
+  sample a mid-animation frame on a loaded runner; it now polls the body height
+  on both sides of each switch and still requires the resting height within
+  0.5 px. Five consecutive runs each: dashboard 69.2-72.4 s, stats 86.9-91.7 s.
+  No product code and no test-only hooks (t6vc).
+
 ## 1.6.95 - 2026-11-04
 
 - fix(pager): a swipe that starts on a widget card now changes the page for good. 1.6.93 made cards stop claiming the gesture, but the rule underneath still handed **every leftward touch** to any horizontally scrollable element without asking whether it could still scroll — at its right edge it could not, so the gesture was dropped and swipes worked only on empty background. The hand-off is now edge-aware per direction (`scrollLeft + clientWidth < scrollWidth - 1` leftward, `scrollLeft > 0` rightward), `data-hscroll` surfaces still always own their gesture, and a sub-pixel overflow no longer turns a card into a gesture sink (km8w).
