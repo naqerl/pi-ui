@@ -309,6 +309,25 @@
   }
 }
 
+/* Every interactive control compresses slightly while pressed. Transform-only,
+   so the feedback stays on the compositor and never reflows the page. The
+   explicit superset keeps transitions controls already declare (opacity,
+   colours) instead of replacing them. Controls that own a pointer gesture opt
+   out with data-no-press and say why. */
+@media (prefers-reduced-motion: no-preference) {
+  button:not(:disabled):not([aria-disabled="true"]):not([data-no-press]),
+  [role="button"]:not([aria-disabled="true"]):not([data-no-press]) {
+    transition-property: transform, background-color, color, border-color, opacity;
+    transition-duration: 90ms, 120ms, 120ms, 120ms, 120ms;
+    transition-timing-function: ease-out;
+  }
+
+  button:not(:disabled):not([aria-disabled="true"]):not([data-no-press]):active,
+  [role="button"]:not([aria-disabled="true"]):not([data-no-press]):active {
+    transform: scale(0.97);
+  }
+}
+
 /* Theme border often matches the surface, so chrome edges use the foreground. */
 .ink-line {
   border-color: color-mix(in srgb, var(--foreground) 28%, transparent);
