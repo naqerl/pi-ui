@@ -312,7 +312,7 @@ test("a phone-width viewport keeps the single-column stack and no drag grips", a
       grips: document.querySelectorAll(".dashboard-drag-handle").length,
       resize: document.querySelectorAll(".dashboard-resize-handle").length,
     })),
-  ).toEqual({ grips: 0, resize: 4 });
+  ).toEqual({ grips: 0, resize: 5 });
 });
 
 test("clicking a chart pins its row, a second click or Escape clears it, and a drag does not pin", async ({
