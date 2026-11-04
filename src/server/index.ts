@@ -521,6 +521,24 @@ app.get("/api/tasks", (c) => c.json(taskView()));
 
 app.get("/api/dashboard", (c) => c.json(dashboard.state()));
 
+app.get("/api/dashboard/sources", async (c) => {
+  try {
+    return c.json({ sources: await dashboard.sources() });
+  } catch (error) {
+    console.error("[pi] dashboard sources failed", error);
+    return c.text("Could not list dashboard sources", 500);
+  }
+});
+
+app.post("/api/dashboard/reset", async (c) => {
+  try {
+    return c.json(await dashboard.reset());
+  } catch (error) {
+    console.error("[pi] dashboard reset failed", error);
+    return c.text("Could not reset the dashboard", 500);
+  }
+});
+
 app.patch("/api/dashboard/layout", async (c) => {
   let body: unknown;
   try {

@@ -1,43 +1,48 @@
 # Dashboard
 
 The page left of the chat (`?page=stats`) is a dashboard the agent can edit. It
-starts with the old stats cards (context, tokens, MCP servers) plus an MCP events
-list, and the agent adds, moves and removes widgets with five tools. The chat
+starts from the committed default board, and the agent adds, moves and removes
+widgets with five tools. See [dashboard-widgets.md](dashboard-widgets.md) for
+the source registry, discovery endpoint, tombstones and reset. The chat
 header shows no MCP status; these two widgets replace it. Widgets only show data: the page never
 renders HTML or JS from a widget and there are no action buttons.
 
 ## Files
 
-- `DATA_DIR/dashboard.json`: widgets and layout. It holds scripts, never tokens.
-  Missing or invalid JSON falls back to the default stats widgets. `seeded`
-  records which set of default widgets the file has been given (currently `2`).
-  A file from an older pi-ui gets the defaults added since then once, on load:
-  seed 2 adds `mcp-events` after the `mcp` widget. A default removed after that
-  stays removed, because `seeded` already covers it.
+- `DATA_DIR/dashboard.json`: widgets, layout and `tombstones`. It holds
+  scripts, never tokens. Missing or invalid JSON falls back to
+  `DEFAULT_DASHBOARD`. Deleted ids are tombstoned so seeding does not recreate
+  them. `defaultVersion` is recorded when the file predates the committed
+  default, so the page can offer a reset.
 - `DATA_DIR/dashboard-state.json`: the last value, error and history of each
   poll and static widget, so the page shows something right after a restart.
 
 `GET /api/dashboard` returns widgets (poll scripts stripped), layout, values,
-the builtin `jobs` and `session` data, and `polling`. Changes go to every open
-client as a `dashboard` event on the stream. `DELETE /api/dashboard/widgets/:id`
-is what the card menu calls.
+the builtin `jobs` and `session` data, `polling`, and `defaultVersion` when a
+newer default is available. `GET /api/dashboard/sources` describes every
+registered source with a live sample. `POST /api/dashboard/reset` restores
+`DEFAULT_DASHBOARD` and clears tombstones. Changes go to every open client as a
+`dashboard` event on the stream. `DELETE /api/dashboard/widgets/:id` is what the
+card menu calls.
 
 ## Tools
 
-| Tool               | Arguments                                            | Does                                                                                                                                                                                                |
-| ------------------ | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `dashboard_get`    | none                                                 | Sections, widget configs, last values, errors and whether polling is on.                                                                                                                            |
-| `dashboard_upsert` | `id`, `title`, `kind`, `source`, `mapping`, `chart?` | Adds or replaces a widget, runs it once and returns `{view, error, sample, logs, notes, polling}` so the agent can fix the mapping or script and try again. `chart` is sparkline presentation only. |
-| `dashboard_remove` | `id`                                                 | Removes a widget and its slot.                                                                                                                                                                      |
-| `dashboard_push`   | `id`, `data`                                         | Sends data to a `static` widget and renders it.                                                                                                                                                     |
-| `dashboard_layout` | `sections: [{title?, widgets: [{id, span?}]}]`       | Orders widgets into titled sections. `span` is `full`, `half` or `third` on wide screens; phones show one column. Widgets left out go to a final section.                                           |
+| Tool               | Arguments                                                        | Does                                                                                                                                                                                                                                                                             |
+| ------------------ | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dashboard_get`    | none                                                             | Sections, widget configs, last values, errors and whether polling is on.                                                                                                                                                                                                         |
+| `dashboard_upsert` | `id`, `replace?`, `title`, `kind`, `source`, `mapping`, `chart?` | Adds or replaces a widget, runs it once and returns `{view, error, sample, logs, notes, polling}` so the agent can fix the mapping or script and try again. `replace:true` deliberately changes the source under an existing builtin id. `chart` is sparkline presentation only. |
+| `dashboard_remove` | `id`                                                             | Removes a widget and its slot.                                                                                                                                                                                                                                                   |
+| `dashboard_push`   | `id`, `data`                                                     | Sends data to a `static` widget and renders it.                                                                                                                                                                                                                                  |
+| `dashboard_layout` | `sections: [{title?, widgets: [{id, span?}]}]`                   | Orders widgets into titled sections. `span` is `full`, `half` or `third` on wide screens; phones show one column. Widgets left out go to a final section.                                                                                                                        |
 
 There is no refresh tool: poll widgets refresh on their own while someone looks
 at the page.
 
 ## Sources
 
-- `{"type": "builtin", "name": …}`: live pi-ui data.
+- `{"type": "builtin", "name": …}`: live pi-ui data from the source registry
+  (see [dashboard-widgets.md](dashboard-widgets.md) and
+  `GET /api/dashboard/sources`).
   - `context`: `tokens`, `window`, `percent`, `text`
   - `tokens`: `input`, `output`, `cacheRead`, `cacheWrite`, `totalTokens`, `cost`, `costText`, `rows[]` (`key`, `label`, `value`)
   - `cache`: `read`, `write`, `hitRate`, `hitPercent`, `text`

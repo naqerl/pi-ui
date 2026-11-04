@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "@e2e-dev/web";
 import { expect, type JsonValue } from "e2e";
 import { parseWidget } from "../src/server/dashboard.js";
+import { DEFAULT_DASHBOARD } from "../src/shared/dashboard-default.js";
+import { BUILTIN_SOURCES } from "../src/shared/dashboard-sources.js";
 
 // Poll scripts the fake model hands to dashboard_upsert. They call the fake
 // ExampleCloud API on the fake model server ({{FAKE_HTTP}}) with env.HCLOUD_TOKEN.
@@ -66,7 +68,12 @@ const createCalls = [
             { id: "example-cloud-servers", span: "full" },
           ],
         },
-        { title: "Agent", widgets: [{ id: "mcp", span: "full" }] },
+        {
+          title: "Agent",
+          widgets: DEFAULT_DASHBOARD.widgets
+            .filter((widget) => widget.id !== "context" && widget.id !== "tokens")
+            .map((widget) => ({ id: widget.id, span: "full" })),
+        },
       ],
     },
   },
@@ -135,22 +142,13 @@ const spendChartCall = {
 
 const spendResetCalls = [{ name: "dashboard_remove", arguments: { id: "spend-chart" } }];
 
+const defaultIds = DEFAULT_DASHBOARD.widgets.map((widget) => widget.id);
 const resetCalls = [
   { name: "dashboard_remove", arguments: { id: "example-cloud-servers" } },
+  { name: "dashboard_remove", arguments: { id: "example-cloud-cost" } },
   {
     name: "dashboard_layout",
-    arguments: {
-      sections: [
-        {
-          widgets: [
-            { id: "context", span: "full" },
-            { id: "tokens", span: "full" },
-            { id: "mcp", span: "full" },
-            { id: "mcp-events", span: "full" },
-          ],
-        },
-      ],
-    },
+    arguments: { sections: DEFAULT_DASHBOARD.sections },
   },
 ];
 
@@ -308,7 +306,56 @@ test("the agent builds dashboard widgets that render at 1280px and 390px", async
   await expect.poll(async () => (await readDashboard(browser)).polling).toBe(false);
   // Leave the default dashboard behind for whichever isolated session runs next.
   await seedDashboard(browser, resetCalls);
-  await dashboardHas(browser, ["context", "tokens", "mcp", "mcp-events"]);
+  await dashboardHas(browser, defaultIds);
+});
+
+test("sources are discoverable and reset restores the committed default board", async ({
+  app,
+  browser,
+}) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/");
+  const sources = (await browser.evaluate(async () => {
+    const response = await fetch("/api/dashboard/sources");
+    if (!response.ok) throw new Error(`sources failed: ${response.status}`);
+    return (await response.json()) as unknown as JsonValue;
+  })) as unknown as {
+    sources: { name: string; description: string; sample?: unknown }[];
+  };
+  assert.deepEqual(
+    sources.sources.map((source) => source.name).sort(),
+    [...BUILTIN_SOURCES].sort(),
+  );
+  for (const source of sources.sources) {
+    assert.notEqual(source.description.trim(), "", `${source.name} has a description`);
+    assert.notEqual(source.sample, undefined, `${source.name} has a sample`);
+  }
+
+  // Delete a builtin and add an unrelated widget, then reset.
+  await browser.evaluate(async () => {
+    const removed = await fetch("/api/dashboard/widgets/context", { method: "DELETE" });
+    if (!removed.ok) throw new Error(`delete failed: ${removed.status}`);
+    const response = await fetch("/api/dashboard/reset", { method: "POST" });
+    if (!response.ok) throw new Error(`reset failed: ${response.status}`);
+    return (await response.json()) as unknown as JsonValue;
+  });
+  await expect
+    .poll(async () => (await readDashboard(browser)).widgets.map((widget) => widget.id))
+    .toEqual(defaultIds);
+  const state = (await browser.evaluate(async () => {
+    const response = await fetch("/api/dashboard");
+    return (await response.json()) as unknown as JsonValue;
+  })) as unknown as {
+    layout: { sections: { title?: string; widgets: { id: string }[] }[] };
+  };
+  assert.deepEqual(
+    state.layout.sections.map((section) => section.title),
+    DEFAULT_DASHBOARD.sections.map((section) => section.title),
+  );
+  assert.deepEqual(
+    state.layout.sections.flatMap((section) => section.widgets.map((slot) => slot.id)),
+    defaultIds,
+  );
 });
 
 test("polls run only while the dashboard is visible, and widgets can be removed", async ({
@@ -381,7 +428,7 @@ test("polls run only while the dashboard is visible, and widgets can be removed"
     .poll(async () => (await readDashboard(browser)).widgets.map((w) => w.id), {
       timeout: 20_000,
     })
-    .toEqual(["context", "tokens", "mcp", "mcp-events"]);
+    .toEqual(defaultIds);
 });
 
 test("the MCP events widget shows at most 3 rows", async ({ app, browser, screen }) => {
@@ -395,7 +442,7 @@ test("the MCP events widget shows at most 3 rows", async ({ app, browser, screen
   }));
   await app.open("/");
   await seedDashboard(browser, resetCalls);
-  await dashboardHas(browser, ["context", "tokens", "mcp", "mcp-events"]);
+  await dashboardHas(browser, defaultIds);
   const state = await browser.evaluate(async () => {
     const res = await fetch("/api/state");
     return (await res.json()) as { [key: string]: JsonValue };
@@ -475,7 +522,7 @@ test("sparkline widgets render through recharts and honor their chart config", a
 
   await screen.getByRole("tab", "Chat").tap();
   await seedDashboard(browser, resetCalls);
-  await dashboardHas(browser, ["context", "tokens", "mcp", "mcp-events"]);
+  await dashboardHas(browser, defaultIds);
 });
 
 test("a chart draws two coloured series, a dashed projection, a reference line and x labels", async ({

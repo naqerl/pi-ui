@@ -43,6 +43,57 @@ async function callDashboard(
   );
 }
 
+const EXTRA_DEFAULT_IDS = [
+  "host-usage",
+  "prefix-moments",
+  "prefix-cost",
+  "hetzner",
+  "hetzner-cost",
+  "go-usage",
+  "bg-jobs",
+];
+
+/** This file's older grid assertions use the four-widget Session board. */
+type GridBrowser = {
+  evaluate<T>(fn: (ids: string[]) => Promise<T> | T, ids: string[]): Promise<T>;
+  evaluate<T>(fn: () => Promise<T> | T): Promise<T>;
+};
+
+async function resetMinimalDashboard(browser: GridBrowser) {
+  await browser.evaluate(async (ids) => {
+    const reset = await fetch("/api/dashboard/reset", { method: "POST" });
+    if (!reset.ok) throw new Error(`reset failed: ${reset.status}`);
+    for (const id of ids) {
+      const removed = await fetch(`/api/dashboard/widgets/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+      if (!removed.ok) throw new Error(`delete ${id} failed: ${removed.status}`);
+    }
+    const layout = await fetch("/api/dashboard/layout", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sections: [
+          {
+            widgets: [
+              { id: "context", span: "full" },
+              { id: "tokens", span: "full" },
+              { id: "mcp", span: "full" },
+              { id: "mcp-events", span: "full" },
+            ],
+          },
+        ],
+      }),
+    });
+    if (!layout.ok) throw new Error(`layout failed: ${layout.status}`);
+    return null;
+  }, EXTRA_DEFAULT_IDS);
+  await expect.poll(async () => (await readDashboard(browser)).layout.sections.length).toBe(1);
+  await expect
+    .poll(async () => (await readDashboard(browser)).widgets.map((widget) => widget.id))
+    .toEqual(["context", "tokens", "mcp", "mcp-events"]);
+}
+
 const pinValues = [10, 20, 30, 40, 50, 60, 70, 80];
 
 function pinChartCall(id: string) {
@@ -236,6 +287,8 @@ test("drags a widget to the top, resizes it to half, and keeps both after reload
     await route.continue();
   });
   await app.open("/?page=stats");
+  await resetMinimalDashboard(browser);
+  patches.length = 0;
   await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
   await expect(screen.getByTestId("widget-tokens")).toBeVisible({ timeout: 30_000 });
   expect(
@@ -385,6 +438,7 @@ test("creates a section through the agent, then renames and deletes it", async (
     },
   ];
   await app.open("/");
+  await resetMinimalDashboard(browser);
   await screen.getByRole("textbox", "Message").fill(`TOOLCALLS ${JSON.stringify(calls)}`);
   await screen.getByRole("button", "Send").tap();
   await expect
@@ -606,6 +660,7 @@ test("applies an external PATCH title and y spacing while the page is open", asy
 test("packs a free drag collision into the persisted layout", async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 1280, height: 1000 });
   await app.open("/?page=stats");
+  await resetMinimalDashboard(browser);
   await expect(screen.getByTestId("widget-tokens")).toBeVisible({ timeout: 30_000 });
   const patched = await browser.evaluate(async () => {
     const response = await fetch("/api/dashboard/layout", {
@@ -682,6 +737,7 @@ test("resizes with touch and disables page scrolling on the resize handle", asyn
 }) => {
   await browser.setViewport({ width: 1280, height: 1000 });
   await app.open("/?page=stats");
+  await resetMinimalDashboard(browser);
   await expect(screen.getByTestId("widget-context-resize")).toBeVisible({ timeout: 30_000 });
   expect(
     await browser.evaluate(() => {
@@ -759,6 +815,7 @@ test("a phone-width viewport keeps the single-column stack and no drag grips", a
 }) => {
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/?page=stats");
+  await resetMinimalDashboard(browser);
   await expect(screen.getByTestId("stats-page")).toBeVisible({ timeout: 30_000 });
   await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
   expect(
