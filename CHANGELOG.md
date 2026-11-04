@@ -1,3 +1,7 @@
+## 1.6.92 - 2026-11-04
+
+- feat(ui): every control answers a press with a compositor-only scale (0.97) under `prefers-reduced-motion: no-preference`, with a `data-no-press` escape hatch for drag handles and resize corners; the rule is written into AGENTS.md (uroi).
+
 ## 1.6.89 - 2026-11-04
 
 - test(tasks): poll for the create request the optimistic task card precedes, instead of reading the route counter once and racing the fetch on a loaded runner.
