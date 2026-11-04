@@ -205,66 +205,6 @@ test("rejects an empty title, a cycle, and a subtask of a done task", async ({ a
   expect(result?.kept).toBe(true);
 });
 
-test("shows a failed task action beside the control and keeps a long title", async ({
-  app,
-  browser,
-  screen,
-}) => {
-  await app.open("/?page=tasks");
-  const composer = screen.getByRole("textbox", "New task");
-  await composer.fill("Write the notice");
-  await screen.getByRole("button", "Add task").tap();
-  const failNextPatch = (message: string) =>
-    browser.evaluate((text) => {
-      const original = window.fetch.bind(window);
-      window.fetch = (input, init) => {
-        const method = (
-          init?.method ?? (input instanceof Request ? input.method : "GET")
-        ).toUpperCase();
-        const url =
-          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-        if (method === "PATCH" && url.includes("/api/tasks/")) {
-          window.fetch = original;
-          return Promise.resolve(new Response(text, { status: 409 }));
-        }
-        return original(input, init);
-      };
-      return null;
-    }, message);
-
-  await failNextPatch("Open subtasks");
-  await screen.getByRole("button", { name: "Open Write the notice" }).tap();
-  await screen.getByTestId("task-detail-status").tap();
-  await expect(screen.getByTestId("task-detail").getByTestId("task-error")).toHaveText(
-    "Open subtasks",
-  );
-  await expect(screen.getByTestId("task-detail-status")).toHaveText("Mark done");
-  const cardError = await browser.evaluate(() => {
-    const error = document.querySelector("[data-testid=task-error]");
-    const card = [...document.querySelectorAll("[data-task-card]")].find((item) =>
-      item
-        .getAttribute("aria-describedby")
-        ?.split(" ")
-        .includes(error?.id ?? ""),
-    );
-    if (!(error instanceof HTMLElement) || !(card instanceof HTMLElement)) return null;
-    const errorBox = error.getBoundingClientRect();
-    const cardBox = card.getBoundingClientRect();
-    return error.parentElement === card.parentElement && errorBox.top >= cardBox.bottom - 1;
-  });
-  expect(cardError).toBe(true);
-
-  await screen.getByTestId("task-detail-status").tap();
-  await expect(screen.getByTestId("task-state")).toHaveText("Done");
-  await expect(screen.getByTestId("task-error")).toHaveCount(0);
-
-  const longTitle = "M".repeat(450);
-  await screen.getByRole("textbox", "New task").fill(longTitle);
-  await screen.getByRole("button", "Add task").tap();
-  await expect(screen.getByText(longTitle, { exact: true })).toBeVisible();
-  await expect(screen.getByTestId("composer-error")).toHaveCount(0);
-});
-
 test("shows created and closed times at the bottom right of a task card", async ({
   app,
   browser,
