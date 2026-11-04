@@ -1414,14 +1414,18 @@ export function ChatView({
     return () => window.clearTimeout(timer);
   }, [pager.page, pager.dragging]);
 
-  // Ctrl+J is the composer shortcut from every page. Switching pages first
-  // keeps the focus attempt out of the slide's first frame.
+  // Ctrl+J focuses the composer on whichever page renders it. Only page to
+  // chat when the composer is not available there (the stats page keeps the
+  // dock mounted but inert while it is collapsed).
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.isComposing) return;
       if (!event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
       if (event.code !== "KeyJ" && event.key.toLowerCase() !== "j") return;
       event.preventDefault();
+      // A dialog owns the focus while it is open, including its own text fields.
+      const active = document.activeElement;
+      if (active instanceof Element && active.closest('[role="dialog"]') !== null) return;
       const focusComposer = () => {
         const element = composerRef.current;
         if (element === null) return;
@@ -1429,7 +1433,8 @@ export function ChatView({
         const end = element.value.length;
         element.setSelectionRange(end, end);
       };
-      if (pager.page === CHAT_PAGE) {
+      const element = composerRef.current;
+      if (element !== null && element.closest("[inert]") === null) {
         focusComposer();
         return;
       }
@@ -1438,7 +1443,7 @@ export function ChatView({
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [pager.page, pager.setPage]);
+  }, [pager.setPage]);
 
   useEffect(() => {
     const id = PAGES[pager.page]?.id;
