@@ -1,6 +1,15 @@
 // biome-ignore-all lint/suspicious/noArrayIndexKey: Markdown tokens have no ids; their order is the identity.
 import { Lexer, lexer, type Token, type Tokens } from "marked";
-import { Fragment, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  type ReactNode,
+  type PointerEvent as ReactPointerEvent,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import type { Task } from "../shared/types";
 import { taskForCode, useTaskLink } from "./task-link";
@@ -369,6 +378,8 @@ const codeSpanClass =
   "bg-foreground/[0.06] px-1 py-px font-mono text-[0.85em] [overflow-wrap:anywhere] [box-decoration-break:clone] [-webkit-box-decoration-break:clone]";
 
 const TASK_PREVIEW_DELAY_MS = 150;
+const TASK_HOLD_PREVIEW_MS = 400;
+const TASK_HOLD_MOVE_TOLERANCE_PX = 10;
 const TASK_STATUS: Record<Task["status"], string> = {
   open: "Open",
   working: "Working",
@@ -389,44 +400,150 @@ function lastBodyLine(body: string | undefined): string | null {
   return last === undefined ? null : plainInline(last);
 }
 
+function isTouchPointer(pointerType: string | null): boolean {
+  return pointerType === "touch" || pointerType === "pen";
+}
+
+type TouchHold = {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  previewed: boolean;
+};
+
 function TaskCodeChip({ task, openTask }: { task: Task; openTask: (id: string) => void }) {
   const previewId = useId();
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const timerRef = useRef<number | undefined>(undefined);
+  const holdRef = useRef<TouchHold | null>(null);
+  const detachHoldRef = useRef<(() => void) | undefined>(undefined);
+  const suppressClickRef = useRef(false);
+  const lastPointerTypeRef = useRef<string | null>(null);
   const [position, setPosition] = useState<PreviewPosition | null>(null);
 
-  const hide = () => {
+  const clearTimer = () => {
     if (timerRef.current !== undefined) {
       window.clearTimeout(timerRef.current);
       timerRef.current = undefined;
     }
+  };
+
+  const detachHoldListeners = () => {
+    detachHoldRef.current?.();
+    detachHoldRef.current = undefined;
+  };
+
+  const hide = () => {
+    clearTimer();
     setPosition(null);
   };
 
+  const reveal = () => {
+    const box = buttonRef.current?.getBoundingClientRect();
+    if (box === undefined) return;
+    const width = Math.min(288, Math.max(0, window.innerWidth - 16));
+    const left = Math.min(Math.max(8, box.left), Math.max(8, window.innerWidth - width - 8));
+    const below = box.bottom + 8;
+    const above = below + 140 > window.innerHeight && box.top > 140;
+    setPosition(
+      above
+        ? { left, width, bottom: window.innerHeight - box.top + 8 }
+        : { left, width, top: below },
+    );
+  };
+
   const show = () => {
+    if (holdRef.current !== null) return;
     if (timerRef.current !== undefined) window.clearTimeout(timerRef.current);
     timerRef.current = window.setTimeout(() => {
       timerRef.current = undefined;
-      const box = buttonRef.current?.getBoundingClientRect();
-      if (box === undefined) return;
-      const width = Math.min(288, Math.max(0, window.innerWidth - 16));
-      const left = Math.min(Math.max(8, box.left), Math.max(8, window.innerWidth - width - 8));
-      const below = box.bottom + 8;
-      const above = below + 140 > window.innerHeight && box.top > 140;
-      setPosition(
-        above
-          ? { left, width, bottom: window.innerHeight - box.top + 8 }
-          : { left, width, top: below },
-      );
+      reveal();
     }, TASK_PREVIEW_DELAY_MS);
+  };
+
+  const finishTouchHold = (hold: TouchHold) => {
+    if (holdRef.current !== hold) return;
+    holdRef.current = null;
+    clearTimer();
+    detachHoldListeners();
+    if (hold.previewed) suppressClickRef.current = true;
+  };
+
+  const cancelTouchHold = (hold: TouchHold) => {
+    if (holdRef.current !== hold) return;
+    holdRef.current = null;
+    suppressClickRef.current = true;
+    clearTimer();
+    detachHoldListeners();
+    if (hold.previewed) setPosition(null);
+  };
+
+  const beginTouchHold = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    clearTimer();
+    detachHoldListeners();
+    suppressClickRef.current = false;
+    setPosition(null);
+
+    const hold: TouchHold = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      previewed: false,
+    };
+    holdRef.current = hold;
+
+    const onMove = (move: PointerEvent) => {
+      if (move.pointerId !== hold.pointerId) return;
+      if (
+        Math.hypot(move.clientX - hold.startX, move.clientY - hold.startY) <=
+        TASK_HOLD_MOVE_TOLERANCE_PX
+      ) {
+        return;
+      }
+      cancelTouchHold(hold);
+    };
+    const onEnd = (end: PointerEvent) => {
+      if (end.pointerId === hold.pointerId) finishTouchHold(hold);
+    };
+    const onCancel = (cancel: PointerEvent) => {
+      if (cancel.pointerId === hold.pointerId) cancelTouchHold(hold);
+    };
+    const onScroll = () => cancelTouchHold(hold);
+
+    window.addEventListener("pointermove", onMove, true);
+    window.addEventListener("pointerup", onEnd, true);
+    window.addEventListener("pointercancel", onCancel, true);
+    window.addEventListener("scroll", onScroll, true);
+    detachHoldRef.current = () => {
+      window.removeEventListener("pointermove", onMove, true);
+      window.removeEventListener("pointerup", onEnd, true);
+      window.removeEventListener("pointercancel", onCancel, true);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = undefined;
+      if (holdRef.current !== hold) return;
+      hold.previewed = true;
+      reveal();
+    }, TASK_HOLD_PREVIEW_MS);
   };
 
   useEffect(
     () => () => {
       if (timerRef.current !== undefined) window.clearTimeout(timerRef.current);
+      detachHoldRef.current?.();
     },
     [],
   );
+
+  useEffect(() => {
+    const clearPointerType = () => {
+      lastPointerTypeRef.current = null;
+    };
+    window.addEventListener("keydown", clearPointerType);
+    return () => window.removeEventListener("keydown", clearPointerType);
+  }, []);
 
   useEffect(() => {
     if (position === null) return;
@@ -452,14 +569,37 @@ function TaskCodeChip({ task, openTask }: { task: Task; openTask: (id: string) =
         aria-label={label}
         aria-describedby={position === null ? undefined : previewId}
         className="cursor-pointer text-inherit underline decoration-foreground/50 decoration-dotted underline-offset-2 hover:decoration-solid focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground"
-        onPointerEnter={show}
-        onPointerLeave={hide}
-        onFocus={show}
+        onPointerEnter={(event) => {
+          lastPointerTypeRef.current = event.pointerType;
+          if (!isTouchPointer(event.pointerType)) show();
+        }}
+        onPointerDown={(event) => {
+          lastPointerTypeRef.current = event.pointerType;
+          if (isTouchPointer(event.pointerType)) beginTouchHold(event);
+        }}
+        onPointerLeave={(event) => {
+          if (!isTouchPointer(event.pointerType)) hide();
+        }}
+        onFocus={(event) => {
+          if (
+            isTouchPointer(lastPointerTypeRef.current) &&
+            !event.currentTarget.matches(":focus-visible")
+          ) {
+            return;
+          }
+          show();
+        }}
         onBlur={hide}
         onClick={(event) => {
           event.preventDefault();
           event.stopPropagation();
+          const hold = holdRef.current;
+          const suppressed = suppressClickRef.current || hold?.previewed === true;
+          suppressClickRef.current = false;
+          holdRef.current = null;
+          detachHoldListeners();
           hide();
+          if (suppressed) return;
           openTask(task.id);
         }}
       >
