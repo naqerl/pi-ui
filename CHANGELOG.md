@@ -1,3 +1,7 @@
+## 1.6.85 - 2026-11-04
+
+- feat(tasks): reopen a finished task with a required reason, count reopens and show the ↻ badge (i59h).
+
 ## 1.6.84 - 2026-11-04
 
 - feat(memory): `memory_grep` (keyword/regex over topics, MEMORY.md, SCRATCHPAD.md and recent dailies) and a line-ranged `memory_read`, so a memory lookup costs lines instead of whole documents (mgv2).
