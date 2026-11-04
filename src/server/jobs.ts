@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
-import { mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export type JobStatus = "running" | "exited" | "failed" | "cancelled" | "lost";
@@ -44,6 +44,36 @@ export const MAX_OUTPUT_CHARS = 20_000;
 const MAX_KEPT_JOBS = 50;
 /** Grace period between SIGTERM and SIGKILL on cancel. */
 const KILL_AFTER_MS = 5_000;
+
+/** Distinguishes temporary files written by concurrent managers in this process. */
+let writeSequence = 0;
+/** One in-flight write chain per index path, shared by every manager on that directory. */
+const indexWrites = new Map<string, Promise<void>>();
+
+/** Queues one index body behind whatever is already writing to the same path. */
+function writeIndex(indexPath: string, body: string): Promise<void> {
+  const previous = indexWrites.get(indexPath) ?? Promise.resolve();
+  const next = previous
+    .then(async () => {
+      writeSequence += 1;
+      const temporary = `${indexPath}.${process.pid}.${writeSequence}.tmp`;
+      try {
+        await writeFile(temporary, body);
+        await rename(temporary, indexPath);
+      } catch (error) {
+        await unlink(temporary).catch(() => undefined);
+        throw error;
+      }
+    })
+    .catch((error: unknown) => {
+      console.error("[pi] could not save the job list", error);
+    });
+  indexWrites.set(indexPath, next);
+  void next.then(() => {
+    if (indexWrites.get(indexPath) === next) indexWrites.delete(indexPath);
+  });
+  return next;
+}
 
 /**
  * Shell commands the agent runs in the background. Each job runs `bash -lc` in its own
@@ -321,15 +351,7 @@ export class JobManager {
       console.error("[pi] job change listener failed", error);
     }
     const body = `${JSON.stringify({ jobs: this.list() }, null, 2)}\n`;
-    this.writes = this.writes
-      .then(async () => {
-        const temporary = `${this.indexPath}.${process.pid}.tmp`;
-        await writeFile(temporary, body);
-        await rename(temporary, this.indexPath);
-      })
-      .catch((error: unknown) => {
-        console.error("[pi] could not save the job list", error);
-      });
+    this.writes = writeIndex(this.indexPath, body);
   }
 
   /** Resolves once pending list writes are on disk. */

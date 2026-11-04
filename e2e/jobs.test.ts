@@ -8,18 +8,52 @@ import { after, before, test } from "node:test";
 import { createJobTools } from "../src/server/job-tools.js";
 import { JobManager, type JobRecord, jobNotice, tailLines } from "../src/server/jobs.js";
 
-let dataDir: string;
 let cwd: string;
 
 before(async () => {
-  dataDir = await mkdtemp(join(tmpdir(), "pi-jobs-data-"));
   cwd = await mkdtemp(join(tmpdir(), "pi-jobs-cwd-"));
 });
 
 after(async () => {
-  await rm(dataDir, { recursive: true, force: true });
   await rm(cwd, { recursive: true, force: true });
 });
+
+/**
+ * A fresh job directory per test, plus a cleanup hook that cancels and awaits any job the test
+ * left running before the directory is removed. No job may cross into the next test.
+ */
+async function jobStore(t: { after: (fn: () => Promise<void>) => void }): Promise<{
+  dataDir: string;
+  track: (jobs: JobManager) => JobManager;
+}> {
+  const dataDir = await mkdtemp(join(tmpdir(), "pi-jobs-data-"));
+  const managers: JobManager[] = [];
+  t.after(async () => {
+    for (const jobs of managers) {
+      for (const job of jobs.list()) {
+        if (job.status !== "running") continue;
+        const pid = job.pid;
+        jobs.cancel(job.id);
+        if (pid !== null) {
+          await waitForGroup(
+            pid,
+            (live) => live.length === 0,
+            `process group ${pid} to exit`,
+          ).catch(() => undefined);
+        }
+      }
+    }
+    await Promise.all(managers.map((jobs) => jobs.flush()));
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  return {
+    dataDir,
+    track: (jobs) => {
+      managers.push(jobs);
+      return jobs;
+    },
+  };
+}
 
 function nextNotice(jobs: JobManager): Promise<{ job: JobRecord; tail: string }> {
   return new Promise((resolve) => {
@@ -83,8 +117,9 @@ async function until(
   }
 }
 
-test("a job runs in the background and reports its end with the last output", async () => {
-  const jobs = new JobManager(dataDir, cwd);
+test("a job runs in the background and reports its end with the last output", async (t) => {
+  const { dataDir, track } = await jobStore(t);
+  const jobs = track(new JobManager(dataDir, cwd));
   await jobs.load();
   const notice = nextNotice(jobs);
   const job = jobs.start({ command: "pwd; for i in 1 2 3; do echo line $i; done; exit 3" });
@@ -101,8 +136,9 @@ test("a job runs in the background and reports its end with the last output", as
   assert.match(text, /exited 3/);
 });
 
-test("output pages forward by offset and tails by lines", async () => {
-  const jobs = new JobManager(dataDir, cwd);
+test("output pages forward by offset and tails by lines", async (t) => {
+  const { dataDir, track } = await jobStore(t);
+  const jobs = track(new JobManager(dataDir, cwd));
   await jobs.load();
   const notice = nextNotice(jobs);
   const job = jobs.start({ command: "seq 1 500", name: "count" });
@@ -116,8 +152,9 @@ test("output pages forward by offset and tails by lines", async () => {
   assert.equal(middle.text, "500\n");
 });
 
-test("cancel stops the job and its children, telling only the chat", async () => {
-  const jobs = new JobManager(dataDir, cwd);
+test("cancel stops the job and its children, telling only the chat", async (t) => {
+  const { dataDir, track } = await jobStore(t);
+  const jobs = track(new JobManager(dataDir, cwd));
   await jobs.load();
   const notices: string[] = [];
   const quiet: { id: string; status: string; tail: string }[] = [];
@@ -149,8 +186,9 @@ test("cancel stops the job and its children, telling only the chat", async () =>
   assert.match(quiet[0]?.tail ?? "", /\[pi-ui\] cancelled/);
 });
 
-test("notify false stays quiet, and a restart keeps the list", async () => {
-  const jobs = new JobManager(dataDir, cwd);
+test("notify false stays quiet, and a restart keeps the list", async (t) => {
+  const { dataDir, track } = await jobStore(t);
+  const jobs = track(new JobManager(dataDir, cwd));
   await jobs.load();
   const notices: string[] = [];
   const quiet: string[] = [];
@@ -163,11 +201,85 @@ test("notify false stays quiet, and a restart keeps the list", async () => {
   assert.deepEqual(notices, []);
   await until(() => quiet.length > 0);
   assert.deepEqual(quiet, [job.id]);
-  const reloaded = new JobManager(dataDir, cwd);
+  const reloaded = track(new JobManager(dataDir, cwd));
   await reloaded.load();
   assert.equal(reloaded.get(job.id).status, "exited");
   const next = reloaded.start({ command: "true", notify: false });
   assert.notEqual(next.id, job.id);
+  await until(() => reloaded.get(next.id).status !== "running");
+  await reloaded.flush();
+});
+
+test("two managers on one directory save the same index at once", async (t) => {
+  const { dataDir, track } = await jobStore(t);
+  const first = track(new JobManager(dataDir, cwd));
+  await first.load();
+  const j1 = first.start({ command: "true", notify: false });
+  await until(() => first.get(j1.id).status !== "running");
+  await first.flush();
+
+  const second = track(new JobManager(dataDir, cwd));
+  await second.load();
+  const j2 = second.start({ command: "true", notify: false });
+  await until(() => second.get(j2.id).status !== "running");
+  await second.flush();
+
+  await first.load();
+  assert.deepEqual(
+    first.list().map((job) => job.id),
+    [j1.id, j2.id],
+    "the first manager adopted the second manager's saved job",
+  );
+
+  // A saved running job whose pid is gone makes both managers finish and save the
+  // same full list at once: the shared temp-file collision this case covers.
+  const stamp = new Date().toISOString();
+  await writeFile(
+    join(dataDir, "jobs", "jobs.json"),
+    JSON.stringify({
+      jobs: [
+        ...first.list().map((job) => ({ ...job })),
+        {
+          id: "j3",
+          name: "stale",
+          command: "make",
+          cwd,
+          pid: 2 ** 22 + 12345,
+          status: "running",
+          exitCode: null,
+          signal: null,
+          notify: false,
+          startedAt: stamp,
+          endedAt: null,
+        },
+      ],
+    }),
+  );
+
+  const errors: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => {
+    errors.push(args.map(String).join(" "));
+  };
+  try {
+    await Promise.all([first.load(), second.load()]);
+    await Promise.all([first.flush(), second.flush()]);
+  } finally {
+    console.error = original;
+  }
+  assert.deepEqual(
+    errors.filter((line) => line.includes("could not save the job list")),
+    [],
+    "neither manager loses its save",
+  );
+
+  const fresh = track(new JobManager(dataDir, cwd));
+  await fresh.load();
+  assert.deepEqual(
+    fresh.list().map((job) => job.id),
+    [j1.id, j2.id, "j3"],
+  );
+  assert.equal(fresh.get("j3").status, "lost");
 });
 
 test("a job running when the server stopped is reported lost once its pid is gone", async () => {
@@ -209,8 +321,9 @@ test("a job running when the server stopped is reported lost once its pid is gon
   }
 });
 
-test("the tools start, list, read and cancel jobs", async () => {
-  const jobs = new JobManager(dataDir, cwd);
+test("the tools start, list, read and cancel jobs", async (t) => {
+  const { dataDir, track } = await jobStore(t);
+  const jobs = track(new JobManager(dataDir, cwd));
   await jobs.load();
   jobs.setNotifier(() => {});
   const tools = new Map(createJobTools(jobs).map((tool) => [tool.name, tool]));
@@ -239,7 +352,11 @@ test("the tools start, list, read and cancel jobs", async () => {
     `job_output for ${id} to contain "hi"`,
   );
   assert.match(output, /hi/);
+  const pid = jobs.get(id).pid;
+  assert.ok(pid !== null);
   assert.match(await run("job_cancel", { id }), /cancelled/);
+  await waitForGroup(pid, (live) => live.length === 0, `process group ${pid} to exit`);
+  await jobs.flush();
   assert.match(await run("job_output", { id: "nope" }), /Unknown job/);
 });
 
