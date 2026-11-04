@@ -64,6 +64,11 @@ function defersToScroller(element: HTMLElement, direction: 1 | -1): boolean {
   return element.scrollLeft > 0;
 }
 
+/** An active grid gesture (drag or resize) owns the pointer; the pager stays out. */
+function lockedByChild(node: HTMLElement): boolean {
+  return node.querySelector("[data-pager-lock]") !== null;
+}
+
 /** Stats, chat, and tasks share one horizontal pager. Touch swipes; a trackpad scrolls sideways. */
 export function usePager(count: number, initial = 0) {
   const start = Math.max(0, Math.min(count - 1, initial));
@@ -72,6 +77,10 @@ export function usePager(count: number, initial = 0) {
   const [dragging, setDragging] = useState(false);
   const pageRef = useRef(start);
   const gesture = useRef<Gesture | null>(null);
+  // Synthetic specs often dispatch a touch gesture and then its pointer
+  // counterpart. The touch path owns the page change; ignore that pointer echo
+  // so the same swipe cannot advance twice.
+  const ignorePointerUntil = useRef(0);
   const suppressClick = useRef(false);
   const pagerRef = useRef<HTMLDivElement>(null);
 
@@ -116,6 +125,9 @@ export function usePager(count: number, initial = 0) {
     if (node === null) return;
     let startX = 0;
     let startY = 0;
+    let lastX = 0;
+    let width = 1;
+    let startPage = 0;
     let mode: "undecided" | "h" | "v" = "undecided";
     let scroller: HTMLElement | null = null;
     let tracking = false;
@@ -127,11 +139,24 @@ export function usePager(count: number, initial = 0) {
       }
       const touch = event.touches[0];
       if (touch === undefined) return;
+      // A real touch also emits pointer events. The touch listeners own the
+      // drag so the two paths cannot page twice; synthetic pointer-only tests
+      // still use the React handlers below.
+      gesture.current = null;
+      setDragging(false);
+      setDragX(0);
+      if (lockedByChild(node)) {
+        tracking = false;
+        return;
+      }
       // Resolve the target now, but decide on the first move whether it can
       // consume the gesture's direction.
       scroller = horizontalScroller(event.target, node);
       startX = touch.clientX;
       startY = touch.clientY;
+      lastX = touch.clientX;
+      width = node.getBoundingClientRect().width || 1;
+      startPage = pageRef.current;
       mode = "undecided";
       tracking = true;
     };
@@ -141,13 +166,23 @@ export function usePager(count: number, initial = 0) {
       if (!tracking || event.touches.length !== 1) return;
       const touch = event.touches[0];
       if (touch === undefined) return;
+      // A dashboard drag or resize has taken this gesture. Suppress the native
+      // pan, but do not page.
+      if (lockedByChild(node)) {
+        if (event.cancelable) event.preventDefault();
+        tracking = false;
+        setDragging(false);
+        setDragX(0);
+        return;
+      }
       const dx = touch.clientX - startX;
       const dy = touch.clientY - startY;
+      lastX = touch.clientX;
       if (mode === "undecided") {
         if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
         mode = Math.abs(dx) > Math.abs(dy) ? "h" : "v";
       }
-      if (mode !== "h" || !event.cancelable) return;
+      if (mode !== "h") return;
       if (scroller !== null) {
         if (defersToScroller(scroller, dx > 0 ? -1 : 1)) {
           // Leave preventDefault off so the element's native panning works.
@@ -158,16 +193,57 @@ export function usePager(count: number, initial = 0) {
         // finger reverses direction.
         scroller = null;
       }
+      if (!event.cancelable) {
+        tracking = false;
+        setDragging(false);
+        setDragX(0);
+        return;
+      }
       event.preventDefault();
+      let next = dx;
+      const atStart = startPage === 0 && next > 0;
+      const atEnd = startPage === count - 1 && next < 0;
+      if (atStart || atEnd) next *= 0.35;
+      setDragging(true);
+      setDragX(next);
+    };
+    const onEnd = () => {
+      ignorePointerUntil.current = performance.now() + 250;
+      if (!tracking) {
+        setDragging(false);
+        setDragX(0);
+        return;
+      }
+      tracking = false;
+      if (mode !== "h") {
+        setDragging(false);
+        setDragX(0);
+        return;
+      }
+      const dx = lastX - startX;
+      const threshold = Math.min(72, width * 0.18);
+      let next = startPage;
+      if (dx <= -threshold) next += 1;
+      else if (dx >= threshold) next -= 1;
+      setPage(next);
+    };
+    const onCancel = () => {
+      ignorePointerUntil.current = performance.now() + 250;
+      tracking = false;
+      setPage(pageRef.current);
     };
 
     node.addEventListener("touchstart", onStart, { capture: true, passive: true });
     node.addEventListener("touchmove", onMove, { capture: true, passive: false });
+    node.addEventListener("touchend", onEnd, { capture: true });
+    node.addEventListener("touchcancel", onCancel, { capture: true });
     return () => {
       node.removeEventListener("touchstart", onStart, { capture: true });
       node.removeEventListener("touchmove", onMove, { capture: true });
+      node.removeEventListener("touchend", onEnd, { capture: true });
+      node.removeEventListener("touchcancel", onCancel, { capture: true });
     };
-  }, []);
+  }, [count, setPage]);
 
   useEffect(() => {
     const node = pagerRef.current;
@@ -193,6 +269,8 @@ export function usePager(count: number, initial = 0) {
 
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.pointerType !== "touch" || event.button !== 0) return;
+    if (performance.now() < ignorePointerUntil.current) return;
+    if (lockedByChild(event.currentTarget)) return;
     gesture.current = {
       id: event.pointerId,
       x: event.clientX,
@@ -208,6 +286,12 @@ export function usePager(count: number, initial = 0) {
   const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const current = gesture.current;
     if (current === null || event.pointerId !== current.id) return;
+    if (lockedByChild(event.currentTarget)) {
+      gesture.current = null;
+      setDragging(false);
+      setDragX(0);
+      return;
+    }
     current.lastX = event.clientX;
     const dx = current.lastX - current.x;
     const dy = event.clientY - current.y;
@@ -241,6 +325,11 @@ export function usePager(count: number, initial = 0) {
     const current = gesture.current;
     if (current === null || event.pointerId !== current.id) return;
     gesture.current = null;
+    if (lockedByChild(event.currentTarget)) {
+      setDragging(false);
+      setDragX(0);
+      return;
+    }
     if (current.locked !== "h") {
       setDragging(false);
       setDragX(0);
