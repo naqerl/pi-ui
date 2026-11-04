@@ -52,7 +52,7 @@ import {
   listSources,
   readSource,
 } from "../shared/dashboard-sources.js";
-import type { TaskReopenStats } from "../shared/types.js";
+import type { TaskDurationStats, TaskReopenStats } from "../shared/types.js";
 import { type PollOutcome, type PollRunner, runPollScript } from "./dashboard-runner.js";
 
 export { DashboardError };
@@ -64,6 +64,7 @@ export interface DashboardHost {
     jobs: BuiltinJob[];
     session: BuiltinSession;
     taskReopens?: TaskReopenStats;
+    taskDurations?: TaskDurationStats;
   };
   notify(text: string): void;
   broadcast(state: DashboardState): void;

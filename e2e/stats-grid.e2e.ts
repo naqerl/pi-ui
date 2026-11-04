@@ -31,6 +31,7 @@ const EXTRA_DEFAULT_IDS = [
   "hetzner-cost",
   "go-usage",
   "bg-jobs",
+  "task-durations",
 ];
 
 /** This file's older grid assertions use the five-widget Session board. */

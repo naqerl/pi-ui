@@ -572,3 +572,30 @@ export interface TaskReopenStats {
   /** One row per project with reopens, busiest first. */
   projects: TaskReopenProjectStats[];
 }
+
+/** Closed-task durations per project, for the stats page. */
+export interface TaskDurationProjectStats {
+  /** The project as the ledger spells it, or "(none)" for tasks without one. */
+  project: string;
+  /** Closed tasks in this project with a positive duration. */
+  count: number;
+  /** Mean closed-task duration in this project, in minutes. */
+  avgMinutes: number;
+  /** 90th-percentile closed-task duration in this project, in minutes. */
+  p90Minutes: number;
+}
+
+export interface TaskDurationStats {
+  /** Closed tasks with both a creation and a completion time and a positive duration. */
+  count: number;
+  /** Mean closed-task duration, in minutes. */
+  avgMinutes: number;
+  /** Median closed-task duration, in minutes. */
+  p50Minutes: number;
+  /** 90th-percentile closed-task duration, in minutes. */
+  p90Minutes: number;
+  /** Longest closed-task duration, in minutes. */
+  longestMinutes: number;
+  /** One row per project with a closed task, busiest first. */
+  projects: TaskDurationProjectStats[];
+}

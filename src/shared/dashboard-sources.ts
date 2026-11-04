@@ -12,10 +12,12 @@ import {
   subscriptionHealth,
   subscriptionLabel,
 } from "./dashboard.js";
+import { formatDurationMinutes } from "./time.js";
 import type {
   ContextUsage,
   McpEventsState,
   McpStatus,
+  TaskDurationStats,
   TaskReopenStats,
   UsageSummary,
 } from "./types.js";
@@ -29,6 +31,7 @@ export const BUILTIN_SOURCES = [
   "jobs",
   "session",
   "task_reopens",
+  "task_durations",
 ] as const;
 export type BuiltinName = (typeof BUILTIN_SOURCES)[number];
 
@@ -40,6 +43,7 @@ export interface SourceContext {
   jobs: BuiltinJob[];
   session: BuiltinSession;
   taskReopens?: TaskReopenStats;
+  taskDurations?: TaskDurationStats;
   /** Client-only display hook; the server deliberately leaves timestamps raw. */
   formatTime?: (timestamp: string) => string;
 }
@@ -376,6 +380,65 @@ function taskReopensData({ taskReopens }: SourceContext): unknown {
   };
 }
 
+function taskDurationsData({ taskDurations }: SourceContext): unknown {
+  const summary = taskDurations ?? {
+    count: 0,
+    avgMinutes: 0,
+    p50Minutes: 0,
+    p90Minutes: 0,
+    longestMinutes: 0,
+    projects: [],
+  };
+  const projects = summary.projects.map((item) => ({
+    key: item.project === "(none)" ? "none" : item.project,
+    project: item.project,
+    label: item.project,
+    count: item.count,
+    avgMinutes: item.avgMinutes,
+    p90Minutes: item.p90Minutes,
+    value: `${item.count} task${item.count === 1 ? "" : "s"} · avg ${formatDurationMinutes(item.avgMinutes)} · p90 ${formatDurationMinutes(item.p90Minutes)}`,
+  }));
+  return {
+    total: summary.count,
+    p50: summary.p50Minutes,
+    p90: summary.p90Minutes,
+    avg: summary.avgMinutes,
+    rows:
+      summary.count === 0
+        ? []
+        : [
+            {
+              key: "p50",
+              label: "p50",
+              value: formatDurationMinutes(summary.p50Minutes),
+            },
+            {
+              key: "p90",
+              label: "p90",
+              value: formatDurationMinutes(summary.p90Minutes),
+            },
+            {
+              key: "avg",
+              label: "avg",
+              value: formatDurationMinutes(summary.avgMinutes),
+            },
+            ...projects,
+          ],
+  };
+}
+
+const TASK_DURATIONS_SAMPLE = taskDurationsData({
+  ...emptyContext(),
+  taskDurations: {
+    count: 3,
+    avgMinutes: 90,
+    p50Minutes: 60,
+    p90Minutes: 180,
+    longestMinutes: 180,
+    projects: [{ project: "pi-ui", count: 3, avgMinutes: 90, p90Minutes: 180 }],
+  },
+});
+
 function sessionData({ session }: SourceContext): unknown {
   return {
     ...session,
@@ -391,12 +454,13 @@ function registerBuiltin(
   name: BuiltinName,
   describe: string,
   read: (ctx: SourceContext) => unknown,
+  sample?: unknown,
 ): void {
   registerSource({
     name,
     describe,
     kind: "builtin",
-    sample: read(emptyContext()),
+    sample: sample ?? read(emptyContext()),
     async read(ctx) {
       return read(ctx);
     },
@@ -442,4 +506,10 @@ registerBuiltin(
   "task_reopens",
   "Task reopen counts: total reopened tasks and reopens this week, plus rows[] grouped by project.",
   taskReopensData,
+);
+registerBuiltin(
+  "task_durations",
+  "Closed-task durations: count, p50, p90 and average minutes, plus rows[] with p50, p90, avg and one project row each.",
+  taskDurationsData,
+  TASK_DURATIONS_SAMPLE,
 );
