@@ -306,7 +306,9 @@ test("paints a task card before the create response and reconciles it to the led
   try {
     await screen.getByRole("button", "Add task").tap();
     await expect(list.getByText(title, { exact: true })).toBeVisible({ timeout: 1_500 });
-    expect(requests).toBe(1);
+    // The card is painted first; the POST that carries it may be dispatched a tick
+    // later, so poll for it instead of reading the counter once.
+    await expect.poll(() => requests, { timeout: 1_500 }).toBe(1);
     // Still no response, so the visible card is the optimistic one.
     await expect(
       browser.locator('[data-pending-task="true"]').filter({ hasText: title }),
