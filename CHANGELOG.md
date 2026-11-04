@@ -1,3 +1,17 @@
+## 1.6.97 - 2026-11-04
+
+- fix(jobs): keep the index write safe for two managers and isolate the job-store
+  tests. The temporary file was named after the process rather than the writer, so
+  two managers on one data directory renamed each other's half-written file — the
+  `ENOENT ... jobs.json.<pid>.tmp` in CI — and writes were serialised per manager
+  instead of per index path. Temporary names now carry a write counter, every write
+  on a path is chained, and a failed write removes only its own temp file, leaving
+  the previous index intact.
+- test(jobs): every job-store test gets its own data directory, so a manager can no
+  longer adopt a job left running by an earlier test and notify the wrong test when
+  it ends (`expected [] / actual ['j2']`). A two-manager case proves a concurrent
+  save from each survives a fresh load.
+
 ## 1.6.96 - 2026-11-04
 
 - test(e2e): stop the two specs that failed on 1.6.94 from failing on timing.
