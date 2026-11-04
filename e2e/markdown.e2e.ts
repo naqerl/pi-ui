@@ -52,6 +52,7 @@ function readCopyButton(browser: Browser) {
     const box = pre.getBoundingClientRect();
     return {
       opacity: Number.parseFloat(getComputedStyle(button).opacity),
+      transitionProperty: getComputedStyle(button).transitionProperty,
       height: box.height,
       scrollWidth: pre.scrollWidth,
       clientWidth: pre.clientWidth,
@@ -301,6 +302,7 @@ test("hides the code copy button until its block is hovered or focused", async (
   screen,
 }) => {
   const code = "const answer = 42;\nconsole.log(answer);";
+  await browser.emulateMedia({ reducedMotion: "no-preference" });
   await browser.route("**/api/state**", async (route) => {
     await route.fulfill({ json: codeBlockSnapshot(code) });
   });
@@ -311,6 +313,8 @@ test("hides the code copy button until its block is hovered or focused", async (
   await expect.poll(async () => (await readCopyButton(browser))?.opacity ?? -1).toBe(0);
   const initial = await readCopyButton(browser);
   expect(initial).not.toBeNull();
+  expect(initial?.transitionProperty).toContain("transform");
+  expect(initial?.transitionProperty).toContain("opacity");
   expect(initial?.height ?? 0).toBeGreaterThan(0);
   expect(initial?.scrollWidth ?? 0).toBeLessThanOrEqual(initial?.clientWidth ?? 0);
 

@@ -1194,12 +1194,14 @@ function SectionGrid({
       >
         <WidgetCard widget={widget} view={view} value={value} onRemove={onRemove} />
         {desktop ? (
+          // The grip owns the resize gesture, so a press scale would fight the drag.
           <button
             type="button"
             className="react-resizable-handle react-resizable-handle-se dashboard-resize-handle opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
             aria-label={`Resize ${widget.title}`}
             title="Drag to resize"
             data-testid={`widget-${widget.id}-resize`}
+            data-no-press
           />
         ) : null}
       </div>

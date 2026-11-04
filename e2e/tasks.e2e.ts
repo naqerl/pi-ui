@@ -722,3 +722,94 @@ test("a proposed or backlog task cannot be reopened", async ({ app, browser }) =
     await deleteReopenTasks(browser, [proposedTitle, backlogTitle]);
   }
 });
+
+test("a press compresses buttons and role buttons until release, unless reduced motion", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  const transformOf = (selector: string) =>
+    browser.evaluate((target) => {
+      const element = document.querySelector<HTMLElement>(target);
+      return element === null ? null : getComputedStyle(element).transform;
+    }, selector);
+  const scaleOf = (selector: string) =>
+    browser.evaluate((target) => {
+      const element = document.querySelector<HTMLElement>(target);
+      if (element === null) return null;
+      const transform = getComputedStyle(element).transform;
+      if (transform === "none") return 1;
+      const scale = Number(transform.slice("matrix(".length).split(",")[0]);
+      return Number.isFinite(scale) ? scale : null;
+    }, selector);
+  const pointOf = (selector: string) =>
+    browser.evaluate((target) => {
+      const element = document.querySelector<HTMLElement>(target);
+      if (element === null) return null;
+      const box = element.getBoundingClientRect();
+      return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+    }, selector);
+  const settle = () =>
+    browser.evaluate(async () => {
+      await new Promise<void>((resolve) => {
+        window.setTimeout(resolve, 160);
+      });
+      return true;
+    });
+
+  await browser.setViewport({ width: 1280, height: 800 });
+  await browser.emulateMedia({ reducedMotion: "no-preference" });
+  await app.open("/?page=tasks");
+
+  const title = `Press feedback ${Date.now()}`;
+  const taskId = await browser.evaluate(async (taskTitle) => {
+    const response = await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: taskTitle }),
+    });
+    if (!response.ok) return null;
+    const ledger = (await response.json()) as { tasks: Array<{ id: string; title: string }> };
+    return ledger.tasks.find((task) => task.title === taskTitle)?.id ?? null;
+  }, title);
+  expect(taskId).not.toBeNull();
+  if (taskId === null) throw new Error("created task is missing");
+  await app.open("/?page=tasks");
+  await expect(screen.getByTestId(`task-${taskId}`)).toBeVisible();
+
+  await screen.getByRole("textbox", "New task").fill(`Button press ${Date.now()}`);
+  const buttonSelector = '[data-testid="add-task"]';
+  await expect(screen.getByTestId("add-task")).toBeVisible();
+  expect(await transformOf(buttonSelector)).toBe("none");
+
+  const buttonPoint = await pointOf(buttonSelector);
+  expect(buttonPoint).not.toBeNull();
+  if (buttonPoint === null) throw new Error("Add task has no box");
+  // Synthetic pointer events do not enter :active, so hold a real pointer to read the press.
+  await browser.mouse.move(buttonPoint.x, buttonPoint.y);
+  await browser.mouse.down();
+  await expect.poll(() => scaleOf(buttonSelector), { timeout: 2_000 }).toBeLessThan(1);
+  expect(await scaleOf(buttonSelector)).toBeGreaterThan(0.95);
+  await browser.mouse.up();
+  await expect.poll(() => transformOf(buttonSelector), { timeout: 2_000 }).toBe("none");
+
+  const cardSelector = `[data-testid="task-${taskId}"] [data-task-card]`;
+  const cardPoint = await pointOf(cardSelector);
+  expect(cardPoint).not.toBeNull();
+  if (cardPoint === null) throw new Error("task card has no box");
+  await browser.mouse.move(cardPoint.x, cardPoint.y);
+  await browser.mouse.down();
+  await expect.poll(() => scaleOf(cardSelector), { timeout: 2_000 }).toBeLessThan(1);
+  await browser.mouse.up();
+
+  await browser.emulateMedia({ reducedMotion: "reduce" });
+  await screen.getByRole("textbox", "New task").fill(`${title} reduced`);
+  const reducedPoint = await pointOf(buttonSelector);
+  expect(reducedPoint).not.toBeNull();
+  if (reducedPoint === null) throw new Error("Add task has no box");
+  await browser.mouse.move(reducedPoint.x, reducedPoint.y);
+  await browser.mouse.down();
+  await settle();
+  expect(await transformOf(buttonSelector)).toBe("none");
+  await browser.mouse.up();
+});
