@@ -2,6 +2,193 @@ import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
 import { parseNotice } from "../src/shared/notices";
 
+// A model stream that stays open without output (SLOW holds it with keepalives) used to make the
+// dock count the run's time and say how long the agent had been quiet. The strip now stays on the
+// animation and the word working, while the server's watchdog still keeps a live run durable has.
+test("a quiet run keeps just the animation and the word working", async ({ app, screen }) => {
+  await app.open("/");
+  const composer = screen.getByRole("textbox", "Message");
+  await composer.fill("SLOW response please");
+  await screen.getByRole("button", "Send").tap();
+  const activity = screen.getByTestId("header-activity");
+  // Shard startup and the send round-trip can sit behind another suite on a busy
+  // host; wait for the run to begin instead of failing on the default deadline.
+  await expect(screen.getByRole("button", "Stop")).toBeVisible({ timeout: 30_000 });
+
+  try {
+    await expect(activity).toHaveText("working");
+    await expect(screen.getByTestId("working-detail")).toHaveCount(0);
+
+    // PI_UI_QUIET_AFTER_MS is 3s in e2e; the watchdog checks durable and keeps the live run.
+    await new Promise((resolve) => setTimeout(resolve, 4_000));
+    await expect(activity).toHaveText("working");
+    await expect(activity).not.toHaveText(/output|\d/);
+    await expect(screen.getByTestId("working-detail")).toHaveCount(0);
+    await expect(screen.getByTestId("working-status")).toHaveAttribute("data-open", "true");
+    await expect(screen.getByRole("button", "Stop")).toBeVisible();
+  } finally {
+    const stop = screen.getByRole("button", "Stop");
+    if ((await stop.count()) > 0) await stop.tap();
+  }
+  await expect(screen.getByTestId("working-status")).toHaveAttribute("data-open", "false");
+  await expect(screen.getByRole("button", "Send")).toBeVisible();
+});
+
+/** Where the start of the last reply (or the run info row above it) sits in the transcript. */
+function replyPosition() {
+  const bubbles = [...document.querySelectorAll<HTMLElement>('[data-role="assistant"]')];
+  const bubble = bubbles.at(-1);
+  const main = document.querySelector<HTMLElement>("main");
+  if (bubble === undefined || main === null) return null;
+  const previous = bubble.previousElementSibling;
+  const target =
+    previous instanceof HTMLElement && previous.dataset.testid === "run-info" ? previous : bubble;
+  return {
+    gap: Math.round(target.getBoundingClientRect().top - main.getBoundingClientRect().top),
+    atEnd: main.scrollHeight - main.scrollTop - main.clientHeight < 4,
+    latest: [...document.querySelectorAll("button")].some(
+      (button) => button.textContent?.trim() === "↓ latest",
+    ),
+  };
+}
+
+for (const width of [390, 1280]) {
+  test(`shows a finished reply from its start at ${width}px`, async ({ app, browser, screen }) => {
+    await browser.setViewport({ width, height: 844 });
+    await app.open("/");
+    const composer = screen.getByRole("textbox", "Message");
+    await composer.fill(`LONG answer please ${width}`);
+    await screen.getByRole("button", "Send").tap();
+    const latestReply = browser.locator('[data-role="assistant"]').last();
+    await expect(
+      latestReply.getByText("Paragraph 40 of a long answer", { exact: false }),
+    ).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(screen.getByRole("button", "Send")).toBeVisible({ timeout: 15_000 });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const position = await browser.evaluate(replyPosition);
+    expect(position).not.toBeNull();
+    // 16px below the top of the transcript, like the first message in a fresh transcript.
+    expect(Math.abs((position?.gap ?? 0) - 16)).toBeLessThanOrEqual(2);
+    expect(position?.atEnd).toBe(false);
+    expect(position?.latest).toBe(true);
+
+    await screen.getByRole("button", "↓ latest").tap();
+    const after = await browser.evaluate(replyPosition);
+    expect(after?.atEnd).toBe(true);
+  });
+}
+
+test("leaves the scroll alone when the reader scrolled away during the run", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/");
+  // Enough history above to scroll into.
+  const composer = screen.getByRole("textbox", "Message");
+  await composer.fill("LONG warm up");
+  await screen.getByRole("button", "Send").tap();
+  await expect(screen.getByRole("button", "Send")).toBeVisible({ timeout: 15_000 });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  await screen.getByRole("button", "↓ latest").tap();
+
+  await composer.fill("LONGDRIP reply while I read");
+  await screen.getByRole("button", "Send").tap();
+  // Wait until the slow reply is streaming.
+  await expect(screen.getByText("LONGDRIP reply while I read", { exact: true })).toBeVisible();
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  expect(
+    await browser.evaluate(
+      () =>
+        document.querySelector('button[aria-label="Stop"], button[aria-label="Steer"]') !== null,
+    ),
+  ).toBe(true);
+  const scrolled = await browser.evaluate(() => {
+    const main = document.querySelector<HTMLElement>("main");
+    if (main === null) return -1;
+    main.scrollTop = 200;
+    main.dispatchEvent(new Event("scroll"));
+    return main.scrollTop;
+  });
+  expect(scrolled).toBe(200);
+  // Earlier messages and lazily loaded images can land above the reader; the transcript keeps
+  // what is read in place while they do, so check the row in view, not the raw scroll offset.
+  const reading = await browser.evaluate(async () => {
+    const main = document.querySelector<HTMLElement>("main");
+    if (main === null) return null;
+    await Promise.all(
+      [...main.querySelectorAll("img")].map((img) =>
+        img.complete
+          ? null
+          : new Promise((resolve) => img.addEventListener("load", resolve, { once: true })),
+      ),
+    );
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const top = main.getBoundingClientRect().top;
+    const rows = [...(main.firstElementChild?.children ?? [])] as HTMLElement[];
+    const row = rows.find((item) => item.getBoundingClientRect().top >= top - 1);
+    if (row === undefined) return null;
+    row.dataset.reading = "";
+    return {
+      offset: Math.round(row.getBoundingClientRect().top - top),
+      atEnd: main.scrollHeight - main.scrollTop - main.clientHeight < 4,
+    };
+  });
+  expect(reading?.atEnd).toBe(false);
+  await expect(screen.getByRole("button", "Send")).toBeVisible({ timeout: 20_000 });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  const after = await browser.evaluate(() => {
+    const main = document.querySelector<HTMLElement>("main");
+    const row = document.querySelector<HTMLElement>("[data-reading]");
+    if (main === null || row === null) return null;
+    return Math.round(row.getBoundingClientRect().top - main.getBoundingClientRect().top);
+  });
+  expect(after).not.toBeNull();
+  expect(Math.abs((after ?? 0) - (reading?.offset ?? 0))).toBeLessThanOrEqual(2);
+});
+
+const lastAssistant = () =>
+  [...document.querySelectorAll<HTMLElement>('[data-role="assistant"]')].at(-1)?.textContent ?? "";
+
+for (const width of [390, 1280]) {
+  test(`a background job tells the agent when it finishes (${width}px)`, async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    await browser.setViewport({ width, height: width === 390 ? 844 : 900 });
+    await app.open("/");
+    const marker = `job-output-${width}`;
+    await screen.getByRole("textbox", "Message").fill(`JOBSTART sleep 1; echo ${marker}; exit 4`);
+    await screen.getByRole("button", "Send").tap();
+    await expect
+      .poll(
+        () =>
+          browser.evaluate(
+            (text) =>
+              [...document.querySelectorAll('[data-role="assistant"]')].some(
+                (node) =>
+                  node.textContent?.includes("Tool result: Started j") &&
+                  node.textContent.includes(text),
+              ),
+            marker,
+          ),
+        { timeout: 15_000 },
+      )
+      .toBe(true);
+    // The finish notice arrives as a new turn; the fake model echoes it back.
+    await expect
+      .poll(() => browser.evaluate(lastAssistant), { timeout: 20_000 })
+      .toContain("[background job");
+    const reply = await browser.evaluate(lastAssistant);
+    expect(reply).toContain("exited 4");
+    expect(reply).toContain(marker);
+  });
+}
+
 type Page = { evaluate: <T, A = undefined>(fn: (arg: A) => T | Promise<T>, arg?: A) => Promise<T> };
 
 /** The visible notices, as kind/role/summary, oldest first. */
@@ -358,4 +545,13 @@ test("an interrupted run keeps its partial reply and shows a warning-toned chip"
   });
   await expect(screen.getByRole("dialog")).toBeVisible();
   expect(await dialogText(browser)).toContain(interruptedNote);
+});
+
+test("answers with a live model", async ({ app, screen }) => {
+  test.skip(process.env.PI_E2E_LIVE !== "1", "set PI_E2E_LIVE=1 to run the live-model spec");
+  await app.open("/");
+  const composer = screen.getByRole("textbox", "Message");
+  await composer.fill("Reply with exactly: live-ok");
+  await screen.getByRole("button", "Send").tap();
+  await expect(screen.getByText("live-ok", { exact: false })).toBeVisible({ timeout: 60_000 });
 });
