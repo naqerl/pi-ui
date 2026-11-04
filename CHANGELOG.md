@@ -1,3 +1,11 @@
+## 1.6.100 - 2026-11-04
+
+- test(e2e): 7-9 s of every browser test was `app.open()` — a new browser context gets a new proxy
+  shard, and the shard boots a fresh backend. `pager-hscroll` now shares one serial-group app (each
+  member swaps the `**/api/state**` route and refreshes), and so do the nine mocked
+  `tasks-detail` tests. `pager-hscroll` 104 s → 43 s wall, `tasks-detail` 152 s → 88 s. The four
+  tests that seed the real ledger through `POST /api/tasks` keep their own fresh boot on purpose.
+
 ## 1.6.99 - 2026-11-04
 
 - test(stats): the 250 s unavailable-row test was not slow assertions — it was the e2e shard
