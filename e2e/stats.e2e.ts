@@ -1,5 +1,119 @@
+import { type ChildProcess, spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
+import type { DashboardState } from "../src/shared/dashboard";
+import { defaultDashboardConfig } from "../src/shared/dashboard-default";
+
+const root = fileURLToPath(new URL("..", import.meta.url));
+const backendEntry = fileURLToPath(new URL("./backend.mjs", import.meta.url));
+
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => {
+      const address = probe.address();
+      if (address === null || typeof address === "string") {
+        probe.close();
+        reject(new Error("the port probe has no TCP address"));
+        return;
+      }
+      const port = address.port;
+      probe.close((error) => (error === undefined ? resolve(port) : reject(error)));
+    });
+  });
+}
+
+async function waitForHealth(baseUrl: string, child: ChildProcess, logs: () => string) {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(`app exited before it answered\n${logs()}`);
+    }
+    try {
+      const response = await fetch(`${baseUrl}/api/health`, {
+        signal: AbortSignal.timeout(3_000),
+      });
+      if (response.ok) return;
+    } catch {
+      // The app is still booting.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`app did not answer within 30 seconds\n${logs()}`);
+}
+
+/**
+ * The unavailable row needs a dashboard with the built-in widgets, not whatever
+ * board the shard this context was assigned happens to hold. A backend of this
+ * test's own also avoids the shard pool's 240s restart wait and the state the
+ * two tests before it left behind.
+ */
+async function startStatsApp(): Promise<{ url: string; stop: () => Promise<void> }> {
+  const dataDir = mkdtempSync(join(tmpdir(), "pi-stats-data-"));
+  const agentDir = mkdtempSync(join(tmpdir(), "pi-stats-agent-"));
+  const port = await freePort();
+  const child = spawn(process.execPath, ["--import", "tsx", backendEntry], {
+    cwd: root,
+    env: {
+      ...process.env,
+      PORT: String(port),
+      PI_E2E_LIVE: "0",
+      PI_E2E_DATA_DIR: dataDir,
+      PI_E2E_AGENT_DIR: agentDir,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let log = "";
+  const append = (chunk: Buffer) => {
+    log = `${log}${chunk.toString()}`.slice(-20_000);
+  };
+  child.stdout?.on("data", append);
+  child.stderr?.on("data", append);
+
+  const url = `http://127.0.0.1:${port}`;
+  try {
+    await waitForHealth(url, child, () => log);
+  } catch (error) {
+    child.kill("SIGKILL");
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(agentDir, { recursive: true, force: true });
+    throw error;
+  }
+
+  return {
+    url,
+    stop: async () => {
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+        child.kill("SIGTERM");
+        await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 5_000))]);
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      }
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(agentDir, { recursive: true, force: true });
+    },
+  };
+}
+
+function dashboardState(): DashboardState {
+  const config = defaultDashboardConfig();
+  return {
+    widgets: config.widgets,
+    layout: config.layout,
+    values: {},
+    builtins: {
+      jobs: [],
+      session: { conversationId: "stats-e2e", model: null, run: "idle" },
+    },
+    polling: false,
+  };
+}
 
 type SeedServer = { name: string; available: boolean; authRejected: boolean; tools: string[] };
 
@@ -172,34 +286,53 @@ test("MCP rows show only tool counts and keep unavailable styling", async ({
 });
 
 test("marks stats the server cannot report as unavailable", async ({ app, browser, screen }) => {
-  await browser.setViewport({ width: 390, height: 844 });
-  await browser.route("**/api/state**", async (route) => {
-    await route.fulfill({
-      json: snapshot({
-        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
-        context: { tokens: 0, window: null, percent: null },
-        servers: [],
-      }),
+  const statsApp = await startStatsApp();
+  try {
+    await browser.setViewport({ width: 390, height: 844 });
+    await browser.route("**/api/state**", async (route) => {
+      await route.fulfill({
+        json: snapshot({
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+          context: { tokens: 0, window: null, percent: null },
+          servers: [],
+        }),
+      });
     });
-  });
-  await app.open("/?page=stats");
-  await expect(screen.getByText("no MCP servers configured", { exact: true })).toBeVisible();
-  const read = await browser.evaluate(() => {
-    const value = (id: string) =>
-      document.querySelector(`[data-testid="${id}"] dd`)?.textContent ?? null;
-    return {
-      context: value("stat-context"),
-      hit: value("stat-cache-hit"),
-      cost: value("stat-cost"),
-      input: value("stat-input"),
-    };
-  });
-  expect(read).toEqual({
-    context: "unavailable · no model call yet",
-    hit: "unavailable · no model call yet",
-    cost: "unavailable · no model call yet",
-    input: "0",
-  });
+    await browser.route("**/api/dashboard", async (route) => {
+      await route.fulfill({
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(dashboardState()),
+      });
+    });
+    // Keep the stream from replacing the fixture with the backend's own MCP status.
+    await browser.route("**/api/stream", async (route) => {
+      await route.fulfill({
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+        body: ": fixture\n\n",
+      });
+    });
+    await app.open(`${statsApp.url}/?page=stats`);
+    await expect(screen.getByText("no MCP servers configured", { exact: true })).toBeVisible();
+    const read = await browser.evaluate(() => {
+      const value = (id: string) =>
+        document.querySelector(`[data-testid="${id}"] dd`)?.textContent ?? null;
+      return {
+        context: value("stat-context"),
+        hit: value("stat-cache-hit"),
+        cost: value("stat-cost"),
+        input: value("stat-input"),
+      };
+    });
+    expect(read).toEqual({
+      context: "unavailable · no model call yet",
+      hit: "unavailable · no model call yet",
+      cost: "unavailable · no model call yet",
+      input: "0",
+    });
+  } finally {
+    await statsApp.stop();
+  }
 });
 
 test("collapses the composer on the stats page and restores it on chat and tasks", async ({
