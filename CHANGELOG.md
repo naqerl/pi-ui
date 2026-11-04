@@ -1,3 +1,7 @@
+## 1.6.98 - 2026-11-04
+
+- test(e2e): two specs no longer sample the UI once and hope. `pager-hscroll` polls for a mounted, laid-out code block (and for the page to become `tasks`) before dispatching a gesture, and `task-projects` polls for exactly one visible match of each task title so a transient optimistic duplicate cannot make the query ambiguous, then polls the project-group order until the server ledger settles. Assertions are unchanged; five consecutive local runs of both files passed 14/14 at 109-111 s.
+
 ## 1.6.97 - 2026-11-04
 
 - fix(jobs): keep the index write safe for two managers and isolate the job-store
