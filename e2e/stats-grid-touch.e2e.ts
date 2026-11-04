@@ -102,6 +102,10 @@ type SwipeInput = {
   dy: number;
   scroll: boolean;
   pointerEcho: boolean;
+  /** Optional horizontal scroller whose native panning this swipe emulates. */
+  hscroll?: string;
+  /** "visible" starts on whatever is painted inside the target's viewport box. */
+  start?: "target" | "visible";
 };
 
 /** Dispatch a real touch gesture at a card element and report the pager outcome. */
@@ -111,16 +115,24 @@ async function swipeCard(
   },
   input: SwipeInput,
 ) {
-  return browser.evaluate(async ({ target, dx, dy, scroll, pointerEcho }) => {
+  return browser.evaluate(async ({ target, dx, dy, scroll, pointerEcho, hscroll, start }) => {
     const pager = document.querySelector<HTMLElement>('[data-testid="pager"]');
     const element = document.querySelector<HTMLElement>(target);
     const page = document.querySelector<HTMLElement>('[data-testid="stats-page"]');
+    const horizontal = hscroll === undefined ? null : document.querySelector<HTMLElement>(hscroll);
     if (pager === null || element === null) return null;
     const box = element.getBoundingClientRect();
-    const startX = box.left + box.width * 0.6;
+    const visibleLeft = Math.max(box.left, 0);
+    const visibleRight = Math.min(box.right, window.innerWidth);
+    const startX =
+      start === "visible"
+        ? visibleLeft + (visibleRight - visibleLeft) * 0.6
+        : box.left + box.width * 0.6;
     const startY = box.top + Math.min(28, box.height / 2);
+    const hit = start === "visible" ? document.elementFromPoint(startX, startY) : null;
+    const touchTarget = hit instanceof Element && element.contains(hit) ? hit : element;
     const point = (x: number, y: number) =>
-      new Touch({ identifier: 71, target: element, clientX: x, clientY: y });
+      new Touch({ identifier: 71, target: touchTarget, clientX: x, clientY: y });
     const fire = (type: string, x: number, y: number) => {
       const touch = point(x, y);
       const event = new TouchEvent(type, {
@@ -130,16 +142,19 @@ async function swipeCard(
         targetTouches: type === "touchend" ? [] : [touch],
         changedTouches: [touch],
       });
-      element.dispatchEvent(event);
+      touchTarget.dispatchEvent(event);
       return event;
     };
     let lastY = startY;
+    let lastX = startX;
     const nativeScroll = (event: TouchEvent) => {
-      if (!scroll || event.defaultPrevented || page === null) return;
+      if (event.defaultPrevented) return;
       const touch = event.touches[0];
       if (touch === undefined) return;
-      page.scrollTop += lastY - touch.clientY;
+      if (scroll && page !== null) page.scrollTop += lastY - touch.clientY;
+      if (horizontal !== null) horizontal.scrollLeft += lastX - touch.clientX;
       lastY = touch.clientY;
+      lastX = touch.clientX;
     };
     page?.addEventListener("touchmove", nativeScroll, { passive: true });
     const pageBefore = pager.getAttribute("data-page");
@@ -154,7 +169,7 @@ async function swipeCard(
     send("touchend", startX + dx, startY + dy);
     if (pointerEcho) {
       const sendPointer = (type: string, x: number, y: number) => {
-        element.dispatchEvent(
+        touchTarget.dispatchEvent(
           new PointerEvent(type, {
             bubbles: true,
             cancelable: true,
@@ -186,6 +201,45 @@ async function swipeCard(
     };
   }, input);
 }
+
+const wideColumns = [
+  "Account identifier",
+  "Region and availability zone",
+  "Machine type and size",
+  "Public address",
+  "Private address",
+  "Running state",
+  "Monthly spend",
+  "Created at",
+];
+
+function wideTableCall(id: string) {
+  const rows = [0, 1, 2].map((row) =>
+    Object.fromEntries(
+      wideColumns.map((_, index) => [`c${index}`, `value-${row}-${index}-${"x".repeat(8)}`]),
+    ),
+  );
+  return {
+    name: "dashboard_upsert",
+    arguments: {
+      id,
+      title: "Wide table",
+      kind: "table",
+      source: {
+        type: "poll",
+        script: `return { rows: ${JSON.stringify(rows)} };`,
+        intervalSec: 0.5,
+      },
+      mapping: {
+        rows: "rows",
+        columns: Object.fromEntries(wideColumns.map((column, index) => [column, `c${index}`])),
+      },
+    },
+  };
+}
+
+const wideTableBody = '[data-widget-id="wide-table"] .overflow-x-auto';
+const wideTableTarget = '[data-widget-id="wide-table"] table';
 
 const pinValues = [10, 20, 30, 40, 50, 60, 70, 80];
 
@@ -463,6 +517,148 @@ test("a card-body swipe pages both ways, while a vertical pan only scrolls", asy
   expect(vertical?.page).toBe("stats");
   expect(vertical?.prevented).toBe(false);
   expect(vertical?.scrollTop ?? 0).toBeGreaterThan(0);
+});
+
+test("a swipe on an overflowing table pages at its edge and scrolls away from it", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/?page=stats");
+  await resetMinimalDashboard(browser);
+  await callDashboard(browser, [wideTableCall("wide-table")]);
+  try {
+    await expect(screen.getByText("Wide table", { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect
+      .poll(() =>
+        browser.evaluate(() => {
+          const table = document.querySelector<HTMLElement>('[data-widget-id="wide-table"] table');
+          const body = table?.parentElement;
+          if (table === null || body === null || body === undefined) return false;
+          table.closest<HTMLElement>("[data-widget-id]")?.scrollIntoView({ block: "center" });
+          return body.scrollWidth - body.clientWidth > 100;
+        }),
+      )
+      .toBe(true);
+
+    const edge = await browser.evaluate(() => {
+      const table = document.querySelector<HTMLElement>('[data-widget-id="wide-table"] table');
+      const body = table?.parentElement;
+      if (table === null || body === null || body === undefined) return null;
+      table.closest<HTMLElement>("[data-widget-id]")?.scrollIntoView({ block: "center" });
+      body.scrollLeft = body.scrollWidth;
+      return { scrollLeft: body.scrollLeft, max: body.scrollWidth - body.clientWidth };
+    });
+    expect(edge).not.toBeNull();
+    expect(edge?.scrollLeft ?? 0).toBe(edge?.max ?? -1);
+
+    const atEdge = await swipeCard(browser, {
+      target: wideTableTarget,
+      hscroll: wideTableBody,
+      start: "visible",
+      dx: -170,
+      dy: 0,
+      scroll: false,
+      pointerEcho: true,
+    });
+    expect(atEdge?.page).toBe("chat");
+    expect(atEdge?.prevented).toBe(true);
+
+    await screen.getByRole("tab", "Stats").tap();
+    await expect
+      .poll(() =>
+        browser.evaluate(
+          () => document.querySelector('[data-testid="pager"]')?.getAttribute("data-page") ?? null,
+        ),
+      )
+      .toBe("stats");
+
+    const middle = await browser.evaluate(() => {
+      const table = document.querySelector<HTMLElement>('[data-widget-id="wide-table"] table');
+      const body = table?.parentElement;
+      if (table === null || body === null || body === undefined) return null;
+      table.closest<HTMLElement>("[data-widget-id]")?.scrollIntoView({ block: "center" });
+      const max = body.scrollWidth - body.clientWidth;
+      body.scrollLeft = Math.floor(max / 2);
+      return { scrollLeft: body.scrollLeft, max };
+    });
+    expect(middle?.scrollLeft ?? 0).toBeGreaterThan(0);
+    expect(middle?.scrollLeft ?? 0).toBeLessThan(middle?.max ?? 0);
+
+    const scrolling = await swipeCard(browser, {
+      target: wideTableTarget,
+      hscroll: wideTableBody,
+      start: "visible",
+      dx: -170,
+      dy: 0,
+      scroll: false,
+      pointerEcho: true,
+    });
+    expect(scrolling?.page).toBe("stats");
+    expect(scrolling?.prevented).toBe(false);
+    const after = await browser.evaluate(() => {
+      const body = document.querySelector<HTMLElement>(
+        '[data-widget-id="wide-table"] .overflow-x-auto',
+      );
+      return body?.scrollLeft ?? 0;
+    });
+    expect(after).toBeGreaterThan(middle?.scrollLeft ?? 0);
+  } finally {
+    await callDashboard(browser, [{ name: "dashboard_remove", arguments: { id: "wide-table" } }]);
+  }
+});
+
+test("a card body that only overflows by rounding does not swallow a swipe", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/?page=stats");
+  await resetMinimalDashboard(browser);
+  await callDashboard(browser, [wideTableCall("wide-table")]);
+  try {
+    await expect(screen.getByText("Wide table", { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    const rounding = await browser.evaluate(() => {
+      const table = document.querySelector<HTMLElement>('[data-widget-id="wide-table"] table');
+      const body = table?.parentElement;
+      if (table === null || body === null || body === undefined) return null;
+      table.closest<HTMLElement>("[data-widget-id]")?.scrollIntoView({ block: "center" });
+      table.remove();
+      const filler = document.createElement("div");
+      filler.textContent = "fits";
+      filler.style.height = "24px";
+      body.append(filler);
+      let overflow = 0;
+      for (const extra of [1, 2, 3]) {
+        filler.style.width = `${body.clientWidth + extra}px`;
+        overflow = body.scrollWidth - body.clientWidth;
+        if (overflow >= 1 && overflow <= 2) break;
+      }
+      return { overflow };
+    });
+    expect(rounding?.overflow ?? 0).toBeGreaterThan(0);
+    expect(rounding?.overflow ?? 0).toBeLessThanOrEqual(2);
+
+    const swipe = await swipeCard(browser, {
+      target: wideTableBody,
+      hscroll: wideTableBody,
+      start: "visible",
+      dx: -170,
+      dy: 0,
+      scroll: false,
+      pointerEcho: true,
+    });
+    expect(swipe?.page).toBe("chat");
+    expect(swipe?.prevented).toBe(true);
+  } finally {
+    await callDashboard(browser, [{ name: "dashboard_remove", arguments: { id: "wide-table" } }]);
+  }
 });
 
 test("a long hold on a card starts the drag without opening its menu", async ({

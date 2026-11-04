@@ -31,7 +31,10 @@ function isHorizontalScroller(element: Element): boolean {
   if (hint !== null) return true;
   const overflowX = getComputedStyle(element).overflowX;
   return (
-    (overflowX === "auto" || overflowX === "scroll") && element.scrollWidth > element.clientWidth
+    (overflowX === "auto" || overflowX === "scroll") &&
+    // Ignore sub-pixel rounding: a card that overflows by one or two pixels
+    // cannot actually be panned and must not swallow the gesture.
+    element.scrollWidth > element.clientWidth + 2
   );
 }
 
@@ -53,14 +56,16 @@ function horizontalScroller(target: EventTarget | null, root: HTMLElement): HTML
 /**
  * Whether the scroller owns a horizontal gesture. `direction` is 1 when the
  * finger moves left (the content scrolls right) and -1 when it moves right. A
- * scroller keeps the gesture while it can still move that way. At its right
- * edge it also keeps the rest of the gesture (no hand-off); at its left edge a
- * rightward gesture belongs to the pager because the scroller cannot consume
- * it. Custom pan surfaces marked with `data-hscroll` always keep the gesture.
+ * scroller keeps the gesture only while it can still move that way: leftward
+ * only before its right edge, rightward only after its left edge. At either
+ * edge the pager takes over. Custom pan surfaces marked with `data-hscroll`
+ * always keep the gesture, edge or not.
  */
 function defersToScroller(element: HTMLElement, direction: 1 | -1): boolean {
   if (element.getAttribute("data-hscroll") !== null) return true;
-  if (direction === 1) return true;
+  if (direction === 1) {
+    return element.scrollLeft + element.clientWidth < element.scrollWidth - 1;
+  }
   return element.scrollLeft > 0;
 }
 

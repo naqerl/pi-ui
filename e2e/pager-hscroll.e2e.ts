@@ -21,6 +21,90 @@ const snapshot = {
   context: { tokens: 0, window: null, percent: null },
 };
 
+const wideTableHeaders = [
+  "Account identifier",
+  "Region and availability zone",
+  "Machine type and size",
+  "Public address",
+];
+const wideTableRow = `| ${wideTableHeaders.map((header) => `value-${header}`).join(" | ")} |`;
+const tableSnapshot = {
+  ...snapshot,
+  conversationId: "pager-table-e2e",
+  messages: [
+    {
+      id: "wide-table",
+      role: "assistant",
+      text: `Here is a wide table:\n\n| ${wideTableHeaders.join(" | ")} |\n| ${wideTableHeaders
+        .map(() => "---")
+        .join(" | ")} |\n${wideTableRow}\n${wideTableRow}\n${wideTableRow}`,
+      timestamp: new Date(Date.UTC(2026, 0, 1)).toISOString(),
+      order: 1,
+    },
+  ],
+};
+
+test("a wide markdown table hands a leftward swipe to the pager at its right edge", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({ json: tableSnapshot });
+  });
+  await app.open("/");
+  await expect(screen.getByText("Here is a wide table:", { exact: false })).toBeVisible();
+  await expect(browser.locator("main table")).toHaveCount(1);
+
+  const result = await browser.evaluate(async () => {
+    const pager = document.querySelector("[data-testid=pager]");
+    const table = document.querySelector("main table");
+    const body = table?.parentElement ?? null;
+    if (!(pager instanceof HTMLElement) || !(table instanceof HTMLElement) || body === null) {
+      return null;
+    }
+    body.scrollIntoView({ block: "center" });
+    body.scrollLeft = body.scrollWidth;
+    const box = body.getBoundingClientRect();
+    const startX = box.left + box.width * 0.6;
+    const y = box.top + Math.min(20, box.height / 2);
+    const endX = startX - 96;
+    const fire = (type: string, x: number) => {
+      table.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          pointerId: 91,
+          pointerType: "touch",
+          isPrimary: true,
+          clientX: x,
+          clientY: y,
+          button: 0,
+          buttons: type === "pointerup" ? 0 : 1,
+        }),
+      );
+    };
+    fire("pointerdown", startX);
+    fire("pointermove", startX - 24);
+    fire("pointermove", endX);
+    fire("pointerup", endX);
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+    return {
+      page: pager.getAttribute("data-page"),
+      scrollLeft: body.scrollLeft,
+      max: body.scrollWidth - body.clientWidth,
+    };
+  });
+
+  expect(result?.max ?? 0).toBeGreaterThan(0);
+  expect(result?.scrollLeft ?? 0).toBe(result?.max ?? -1);
+  expect(result?.page).toBe("tasks");
+});
+
 test("lets a wide code block keep a horizontal touch gesture", async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 390, height: 844 });
   await browser.route("**/api/state**", async (route) => {
