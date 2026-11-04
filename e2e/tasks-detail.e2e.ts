@@ -93,6 +93,60 @@ async function expectProjectAboveBody(browser: Browser) {
   expect(projectAboveBody).toBe(true);
 }
 
+/** Seeds the real ledger through the API and returns the created task ids. */
+async function seedLedger(browser: Browser, titles: string[]): Promise<string[]> {
+  return browser.evaluate(async (names) => {
+    const ids: string[] = [];
+    for (const title of names) {
+      const response = await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      });
+      if (!response.ok) throw new Error(`could not create ${title}: ${response.status}`);
+      const ledger = (await response.json()) as {
+        tasks: Array<{ id: string; title: string }>;
+      };
+      const id = ledger.tasks.find((task) => task.title === title)?.id;
+      if (id === undefined) throw new Error(`the ledger did not return ${title}`);
+      ids.push(id);
+    }
+    return ids;
+  }, titles);
+}
+
+/** A touch long press on one card, leaving its menu open. */
+async function longPressCard(browser: Browser, title: string): Promise<boolean> {
+  return browser.evaluate(async (name) => {
+    const card = [...document.querySelectorAll<HTMLElement>("[data-task-card]")].find(
+      (item) => item.getAttribute("aria-label") === `Open ${name}`,
+    );
+    if (card === undefined) return false;
+    const box = card.getBoundingClientRect();
+    const fire = (type: string) => {
+      card.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 71,
+          pointerType: "touch",
+          isPrimary: true,
+          clientX: box.left + 24,
+          clientY: box.top + box.height / 2,
+          button: 0,
+          buttons: type === "pointerup" ? 0 : 1,
+        }),
+      );
+    };
+    fire("pointerdown");
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 600);
+    });
+    fire("pointerup");
+    return true;
+  }, title);
+}
+
 test("on a phone the task detail replaces the list and goes back with its button or Escape", async ({
   app,
   browser,
@@ -510,4 +564,130 @@ test("the detail drops the activity history and its backlog toggle parks and reo
   await expect.poll(() => ship.status).toBe("backlog");
   await expect(toggle).toHaveText("Reopen");
   await expect(screen.getByTestId("task-project-Pi UI")).toContainText("Ship the modal");
+});
+
+test("on a phone one tap opens a task detail and it stays open", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  const stamp = Date.now();
+  const first = `First tap ${stamp}`;
+  const second = `Second tap ${stamp}`;
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/");
+  const ids = await seedLedger(browser, [first, second]);
+  expect(ids).toHaveLength(2);
+  await app.open("/?page=tasks");
+  await expect(screen.getByTestId("tasks-page")).toHaveAttribute("data-layout", "stack");
+  await expect(screen.getByTestId(`task-${ids[1]}`)).toBeVisible();
+
+  await screen.getByRole("button", { name: `Open ${first}` }).tap();
+  const detail = screen.getByTestId("task-detail");
+  await expect(detail).toBeVisible();
+  await expect(detail).toHaveAttribute("aria-label", first);
+  await expect(detail.getByTestId("task-detail-back")).toBeVisible();
+  await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  await expect(detail).toBeVisible();
+  await expect(screen.getByTestId("task-list")).toHaveCount(0);
+});
+
+test("on a phone one tap reopens the same task after Back", async ({ app, browser, screen }) => {
+  const stamp = Date.now();
+  const first = `Back first ${stamp}`;
+  const second = `Back second ${stamp}`;
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/");
+  await seedLedger(browser, [first, second]);
+  await app.open("/?page=tasks");
+
+  const card = () => screen.getByRole("button", { name: `Open ${first}` });
+  await card().tap();
+  await expect(screen.getByTestId("task-detail")).toHaveAttribute("aria-label", first);
+  await screen.getByTestId("task-detail-back").tap();
+  await expect(screen.getByTestId("task-detail")).toHaveCount(0);
+  await expect(screen.getByTestId("task-list")).toBeVisible();
+
+  await card().tap();
+  await expect(screen.getByTestId("task-detail")).toHaveAttribute("aria-label", first);
+  await expect(screen.getByTestId("task-detail")).toBeVisible();
+});
+
+test("on a phone a long-press menu does not poison the next card tap", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  const stamp = Date.now();
+  const first = `Menu first ${stamp}`;
+  const second = `Menu second ${stamp}`;
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/");
+  await seedLedger(browser, [first, second]);
+  await app.open("/?page=tasks");
+
+  expect(await longPressCard(browser, first)).toBe(true);
+  await expect(screen.getByTestId("task-menu")).toBeVisible();
+
+  // Dismiss the menu on the other card without letting its click arrive, the
+  // sequence that used to leave the suppression flag stuck on.
+  await browser.evaluate((name) => {
+    const card = [...document.querySelectorAll<HTMLElement>("[data-task-card]")].find(
+      (item) => item.getAttribute("aria-label") === `Open ${name}`,
+    );
+    if (card === undefined) return false;
+    const box = card.getBoundingClientRect();
+    const fire = (type: string) => {
+      card.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 72,
+          pointerType: "touch",
+          isPrimary: true,
+          clientX: box.left + 24,
+          clientY: box.top + box.height / 2,
+          button: 0,
+          buttons: type === "pointerup" ? 0 : 1,
+        }),
+      );
+    };
+    fire("pointerdown");
+    fire("pointerup");
+    return true;
+  }, second);
+  await expect(screen.getByTestId("task-menu")).toHaveCount(0);
+
+  await screen.getByRole("button", { name: `Open ${first}` }).tap();
+  await expect(screen.getByTestId("task-detail")).toHaveAttribute("aria-label", first);
+  await expect(screen.getByTestId("task-detail")).toBeVisible();
+});
+
+test("on a phone the detail's own history state does not close it", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  const stamp = Date.now();
+  const first = `History first ${stamp}`;
+  const second = `History second ${stamp}`;
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/");
+  await seedLedger(browser, [first, second]);
+  await app.open("/?page=tasks");
+
+  await screen.getByRole("button", { name: `Open ${first}` }).tap();
+  await expect(screen.getByTestId("task-detail")).toHaveAttribute("aria-label", first);
+  await browser.evaluate(() => {
+    window.dispatchEvent(
+      new PopStateEvent("popstate", { state: structuredClone(window.history.state) }),
+    );
+    return true;
+  });
+  await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  await expect(screen.getByTestId("task-detail")).toBeVisible();
+
+  await browser.back();
+  await expect(screen.getByTestId("task-detail")).toHaveCount(0);
+  await expect(screen.getByTestId("task-list")).toBeVisible();
 });

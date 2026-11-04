@@ -34,6 +34,8 @@ import { removeTask, type TaskOutcome, updateTask } from "./task-client";
 import { TaskLinkProvider } from "./task-link";
 
 const LONG_PRESS_MS = 500;
+/** A pointer sequence this long after the menu opened cannot still be the dismissing tap. */
+const CARD_CLICK_IGNORE_MS = 700;
 const WIDE_QUERY = "(min-width: 1024px)";
 /** Past days of the done list shown at first; "Show older days" adds this many more. */
 const DAY_PAGE = 7;
@@ -76,6 +78,24 @@ type TaskDetailHistoryState = Record<string, unknown> & { piTaskDetailId?: strin
 function taskDetailHistory(): TaskDetailHistoryState | null {
   const state: unknown = window.history.state;
   return state !== null && typeof state === "object" ? (state as TaskDetailHistoryState) : null;
+}
+
+/** One pointerdown/up/click sequence; the token is shared by every handler on that event. */
+type CardPointerToken = { sequence: number };
+type CardClickGuard = {
+  pointer: CardPointerToken | null;
+  ignore: CardPointerToken | null;
+  timer: number | null;
+};
+let cardPointerSequence = 0;
+const cardPointerTokens = new WeakMap<Event, CardPointerToken>();
+
+function cardPointerToken(event: Event): CardPointerToken {
+  const known = cardPointerTokens.get(event);
+  if (known !== undefined) return known;
+  const token = { sequence: ++cardPointerSequence };
+  cardPointerTokens.set(event, token);
+  return token;
 }
 
 function useWide(): boolean {
@@ -288,7 +308,7 @@ export function TasksView({
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
   const [reopenTaskId, setReopenTaskId] = useState<string | null>(null);
   const [dayLimit, setDayLimit] = useState(DAY_PAGE);
-  const ignoreNextCardClick = useRef(false);
+  const cardClickGuard = useRef<CardClickGuard>({ pointer: null, ignore: null, timer: null });
   const lastSelectionRequest = useRef<number | null>(null);
   const now = new Date();
 
@@ -382,8 +402,14 @@ export function TasksView({
   }, [wide]);
 
   useEffect(() => {
-    const onPop = () => {
-      if (!wide) setOpenTaskId(null);
+    const onPop = (event: PopStateEvent) => {
+      if (wide) return;
+      const state = event.state as TaskDetailHistoryState | null;
+      // Our own detail entry can surface as a popstate around a pager or a
+      // replaceState; only a genuine back to an entry without this detail closes it.
+      setOpenTaskId((current) =>
+        current !== null && state?.piTaskDetailId === current ? current : null,
+      );
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -408,15 +434,36 @@ export function TasksView({
     if (!wide) setOpenTaskId(null);
   }, [wide]);
 
+  const armCardClickIgnore = useCallback((token: CardPointerToken) => {
+    const guard = cardClickGuard.current;
+    guard.ignore = token;
+    if (guard.timer !== null) window.clearTimeout(guard.timer);
+    guard.timer = window.setTimeout(() => {
+      guard.timer = null;
+      if (guard.ignore === token) guard.ignore = null;
+    }, CARD_CLICK_IGNORE_MS);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      const timer = cardClickGuard.current.timer;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, []);
+
   useEffect(() => {
     if (menu === null) return;
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
       if (document.getElementById("task-menu")?.contains(target)) return;
-      // A tap that only dismisses the menu must not also open the row.
+      // A tap that only dismisses the menu must not also open the row. The token
+      // belongs to this pointer sequence, so a missing click cannot poison the
+      // next tap, which carries a new token.
       if (target instanceof Element && target.closest("[data-task-card]") !== null) {
-        ignoreNextCardClick.current = true;
+        armCardClickIgnore(cardPointerToken(event));
+      } else if (cardClickGuard.current.ignore !== null) {
+        cardClickGuard.current.ignore = null;
       }
       setMenu(null);
     };
@@ -431,7 +478,7 @@ export function TasksView({
       document.removeEventListener("pointerdown", onPointerDown, true);
       document.removeEventListener("keydown", onKey);
     };
-  }, [menu]);
+  }, [armCardClickIgnore, menu]);
 
   useEffect(() => {
     if (openTaskId === null || menu !== null || wide) return;
@@ -475,7 +522,8 @@ export function TasksView({
     activity,
     state,
     selectedId: openTaskId,
-    ignoreNextCardClick,
+    cardClickGuard,
+    armCardClickIgnore,
     problem,
     menuTaskId: menu?.id ?? null,
     onOpenMenu: openMenu,
@@ -913,7 +961,8 @@ export function TaskRow({
   history = false,
   showProject = false,
   selectedId,
-  ignoreNextCardClick,
+  cardClickGuard,
+  armCardClickIgnore,
   problem,
   menuTaskId,
   onOpenMenu,
@@ -930,7 +979,8 @@ export function TaskRow({
   /** Name the project on the row, for lists not already grouped by project. */
   showProject?: boolean;
   selectedId: string | null;
-  ignoreNextCardClick: { current: boolean };
+  cardClickGuard: { current: CardClickGuard };
+  armCardClickIgnore: (token: CardPointerToken) => void;
   problem: { id: string; message: string } | null;
   menuTaskId: string | null;
   onOpenMenu: (id: string, x: number, y: number) => void;
@@ -945,7 +995,6 @@ export function TaskRow({
   const notice = problem?.id === task.id && menuTaskId !== task.id ? problem.message : null;
   const press = useRef<number | null>(null);
   const origin = useRef({ x: 0, y: 0 });
-  const openedAt = useRef(0);
   const selected = selectedId === task.id;
   const trace = activity?.traces[task.id];
   const badge = history || (done && depth > 0) ? null : stateBadge(current, trace);
@@ -967,7 +1016,6 @@ export function TaskRow({
     press.current = null;
   };
   const openMenu = (x: number, y: number) => {
-    openedAt.current = Date.now();
     onOpenMenu(task.id, x, y);
   };
 
@@ -1004,41 +1052,48 @@ export function TaskRow({
           width: `calc(100% - ${depth * 24}px)`,
         }}
         onPointerDown={(event) => {
+          const token = cardPointerToken(event.nativeEvent);
+          cardClickGuard.current.pointer = token;
           origin.current = { x: event.clientX, y: event.clientY };
           clearPress();
           if (event.pointerType === "mouse") return;
           press.current = window.setTimeout(() => {
             press.current = null;
+            armCardClickIgnore(token);
             openMenu(origin.current.x, origin.current.y);
           }, LONG_PRESS_MS);
         }}
         onPointerMove={(event) => {
-          if (press.current === null && !ignoreNextCardClick.current) return;
+          if (press.current === null) return;
           const distance = Math.hypot(
             event.clientX - origin.current.x,
             event.clientY - origin.current.y,
           );
           if (distance <= 10) return;
           clearPress();
-          ignoreNextCardClick.current = false;
         }}
         onPointerUp={(event) => {
-          const suppress = Date.now() - openedAt.current < 700;
+          const guard = cardClickGuard.current;
+          const suppress = guard.ignore !== null && guard.ignore === guard.pointer;
           clearPress();
+          // Only the gesture that opened or dismissed a menu suppresses its
+          // pointerup; a plain tap must keep the browser's following click.
           if (suppress) event.preventDefault();
         }}
         onPointerCancel={clearPress}
         onContextMenu={(event) => {
           event.preventDefault();
           clearPress();
+          const token = cardPointerToken(event.nativeEvent);
+          cardClickGuard.current.pointer = token;
+          armCardClickIgnore(token);
           openMenu(event.clientX, event.clientY);
         }}
         onClick={() => {
-          if (ignoreNextCardClick.current) {
-            ignoreNextCardClick.current = false;
-            return;
-          }
-          if (Date.now() - openedAt.current < 700) return;
+          const guard = cardClickGuard.current;
+          const ignored = guard.ignore !== null && guard.ignore === guard.pointer;
+          if (guard.ignore !== null) guard.ignore = null;
+          if (ignored) return;
           onOpen(task.id);
         }}
         onKeyDown={(event) => {
@@ -1107,7 +1162,8 @@ export function TaskRow({
               depth={depth + 1}
               history={history}
               selectedId={selectedId}
-              ignoreNextCardClick={ignoreNextCardClick}
+              cardClickGuard={cardClickGuard}
+              armCardClickIgnore={armCardClickIgnore}
               problem={problem}
               menuTaskId={menuTaskId}
               onOpenMenu={onOpenMenu}
