@@ -14,7 +14,9 @@ import {
 import {
   MCP_EVENTS_HEAD,
   MCP_EVENTS_TRAILER,
+  MCP_STATUS_HEAD,
   parseMcpEventPayload,
+  parseNotice,
 } from "../src/shared/notices.js";
 import type { QueuedMessageGroup } from "../src/shared/queue.js";
 import {
@@ -63,6 +65,15 @@ const JOB_TEXT = [
   "```",
   "Read more with job_output id=j12.",
 ].join("\n");
+
+function statusText(): string {
+  return `${MCP_STATUS_HEAD}\n${JSON.stringify({
+    subscriptions: [
+      { id: "sub-1", server: "github", name: "repo", status: "failed", error: "401" },
+    ],
+    dropped_statuses: 0,
+  })}`;
+}
 
 /** A chat service held in a running turn, so every submitted item stays queued. */
 function queuedChat(): {
@@ -483,6 +494,59 @@ test("a human queued message keeps its bubble and cancel button", async () => {
   assert.match(markup, />cancel</);
   assert.doesNotMatch(markup, /data-testid="queued-notice-chip"/);
   assert.doesNotMatch(markup, /\bopacity-60\b/);
+});
+
+test("a status notice queues as an MCP chip and keeps the model text", async () => {
+  const { chat, submissions } = queuedChat();
+  const text = statusText();
+  await chat.submitMcpEventNotice(text);
+  const item = firstQueued(chat);
+  assert.deepEqual(item.notice, {
+    kind: MCP_NOTICE_ENTRY_KIND,
+    label: "MCP status",
+    glyph: "↯",
+  });
+
+  const submission = submissions[0] as {
+    content: string;
+    entry?: { kind?: string; data?: { text?: string } };
+  };
+  assert.equal(submission.content, text, "the agent still receives the status notice verbatim");
+  assert.equal(submission.entry?.kind, MCP_NOTICE_ENTRY_KIND);
+  assert.equal(submission.entry?.data?.text, text);
+  const parsed = parseNotice(submission.entry?.data?.text ?? "");
+  assert.equal(parsed?.kind, "mcp");
+  assert.equal(parsed?.summary, "MCP github: repo failed");
+
+  const markup = render(pendingQueuedMessage(item), () => undefined);
+  assert.match(markup, /data-testid="queued-notice-chip"/);
+  assert.match(markup, /↯/);
+  assert.match(markup, /MCP status/);
+  assert.doesNotMatch(markup, /subscription status follows/);
+});
+
+test("an unparseable MCP notice queues as one raw chip", async () => {
+  const { chat, submissions } = queuedChat();
+  const text = `${MCP_EVENTS_HEAD}\n{"events":[`;
+  await chat.submitMcpEventNotice(text);
+  const item = firstQueued(chat);
+  assert.equal(item.notice?.kind, MCP_NOTICE_ENTRY_KIND);
+
+  const submission = submissions[0] as {
+    content: string;
+    entry?: { kind?: string; data?: { text?: string } };
+  };
+  assert.equal(submission.content, text, "the raw payload is preserved for the model and the chip");
+  assert.equal(submission.entry?.kind, MCP_NOTICE_ENTRY_KIND);
+  const parsed = parseNotice(submission.entry?.data?.text ?? "");
+  assert.ok(parsed?.kind === "mcp");
+  assert.equal(parsed.summary, "/mcp");
+  assert.equal(parsed.raw, text);
+
+  const markup = render(pendingQueuedMessage(item), () => undefined);
+  assert.match(markup, /data-testid="queued-notice-chip"/);
+  assert.match(markup, /MCP notice/);
+  assert.doesNotMatch(markup, /events/);
 });
 
 test("a background-job notice uses the same chip", async () => {

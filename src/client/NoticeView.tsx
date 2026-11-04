@@ -193,7 +193,11 @@ function NoticeDialog({
               {notice.kind === "job"
                 ? "Background job"
                 : notice.kind === "mcp"
-                  ? "MCP event"
+                  ? notice.statuses.length > 0
+                    ? "MCP status"
+                    : notice.raw !== undefined
+                      ? "MCP notice"
+                      : "MCP event"
                   : notice.kind === "memory"
                     ? "Memory write"
                     : notice.kind === "idle"
@@ -380,6 +384,9 @@ function payload(data: unknown): string {
 }
 
 function McpDetails({ notice }: { notice: McpNoticeDetails }) {
+  if (notice.raw !== undefined) {
+    return <Block label="Raw notice">{notice.raw}</Block>;
+  }
   return (
     <>
       <Fields

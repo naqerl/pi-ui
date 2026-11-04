@@ -23,6 +23,7 @@ import {
   isMcpEventEcho,
   MCP_EVENTS_HEAD,
   MCP_EVENTS_TRAILER,
+  MCP_STATUS_HEAD,
   type OperatorNoticeRecord,
   parseMcpEventPayload,
   parseNotice,
@@ -1740,7 +1741,22 @@ export class ChatService {
   ): Promise<void> {
     const envelope = mcpEventEnvelope(text);
     if (envelope === null) {
-      await this.submit(text, deliverAs === "steer" ? "steer" : "queue");
+      const at = new Date().toISOString();
+      const status = text.startsWith(MCP_STATUS_HEAD);
+      const kind = status ? "status" : "notice";
+      await this.submit(text, deliverAs === "steer" ? "steer" : "queue", {
+        entry: {
+          kind: MCP_NOTICE_ENTRY_KIND,
+          label: status ? "MCP status" : "MCP notice",
+          data: {
+            noticeId: `mcp/${kind}#${randomUUID()}`,
+            key: `mcp/${kind}`,
+            text,
+            at,
+            createdAt: at,
+          },
+        },
+      });
       return;
     }
 
