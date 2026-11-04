@@ -307,6 +307,16 @@ export interface TaskCompletion {
   evidence: string;
 }
 
+/** One time a finished task was reopened, with the reason that brought it back. */
+export interface TaskReopen {
+  /** ISO timestamp of the reopen. */
+  at: string;
+  /** What the operator or agent said was still wrong. */
+  reason: string;
+  /** Who reopened it. */
+  by: "operator" | "agent";
+}
+
 /** One todo. Subtasks point at a parent. `blockedBy` names tasks that gate this one. */
 export interface Task {
   id: string;
@@ -339,6 +349,10 @@ export interface Task {
   completedAt: string | null;
   /** The report recorded when the task was closed, or null while it is open. */
   completion: TaskCompletion | null;
+  /** Every time this task was reopened, oldest first. Absent on older ledgers. */
+  reopens?: TaskReopen[];
+  /** Convenience mirror of reopens[reopens.length - 1].at, or null. */
+  reopenedAt?: string | null;
 }
 
 export interface TaskLedger {
@@ -346,6 +360,8 @@ export interface TaskLedger {
   revision: number;
   /** What the agent's runs did for each task. Absent from older servers and plain store reads. */
   activity?: TaskActivity;
+  /** Reopen counts per project, computed from this ledger. Absent on plain store reads. */
+  reopenStats?: TaskReopenStats;
 }
 
 /** A task's state as the UI shows it, derived from the ledger plus measured run activity. */
@@ -526,4 +542,27 @@ export interface StreamRunState {
 export interface StreamSteerDropped {
   id: string;
   reason: string;
+}
+
+/** Reopened tasks per project, for the stats page. */
+export interface TaskReopenProjectStats {
+  /** The project as the ledger spells it, or null for tasks without one. */
+  project: string | null;
+  /** Tasks in this project that have been reopened at least once. */
+  reopenedTasks: number;
+  /** Every reopen recorded in this project. */
+  reopens: number;
+  /** Reopens since the start of the current week. */
+  reopensThisWeek: number;
+}
+
+export interface TaskReopenStats {
+  /** Tasks that have been reopened at least once. */
+  totalReopenedTasks: number;
+  /** Every reopen recorded, across all tasks. */
+  totalReopens: number;
+  /** Reopens since the start of the current week. */
+  reopensThisWeek: number;
+  /** One row per project with reopens, busiest first. */
+  projects: TaskReopenProjectStats[];
 }

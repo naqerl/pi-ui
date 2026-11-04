@@ -128,6 +128,7 @@ const REQUIRED_APP_TOOLS = [
   "notify_operator",
   "memory_write",
   "memory_read",
+  "memory_grep",
   "memory_find",
   "memory_dream",
   "memory_status",

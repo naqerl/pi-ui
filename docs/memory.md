@@ -26,16 +26,16 @@ data/memory/
 
 ## Modules (`src/server/memory/`)
 
-| module         | responsibility                                                                                                                                                                                                                                      |
-| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `store.ts`     | Path resolution, front-matter read/write, atomic **tmp + rename** writes, and a serialising queue so two tool calls cannot interleave a read-modify-write. This is the only topic writer.                                                           |
-| `scopes.ts`    | Ordered `[name, regex]` rules; the first match wins, unmatched sections go to `misc`.                                                                                                                                                               |
-| `migrate.ts`   | Splits a monolithic `MEMORY.md` into the layout. Bodies over 8000 chars are carved on `#`/`##`/`###` headings first, then on blank-line paragraphs. Dry-run by default; `--apply` writes.                                                           |
-| `index-map.ts` | Regenerates only the bytes between `<!-- MAP:BEGIN -->` and `<!-- MAP:END -->`, byte-identically on a second run; warns above 4000 chars. Never moves a body into `MEMORY.md`.                                                                      |
-| `find.ts`      | TF-IDF over `topics/` (excluding `INDEX.md`), exact-term weight 2.2, prefix matching both ways, title/filename bonus, recency and recall multipliers; records the top three in `.usage.json`.                                                       |
-| `dream.ts`     | Consolidation pass: attaches whole journalled blocks above 1.1, reports new-topic candidates, near-duplicates (4-shingle Jaccard ≥ 0.70), oversized topics, index drift and open scratchpad items. `--emit` writes work items; `--commit` archives. |
-| `snapshot.ts`  | Assembles the injected block (index ≤ 1800, today's tail ≤ 1200, open scratchpad ≤ 600, hard total 4000) and caches it between checkpoints.                                                                                                         |
-| `tools.ts`     | Registers `memory_write`, `memory_read`, `memory_find`, `memory_dream`, `memory_status` in the same registry as `task-tools.ts`, so `/api/state` lists them.                                                                                        |
+| module         | responsibility                                                                                                                                                                                                                                                                                      |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `store.ts`     | Path resolution, front-matter read/write, atomic **tmp + rename** writes, and a serialising queue so two tool calls cannot interleave a read-modify-write. This is the only topic writer.                                                                                                           |
+| `scopes.ts`    | Ordered `[name, regex]` rules; the first match wins, unmatched sections go to `misc`.                                                                                                                                                                                                               |
+| `migrate.ts`   | Splits a monolithic `MEMORY.md` into the layout. Bodies over 8000 chars are carved on `#`/`##`/`###` headings first, then on blank-line paragraphs. Dry-run by default; `--apply` writes.                                                                                                           |
+| `index-map.ts` | Regenerates only the bytes between `<!-- MAP:BEGIN -->` and `<!-- MAP:END -->`, byte-identically on a second run; warns above 4000 chars. Never moves a body into `MEMORY.md`.                                                                                                                      |
+| `find.ts`      | TF-IDF over `topics/` (excluding `INDEX.md`), exact-term weight 2.2, prefix matching both ways, title/filename bonus, recency and recall multipliers; records the top three in `.usage.json`.                                                                                                       |
+| `dream.ts`     | Consolidation pass: attaches whole journalled blocks above 1.1, reports new-topic candidates, near-duplicates (4-shingle Jaccard ≥ 0.70), oversized topics, index drift and open scratchpad items. `--emit` writes work items; `--commit` archives.                                                 |
+| `snapshot.ts`  | Assembles the injected block (index ≤ 1800, today's tail ≤ 1200, open scratchpad ≤ 600, hard total 4000) and caches it between checkpoints.                                                                                                                                                         |
+| `tools.ts`     | Registers `memory_write`, `memory_read` (with an optional line window), `memory_grep` (literal/regex search across topics, `MEMORY.md`, `SCRATCHPAD.md` and recent dailies), `memory_find`, `memory_dream` and `memory_status` in the same registry as `task-tools.ts`, so `/api/state` lists them. |
 
 ### Writing a topic
 
@@ -86,9 +86,10 @@ npx tsx src/server/memory/dream.ts --memory=data/memory --emit .dream/merge
 npx tsx src/server/memory/dream.ts --memory=data/memory --commit
 ```
 
-The same steps are available to the agent as `memory_write`, `memory_read`, `memory_find`,
-`memory_dream` and `memory_status`. Writes to `daily/` and `SCRATCHPAD.md` are cheap; merging is
-deliberate. `--commit` archives every daily log except today's into `archive/YYYY-MM/`, records the
+The same steps are available to the agent as `memory_write`, `memory_read`, `memory_grep`, `memory_find`,
+`memory_dream` and `memory_status`. `memory_grep` is the literal/regex scan for "where does this string
+appear"; `memory_read` takes `offset`/`limit` to return only the lines that matter. Writes to `daily/` and
+`SCRATCHPAD.md` are cheap; merging is deliberate. `--commit` archives every daily log except today's into `archive/YYYY-MM/`, records the
 archived names in `.dream-state.json`'s `consumed` array, and re-runs the index build.
 
 The injected block is assembled as the index (middle-truncated), today's journal tail, and open

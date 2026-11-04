@@ -45,6 +45,7 @@ export function updateTask(
     blockedBy?: string[];
     completion?: { evidence: string };
     project?: string | null;
+    reopenReason?: string;
   },
 ): Promise<TaskOutcome> {
   return requestTask(`/api/tasks/${encodeURIComponent(id)}`, {

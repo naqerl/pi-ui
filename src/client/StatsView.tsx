@@ -1671,6 +1671,9 @@ export function StatsView({
     mcpEvents: stats.mcpEvents,
     jobs: dashboard?.builtins.jobs ?? [],
     session: dashboard?.builtins.session ?? { conversationId: "", model: null, run: "idle" },
+    ...(dashboard?.builtins.taskReopens === undefined
+      ? {}
+      : { taskReopens: dashboard.builtins.taskReopens }),
   };
   const byId = new Map((dashboard?.widgets ?? []).map((widget) => [widget.id, widget]));
   const viewLayout = layout ?? (dashboard === null ? null : normalizeLayout(dashboard.layout));
