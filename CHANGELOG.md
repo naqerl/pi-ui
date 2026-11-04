@@ -1,3 +1,11 @@
+## 1.6.99 - 2026-11-04
+
+- test(stats): the 250 s unavailable-row test was not slow assertions — it was the e2e shard
+  proxy's 240 s health deadline plus the retry. The test now boots a backend of its own, mocks
+  `/api/dashboard` with the default built-in board and stubs `/api/stream` before navigation, so the
+  empty MCP row and the four `dd` values come from the fixture. 250.17 s in CI becomes 3.1 s, the
+  file 45 s, five consecutive runs green.
+
 ## 1.6.98 - 2026-11-04
 
 - test(e2e): two specs no longer sample the UI once and hope. `pager-hscroll` polls for a mounted, laid-out code block (and for the page to become `tasks`) before dispatching a gesture, and `task-projects` polls for exactly one visible match of each task title so a transient optimistic duplicate cannot make the query ambiguous, then polls the project-group order until the server ledger settles. Assertions are unchanged; five consecutive local runs of both files passed 14/14 at 109-111 s.
