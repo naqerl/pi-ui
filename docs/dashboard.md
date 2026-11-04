@@ -136,8 +136,10 @@ The general shape is:
 
 - `type` is `area` (default), `line` or `bar` and is the default for every
   series. `color` is the legacy single-series colour; `series[i].color` wins.
-  Colours default to `var(--chart-1)` … `var(--chart-5)` cycling by series
-  index.
+  Colours default to `var(--chart-1)` … `var(--chart-6)` cycling by series
+  index. Widget colours must be `var(--token)` references or
+  `color-mix(in srgb, …)` expressions built from them; literal colours are
+  rejected so every plot follows the active theme.
 - `height` is 12–400 px (default 40). `legend` defaults to true when there is
   more than one series. `yDomain` is `"auto"`, a fixed `[min, max]`, or omitted.
 - `y.format` is `number`, `currency` (whole units, default symbol `€`),

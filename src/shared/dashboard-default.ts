@@ -44,6 +44,20 @@ const MCP_EVENTS: Widget = {
   },
 };
 
+const TASK_REOPENS: Widget = {
+  id: "task-reopens",
+  title: "Task reopens",
+  kind: "list",
+  source: { type: "builtin", name: "task_reopens" },
+  mapping: {
+    items: "rows",
+    key: "key",
+    label: "label",
+    value: "value",
+    empty: "=no tasks reopened yet",
+  },
+};
+
 /**
  * The board production actually shows. The live dashboard.json was not
  * reachable from the checkout that wrote this file, so the poll-only cards
@@ -95,6 +109,7 @@ export const DEFAULT_DASHBOARD: {
     },
     MCP_STATUS,
     MCP_EVENTS,
+    TASK_REOPENS,
     {
       id: "hetzner",
       title: "Hetzner",
@@ -149,6 +164,7 @@ export const DEFAULT_DASHBOARD: {
         { id: "tokens", span: "half", x: 6, y: 0, w: 6, h: DEFAULT_WIDGET_ROWS },
         { id: "mcp", span: "full", x: 0, y: 4, w: 12, h: DEFAULT_WIDGET_ROWS },
         { id: "mcp-events", span: "full", x: 0, y: 8, w: 12, h: DEFAULT_WIDGET_ROWS },
+        { id: "task-reopens", span: "full", x: 0, y: 12, w: 12, h: DEFAULT_WIDGET_ROWS },
       ],
     },
     {

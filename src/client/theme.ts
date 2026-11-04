@@ -1,4 +1,5 @@
 import { manifestColor } from "../shared/color";
+import { themeTokens } from "../shared/theme";
 import type { ThemeColors } from "../shared/types";
 
 /** The document's runtime paint, chrome metas and installed-app manifest. */
@@ -13,6 +14,7 @@ export function applyTheme(colors: ThemeColors): void {
     ["--border", colors.border],
     ["--accent", colors.accent],
     ["--destructive", colors.destructive],
+    ...themeTokens(colors),
   ];
   for (const [name, value] of pairs) root.style.setProperty(name, value);
   root.style.setProperty("--radius", `${colors.radius}px`);

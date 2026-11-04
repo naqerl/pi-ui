@@ -396,6 +396,7 @@ test("the committed default dashboard is the operator board", () => {
       "tokens",
       "mcp",
       "mcp-events",
+      "task-reopens",
       "hetzner",
       "hetzner-cost",
       "go-usage",

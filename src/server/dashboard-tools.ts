@@ -34,7 +34,7 @@ list, table and status also take empty (text shown when there are no items).`;
 
 const CHART_DOC = `Sparkline chart spec (all keys except series/reference are optional):
 {type (area|line|bar, default area for every series), color (legacy single-series colour), height (12-400, default 40), legend (default true when more than one series), showTooltip, yDomain ([min,max] or "auto"), y {format: number|currency|percent|bytes, ticks: 0-10, currency: symbol (default €)}, x {labels: string[], format}, series: [{key (1-64 chars), label (≤40), color, type, dashed, fillOpacity (0-1, area default 0.35), stack (≤24)}] (1-6), reference: [{value, label, color, dashed}] (0-4)}.
-Colours default to var(--chart-1) through var(--chart-5), cycling by series index. A reference line defaults to var(--chart-4) and dashed. Series keys index the mapped series data.
+Colours default to var(--chart-1) through var(--chart-6), cycling by series index. A reference line defaults to var(--chart-4) and dashed. Series keys index the mapped series data. Colours must be var(--token) references or color-mix(in srgb, …) expressions built from them; literal colours are rejected.
 Examples:
 - two curves, projection dashed: mapping {series:"series", labels:"labels"}, data {series:{actual:[1,4,7], projection:[2,5,9]}, labels:["Mon","Tue","Wed"]}, chart {type:"line", x:{labels:["Mon","Tue","Wed"]}, series:[{key:"actual",label:"Actual",color:"var(--chart-1)"},{key:"projection",label:"Projection",color:"var(--chart-2)",dashed:true}]}
 - stacked bars: mapping {series:"series"}, data {series:{used:[2,3],free:[5,4]}}, chart {type:"bar", series:[{key:"used",label:"Used",stack:"cost"},{key:"free",label:"Free",stack:"cost"}]}
@@ -140,7 +140,7 @@ ${MAPPING_DOC}`,
               color: Type.Optional(
                 Type.String({
                   description:
-                    "Legacy single-series colour; series[i].color wins. Usually var(--chart-1…5).",
+                    "Legacy single-series colour; series[i].color wins. Usually var(--chart-1…6).",
                 }),
               ),
               height: Type.Optional(
@@ -247,7 +247,7 @@ ${MAPPING_DOC}`,
                     value: Type.Number({ description: "Y value of the line." }),
                     label: Type.Optional(Type.String({ description: "Text beside the line." })),
                     color: Type.Optional(
-                      Type.String({ description: "CSS color. Default var(--chart-4)." }),
+                      Type.String({ description: "Theme token. Default var(--chart-4)." }),
                     ),
                     dashed: Type.Optional(
                       Type.Boolean({ description: "Draw dashed. Default true." }),

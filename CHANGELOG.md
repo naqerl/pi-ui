@@ -1,3 +1,16 @@
+## 1.6.86 - 2026-11-04
+
+- feat(stats): drive plot and status colours from the theme palette, so charts follow the active theme instead of fixed hues (xfw2).
+- test(e2e): consolidate the browser suite from 43 files to 24, moving shared cases into themed siblings (e2e2).
+
+## 1.6.85 - 2026-11-04
+
+- feat(tasks): reopen a finished task with a required reason, count reopens and show the ↻ badge (i59h).
+
+## 1.6.84 - 2026-11-04
+
+- feat(memory): `memory_grep` (keyword/regex over topics, MEMORY.md, SCRATCHPAD.md and recent dailies) and a line-ranged `memory_read`, so a memory lookup costs lines instead of whole documents (mgv2).
+
 ## 1.6.83 - 2026-11-03
 
 - feat(memory): memory_write can append to a long_term topic instead of rewriting it (k4ec).

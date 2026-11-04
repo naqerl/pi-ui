@@ -16,7 +16,7 @@ import {
 } from "../src/client/TasksView.js";
 import type { PushNotification } from "../src/server/push.js";
 import { createTaskTools, type TaskBridge } from "../src/server/task-tools.js";
-import { TaskStore, type TaskStoreOptions } from "../src/server/tasks.js";
+import { TaskStore, type TaskStoreOptions, taskReopenStats } from "../src/server/tasks.js";
 import type { OperatorNoticeRecord } from "../src/shared/notices.js";
 import {
   compareTasks,
@@ -768,7 +768,7 @@ test("proposed tasks cannot block and do not keep a parent open", async () => {
   }
 });
 
-test("store round-trips completedAt and clears it when reopened", async () => {
+test("store round-trips completedAt and keeps it as history when reopened", async () => {
   const { directory, file, store } = await temporaryStore();
   try {
     const task = (await store.create("Persist the report", null)).tasks[0];
@@ -788,10 +788,48 @@ test("store round-trips completedAt and clears it when reopened", async () => {
     assert.equal(roundTripped?.completedAt, closed.completedAt);
     assert.deepEqual(roundTripped?.completion, completion);
 
-    await loaded.update(task.id, { status: "open" });
+    await loaded.update(task.id, {
+      status: "open",
+      reopenReason: "The fix regressed on the next run",
+    });
     const reopened = loaded.ledger().tasks.find((item) => item.id === task.id);
     assert.equal(reopened?.completedAt, null);
-    assert.equal(reopened?.completion, null);
+    assert.deepEqual(reopened?.completion, completion, "the old report stays as history");
+    assert.equal(reopened?.reopens?.length, 1);
+    assert.equal(reopened?.reopens?.[0]?.reason, "The fix regressed on the next run");
+    assert.equal(reopened?.reopenedAt, reopened?.reopens?.[0]?.at);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a done task cannot move to working or backlog without an audited reopen", async () => {
+  const { directory, store } = await temporaryStore();
+  try {
+    const task = (await store.create("Finished work", null)).tasks[0];
+    assert.ok(task);
+    const completion = { evidence: "e2e/tasks.test.ts finished" };
+    await store.update(task.id, { status: "done", completion });
+
+    await assert.rejects(store.update(task.id, { status: "working" }), /task_reopen/);
+    let current = store.ledger().tasks.find((item) => item.id === task.id);
+    assert.equal(current?.status, "done");
+    assert.deepEqual(current?.completion, completion);
+    assert.equal(current?.reopens, undefined);
+    assert.equal(current?.reopenedAt, null);
+
+    await assert.rejects(store.update(task.id, { status: "backlog" }), /task_reopen/);
+    current = store.ledger().tasks.find((item) => item.id === task.id);
+    assert.equal(current?.status, "done");
+    assert.deepEqual(current?.completion, completion);
+
+    await store.update(task.id, {
+      status: "open",
+      reopenReason: "The operator says it is still wrong",
+    });
+    current = store.ledger().tasks.find((item) => item.id === task.id);
+    assert.equal(current?.status, "open");
+    assert.equal(current?.reopens?.length, 1);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -827,7 +865,10 @@ test("lastWorkedAt survives a restart and clears when the task closes or reopens
       "a tagged call that finishes after the close does not revive the task",
     );
 
-    await restarted.update(task.id, { status: "open" });
+    await restarted.update(task.id, {
+      status: "open",
+      reopenReason: "The report says it is still wrong",
+    });
     assert.equal(
       restarted.ledger().tasks.find((item) => item.id === task.id)?.lastWorkedAt,
       null,
@@ -1014,4 +1055,55 @@ test("the task store rejects an empty title and a body that is not a string or t
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("reopen stats count tasks and this week's reopens per project", () => {
+  const now = Date.parse("2026-11-04T12:00:00.000Z");
+  const recent = "2026-11-03T09:00:00.000Z";
+  const old = "2026-10-20T09:00:00.000Z";
+  const base = {
+    status: "open" as const,
+    parentId: null,
+    blockedBy: [],
+    createdAt: old,
+    completedAt: null,
+    completion: null,
+  };
+  const tasks: Task[] = [
+    {
+      ...base,
+      id: "a1",
+      title: "Alpha fix",
+      project: "pi-ui",
+      reopens: [
+        { at: old, reason: "still wrong", by: "operator" },
+        { at: recent, reason: "regressed", by: "agent" },
+      ],
+      reopenedAt: recent,
+    },
+    {
+      ...base,
+      id: "a2",
+      title: "Beta fix",
+      project: "PI-UI",
+      reopens: [{ at: recent, reason: "wrong again", by: "operator" }],
+      reopenedAt: recent,
+    },
+    {
+      ...base,
+      id: "a3",
+      title: "Loose fix",
+      reopens: [{ at: old, reason: "came back", by: "operator" }],
+      reopenedAt: old,
+    },
+  ];
+  assert.deepEqual(taskReopenStats(tasks, now), {
+    totalReopenedTasks: 3,
+    totalReopens: 4,
+    reopensThisWeek: 2,
+    projects: [
+      { project: "pi-ui", reopenedTasks: 2, reopens: 3, reopensThisWeek: 2 },
+      { project: null, reopenedTasks: 1, reopens: 1, reopensThisWeek: 0 },
+    ],
+  });
 });

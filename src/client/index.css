@@ -17,10 +17,19 @@
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
+  --chart-6: oklch(0.828 0.189 84.429);
   --status-ok: oklch(0.596 0.145 163.225);
   --status-warn: oklch(0.666 0.179 58.318);
   --status-bad: oklch(0.577 0.245 27.325);
   --status-idle: oklch(0.556 0 0);
+  --status-info: oklch(0.546 0.245 262.881);
+  /* Plot aliases stay here; the theme's inline chart tokens flow through them. */
+  --plot-1: var(--chart-1);
+  --plot-2: var(--chart-2);
+  --plot-3: var(--chart-3);
+  --plot-4: var(--chart-4);
+  --plot-5: var(--chart-5);
+  --plot-6: var(--chart-6);
   color-scheme: light;
 }
 
@@ -39,10 +48,12 @@
     --chart-3: oklch(0.769 0.188 70.08);
     --chart-4: oklch(0.627 0.265 303.9);
     --chart-5: oklch(0.645 0.246 16.439);
+    --chart-6: oklch(0.852 0.199 91.936);
     --status-ok: oklch(0.765 0.177 163.223);
     --status-warn: oklch(0.828 0.189 84.429);
     --status-bad: oklch(0.704 0.191 22.216);
     --status-idle: oklch(0.708 0 0);
+    --status-info: oklch(0.623 0.214 259.815);
     color-scheme: dark;
   }
 }
@@ -77,10 +88,12 @@
   --color-chart-3: var(--chart-3);
   --color-chart-4: var(--chart-4);
   --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
   --color-status-ok: var(--status-ok);
   --color-status-warn: var(--status-warn);
   --color-status-bad: var(--status-bad);
   --color-status-idle: var(--status-idle);
+  --color-status-info: var(--status-info);
   --radius-sm: var(--radius);
   --radius-md: var(--radius);
   --radius-lg: var(--radius);

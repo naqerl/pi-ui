@@ -12,7 +12,13 @@ import {
   subscriptionHealth,
   subscriptionLabel,
 } from "./dashboard.js";
-import type { ContextUsage, McpEventsState, McpStatus, UsageSummary } from "./types.js";
+import type {
+  ContextUsage,
+  McpEventsState,
+  McpStatus,
+  TaskReopenStats,
+  UsageSummary,
+} from "./types.js";
 
 export const BUILTIN_SOURCES = [
   "tokens",
@@ -22,6 +28,7 @@ export const BUILTIN_SOURCES = [
   "mcp_events",
   "jobs",
   "session",
+  "task_reopens",
 ] as const;
 export type BuiltinName = (typeof BUILTIN_SOURCES)[number];
 
@@ -32,6 +39,7 @@ export interface SourceContext {
   mcpEvents: McpEventsState;
   jobs: BuiltinJob[];
   session: BuiltinSession;
+  taskReopens?: TaskReopenStats;
   /** Client-only display hook; the server deliberately leaves timestamps raw. */
   formatTime?: (timestamp: string) => string;
 }
@@ -331,6 +339,43 @@ function jobsData({ jobs }: SourceContext): unknown {
   };
 }
 
+function taskReopensData({ taskReopens }: SourceContext): unknown {
+  const summary = taskReopens ?? {
+    totalReopenedTasks: 0,
+    totalReopens: 0,
+    reopensThisWeek: 0,
+    projects: [],
+  };
+  const projects = summary.projects.map((item) => ({
+    key: item.project ?? "none",
+    project: item.project ?? "No project",
+    label: item.project ?? "No project",
+    reopenedTasks: item.reopenedTasks,
+    reopens: item.reopens,
+    reopensThisWeek: item.reopensThisWeek,
+    value: `${item.reopenedTasks} task${item.reopenedTasks === 1 ? "" : "s"} · ${item.reopensThisWeek} this week`,
+  }));
+  return {
+    totalReopenedTasks: summary.totalReopenedTasks,
+    totalReopened: summary.totalReopenedTasks,
+    totalReopens: summary.totalReopens,
+    reopensThisWeek: summary.reopensThisWeek,
+    rows: [
+      {
+        key: "all",
+        project: "All projects",
+        label: "All projects",
+        reopenedTasks: summary.totalReopenedTasks,
+        reopens: summary.totalReopens,
+        reopensThisWeek: summary.reopensThisWeek,
+        value: `${summary.totalReopenedTasks} task${summary.totalReopenedTasks === 1 ? "" : "s"} · ${summary.reopensThisWeek} this week`,
+      },
+      ...projects,
+    ],
+    projects,
+  };
+}
+
 function sessionData({ session }: SourceContext): unknown {
   return {
     ...session,
@@ -392,4 +437,9 @@ registerBuiltin(
   "session",
   "The current session: conversationId, model, run state and rows[] ready for a list widget.",
   sessionData,
+);
+registerBuiltin(
+  "task_reopens",
+  "Task reopen counts: total reopened tasks and reopens this week, plus rows[] grouped by project.",
+  taskReopensData,
 );

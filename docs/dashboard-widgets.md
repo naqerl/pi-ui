@@ -31,8 +31,9 @@ The registry is small and explicit:
 - `readSource(name, ctx)` reads one source, or throws for an unknown name.
 
 The builtin sources are registered in that file: `tokens`, `context`, `cache`,
-`mcp`, `mcp_events`, `jobs` and `session`. Their previous special-case data
-builders are gone; `read()` is the only way to get their payload.
+`mcp`, `mcp_events`, `jobs`, `session` and `task_reopens`. Their previous
+special-case data builders are gone; `read()` is the only way to get their
+payload.
 
 ## Discovery
 
@@ -113,8 +114,9 @@ because it restores the default board on purpose.
 `widgets` are the same objects `dashboard_upsert` writes and `sections` are the
 same slots `dashboard_layout` writes. It is the board production uses:
 `host-usage` on top; **Cache & prefix** with `prefix-moments` and `prefix-cost`;
-**Session** with `context`, `tokens`, `mcp` and `mcp-events`; and
-**Infrastructure** with `hetzner`, `hetzner-cost`, `go-usage` and `bg-jobs`.
+**Session** with `context`, `tokens`, `mcp`, `mcp-events` and `task-reopens`;
+and **Infrastructure** with `hetzner`, `hetzner-cost`, `go-usage` and
+`bg-jobs`.
 
 A fresh `DATA_DIR` with no `dashboard.json` is seeded from `DEFAULT_DASHBOARD`.
 A current-version file gains any missing default widgets except tombstoned ones.

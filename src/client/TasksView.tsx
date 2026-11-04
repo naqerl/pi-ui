@@ -10,6 +10,7 @@ import {
   isActiveStatus,
   liveBlockerIds,
   TASK_BODY_MAX_LENGTH,
+  TASK_REOPEN_REASON_MAX_LENGTH,
 } from "../shared/tasks";
 import { formatDateTime, formatDay, formatMonthDay, formatTime } from "../shared/time";
 import type {
@@ -285,6 +286,7 @@ export function TasksView({
   const [problem, setProblem] = useState<{ id: string; message: string } | null>(null);
   const [statusPending, setStatusPending] = useState<Record<string, boolean>>({});
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+  const [reopenTaskId, setReopenTaskId] = useState<string | null>(null);
   const [dayLimit, setDayLimit] = useState(DAY_PAGE);
   const ignoreNextCardClick = useRef(false);
   const lastSelectionRequest = useRef<number | null>(null);
@@ -342,6 +344,8 @@ export function TasksView({
 
   const menuTask = menu === null ? undefined : activeTasks.find((task) => task.id === menu.id);
   const openTask = openTaskId === null ? undefined : tasks.find((task) => task.id === openTaskId);
+  const reopenTask =
+    reopenTaskId === null ? undefined : tasks.find((task) => task.id === reopenTaskId);
 
   // A narrow detail is a history entry of its own, so the OS back gesture closes
   // it. Replacing an open detail keeps one entry, not a stack of them.
@@ -441,7 +445,18 @@ export function TasksView({
   const openMenu = (id: string, x: number, y: number) => {
     setMenu({ id, x, y });
   };
+  const requestReopen = async (task: Task, reason: string): Promise<string | null> => {
+    haptic();
+    const outcome = await updateTask(task.id, { status: "open", reopenReason: reason });
+    if (!outcome.ok) return outcome.error;
+    onLedger(outcome.ledger);
+    return null;
+  };
   const setStatus = async (task: Task, status: Task["status"]) => {
+    if (task.status === "done" && status === "open") {
+      setReopenTaskId(task.id);
+      return;
+    }
     setStatusPending((current) => ({ ...current, [task.id]: true }));
     try {
       await apply(task.id, updateTask(task.id, { status }));
@@ -656,6 +671,19 @@ export function TasksView({
           />,
           document.body,
         )}
+      {reopenTask !== undefined &&
+        createPortal(
+          <ReopenPrompt
+            task={reopenTask}
+            onCancel={() => setReopenTaskId(null)}
+            onSubmit={async (reason) => {
+              const error = await requestReopen(reopenTask, reason);
+              if (error === null) setReopenTaskId(null);
+              return error;
+            }}
+          />,
+          document.body,
+        )}
     </div>
   );
 
@@ -793,6 +821,22 @@ function TaskIdChip({ id, className }: { id: string; className?: string }) {
     >
       {shortTaskId(id)}
     </span>
+  );
+}
+
+/** How many times a task has come back, shown beside its id. */
+function ReopenBadge({ task, testId }: { task: Task; testId?: string }) {
+  const count = task.reopens?.length ?? 0;
+  if (count === 0) return null;
+  return (
+    <Badge
+      variant="outline"
+      data-testid={testId ?? `task-reopens-${task.id}`}
+      title={`Reopened ${count} time${count === 1 ? "" : "s"}`}
+      className="h-4 px-1.5 text-[10px] font-normal leading-4 text-muted-foreground"
+    >
+      ↻ {count}
+    </Badge>
   );
 }
 
@@ -1040,6 +1084,7 @@ export function TaskRow({
               </Badge>
             )}
             {stale && <StaleMarker id={task.id} />}
+            <ReopenBadge task={task} />
             <TaskIdChip id={task.id} />
           </span>
           <TaskCardTimes task={task} />
@@ -1544,6 +1589,7 @@ export function TaskDetail({
             )}
           </div>
           <span className="mt-1 flex shrink-0 items-center gap-1.5">
+            <ReopenBadge task={task} testId={`task-detail-reopens-${task.id}`} />
             <TaskIdBadge id={task.id} testId="task-detail-id" />
             <Badge
               data-testid="task-state"
@@ -1729,6 +1775,24 @@ export function TaskDetail({
           wide && "max-h-[40vh] min-h-0 shrink-0 overflow-y-auto",
         )}
       >
+        {task.reopens !== undefined && task.reopens.length > 0 && (
+          <section
+            data-testid="task-reopen"
+            className="flex flex-col gap-1 rounded-md border border-border bg-surface px-3 py-2"
+          >
+            <SubHeading>Last reopen</SubHeading>
+            <p className="whitespace-pre-wrap text-sm leading-5 [overflow-wrap:anywhere]">
+              {task.reopens[task.reopens.length - 1]?.reason}
+            </p>
+            <time
+              dateTime={task.reopens[task.reopens.length - 1]?.at}
+              title={formatDateTime(task.reopens[task.reopens.length - 1]?.at ?? "")}
+              className="text-xs leading-4 text-muted-foreground"
+            >
+              {formatDateTime(task.reopens[task.reopens.length - 1]?.at ?? "")}
+            </time>
+          </section>
+        )}
         <TaskTimes task={task} />
         {task.createdBy !== undefined && (
           <p
@@ -1890,7 +1954,7 @@ export function TaskDetail({
                 onStatus(task, done ? "open" : "done");
               }}
             >
-              {done ? "Reopen" : "Mark done"}
+              {done ? "Reopen…" : "Mark done"}
             </Button>
           </>
         )}
@@ -1963,7 +2027,7 @@ function TaskMenu({
           onStatus(task, done ? "open" : "done");
         }}
       >
-        {done ? "Reopen" : "Mark done"}
+        {done ? "Reopen…" : "Mark done"}
       </button>
       <button
         type="button"
@@ -1975,5 +2039,126 @@ function TaskMenu({
         Remove
       </button>
     </div>
+  );
+}
+
+/** A small prompt for the reason a done task is coming back. */
+function ReopenPrompt({
+  task,
+  onCancel,
+  onSubmit,
+}: {
+  task: Task;
+  onCancel: () => void;
+  onSubmit: (reason: string) => Promise<string | null>;
+}) {
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const reasonRef = useRef<HTMLTextAreaElement>(null);
+  const trimmed = reason.trim();
+  const valid = trimmed.length > 0 && trimmed.length <= TASK_REOPEN_REASON_MAX_LENGTH;
+
+  useEffect(() => {
+    reasonRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      onCancel();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
+  const submit = async () => {
+    if (!valid || busy) return;
+    setBusy(true);
+    setError(null);
+    const message = await onSubmit(trimmed);
+    if (message !== null) {
+      setError(message);
+      setBusy(false);
+    }
+  };
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/60 p-4 backdrop-blur-sm"
+      onPointerDown={(event) => {
+        if (event.target === event.currentTarget) onCancel();
+      }}
+    >
+      <Card
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={`reopen-title-${task.id}`}
+        data-testid="task-reopen-prompt"
+        className="w-full max-w-md bg-surface shadow-md"
+      >
+        <CardHeader className="flex flex-col gap-1">
+          <h2 id={`reopen-title-${task.id}`} className="text-base font-semibold leading-6">
+            Reopen {plainInline(task.title)}
+          </h2>
+          <p className="text-sm leading-5 text-muted-foreground">
+            Say what is still wrong. The old completion stays in the history.
+          </p>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2">
+          <label htmlFor={`reopen-reason-${task.id}`} className="text-sm font-medium leading-5">
+            Reason
+          </label>
+          <textarea
+            ref={reasonRef}
+            id={`reopen-reason-${task.id}`}
+            aria-label="Reopen reason"
+            data-testid="task-reopen-reason"
+            rows={3}
+            maxLength={TASK_REOPEN_REASON_MAX_LENGTH}
+            value={reason}
+            placeholder="What regressed or is still wrong?"
+            onChange={(event) => {
+              setReason(event.target.value);
+              setError(null);
+            }}
+            onKeyDown={(event) => {
+              if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                event.preventDefault();
+                void submit();
+              }
+            }}
+            className="min-h-20 w-full resize-y rounded-md border border-border bg-background px-2 py-1.5 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-foreground"
+          />
+          <span className="self-end text-xs leading-4 text-muted-foreground tabular-nums">
+            {trimmed.length}/{TASK_REOPEN_REASON_MAX_LENGTH}
+          </span>
+          {error !== null && <ErrorText>{error}</ErrorText>}
+        </CardContent>
+        <CardFooter className="flex items-center justify-end gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="rounded-md"
+            onClick={onCancel}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            data-testid="task-reopen-submit"
+            className="rounded-md"
+            disabled={!valid || busy}
+            onClick={() => void submit()}
+          >
+            Reopen task
+          </Button>
+        </CardFooter>
+      </Card>
+    </div>,
+    document.body,
   );
 }

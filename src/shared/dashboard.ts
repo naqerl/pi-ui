@@ -4,7 +4,7 @@
  * and the client.
  */
 import type { BuiltinName } from "./dashboard-sources.js";
-import type { UsageSummary } from "./types.js";
+import type { TaskReopenStats, UsageSummary } from "./types.js";
 
 export const WIDGET_KINDS = ["stat", "list", "table", "sparkline", "markdown", "status"] as const;
 export type WidgetKind = (typeof WIDGET_KINDS)[number];
@@ -22,7 +22,7 @@ export type ChartFormat = (typeof CHART_FORMATS)[number];
 export interface ChartSeries {
   key: string;
   label?: string;
-  /** A CSS color, usually one of the shadcn `--chart-1` … `--chart-5` tokens. */
+  /** A themed CSS token, usually one of `--chart-1` … `--chart-6`. */
   color?: string;
   type?: ChartType;
   dashed?: boolean;
@@ -243,7 +243,11 @@ export interface DashboardState {
   widgets: Widget[];
   layout: DashboardLayout;
   values: Record<string, WidgetValue>;
-  builtins: { jobs: BuiltinJob[]; session: BuiltinSession };
+  builtins: {
+    jobs: BuiltinJob[];
+    session: BuiltinSession;
+    taskReopens?: TaskReopenStats;
+  };
   /** True while some client has the dashboard open, so polls run. */
   polling: boolean;
   /** Present when a newer default board is available; offer reset. */
