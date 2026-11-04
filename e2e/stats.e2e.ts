@@ -352,22 +352,37 @@ test("keeps the composer body's resting height after ten page switches", async (
   await app.open("/");
   await expect(screen.getByTestId("composer-body")).toBeVisible();
 
-  const read = await browser.evaluate(async () => {
-    const body = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
-    const stats = document.querySelector<HTMLElement>('[data-testid="page-dot-stats"]');
-    const chat = document.querySelector<HTMLElement>('[data-testid="page-dot-chat"]');
-    if (body === null || stats === null || chat === null) return null;
-    const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 300));
-    const before = body.getBoundingClientRect().height;
-    for (let index = 0; index < 10; index += 1) {
-      stats.click();
-      await settle();
-      chat.click();
-      await settle();
-    }
-    return { before, after: body.getBoundingClientRect().height };
-  });
-  expect(read).not.toBeNull();
-  expect(read?.before).toBeGreaterThan(0);
-  expect(Math.abs((read?.after ?? 0) - (read?.before ?? 0))).toBeLessThan(0.5);
+  const height = () =>
+    browser.evaluate(() => {
+      const body = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
+      return body === null ? null : body.getBoundingClientRect().height;
+    });
+
+  const before = await height();
+  expect(before).not.toBeNull();
+  expect(before ?? 0).toBeGreaterThan(0);
+
+  for (let index = 0; index < 10; index += 1) {
+    await screen.getByTestId("page-dot-stats").tap();
+    await expect.poll(height, { timeout: 5_000 }).toBeLessThan(0.5);
+    await screen.getByTestId("page-dot-chat").tap();
+    await expect.poll(height, { timeout: 5_000 }).toBeGreaterThan((before ?? 0) - 0.5);
+  }
+
+  // The last switch is back to chat, so poll the height through the 220ms
+  // transition instead of sampling a mid-animation frame on a loaded runner.
+  await expect
+    .poll(
+      async () => {
+        const after = await height();
+        return after === null ? null : Math.abs(after - (before ?? 0));
+      },
+      { timeout: 5_000 },
+    )
+    .toBeLessThan(0.5);
+  const after = await height();
+  expect(
+    Math.abs((after ?? 0) - (before ?? 0)),
+    `composer body was ${after}px after ten switches; its resting height is ${before}px`,
+  ).toBeLessThan(0.5);
 });

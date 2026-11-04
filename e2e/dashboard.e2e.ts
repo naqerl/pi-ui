@@ -462,13 +462,20 @@ test("the MCP events widget shows at most 3 rows", async ({ app, browser, screen
   });
   await app.open("/?page=stats");
   await expect(screen.getByTestId("widget-mcp-events")).toBeVisible();
-  const read = await browser.evaluate(() => {
-    const rows = [...document.querySelectorAll('[data-testid="widget-mcp-events"] dl > div')];
-    return {
-      count: rows.length,
-      ids: rows.map((row) => row.getAttribute("data-testid")),
-    };
-  });
+  // Installing the route before the reload means the widget's first fetch is
+  // already mocked. focus is the refresh useChat already listens for, so even a
+  // fetch that started before the route retires on this fresh snapshot.
+  await browser.evaluate(() => window.dispatchEvent(new Event("focus")));
+  const readRows = () =>
+    browser.evaluate(() => {
+      const rows = [...document.querySelectorAll('[data-testid="widget-mcp-events"] dl > div')];
+      return {
+        count: rows.length,
+        ids: rows.map((row) => row.getAttribute("data-testid")),
+      };
+    });
+  await expect.poll(async () => (await readRows()).count, { timeout: 10_000 }).toBe(3);
+  const read = await readRows();
   expect(read.count).toBe(3);
   expect(read.ids).toEqual(["stat-mcp-event-e4", "stat-mcp-event-e3", "stat-mcp-event-e2"]);
 });
