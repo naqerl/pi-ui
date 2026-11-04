@@ -2,6 +2,7 @@ import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { manifestColor } from "../shared/color.js";
+import { mixed, themePalette, themeTokens } from "../shared/theme.js";
 import type { OmarchyTheme, OmarchyThemes, ThemeColors } from "../shared/types.js";
 
 /** Colors and lengths that can sit in an HTML style attribute. */
@@ -47,10 +48,6 @@ function firstDifferent(
   return null;
 }
 
-function mixed(background: string, foreground: string, weight: number): string {
-  return `color-mix(in srgb, ${background} ${weight}%, ${foreground})`;
-}
-
 function parseColors(text: string): Omit<ThemeColors, "radius"> | null {
   const values: Record<string, string> = {};
   for (const line of text.split("\n")) {
@@ -76,6 +73,7 @@ function parseColors(text: string): Omit<ThemeColors, "radius"> | null {
   const muted =
     firstDifferent(background, [surface], [dark, darker, lighter]) ??
     mixed(background, foreground, 93);
+  const palette = themePalette(background, foreground, values);
   return {
     mode,
     background,
@@ -85,8 +83,9 @@ function parseColors(text: string): Omit<ThemeColors, "radius"> | null {
     mutedForeground: values.dark_foreground ?? values.muted ?? foreground,
     border: values.lighter_background ?? values.selection ?? foreground,
     accent: values.accent ?? values.blue ?? foreground,
-    destructive: values.red ?? "#c24040",
+    destructive: values.red ?? palette.red,
     selection: values.selection ?? values.lighter_background ?? background,
+    palette,
   };
 }
 
@@ -202,6 +201,7 @@ export function themeStyle(colors: ThemeColors): string | null {
     ["--border", colors.border],
     ["--accent", colors.accent],
     ["--destructive", colors.destructive],
+    ...themeTokens(colors),
     ["--radius", `${colors.radius}px`],
     ["color-scheme", colors.mode],
     ["background-color", colors.background],

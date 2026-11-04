@@ -32,7 +32,7 @@ export type ChartFormat = (typeof CHART_FORMATS)[number];
 export interface ChartSeries {
   key: string;
   label?: string;
-  /** A CSS color, usually one of the shadcn `--chart-1` … `--chart-5` tokens. */
+  /** A themed CSS token, usually one of `--chart-1` … `--chart-6`. */
   color?: string;
   type?: ChartType;
   dashed?: boolean;

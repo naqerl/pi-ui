@@ -346,6 +346,7 @@ const CHART_COLORS = [
   "var(--chart-3)",
   "var(--chart-4)",
   "var(--chart-5)",
+  "var(--chart-6)",
 ];
 
 type SparklineView = Extract<WidgetView, { kind: "sparkline" }>;

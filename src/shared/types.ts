@@ -230,6 +230,17 @@ export interface McpEventsState {
   revision: number;
 }
 
+export interface ThemePalette {
+  red: string;
+  green: string;
+  yellow: string;
+  blue: string;
+  magenta: string;
+  cyan: string;
+  orange: string;
+  brown: string;
+}
+
 export interface ThemeColors {
   mode: "light" | "dark";
   background: string;
@@ -242,6 +253,8 @@ export interface ThemeColors {
   accent: string;
   destructive: string;
   selection: string;
+  /** The desktop theme's ANSI palette, used for plots and status colours. */
+  palette: ThemePalette;
   /** Corner radius in pixels, from the theme's Hyprland `rounding`. `0` is square. */
   radius: number;
 }

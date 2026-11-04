@@ -125,8 +125,19 @@ const CHART_SERIES_KEYS = new Set([
 const CHART_REFERENCE_KEYS = new Set(["value", "label", "color", "dashed"]);
 const MAX_CHART_SERIES = 6;
 const MAX_CHART_REFERENCES = 4;
-const SAFE_CHART_COLOR =
-  /^(?:[a-zA-Z]+|#[0-9a-fA-F]{3,8}|(?:var|rgb|rgba|hsl|hsla|oklch|oklab|color|color-mix)\([^;{}<>]*\))$/;
+const VAR_COLOR = /^var\(\s*--[A-Za-z0-9_-]+\s*\)$/;
+const COLOR_MIX = /^color-mix\(\s*in\s+srgb\s*,\s*(.+)\)$/i;
+const COLOR_MIX_COMPONENT = /^\s*var\(\s*--[A-Za-z0-9_-]+\s*\)(?:\s+\d+(?:\.\d+)?%)?\s*$/;
+
+/** Only theme tokens may colour a widget; a literal would survive a theme switch. */
+function isThemedChartColor(value: string): boolean {
+  const text = value.trim();
+  if (VAR_COLOR.test(text)) return true;
+  const mix = COLOR_MIX.exec(text);
+  if (mix === null || /[;{}<>]/.test(mix[1])) return false;
+  const components = mix[1].split(",");
+  return components.length >= 2 && components.every((item) => COLOR_MIX_COMPONENT.test(item));
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -252,9 +263,11 @@ function parseColor(value: unknown, field: string): string {
     typeof value !== "string" ||
     value.trim() === "" ||
     value.length > 80 ||
-    !SAFE_CHART_COLOR.test(value.trim())
+    !isThemedChartColor(value)
   ) {
-    throw new DashboardError(`${field} must be a CSS color or a var(--chart-N) token.`);
+    throw new DashboardError(
+      `${field} must be a var(--token) reference or a color-mix(in srgb, var(...)) expression; literal colours are not allowed.`,
+    );
   }
   return value.trim();
 }

@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { availableParallelism } from "node:os";
+import { join } from "node:path";
 import { web } from "@e2e-dev/web";
 import type { E2EConfig } from "e2e";
 
@@ -37,7 +38,13 @@ export default {
         command: {
           executable: process.execPath,
           args: ["--import", "tsx", "e2e/server.mjs"],
-          env: { PORT: "{port}", PI_E2E_SHARDS: String(appShards) },
+          env: {
+            PORT: "{port}",
+            PI_E2E_SHARDS: String(appShards),
+            // A writable HOME lets theme tests install real color files without
+            // touching the runner's read-only home directory.
+            HOME: join(process.cwd(), ".e2e/home"),
+          },
           inheritEnv: [
             "PI_E2E_LIVE",
             "PI_MODEL",
