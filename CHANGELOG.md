@@ -1,7 +1,7 @@
 ## 1.6.96 - 2026-11-04
 
 - test(e2e): stop the two specs that failed on 1.6.94 from failing on timing.
-  The MCP-events widget test installed its `/api/state` mock *after* the first
+  The MCP-events widget test installed its `/api/state` mock _after_ the first
   page had already fetched it, so whether three rows appeared depended on a
   later refresh landing inside the assertion window; it now installs the route
   before the stats reload, retires any in-flight fetch through the existing
