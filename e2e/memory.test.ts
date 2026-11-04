@@ -655,12 +655,13 @@ test("memory_write append adds a block and overwrite still replaces the body", a
   assert.match(overwritten, /the cache was reset/);
 });
 
-test("the memory tool set is the five documented tools", async (t) => {
+test("the memory tool set is the six documented tools", async (t) => {
   const store = await freshStore(t);
   const names = createMemoryTools(store).map((tool) => tool.name);
   assert.deepEqual(names, [
     "memory_write",
     "memory_read",
+    "memory_grep",
     "memory_find",
     "memory_dream",
     "memory_status",
