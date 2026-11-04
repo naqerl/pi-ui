@@ -25,6 +25,14 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/?page=tasks");
   const composer = screen.getByRole("textbox", "New task");
+  const taskList = screen.getByTestId("task-list");
+  // A just-added task can appear as both its optimistic row and the settled row
+  // for a moment; wait for exactly one visible match instead of sampling both.
+  const expectTaskTitle = async (title: string, scope = taskList) => {
+    const matches = scope.getByText(title, { exact: true });
+    await expect.poll(() => matches.count(), { timeout: 15_000 }).toBe(1);
+    await expect(matches).toBeVisible();
+  };
   await expect(composer).toBeVisible();
   // No project pickers: @ in the title is the only way to set one.
   await expect(screen.getByTestId("composer-project")).toHaveCount(0);
@@ -39,13 +47,13 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
   await expect(suggestions).toHaveCount(0);
   await expect(composer).toHaveValue("Diff the maps @citydiff ");
   await browser.keyboard.press("Enter");
-  await expect(screen.getByText("Diff the maps", { exact: true })).toBeVisible();
+  await expectTaskTitle("Diff the maps");
   await expect(composer).toHaveValue("");
 
   // Without @ a task has no project, whatever was used last.
   await composer.fill("Loose end");
   await screen.getByRole("button", "Add task").tap();
-  await expect(screen.getByText("Loose end", { exact: true })).toBeVisible();
+  await expectTaskTitle("Loose end");
   await expect(composer).toHaveValue("");
 
   // @ lists the known projects, filtered as you type.
@@ -56,7 +64,7 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
   await browser.keyboard.press("Enter");
   await expect(composer).toHaveValue("Fix the login @citydiff ");
   await browser.keyboard.press("Enter");
-  await expect(screen.getByText("Fix the login", { exact: true })).toBeVisible();
+  await expectTaskTitle("Fix the login");
 
   // A tap accepts a suggestion too.
   await composer.tap();
@@ -64,7 +72,7 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
   await screen.getByTestId("project-suggestion-zero").tap();
   await expect(composer).toHaveValue("Write the docs @zero ");
   await screen.getByRole("button", "Add task").tap();
-  await expect(screen.getByText("Write the docs", { exact: true })).toBeVisible();
+  await expectTaskTitle("Write the docs");
   await expect(composer).toHaveValue("");
 
   // Escape closes the list and keeps the text.
@@ -79,20 +87,23 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
   const citydiff = screen.getByTestId("task-project-citydiff");
   await expect(citydiff).toBeVisible();
   await expect(citydiff).toContainText("citydiff");
-  await expect(citydiff.getByText("Diff the maps", { exact: true })).toBeVisible();
-  await expect(citydiff.getByText("Fix the login", { exact: true })).toBeVisible();
-  await expect(
-    screen.getByTestId("task-project-zero").getByText("Write the docs", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    screen.getByTestId("task-project-none").getByText("Loose end", { exact: true }),
-  ).toBeVisible();
-  const order = await browser.evaluate(() =>
-    [...document.querySelectorAll("[data-testid^='task-project-']")]
-      .map((item) => item.getAttribute("data-testid"))
-      .filter((id) => id !== "task-project-line"),
-  );
-  expect(order).toEqual(["task-project-citydiff", "task-project-zero", "task-project-none"]);
+  await expectTaskTitle("Diff the maps", citydiff);
+  await expectTaskTitle("Fix the login", citydiff);
+  await expectTaskTitle("Write the docs", screen.getByTestId("task-project-zero"));
+  await expectTaskTitle("Loose end", screen.getByTestId("task-project-none"));
+  // The optimistic rows render before the server ledger lands; poll the group
+  // order so the assertion sees the settled grouping rather than a transient.
+  await expect
+    .poll(
+      () =>
+        browser.evaluate(() =>
+          [...document.querySelectorAll("[data-testid^='task-project-']")]
+            .map((item) => item.getAttribute("data-testid"))
+            .filter((id) => id !== "task-project-line"),
+        ),
+      { timeout: 15_000 },
+    )
+    .toEqual(["task-project-citydiff", "task-project-zero", "task-project-none"]);
 
   await removeTasks(browser, ["Diff the maps", "Loose end", "Fix the login", "Write the docs"]);
 });
