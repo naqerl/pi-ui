@@ -17,6 +17,9 @@ export function useStickToBottom(dependency: unknown) {
   const contentRef = useRef<HTMLDivElement | null>(null);
   const attachedRef = useRef(true);
   const anchorRef = useRef<Anchor | null>(null);
+  const lastScrollHeightRef = useRef<number | null>(null);
+  const lastClientHeightRef = useRef<number | null>(null);
+  const lastScrollTopRef = useRef<number | null>(null);
   const syncFrameRef = useRef<number | null>(null);
   const scrollFrameRef = useRef<number | null>(null);
   const [attached, setAttachedState] = useState(true);
@@ -58,8 +61,21 @@ export function useStickToBottom(dependency: unknown) {
   const sync = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
+    const scrollHeight = container.scrollHeight;
+    const clientHeight = container.clientHeight;
+    const previousScrollHeight = lastScrollHeightRef.current;
+    const previousClientHeight = lastClientHeightRef.current;
+    lastScrollHeightRef.current = scrollHeight;
+    lastClientHeightRef.current = clientHeight;
     if (attachedRef.current) {
-      container.scrollTop = container.scrollHeight;
+      // Content growth pins the end. So does a shrinking viewport: the expanding dock
+      // pushes the transcript up with it. A growing viewport is left alone, because the
+      // browser already clamps the old end offset as the dock collapses.
+      const contentGrew = previousScrollHeight === null || scrollHeight > previousScrollHeight;
+      const viewportShrank = previousClientHeight !== null && clientHeight < previousClientHeight;
+      if (contentGrew || viewportShrank) {
+        container.scrollTop = scrollHeight;
+      }
     } else {
       const anchor = anchorRef.current;
       if (anchor?.element.isConnected) {
@@ -86,8 +102,17 @@ export function useStickToBottom(dependency: unknown) {
       scrollFrameRef.current = null;
       const container = containerRef.current;
       if (!container) return;
-      const distance = container.scrollHeight - container.scrollTop - container.clientHeight;
-      updateAttached(distance <= NEAR_BOTTOM_PX);
+      const scrollTop = container.scrollTop;
+      const previousScrollTop = lastScrollTopRef.current;
+      lastScrollTopRef.current = scrollTop;
+      const distance = container.scrollHeight - scrollTop - container.clientHeight;
+      if (distance <= NEAR_BOTTOM_PX) {
+        updateAttached(true);
+      } else if (previousScrollTop !== null && scrollTop < previousScrollTop - 0.5) {
+        // Only an upward scroll detaches. A shrinking viewport can make the distance
+        // temporarily grow before the next resize sync re-pins; that is not a reader move.
+        updateAttached(false);
+      }
       recordAnchor();
     });
   }, [recordAnchor, updateAttached]);
@@ -123,25 +148,29 @@ export function useStickToBottom(dependency: unknown) {
     const content = contentRef.current;
     if (!container || !content) return;
 
-    // ResizeObserver runs after layout but before paint, so correcting the offset here
-    // keeps the end pinned on the very frame the viewport (or content) changes size.
-    const observer = new ResizeObserver(sync);
-    observer.observe(container);
-    observer.observe(content);
+    // Content growth pins the end. The container observer also runs sync so a shrinking
+    // viewport can carry an attached reader with the expanding dock; a growing viewport
+    // only records the anchor and lets the browser clamp the old offset.
+    const contentObserver = new ResizeObserver(sync);
+    contentObserver.observe(content);
     const observeChildren = () => {
-      for (const child of content.children) observer.observe(child);
+      for (const child of content.children) contentObserver.observe(child);
     };
     observeChildren();
+    const containerObserver = new ResizeObserver(sync);
+    containerObserver.observe(container);
     const mutations = new MutationObserver(() => {
       observeChildren();
       scheduleSync();
     });
     mutations.observe(content, { childList: true });
     container.addEventListener("scroll", handleScroll, { passive: true });
+    lastScrollTopRef.current = container.scrollTop;
     scheduleSync();
 
     return () => {
-      observer.disconnect();
+      contentObserver.disconnect();
+      containerObserver.disconnect();
       mutations.disconnect();
       container.removeEventListener("scroll", handleScroll);
       if (syncFrameRef.current !== null) cancelAnimationFrame(syncFrameRef.current);
