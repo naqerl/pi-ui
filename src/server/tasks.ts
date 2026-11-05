@@ -731,7 +731,9 @@ export class TaskStore {
     }
     if (changes.length === 0) return;
 
-    await Promise.all(changes.map((change) => this.recordDecisionNotice(change)));
+    // The ledger is saved; delivering a decision to the live chat session can wait for a
+    // running turn. recordDecisionNotice handles its own failures, so never hold this write.
+    for (const change of changes) void this.recordDecisionNotice(change);
 
     // A decision stays in the chat. Drop its proposal's pending push, which
     // would otherwise describe a state the ledger has already left.
