@@ -132,6 +132,12 @@ export interface MemoryWriteRecord {
   readonly path: string;
   /** The text just written, without front matter. */
   readonly text: string;
+  /** The topic title, when this was a long-term write. */
+  readonly title?: string;
+  /** The full topic body length after the write, when this was a long-term write. */
+  readonly chars?: number;
+  /** The ISO date the topic was restamped with, when this was a long-term write. */
+  readonly updated?: string;
 }
 
 export interface MemoryToolHooks {
@@ -200,12 +206,20 @@ export function createMemoryTools(
         try {
           if (args.target === "daily") {
             await store.appendDaily(args.body);
-            await recordWrite({ path: `daily/${todayIso()}.md`, text: args.body.trim() });
+            await recordWrite({
+              path: `daily/${todayIso()}.md`,
+              text: args.body.trim(),
+              chars: args.body.trim().length,
+            });
             return text(`Appended one daily block (${args.body.trim().length} chars).`);
           }
           if (args.target === "scratchpad") {
             await store.appendScratchpad(args.body);
-            await recordWrite({ path: "SCRATCHPAD.md", text: args.body.trim() });
+            await recordWrite({
+              path: "SCRATCHPAD.md",
+              text: args.body.trim(),
+              chars: args.body.trim().length,
+            });
             return text(`Appended one open scratchpad item.`);
           }
           if (args.body.trim().length === 0) return text("Refusing to write an empty topic.", true);
@@ -233,7 +247,13 @@ export function createMemoryTools(
             });
           }
           snapshot?.invalidate();
-          await recordWrite({ path: `topics/${written.rel}`, text: appended ?? written.body });
+          await recordWrite({
+            path: `topics/${written.rel}`,
+            text: appended ?? written.body,
+            title: written.title,
+            chars: written.body.length,
+            updated: written.updated,
+          });
           if (appended !== undefined) {
             return text(
               `appended ${appended.length} chars to ${written.rel} (now ${written.body.length} chars, updated ${written.updated})`,

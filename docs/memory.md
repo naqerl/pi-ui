@@ -44,7 +44,9 @@ date, take the title from the body's first `# ` heading, update that scope's `IN
 write via a temp file plus rename. A topic is never half-written.
 
 `memory_write` with `target: "long_term"` bumps the store revision and invalidates the snapshot.
-`target: "daily"` and `target: "scratchpad"` do **not** invalidate it.
+`target: "daily"` and `target: "scratchpad"` do **not** invalidate it. The live instructions stay
+stable: a topic write is published once at the tail of the turn as a compact delta naming each
+changed path, title, size and date, so the prompt cache is not invalidated.
 
 ### Scoring
 
@@ -65,8 +67,9 @@ for recall. `INDEX.md` is never indexed. A result is
 - Daily blocks use exactly the grammar `pi-memory` writes — `<!-- <ISO timestamp> [<session id>] -->`
   followed by a heading and body — so an existing journal migrates unchanged.
 - The snapshot is **byte-stable between checkpoints**. It is rebuilt only on the first turn, a day
-  rollover, a long-term `memory_write`, and before compaction. A stable prefix is what keeps prompt
-  caching alive.
+  rollover, a long-term `memory_write`, and before compaction. The instructions are reconfigured only
+  on the first turn, a day rollover and compaction; a long-term write rebuilds the cache but is
+  announced as a tail delta. A stable prefix is what keeps prompt caching alive.
 
 ## The loop
 
@@ -94,8 +97,9 @@ archived names in `.dream-state.json`'s `consumed` array, and re-runs the index 
 
 The injected block is assembled as the index (middle-truncated), today's journal tail, and open
 scratchpad items, with a one-line caveat naming the snapshot reason. `SnapshotController` refreshes
-it before every turn and on a compaction event; it reconfigures the live conversation only when the
-composed instructions changed. A day rollover is detected from the cached day and a long-term write
-from the store revision, so the server does not keep serving the boot-time prefix. Compaction is
-disabled in this build, but the snapshot module still exposes the `compaction` checkpoint so a manual
-pass can use it.
+it before every turn and on a compaction event; it reconfigures the live conversation only on a
+first turn, a day rollover, or a compaction. A long-term write still rebuilds the cache, so a later
+compaction carries every write, but its only immediate notice is one coalesced `memory-delta` at the
+end of the turn. A day rollover is detected from the cached day and a long-term write from the store
+revision. Compaction is disabled in this build, but the snapshot module still exposes the
+`compaction` checkpoint so a manual pass can use it.

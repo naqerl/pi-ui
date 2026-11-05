@@ -20,7 +20,8 @@ import {
   parseFrontMatter,
   todayIso,
 } from "../src/server/memory/store.js";
-import { createMemoryTools } from "../src/server/memory/tools.js";
+import { createMemoryTools, type MemoryWriteRecord } from "../src/server/memory/tools.js";
+import { memoryDeltaPrompt, parseNotice } from "../src/shared/notices.js";
 
 async function freshStore(t: { after: (fn: () => Promise<void>) => void }): Promise<MemoryStore> {
   const root = await mkdtemp(join(tmpdir(), "pi-memory-"));
@@ -539,7 +540,7 @@ widget-service queue fine.
   assert.match(emitted, /widget-service queue fine\./);
 });
 
-test("a snapshot controller reconfigures only at a checkpoint", async (t) => {
+test("a snapshot controller keeps instructions stable on a long-term write", async (t) => {
   const store = await freshStore(t);
   await writeMemory(store, FIXTURE);
   await migrateMemory(store, { apply: true });
@@ -563,13 +564,65 @@ test("a snapshot controller reconfigures only at a checkpoint", async (t) => {
   const third = await controller.refresh();
   assert.notEqual(third, first);
   assert.match(third, /long_term_write/);
-  assert.equal(applied.length, 2);
+  assert.equal(applied.length, 1, "a long-term write is announced, not applied");
   assert.ok(third.startsWith("BASE INSTRUCTIONS\n\n"));
+
+  // The cache still saw the write, so the next forced rebuild carries it.
+  const fourth = await controller.refresh("compaction");
+  assert.notEqual(fourth, third);
+  assert.match(fourth, /compaction/);
+  assert.equal(applied.length, 2);
+  assert.notEqual(applied[1], first);
+  const fifth = await controller.refresh();
+  assert.equal(fifth, fourth);
+  assert.equal(applied.length, 2, "a later ordinary turn stays stable");
+});
+
+test("a day rollover still reconfigures with the fresh block", async (t) => {
+  const store = await freshStore(t);
+  await writeMemory(store, FIXTURE);
+  await migrateMemory(store, { apply: true });
+  const applied: string[] = [];
+  const controller = new SnapshotController(store, "BASE INSTRUCTIONS", async (next) => {
+    applied.push(next);
+  });
+  const first = await controller.refresh("first_turn");
+  await store.appendDaily("the next day starts here", "s1");
+  const next = await controller.refresh("day_rollover");
+  assert.notEqual(next, first);
+  assert.match(next, /day_rollover/);
+  assert.equal(applied.length, 2);
+});
+
+test("the memory delta names every topic, its size and its date once", () => {
+  const prompt = memoryDeltaPrompt([
+    {
+      path: "topics/projects/widget-cache.md",
+      title: "Widget cache",
+      chars: 2954,
+      updated: "2026-11-05",
+    },
+    {
+      path: "topics/forge/pi-ui.md",
+      title: "pi-ui handoff",
+      chars: 42,
+      updated: "2026-11-05",
+    },
+  ]);
+  assert.equal((prompt.match(/Memory updated:/g) ?? []).length, 1);
+  assert.match(prompt, /topics\/projects\/widget-cache\.md/);
+  assert.match(prompt, /Widget cache \(2954 chars, updated 2026-11-05\)/);
+  assert.match(prompt, /topics\/forge\/pi-ui\.md/);
+  assert.match(prompt, /pi-ui handoff \(42 chars, updated 2026-11-05\)/);
+  assert.match(prompt, /memory_read/);
+  const notice = parseNotice(prompt);
+  assert.equal(notice?.kind, "memory-delta");
+  assert.equal(notice?.kind === "memory-delta" ? notice.topics.length : 0, 2);
 });
 
 test("a successful memory_write reports its path and written text", async (t) => {
   const store = await freshStore(t);
-  const writes: { path: string; text: string }[] = [];
+  const writes: MemoryWriteRecord[] = [];
   const tools = new Map(
     createMemoryTools(store, undefined, {
       onWrite: (record) => {
@@ -590,10 +643,14 @@ test("a successful memory_write reports its path and written text", async (t) =>
   });
   assert.equal(writes[0]?.path, "topics/projects/widget-cache.md");
   assert.match(writes[0]?.text ?? "", /the cache keeps 200 responses/);
+  assert.equal(writes[0]?.title, "Widget cache");
+  assert.equal(writes[0]?.chars, "# Widget cache\n\nthe cache keeps 200 responses.".length);
+  assert.equal(writes[0]?.updated, todayIso());
 
   await run({ target: "daily", body: "a daily note" });
   assert.equal(writes[1]?.path, `daily/${todayIso()}.md`);
   assert.equal(writes[1]?.text, "a daily note");
+  assert.equal(writes[1]?.title, undefined);
 
   await run({ target: "scratchpad", body: "an open item" });
   assert.equal(writes[2]?.path, "SCRATCHPAD.md");
@@ -602,7 +659,7 @@ test("a successful memory_write reports its path and written text", async (t) =>
 
 test("memory_write append adds a block and overwrite still replaces the body", async (t) => {
   const store = await freshStore(t);
-  const writes: { path: string; text: string }[] = [];
+  const writes: MemoryWriteRecord[] = [];
   const tools = new Map(
     createMemoryTools(store, undefined, {
       onWrite: (record) => {

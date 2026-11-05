@@ -117,13 +117,15 @@ export function composeInstructions(base: string, block: string): string {
 }
 
 /**
- * Rebuilds the injected block only at a checkpoint and reconfigures the live
- * conversation when the composed instructions actually changed. Called before a
- * turn (day rollover or long-term write is detected from state) and on a
- * compaction event. Daily and scratchpad writes leave the prefix untouched.
+ * Rebuilds the injected block at a checkpoint but keeps the live instructions
+ * stable. Only a first turn, a day rollover and a compaction reconfigure the
+ * conversation; a long-term topic write updates the cache for the next forced
+ * rebuild and is announced as a tail delta instead. Daily and scratchpad writes
+ * leave the prefix untouched.
  */
 export class SnapshotController {
   private lastInstructions: string | undefined;
+  private configured: boolean;
   private lastDay: string;
   private lastRevision: number;
 
@@ -135,6 +137,7 @@ export class SnapshotController {
     initialInstructions?: string,
   ) {
     this.lastInstructions = initialInstructions;
+    this.configured = initialInstructions !== undefined;
     this.lastDay = todayIso();
     this.lastRevision = store.checkpoint;
   }
@@ -150,10 +153,18 @@ export class SnapshotController {
           : "first_turn");
     const block = await this.cache.get(this.store, chosen);
     const next = composeInstructions(this.base, block);
-    if (next !== this.lastInstructions) {
+    const forced = chosen === "day_rollover" || chosen === "compaction";
+    // Observe every rebuild so a later first_turn does not mistake the pending
+    // topic write for an unconfigured conversation. Reconfigure only when the
+    // prompt is already being rewritten anyway.
+    if (
+      chosen !== "long_term_write" &&
+      (forced || !this.configured || next !== this.lastInstructions)
+    ) {
       await this.apply(next);
-      this.lastInstructions = next;
+      this.configured = true;
     }
+    this.lastInstructions = next;
     this.lastDay = day;
     this.lastRevision = this.store.checkpoint;
     return next;

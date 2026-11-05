@@ -24,7 +24,10 @@ import { diagramPartFromDetails, parseDiagramDetails } from "../shared/diagrams.
 import { parseMemoryToolDetails } from "../shared/memory.js";
 import {
   isMcpEventEcho,
+  type MemoryDeltaDetails,
+  type MemoryDeltaTopic,
   type MemoryNoticeDetails,
+  memoryDeltaSummary,
   memoryNoticeSummary,
   memoryNoticeText,
   type OperatorNoticeDetails,
@@ -119,6 +122,18 @@ const MemoryWriteEntry = defineEntry<{
 }>("ui.memory-write");
 
 export const MEMORY_WRITE_ENTRY_KIND = MemoryWriteEntry.kind;
+
+/**
+ * The compact tail notice for long-term topic writes. It carries the model
+ * message so the agent reads it next turn, without rewriting the system prompt.
+ */
+const MemoryDeltaEntry = defineEntry<{
+  text: string;
+  topics: Array<{ path: string; title: string; chars: number; updated: string }>;
+  createdAt: string;
+}>("ui.memory-delta");
+
+export const MEMORY_DELTA_ENTRY_KIND = MemoryDeltaEntry.kind;
 
 /**
  * The automated idle prompt. It carries a model message so it starts a turn, but
@@ -865,6 +880,34 @@ export function buildTranscript(
           from: typeof entry.data.from === "string" ? entry.data.from : null,
           to: typeof entry.data.to === "string" ? entry.data.to : "",
         },
+      });
+      continue;
+    }
+    if (kind === MemoryDeltaEntry.kind) {
+      if (!isRecord(entry.data) || typeof entry.data.text !== "string") continue;
+      const topics = Array.isArray(entry.data.topics)
+        ? entry.data.topics.filter((topic): topic is MemoryDeltaTopic => {
+            if (!isRecord(topic)) return false;
+            return (
+              typeof topic.path === "string" &&
+              typeof topic.title === "string" &&
+              typeof topic.chars === "number" &&
+              typeof topic.updated === "string"
+            );
+          })
+        : [];
+      const notice: MemoryDeltaDetails = {
+        kind: "memory-delta",
+        topics,
+        summary: memoryDeltaSummary(topics),
+      };
+      messages.push({
+        id: `m-${entry.id}`,
+        role: "system",
+        text: entry.data.text,
+        timestamp: entryTimestamp(entry.data),
+        order: entry.id * 10_000,
+        notice,
       });
       continue;
     }

@@ -5,6 +5,7 @@ import {
   type InterruptedNoticeDetails,
   type JobNoticeDetails,
   type McpNoticeDetails,
+  type MemoryDeltaDetails,
   type MemoryNoticeDetails,
   memoryUndoPrompt,
   type OperatorNoticeDetails,
@@ -40,7 +41,7 @@ function noticeLabel(notice: ChatNotice): string {
 function noticeGlyph(notice: ChatNotice): string {
   if (notice.kind === "job") return "⚙";
   if (notice.kind === "mcp") return "↯";
-  if (notice.kind === "memory") return "✎";
+  if (notice.kind === "memory" || notice.kind === "memory-delta") return "✎";
   if (notice.kind === "idle") return "◷";
   if (notice.kind === "decision") return notice.decision === "approved" ? "✓" : "✕";
   if (notice.kind === "operator") return "◇";
@@ -200,17 +201,19 @@ function NoticeDialog({
                       : "MCP event"
                   : notice.kind === "memory"
                     ? "Memory write"
-                    : notice.kind === "idle"
-                      ? notice.stale === true
-                        ? "Status check"
-                        : "Idle nudge"
-                      : notice.kind === "decision"
-                        ? "Proposal decision"
-                        : notice.kind === "operator"
-                          ? "Operator request"
-                          : notice.stopped
-                            ? "Run stopped"
-                            : "Run interrupted"}
+                    : notice.kind === "memory-delta"
+                      ? "Memory updated"
+                      : notice.kind === "idle"
+                        ? notice.stale === true
+                          ? "Status check"
+                          : "Idle nudge"
+                        : notice.kind === "decision"
+                          ? "Proposal decision"
+                          : notice.kind === "operator"
+                            ? "Operator request"
+                            : notice.stopped
+                              ? "Run stopped"
+                              : "Run interrupted"}
               {dateTime !== "" && ` · ${dateTime}`}
             </div>
             <h2 id={titleId} className="mt-0.5 font-mono text-sm [overflow-wrap:anywhere]">
@@ -234,6 +237,8 @@ function NoticeDialog({
             <McpDetails notice={notice} />
           ) : notice.kind === "memory" ? (
             <MemoryDetails notice={notice} onSteer={onSteer} />
+          ) : notice.kind === "memory-delta" ? (
+            <MemoryDeltaDetailsView notice={notice} />
           ) : notice.kind === "idle" ? (
             <IdleDetails notice={notice} />
           ) : notice.kind === "decision" ? (
@@ -322,6 +327,28 @@ function MemoryDetails({
       >
         Undo
       </button>
+    </>
+  );
+}
+
+function MemoryDeltaDetailsView({ notice }: { notice: MemoryDeltaDetails }) {
+  return (
+    <>
+      {notice.topics.map((topic) => (
+        <section key={topic.path} className="mb-3 last:mb-0">
+          <Fields
+            rows={[
+              ["Path", topic.path],
+              ["Title", topic.title],
+              ["Chars", String(topic.chars)],
+              ["Updated", topic.updated],
+            ]}
+          />
+        </section>
+      ))}
+      <p className="mt-3 text-muted-foreground">
+        Read a topic with <code>memory_read</code> before relying on it.
+      </p>
     </>
   );
 }

@@ -135,7 +135,7 @@ const catalog = await createModelCatalog();
 const memory = new MemoryStore(resolve(dataDir, "memory"));
 await memory.ensure();
 const memorySnapshot = new SnapshotCache();
-const memoryWrites: { current?: (record: MemoryWriteRecord) => void } = {};
+const memoryWrites: { current?: (record: MemoryWriteRecord) => void | Promise<void> } = {};
 const memoryBlock = await memorySnapshot.get(memory, "first_turn");
 const baseInstructions = `${await buildPiSystemPrompt(cwd, catalog.runtime)}
 
@@ -197,6 +197,8 @@ const memoryCheckpoints = new SnapshotController(
   memorySnapshot,
   instructions,
 );
+/** The browser suite may read the live instructions and drive a memory checkpoint. */
+const e2eMemoryHook = process.env.PI_E2E_DATA_DIR !== undefined;
 const hub = new StreamHub();
 taskBridge.publish = (ledger) => {
   taskActivity.observeLedger(ledger.tasks);
@@ -248,11 +250,10 @@ const chat = new ChatService(
 );
 operatorNotices.current = (record) => chat.recordOperatorNotice(record);
 taskNotices.current = (record) => chat.recordTaskDecision(record);
-memoryWrites.current = (record) => {
-  void chat.recordMemoryWrite(record).catch((error: unknown) => {
+memoryWrites.current = (record) =>
+  chat.recordMemoryWrite(record).catch((error: unknown) => {
     console.error("[pi] memory write notice failed", error);
   });
-};
 const events = new McpEventFeed(boot.mcp.subscriptionRegistry, {
   startedAt: boot.mcp.startedAt,
 });
@@ -485,12 +486,15 @@ app.post("/api/theme", async (c) => {
   return c.json(data);
 });
 
-app.get("/api/state", async (c) =>
-  c.json({
-    ...(await chat.getSnapshot(windowRequestFromQuery(c.req.query()))),
+app.get("/api/state", async (c) => {
+  const snapshot = await chat.getSnapshot(windowRequestFromQuery(c.req.query()));
+  const live = e2eMemoryHook ? await boot.conversation.agent(SESSION_CONTEXT) : undefined;
+  return c.json({
+    ...snapshot,
     tasks: taskView(),
-  }),
-);
+    ...(live?.instructions === undefined ? {} : { instructions: live.instructions }),
+  });
+});
 
 const MCP_SUBSCRIPTIONS_PATH = "/api/mcp/subscriptions/";
 
