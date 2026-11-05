@@ -1,3 +1,6 @@
+## 1.6.103
+
+- Approving or dismissing a proposal now applies to the ledger and repaints the row immediately; the decision is delivered to the model as a queued notice once the agent is free, instead of holding the request open until the running turn ends.
 ## 1.6.102 - 2026-11-05
 
 - fix(chat): the stick-to-bottom hook re-pinned `scrollTop` on every scroller resize, and the
