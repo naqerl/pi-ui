@@ -1,3 +1,12 @@
+## 1.6.101 - 2026-11-05
+
+- fix(chat): the submit gate matched only the literal `MCP event data follows.`, so every other MCP
+  notice — subscription status, and any payload that did not parse — fell through to `chat.submit`
+  and arrived as a full message bubble with raw JSON in the transcript. Routing now asks the shared
+  `isMcpNotice` predicate, keeping `dropMcpEventsBefore` for event batches; an unparseable payload
+  becomes one `/mcp` chip whose details hold the raw text. The model-facing text (preambles, status
+  text, payloads, trailer) is unchanged byte for byte.
+
 ## 1.6.100 - 2026-11-04
 
 - test(e2e): 7-9 s of every browser test was `app.open()` — a new browser context gets a new proxy
