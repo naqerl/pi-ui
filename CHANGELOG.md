@@ -1,3 +1,17 @@
+## 1.6.105
+
+The browser suite was 621 s against a 600 s budget. Four specs accounted for 405 s of it,
+and most of that was boot: a fresh `app.open()` starts a new browser context, which takes a
+new proxy shard, which boots a backend — 7-9 s per test.
+
+- `e2e/chat.e2e.ts`, `e2e/stats.e2e.ts`, `e2e/mcp-events.e2e.ts` and `e2e/stats-grid-touch.e2e.ts`
+  now share one app instance per serial group, swapping state through the existing `browser.route`
+  mocks and `/api/state` reloads instead of paying for a boot per test.
+- Tests that must see a fresh process keep their own app and say so: ledger seeding, restart and
+  kill, first-paint, and reconnect/persistence.
+- No assertion was weakened, no test removed and no `waitForTimeout` introduced — the four files
+  keep the same test counts (15, 6, 8, 11) and the same `expect` counts.
+
 ## 1.6.104
 
 - **Memory writes no longer rewrite the system prompt.** A long-term topic write is announced as one compact tail delta (topic, title, size, date, and a pointer to `memory_read`); the injected snapshot is only rebuilt when the prompt is rewritten anyway — first turn, day rollover, compaction. Daily and scratchpad writes change nothing, as before.
