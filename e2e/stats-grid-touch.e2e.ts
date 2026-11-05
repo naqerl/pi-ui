@@ -1,4 +1,4 @@
-import { test } from "@e2e-dev/web";
+import { describe, test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
 type PatchBody = {
@@ -325,247 +325,181 @@ async function clickChart(
   else await chart.tap({ position });
 }
 
-test("resizes with touch and disables page scrolling on the resize handle", async ({
-  app,
-  browser,
-  screen,
-}) => {
-  await browser.setViewport({ width: 1280, height: 1000 });
-  await app.open("/?page=stats");
-  await resetMinimalDashboard(browser);
-  await expect(screen.getByTestId("widget-context-resize")).toBeVisible({ timeout: 30_000 });
-  expect(
-    await browser.evaluate(() => {
-      const handle = document.querySelector<HTMLElement>('[data-testid="widget-context-resize"]');
-      return handle === null ? null : getComputedStyle(handle).touchAction;
-    }),
-  ).toBe("none");
-  await browser.evaluate(() => {
-    const card = document.querySelector<HTMLElement>('[data-widget-id="context"]');
-    const handle = card?.querySelector<HTMLElement>(".react-resizable-handle-se");
-    if (card === null || card === undefined || handle === null || handle === undefined) {
-      throw new Error("missing resize handle");
-    }
-    const box = card.getBoundingClientRect();
-    const start = handle.getBoundingClientRect();
-    const x0 = start.left + start.width / 2;
-    const y0 = start.top + start.height / 2;
-    const x1 = box.left + box.width / 2;
-    const fire = (type: string, x: number, y: number, buttons: number) =>
-      handle.dispatchEvent(
-        new PointerEvent(type, {
-          bubbles: true,
-          cancelable: true,
-          composed: true,
-          pointerId: 32,
-          pointerType: "touch",
-          isPrimary: true,
-          clientX: x,
-          clientY: y,
-          button: 0,
-          buttons,
-        }),
-      );
-    fire("pointerdown", x0, y0, 1);
-    for (let step = 1; step <= 6; step += 1) {
-      fire("pointermove", x0 + ((x1 - x0) * step) / 6, y0, 1);
-    }
-    fire("pointerup", x1, y0, 0);
-    return true;
-  });
-  await expect
-    .poll(async () => {
-      const dashboard = await readDashboard(browser);
-      const slot = dashboard.layout.sections
-        .flatMap((section) => section.widgets)
-        .find((item) => item.id === "context");
-      return slot === undefined ? null : [slot.span, slot.w];
-    })
-    .toEqual(["half", 6]);
-  expect(
-    await browser.evaluate(
-      () => document.querySelector<HTMLElement>('[data-widget-id="context"]')?.dataset.span ?? null,
-    ),
-  ).toBe("half");
-});
-
-test("PATCH /api/dashboard/layout rejects an unknown widget id", async ({ app, browser }) => {
-  await app.open("/");
-  const result = await browser.evaluate(async () => {
-    const response = await fetch("/api/dashboard/layout", {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sections: [{ widgets: [{ id: "not-a-widget" }] }] }),
-    });
-    return { status: response.status, text: await response.text() };
-  });
-  expect(result.status).toBe(400);
-  expect(result.text).toContain("not-a-widget");
-});
-
-test("a phone-width viewport keeps the single-column stack with drag handles", async ({
-  app,
-  browser,
-  screen,
-}) => {
-  await browser.setViewport({ width: 390, height: 844 });
-  await app.open("/?page=stats");
-  await resetMinimalDashboard(browser);
-  await expect(screen.getByTestId("stats-page")).toBeVisible({ timeout: 30_000 });
-  await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
-  expect(
-    await browser.evaluate(() => ({
-      grips: document.querySelectorAll('[data-testid="dashboard-drag-handle"]').length,
-      add: document.querySelectorAll('[data-testid="dashboard-add-section"]').length,
-      grids: document.querySelectorAll(".dashboard-grid").length,
-      stacks: document.querySelectorAll('[data-testid^="dashboard-stack-"]').length,
-    })),
-  ).toEqual({ grips: 5, add: 0, grids: 0, stacks: 1 });
-  expect(
-    await browser.evaluate(() => {
-      const cards = [...document.querySelectorAll("[data-widget-id]")];
-      return cards.every((card) => {
-        const box = card.getBoundingClientRect();
-        return box.width > 0 && box.right <= window.innerWidth + 0.5;
-      });
-    }),
-  ).toBe(true);
-
-  // Crossing md after mount must measure the newly rendered grid instead of
-  // keeping the mobile mount's fallback width.
-  await browser.setViewport({ width: 800, height: 900 });
-  await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
-  await expect
-    .poll(() =>
-      browser.evaluate(() => {
-        const grid = document.querySelector<HTMLElement>(".dashboard-grid");
-        const card = document.querySelector<HTMLElement>('[data-widget-id="context"]');
-        const page = document.querySelector<HTMLElement>("[data-testid=stats-page]");
-        if (grid === null || card === null || page === null) return null;
-        const gridBox = grid.getBoundingClientRect();
-        const cardBox = card.getBoundingClientRect();
-        return {
-          grid: Math.round(gridBox.width),
-          card: Math.round(cardBox.width),
-          inside: cardBox.right <= window.innerWidth + 0.5,
-          overflow: page.scrollWidth > page.clientWidth,
-        };
+describe("dashboard grid gestures against one shared app", { serial: true }, () => {
+  test("resizes with touch and disables page scrolling on the resize handle", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    await browser.setViewport({ width: 1280, height: 1000 });
+    await app.open("/?page=stats");
+    await resetMinimalDashboard(browser);
+    await expect(screen.getByTestId("widget-context-resize")).toBeVisible({ timeout: 30_000 });
+    expect(
+      await browser.evaluate(() => {
+        const handle = document.querySelector<HTMLElement>('[data-testid="widget-context-resize"]');
+        return handle === null ? null : getComputedStyle(handle).touchAction;
       }),
-    )
-    .toEqual({ grid: 768, card: 768, inside: true, overflow: false });
-  expect(
-    await browser.evaluate(() => ({
-      grips: document.querySelectorAll('[data-testid="dashboard-drag-handle"]').length,
-      resize: document.querySelectorAll(".dashboard-resize-handle").length,
-    })),
-  ).toEqual({ grips: 5, resize: 5 });
-});
-
-test("a card-body swipe pages both ways, while a vertical pan only scrolls", async ({
-  app,
-  browser,
-  screen,
-}) => {
-  // Short enough that the five stacked cards overflow and can actually scroll.
-  await browser.setViewport({ width: 390, height: 480 });
-  await app.open("/?page=stats");
-  await resetMinimalDashboard(browser);
-  await expect(screen.getByTestId("stats-page")).toBeVisible({ timeout: 30_000 });
-  await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
-
-  const forward = await swipeCard(browser, {
-    target: '[data-widget-id="context"] h2',
-    dx: -170,
-    dy: 0,
-    scroll: false,
-    pointerEcho: true,
-  });
-  expect(forward).toEqual({ pageBefore: "stats", page: "chat", prevented: true, scrollTop: 0 });
-
-  await screen.getByRole("tab", "Tasks").tap();
-  await expect
-    .poll(() =>
-      browser.evaluate(
-        () => document.querySelector('[data-testid="pager"]')?.getAttribute("data-page") ?? null,
-      ),
-    )
-    .toBe("tasks");
-  const back = await swipeCard(browser, {
-    target: '[data-widget-id="context"] h2',
-    dx: 170,
-    dy: 0,
-    scroll: false,
-    pointerEcho: true,
-  });
-  expect(back?.page).toBe("chat");
-
-  await screen.getByRole("tab", "Stats").tap();
-  await expect
-    .poll(() =>
-      browser.evaluate(
-        () => document.querySelector('[data-testid="pager"]')?.getAttribute("data-page") ?? null,
-      ),
-    )
-    .toBe("stats");
-  const vertical = await swipeCard(browser, {
-    target: '[data-widget-id="context"] h2',
-    dx: 0,
-    dy: -180,
-    scroll: true,
-    pointerEcho: false,
-  });
-  expect(vertical?.page).toBe("stats");
-  expect(vertical?.prevented).toBe(false);
-  expect(vertical?.scrollTop ?? 0).toBeGreaterThan(0);
-});
-
-test("a swipe on an overflowing table pages at its edge and scrolls away from it", async ({
-  app,
-  browser,
-  screen,
-}) => {
-  await browser.setViewport({ width: 390, height: 844 });
-  await app.open("/?page=stats");
-  await resetMinimalDashboard(browser);
-  await callDashboard(browser, [wideTableCall("wide-table")]);
-  try {
-    await expect(screen.getByText("Wide table", { exact: true })).toBeVisible({
-      timeout: 30_000,
+    ).toBe("none");
+    await browser.evaluate(() => {
+      const card = document.querySelector<HTMLElement>('[data-widget-id="context"]');
+      const handle = card?.querySelector<HTMLElement>(".react-resizable-handle-se");
+      if (card === null || card === undefined || handle === null || handle === undefined) {
+        throw new Error("missing resize handle");
+      }
+      const box = card.getBoundingClientRect();
+      const start = handle.getBoundingClientRect();
+      const x0 = start.left + start.width / 2;
+      const y0 = start.top + start.height / 2;
+      const x1 = box.left + box.width / 2;
+      const fire = (type: string, x: number, y: number, buttons: number) =>
+        handle.dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            pointerId: 32,
+            pointerType: "touch",
+            isPrimary: true,
+            clientX: x,
+            clientY: y,
+            button: 0,
+            buttons,
+          }),
+        );
+      fire("pointerdown", x0, y0, 1);
+      for (let step = 1; step <= 6; step += 1) {
+        fire("pointermove", x0 + ((x1 - x0) * step) / 6, y0, 1);
+      }
+      fire("pointerup", x1, y0, 0);
+      return true;
     });
+    await expect
+      .poll(async () => {
+        const dashboard = await readDashboard(browser);
+        const slot = dashboard.layout.sections
+          .flatMap((section) => section.widgets)
+          .find((item) => item.id === "context");
+        return slot === undefined ? null : [slot.span, slot.w];
+      })
+      .toEqual(["half", 6]);
+    expect(
+      await browser.evaluate(
+        () =>
+          document.querySelector<HTMLElement>('[data-widget-id="context"]')?.dataset.span ?? null,
+      ),
+    ).toBe("half");
+  });
+
+  test("PATCH /api/dashboard/layout rejects an unknown widget id", async ({ app, browser }) => {
+    await app.open("/");
+    const result = await browser.evaluate(async () => {
+      const response = await fetch("/api/dashboard/layout", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sections: [{ widgets: [{ id: "not-a-widget" }] }] }),
+      });
+      return { status: response.status, text: await response.text() };
+    });
+    expect(result.status).toBe(400);
+    expect(result.text).toContain("not-a-widget");
+  });
+
+  test("a phone-width viewport keeps the single-column stack with drag handles", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    await browser.setViewport({ width: 390, height: 844 });
+    await app.open("/?page=stats");
+    await resetMinimalDashboard(browser);
+    await expect(screen.getByTestId("stats-page")).toBeVisible({ timeout: 30_000 });
+    await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
+    expect(
+      await browser.evaluate(() => ({
+        grips: document.querySelectorAll('[data-testid="dashboard-drag-handle"]').length,
+        add: document.querySelectorAll('[data-testid="dashboard-add-section"]').length,
+        grids: document.querySelectorAll(".dashboard-grid").length,
+        stacks: document.querySelectorAll('[data-testid^="dashboard-stack-"]').length,
+      })),
+    ).toEqual({ grips: 5, add: 0, grids: 0, stacks: 1 });
+    expect(
+      await browser.evaluate(() => {
+        const cards = [...document.querySelectorAll("[data-widget-id]")];
+        return cards.every((card) => {
+          const box = card.getBoundingClientRect();
+          return box.width > 0 && box.right <= window.innerWidth + 0.5;
+        });
+      }),
+    ).toBe(true);
+
+    // Crossing md after mount must measure the newly rendered grid instead of
+    // keeping the mobile mount's fallback width.
+    await browser.setViewport({ width: 800, height: 900 });
+    await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
     await expect
       .poll(() =>
         browser.evaluate(() => {
-          const table = document.querySelector<HTMLElement>('[data-widget-id="wide-table"] table');
-          const body = table?.parentElement;
-          if (table === null || body === null || body === undefined) return false;
-          table.closest<HTMLElement>("[data-widget-id]")?.scrollIntoView({ block: "center" });
-          return body.scrollWidth - body.clientWidth > 100;
+          const grid = document.querySelector<HTMLElement>(".dashboard-grid");
+          const card = document.querySelector<HTMLElement>('[data-widget-id="context"]');
+          const page = document.querySelector<HTMLElement>("[data-testid=stats-page]");
+          if (grid === null || card === null || page === null) return null;
+          const gridBox = grid.getBoundingClientRect();
+          const cardBox = card.getBoundingClientRect();
+          return {
+            grid: Math.round(gridBox.width),
+            card: Math.round(cardBox.width),
+            inside: cardBox.right <= window.innerWidth + 0.5,
+            overflow: page.scrollWidth > page.clientWidth,
+          };
         }),
       )
-      .toBe(true);
+      .toEqual({ grid: 768, card: 768, inside: true, overflow: false });
+    expect(
+      await browser.evaluate(() => ({
+        grips: document.querySelectorAll('[data-testid="dashboard-drag-handle"]').length,
+        resize: document.querySelectorAll(".dashboard-resize-handle").length,
+      })),
+    ).toEqual({ grips: 5, resize: 5 });
+  });
 
-    const edge = await browser.evaluate(() => {
-      const table = document.querySelector<HTMLElement>('[data-widget-id="wide-table"] table');
-      const body = table?.parentElement;
-      if (table === null || body === null || body === undefined) return null;
-      table.closest<HTMLElement>("[data-widget-id]")?.scrollIntoView({ block: "center" });
-      body.scrollLeft = body.scrollWidth;
-      return { scrollLeft: body.scrollLeft, max: body.scrollWidth - body.clientWidth };
-    });
-    expect(edge).not.toBeNull();
-    expect(edge?.scrollLeft ?? 0).toBe(edge?.max ?? -1);
+  test("a card-body swipe pages both ways, while a vertical pan only scrolls", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    // Short enough that the five stacked cards overflow and can actually scroll.
+    await browser.setViewport({ width: 390, height: 480 });
+    await app.open("/?page=stats");
+    await resetMinimalDashboard(browser);
+    await expect(screen.getByTestId("stats-page")).toBeVisible({ timeout: 30_000 });
+    await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
 
-    const atEdge = await swipeCard(browser, {
-      target: wideTableTarget,
-      hscroll: wideTableBody,
-      start: "visible",
+    const forward = await swipeCard(browser, {
+      target: '[data-widget-id="context"] h2',
       dx: -170,
       dy: 0,
       scroll: false,
       pointerEcho: true,
     });
-    expect(atEdge?.page).toBe("chat");
-    expect(atEdge?.prevented).toBe(true);
+    expect(forward).toEqual({ pageBefore: "stats", page: "chat", prevented: true, scrollTop: 0 });
+
+    await screen.getByRole("tab", "Tasks").tap();
+    await expect
+      .poll(() =>
+        browser.evaluate(
+          () => document.querySelector('[data-testid="pager"]')?.getAttribute("data-page") ?? null,
+        ),
+      )
+      .toBe("tasks");
+    const back = await swipeCard(browser, {
+      target: '[data-widget-id="context"] h2',
+      dx: 170,
+      dy: 0,
+      scroll: false,
+      pointerEcho: true,
+    });
+    expect(back?.page).toBe("chat");
 
     await screen.getByRole("tab", "Stats").tap();
     await expect
@@ -575,353 +509,431 @@ test("a swipe on an overflowing table pages at its edge and scrolls away from it
         ),
       )
       .toBe("stats");
-
-    const middle = await browser.evaluate(() => {
-      const table = document.querySelector<HTMLElement>('[data-widget-id="wide-table"] table');
-      const body = table?.parentElement;
-      if (table === null || body === null || body === undefined) return null;
-      table.closest<HTMLElement>("[data-widget-id]")?.scrollIntoView({ block: "center" });
-      const max = body.scrollWidth - body.clientWidth;
-      body.scrollLeft = Math.floor(max / 2);
-      return { scrollLeft: body.scrollLeft, max };
-    });
-    expect(middle?.scrollLeft ?? 0).toBeGreaterThan(0);
-    expect(middle?.scrollLeft ?? 0).toBeLessThan(middle?.max ?? 0);
-
-    const scrolling = await swipeCard(browser, {
-      target: wideTableTarget,
-      hscroll: wideTableBody,
-      start: "visible",
-      dx: -170,
-      dy: 0,
-      scroll: false,
-      pointerEcho: true,
-    });
-    expect(scrolling?.page).toBe("stats");
-    expect(scrolling?.prevented).toBe(false);
-    const after = await browser.evaluate(() => {
-      const body = document.querySelector<HTMLElement>(
-        '[data-widget-id="wide-table"] .overflow-x-auto',
-      );
-      return body?.scrollLeft ?? 0;
-    });
-    expect(after).toBeGreaterThan(middle?.scrollLeft ?? 0);
-  } finally {
-    await callDashboard(browser, [{ name: "dashboard_remove", arguments: { id: "wide-table" } }]);
-  }
-});
-
-test("a card body that only overflows by rounding does not swallow a swipe", async ({
-  app,
-  browser,
-  screen,
-}) => {
-  await browser.setViewport({ width: 390, height: 844 });
-  await app.open("/?page=stats");
-  await resetMinimalDashboard(browser);
-  await callDashboard(browser, [wideTableCall("wide-table")]);
-  try {
-    await expect(screen.getByText("Wide table", { exact: true })).toBeVisible({
-      timeout: 30_000,
-    });
-    const rounding = await browser.evaluate(() => {
-      const table = document.querySelector<HTMLElement>('[data-widget-id="wide-table"] table');
-      const body = table?.parentElement;
-      if (table === null || body === null || body === undefined) return null;
-      table.closest<HTMLElement>("[data-widget-id]")?.scrollIntoView({ block: "center" });
-      table.remove();
-      const filler = document.createElement("div");
-      filler.textContent = "fits";
-      filler.style.height = "24px";
-      body.append(filler);
-      let overflow = 0;
-      for (const extra of [1, 2, 3]) {
-        filler.style.width = `${body.clientWidth + extra}px`;
-        overflow = body.scrollWidth - body.clientWidth;
-        if (overflow >= 1 && overflow <= 2) break;
-      }
-      return { overflow };
-    });
-    expect(rounding?.overflow ?? 0).toBeGreaterThan(0);
-    expect(rounding?.overflow ?? 0).toBeLessThanOrEqual(2);
-
-    const swipe = await swipeCard(browser, {
-      target: wideTableBody,
-      hscroll: wideTableBody,
-      start: "visible",
-      dx: -170,
-      dy: 0,
-      scroll: false,
-      pointerEcho: true,
-    });
-    expect(swipe?.page).toBe("chat");
-    expect(swipe?.prevented).toBe(true);
-  } finally {
-    await callDashboard(browser, [{ name: "dashboard_remove", arguments: { id: "wide-table" } }]);
-  }
-});
-
-test("a long hold on a card starts the drag without opening its menu", async ({
-  app,
-  browser,
-  screen,
-}) => {
-  await browser.setViewport({ width: 390, height: 844 });
-  await app.open("/?page=stats");
-  await resetMinimalDashboard(browser);
-  await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
-  const held = await browser.evaluate(async () => {
-    const card = document.querySelector<HTMLElement>('[data-widget-id="context"]');
-    const target = card?.querySelector<HTMLElement>("h2") ?? null;
-    if (card === null || target === null) throw new Error("missing card");
-    const box = card.getBoundingClientRect();
-    const x = box.left + box.width * 0.6;
-    const y = box.top + Math.min(28, box.height / 2);
-    const fire = (type: string, buttons: number) =>
-      target.dispatchEvent(
-        new PointerEvent(type, {
-          bubbles: true,
-          cancelable: true,
-          composed: true,
-          pointerId: 43,
-          pointerType: "touch",
-          isPrimary: true,
-          clientX: x,
-          clientY: y,
-          button: 0,
-          buttons,
-        }),
-      );
-    fire("pointerdown", 1);
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    const result = {
-      lock: card.closest("[data-pager-lock]") !== null,
-      menu: document.querySelector('[role="menu"]') !== null,
-      page: document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
-    };
-    fire("pointerup", 0);
-    return result;
-  });
-  expect(held).toEqual({ lock: true, menu: false, page: "stats" });
-});
-
-test("holding a card drag handle moves the card without paging", async ({
-  app,
-  browser,
-  screen,
-}) => {
-  await browser.setViewport({ width: 390, height: 844 });
-  await app.open("/?page=stats");
-  await resetMinimalDashboard(browser);
-  await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
-  const before = await browser.evaluate(async () => {
-    const response = await fetch("/api/dashboard");
-    const dashboard = (await response.json()) as DashboardRead;
-    return dashboard.layout.sections[0]?.widgets.map((widget) => widget.id) ?? [];
-  });
-  const start = await browser.evaluate(() => {
-    const handle = document.querySelector<HTMLElement>(
-      '[data-widget-id="tokens"] [data-testid="dashboard-drag-handle"]',
-    );
-    const target = document.querySelector<HTMLElement>('[data-widget-id="context"]');
-    if (handle === null || target === null) return null;
-    const from = handle.getBoundingClientRect();
-    const to = target.getBoundingClientRect();
-    return {
-      x0: from.left + from.width / 2,
-      y0: from.top + from.height / 2,
-      x1: to.left + to.width / 2,
-      y1: to.top + to.height * 0.25,
-    };
-  });
-  expect(start).not.toBeNull();
-  if (start === null) throw new Error("missing drag handle");
-  await browser.evaluate(async ({ x0, y0, x1, y1 }) => {
-    const handle = document.querySelector<HTMLElement>(
-      '[data-widget-id="tokens"] [data-testid="dashboard-drag-handle"]',
-    );
-    if (handle === null) throw new Error("missing drag handle");
-    const fire = (type: string, x: number, y: number, buttons: number) =>
-      handle.dispatchEvent(
-        new PointerEvent(type, {
-          bubbles: true,
-          cancelable: true,
-          composed: true,
-          pointerId: 41,
-          pointerType: "touch",
-          isPrimary: true,
-          clientX: x,
-          clientY: y,
-          button: 0,
-          buttons,
-        }),
-      );
-    fire("pointerdown", x0, y0, 1);
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    for (let step = 1; step <= 6; step += 1) {
-      fire("pointermove", x0 + ((x1 - x0) * step) / 6, y0 + ((y1 - y0) * step) / 6, 1);
-    }
-    fire("pointerup", x1, y1, 0);
-    return true;
-  }, start);
-  await expect
-    .poll(async () => {
-      const dashboard = await readDashboard(browser);
-      return dashboard.layout.sections[0]?.widgets.map((widget) => widget.id) ?? [];
-    })
-    .not.toEqual(before);
-  expect(
-    await browser.evaluate(
-      () => document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
-    ),
-  ).toBe("stats");
-});
-
-test("a horizontal swipe over a chart pages instead of pinning it", async ({
-  app,
-  browser,
-  screen,
-}) => {
-  await browser.setViewport({ width: 390, height: 844 });
-  await app.open("/?page=stats");
-  await expect(screen.getByTestId("stats-page")).toBeVisible({ timeout: 30_000 });
-  await callDashboard(browser, [pinChartCall("pin-swipe")]);
-  try {
-    await expect(screen.getByText("Pinned chart", { exact: true })).toBeVisible({
-      timeout: 30_000,
-    });
-    await waitForChart(browser, "pin-swipe");
-    const swipe = await swipeCard(browser, {
-      target: '[data-chart-widget="pin-swipe"]',
-      dx: -170,
-      dy: 0,
-      scroll: false,
+    const vertical = await swipeCard(browser, {
+      target: '[data-widget-id="context"] h2',
+      dx: 0,
+      dy: -180,
+      scroll: true,
       pointerEcho: false,
     });
-    expect(swipe?.page).toBe("chat");
-    expect(swipe?.prevented).toBe(true);
+    expect(vertical?.page).toBe("stats");
+    expect(vertical?.prevented).toBe(false);
+    expect(vertical?.scrollTop ?? 0).toBeGreaterThan(0);
+  });
+
+  test("a swipe on an overflowing table pages at its edge and scrolls away from it", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    await browser.setViewport({ width: 390, height: 844 });
+    await app.open("/?page=stats");
+    await resetMinimalDashboard(browser);
+    await callDashboard(browser, [wideTableCall("wide-table")]);
+    try {
+      await expect(screen.getByText("Wide table", { exact: true })).toBeVisible({
+        timeout: 30_000,
+      });
+      await expect
+        .poll(() =>
+          browser.evaluate(() => {
+            const table = document.querySelector<HTMLElement>(
+              '[data-widget-id="wide-table"] table',
+            );
+            const body = table?.parentElement;
+            if (table === null || body === null || body === undefined) return false;
+            table.closest<HTMLElement>("[data-widget-id]")?.scrollIntoView({ block: "center" });
+            return body.scrollWidth - body.clientWidth > 100;
+          }),
+        )
+        .toBe(true);
+
+      const edge = await browser.evaluate(() => {
+        const table = document.querySelector<HTMLElement>('[data-widget-id="wide-table"] table');
+        const body = table?.parentElement;
+        if (table === null || body === null || body === undefined) return null;
+        table.closest<HTMLElement>("[data-widget-id]")?.scrollIntoView({ block: "center" });
+        body.scrollLeft = body.scrollWidth;
+        return { scrollLeft: body.scrollLeft, max: body.scrollWidth - body.clientWidth };
+      });
+      expect(edge).not.toBeNull();
+      expect(edge?.scrollLeft ?? 0).toBe(edge?.max ?? -1);
+
+      const atEdge = await swipeCard(browser, {
+        target: wideTableTarget,
+        hscroll: wideTableBody,
+        start: "visible",
+        dx: -170,
+        dy: 0,
+        scroll: false,
+        pointerEcho: true,
+      });
+      expect(atEdge?.page).toBe("chat");
+      expect(atEdge?.prevented).toBe(true);
+
+      await screen.getByRole("tab", "Stats").tap();
+      await expect
+        .poll(() =>
+          browser.evaluate(
+            () =>
+              document.querySelector('[data-testid="pager"]')?.getAttribute("data-page") ?? null,
+          ),
+        )
+        .toBe("stats");
+
+      const middle = await browser.evaluate(() => {
+        const table = document.querySelector<HTMLElement>('[data-widget-id="wide-table"] table');
+        const body = table?.parentElement;
+        if (table === null || body === null || body === undefined) return null;
+        table.closest<HTMLElement>("[data-widget-id]")?.scrollIntoView({ block: "center" });
+        const max = body.scrollWidth - body.clientWidth;
+        body.scrollLeft = Math.floor(max / 2);
+        return { scrollLeft: body.scrollLeft, max };
+      });
+      expect(middle?.scrollLeft ?? 0).toBeGreaterThan(0);
+      expect(middle?.scrollLeft ?? 0).toBeLessThan(middle?.max ?? 0);
+
+      const scrolling = await swipeCard(browser, {
+        target: wideTableTarget,
+        hscroll: wideTableBody,
+        start: "visible",
+        dx: -170,
+        dy: 0,
+        scroll: false,
+        pointerEcho: true,
+      });
+      expect(scrolling?.page).toBe("stats");
+      expect(scrolling?.prevented).toBe(false);
+      const after = await browser.evaluate(() => {
+        const body = document.querySelector<HTMLElement>(
+          '[data-widget-id="wide-table"] .overflow-x-auto',
+        );
+        return body?.scrollLeft ?? 0;
+      });
+      expect(after).toBeGreaterThan(middle?.scrollLeft ?? 0);
+    } finally {
+      await callDashboard(browser, [{ name: "dashboard_remove", arguments: { id: "wide-table" } }]);
+    }
+  });
+
+  test("a card body that only overflows by rounding does not swallow a swipe", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    await browser.setViewport({ width: 390, height: 844 });
+    await app.open("/?page=stats");
+    await resetMinimalDashboard(browser);
+    await callDashboard(browser, [wideTableCall("wide-table")]);
+    try {
+      await expect(screen.getByText("Wide table", { exact: true })).toBeVisible({
+        timeout: 30_000,
+      });
+      const rounding = await browser.evaluate(() => {
+        const table = document.querySelector<HTMLElement>('[data-widget-id="wide-table"] table');
+        const body = table?.parentElement;
+        if (table === null || body === null || body === undefined) return null;
+        table.closest<HTMLElement>("[data-widget-id]")?.scrollIntoView({ block: "center" });
+        table.remove();
+        const filler = document.createElement("div");
+        filler.textContent = "fits";
+        filler.style.height = "24px";
+        body.append(filler);
+        let overflow = 0;
+        for (const extra of [1, 2, 3]) {
+          filler.style.width = `${body.clientWidth + extra}px`;
+          overflow = body.scrollWidth - body.clientWidth;
+          if (overflow >= 1 && overflow <= 2) break;
+        }
+        return { overflow };
+      });
+      expect(rounding?.overflow ?? 0).toBeGreaterThan(0);
+      expect(rounding?.overflow ?? 0).toBeLessThanOrEqual(2);
+
+      const swipe = await swipeCard(browser, {
+        target: wideTableBody,
+        hscroll: wideTableBody,
+        start: "visible",
+        dx: -170,
+        dy: 0,
+        scroll: false,
+        pointerEcho: true,
+      });
+      expect(swipe?.page).toBe("chat");
+      expect(swipe?.prevented).toBe(true);
+    } finally {
+      await callDashboard(browser, [{ name: "dashboard_remove", arguments: { id: "wide-table" } }]);
+    }
+  });
+
+  test("a long hold on a card starts the drag without opening its menu", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    await browser.setViewport({ width: 390, height: 844 });
+    await app.open("/?page=stats");
+    await resetMinimalDashboard(browser);
+    await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
+    const held = await browser.evaluate(async () => {
+      const card = document.querySelector<HTMLElement>('[data-widget-id="context"]');
+      const target = card?.querySelector<HTMLElement>("h2") ?? null;
+      if (card === null || target === null) throw new Error("missing card");
+      const box = card.getBoundingClientRect();
+      const x = box.left + box.width * 0.6;
+      const y = box.top + Math.min(28, box.height / 2);
+      const fire = (type: string, buttons: number) =>
+        target.dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            pointerId: 43,
+            pointerType: "touch",
+            isPrimary: true,
+            clientX: x,
+            clientY: y,
+            button: 0,
+            buttons,
+          }),
+        );
+      fire("pointerdown", 1);
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      const result = {
+        lock: card.closest("[data-pager-lock]") !== null,
+        menu: document.querySelector('[role="menu"]') !== null,
+        page: document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
+      };
+      fire("pointerup", 0);
+      return result;
+    });
+    expect(held).toEqual({ lock: true, menu: false, page: "stats" });
+  });
+
+  test("holding a card drag handle moves the card without paging", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    await browser.setViewport({ width: 390, height: 844 });
+    await app.open("/?page=stats");
+    await resetMinimalDashboard(browser);
+    await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
+    const before = await browser.evaluate(async () => {
+      const response = await fetch("/api/dashboard");
+      const dashboard = (await response.json()) as DashboardRead;
+      return dashboard.layout.sections[0]?.widgets.map((widget) => widget.id) ?? [];
+    });
+    const start = await browser.evaluate(() => {
+      const handle = document.querySelector<HTMLElement>(
+        '[data-widget-id="tokens"] [data-testid="dashboard-drag-handle"]',
+      );
+      const target = document.querySelector<HTMLElement>('[data-widget-id="context"]');
+      if (handle === null || target === null) return null;
+      const from = handle.getBoundingClientRect();
+      const to = target.getBoundingClientRect();
+      return {
+        x0: from.left + from.width / 2,
+        y0: from.top + from.height / 2,
+        x1: to.left + to.width / 2,
+        y1: to.top + to.height * 0.25,
+      };
+    });
+    expect(start).not.toBeNull();
+    if (start === null) throw new Error("missing drag handle");
+    await browser.evaluate(async ({ x0, y0, x1, y1 }) => {
+      const handle = document.querySelector<HTMLElement>(
+        '[data-widget-id="tokens"] [data-testid="dashboard-drag-handle"]',
+      );
+      if (handle === null) throw new Error("missing drag handle");
+      const fire = (type: string, x: number, y: number, buttons: number) =>
+        handle.dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            pointerId: 41,
+            pointerType: "touch",
+            isPrimary: true,
+            clientX: x,
+            clientY: y,
+            button: 0,
+            buttons,
+          }),
+        );
+      fire("pointerdown", x0, y0, 1);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      for (let step = 1; step <= 6; step += 1) {
+        fire("pointermove", x0 + ((x1 - x0) * step) / 6, y0 + ((y1 - y0) * step) / 6, 1);
+      }
+      fire("pointerup", x1, y1, 0);
+      return true;
+    }, start);
+    await expect
+      .poll(async () => {
+        const dashboard = await readDashboard(browser);
+        return dashboard.layout.sections[0]?.widgets.map((widget) => widget.id) ?? [];
+      })
+      .not.toEqual(before);
     expect(
       await browser.evaluate(
-        () =>
-          document.querySelector('[data-testid="widget-pin-swipe"] [data-testid="chart-pin"]') !==
-          null,
+        () => document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
       ),
-    ).toBe(false);
-  } finally {
-    await callDashboard(browser, [{ name: "dashboard_remove", arguments: { id: "pin-swipe" } }]);
-  }
-});
+    ).toBe("stats");
+  });
 
-test("clicking a chart pins its row, a second click or Escape clears it, and a drag does not pin", async ({
-  app,
-  browser,
-  screen,
-}) => {
-  await browser.setViewport({ width: 1280, height: 1000 });
-  await app.open("/?page=stats");
-  await expect(screen.getByTestId("stats-page")).toBeVisible({ timeout: 30_000 });
-  await callDashboard(browser, [pinChartCall("pin-chart")]);
-  try {
-    await expect(screen.getByText("Pinned chart", { exact: true })).toBeVisible({
-      timeout: 30_000,
-    });
-    await waitForChart(browser, "pin-chart");
-
-    const center = await browser.evaluate(() => {
-      const chart = document.querySelector<HTMLElement>('[data-chart-widget="pin-chart"]');
-      if (chart === null) return null;
-      chart.scrollIntoView({ block: "center" });
-      const box = chart.getBoundingClientRect();
-      return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
-    });
-    expect(center).not.toBeNull();
-    if (center === null) throw new Error("missing chart box");
-    await browser.mouse.move(center.x, center.y);
-    await expect
-      .poll(() =>
-        browser.evaluate(
+  test("a horizontal swipe over a chart pages instead of pinning it", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    await browser.setViewport({ width: 390, height: 844 });
+    await app.open("/?page=stats");
+    await expect(screen.getByTestId("stats-page")).toBeVisible({ timeout: 30_000 });
+    await callDashboard(browser, [pinChartCall("pin-swipe")]);
+    try {
+      await expect(screen.getByText("Pinned chart", { exact: true })).toBeVisible({
+        timeout: 30_000,
+      });
+      await waitForChart(browser, "pin-swipe");
+      const swipe = await swipeCard(browser, {
+        target: '[data-chart-widget="pin-swipe"]',
+        dx: -170,
+        dy: 0,
+        scroll: false,
+        pointerEcho: false,
+      });
+      expect(swipe?.page).toBe("chat");
+      expect(swipe?.prevented).toBe(true);
+      expect(
+        await browser.evaluate(
           () =>
-            document.querySelector('[data-testid="widget-pin-chart"] .recharts-tooltip-wrapper')
-              ?.textContent ?? "",
+            document.querySelector('[data-testid="widget-pin-swipe"] [data-testid="chart-pin"]') !==
+            null,
         ),
-      )
-      .toContain("Value");
+      ).toBe(false);
+    } finally {
+      await callDashboard(browser, [{ name: "dashboard_remove", arguments: { id: "pin-swipe" } }]);
+    }
+  });
 
-    await clickChart(browser, "pin-chart", 4 / 7, "mouse");
-    await expect
-      .poll(() => readPin(browser, "pin-chart"))
-      .toEqual({
-        height: 160,
-        line: true,
-        dots: 1,
-        caption: "4\nValue: €50",
-        status: "4\nValue: €50",
+  test("clicking a chart pins its row, a second click or Escape clears it, and a drag does not pin", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    await browser.setViewport({ width: 1280, height: 1000 });
+    await app.open("/?page=stats");
+    await expect(screen.getByTestId("stats-page")).toBeVisible({ timeout: 30_000 });
+    await callDashboard(browser, [pinChartCall("pin-chart")]);
+    try {
+      await expect(screen.getByText("Pinned chart", { exact: true })).toBeVisible({
+        timeout: 30_000,
       });
+      await waitForChart(browser, "pin-chart");
 
-    await clickChart(browser, "pin-chart", 4 / 7, "mouse");
-    await expect
-      .poll(() => readPin(browser, "pin-chart"))
-      .toEqual({ height: 160, line: false, dots: 0, caption: null, status: "" });
-
-    await clickChart(browser, "pin-chart", 4 / 7, "mouse");
-    await expect.poll(() => readPin(browser, "pin-chart").then((state) => state.line)).toBe(true);
-    await browser.keyboard.press("Escape");
-    await expect.poll(() => readPin(browser, "pin-chart").then((state) => state.line)).toBe(false);
-
-    const dragChart = browser.locator('[data-chart-widget="pin-chart"]');
-    await dragChart.scrollIntoView();
-    const box = await dragChart.boundingBox();
-    if (box === null) throw new Error("missing chart");
-    const y = box.y + box.height / 2;
-    const x0 = box.x + box.width * 0.25;
-    const x1 = box.x + box.width * 0.75;
-    await browser.mouse.move(x0, y);
-    await browser.mouse.down();
-    await browser.mouse.move(x0 + 30, y);
-    await browser.mouse.move(x1, y);
-    await browser.mouse.up();
-    await expect.poll(() => readPin(browser, "pin-chart").then((state) => state.line)).toBe(false);
-  } finally {
-    await callDashboard(browser, [{ name: "dashboard_remove", arguments: { id: "pin-chart" } }]);
-    await expect
-      .poll(async () => (await readDashboard(browser)).widgets.map((widget) => widget.id))
-      .not.toContain("pin-chart");
-  }
-});
-
-test("a tap on a phone viewport pins the same row without a hover", async ({
-  app,
-  browser,
-  screen,
-}) => {
-  await browser.setViewport({ width: 390, height: 844 });
-  await app.open("/?page=stats");
-  await expect(screen.getByTestId("stats-page")).toBeVisible({ timeout: 30_000 });
-  await callDashboard(browser, [pinChartCall("pin-touch")]);
-  try {
-    await expect(screen.getByText("Touch chart", { exact: true })).toBeVisible({
-      timeout: 30_000,
-    });
-    await waitForChart(browser, "pin-touch");
-
-    await clickChart(browser, "pin-touch", 4 / 7);
-    await expect
-      .poll(() => readPin(browser, "pin-touch"))
-      .toEqual({
-        height: 160,
-        line: true,
-        dots: 1,
-        caption: "4\nValue: €50",
-        status: "4\nValue: €50",
+      const center = await browser.evaluate(() => {
+        const chart = document.querySelector<HTMLElement>('[data-chart-widget="pin-chart"]');
+        if (chart === null) return null;
+        chart.scrollIntoView({ block: "center" });
+        const box = chart.getBoundingClientRect();
+        return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
       });
-    expect((await readPin(browser, "pin-touch")).height).toBeGreaterThanOrEqual(24);
+      expect(center).not.toBeNull();
+      if (center === null) throw new Error("missing chart box");
+      await browser.mouse.move(center.x, center.y);
+      await expect
+        .poll(() =>
+          browser.evaluate(
+            () =>
+              document.querySelector('[data-testid="widget-pin-chart"] .recharts-tooltip-wrapper')
+                ?.textContent ?? "",
+          ),
+        )
+        .toContain("Value");
 
-    await clickChart(browser, "pin-touch", 4 / 7);
-    await expect.poll(() => readPin(browser, "pin-touch").then((state) => state.line)).toBe(false);
-  } finally {
-    await callDashboard(browser, [{ name: "dashboard_remove", arguments: { id: "pin-touch" } }]);
-    await expect
-      .poll(async () => (await readDashboard(browser)).widgets.map((widget) => widget.id))
-      .not.toContain("pin-touch");
-  }
+      await clickChart(browser, "pin-chart", 4 / 7, "mouse");
+      await expect
+        .poll(() => readPin(browser, "pin-chart"))
+        .toEqual({
+          height: 160,
+          line: true,
+          dots: 1,
+          caption: "4\nValue: €50",
+          status: "4\nValue: €50",
+        });
+
+      await clickChart(browser, "pin-chart", 4 / 7, "mouse");
+      await expect
+        .poll(() => readPin(browser, "pin-chart"))
+        .toEqual({ height: 160, line: false, dots: 0, caption: null, status: "" });
+
+      await clickChart(browser, "pin-chart", 4 / 7, "mouse");
+      await expect.poll(() => readPin(browser, "pin-chart").then((state) => state.line)).toBe(true);
+      await browser.keyboard.press("Escape");
+      await expect
+        .poll(() => readPin(browser, "pin-chart").then((state) => state.line))
+        .toBe(false);
+
+      const dragChart = browser.locator('[data-chart-widget="pin-chart"]');
+      await dragChart.scrollIntoView();
+      const box = await dragChart.boundingBox();
+      if (box === null) throw new Error("missing chart");
+      const y = box.y + box.height / 2;
+      const x0 = box.x + box.width * 0.25;
+      const x1 = box.x + box.width * 0.75;
+      await browser.mouse.move(x0, y);
+      await browser.mouse.down();
+      await browser.mouse.move(x0 + 30, y);
+      await browser.mouse.move(x1, y);
+      await browser.mouse.up();
+      await expect
+        .poll(() => readPin(browser, "pin-chart").then((state) => state.line))
+        .toBe(false);
+    } finally {
+      await callDashboard(browser, [{ name: "dashboard_remove", arguments: { id: "pin-chart" } }]);
+      await expect
+        .poll(async () => (await readDashboard(browser)).widgets.map((widget) => widget.id))
+        .not.toContain("pin-chart");
+    }
+  });
+
+  test("a tap on a phone viewport pins the same row without a hover", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    await browser.setViewport({ width: 390, height: 844 });
+    await app.open("/?page=stats");
+    await expect(screen.getByTestId("stats-page")).toBeVisible({ timeout: 30_000 });
+    await callDashboard(browser, [pinChartCall("pin-touch")]);
+    try {
+      await expect(screen.getByText("Touch chart", { exact: true })).toBeVisible({
+        timeout: 30_000,
+      });
+      await waitForChart(browser, "pin-touch");
+
+      await clickChart(browser, "pin-touch", 4 / 7);
+      await expect
+        .poll(() => readPin(browser, "pin-touch"))
+        .toEqual({
+          height: 160,
+          line: true,
+          dots: 1,
+          caption: "4\nValue: €50",
+          status: "4\nValue: €50",
+        });
+      expect((await readPin(browser, "pin-touch")).height).toBeGreaterThanOrEqual(24);
+
+      await clickChart(browser, "pin-touch", 4 / 7);
+      await expect
+        .poll(() => readPin(browser, "pin-touch").then((state) => state.line))
+        .toBe(false);
+    } finally {
+      await callDashboard(browser, [{ name: "dashboard_remove", arguments: { id: "pin-touch" } }]);
+      await expect
+        .poll(async () => (await readDashboard(browser)).widgets.map((widget) => widget.id))
+        .not.toContain("pin-touch");
+    }
+  });
 });
