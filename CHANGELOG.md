@@ -1,3 +1,14 @@
+## 1.6.102 - 2026-11-05
+
+- fix(chat): the stick-to-bottom hook re-pinned `scrollTop` on every scroller resize, and the
+  composer’s 220 ms height animation resizes the scroller on every frame — so the transcript was
+  dragged to the dock’s moving edge and the composer appeared to slide over the last messages
+  instead of moving them up. `sync()` now separates the two events: content growth pins an attached
+  reader as before, a shrinking viewport pins it back to the end so the expanding dock pushes the
+  transcript up with it, and a growing viewport is left to the browser’s own clamp. The scroll
+  handler detaches only on an upward reader scroll, so a transient resize distance cannot turn the
+  pin off mid-animation.
+
 ## 1.6.101 - 2026-11-05
 
 - fix(chat): the submit gate matched only the literal `MCP event data follows.`, so every other MCP
