@@ -81,10 +81,11 @@ export function spanForWidth(width: number): WidgetSpan {
 }
 
 /**
- * Packs a section into the 12-column grid. Existing, non-overlapping positions
- * survive; missing coordinates and collisions take the first free cell at or
- * below the requested row. Both the server and the page use this, so stored
- * coordinates always describe the layout that is actually rendered.
+ * Sanitises a section into the 12-column grid. Existing, non-overlapping
+ * positions survive; missing coordinates and overlapping stored positions take
+ * the first free cell at or below the requested row. The server runs this on
+ * every write and the default board runs it while seeding; the page only uses
+ * it when normalising stored state, never per pointer event.
  */
 export function packLayoutSlots(slots: readonly LayoutSlot[], reset = false): LayoutSlot[] {
   const occupied = new Set<string>();
