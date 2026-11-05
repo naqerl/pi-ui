@@ -1,3 +1,19 @@
+## 1.6.106
+
+Widgets moved and resized with hand-written pointer math, and collisions were resolved only
+after the drop, so a card teleported on release. `react-grid-layout` was already a dependency
+but only its class names were used.
+
+- Each dashboard section is now a `GridLayout` (`cols: 12`, `rowHeight: 44`, `margin: [12,12]`,
+  `compactType: null`, `preventCollision: false`), so the grid makes room during the gesture.
+- The grip is the drag handle; `draggableCancel` excludes buttons, links, inputs and
+  `[data-no-press]` so the click animation and the composer keep working.
+- Width stays continuous while resizing and snaps to 4/6/12 on release, with `w` and `span`
+  derived from one another; one layout write per gesture instead of one per pointer event.
+- `packLayoutSlots` is now a server-side sanitiser and the default-board builder, not a per-frame
+  pass; it still rejects overlapping stored layouts.
+- Grip and resize corner take `touch-action: none`, card bodies keep `pan-y` so page swipe works.
+
 ## 1.6.105
 
 The browser suite was 621 s against a 600 s budget. Four specs accounted for 405 s of it,
