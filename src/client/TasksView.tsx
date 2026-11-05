@@ -294,7 +294,7 @@ function Chevron({ open, className }: { open: boolean; className?: string }) {
 }
 
 export function TasksView({
-  tasks,
+  tasks: serverTasks,
   activity,
   ready,
   footerClearance,
@@ -308,9 +308,18 @@ export function TasksView({
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
   const [reopenTaskId, setReopenTaskId] = useState<string | null>(null);
   const [dayLimit, setDayLimit] = useState(DAY_PAGE);
+  // A decision paints its row before the request returns; null means the row is gone.
+  const [optimisticTasks, setOptimisticTasks] = useState<Record<string, Task | null>>({});
+  const optimisticSequence = useRef<Record<string, number>>({});
   const cardClickGuard = useRef<CardClickGuard>({ pointer: null, ignore: null, timer: null });
   const lastSelectionRequest = useRef<number | null>(null);
   const now = new Date();
+
+  const tasks = serverTasks.flatMap((task) => {
+    if (!(task.id in optimisticTasks)) return [task];
+    const replacement = optimisticTasks[task.id];
+    return replacement === null ? [] : [replacement];
+  });
 
   const stateOf = new Map<string, TaskState>();
   for (const task of tasks) stateOf.set(task.id, taskState(tasks, task, activity));
@@ -351,9 +360,29 @@ export function TasksView({
   const today = dayKey(now);
   if (days.length > 0 && days[0]?.[0] !== today) days.unshift([today, []]);
 
-  const apply = async (id: string, outcome: Promise<TaskOutcome>) => {
+  const apply = async (
+    id: string,
+    outcome: Promise<TaskOutcome>,
+    optimistic?: (task: Task) => Task | null,
+  ) => {
     haptic();
+    const sequence = (optimisticSequence.current[id] ?? 0) + 1;
+    optimisticSequence.current[id] = sequence;
+    if (optimistic !== undefined) {
+      const task = tasks.find((item) => item.id === id);
+      if (task !== undefined) {
+        setOptimisticTasks((current) => ({ ...current, [id]: optimistic(task) }));
+      }
+    }
     const next = await outcome;
+    // A newer action for this row owns the result now.
+    if (optimisticSequence.current[id] !== sequence) return;
+    setOptimisticTasks((current) => {
+      if (!(id in current)) return current;
+      const copy = { ...current };
+      delete copy[id];
+      return copy;
+    });
     if (!next.ok) {
       setProblem({ id, message: next.error });
       return;
@@ -361,6 +390,14 @@ export function TasksView({
     setProblem((current) => (current?.id === id ? null : current));
     onLedger(next.ledger);
   };
+
+  const approve = (task: Task) =>
+    void apply(task.id, updateTask(task.id, { status: "open" }), (current) => ({
+      ...current,
+      status: "open",
+      proposedAt: null,
+    }));
+  const dismiss = (task: Task) => void apply(task.id, removeTask(task.id), () => null);
 
   const menuTask = menu === null ? undefined : activeTasks.find((task) => task.id === menu.id);
   const openTask = openTaskId === null ? undefined : tasks.find((task) => task.id === openTaskId);
@@ -539,8 +576,8 @@ export function TasksView({
       selected={openTaskId === task.id}
       notice={problem?.id === task.id ? problem.message : null}
       onOpen={() => openDetail(task.id)}
-      onApprove={() => void apply(task.id, updateTask(task.id, { status: "open" }))}
-      onDismiss={() => void apply(task.id, removeTask(task.id))}
+      onApprove={() => approve(task)}
+      onDismiss={() => dismiss(task)}
     />
   );
 
@@ -652,8 +689,8 @@ export function TasksView({
         onClose={closeDetail}
         onOpen={openDetail}
         onStatus={setStatus}
-        onApprove={() => void apply(openTask.id, updateTask(openTask.id, { status: "open" }))}
-        onDismiss={() => void apply(openTask.id, removeTask(openTask.id))}
+        onApprove={() => approve(openTask)}
+        onDismiss={() => dismiss(openTask)}
         onRemove={() => {
           void apply(openTask.id, removeTask(openTask.id));
         }}
