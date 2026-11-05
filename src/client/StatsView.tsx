@@ -2,6 +2,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  type Ref,
   type RefObject,
   useCallback,
   useEffect,
@@ -11,6 +12,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { flushSync } from "react-dom";
 import type { Layout } from "react-grid-layout";
 import GridLayout from "react-grid-layout";
 import {
@@ -79,6 +81,11 @@ const DRAG_HOLD_MS = 350;
 const DRAG_HOLD_SLOP_PX = 6;
 const DRAG_BLOCKERS = 'button, a, input, textarea, select, [role="button"], [data-no-drag]';
 const DRAG_HANDLE = ".dashboard-drag-handle";
+// The grip is a button, so it has to opt out of the generic cancel selector.
+const DRAGGABLE_CANCEL =
+  "button:not(.dashboard-drag-handle), input, textarea, a, [data-no-press]:not(.dashboard-drag-handle)";
+
+type GridResizeHandle = "s" | "w" | "e" | "n" | "sw" | "nw" | "se" | "ne";
 
 interface GridGesture {
   kind: "drag" | "resize";
@@ -133,34 +140,6 @@ function reorderInSection(
   if (from < at) at -= 1;
   section.widgets.splice(at, 0, moved);
   section.widgets = packSection(section.widgets, true);
-  return next;
-}
-
-function moveBetweenSections(
-  layout: DashboardLayout,
-  sourceIndex: number,
-  destinationIndex: number,
-  widgetId: string,
-  target: HTMLElement,
-  y: number,
-): DashboardLayout {
-  const next = structuredClone(layout);
-  const source = next.sections[sourceIndex];
-  const destination = next.sections[destinationIndex];
-  if (source === undefined || destination === undefined) return layout;
-  const from = source.widgets.findIndex((slot) => slot.id === widgetId);
-  if (from < 0) return layout;
-  const [moved] = source.widgets.splice(from, 1);
-  if (moved === undefined) return layout;
-  const at = insertionIndex(target, destination.widgets, y);
-  destination.widgets.splice(at, 0, {
-    id: moved.id,
-    span: moved.span,
-    w: slotWidth(moved),
-    h: slotHeight(moved),
-  });
-  source.widgets = packSection(source.widgets, true);
-  destination.widgets = packSection(destination.widgets, true);
   return next;
 }
 
@@ -243,33 +222,46 @@ function gridLayout(section: LayoutSection): Layout[] {
   }));
 }
 
-/** The section under the pointer, ignoring the section the dragged card came from. */
-function sectionAtPoint(
-  point: { x: number; y: number },
-  sourceIndex: number,
-): { index: number; element: HTMLElement } | null {
-  for (const element of document.elementsFromPoint(point.x, point.y)) {
-    const section = element.closest<HTMLElement>("[data-section-index]");
-    if (section === null) continue;
-    const index = Number(section.dataset.sectionIndex);
-    if (Number.isInteger(index) && index !== sourceIndex) {
-      return { index, element: section };
-    }
-  }
-  return null;
+/** The page exposes three resize widths; snap the final RGL width to one of them. */
+function snapResizeWidth(width: number): number {
+  return [4, 6, 12].reduce((best, candidate) =>
+    Math.abs(candidate - width) < Math.abs(best - width) ? candidate : best,
+  );
 }
 
-function insertionIndex(element: HTMLElement, widgets: LayoutSlot[], y: number): number {
-  const cards = [...element.querySelectorAll<HTMLElement>("[data-widget-id]")];
-  for (const card of cards) {
-    const box = card.getBoundingClientRect();
-    if (y < box.top + box.height / 2) {
-      const id = card.dataset.widgetId;
-      const index = widgets.findIndex((slot) => slot.id === id);
-      if (index >= 0) return index;
-    }
-  }
-  return widgets.length;
+/**
+ * Merge RGL's gesture layout back into one section. RGL owns positions during
+ * the gesture; this only commits the final cells and turns a resize into the
+ * stored span, so w and span can never disagree.
+ */
+function applyGridLayout(
+  layout: DashboardLayout,
+  sectionIndex: number,
+  items: readonly Layout[],
+  kind: "drag" | "resize",
+  resizedId?: string,
+): DashboardLayout {
+  const next = structuredClone(layout);
+  const section = next.sections[sectionIndex];
+  if (section === undefined) return layout;
+  const byId = new Map(items.map((item) => [item.i, item]));
+  section.widgets = section.widgets.map((slot) => {
+    const item = byId.get(slot.id);
+    if (item === undefined) return slot;
+    let w = Math.max(2, Math.min(GRID_COLUMNS, item.w));
+    if (kind === "resize" && slot.id === resizedId) w = snapResizeWidth(w);
+    const x = Math.max(0, Math.min(GRID_COLUMNS - w, item.x));
+    const h = Math.max(2, Math.min(24, item.h));
+    return {
+      ...slot,
+      x,
+      y: Math.max(0, item.y),
+      w,
+      h,
+      span: spanForWidth(w),
+    };
+  });
+  return next;
 }
 
 function viewerId(): string {
@@ -1006,7 +998,7 @@ function WidgetCard({
       aria-label={widget.title}
       data-testid={`widget-${widget.id}`}
       data-kind={widget.kind}
-      className="theme-radius relative flex h-full min-w-0 flex-col border border-border/70 bg-surface px-3 py-2 font-mono text-xs"
+      className="theme-radius relative flex h-full min-w-0 touch-pan-y flex-col border border-border/70 bg-surface px-3 py-2 font-mono text-xs"
       onPointerDown={(event) => {
         if (event.pointerType !== "touch") return;
         cancelPress();
@@ -1178,6 +1170,8 @@ function SectionGrid({
   builtinValues,
   desktop,
   onRemove,
+  onGestureStart,
+  onGestureStop,
 }: {
   index: number;
   section: LayoutSection;
@@ -1186,6 +1180,13 @@ function SectionGrid({
   builtinValues: Record<string, { view?: WidgetView; error?: string }>;
   desktop: boolean;
   onRemove: (id: string) => void;
+  onGestureStart: (kind: "drag" | "resize") => void;
+  onGestureStop: (
+    index: number,
+    layout: Layout[],
+    kind: "drag" | "resize",
+    resizedId?: string,
+  ) => void;
 }) {
   const { ref: gridRef, width } = useGridWidth(desktop);
   const visible = section.widgets.filter((slot) => byId.has(slot.id));
@@ -1209,20 +1210,34 @@ function SectionGrid({
         data-span={slot.span}
       >
         <WidgetCard widget={widget} view={view} value={value} onRemove={onRemove} />
-        {desktop ? (
-          // The grip owns the resize gesture, so a press scale would fight the drag.
-          <button
-            type="button"
-            className="react-resizable-handle react-resizable-handle-se dashboard-resize-handle opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
-            aria-label={`Resize ${widget.title}`}
-            title="Drag to resize"
-            data-testid={`widget-${widget.id}-resize`}
-            data-no-press
-          />
-        ) : null}
       </div>
     );
   });
+
+  // RGL owns the resize DraggableCore, so its handle has to be the real corner.
+  // The per-widget test id and label are filled in once the grid item exists.
+  const resizeHandle = (axis: GridResizeHandle, ref: Ref<HTMLElement>) => (
+    <button
+      ref={ref as Ref<HTMLButtonElement>}
+      type="button"
+      className={`react-resizable-handle react-resizable-handle-${axis} dashboard-resize-handle opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100`}
+      title="Drag to resize"
+      data-no-press
+    />
+  );
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: relabel RGL handles after every layout render; the grid node itself is stable
+  useEffect(() => {
+    if (!desktop) return;
+    const grid = gridRef.current;
+    if (grid === null) return;
+    for (const handle of grid.querySelectorAll<HTMLElement>(".dashboard-resize-handle")) {
+      const id = handle.closest<HTMLElement>("[data-widget-id]")?.dataset.widgetId;
+      if (id === undefined) continue;
+      handle.dataset.testid = `widget-${id}-resize`;
+      handle.setAttribute("aria-label", `Resize ${byId.get(id)?.title ?? id}`);
+    }
+  }, [desktop, byId, visible]);
 
   if (!desktop) {
     return (
@@ -1242,8 +1257,18 @@ function SectionGrid({
         margin={[GRID_MARGIN, GRID_MARGIN]}
         containerPadding={[0, 0]}
         compactType={null}
-        isDraggable={false}
-        isResizable={false}
+        isDroppable={false}
+        preventCollision={false}
+        isDraggable
+        isResizable
+        draggableHandle={DRAG_HANDLE}
+        draggableCancel={DRAGGABLE_CANCEL}
+        resizeHandles={["se"]}
+        resizeHandle={resizeHandle}
+        onDragStart={() => onGestureStart("drag")}
+        onDragStop={(next) => onGestureStop(index, next, "drag")}
+        onResizeStart={() => onGestureStart("resize")}
+        onResizeStop={(next, _oldItem, newItem) => onGestureStop(index, next, "resize", newItem.i)}
       >
         {cards}
       </GridLayout>
@@ -1441,11 +1466,26 @@ export function StatsView({
   const layoutRef = useRef<DashboardLayout | null>(null);
   layoutRef.current = layout;
 
-  // Drag and resize are pointer-native, because the grid must work with mouse,
-  // touch and the synthetic pointer events in the browser suite. A card body
-  // arms a short hold before a drag starts, so taps and links stay taps. No
-  // layout is persisted until the gesture ends.
+  const beginGridGesture = useCallback((kind: "drag" | "resize") => {
+    pageRef.current?.setAttribute("data-pager-lock", kind);
+  }, []);
+
+  const finishGridGesture = useCallback(
+    (sectionIndex: number, items: Layout[], kind: "drag" | "resize", resizedId?: string) => {
+      pageRef.current?.removeAttribute("data-pager-lock");
+      const current = layoutRef.current;
+      if (current === null) return;
+      const next = applyGridLayout(current, sectionIndex, items, kind, resizedId);
+      if (JSON.stringify(normalizeLayout(next)) === JSON.stringify(current)) return;
+      commitLayout(next);
+    },
+    [commitLayout],
+  );
+
+  // The stacked mobile layout has no RGL grid, so it keeps the older pointer
+  // reorder shim. The desktop grid below is driven entirely by RGL.
   useEffect(() => {
+    if (desktop) return;
     const root = pageRef.current;
     if (root === null) return;
     let gesture: GridGesture | null = null;
@@ -1483,28 +1523,16 @@ export function StatsView({
       let next = current;
       const point = { x: event.clientX, y: event.clientY };
       if (active.kind === "drag") {
-        const otherSection = sectionAtPoint(point, active.sectionIndex);
-        if (otherSection !== null) {
-          next = moveBetweenSections(
+        const card = cardAtPoint(point, active.widgetId);
+        if (card !== null && card.sectionIndex === active.sectionIndex) {
+          next = reorderInSection(
             current,
             active.sectionIndex,
-            otherSection.index,
             active.widgetId,
-            otherSection.element,
+            card.id,
             point.y,
+            card.element,
           );
-        } else {
-          const card = cardAtPoint(point, active.widgetId);
-          if (card !== null && card.sectionIndex === active.sectionIndex) {
-            next = reorderInSection(
-              current,
-              active.sectionIndex,
-              active.widgetId,
-              card.id,
-              point.y,
-              card.element,
-            );
-          }
         }
       }
       commitLayout(next);
@@ -1676,7 +1704,181 @@ export function StatsView({
       cancelHold();
       root.removeAttribute("data-pager-lock");
     };
-  }, [commitLayout]);
+  }, [commitLayout, desktop]);
+
+  // RGL's drag and resize listeners use mouse/touch events, while the browser
+  // suite (and a pointer-native page) speaks PointerEvents. For synthetic
+  // pointers bridge the gesture to RGL; real mouse/touch already emits the
+  // native events RGL listens for. The body hold remains: it starts a grip drag
+  // so a short tap or swipe still belongs to the card and the pager.
+  useEffect(() => {
+    if (!desktop) return;
+    const root = pageRef.current;
+    if (root === null) return;
+    let hold: {
+      timer: number;
+      pointerId: number;
+      startX: number;
+      startY: number;
+      card: HTMLElement;
+      event: PointerEvent;
+    } | null = null;
+    let removeHoldListeners: (() => void) | null = null;
+    let bridge: { pointerId: number; forward: boolean } | null = null;
+    let removeBridgeListeners: (() => void) | null = null;
+
+    const detachHold = () => {
+      if (hold !== null) window.clearTimeout(hold.timer);
+      hold = null;
+      removeHoldListeners?.();
+      removeHoldListeners = null;
+    };
+
+    const detachBridge = () => {
+      bridge = null;
+      removeBridgeListeners?.();
+      removeBridgeListeners = null;
+    };
+
+    const fireMouse = (
+      type: "mousedown" | "mousemove" | "mouseup",
+      target: EventTarget,
+      event: PointerEvent,
+    ) => {
+      target.dispatchEvent(
+        new MouseEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          view: window,
+          button: 0,
+          buttons: type === "mouseup" ? 0 : 1,
+          clientX: event.clientX,
+          clientY: event.clientY,
+        }),
+      );
+    };
+
+    const onBridgeMove = (event: PointerEvent) => {
+      if (bridge === null || event.pointerId !== bridge.pointerId) return;
+      if (!bridge.forward) return;
+      fireMouse("mousemove", document, event);
+    };
+
+    const onBridgeEnd = (event: PointerEvent) => {
+      if (bridge === null || event.pointerId !== bridge.pointerId) return;
+      if (bridge.forward) fireMouse("mouseup", document, event);
+      detachBridge();
+    };
+
+    const startBridge = (event: PointerEvent, target: HTMLElement, forward: boolean) => {
+      detachBridge();
+      bridge = { pointerId: event.pointerId, forward };
+      if (forward) {
+        window.addEventListener("pointermove", onBridgeMove, true);
+        window.addEventListener("pointerup", onBridgeEnd, true);
+        window.addEventListener("pointercancel", onBridgeEnd, true);
+        removeBridgeListeners = () => {
+          window.removeEventListener("pointermove", onBridgeMove, true);
+          window.removeEventListener("pointerup", onBridgeEnd, true);
+          window.removeEventListener("pointercancel", onBridgeEnd, true);
+          removeBridgeListeners = null;
+        };
+      }
+      // RGL starts the gesture from a React mousedown handler. A synthetic
+      // pointer sequence can send moves in the same task, so commit the start
+      // state before those moves arrive.
+      flushSync(() => fireMouse("mousedown", target, event));
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.pointerType === "mouse" && event.button !== 0) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target === null) return;
+      const card = target.closest<HTMLElement>("[data-widget-id]");
+      if (card === null) return;
+      const resizeHandle = target.closest<HTMLElement>(".dashboard-resize-handle");
+      if (resizeHandle !== null) {
+        detachHold();
+        // Trusted mouse/touch emits the mousedown/touchstart RGL listens for;
+        // only synthetic pointer sequences need the bridge. Cancelling the
+        // trusted pointerdown would suppress those native compatibility events.
+        if (!event.isTrusted) {
+          event.preventDefault();
+          event.stopPropagation();
+          startBridge(event, resizeHandle, true);
+        }
+        return;
+      }
+      const dragHandle = target.closest<HTMLElement>(DRAG_HANDLE);
+      if (dragHandle !== null) {
+        detachHold();
+        if (!event.isTrusted) {
+          event.preventDefault();
+          event.stopPropagation();
+          startBridge(event, dragHandle, true);
+        }
+        return;
+      }
+      if (target.closest(DRAG_BLOCKERS) !== null) return;
+      detachHold();
+      // Let the pager see this pointerdown: a swipe on the card body still
+      // pages. The hold only takes over once it is armed.
+      const armed = {
+        timer: 0,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        card,
+        event,
+      };
+      hold = armed;
+      const onHoldMove = (move: PointerEvent) => {
+        if (hold === null || move.pointerId !== hold.pointerId) return;
+        if (
+          Math.hypot(move.clientX - hold.startX, move.clientY - hold.startY) > DRAG_HOLD_SLOP_PX
+        ) {
+          detachHold();
+        }
+      };
+      const onHoldEnd = (end: PointerEvent) => {
+        if (hold === null || end.pointerId !== hold.pointerId) return;
+        detachHold();
+      };
+      window.addEventListener("pointermove", onHoldMove, true);
+      window.addEventListener("pointerup", onHoldEnd, true);
+      window.addEventListener("pointercancel", onHoldEnd, true);
+      removeHoldListeners = () => {
+        window.removeEventListener("pointermove", onHoldMove, true);
+        window.removeEventListener("pointerup", onHoldEnd, true);
+        window.removeEventListener("pointercancel", onHoldEnd, true);
+        removeHoldListeners = null;
+      };
+      armed.timer = window.setTimeout(() => {
+        if (hold !== armed) return;
+        hold = null;
+        removeHoldListeners?.();
+        removeHoldListeners = null;
+        const handle = armed.card.querySelector<HTMLElement>(DRAG_HANDLE);
+        if (handle === null) return;
+        // A trusted mouse already emits mousemove; everything else needs the
+        // pointer sequence forwarded so the same hold works on touch.
+        startBridge(
+          armed.event,
+          handle,
+          !(armed.event.isTrusted && armed.event.pointerType === "mouse"),
+        );
+      }, DRAG_HOLD_MS);
+    };
+
+    root.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      root.removeEventListener("pointerdown", onPointerDown, true);
+      detachHold();
+      detachBridge();
+      root.removeAttribute("data-pager-lock");
+    };
+  }, [desktop]);
 
   const reset = useCallback(async () => {
     const response = await fetch("/api/dashboard/reset", { method: "POST" }).catch(() => null);
@@ -1796,6 +1998,8 @@ export function StatsView({
               builtinValues={builtinValues}
               desktop={desktop}
               onRemove={remove}
+              onGestureStart={beginGridGesture}
+              onGestureStop={finishGridGesture}
             />
           </div>
         ))}

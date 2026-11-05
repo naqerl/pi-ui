@@ -337,8 +337,8 @@
    only appears while its card is hovered or focused. */
 .dashboard-grid .react-grid-item {
   min-width: 0;
-  /* Layout changes are applied by the pointer shim; animating them makes the
-     persisted coordinates briefly disagree with the rendered cards. */
+  /* RGL owns the live preview; animating cells would make the placeholder and
+     the persisted coordinates briefly disagree with the rendered cards. */
   transition: none;
 }
 
