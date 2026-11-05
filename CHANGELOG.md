@@ -1,3 +1,7 @@
+## 1.6.104
+
+- **Memory writes no longer rewrite the system prompt.** A long-term topic write is announced as one compact tail delta (topic, title, size, date, and a pointer to `memory_read`); the injected snapshot is only rebuilt when the prompt is rewritten anyway — first turn, day rollover, compaction. Daily and scratchpad writes change nothing, as before.
+
 ## 1.6.103
 
 - Approving or dismissing a proposal now applies to the ledger and repaints the row immediately; the decision is delivered to the model as a queued notice once the agent is free, instead of holding the request open until the running turn ends.
