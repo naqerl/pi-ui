@@ -611,3 +611,10 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 - An explicit container MCP contract; unavailable MCP servers are shown.
 - Interrupted runs are recovered and resumed, replies render Markdown, and the app has e2e tests.
 - A stable composer across sends, runs and mobile viewports, over a blurred black footer.
+## 1.6.109
+
+- The dashboard no longer carries an empty-state line or a "newer default dashboard
+  available" banner with its Reset button. Widgets are the page: the grid shows the
+  grid, and a reset happens because the agent was asked for it, not by tapping a bar
+  that appears whenever the default board changes.
+
