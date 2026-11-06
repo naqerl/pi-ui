@@ -611,6 +611,14 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 - An explicit container MCP contract; unavailable MCP servers are shown.
 - Interrupted runs are recovered and resumed, replies render Markdown, and the app has e2e tests.
 - A stable composer across sends, runs and mobile viewports, over a blurred black footer.
+## 1.6.111
+
+- CI caught what my local gate did not: 1.6.110 left a stray blank line in this
+  changelog, so `biome check .` failed the lint job before any test ran. The
+  chart fix itself is unchanged (34 px y-axis, 4 px tick margin); only the
+  formatter's complaint is gone. Lesson repeated: the release gate is
+  `biome check .` over the whole tree, never `biome check src e2e`.
+
 ## 1.6.110
 
 - Widget charts keep their y-axis on the left but stop paying Recharts' default
@@ -624,4 +632,3 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
   available" banner with its Reset button. Widgets are the page: the grid shows the
   grid, and a reset happens because the agent was asked for it, not by tapping a bar
   that appears whenever the default board changes.
-

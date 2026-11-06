@@ -521,9 +521,6 @@ function WidgetSparkline({
         tickLine={false}
         axisLine={false}
         fontSize={10}
-        // Recharts reserves 60 px for a y-axis it can see; that gutter was the
-        // "empty space on the left" of every widget chart. 34 px fits a value
-        // like €1.70 with a 4 px gap to the plot.
         width={34}
         tickMargin={4}
       />
