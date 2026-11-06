@@ -1,3 +1,7 @@
+## 1.6.107
+
+- `stats`: the sparkline fills its widget — the y-axis no longer reserves a left gutter for tick labels (they sit inside the plot, on the right) and sparkline cards use the narrower gutter, so the plot reaches the card's inner edge. `qiu9`.
+
 ## 1.6.106
 
 Widgets moved and resized with hand-written pointer math, and collisions were resolved only
