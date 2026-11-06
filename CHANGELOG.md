@@ -1,3 +1,7 @@
+## 1.6.108
+
+- `stats`: revert the sparkline width change from 1.6.107 — the y-axis keeps its gutter on the left instead of putting the ticks inside the plot, and sparkline cards go back to the standard `px-3` padding so their inset matches every other widget.
+
 ## 1.6.107
 
 - `stats`: the sparkline fills its widget — the y-axis no longer reserves a left gutter for tick labels (they sit inside the plot, on the right) and sparkline cards use the narrower gutter, so the plot reaches the card's inner edge. `qiu9`.
