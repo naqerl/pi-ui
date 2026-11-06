@@ -611,6 +611,13 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 - An explicit container MCP contract; unavailable MCP servers are shown.
 - Interrupted runs are recovered and resumed, replies render Markdown, and the app has e2e tests.
 - A stable composer across sends, runs and mobile viewports, over a blurred black footer.
+## 1.6.110
+
+- Widget charts keep their y-axis on the left but stop paying Recharts' default
+  60 px gutter for it: the axis is 34 px wide with a 4 px tick margin, so the plot
+  fills the card instead of leaving a band on the left and a gap on the right.
+  Card padding is unchanged for every widget kind, so nothing looks inset.
+
 ## 1.6.109
 
 - The dashboard no longer carries an empty-state line or a "newer default dashboard
