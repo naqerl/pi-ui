@@ -611,6 +611,15 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 - An explicit container MCP contract; unavailable MCP servers are shown.
 - Interrupted runs are recovered and resumed, replies render Markdown, and the app has e2e tests.
 - A stable composer across sends, runs and mobile viewports, over a blurred black footer.
+## 1.6.112
+
+- Tapping a push notification no longer lands on a 404. The payloads always
+  carried the client's routes (`/chat`, `/tasks`), but `openWindow` is a real
+  document request and the server had no shell for them, so the browser got a
+  404 before the router could run. The server now serves the app shell for the
+  page routes it owns in a shared `PAGE_PATHS` table; `/api/*` and unknown paths
+  keep returning a real 404.
+
 ## 1.6.111
 
 - CI caught what my local gate did not: 1.6.110 left a stray blank line in this
