@@ -512,6 +512,10 @@ function WidgetSparkline({
     chart?.y?.ticks === undefined ? (
       <YAxis hide domain={domain} />
     ) : (
+      // A sparkline's drawing starts at the card's inner edge. The ticks still
+      // carry a real reading, but they sit inside the right edge of the plot
+      // instead of reserving a label gutter on the left. `mirror` keeps the
+      // axis out of recharts' offset calculation, so the plot keeps full width.
       <YAxis
         domain={domain}
         tickCount={chart.y.ticks}
@@ -521,6 +525,10 @@ function WidgetSparkline({
         tickLine={false}
         axisLine={false}
         fontSize={10}
+        orientation="right"
+        mirror
+        width={1}
+        tickMargin={2}
       />
     );
   const tooltip = showTooltip ? (
@@ -998,7 +1006,9 @@ function WidgetCard({
       aria-label={widget.title}
       data-testid={`widget-${widget.id}`}
       data-kind={widget.kind}
-      className="theme-radius relative flex h-full min-w-0 touch-pan-y flex-col border border-border/70 bg-surface px-3 py-2 font-mono text-xs"
+      className={`theme-radius relative flex h-full min-w-0 touch-pan-y flex-col border border-border/70 bg-surface py-2 font-mono text-xs ${
+        widget.kind === "sparkline" ? "px-2" : "px-3"
+      }`}
       onPointerDown={(event) => {
         if (event.pointerType !== "touch") return;
         cancelPress();

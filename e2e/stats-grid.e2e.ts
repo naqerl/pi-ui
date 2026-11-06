@@ -23,6 +23,26 @@ async function readDashboard(browser: {
   });
 }
 
+async function callDashboard(
+  browser: {
+    evaluate<T>(fn: (text: string) => Promise<T> | T, text: string): Promise<T>;
+  },
+  calls: unknown[],
+) {
+  await browser.evaluate(
+    async (text) => {
+      const response = await fetch("/api/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!response.ok) throw new Error(`message failed: ${response.status}`);
+      return null;
+    },
+    `TOOLCALLS ${JSON.stringify(calls)}`,
+  );
+}
+
 const EXTRA_DEFAULT_IDS = [
   "host-usage",
   "prefix-moments",
@@ -891,4 +911,123 @@ test("packs a free drag collision into the persisted layout", async ({ app, brow
       stored: { context: 0, tokens: 5, mcp: 12, "mcp-events": 16, "task-reopens": 30 },
       rendered: { context: 0, tokens: 5, mcp: 12, "mcp-events": 16, "task-reopens": 30 },
     });
+});
+
+const sparkWidthValues = [
+  1_120_000, 1_280_000, 1_460_000, 1_390_000, 1_520_000, 1_610_000, 1_540_000, 1_720_000,
+];
+
+function sparkWidthCall() {
+  return {
+    name: "dashboard_upsert",
+    arguments: {
+      id: "spark-width",
+      title: "Spark width",
+      kind: "sparkline",
+      source: {
+        type: "poll",
+        script: `return { values: ${JSON.stringify(sparkWidthValues)}, labels: ${JSON.stringify(
+          sparkWidthValues.map((_, index) => String(index)),
+        )} };`,
+        intervalSec: 0.5,
+      },
+      mapping: { series: "values", labels: "labels" },
+      chart: {
+        height: 120,
+        showTooltip: true,
+        y: { format: "bytes", ticks: 4 },
+        reference: [{ value: 1_600_000, label: "Budget", color: "var(--chart-4)" }],
+        series: [{ key: "values", label: "Rate", color: "var(--chart-1)", type: "line" }],
+      },
+    },
+  };
+}
+
+test("the sparkline fills the card width and still pins from its left third", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 1280, height: 1000 });
+  await app.open("/?page=stats");
+  await resetMinimalDashboard(browser);
+  await callDashboard(browser, [sparkWidthCall()]);
+  try {
+    await expect(screen.getByText("Spark width", { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect
+      .poll(async () => (await readDashboard(browser)).values["spark-width"]?.view !== undefined, {
+        timeout: 30_000,
+      })
+      .toBe(true);
+
+    // A 4-column card is the narrowest desktop span and the hardest case for
+    // the card's fixed padding and border.
+    const patched = await browser.evaluate(async () => {
+      const response = await fetch("/api/dashboard/layout", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sections: [
+            {
+              widgets: [
+                { id: "context", span: "full", x: 0, y: 0, w: 12, h: 4 },
+                { id: "tokens", span: "full", x: 0, y: 4, w: 12, h: 4 },
+                { id: "mcp", span: "full", x: 0, y: 8, w: 12, h: 4 },
+                { id: "mcp-events", span: "full", x: 0, y: 12, w: 12, h: 4 },
+                { id: "task-reopens", span: "full", x: 0, y: 16, w: 12, h: 4 },
+                { id: "spark-width", span: "third", x: 0, y: 20, w: 4, h: 4 },
+              ],
+            },
+          ],
+        }),
+      });
+      return response.status;
+    });
+    expect(patched).toBe(200);
+    await expect
+      .poll(() =>
+        browser.evaluate(
+          () =>
+            document.querySelector<HTMLElement>('[data-widget-id="spark-width"]')?.dataset.span ??
+            null,
+        ),
+      )
+      .toBe("third");
+
+    const card = browser.locator('[data-testid="widget-spark-width"]');
+    const chart = browser.locator('[data-chart-widget="spark-width"]');
+    await chart.scrollIntoView();
+    const cardBox = await card.boundingBox();
+    const chartBox = await chart.boundingBox();
+    if (cardBox === null || chartBox === null) throw new Error("missing sparkline geometry");
+    expect(chartBox.width).toBeGreaterThanOrEqual(cardBox.width * 0.92);
+
+    await chart.click({
+      position: {
+        x: cardBox.x + cardBox.width / 3 - chartBox.x,
+        y: chartBox.height / 2,
+      },
+    });
+    await expect
+      .poll(() =>
+        browser.evaluate(() => {
+          const widget = document.querySelector('[data-testid="widget-spark-width"]');
+          return {
+            pin: widget?.querySelector('[data-testid="chart-pin"]') !== null,
+            caption:
+              widget?.querySelector<HTMLElement>('[data-testid="chart-pin-caption"]')
+                ?.textContent ?? null,
+            reference: widget?.textContent?.includes("Budget") ?? false,
+          };
+        }),
+      )
+      .toMatchObject({ pin: true, reference: true });
+  } finally {
+    await browser.evaluate(async () => {
+      await fetch("/api/dashboard/widgets/spark-width", { method: "DELETE" });
+      return null;
+    });
+  }
 });
