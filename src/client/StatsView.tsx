@@ -1880,14 +1880,6 @@ export function StatsView({
     };
   }, [desktop]);
 
-  const reset = useCallback(async () => {
-    const response = await fetch("/api/dashboard/reset", { method: "POST" }).catch(() => null);
-    if (response?.ok) {
-      haptic([12, 40, 12]);
-      setDashboard((await response.json()) as DashboardState);
-    }
-  }, []);
-
   const remove = useCallback(async (id: string) => {
     const response = await fetch(`/api/dashboard/widgets/${encodeURIComponent(id)}`, {
       method: "DELETE",
@@ -1947,28 +1939,6 @@ export function StatsView({
       >
         {!ready || dashboard === null ? (
           <p className="font-mono text-xs text-muted-foreground">Loading…</p>
-        ) : null}
-        {dashboard !== null && dashboard.widgets.length === 0 ? (
-          <p className="px-1 font-mono text-xs text-muted-foreground" data-testid="dashboard-empty">
-            The dashboard is empty. Ask the agent to add widgets.
-          </p>
-        ) : null}
-        {dashboard?.defaultVersion !== undefined ? (
-          <div
-            className="theme-radius flex flex-wrap items-center gap-3 border border-border/70 bg-surface px-3 py-2 font-mono text-xs text-muted-foreground"
-            data-testid="dashboard-default-notice"
-          >
-            <span className="min-w-0 flex-1">
-              A newer default dashboard (v{dashboard.defaultVersion}) is available.
-            </span>
-            <button
-              type="button"
-              className="theme-radius border border-border/70 bg-background px-2 py-1 text-foreground hover:bg-foreground/10"
-              onClick={() => void reset()}
-            >
-              Reset to default
-            </button>
-          </div>
         ) : null}
         {viewLayout?.sections.map((section, index) => (
           <div
