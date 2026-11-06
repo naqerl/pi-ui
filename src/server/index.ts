@@ -9,6 +9,7 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { OperatorNoticeRecord, TaskDecisionNoticeRecord } from "../shared/notices.js";
 import { isMcpNotice, MCP_EVENTS_HEAD } from "../shared/notices.js";
+import { PAGE_IDS, PAGE_PATHS } from "../shared/pages.js";
 import { parseCompletion, parseReopenReason, TASK_BODY_MAX_LENGTH } from "../shared/tasks.js";
 import type { TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
@@ -1035,6 +1036,14 @@ app.get("/activity", serveIndex);
 app.get("/activity/", serveIndex);
 app.get("/events", serveIndex);
 app.get("/events/", serveIndex);
+// A push carries a page route, so a document request to /tasks or /chat must
+// boot the app shell and let the client pager take over. Unknown paths still
+// fall through to serveStatic and a real 404.
+for (const id of PAGE_IDS) {
+  const path = PAGE_PATHS[id];
+  app.get(path, serveIndex);
+  app.get(`${path}/`, serveIndex);
+}
 
 app.get("/manifest.webmanifest", async (c) => {
   try {

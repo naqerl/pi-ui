@@ -152,3 +152,46 @@ test("the notifications row fits the popover and keeps its height from off to on
     await expect(toggle).toHaveAttribute("aria-checked", "false");
   }
 });
+
+test("a notification page boots the app shell while unknown api paths stay 404", async ({
+  app,
+  browser,
+}) => {
+  await app.open("/");
+
+  const shell = await browser.evaluate(async () => {
+    const response = await fetch("/tasks", {
+      cache: "no-store",
+      headers: { accept: "text/html" },
+    });
+    const html = await response.text();
+    return {
+      status: response.status,
+      type: response.headers.get("content-type") ?? "",
+      hasRoot: html.includes('id="root"'),
+    };
+  });
+  expect(shell.status).toBe(200);
+  expect(shell.type).toContain("text/html");
+  expect(shell.hasRoot).toBe(true);
+
+  const missing = await browser.evaluate(async () => {
+    const response = await fetch("/api/nope", { cache: "no-store" });
+    return response.status;
+  });
+  expect(missing).toBe(404);
+
+  for (const [path, page] of [
+    ["/tasks", "tasks"],
+    ["/chat", "chat"],
+    ["/stats", "stats"],
+  ] as const) {
+    await app.open(path);
+    const opened = await browser.evaluate(() => ({
+      page: document.querySelector<HTMLElement>('[data-testid="pager"]')?.dataset.page ?? null,
+      root: document.getElementById("root") !== null,
+    }));
+    expect(opened.root).toBe(true);
+    expect(opened.page).toBe(page);
+  }
+});

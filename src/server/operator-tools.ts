@@ -5,6 +5,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import type { OperatorNoticeRecord } from "../shared/notices.js";
+import { PAGE_PATHS } from "../shared/pages.js";
 import type { PushNotification } from "./push.js";
 
 /** The limits the tool validates before anything is sent or clamped. */
@@ -95,7 +96,7 @@ export function createOperatorTools(
               title,
               body,
               tag: "notify-operator",
-              url: "/chat",
+              url: PAGE_PATHS.chat,
               data: { reason },
             });
           } catch (error) {

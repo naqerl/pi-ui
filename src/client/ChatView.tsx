@@ -12,6 +12,7 @@ import {
   useState,
 } from "react";
 import type { MemoryPathMatch, MemoryReadRange, MemoryToolDetails } from "../shared/memory";
+import { pageIdFromPath } from "../shared/pages";
 import { acceptMention, mentionAt, parseProjectToken, projectsOf } from "../shared/project";
 import { isQueuedNotice, queuedMessageIds, queuedNoticeGlyph } from "../shared/queue";
 import { isActiveStatus } from "../shared/tasks";
@@ -100,7 +101,12 @@ const PAGE_SETTLE_MS = 320;
 
 function pageFromLocation(): number {
   const name = new URLSearchParams(window.location.search).get("page");
-  const index = PAGES.findIndex((item) => item.id === name);
+  const fromQuery = PAGES.findIndex((item) => item.id === name);
+  if (fromQuery >= 0) return fromQuery;
+  // A push or a bookmark may carry the page as a real path (/tasks). The
+  // server serves the shell for it; the pager picks the matching page here.
+  const fromPath = pageIdFromPath(window.location.pathname);
+  const index = fromPath === undefined ? -1 : PAGES.findIndex((item) => item.id === fromPath);
   return index < 0 ? CHAT_PAGE : index;
 }
 

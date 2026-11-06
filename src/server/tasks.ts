@@ -2,6 +2,7 @@ import { randomInt } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { TaskDecisionNoticeRecord } from "../shared/notices.js";
+import { PAGE_PATHS } from "../shared/pages.js";
 import { normalizeProject, PROJECT_MAX_LENGTH, sameProject } from "../shared/project.js";
 import {
   blockerClosesCycle,
@@ -782,7 +783,7 @@ export class TaskStore {
       title: pushTitle(change.kind),
       body: clampPushText(change.task.title, MAX_BODY_CHARS),
       tag: change.task.id,
-      url: "/tasks",
+      url: PAGE_PATHS.tasks,
     });
   }
 
@@ -845,7 +846,7 @@ export class TaskStore {
       title: `${changes.length} task${changes.length === 1 ? "" : "s"} updated`,
       body: body || "Ledger updated",
       tag: TASK_PUSH_TAG,
-      url: "/tasks",
+      url: PAGE_PATHS.tasks,
     });
   }
 

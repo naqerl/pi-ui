@@ -22,6 +22,7 @@ import {
   resetPushServiceForTests,
 } from "../src/server/push.js";
 import { TaskStore } from "../src/server/tasks.js";
+import { PAGE_PATHS, pageIdFromPath } from "../src/shared/pages.js";
 
 async function tempDir(t: { after: (fn: () => Promise<void>) => void }): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "pi-push-"));
@@ -257,7 +258,8 @@ test("creating a proposal sends one push with its title, id and tasks url", asyn
     assert.equal(payload.title, "New proposal");
     assert.equal(payload.body, clampBody(title));
     assert.equal(payload.tag, proposal.id);
-    assert.equal(payload.url, "/tasks");
+    assert.equal(payload.url, PAGE_PATHS.tasks);
+    assert.equal(pageIdFromPath(String(payload.url)), "tasks");
     assert.ok(String(payload.body).length <= MAX_BODY_CHARS);
   } finally {
     await service.close();
@@ -291,7 +293,8 @@ test("marking a task done sends one push only on the transition", async (t) => {
     assert.equal(payload.title, "Task done");
     assert.equal(payload.body, "Ship the modal");
     assert.equal(payload.tag, task.id);
-    assert.equal(payload.url, "/tasks");
+    assert.equal(payload.url, PAGE_PATHS.tasks);
+    assert.equal(pageIdFromPath(String(payload.url)), "tasks");
 
     await store.update(task.id, { status: "done", completion });
     assert.equal(sent.length, 1);
@@ -316,6 +319,82 @@ test("the worker stays quiet only while a client is focused", async () => {
   assert.equal(shouldNotify?.([{ focused: true }]), false);
   assert.equal(shouldNotify?.([{ focused: false }]), true);
   assert.equal(shouldNotify?.([]), true);
+});
+
+interface ClickEvent {
+  notification: { close: () => void; data: { url: string } };
+  waitUntil: (promise: Promise<void>) => void;
+}
+
+async function loadClickWorker(clients: readonly unknown[]): Promise<{
+  click: (event: ClickEvent) => void;
+  opened: string[];
+}> {
+  const source = await readFile(new URL("../public/sw.js", import.meta.url), "utf8");
+  const listeners = new Map<string, (event: ClickEvent) => void>();
+  const opened: string[] = [];
+  const sandbox = {
+    self: {
+      addEventListener(type: string, listener: (event: ClickEvent) => void) {
+        listeners.set(type, listener);
+      },
+      clients: {
+        matchAll: async () => clients,
+        openWindow: async (url: string) => {
+          opened.push(url);
+          return {};
+        },
+      },
+      registration: {},
+    },
+    caches: {},
+    Response,
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(source, sandbox);
+  const click = listeners.get("notificationclick");
+  assert.equal(typeof click, "function");
+  return { click: click as (event: ClickEvent) => void, opened };
+}
+
+async function clickNotification(click: (event: ClickEvent) => void, url: string): Promise<void> {
+  let pending: Promise<void> | undefined;
+  click({
+    notification: { close() {}, data: { url } },
+    waitUntil(promise) {
+      pending = promise;
+    },
+  });
+  assert.ok(pending);
+  await pending;
+}
+
+test("a notification click focuses and navigates an open client", async () => {
+  const calls: string[] = [];
+  const { click, opened } = await loadClickWorker([
+    {
+      focused: false,
+      focus: async () => {
+        calls.push("focus");
+      },
+      navigate: async (url: string) => {
+        calls.push(`navigate:${url}`);
+      },
+    },
+  ]);
+
+  await clickNotification(click, "/tasks");
+
+  assert.deepEqual(calls, ["focus", "navigate:/tasks"]);
+  assert.deepEqual(opened, []);
+});
+
+test("a notification click opens the page when no client is open", async () => {
+  const { click, opened } = await loadClickWorker([]);
+
+  await clickNotification(click, "/chat");
+
+  assert.deepEqual(opened, ["/chat"]);
 });
 
 function render(state: PushRowState, busy = false): string {
