@@ -15,6 +15,7 @@ import type { TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js"
 import { installBillionContextInline } from "./billion-context.js";
 import { ChatService, dropMcpEventsBefore } from "./chat-service.js";
 import { DashboardError, DashboardManager } from "./dashboard.js";
+import { DelegateManager } from "./delegates.js";
 import type { DiagramBridge } from "./diagram-tools.js";
 import { DiagramStore } from "./diagrams.js";
 import { JobManager, jobNotice } from "./jobs.js";
@@ -133,6 +134,13 @@ const bili = await installBillionContextInline({
 });
 
 const catalog = await createModelCatalog();
+const delegates = new DelegateManager({
+  dataDir,
+  cwd,
+  models: catalog.runtime,
+  model: catalog.model,
+});
+await delegates.load();
 const memory = new MemoryStore(resolve(dataDir, "memory"));
 await memory.ensure();
 const memorySnapshot = new SnapshotCache();
@@ -145,6 +153,8 @@ Tasks are a shared todo ledger on the tasks page. You can list them with task_li
 Draw a diagram into the chat with draw_diagram (Mermaid source) and revise it later with replace_diagram and the id from the first result. The drawing is part of your reply; do not repeat its source in your text.
 
 Long-running shell commands (builds, test suites, servers) can run in the background with job_start; list them with job_list, read their output with job_output, and stop one with job_cancel. When a job ends on its own you receive a message with its exit status and last output, so you do not need to poll.
+
+For a self-contained investigation, review or implementation that should not use this conversation's context, hand it to a sub-agent with acp_delegate (roles: reviewer, researcher, worker, planner, oracle). It runs in a clean context and writes its answer to a result file; acp_delegate_wait blocks for the result, acp_delegate_cancel stops a run, and a finished run also sends one notice chip. Give a delegate every path, goal and constraint it needs because it cannot see this chat.
 
 The dashboard page (the Stats tab, left of chat) is yours to arrange for the user: dashboard_get shows it, dashboard_upsert adds or changes a widget (built-in pi-ui stats, a poll script that fetches JSON, or data you push with dashboard_push), dashboard_remove deletes one and dashboard_layout places them. Widgets only display data. Poll scripts read secrets from env; never put a token in a widget.`;
 const instructions = composeInstructions(baseInstructions, memoryBlock);
@@ -160,6 +170,7 @@ const boot = await openDurableSession({
   bili,
   tasks: taskBridge,
   jobs,
+  delegates,
   dashboard,
   memory: {
     store: memory,
@@ -370,6 +381,7 @@ jobs.setQuietNotifier((job, tail) => {
     console.error(`[pi] background job ${job.id} notice failed`, error);
   });
 });
+delegates.setNotifier((text) => chat.submitDelegateNotice(text));
 boot.mcp.setSubmit((text, options) => {
   const deliverAs = options.deliverAs === "steer" ? "steer" : "queue";
   const filtered = text.startsWith(MCP_EVENTS_HEAD)
@@ -493,8 +505,23 @@ app.get("/api/state", async (c) => {
   return c.json({
     ...snapshot,
     tasks: taskView(),
+    delegates: delegates.list(),
     ...(live?.instructions === undefined ? {} : { instructions: live.instructions }),
   });
+});
+
+app.get("/api/delegates", (c) => c.json(delegates.list()));
+
+app.get("/api/delegates/:id/result", async (c) => {
+  const text = await delegates.read(c.req.param("id"), "result");
+  if (text === undefined) return c.notFound();
+  return c.text(text, 200, { "Cache-Control": "no-store" });
+});
+
+app.get("/api/delegates/:id/activity", async (c) => {
+  const text = await delegates.read(c.req.param("id"), "activity");
+  if (text === undefined) return c.notFound();
+  return c.text(text, 200, { "Cache-Control": "no-store" });
 });
 
 const MCP_SUBSCRIPTIONS_PATH = "/api/mcp/subscriptions/";
@@ -1096,6 +1123,7 @@ const server = serve({ fetch: app.fetch, port }, (info) => {
     "write",
     ...boot.taskTools,
     ...boot.jobTools,
+    ...boot.delegateTools,
     ...boot.dashboardTools,
     ...boot.memoryTools,
     ...boot.diagramTools,
@@ -1125,6 +1153,7 @@ async function shutdown(): Promise<void> {
     await chat.close();
     await subscriptionWatchdog.close();
     await boot.mcp.close();
+    await delegates.shutdown();
     await boot.harness.close(SESSION_CONTEXT);
     await closePush();
   } catch (error) {

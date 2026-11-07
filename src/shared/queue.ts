@@ -11,6 +11,7 @@ export function queuedNoticeGlyph(kind: string): string {
   const name = kind.toLowerCase().replace(/^ui[.-]/, "");
   if (name.startsWith("mcp")) return "↯";
   if (name.startsWith("job")) return "⚙";
+  if (name.startsWith("delegate")) return "◈";
   if (name.startsWith("idle")) return "◷";
   if (name.startsWith("task-decision")) return "✓";
   if (name.startsWith("memory")) return "✎";

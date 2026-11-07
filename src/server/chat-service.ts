@@ -92,6 +92,7 @@ import {
   assistantMessageFromEntry,
   buildTranscript,
   contextUsage,
+  DELEGATE_NOTICE_ENTRY_KIND,
   type DiagramRevisionResolver,
   IDLE_NUDGE_ENTRY_KIND,
   JOB_NOTICE_ENTRY_KIND,
@@ -475,6 +476,7 @@ function entryNoticeLabel(kind: string, label?: string): string {
   if (label !== undefined && label.trim().length > 0) return label.trim();
   if (kind === MCP_NOTICE_ENTRY_KIND) return "MCP events";
   if (kind === JOB_NOTICE_ENTRY_KIND) return "Background job";
+  if (kind === DELEGATE_NOTICE_ENTRY_KIND) return "Delegate run";
   if (kind === IDLE_NUDGE_ENTRY_KIND) return "Idle nudge";
   if (kind === TASK_DECISION_ENTRY_KIND) return "Proposal decision";
   const readable = kind
@@ -1884,6 +1886,17 @@ export class ChatService {
     });
   }
 
+  /** Sends one finished delegate result to the agent as a notice chip, never a user bubble. */
+  async submitDelegateNotice(text: string): Promise<void> {
+    await this.submit(text, "queue", {
+      entry: {
+        kind: DELEGATE_NOTICE_ENTRY_KIND,
+        label: "Delegate run",
+        data: { text, createdAt: new Date().toISOString() },
+      },
+    });
+  }
+
   /**
    * Records a job result the agent is not told about and shows it to open clients.
    * It belongs to the activity page, so this never touches the chat draft.
@@ -2426,6 +2439,7 @@ export class ChatService {
           event.entry.kind === STEER_ENTRY_KIND ||
           event.entry.kind === QUEUE_ENTRY_KIND ||
           event.entry.kind === MCP_NOTICE_ENTRY_KIND ||
+          event.entry.kind === DELEGATE_NOTICE_ENTRY_KIND ||
           event.entry.kind === MEMORY_DELTA_ENTRY_KIND
         ) {
           // Send the placed entry before the queue update retires its pending bubble, so the

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { accessSync, constants, mkdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
@@ -89,6 +90,18 @@ export interface InstallOptions {
 let installed: BillionContextInline | undefined;
 
 /**
+ * A delegate's model requests must carry the delegate conversation's id, not
+ * the parent's, or billion-context could compress the child with the parent's
+ * state. The in-process delegate wraps its run in this scope.
+ */
+const conversationScope = new AsyncLocalStorage<string>();
+
+export function withConversationIdentity<T>(conversationId: string | undefined, run: () => T): T {
+  if (conversationId === undefined || conversationId.length === 0) return run();
+  return conversationScope.run(conversationId, run);
+}
+
+/**
  * Install billion-context's inline engine once per process, then put the pi-ui
  * identity wrapper outermost. Call this before creating the durable session so
  * every model request made by the harness carries the conversation identity.
@@ -142,7 +155,9 @@ export async function installBillionContextInline(
   // conversation handling the request; a process-global current.json would
   // misattribute concurrent conversations.
   const currentConversationId = (): string | undefined =>
-    readConversationId(options.currentPath) ?? fallbackConversationId;
+    conversationScope.getStore() ??
+    readConversationId(options.currentPath) ??
+    fallbackConversationId;
 
   const observed: ObservedRequest[] = [];
   const modelMetadata: { model?: string; contextWindow?: number; maxOutput?: number } = {};
