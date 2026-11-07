@@ -169,16 +169,20 @@ function DelegateRunRow({ run }: { run: DelegateRunView }) {
   useEffect(() => {
     if (!open || content !== null) return;
     let active = true;
-    void Promise.all([
-      fetch(run.resultUrl, { cache: "no-store" }).then((response) =>
-        response.ok ? response.text() : Promise.reject(new Error(`HTTP ${response.status}`)),
-      ),
-      fetch(run.activityUrl, { cache: "no-store" }).then((response) =>
-        response.ok ? response.text() : Promise.reject(new Error(`HTTP ${response.status}`)),
-      ),
-    ])
+    const load = async (url: string): Promise<string> => {
+      try {
+        const response = await fetch(url, { cache: "no-store" });
+        return response.ok ? await response.text() : "";
+      } catch {
+        return "";
+      }
+    };
+    void Promise.all([load(run.resultUrl), load(run.activityUrl)])
       .then(([result, activity]) => {
-        if (active) setContent({ result, activity });
+        if (active) {
+          setContent({ result, activity });
+          setLoadError(null);
+        }
       })
       .catch((error: unknown) => {
         if (active) setLoadError(String(error));

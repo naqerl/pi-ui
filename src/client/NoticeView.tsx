@@ -59,7 +59,6 @@ export function ChipButton({
   kind,
   title,
   onClick,
-  href,
   dialog = false,
   expanded,
   controls,
@@ -70,8 +69,6 @@ export function ChipButton({
   kind: string;
   title: string;
   onClick?: () => void;
-  /** When set, the chip is a link (used by delegate notices to open the result). */
-  href?: string;
   /** Opens a modal dialog rather than expanding inline. */
   dialog?: boolean;
   expanded?: boolean;
@@ -79,29 +76,6 @@ export function ChipButton({
   tone?: "default" | "warning" | "destructive";
   children: ReactNode;
 }) {
-  const classes = cn(
-    "flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-mono text-[11px] leading-5 shadow-sm backdrop-blur-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
-    tone === "warning"
-      ? "border-status-warn/40 bg-status-warn/10 text-status-warn hover:border-status-warn/60 hover:text-status-warn"
-      : tone === "destructive"
-        ? "border-destructive/40 bg-surface/90 text-destructive hover:border-foreground/25 hover:text-destructive"
-        : "border-foreground/10 bg-surface/90 text-muted-foreground hover:border-foreground/25 hover:text-foreground",
-  );
-  if (href !== undefined) {
-    return (
-      <a
-        data-testid={testId}
-        data-notice-kind={kind}
-        title={title}
-        href={href}
-        target="_blank"
-        rel="noreferrer"
-        className={classes}
-      >
-        {children}
-      </a>
-    );
-  }
   return (
     <button
       type="button"
@@ -112,7 +86,14 @@ export function ChipButton({
       aria-controls={controls}
       title={title}
       onClick={onClick}
-      className={classes}
+      className={cn(
+        "flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-mono text-[11px] leading-5 shadow-sm backdrop-blur-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
+        tone === "warning"
+          ? "border-status-warn/40 bg-status-warn/10 text-status-warn hover:border-status-warn/60 hover:text-status-warn"
+          : tone === "destructive"
+            ? "border-destructive/40 bg-surface/90 text-destructive hover:border-foreground/25 hover:text-destructive"
+            : "border-foreground/10 bg-surface/90 text-muted-foreground hover:border-foreground/25 hover:text-foreground",
+      )}
     >
       {children}
     </button>
@@ -144,9 +125,8 @@ export function NoticeLine({
         testId="chat-notice"
         kind={notice.kind}
         title={label}
-        {...(notice.kind === "delegate"
-          ? { href: `/api/delegates/${encodeURIComponent(notice.runId)}/result` }
-          : { dialog: true, onClick: () => setOpen(true) })}
+        dialog
+        onClick={() => setOpen(true)}
         tone={
           notice.kind === "interrupted" ? "warning" : failed(notice) ? "destructive" : "default"
         }
@@ -163,7 +143,7 @@ export function NoticeLine({
           </time>
         )}
       </ChipButton>
-      {open && notice.kind !== "delegate" && (
+      {open && (
         <NoticeDialog
           message={message}
           notice={notice}
@@ -291,6 +271,11 @@ function DelegateDetails({ notice }: { notice: DelegateNoticeDetails }) {
         {notice.duration === null ? "" : ` · ${notice.duration}`}
       </p>
       {notice.task.length > 0 && <p className="[overflow-wrap:anywhere]">{notice.task}</p>}
+      {notice.tokens !== null && (
+        <p className="font-mono text-xs text-muted-foreground">
+          {notice.tokens.input.toLocaleString()} in / {notice.tokens.output.toLocaleString()} out
+        </p>
+      )}
       {notice.error !== null && <p className="text-destructive">{notice.error}</p>}
       <div className="flex flex-wrap gap-3 font-mono text-xs">
         <a

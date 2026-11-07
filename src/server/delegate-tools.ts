@@ -6,6 +6,7 @@ import {
 import { Type } from "typebox";
 import {
   DELEGATE_ROLE_NAMES,
+  DELEGATE_ROLES,
   DelegateError,
   type DelegateManager,
   type DelegateRole,
@@ -72,10 +73,10 @@ export function createAcpDelegateTools(
   manager: DelegateManager,
   depth: number,
   onFinish?: (text: string) => void | Promise<void>,
+  parentRunId?: string,
 ): ToolRegistration[] {
   const roleList = DELEGATE_ROLE_NAMES.map((role) => {
-    const readOnly = role !== "worker";
-    return `  • ${role} — ${readOnly ? "read-only" : "may edit files"}`;
+    return `  • ${role} — ${DELEGATE_ROLES[role].readOnly ? "read-only" : "may edit files"}`;
   }).join("\n");
   return [
     defineTool({
@@ -132,6 +133,7 @@ Behavior:
             ...(args.async === undefined ? {} : { async: args.async }),
             ...(args.timeoutMinutes === undefined ? {} : { timeoutMinutes: args.timeoutMinutes }),
             depth,
+            ...(parentRunId === undefined ? {} : { parentRunId }),
             notify: args.async !== false,
             ...(onFinish === undefined ? {} : { onFinish }),
           });
