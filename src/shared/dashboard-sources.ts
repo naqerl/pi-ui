@@ -228,7 +228,7 @@ function mcpData({ mcp, mcpEvents }: SourceContext): unknown {
           : `${server.tools.length} tool${server.tools.length === 1 ? "" : "s"}`
         : server.authRejected
           ? "auth rejected"
-          : unavailable("server unreachable");
+          : unavailable(server.reason ?? "server unreachable");
       const detail =
         server.available && broken.length > 0
           ? `${base} · ${broken.join(", ")}`

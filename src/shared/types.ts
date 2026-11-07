@@ -161,6 +161,8 @@ export interface McpServerStatus {
   authRejected: boolean;
   /** Registered tool names for this server; empty when the server is unavailable. */
   tools: string[];
+  /** Transport-level reason while unavailable; never a secret. */
+  reason?: string;
 }
 
 /** Per-server MCP availability, so a configured-but-unreachable server is visible. */

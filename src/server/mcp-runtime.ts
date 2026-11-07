@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 import {
   type CallToolResult,
@@ -16,6 +17,7 @@ import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotoc
 import type { McpServerStatus, McpStatus } from "../shared/types.js";
 import {
   type DurableExtensionApi,
+  type DurableExtensionMessage,
   DurableExtensionShim,
   type DurableExtensionSink,
   type DurableExtensionTool,
@@ -55,6 +57,8 @@ const HEADER_COMMAND_MAX_BYTES = 1024 * 1024;
 
 interface HostManagedMcpServer {
   createTransport(context: { server: string; signal: AbortSignal }): Transport | Promise<Transport>;
+  /** MCP tool names to expose. Omit to expose every tool the server lists. */
+  readonly tools?: readonly string[];
 }
 
 interface HostManagedMcpToolCall {
@@ -185,6 +189,8 @@ interface RawServerEntry {
 export interface ServerFailure {
   readonly name: string;
   readonly auth: boolean;
+  /** Transport-level reason, never a URL, command, header, or token. */
+  readonly reason?: string;
 }
 
 interface ProtocolConnection {
@@ -457,6 +463,9 @@ function httpStatus(error: unknown): number | undefined {
     if ("status" in current && typeof current.status === "number") {
       return current.status;
     }
+    // The Streamable HTTP client reports an unauthenticated request as an
+    // UnauthorizedError without an HTTP status field. It still means 401.
+    if (current instanceof Error && current.name === "UnauthorizedError") return 401;
     current = "cause" in current ? current.cause : undefined;
   }
   return undefined;
@@ -522,15 +531,6 @@ function credentialAwareTool(server: string, tool: DurableExtensionTool): Durabl
   };
 }
 
-function serverApi(shim: DurableExtensionShim, server: string): DurableExtensionApi {
-  const api = Object.create(shim) as DurableExtensionApi;
-  Object.defineProperty(api, "registerTool", {
-    value: (tool: DurableExtensionTool) =>
-      shim.registerTool(credentialAwareTool(server, qualifiedTool(server, tool))),
-  });
-  return api;
-}
-
 function protocolError(name: string, error: unknown): Error {
   const status = httpStatus(error);
   if (status === 401 || status === 403) return new Error(credentialsRejected(name));
@@ -538,17 +538,75 @@ function protocolError(name: string, error: unknown): Error {
 }
 
 const STALE_SESSION_CODE = -32600;
+const STALE_SESSION_TEXTS = new Set(["Invalid Request", "invalid during session initialization"]);
+
+type StaleSessionReason = "http404" | "jsonrpc-32600";
+
+/** Text a server uses when it has forgotten the session it gave us. */
+function staleSessionText(text: string): boolean {
+  return STALE_SESSION_TEXTS.has(text) || /session not found/i.test(text);
+}
 
 /**
- * A restarted server rejects the previous HTTP session with JSON-RPC -32600
- * Invalid Request. pi-mcp-events treats any protocol error as terminal, so
- * the subscription stays failed and looks idle. Any other error, including
- * method-not-found, still reaches the adapter unchanged.
+ * A restarted server rejects the previous HTTP session with a 404 whose body
+ * says `session not found`, or with JSON-RPC -32600 Invalid Request / invalid
+ * during session initialization. pi-mcp-events treats any protocol error as
+ * terminal, so the subscription stays failed and looks idle. Any other error,
+ * including method-not-found, still reaches the adapter unchanged.
  */
 function isStaleSessionResponse(message: unknown): boolean {
   if (!isRecord(message) || "method" in message || !isRecord(message.error)) return false;
   const text = message.error.message;
-  return message.error.code === STALE_SESSION_CODE || text === "Invalid Request";
+  return (
+    message.error.code === STALE_SESSION_CODE ||
+    (typeof text === "string" && staleSessionText(text))
+  );
+}
+
+function stringField(value: unknown, key: string): string | undefined {
+  return isRecord(value) && typeof value[key] === "string" ? value[key] : undefined;
+}
+
+/**
+ * Classify a tool-call failure without trusting a fixed error class: the
+ * adapter keeps the real transport error only as `cause`.
+ */
+function staleSessionReason(error: unknown): StaleSessionReason | undefined {
+  let current: unknown = error;
+  const seen = new Set<unknown>();
+  for (let depth = 0; depth < 8 && current !== undefined; depth++) {
+    if (typeof current !== "object" || current === null || seen.has(current)) break;
+    seen.add(current);
+    const status = "status" in current && typeof current.status === "number" ? current.status : 0;
+    const code =
+      "code" in current && typeof current.code === "number"
+        ? current.code
+        : "protocolCode" in current && typeof current.protocolCode === "number"
+          ? current.protocolCode
+          : undefined;
+    const texts = [
+      current instanceof Error ? current.message : undefined,
+      stringField(current, "statusText"),
+      stringField(current, "body"),
+      stringField(isRecord(current) && isRecord(current.data) ? current.data : undefined, "text"),
+    ].filter((text): text is string => text !== undefined);
+    if (status === 404 && texts.some((text) => /session not found/i.test(text))) {
+      return "http404";
+    }
+    if (code === STALE_SESSION_CODE && texts.some(staleSessionText)) {
+      return "jsonrpc-32600";
+    }
+    current = "cause" in current ? current.cause : undefined;
+  }
+  return undefined;
+}
+
+function transportFailureReason(error: unknown): string {
+  const status = httpStatus(error);
+  if (status !== undefined) return `HTTP ${status}`;
+  const code = errorCode(error);
+  if (code !== undefined) return `JSON-RPC ${code}`;
+  return "server unreachable";
 }
 
 /**
@@ -598,6 +656,33 @@ function watchStaleSession(transport: Transport, retire: () => void): Transport 
       }
       if (property === "onclose") {
         onClose = typeof value === "function" ? (value as Transport["onclose"]) : undefined;
+        return true;
+      }
+      return Reflect.set(target, property, value, target);
+    },
+  });
+}
+
+/**
+ * The adapter re-lists after tools/list_changed but keeps the catalog it froze
+ * at ready(), so a new tool never becomes callable there. Watch the transport
+ * so the channel can re-initialize and register the grown set through the shim.
+ */
+function watchToolListChanges(transport: Transport, onChange: () => void): Transport {
+  let onMessage = transport.onmessage;
+  transport.onmessage = (message, extra) => {
+    if ("method" in message && message.method === "notifications/tools/list_changed") onChange();
+    onMessage?.(message, extra);
+  };
+  return new Proxy(transport, {
+    get(target, property) {
+      if (property === "onmessage") return onMessage;
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+    set(target, property, value) {
+      if (property === "onmessage") {
+        onMessage = typeof value === "function" ? (value as Transport["onmessage"]) : undefined;
         return true;
       }
       return Reflect.set(target, property, value, target);
@@ -678,6 +763,416 @@ function pollHasOldBacklog(response: unknown, startedAt: number): boolean {
   return false;
 }
 
+const CHANNEL_RETRY_DELAYS_MS = [1_000, 5_000, 15_000, 60_000, 300_000] as const;
+const TOOL_REFRESH_DEBOUNCE_MS = 50;
+
+interface McpChannelHooks {
+  onFailure(name: string, auth: boolean, reason?: string): void;
+  onConnected(name: string): void;
+  onNotice(text: string, details: Record<string, unknown>): void;
+}
+
+interface StaleSessionFailure {
+  readonly reason: StaleSessionReason;
+  readonly error: unknown;
+}
+
+interface ChannelCall {
+  readonly token: number;
+  stale?: StaleSessionFailure;
+}
+
+/**
+ * Owns one server's adapter for the whole process. The model-facing tools are
+ * registered once, against this channel, so a stale session or a server that
+ * was down at boot can be replaced without tripping the shim's duplicate-name
+ * guard. A call retries at most once, and only for a stale-session signature.
+ */
+class McpServerChannel {
+  private adapter: HostManagedMcpAdapter | undefined;
+  private tools = new Map<string, DurableExtensionTool>();
+  private readonly registered = new Set<string>();
+  /** One adapter lifecycle operation or tool call at a time. */
+  private tail: Promise<void> = Promise.resolve();
+  /** Identity of the call currently running through this channel. */
+  private activeCall: ChannelCall | undefined;
+  private nextCallToken = 0;
+  private initPromise: Promise<boolean> | undefined;
+  private retryTimer: ReturnType<typeof setTimeout> | undefined;
+  private refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  private attempt = 0;
+  private hadFailure = false;
+  private closed = false;
+
+  constructor(
+    private readonly name: string,
+    private readonly definition: HostManagedMcpServer,
+    private readonly timeout: number,
+    private readonly shim: DurableExtensionShim,
+    private readonly hooks: McpChannelHooks,
+  ) {}
+
+  /** The tools the current adapter lists, in shim-visible names. */
+  get toolNames(): readonly string[] {
+    return [...this.tools.keys()];
+  }
+
+  initialize(reason?: StaleSessionReason, announce = true): Promise<boolean> {
+    return this.startInitialize(reason, announce, false);
+  }
+
+  async call(
+    name: string,
+    args: unknown,
+    signal: AbortSignal | undefined,
+    toolCallId: string,
+  ): Promise<AgentToolResult> {
+    return this.enqueue(() => this.runCall(name, args, signal, toolCallId));
+  }
+
+  /**
+   * Calls, recovery, catalog refreshes and backoff probes share one queue. A
+   * recovery must never close an adapter under another in-flight call, and a
+   * queued call must see the fresh adapter rather than a transient gap.
+   */
+  private enqueue<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.tail.then(task, task);
+    this.tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  private async runCall(
+    name: string,
+    args: unknown,
+    signal: AbortSignal | undefined,
+    toolCallId: string,
+  ): Promise<AgentToolResult> {
+    if (this.closed) return this.missingResult(name);
+    const call = { token: ++this.nextCallToken };
+    this.activeCall = call;
+    try {
+      const first = this.tools.get(name);
+      if (first === undefined) return this.missingResult(name);
+      let result: AgentToolResult;
+      try {
+        result = await first.execute(toolCallId, args, signal);
+      } catch (error) {
+        const stale = this.takeStale(call);
+        if (stale === undefined) throw error;
+        return this.recoverAndRetry(name, args, signal, toolCallId, call, stale);
+      }
+      const stale = this.takeStale(call);
+      if (stale === undefined) return result;
+      return this.recoverAndRetry(name, args, signal, toolCallId, call, stale);
+    } finally {
+      if (this.activeCall === call) this.activeCall = undefined;
+    }
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    this.activeCall = undefined;
+    this.clearRetry();
+    if (this.refreshTimer !== undefined) {
+      clearTimeout(this.refreshTimer);
+      this.refreshTimer = undefined;
+    }
+    await this.initPromise?.catch(() => {});
+    const adapter = this.adapter;
+    this.adapter = undefined;
+    this.tools = new Map();
+    await adapter?.close().catch(() => {});
+  }
+
+  private startInitialize(
+    reason: StaleSessionReason | undefined,
+    announce: boolean,
+    refresh: boolean,
+  ): Promise<boolean> {
+    if (this.closed) return Promise.resolve(false);
+    if (this.initPromise !== undefined) return this.initPromise;
+    const promise = this.runInitialize(reason, announce, refresh).finally(() => {
+      this.initPromise = undefined;
+    });
+    this.initPromise = promise;
+    return promise;
+  }
+
+  private async runInitialize(
+    reason: StaleSessionReason | undefined,
+    announce: boolean,
+    refresh: boolean,
+  ): Promise<boolean> {
+    if (this.closed) return false;
+    const previous = this.adapter;
+    const adapter = this.createAdapter();
+    try {
+      await adapter.ready();
+      if (this.closed) {
+        await adapter.close().catch(() => {});
+        return false;
+      }
+      const captured = new Map<string, DurableExtensionTool>();
+      adapter.extensionFactory(this.captureApi(captured));
+      this.adapter = adapter;
+      this.tools = captured;
+      for (const tool of captured.values()) this.registerPassthrough(tool);
+      if (previous !== undefined && previous !== adapter) {
+        await previous.close().catch(() => {});
+      }
+      const wasFailed = this.hadFailure;
+      this.hadFailure = false;
+      this.attempt = 0;
+      this.clearRetry();
+      this.hooks.onConnected(this.name);
+      if (announce) {
+        if (reason !== undefined) {
+          this.notice(
+            `mcp ${this.name}: session lost (${reason}), re-initialized, tool list refreshed`,
+            { server: this.name, reason },
+          );
+        } else if (wasFailed) {
+          this.notice(`mcp ${this.name}: re-initialized, tool list refreshed`, {
+            server: this.name,
+          });
+        }
+      }
+      return true;
+    } catch (error) {
+      await adapter.close().catch(() => {});
+      if (refresh) {
+        console.warn(`mcp: could not refresh the tool list for ${this.name}`, error);
+        return false;
+      }
+      this.recordFailure(
+        error,
+        reason === undefined ? transportFailureReason(error) : `session lost (${reason})`,
+      );
+      if (announce && reason !== undefined) {
+        this.notice(`mcp ${this.name}: session lost (${reason}), re-initialize failed`, {
+          server: this.name,
+          reason,
+        });
+      }
+      return false;
+    }
+  }
+
+  private createAdapter(): HostManagedMcpAdapter {
+    const definition: HostManagedMcpServer = {
+      ...this.definition,
+      createTransport: async (context) =>
+        watchToolListChanges(await this.definition.createTransport(context), () =>
+          this.onToolListChanged(),
+        ),
+    };
+    return hostManagedModule.createHostManagedMcpAdapter({
+      servers: { [this.name]: definition },
+      onToolCall: (call) => this.onToolCall(call),
+      requestTimeoutMs: this.timeout,
+    });
+  }
+
+  private captureApi(captured: Map<string, DurableExtensionTool>): DurableExtensionApi {
+    const api = Object.create(this.shim) as DurableExtensionApi;
+    Object.defineProperty(api, "registerTool", {
+      value: (tool: DurableExtensionTool) => {
+        const qualified = credentialAwareTool(this.name, qualifiedTool(this.name, tool));
+        captured.set(qualified.name, qualified);
+      },
+    });
+    return api;
+  }
+
+  /** Registered once; later adapters only change what the passthrough dispatches to. */
+  private registerPassthrough(tool: DurableExtensionTool): void {
+    if (this.registered.has(tool.name)) return;
+    this.registered.add(tool.name);
+    this.shim.registerTool({
+      name: tool.name,
+      ...(tool.label === undefined ? {} : { label: tool.label }),
+      description: tool.description,
+      ...(tool.promptSnippet === undefined ? {} : { promptSnippet: tool.promptSnippet }),
+      parameters: tool.parameters,
+      execute: (toolCallId, params, signal) => this.call(tool.name, params, signal, toolCallId),
+    });
+  }
+
+  private async onToolCall(call: HostManagedMcpToolCall): Promise<CallToolResult> {
+    try {
+      return await call.dispatch();
+    } catch (error) {
+      const status = httpStatus(error);
+      if (status === 401 || status === 403) return credentialsResult(call.server);
+      const reason = staleSessionReason(error);
+      if (reason !== undefined && this.activeCall !== undefined) {
+        this.activeCall.stale = { reason, error };
+      }
+      throw error;
+    }
+  }
+
+  private takeStale(call: ChannelCall): StaleSessionFailure | undefined {
+    const stale = call.stale;
+    call.stale = undefined;
+    return stale;
+  }
+
+  private async recoverAndRetry(
+    name: string,
+    args: unknown,
+    signal: AbortSignal | undefined,
+    toolCallId: string,
+    call: ChannelCall,
+    stale: StaleSessionFailure,
+  ): Promise<AgentToolResult> {
+    await this.initPromise?.catch(() => {});
+    const previous = this.adapter;
+    this.adapter = undefined;
+    this.tools = new Map();
+    await previous?.close().catch(() => {});
+    const recovered = await this.initialize(stale.reason, false);
+    if (!recovered) {
+      this.notice(`mcp ${this.name}: session lost (${stale.reason}), re-initialize failed`, {
+        server: this.name,
+        reason: stale.reason,
+      });
+      throw stale.error;
+    }
+    const retryTool = this.tools.get(name);
+    if (retryTool === undefined) {
+      this.notice(
+        `mcp ${this.name}: session lost (${stale.reason}), re-initialized, tool list refreshed`,
+        { server: this.name, reason: stale.reason },
+      );
+      return this.missingResult(name);
+    }
+    let retried: AgentToolResult;
+    try {
+      retried = await retryTool.execute(toolCallId, args, signal);
+    } catch (error) {
+      const again = this.takeStale(call);
+      if (again !== undefined) {
+        await this.failAdapter(again.reason);
+        this.notice(`mcp ${this.name}: session lost (${again.reason}), retry failed`, {
+          server: this.name,
+          reason: again.reason,
+        });
+        throw again.error;
+      }
+      if (signal?.aborted === true) throw error;
+      const reason = transportFailureReason(error);
+      await this.failTransport(error, reason);
+      this.notice(`mcp ${this.name}: retry failed (${reason})`, {
+        server: this.name,
+        reason,
+      });
+      throw error;
+    }
+    const again = this.takeStale(call);
+    if (again !== undefined) {
+      await this.failAdapter(again.reason);
+      this.notice(`mcp ${this.name}: session lost (${again.reason}), retry failed`, {
+        server: this.name,
+        reason: again.reason,
+      });
+      throw again.error;
+    }
+    this.notice(
+      `mcp ${this.name}: session lost (${stale.reason}), re-initialized, tool list refreshed`,
+      { server: this.name, reason: stale.reason },
+    );
+    return retried;
+  }
+
+  /** The retry also failed: keep the adapter closed and let backoff take over. */
+  private async failAdapter(reason: StaleSessionReason): Promise<void> {
+    const adapter = this.adapter;
+    this.adapter = undefined;
+    this.tools = new Map();
+    await adapter?.close().catch(() => {});
+    this.recordFailure(
+      new Error(`MCP server ${this.name} lost its session (${reason})`),
+      `session lost (${reason})`,
+    );
+  }
+
+  private async failTransport(error: unknown, reason: string): Promise<void> {
+    const adapter = this.adapter;
+    this.adapter = undefined;
+    this.tools = new Map();
+    await adapter?.close().catch(() => {});
+    this.recordFailure(error, reason);
+  }
+
+  private missingResult(name: string): AgentToolResult {
+    const text =
+      this.adapter === undefined
+        ? `MCP server "${this.name}" is unavailable; tool "${name}" was not run.`
+        : `MCP tool "${name}" is no longer offered by server "${this.name}".`;
+    return { content: [{ type: "text", text }], details: {}, isError: true };
+  }
+
+  private onToolListChanged(): void {
+    if (this.closed || this.refreshTimer !== undefined) return;
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = undefined;
+      void this.refreshTools();
+    }, TOOL_REFRESH_DEBOUNCE_MS);
+    this.refreshTimer.unref?.();
+  }
+
+  private refreshTools(): Promise<void> {
+    return this.enqueue(() => this.runRefresh());
+  }
+
+  private async runRefresh(): Promise<void> {
+    if (this.closed || this.adapter === undefined) return;
+    const before = new Set(this.tools.keys());
+    const refreshed = await this.startInitialize(undefined, false, true);
+    if (!refreshed) return;
+    const added = [...this.tools.keys()].filter((name) => !before.has(name));
+    if (added.length > 0) {
+      this.notice(`mcp ${this.name}: tool list refreshed`, { server: this.name, tools: added });
+    }
+  }
+
+  private notice(text: string, details: Record<string, unknown>): void {
+    this.hooks.onNotice(text, details);
+  }
+
+  private recordFailure(error: unknown, reason?: string): void {
+    this.hadFailure = true;
+    const auth = httpStatus(error) === 401 || httpStatus(error) === 403;
+    this.hooks.onFailure(this.name, auth, reason);
+    console.warn(describeBootFailure(this.name, error));
+    // A rejected credential is not transient; retrying it would only repeat it.
+    if (!auth) this.scheduleRetry();
+  }
+
+  private scheduleRetry(): void {
+    if (this.closed || this.retryTimer !== undefined) return;
+    const delay =
+      CHANNEL_RETRY_DELAYS_MS[Math.min(this.attempt, CHANNEL_RETRY_DELAYS_MS.length - 1)];
+    this.attempt += 1;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined;
+      void this.enqueue(() => this.initialize());
+    }, delay);
+    this.retryTimer.unref?.();
+  }
+
+  private clearRetry(): void {
+    if (this.retryTimer === undefined) return;
+    clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
+  }
+}
+
 /**
  * Bridges the host-managed MCP adapter and pi-mcp-events into the durable
  * registry. There is no extension loader: the shim has exactly the surface
@@ -691,7 +1186,7 @@ export class McpRuntime {
   /** Process start time; no event from before it may become a chat notice. */
   readonly startedAt: number;
   private readonly servers: Record<string, HostManagedMcpServer>;
-  private readonly adapters: HostManagedMcpAdapter[] = [];
+  private readonly channels = new Map<string, McpServerChannel>();
   private readonly protocolConnections = new Set<ProtocolConnection>();
   private readonly subscriptionStore: McpSubscriptionRegistry | undefined;
   /** New subscription id → the persisted entry it was restored from. */
@@ -808,37 +1303,17 @@ export class McpRuntime {
     eventsModule.default(shim);
     await shim.dispatch("session_start");
 
-    const onToolCall = async (call: HostManagedMcpToolCall): Promise<CallToolResult> => {
-      try {
-        return await call.dispatch();
-      } catch (error) {
-        const status = httpStatus(error);
-        if (status === 401 || status === 403) return credentialsResult(call.server);
-        // The adapter turns a HostManagedMcpError into its fixed delivery-class
-        // result, including the machine-readable details.error value.
-        throw error;
-      }
-    };
-
-    await Promise.all(
-      Object.entries(servers).map(async ([name, definition]) => {
-        const adapter = hostManagedModule.createHostManagedMcpAdapter({
-          servers: { [name]: definition },
-          onToolCall,
-          requestTimeoutMs: timeouts[name] ?? REQUEST_TIMEOUT_MS,
-        });
-        try {
-          await adapter.ready();
-          adapter.extensionFactory(serverApi(shim, name));
-          runtime.adapters.push(adapter);
-        } catch (error) {
-          await adapter.close().catch(() => {});
-          const auth = httpStatus(error) === 401 || httpStatus(error) === 403;
-          runtime.failedServers.push({ name, auth });
-          console.warn(describeBootFailure(name, error));
-        }
-      }),
-    );
+    for (const [name, definition] of Object.entries(servers)) {
+      runtime.channels.set(
+        name,
+        new McpServerChannel(name, definition, timeouts[name] ?? REQUEST_TIMEOUT_MS, shim, {
+          onFailure: (server, auth, reason) => runtime.markFailure(server, auth, reason),
+          onConnected: (server) => runtime.markConnected(server),
+          onNotice: (text, details) => runtime.notifyChannel(text, details),
+        }),
+      );
+    }
+    await Promise.all([...runtime.channels.values()].map((channel) => channel.initialize()));
 
     await runtime.restoreSubscriptions();
     return runtime;
@@ -1038,22 +1513,45 @@ export class McpRuntime {
   /** Names and availability only: never a URL, command, header, or token. */
   get status(): McpStatus {
     const failures = new Map(this.failedServers.map((failure) => [failure.name, failure]));
-    const toolNames = this.toolNames;
     const servers: McpServerStatus[] = this.serverNames.map((name) => {
       const failure = failures.get(name);
-      const prefix = `${sanitizeServerName(name)}__`;
+      const channel = this.channels.get(name);
       return {
         name,
         available: failure === undefined,
         authRejected: failure?.auth ?? false,
-        tools:
-          failure === undefined ? toolNames.filter((toolName) => toolName.startsWith(prefix)) : [],
+        tools: failure === undefined && channel !== undefined ? [...channel.toolNames] : [],
+        ...(failure?.reason === undefined ? {} : { reason: failure.reason }),
       };
     });
     return {
       servers,
       unavailable: servers.filter((server) => !server.available).map((server) => server.name),
     };
+  }
+
+  /** Keep one failure entry per server, so a later reconnect replaces the old reason. */
+  private markFailure(name: string, auth: boolean, reason?: string): void {
+    for (let failure = this.failedServers.length - 1; failure >= 0; failure -= 1) {
+      if (this.failedServers[failure]?.name === name) this.failedServers.splice(failure, 1);
+    }
+    this.failedServers.push({ name, auth, ...(reason === undefined ? {} : { reason }) });
+  }
+
+  private markConnected(name: string): void {
+    for (let failure = this.failedServers.length - 1; failure >= 0; failure -= 1) {
+      if (this.failedServers[failure]?.name === name) this.failedServers.splice(failure, 1);
+    }
+  }
+
+  /** Recovery is news for the chat and a status broadcast for every open tab. */
+  private notifyChannel(text: string, details: Record<string, unknown>): void {
+    this.shim.sendMessage({
+      customType: "mcp-recovery",
+      content: text,
+      display: true,
+      details: details as DurableExtensionMessage["details"],
+    });
   }
 
   setSubmit(sink: DurableExtensionSink | undefined): void {
@@ -1358,9 +1856,7 @@ export class McpRuntime {
     // A server that was down during the boot probe can come back later. The
     // protocol connection is a live probe of the same definition, so clear
     // every failure for this server instead of writing a stale array once.
-    for (let failure = this.failedServers.length - 1; failure >= 0; failure -= 1) {
-      if (this.failedServers[failure]?.name === name) this.failedServers.splice(failure, 1);
-    }
+    this.markConnected(name);
     // A server that was unavailable during the boot probe can now restore its
     // deferred subscriptions. The delay keeps the current subscribe first.
     setTimeout(() => {
@@ -1414,7 +1910,7 @@ export class McpRuntime {
     this.protocolConnections.clear();
     for (const connection of new Set(this.directSubscriptions.values())) connection.close();
     this.directSubscriptions.clear();
-    await Promise.allSettled(this.adapters.map((adapter) => adapter.close()));
+    await Promise.allSettled([...this.channels.values()].map((channel) => channel.close()));
     await this.subscriptionStore?.close().catch(() => {});
     this.shim.close();
   }
