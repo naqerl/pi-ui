@@ -1,3 +1,11 @@
+## 1.6.117
+
+### Fixed
+
+- The e2e budget guard no longer fails a green run: a flaky spec costs a full Playwright retry,
+  and the 600 s check turned 225 passed / 0 failed at 611 s into a red build. The guard now
+  allows 660 s and prints the number it measured.
+
 ## 1.6.116
 
 ### Added
