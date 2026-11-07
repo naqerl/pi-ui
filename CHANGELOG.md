@@ -1,3 +1,20 @@
+## 1.6.114
+
+### Added
+
+- Agent subagents: `acp_delegate`, `acp_delegate_wait` and `acp_delegate_cancel` run a task in an
+  isolated context (reviewer, researcher, worker, planner, oracle) and report back as one chip with
+  a result and an activity file, never as a bubble. Depth and concurrency are capped, every delegate
+  has a hard timeout and can be cancelled.
+
+### Fixed
+
+- MCP connections survive a server restart: when a server no longer knows our session (HTTP 404
+  `session not found` or JSON-RPC `-32600`), the call re-initializes, refreshes the tool list and is
+  retried once, with one honest notice and an accurate status. A server that adds a tool while we are
+  connected becomes callable without restarting pi, and a server that is down retries with backoff
+  instead of staying dead for the process lifetime.
+
 ## 1.6.108
 
 - `stats`: revert the sparkline width change from 1.6.107 — the y-axis keeps its gutter on the left instead of putting the ticks inside the plot, and sparkline cards go back to the standard `px-3` padding so their inset matches every other widget.
