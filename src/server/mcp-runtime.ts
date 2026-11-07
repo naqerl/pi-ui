@@ -14,6 +14,7 @@ import {
   type Transport,
 } from "@modelcontextprotocol/client";
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { MCP_STATUS_HEAD } from "../shared/notices.js";
 import type { McpServerStatus, McpStatus } from "../shared/types.js";
 import {
   type DurableExtensionApi,
@@ -1546,9 +1547,12 @@ export class McpRuntime {
 
   /** Recovery is news for the chat and a status broadcast for every open tab. */
   private notifyChannel(text: string, details: Record<string, unknown>): void {
+    // A recovery notice is MCP status, not a user turn. The head routes it through
+    // the MCP notice path, so the chat shows one chip instead of a queued bubble
+    // that looks like something the operator typed.
     this.shim.sendMessage({
       customType: "mcp-recovery",
-      content: text,
+      content: `${MCP_STATUS_HEAD}\n${text}`,
       display: true,
       details: details as DurableExtensionMessage["details"],
     });

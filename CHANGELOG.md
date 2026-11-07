@@ -1,3 +1,11 @@
+## 1.6.115
+
+### Fixed
+
+- An MCP recovery notice ("session lost (http404), re-initialized, tool list refreshed") now
+  travels as MCP status instead of an ordinary message, so the chat draws one chip rather than a
+  queued bubble that reads like something the operator typed.
+
 ## 1.6.114
 
 ### Added
@@ -14,8 +22,6 @@
   retried once, with one honest notice and an accurate status. A server that adds a tool while we are
   connected becomes callable without restarting pi, and a server that is down retries with backoff
   instead of staying dead for the process lifetime.
-
-## 1.6.108
 
 - `stats`: revert the sparkline width change from 1.6.107 — the y-axis keeps its gutter on the left instead of putting the ticks inside the plot, and sparkline cards go back to the standard `px-3` padding so their inset matches every other widget.
 
