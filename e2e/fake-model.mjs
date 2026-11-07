@@ -33,6 +33,11 @@ function lastUserText(body) {
   return "";
 }
 
+function systemText(body) {
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  return textOf(messages.find((message) => message?.role === "system")?.content);
+}
+
 function bulkAnswer(prompt) {
   const turn = prompt.match(/BULK (\d+)/)?.[1] ?? "0";
   const paragraphs = Array.from(
@@ -73,6 +78,13 @@ function updateNotice(body) {
 }
 
 function responseFor(prompt, body = {}) {
+  if (prompt.includes("REPEAT_FIRST_INSTRUCTION")) {
+    const first =
+      systemText(body)
+        .split("\n")
+        .find((line) => line.trim().length > 0) ?? "(none)";
+    return `First instruction: ${first.trim().slice(0, 300)}`;
+  }
   if (prompt.includes("WHATVERSION")) return `Update notice: ${updateNotice(body)}`;
   // The echo guard test wants the model to repeat a notice verbatim, trailer included.
   if (prompt.includes("MCP event data follows.") && prompt.includes("ECHO_MCP_NOTICE")) {
@@ -208,6 +220,16 @@ export function startFakeModelServer() {
     }
 
     const prompt = lastUserText(body);
+    if (
+      prompt
+        .replace(/<acp[^>]*>[^<]*<\/acp>\n?/g, "")
+        .trim()
+        .startsWith("DELEGATE_FAIL")
+    ) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "delegate failure requested by the test" } }));
+      return;
+    }
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
@@ -291,7 +313,10 @@ export function startFakeModelServer() {
     }
     if (last?.role === "tool") {
       const result = textOf(last.content).replace(/<acp[^>]*>[^<]*<\/acp>\n?/g, "");
-      const reply = `Tool result: ${result.split("\n")[0]}`;
+      const parentAsked = lastUserText(body).includes("DELEGATE_CLEAN_CONTEXT");
+      const reply = parentAsked
+        ? `Parent did not see the delegate transcript. ${result.split("\n")[0]}`
+        : `Tool result: ${result.split("\n")[0]}`;
       for (const piece of reply.match(/.{1,18}/gs) ?? []) writeEvent(res, chunkFor(piece));
       writeEvent(res, chunkFor("", "stop"));
       res.write("data: [DONE]\n\n");

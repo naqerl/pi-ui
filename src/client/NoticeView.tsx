@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import {
   type ChatNotice,
+  type DelegateNoticeDetails,
   type IdleNoticeDetails,
   type InterruptedNoticeDetails,
   type JobNoticeDetails,
@@ -31,7 +32,10 @@ function noticeClock(message: ChatMessage, notice: ChatNotice): string {
 }
 
 function failed(notice: ChatNotice): boolean {
-  return notice.kind === "job" && (notice.status === "failed" || notice.status === "lost");
+  return (
+    (notice.kind === "job" && (notice.status === "failed" || notice.status === "lost")) ||
+    (notice.kind === "delegate" && notice.status === "failed")
+  );
 }
 
 function noticeLabel(notice: ChatNotice): string {
@@ -40,6 +44,7 @@ function noticeLabel(notice: ChatNotice): string {
 
 function noticeGlyph(notice: ChatNotice): string {
   if (notice.kind === "job") return "⚙";
+  if (notice.kind === "delegate") return "◈";
   if (notice.kind === "mcp") return "↯";
   if (notice.kind === "memory" || notice.kind === "memory-delta") return "✎";
   if (notice.kind === "idle") return "◷";
@@ -54,6 +59,7 @@ export function ChipButton({
   kind,
   title,
   onClick,
+  href,
   dialog = false,
   expanded,
   controls,
@@ -63,7 +69,9 @@ export function ChipButton({
   testId: string;
   kind: string;
   title: string;
-  onClick: () => void;
+  onClick?: () => void;
+  /** When set, the chip is a link (used by delegate notices to open the result). */
+  href?: string;
   /** Opens a modal dialog rather than expanding inline. */
   dialog?: boolean;
   expanded?: boolean;
@@ -71,6 +79,29 @@ export function ChipButton({
   tone?: "default" | "warning" | "destructive";
   children: ReactNode;
 }) {
+  const classes = cn(
+    "flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-mono text-[11px] leading-5 shadow-sm backdrop-blur-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
+    tone === "warning"
+      ? "border-status-warn/40 bg-status-warn/10 text-status-warn hover:border-status-warn/60 hover:text-status-warn"
+      : tone === "destructive"
+        ? "border-destructive/40 bg-surface/90 text-destructive hover:border-foreground/25 hover:text-destructive"
+        : "border-foreground/10 bg-surface/90 text-muted-foreground hover:border-foreground/25 hover:text-foreground",
+  );
+  if (href !== undefined) {
+    return (
+      <a
+        data-testid={testId}
+        data-notice-kind={kind}
+        title={title}
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        className={classes}
+      >
+        {children}
+      </a>
+    );
+  }
   return (
     <button
       type="button"
@@ -81,14 +112,7 @@ export function ChipButton({
       aria-controls={controls}
       title={title}
       onClick={onClick}
-      className={cn(
-        "flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-mono text-[11px] leading-5 shadow-sm backdrop-blur-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
-        tone === "warning"
-          ? "border-status-warn/40 bg-status-warn/10 text-status-warn hover:border-status-warn/60 hover:text-status-warn"
-          : tone === "destructive"
-            ? "border-destructive/40 bg-surface/90 text-destructive hover:border-foreground/25 hover:text-destructive"
-            : "border-foreground/10 bg-surface/90 text-muted-foreground hover:border-foreground/25 hover:text-foreground",
-      )}
+      className={classes}
     >
       {children}
     </button>
@@ -120,11 +144,12 @@ export function NoticeLine({
         testId="chat-notice"
         kind={notice.kind}
         title={label}
-        dialog
+        {...(notice.kind === "delegate"
+          ? { href: `/api/delegates/${encodeURIComponent(notice.runId)}/result` }
+          : { dialog: true, onClick: () => setOpen(true) })}
         tone={
           notice.kind === "interrupted" ? "warning" : failed(notice) ? "destructive" : "default"
         }
-        onClick={() => setOpen(true)}
       >
         <span aria-hidden="true" className="shrink-0">
           {noticeGlyph(notice)}
@@ -138,7 +163,7 @@ export function NoticeLine({
           </time>
         )}
       </ChipButton>
-      {open && (
+      {open && notice.kind !== "delegate" && (
         <NoticeDialog
           message={message}
           notice={notice}
@@ -193,27 +218,29 @@ function NoticeDialog({
             <div className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
               {notice.kind === "job"
                 ? "Background job"
-                : notice.kind === "mcp"
-                  ? notice.statuses.length > 0
-                    ? "MCP status"
-                    : notice.raw !== undefined
-                      ? "MCP notice"
-                      : "MCP event"
-                  : notice.kind === "memory"
-                    ? "Memory write"
-                    : notice.kind === "memory-delta"
-                      ? "Memory updated"
-                      : notice.kind === "idle"
-                        ? notice.stale === true
-                          ? "Status check"
-                          : "Idle nudge"
-                        : notice.kind === "decision"
-                          ? "Proposal decision"
-                          : notice.kind === "operator"
-                            ? "Operator request"
-                            : notice.stopped
-                              ? "Run stopped"
-                              : "Run interrupted"}
+                : notice.kind === "delegate"
+                  ? "Delegate run"
+                  : notice.kind === "mcp"
+                    ? notice.statuses.length > 0
+                      ? "MCP status"
+                      : notice.raw !== undefined
+                        ? "MCP notice"
+                        : "MCP event"
+                    : notice.kind === "memory"
+                      ? "Memory write"
+                      : notice.kind === "memory-delta"
+                        ? "Memory updated"
+                        : notice.kind === "idle"
+                          ? notice.stale === true
+                            ? "Status check"
+                            : "Idle nudge"
+                          : notice.kind === "decision"
+                            ? "Proposal decision"
+                            : notice.kind === "operator"
+                              ? "Operator request"
+                              : notice.stopped
+                                ? "Run stopped"
+                                : "Run interrupted"}
               {dateTime !== "" && ` · ${dateTime}`}
             </div>
             <h2 id={titleId} className="mt-0.5 font-mono text-sm [overflow-wrap:anywhere]">
@@ -233,6 +260,8 @@ function NoticeDialog({
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 text-sm">
           {notice.kind === "job" ? (
             <JobDetails notice={notice} />
+          ) : notice.kind === "delegate" ? (
+            <DelegateDetails notice={notice} />
           ) : notice.kind === "mcp" ? (
             <McpDetails notice={notice} />
           ) : notice.kind === "memory" ? (
@@ -251,6 +280,33 @@ function NoticeDialog({
         </div>
       </div>
     </dialog>
+  );
+}
+
+function DelegateDetails({ notice }: { notice: DelegateNoticeDetails }) {
+  return (
+    <div className="space-y-3 text-sm">
+      <p className="[overflow-wrap:anywhere]">
+        {notice.agent} · {notice.status}
+        {notice.duration === null ? "" : ` · ${notice.duration}`}
+      </p>
+      {notice.task.length > 0 && <p className="[overflow-wrap:anywhere]">{notice.task}</p>}
+      {notice.error !== null && <p className="text-destructive">{notice.error}</p>}
+      <div className="flex flex-wrap gap-3 font-mono text-xs">
+        <a
+          className="underline underline-offset-2"
+          href={`/api/delegates/${encodeURIComponent(notice.runId)}/result`}
+        >
+          Open result
+        </a>
+        <a
+          className="underline underline-offset-2"
+          href={`/api/delegates/${encodeURIComponent(notice.runId)}/activity`}
+        >
+          Open activity
+        </a>
+      </div>
+    </div>
   );
 }
 
