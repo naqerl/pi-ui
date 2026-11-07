@@ -229,6 +229,12 @@ export interface McpEventsState {
   subscriptions: McpSubscriptionView[];
   events: McpEventView[];
   notice: string | null;
+  /**
+   * Set when the adapter reports that a window was skipped (a reconnecting
+   * stream drops events rather than replaying them). `dropped` is the count it
+   * named; the feed never invents one.
+   */
+  gap?: { dropped: number; at: string };
   revision: number;
 }
 

@@ -165,10 +165,11 @@ function subscriptionFrom(value: unknown): McpSubscriptionView | null {
  *
  * Replay detection is keyed by the durable stable id, not the adapter id: the
  * registry keeps the last `MAX_DELIVERED_EVENT_IDS` event ids for each stable
- * id. Ids seen before this process started are historical, so they are stored
- * with `replayed: true` and never become a chat notice. An id first delivered
- * by this process is live; a duplicate of it is dropped, but that first live
- * delivery always wins.
+ * id. Novelty is judged from that id set alone, per conversation: an id already
+ * delivered is a re-delivery and never becomes a chat notice, and an id the
+ * conversation has not seen is news even when it was produced while this
+ * process was down. Process boot time deliberately plays no part — a restart of
+ * the server is not a restart of the conversation.
  */
 export class McpEventFeed {
   private readonly subscriptions = new Map<string, McpSubscriptionView>();
@@ -184,6 +185,7 @@ export class McpEventFeed {
   private readonly adapterAliases = new Map<string, string>();
   private events: McpEventView[] = [];
   private notice: string | null = null;
+  private gap: { dropped: number; at: string } | undefined;
   private revision = 0;
   private readonly startedAt: number;
 
@@ -207,6 +209,7 @@ export class McpEventFeed {
       subscriptions: [...this.subscriptions.values()],
       events: this.events,
       notice: this.notice,
+      ...(this.gap === undefined ? {} : { gap: this.gap }),
       revision: this.revision,
     };
   }
@@ -442,16 +445,8 @@ export class McpEventFeed {
     return [...(this.delivered.get(stableId) ?? [])];
   }
 
-  private isHistorical(stableId: string, eventId: string | undefined): boolean {
-    return eventId !== undefined && this.historical.get(stableId)?.has(eventId) === true;
-  }
-
-  private isLiveDuplicate(stableId: string, eventId: string | undefined): boolean {
-    return (
-      eventId !== undefined &&
-      this.delivered.get(stableId)?.has(eventId) === true &&
-      !this.isHistorical(stableId, eventId)
-    );
+  private isDelivered(stableId: string, eventId: string | undefined): boolean {
+    return eventId !== undefined && this.delivered.get(stableId)?.has(eventId) === true;
   }
 
   private persist(subscription: McpSubscriptionView): void {
@@ -503,6 +498,15 @@ export class McpEventFeed {
     if (!isRecord(details) || !Array.isArray(details.events)) return false;
     let stateChanged = false;
     let deliveredNew = false;
+    // A reconnecting stream drops what it cannot replay and says how much. That
+    // count is the only honest witness of a gap, so record it rather than
+    // letting the missing window look like quietness.
+    const dropped = typeof details.dropped_events === "number" ? details.dropped_events : 0;
+    if (dropped > 0) {
+      this.gap = { dropped, at: new Date().toISOString() };
+      this.notice = `${dropped} events dropped while reconnecting`;
+      stateChanged = true;
+    }
     for (const item of details.events) {
       if (!isRecord(item) || typeof item.server !== "string" || !isRecord(item.event)) continue;
       const event = item.event;
@@ -524,15 +528,10 @@ export class McpEventFeed {
         subscriptionId === undefined ? undefined : this.viewForAdapter(subscriptionId);
       const stableId =
         current?.stableId ?? deriveStableId(item.server, streamName, current?.arguments ?? {});
-      // An adapter may ignore its replay flag. The process boot time is the
-      // independent boundary: an event stamped before it is history.
-      const timestampMs = Date.parse(timestamp);
-      const beforeBoot = Number.isFinite(timestampMs) && timestampMs < this.startedAt;
-      const historical = beforeBoot || this.isHistorical(stableId, eventId);
-      const liveDuplicate = this.isLiveDuplicate(stableId, eventId);
-      // Event ids are the replay key. A cursor is opaque, so it is stored but
-      // never used to decide whether a frame is old.
-      const replay = beforeBoot || (!liveDuplicate && historical && this.restored.has(stableId));
+      // Novelty belongs to the conversation, not to this process. An id the feed
+      // already delivered — in this process or before it started — is a
+      // re-delivery; anything else is news, however old its timestamp looks.
+      const replay = this.isDelivered(stableId, eventId);
 
       if (replay) {
         // A restored stream may redeliver an event whose id we already stored
@@ -552,30 +551,6 @@ export class McpEventFeed {
               replayed: true,
             },
           ].slice(-EVENT_LIMIT);
-          stateChanged = true;
-        }
-        const tracked =
-          subscriptionId === undefined ? undefined : this.viewForAdapter(subscriptionId);
-        if (tracked !== undefined) this.persist(tracked);
-        continue;
-      }
-
-      if (liveDuplicate) {
-        // The first live copy already won. The one exception is a copy that
-        // was only known as a replay before: now that it arrived live, deliver
-        // exactly one non-replayed event for it.
-        const index = this.events.findIndex((entry) => entry.id === id);
-        const existing = index === -1 ? undefined : this.events[index];
-        const promoted = existing?.replayed === true;
-        if (promoted) {
-          this.events = this.events.map((entry, at) =>
-            at === index ? { ...entry, replayed: undefined } : entry,
-          );
-          this.notice = `new event from ${item.server}`;
-          deliveredNew = true;
-          stateChanged = true;
-        }
-        if (this.trackCursor(item, streamName, cursor, promoted ? timestamp : undefined)) {
           stateChanged = true;
         }
         const tracked =

@@ -167,3 +167,86 @@ test("the feed shows data.kind as the event name and keeps each subscription's c
     ],
   );
 });
+
+test("an event produced before this process started is news, not a replay", () => {
+  const feed = new McpEventFeed(undefined, { startedAt: "2026-11-07T12:00:00.000Z" });
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe" },
+      result: { subscription: { id: "s1", server: "zeroshot", name: "hub", status: "active" } },
+    },
+  });
+  const changed = feed.ingest({
+    customType: "mcp-events",
+    details: {
+      events: [
+        {
+          subscription_id: "s1",
+          server: "zeroshot",
+          event: {
+            eventId: "hub:900",
+            name: "hub",
+            timestamp: "2026-11-07T11:30:34.640Z",
+            cursor: "hub:900",
+            data: { kind: "hub.run", labels: { task: "abc1" } },
+          },
+        },
+      ],
+    },
+  });
+  assert.equal(changed, true);
+  assert.equal(feed.state.notice, "new event from zeroshot");
+  assert.equal(feed.state.events.at(-1)?.replayed, undefined, "not marked as a replay");
+});
+
+test("the same event id twice is one entry and one notice", () => {
+  const feed = new McpEventFeed(undefined, { startedAt: "2026-11-07T12:00:00.000Z" });
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe" },
+      result: { subscription: { id: "s1", server: "zeroshot", name: "hub", status: "active" } },
+    },
+  });
+  const frame = (id: string) => ({
+    customType: "mcp-events",
+    details: {
+      events: [
+        {
+          subscription_id: "s1",
+          server: "zeroshot",
+          event: {
+            eventId: id,
+            name: "hub",
+            timestamp: "2026-11-07T11:40:00.000Z",
+            cursor: "hub:901",
+            data: { kind: "hub.job", labels: { task: "abc1" } },
+          },
+        },
+      ],
+    },
+  });
+  feed.ingest(frame("hub:901"));
+  const notices = feed.state.events.filter((item) => item.id === "hub:901");
+  feed.ingest(frame("hub:901"));
+  assert.equal(feed.state.events.filter((item) => item.id === "hub:901").length, notices.length);
+  assert.equal(feed.state.events.at(-1)?.replayed, undefined);
+});
+
+test("a skipped window is recorded as a gap instead of silence", () => {
+  const feed = new McpEventFeed(undefined, { startedAt: "2026-11-07T12:00:00.000Z" });
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe" },
+      result: { subscription: { id: "s1", server: "zeroshot", name: "hub", status: "active" } },
+    },
+  });
+  feed.ingest({
+    customType: "mcp-events",
+    details: { events: [], dropped_events: 92 },
+  });
+  assert.equal(feed.state.gap?.dropped, 92);
+  assert.equal(feed.state.notice, "92 events dropped while reconnecting");
+});
