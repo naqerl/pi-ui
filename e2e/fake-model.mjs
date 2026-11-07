@@ -33,11 +33,6 @@ function lastUserText(body) {
   return "";
 }
 
-function systemText(body) {
-  const messages = Array.isArray(body.messages) ? body.messages : [];
-  return textOf(messages.find((message) => message?.role === "system")?.content);
-}
-
 function bulkAnswer(prompt) {
   const turn = prompt.match(/BULK (\d+)/)?.[1] ?? "0";
   const paragraphs = Array.from(
@@ -79,11 +74,13 @@ function updateNotice(body) {
 
 function responseFor(prompt, body = {}) {
   if (prompt.includes("REPEAT_FIRST_INSTRUCTION")) {
-    const first =
-      systemText(body)
-        .split("\n")
-        .find((line) => line.trim().length > 0) ?? "(none)";
-    return `First instruction: ${first.trim().slice(0, 300)}`;
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+    const users = messages
+      .filter((message) => message?.role === "user")
+      .map((message) => textOf(message.content))
+      .filter((text) => text.trim().length > 0);
+    const first = users[0]?.trim() ?? "(none)";
+    return `First user message: ${first.slice(0, 300)}\nUser messages: ${users.length}`;
   }
   if (prompt.includes("WHATVERSION")) return `Update notice: ${updateNotice(body)}`;
   // The echo guard test wants the model to repeat a notice verbatim, trailer included.
@@ -324,6 +321,38 @@ export function startFakeModelServer() {
       return;
     }
 
+    if (prompt.includes("DELEGATE_PARTIAL")) {
+      writeEvent(res, chunkFor("Working on it"));
+      writeEvent(res, {
+        id: "chatcmpl-e2e",
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: "e2e-model",
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: `call_${Date.now()}_delegate_partial`,
+                  type: "function",
+                  function: {
+                    name: "bash",
+                    arguments: JSON.stringify({ command: "sleep 30; echo delegate-partial-done" }),
+                  },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      });
+      writeEvent(res, chunkFor("", "tool_calls"));
+      res.write("data: [DONE]\n\n");
+      res.end();
+      return;
+    }
     if (prompt.includes("SLOW")) {
       writeEvent(res, chunkFor("Working on it"));
       const heartbeat = setInterval(() => res.write(": keepalive\n\n"), 10_000);

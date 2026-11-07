@@ -100,7 +100,9 @@ describe("delegate sub-agents share one app instance", { serial: true }, () => {
       })
       .toBe("completed");
     const result = await fileText(browser, run.resultUrl);
-    expect(result).toContain("First instruction:");
+    expect(result).toContain("First user message:");
+    expect(result).toContain("REPEAT_FIRST_INSTRUCTION");
+    expect(result).toContain("User messages: 1");
     expect(result).not.toContain(secret);
 
     await expect
@@ -144,7 +146,7 @@ describe("delegate sub-agents share one app instance", { serial: true }, () => {
             .join("\n"),
         ),
       )
-      .toContain("First instruction:");
+      .toContain("First user message:");
   });
 
   test("an async delegate overlaps a second parent tool call by timestamps", async ({
@@ -155,7 +157,7 @@ describe("delegate sub-agents share one app instance", { serial: true }, () => {
     const marker = `ASYNC_OVERLAP_${Date.now()}`;
     const sentAt = Date.now();
     await sendCalls(browser, [
-      { name: "acp_delegate", arguments: { agent: "worker", task: `SLOW ${marker}` } },
+      { name: "acp_delegate", arguments: { agent: "worker", task: `DELEGATE_PARTIAL ${marker}` } },
       { name: "job_start", arguments: { command: "true" } },
     ]);
 
@@ -234,8 +236,23 @@ describe("delegate sub-agents share one app instance", { serial: true }, () => {
       )
       .toBe(true);
     const notice = (await notices(browser)).find((item) => item.kind === "delegate");
-    expect(notice?.href).toContain(`/api/delegates/${run.id}/result`);
     expect(notice?.tone).toContain("text-destructive");
+    await browser.evaluate(() => {
+      document
+        .querySelector<HTMLElement>('[data-testid="chat-notice"][data-notice-kind="delegate"]')
+        ?.click();
+      return null;
+    });
+    await expect
+      .poll(async () =>
+        browser.evaluate((id) => {
+          const link = document.querySelector<HTMLAnchorElement>(
+            `[data-testid="notice-dialog"] a[href*="/api/delegates/${id}/result"]`,
+          );
+          return link?.getAttribute("href") ?? "";
+        }, run.id),
+      )
+      .toContain(`/api/delegates/${run.id}/result`);
     const result = await fileText(browser, run.resultUrl);
     expect(result).toContain("Failed:");
     expect(result).toContain("delegate failure requested by the test");
@@ -248,7 +265,7 @@ describe("delegate sub-agents share one app instance", { serial: true }, () => {
     await app.open("/");
     const marker = `CANCEL_${Date.now()}`;
     await sendCalls(browser, [
-      { name: "acp_delegate", arguments: { agent: "worker", task: `SLOW ${marker}` } },
+      { name: "acp_delegate", arguments: { agent: "worker", task: `DELEGATE_PARTIAL ${marker}` } },
     ]);
     const run = await waitForRun(browser, (candidate) => candidate.task.includes(marker));
     await expect
@@ -256,6 +273,12 @@ describe("delegate sub-agents share one app instance", { serial: true }, () => {
         timeout: 30_000,
       })
       .toBe("running");
+
+    await expect
+      .poll(async () => (await fileText(browser, run.activityUrl)).includes("Working on it"), {
+        timeout: 20_000,
+      })
+      .toBe(true);
 
     await sendCalls(browser, [{ name: "acp_delegate_cancel", arguments: { runId: run.id } }]);
     await expect
@@ -266,8 +289,12 @@ describe("delegate sub-agents share one app instance", { serial: true }, () => {
     await expect
       .poll(async () => (await fileText(browser, run.resultUrl)).includes("Cancelled"))
       .toBe(true);
-    expect(await fileText(browser, run.resultUrl)).toContain("Cancelled");
-    expect(await fileText(browser, run.activityUrl)).toContain("started");
+    const result = await fileText(browser, run.resultUrl);
+    expect(result).toContain("Cancelled");
+    expect(result).toContain("Working on it");
+    const activity = await fileText(browser, run.activityUrl);
+    expect(activity).toContain("started");
+    expect(activity).toContain("Working on it");
   });
 
   test("nesting is refused at max depth and a fifth concurrent run queues", async ({

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { statSync } from "node:fs";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -8,11 +9,13 @@ import {
   AssistantEntry,
   type Conversation,
   createRegistry,
+  type DocumentWatch,
   defineExtension,
   type EntryRecord,
   type Harness,
   Harness as HarnessImpl,
   LiveDoc,
+  type LiveState,
   MemoryStorage,
   type ModelRef,
   type ToolRegistration,
@@ -103,6 +106,8 @@ export interface DelegateStartOptions {
   readonly timeoutMinutes?: number;
   /** Depth of the new run. Root tools pass 0; tools inside a delegate pass the delegate's depth. */
   readonly depth?: number;
+  /** The run whose tool started this one, so cancelling the parent can stop descendants. */
+  readonly parentRunId?: string;
   /** Whether completion/failure injects a notice. Sync runs and explicit cancels stay quiet. */
   readonly notify?: boolean;
   /** Where a completion notice goes. Defaults to the manager's chat notifier. */
@@ -127,6 +132,7 @@ interface SerializedDelegateRun {
   depth: number;
   timeoutMinutes: number;
   notify: boolean;
+  parentRunId?: string;
   model?: ModelRef;
   thinkingLevel?: ModelThinkingLevel;
   usage?: DelegateTokenUsage;
@@ -137,11 +143,11 @@ interface DelegateRun extends SerializedDelegateRun {
   result?: string;
   cancelRequested: boolean;
   timedOut?: string;
-  controller: AbortController;
   done: Promise<void>;
   finish: () => void;
   onFinish?: (text: string) => void | Promise<void>;
-  submissionId?: string;
+  partialText?: string;
+  closing?: boolean;
 }
 
 interface ActiveDelegate {
@@ -262,6 +268,8 @@ function activityLineFromEntry(entry: EntryRecord): string | null {
     const message: unknown = entry.model?.[0];
     if (!isRecord(message) || !Array.isArray(message.content)) return null;
     const lines: string[] = [];
+    const text = contentText(message.content).trim();
+    if (text.length > 0) lines.push(`[assistant] ${text.slice(0, 2_000)}`);
     for (const block of message.content) {
       if (!isRecord(block) || block.type !== "toolCall") continue;
       const name = typeof block.name === "string" ? block.name : "tool";
@@ -378,9 +386,9 @@ export class DelegateManager {
       );
     }
     const cwd = resolve(options.cwd?.trim() || this.options.cwd);
-    let info: Awaited<ReturnType<typeof stat>>;
+    let info: ReturnType<typeof statSync>;
     try {
-      info = await stat(cwd);
+      info = statSync(cwd);
     } catch {
       throw new DelegateError(`The delegate working directory does not exist: ${cwd}`);
     }
@@ -405,6 +413,7 @@ export class DelegateManager {
       depth,
       timeoutMinutes,
       notify: options.notify ?? async,
+      ...(options.parentRunId === undefined ? {} : { parentRunId: options.parentRunId }),
       ...(model === undefined ? {} : { model }),
       ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
     });
@@ -482,7 +491,8 @@ export class DelegateManager {
   }
 
   async read(id: string, kind: "result" | "activity"): Promise<string | undefined> {
-    const run = this.get(id);
+    const run = this.runs.get(id.trim());
+    if (run === undefined) return undefined;
     try {
       return await readFile(this.pathOf(run, kind), "utf8");
     } catch {
@@ -500,7 +510,6 @@ export class DelegateManager {
     return {
       ...raw,
       cancelRequested: false,
-      controller: new AbortController(),
       done,
       finish,
     };
@@ -532,6 +541,9 @@ export class DelegateManager {
     let harness: Harness | undefined;
     let conversation: Conversation | undefined;
     let watch: Awaited<ReturnType<Conversation["watch"]>> | undefined;
+    let liveWatch: DocumentWatch<LiveState> | undefined;
+    let timer: NodeJS.Timeout | undefined;
+    let partialTimer: NodeJS.Timeout | undefined;
     try {
       const storage = new MemoryStorage();
       const registry = createRegistry<ToolRegistration>();
@@ -542,21 +554,26 @@ export class DelegateManager {
         }),
       );
       const conversationRef: { current?: Conversation } = {};
-      const nestedTools = createAcpDelegateTools(this, run.depth + 1, async (text) => {
-        const parent = conversationRef.current;
-        if (parent === undefined) return;
-        await parent.submit(
-          {
-            type: "input",
-            content: text,
-            entry: {
-              kind: "ui.delegate-notice",
-              data: { text, createdAt: new Date().toISOString() },
+      const nestedTools = createAcpDelegateTools(
+        this,
+        run.depth + 1,
+        async (text) => {
+          const parent = conversationRef.current;
+          if (parent === undefined) return;
+          await parent.submit(
+            {
+              type: "input",
+              content: text,
+              entry: {
+                kind: "ui.delegate-notice",
+                data: { text, createdAt: new Date().toISOString() },
+              },
             },
-          },
-          BACKGROUND_CONTEXT,
-        );
-      });
+            BACKGROUND_CONTEXT,
+          );
+        },
+        run.id,
+      );
       registry.install(
         defineExtension({
           name: "delegate-delegate-tools",
@@ -609,9 +626,21 @@ export class DelegateManager {
       this.active.set(run.id, { harness, conversation });
       watch = await conversation.watch(BACKGROUND_CONTEXT, { min: 100, max: 200 });
       this.observeActivity(run, watch);
+      const live = await harness.watchDoc(LiveDoc, conversation.id, BACKGROUND_CONTEXT);
+      if (live !== undefined) {
+        liveWatch = live;
+        liveWatch.start(async (call) => {
+          if (call.kind !== "value" || run.closing === true) return;
+          await this.publishPartialText(run, liveText(call.value));
+        });
+      }
+      partialTimer = setInterval(() => {
+        void this.publishPartial(run, harness, conversation);
+      }, 200);
+      partialTimer.unref?.();
       harness.resume();
 
-      const timer = setTimeout(() => {
+      timer = setTimeout(() => {
         run.timedOut = `after ${run.timeoutMinutes}m`;
         void this.abortRun(run);
       }, run.timeoutMinutes * 60_000);
@@ -623,21 +652,19 @@ export class DelegateManager {
           BACKGROUND_CONTEXT,
         );
         if (submission === undefined) throw new DelegateError("The delegate conversation closed.");
-        run.submissionId = String(submission.id);
         return submission.wait(BACKGROUND_CONTEXT);
       });
-      clearTimeout(timer);
 
       run.usage = usageTotals(await harness.usage(BACKGROUND_CONTEXT));
       const entries = (await conversation.context(BACKGROUND_CONTEXT)).entries;
       if (run.cancelRequested) {
         run.status = "cancelled";
         run.error ??= "Cancelled by the parent.";
-        run.result = this.partialResult(run, latestAssistantText(entries));
+        run.result = this.partialResult(run, run.partialText ?? latestAssistantText(entries));
       } else if (run.timedOut !== undefined) {
         run.status = "failed";
         run.error = `Timed out ${run.timedOut}.`;
-        run.result = this.partialResult(run, latestAssistantText(entries));
+        run.result = this.partialResult(run, run.partialText ?? latestAssistantText(entries));
       } else if (outcome.status === "done") {
         const answer = entryText(entries.find((entry) => entry.id === outcome.answer));
         if (answer.trim().length === 0) {
@@ -662,12 +689,17 @@ export class DelegateManager {
       }
       if (run.result === undefined) {
         const partial =
+          run.partialText ||
           (await this.capturePartial(harness, conversation)) ||
           (await this.captureContextText(conversation));
         run.result = this.partialResult(run, partial);
       }
     } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      if (partialTimer !== undefined) clearInterval(partialTimer);
+      run.closing = true;
       if (watch !== undefined) await watch.stop().catch(() => undefined);
+      if (liveWatch !== undefined) await liveWatch.stop().catch(() => undefined);
       if (harness !== undefined && run.usage === undefined) {
         run.usage = usageTotals(await harness.usage(BACKGROUND_CONTEXT).catch(() => undefined));
       }
@@ -679,6 +711,7 @@ export class DelegateManager {
         run.error ??= "The delegate stopped unexpectedly.";
       }
       if (run.result === undefined) run.result = run.error ?? "(no output)";
+      this.cancelDescendants(run.id);
       await this.writeResult(run);
       await this.appendActivity(
         run,
@@ -707,7 +740,7 @@ export class DelegateManager {
   ): void {
     let newest = 0;
     watch.start(async (call) => {
-      if (call.kind !== "value") return;
+      if (call.kind !== "value" || run.closing === true) return;
       for (const entry of call.value.entries) {
         if (entry.id <= newest) continue;
         newest = entry.id;
@@ -717,13 +750,67 @@ export class DelegateManager {
     });
   }
 
+  private async publishPartial(
+    run: DelegateRun,
+    harness: Harness | undefined,
+    conversation: Conversation | undefined,
+  ): Promise<void> {
+    if (run.closing === true || run.status !== "running") return;
+    await this.publishPartialText(run, await this.capturePartial(harness, conversation));
+  }
+
+  private async publishPartialText(run: DelegateRun, text: string): Promise<void> {
+    if (run.closing === true || run.status !== "running") return;
+    if (text.trim().length === 0 || text === run.partialText) return;
+    const previous = run.partialText ?? "";
+    const delta = text.startsWith(previous) ? text.slice(previous.length) : text;
+    run.partialText = text;
+    if (delta.trim().length > 0) {
+      await this.appendActivity(run, `[assistant] ${delta.trimEnd()}\n`);
+    }
+    await this.writeResult(run, text);
+  }
+
+  private isDescendantOf(run: DelegateRun, ancestorId: string): boolean {
+    let current = run;
+    const seen = new Set<string>();
+    while (current.parentRunId !== undefined && !seen.has(current.id)) {
+      if (current.parentRunId === ancestorId) return true;
+      seen.add(current.id);
+      const parent = this.runs.get(current.parentRunId);
+      if (parent === undefined) return false;
+      current = parent;
+    }
+    return false;
+  }
+
+  private cancelDescendants(parentId: string): void {
+    for (const run of this.runs.values()) {
+      if (run.status !== "queued" && run.status !== "running") continue;
+      if (!this.isDescendantOf(run, parentId)) continue;
+      this.cancel(run.id);
+    }
+  }
+
   private async abortRun(run: DelegateRun): Promise<void> {
-    run.controller.abort();
     const active = this.active.get(run.id);
+    if (active !== undefined) {
+      const partial = await this.capturePartial(active.harness, active.conversation);
+      if (partial.trim().length > 0) {
+        run.partialText = partial;
+        await this.writeResult(run, partial);
+      }
+    }
+    this.cancelDescendants(run.id);
     if (active === undefined) return;
     await active.conversation
       .abort(BACKGROUND_CONTEXT, { background: true })
       .catch(() => undefined);
+    const partial = await this.captureContextText(active.conversation);
+    if (partial.trim().length > 0) {
+      run.partialText = partial;
+      await this.writeResult(run, partial);
+    }
   }
 
   private async capturePartial(
@@ -857,30 +944,41 @@ export class DelegateManager {
     return lines.join("\n");
   }
 
-  private async appendActivity(run: DelegateRun, text: string): Promise<void> {
-    const path = this.pathOf(run, "activity");
+  private queueFileWrite(path: string, body: string, append: boolean): Promise<void> {
     const previous = this.writes.get(path) ?? Promise.resolve();
     const next = previous
-      .then(() => writeFile(path, text, { flag: "a" }))
+      .then(async () => {
+        await mkdir(this.dir, { recursive: true });
+        if (append) {
+          await writeFile(path, body, { flag: "a" });
+          return;
+        }
+        const temporary = `${path}.${process.pid}.${++writeSequence}.tmp`;
+        try {
+          await writeFile(temporary, body);
+          await rename(temporary, path);
+        } catch (error) {
+          await unlink(temporary).catch(() => undefined);
+          throw error;
+        }
+      })
       .catch((error: unknown) => {
-        console.error(`[delegate] ${run.id} activity write failed`, error);
+        console.error(`[delegate] file write failed for ${path}`, error);
       });
     this.writes.set(path, next);
-    await next;
-    if (this.writes.get(path) === next) this.writes.delete(path);
+    void next.finally(() => {
+      if (this.writes.get(path) === next) this.writes.delete(path);
+    });
+    return next;
   }
 
-  private async writeResult(run: DelegateRun): Promise<void> {
-    const path = this.pathOf(run, "result");
-    const body = `${run.result ?? run.error ?? "(no output)"}\n`;
-    try {
-      await mkdir(this.dir, { recursive: true });
-      const temporary = `${path}.${process.pid}.${++writeSequence}.tmp`;
-      await writeFile(temporary, body);
-      await rename(temporary, path);
-    } catch (error) {
-      console.error(`[delegate] ${run.id} result write failed`, error);
-    }
+  private async appendActivity(run: DelegateRun, text: string): Promise<void> {
+    await this.queueFileWrite(this.pathOf(run, "activity"), text, true);
+  }
+
+  private async writeResult(run: DelegateRun, bodyOverride?: string): Promise<void> {
+    const body = `${bodyOverride ?? run.result ?? run.error ?? "(no output)"}\n`;
+    await this.queueFileWrite(this.pathOf(run, "result"), body, false);
   }
 
   private save(): void {
@@ -896,6 +994,7 @@ export class DelegateManager {
       depth: run.depth,
       timeoutMinutes: run.timeoutMinutes,
       notify: run.notify,
+      ...(run.parentRunId === undefined ? {} : { parentRunId: run.parentRunId }),
       ...(run.model === undefined ? {} : { model: run.model }),
       ...(run.thinkingLevel === undefined ? {} : { thinkingLevel: run.thinkingLevel }),
       ...(run.usage === undefined ? {} : { usage: run.usage }),
