@@ -83,6 +83,8 @@ const VersionUpdateEntry = defineEntry<{
   from: string | null;
   to: string;
   note: string;
+  /** The changelog sections the model was told about, so the chat can show them on demand. */
+  changes?: string;
   createdAt: string;
 }>("ui.version-update");
 
@@ -467,6 +469,7 @@ async function recordVersion(
                 from: notice.from ?? null,
                 to: notice.to,
                 note: notice.note,
+                changes: notice.changes,
                 createdAt: new Date().toISOString(),
               },
             }),
@@ -910,6 +913,7 @@ export function buildTranscript(
         version: {
           from: typeof entry.data.from === "string" ? entry.data.from : null,
           to: typeof entry.data.to === "string" ? entry.data.to : "",
+          changes: typeof entry.data.changes === "string" ? entry.data.changes : "",
         },
       });
       continue;

@@ -247,6 +247,7 @@ test("paints the pi-ui update note with the theme accent", async ({ app, browser
             text: "Updated pi-ui from 1.4.3 to 1.6.0. The agent has the changelog.",
             timestamp: "2026-01-01T00:00:03.000Z",
             order: 99,
+            version: { from: "1.4.3", to: "1.6.0", changes: "### Added\n\n- Six widgets\n" },
           },
         ],
       },
@@ -311,6 +312,12 @@ test("paints the pi-ui update note with the theme accent", async ({ app, browser
       }),
     )
     .toEqual({ background: "rgb(141, 141, 141)", accent: "#8d8d8d", warning: false });
+  // The note is a card, not a dead label: it opens the changelog it was told about.
+  await screen.getByTestId("version-update").click();
+  await expect(screen.getByTestId("version-update-changelog")).toContainText("Six widgets");
+  await expect(screen.getByRole("heading", { name: "pi-ui 1.6.0" })).toBeVisible();
+  await screen.getByRole("button", { name: "Close" }).click();
+  await expect(screen.getByTestId("version-update-dialog")).toHaveCount(0);
 });
 
 test("paints the app manifest with the active theme", async ({ app, browser, screen }) => {

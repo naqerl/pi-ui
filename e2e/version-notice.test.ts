@@ -87,12 +87,17 @@ test("the update note keeps its versions for the chat", () => {
       from: "1.4.3",
       to: "1.5.0",
       note: "Updated pi-ui from 1.4.3 to 1.5.0. The agent has the changelog.",
+      changes: "### Added\n\n- Six widgets\n",
       createdAt: "2026-10-30T00:00:00.000Z",
     },
   } as unknown as EntryRecord;
   const { messages } = buildTranscript([entry]);
   assert.equal(messages[0]?.role, "system");
-  assert.deepEqual(messages[0]?.version, { from: "1.4.3", to: "1.5.0" });
+  assert.deepEqual(messages[0]?.version, {
+    from: "1.4.3",
+    to: "1.5.0",
+    changes: "### Added\n\n- Six widgets\n",
+  });
 });
 
 test("a start only notifies when the version moved", async () => {

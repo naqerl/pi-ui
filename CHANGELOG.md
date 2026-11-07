@@ -1,3 +1,11 @@
+## 1.6.116
+
+### Added
+
+- The pi-ui update note is a card you can open: clicking it shows the changelog the agent was
+  told about, in a sheet like the activity view, instead of leaving the text hidden from the
+  operator. The note still reads as one line in the transcript.
+
 ## 1.6.115
 
 ### Fixed

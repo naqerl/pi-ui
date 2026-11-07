@@ -151,6 +151,83 @@ function isVersionUpdate(message: ChatMessage): boolean {
   );
 }
 
+/**
+ * The pi-ui update note: a card that opens the changelog the agent was told about. The note itself
+ * stays one line, because the changelog is long and belongs in a sheet the operator asks for.
+ */
+function VersionUpdateCard({ message }: { message: ChatMessage }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
+
+  useEffect(() => {
+    const dialog = ref.current;
+    if (dialog === null) return;
+    if (open && !dialog.open) dialog.showModal();
+    if (!open && dialog.open) dialog.close();
+  }, [open]);
+
+  const version = message.version;
+  const changes = version?.changes ?? "";
+  const title = version === undefined || version.to === "" ? "pi-ui update" : `pi-ui ${version.to}`;
+
+  return (
+    <>
+      <button
+        type="button"
+        data-message-id={message.id}
+        data-role={message.role}
+        data-testid="version-update"
+        onClick={() => {
+          haptic();
+          setOpen(true);
+        }}
+        className="theme-radius mx-auto w-fit min-w-0 max-w-[92%] cursor-pointer bg-accent px-3 py-1 text-center font-mono text-[11px] leading-5 text-background transition-opacity [overflow-wrap:anywhere] hover:opacity-90"
+      >
+        {message.text}
+      </button>
+      {open ? (
+        // biome-ignore lint/a11y/useKeyWithClickEvents: Esc is handled by the dialog cancel event.
+        <dialog
+          ref={ref}
+          data-testid="version-update-dialog"
+          aria-labelledby={titleId}
+          onCancel={(event) => {
+            event.preventDefault();
+            setOpen(false);
+          }}
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setOpen(false);
+          }}
+          className="m-auto flex max-h-[85vh] w-[min(46rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-foreground/15 bg-surface p-0 text-foreground shadow-xl backdrop:bg-black/50"
+        >
+          <div className="flex items-center justify-between gap-2 border-b border-foreground/10 px-3 py-2">
+            <h2
+              id={titleId}
+              className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground"
+            >
+              {title}
+            </h2>
+            <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
+              Close
+            </Button>
+          </div>
+          <div
+            data-testid="version-update-changelog"
+            className="min-h-0 flex-1 overflow-y-auto px-3 py-2 text-sm leading-relaxed"
+          >
+            {changes.trim() === "" ? (
+              <p className="text-muted-foreground">CHANGELOG.md has no entry for this version.</p>
+            ) : (
+              <DeferredMarkdown text={changes} />
+            )}
+          </div>
+        </dialog>
+      ) : null}
+    </>
+  );
+}
+
 /** An assistant reply: its full Markdown, rendered the same way at any length. */
 function AssistantReply({ message }: { message: ChatMessage }) {
   return (
@@ -264,16 +341,7 @@ export function MessageBubble({
       );
     }
     if (isVersionUpdate(message)) {
-      return (
-        <div
-          data-message-id={message.id}
-          data-role={message.role}
-          data-testid="version-update"
-          className="theme-radius mx-auto w-fit min-w-0 max-w-[92%] bg-accent px-3 py-1 text-center font-mono text-[11px] leading-5 text-background [overflow-wrap:anywhere]"
-        >
-          {message.text}
-        </div>
-      );
+      return <VersionUpdateCard message={message} />;
     }
     return (
       <div className="px-2 py-1 text-center font-mono text-[11px] text-muted-foreground">
