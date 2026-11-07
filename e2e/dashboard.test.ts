@@ -1272,13 +1272,20 @@ test("MCP details show tool counts and never the connected label", async () => {
     usage: null,
     context: null,
     mcp: {
-      unavailable: ["down"],
+      unavailable: ["down", "reasoned"],
       servers: [
         { name: "three", available: true, authRejected: false, tools: ["a", "b", "c"] },
         { name: "single", available: true, authRejected: false, tools: ["a"] },
         { name: "empty", available: true, authRejected: false, tools: [] },
         { name: "rejected", available: false, authRejected: true, tools: [] },
         { name: "down", available: false, authRejected: false, tools: [] },
+        {
+          name: "reasoned",
+          available: false,
+          authRejected: false,
+          tools: [],
+          reason: "session lost (http404)",
+        },
       ],
     },
     mcpEvents: { subscriptions: [], events: [], notice: null, revision: 0 },
@@ -1297,11 +1304,18 @@ test("MCP details show tool counts and never the connected label", async () => {
   };
   assert.deepEqual(
     data.servers.map((server) => server.detail),
-    ["3 tools", "1 tool", "no tools", "auth rejected", "unavailable · server unreachable"],
+    [
+      "3 tools",
+      "1 tool",
+      "no tools",
+      "auth rejected",
+      "unavailable · server unreachable",
+      "unavailable · session lost (http404)",
+    ],
   );
   assert.deepEqual(
     data.servers.map((server) => server.state),
-    ["ok", "ok", "ok", "warn", "error"],
+    ["ok", "ok", "ok", "warn", "error", "error"],
   );
   assert.deepEqual(
     data.servers.map((server) => [server.available, server.authRejected, server.tools]),
@@ -1310,6 +1324,7 @@ test("MCP details show tool counts and never the connected label", async () => {
       [true, false, 1],
       [true, false, 0],
       [false, true, 0],
+      [false, false, 0],
       [false, false, 0],
     ],
   );
