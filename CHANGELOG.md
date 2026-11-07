@@ -611,6 +611,16 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 - An explicit container MCP contract; unavailable MCP servers are shown.
 - Interrupted runs are recovered and resumed, replies render Markdown, and the app has e2e tests.
 - A stable composer across sends, runs and mobile viewports, over a blurred black footer.
+## 1.6.113
+
+- **MCP events stream again after a restart.** An event stamped before this process
+  started was stored with `replayed: true`, and replayed events are dropped before they
+  become a notice — so a healthy `events/stream` subscription advanced its cursor and
+  delivered nothing, with `lastEventAt` frozen for sixteen hours. Novelty is now the
+  durable delivered-id set alone: a known id is a re-delivery, anything else is news
+  whenever it was produced. A batch that reports `dropped_events` also records a `gap`
+  (count and time) on `/api/state` instead of leaving the missing window silent.
+
 ## 1.6.112
 
 - Tapping a push notification no longer lands on a 404. The payloads always
