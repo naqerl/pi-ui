@@ -1,3 +1,11 @@
+## 1.6.118
+
+### Changed
+
+- Actualized the pi family: `@earendil-works/pi-ai` 1.3.0 → 1.5.0, `@earendil-works/pi-coding-agent`
+  1.4.0 → 1.5.0 and `@earendil-works/pi-codemode` 1.4.0 → 1.5.0 (`pi-durable` was already 1.5.0).
+  No source changes were needed: 360 unit tests pass, the server boots and serves /api/state.
+
 ## 1.6.117
 
 ### Fixed
