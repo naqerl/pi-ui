@@ -85,6 +85,36 @@ export interface TokenSpend {
   output: number;
 }
 
+export type DelegateRunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+export interface DelegateTokenUsage {
+  input: number;
+  output: number;
+  total: number;
+  cost: number;
+}
+
+/** One sub-agent run, as the activity page and /api/state see it. */
+export interface DelegateRunView {
+  id: string;
+  agent: string;
+  task: string;
+  taskFirstLine: string;
+  cwd: string;
+  status: DelegateRunStatus;
+  queuedAt: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationMs: number;
+  duration: string;
+  usage?: DelegateTokenUsage;
+  error?: string;
+  resultPath: string;
+  activityPath: string;
+  resultUrl: string;
+  activityUrl: string;
+}
+
 /** One message waiting for the current run to finish. */
 export interface QueuedMessage {
   id: string;
@@ -466,6 +496,8 @@ export interface Snapshot {
   mcpEvents?: McpEventsState;
   draft?: DraftSync;
   tasks?: TaskLedger;
+  /** Sub-agent runs, with their own token usage rather than the main turn's. */
+  delegates?: DelegateRunView[];
   /** Tools still running. A refresh uses this when `toolsRevision` is current. */
   activeTools?: ToolActivity[];
   toolsRevision?: number;

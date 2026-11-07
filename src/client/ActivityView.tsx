@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { formatTime } from "../shared/time";
-import type { ActivityItem } from "../shared/types";
+import type { ActivityItem, DelegateRunStatus, DelegateRunView } from "../shared/types";
 import { activitySummary } from "./activity-format";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
 import { cn } from "./lib/utils";
@@ -141,6 +141,182 @@ function JobActivityRow({ activity }: { activity: Extract<ActivityItem, { kind: 
   );
 }
 
+function delegateStatus(status: DelegateRunStatus): string {
+  switch (status) {
+    case "completed":
+      return "finished";
+    case "failed":
+      return "failed";
+    case "cancelled":
+      return "cancelled";
+    case "running":
+      return "running";
+    default:
+      return "queued";
+  }
+}
+
+function DelegateRunRow({ run }: { run: DelegateRunView }) {
+  const [open, setOpen] = useState(false);
+  const [content, setContent] = useState<{ result: string; activity: string } | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const failed = run.status === "failed";
+  const clock = formatTime(run.startedAt ?? run.queuedAt);
+  const tokens =
+    run.usage === undefined
+      ? ""
+      : ` · ${run.usage.input.toLocaleString()} in / ${run.usage.output.toLocaleString()} out`;
+  useEffect(() => {
+    if (!open || content !== null) return;
+    let active = true;
+    const load = async (url: string): Promise<string> => {
+      try {
+        const response = await fetch(url, { cache: "no-store" });
+        return response.ok ? await response.text() : "";
+      } catch {
+        return "";
+      }
+    };
+    void Promise.all([load(run.resultUrl), load(run.activityUrl)])
+      .then(([result, activity]) => {
+        if (active) {
+          setContent({ result, activity });
+          setLoadError(null);
+        }
+      })
+      .catch((error: unknown) => {
+        if (active) setLoadError(String(error));
+      });
+    return () => {
+      active = false;
+    };
+  }, [content, open, run.activityUrl, run.resultUrl]);
+  return (
+    <Collapsible onOpenChange={setOpen}>
+      <CollapsibleTrigger
+        data-testid="activity-delegate"
+        data-status={run.status}
+        data-notice-kind="delegate"
+        className={cn(
+          "group flex w-full items-center gap-2 border-b border-border py-3 text-left font-mono text-xs hover:text-foreground",
+          failed ? "text-destructive" : "text-muted-foreground",
+        )}
+      >
+        <span className="inline-block w-3 shrink-0 transition-transform group-data-[state=open]:rotate-90">
+          ▸
+        </span>
+        <span aria-hidden="true" className="shrink-0">
+          ◈
+        </span>
+        <span
+          data-testid="activity-delegate-summary"
+          className="min-w-0 flex-1 [overflow-wrap:anywhere]"
+        >
+          {run.agent} · {run.taskFirstLine} · {delegateStatus(run.status)} · {run.duration}
+          {tokens}
+        </span>
+        {clock !== "" && (
+          <time
+            dateTime={run.startedAt ?? run.queuedAt}
+            className="shrink-0 tabular-nums opacity-60"
+          >
+            {clock}
+          </time>
+        )}
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="theme-radius space-y-3 border-b border-border bg-muted/40 px-3 py-3 pl-8 text-xs">
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-xs">
+            <JobField label="Run" value={run.id} />
+            <JobField label="Agent" value={run.agent} />
+            <JobField label="Task" value={run.task} />
+            <JobField label="Status" value={delegateStatus(run.status)} />
+            <JobField label="Duration" value={run.duration} />
+            {run.usage !== undefined && (
+              <JobField
+                label="Tokens"
+                value={`${run.usage.input.toLocaleString()} in / ${run.usage.output.toLocaleString()} out`}
+              />
+            )}
+            {run.error !== undefined && <JobField label="Error" value={run.error} />}
+          </dl>
+          <div className="flex flex-wrap gap-3 font-mono text-xs">
+            <a
+              className="underline underline-offset-2"
+              href={run.resultUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Result file
+            </a>
+            <a
+              className="underline underline-offset-2"
+              href={run.activityUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Activity file
+            </a>
+          </div>
+          {loadError !== null && <p className="text-destructive">{loadError}</p>}
+          {content === null ? (
+            open && <p className="font-mono text-muted-foreground">Loading files…</p>
+          ) : (
+            <>
+              <Detail label="result">
+                {content.result.trim().length > 0 ? content.result : "(no result yet)"}
+              </Detail>
+              <Detail label="activity">
+                {content.activity.trim().length > 0 ? content.activity : "(no activity yet)"}
+              </Detail>
+            </>
+          )}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function DelegateRuns() {
+  const [runs, setRuns] = useState<DelegateRunView[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      try {
+        const response = await fetch("/api/delegates", { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = (await response.json()) as unknown;
+        if (!active) return;
+        setRuns(Array.isArray(data) ? (data as DelegateRunView[]) : []);
+        setError(null);
+      } catch (cause) {
+        if (active) setError(String(cause));
+      }
+    };
+    void load();
+    const timer = setInterval(() => void load(), 2_000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, []);
+  if (runs.length === 0 && error === null) return null;
+  return (
+    <section data-testid="delegate-runs" className="mb-4">
+      <h2 className="mb-1 font-mono text-[11px] uppercase tracking-wide text-muted-foreground">
+        Delegates
+      </h2>
+      {error !== null && <p className="font-mono text-xs text-destructive">{error}</p>}
+      <div>
+        {runs.map((run) => (
+          <DelegateRunRow key={run.id} run={run} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function ActivityRow({ activity }: { activity: ActivityItem }) {
   if (activity.kind === "job") return <JobActivityRow activity={activity} />;
   const failed = activity.kind === "tool" && activity.isError;
@@ -234,6 +410,7 @@ export function ActivityView({ timeline, ready, run: runProp, dialog }: Activity
       </div>
       <div data-testid="activity-scroll" className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-4">
         {!ready && <p className="font-mono text-xs text-muted-foreground">Loading…</p>}
+        <DelegateRuns />
         {ready && activities.length === 0 && (
           <p className="font-mono text-xs text-muted-foreground">
             {run === null ? "No activity yet." : "No activity in this run."}

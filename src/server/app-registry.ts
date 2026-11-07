@@ -10,6 +10,8 @@ import { createBiliTools } from "./bili-tools.js";
 import type { BillionContextInline } from "./billion-context.js";
 import type { DashboardManager } from "./dashboard.js";
 import { createDashboardTools } from "./dashboard-tools.js";
+import { createAcpDelegateTools } from "./delegate-tools.js";
+import type { DelegateManager } from "./delegates.js";
 import { createDiagramTools, type DiagramBridge } from "./diagram-tools.js";
 import { createJobTools } from "./job-tools.js";
 import type { JobManager } from "./jobs.js";
@@ -28,6 +30,7 @@ export interface AppRegistryBoot {
   readonly biliTools: readonly string[];
   readonly taskTools: readonly string[];
   readonly jobTools: readonly string[];
+  readonly delegateTools: readonly string[];
   readonly dashboardTools: readonly string[];
   readonly memoryTools: readonly string[];
   readonly diagramTools: readonly string[];
@@ -40,6 +43,8 @@ export interface AppRegistryOptions {
   readonly tasks: TaskBridge;
   /** Background shell jobs. Without it, the job tools are not offered. */
   readonly jobs?: JobManager;
+  /** Sub-agent runs. Without it, the delegate tools are not offered. */
+  readonly delegates?: DelegateManager;
   /** The agent-editable dashboard page. Without it, the dashboard tools are not offered. */
   readonly dashboard?: DashboardManager;
   /** The layered memory tree, its injected-snapshot cache and the write notice hook. */
@@ -80,6 +85,12 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
   const jobTools = options.jobs === undefined ? [] : createJobTools(options.jobs);
   if (jobTools.length > 0) {
     registry.install(defineExtension({ name: "pi-ui-job-tools", tools: jobTools }));
+  }
+
+  const delegateTools =
+    options.delegates === undefined ? [] : createAcpDelegateTools(options.delegates, 0);
+  if (delegateTools.length > 0) {
+    registry.install(defineExtension({ name: "pi-ui-delegate-tools", tools: delegateTools }));
   }
 
   const dashboardTools =
@@ -132,6 +143,7 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
     biliTools: biliTools.map((tool) => tool.name),
     taskTools: taskTools.map((tool) => tool.name),
     jobTools: jobTools.map((tool) => tool.name),
+    delegateTools: delegateTools.map((tool) => tool.name),
     dashboardTools: dashboardTools.map((tool) => tool.name),
     memoryTools: memoryTools.map((tool) => tool.name),
     diagramTools: diagramTools.map((tool) => tool.name),

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { createDashboardTools } from "../src/server/dashboard-tools.js";
+import { createAcpDelegateTools } from "../src/server/delegate-tools.js";
 import { createDiagramTools } from "../src/server/diagram-tools.js";
 import { createJobTools } from "../src/server/job-tools.js";
 import { createMemoryTools } from "../src/server/memory/tools.js";
@@ -94,6 +95,7 @@ function collectAgentTools(): ToolRegistration[] {
     ...(createCodingTools().tools ?? []),
     ...createTaskTools(unused),
     ...createJobTools(unused),
+    ...createAcpDelegateTools(unused, 0),
     ...createDashboardTools(unused),
     ...createDiagramTools(unused),
     ...createOperatorTools(unused),
@@ -118,6 +120,9 @@ const REQUIRED_APP_TOOLS = [
   "job_list",
   "job_output",
   "job_cancel",
+  "acp_delegate",
+  "acp_delegate_wait",
+  "acp_delegate_cancel",
   "dashboard_get",
   "dashboard_upsert",
   "dashboard_remove",

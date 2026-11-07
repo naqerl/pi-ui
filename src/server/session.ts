@@ -53,6 +53,7 @@ import {
 import { createAppRegistry } from "./app-registry.js";
 import type { BillionContextInline } from "./billion-context.js";
 import type { DashboardManager } from "./dashboard.js";
+import type { DelegateManager } from "./delegates.js";
 import type { DiagramBridge } from "./diagram-tools.js";
 import { type DurableDoctorReport, durableDoctor, durableRepairNotice } from "./durable-doctor.js";
 import type { JobManager } from "./jobs.js";
@@ -97,6 +98,17 @@ const JobNoticeEntry = defineEntry<{
 
 /** The entry kind a job result is placed as; the chat never renders it as a user message. */
 export const JOB_NOTICE_ENTRY_KIND = JobNoticeEntry.kind;
+
+/**
+ * A finished sub-agent run. Like a job result it carries a model message, so the
+ * agent can read the result next turn, but the chat renders it as a notice chip.
+ */
+const DelegateNoticeEntry = defineEntry<{
+  text: string;
+  createdAt: string;
+}>("ui.delegate-notice");
+
+export const DELEGATE_NOTICE_ENTRY_KIND = DelegateNoticeEntry.kind;
 
 /**
  * An MCP event notice. The first entry of a key carries the model message that
@@ -191,6 +203,7 @@ export interface DurableSessionOptions {
   readonly bili?: BillionContextInline;
   readonly tasks: TaskBridge;
   readonly jobs?: JobManager;
+  readonly delegates?: DelegateManager;
   readonly dashboard?: DashboardManager;
   readonly memory?: {
     readonly store: MemoryStore;
@@ -217,6 +230,7 @@ export interface DurableSessionBoot {
   readonly biliTools: readonly string[];
   readonly taskTools: readonly string[];
   readonly jobTools: readonly string[];
+  readonly delegateTools: readonly string[];
   readonly dashboardTools: readonly string[];
   readonly memoryTools: readonly string[];
   readonly diagramTools: readonly string[];
@@ -257,6 +271,7 @@ export async function openDurableSession(
     biliTools,
     taskTools,
     jobTools,
+    delegateTools,
     dashboardTools,
     memoryTools,
     diagramTools,
@@ -266,6 +281,7 @@ export async function openDurableSession(
     bili: options.bili,
     tasks: options.tasks,
     ...(options.jobs === undefined ? {} : { jobs: options.jobs }),
+    ...(options.delegates === undefined ? {} : { delegates: options.delegates }),
     ...(options.dashboard === undefined ? {} : { dashboard: options.dashboard }),
     ...(options.memory === undefined ? {} : { memory: options.memory }),
     ...(options.diagrams === undefined ? {} : { diagrams: options.diagrams }),
@@ -362,6 +378,7 @@ export async function openDurableSession(
     biliTools,
     taskTools,
     jobTools,
+    delegateTools,
     dashboardTools,
     memoryTools,
     diagramTools,
@@ -744,6 +761,20 @@ export function buildTranscript(
 
   for (const entry of sorted) {
     const kind = entry.kind;
+    if (kind === DelegateNoticeEntry.kind) {
+      if (!isRecord(entry.data) || typeof entry.data.text !== "string") continue;
+      const notice = parseNotice(entry.data.text);
+      if (notice === null || notice.kind !== "delegate") continue;
+      messages.push({
+        id: `m-${entry.id}`,
+        role: "system",
+        text: entry.data.text,
+        timestamp: entryTimestamp(entry.data),
+        order: entry.id * 10_000,
+        notice,
+      });
+      continue;
+    }
     if (kind === JobNoticeEntry.kind) {
       if (!isRecord(entry.data) || typeof entry.data.text !== "string") continue;
       const notice = parseNotice(entry.data.text);

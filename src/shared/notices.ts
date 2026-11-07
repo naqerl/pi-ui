@@ -123,6 +123,21 @@ export interface TaskDecisionNoticeDetails extends TaskDecisionNoticeRecord {
   summary: string;
 }
 
+/** A finished sub-agent run, announced once as a chip. */
+export interface DelegateNoticeDetails {
+  kind: "delegate";
+  runId: string;
+  agent: string;
+  status: "completed" | "failed" | "cancelled";
+  task: string;
+  resultPath: string;
+  activityPath: string;
+  duration: string | null;
+  tokens: { input: number; output: number } | null;
+  error: string | null;
+  summary: string;
+}
+
 /** The restart note recorded for an interrupted run. */
 export interface InterruptedNoticeDetails {
   kind: "interrupted";
@@ -136,6 +151,7 @@ export interface InterruptedNoticeDetails {
 export type ChatNotice =
   | JobNoticeDetails
   | McpNoticeDetails
+  | DelegateNoticeDetails
   | InterruptedNoticeDetails
   | MemoryNoticeDetails
   | MemoryDeltaDetails
@@ -144,6 +160,8 @@ export type ChatNotice =
   | TaskDecisionNoticeDetails;
 
 const JOB_HEAD = /^\[background job (\S+) finished\] (\S+) (.+?): (.*)$/;
+const DELEGATE_HEAD =
+  /^\[acp_delegate (completed|FAILED[^\]]*)\] \*\*(.+?)\*\* \(runId `([^`]+)`\) (completed|failed) after (.+?)\.$/;
 export const MCP_EVENTS_HEAD = "MCP event data follows.";
 /**
  * The fixed line after every MCP event notice. It tells the model the notice is
@@ -255,6 +273,48 @@ function parseJob(lines: string[]): JobNoticeDetails | null {
           ? `job ${name} lost on restart`
           : `job ${name} failed ✗${reason}${after}`;
   return { kind: "job", id, name, command, status, exitCode, signal, duration, output, summary };
+}
+
+function parseDelegate(lines: string[]): DelegateNoticeDetails | null {
+  const head = DELEGATE_HEAD.exec(lines[0] ?? "");
+  if (head === null) return null;
+  const [, marker = "", agent = "", runId = "", outcome = "", duration = ""] = head;
+  const status: DelegateNoticeDetails["status"] =
+    outcome === "completed" ? "completed" : marker.startsWith("FAILED") ? "failed" : "cancelled";
+  let task = "";
+  let resultPath = "";
+  let activityPath = "";
+  let error: string | null = null;
+  let tokens: DelegateNoticeDetails["tokens"] = null;
+  for (const line of lines.slice(1)) {
+    if (line.startsWith("Task: ")) task = line.slice("Task: ".length);
+    else if (line.startsWith("Result: ")) resultPath = line.slice("Result: ".length);
+    else if (line.startsWith("Activity: ")) activityPath = line.slice("Activity: ".length);
+    else if (line.startsWith("Error: ")) error = line.slice("Error: ".length);
+    else {
+      const usage = /^Tokens: ([\d,]+) in, ([\d,]+) out\.$/.exec(line);
+      if (usage !== null) {
+        tokens = {
+          input: Number(usage[1]?.replaceAll(",", "") ?? 0),
+          output: Number(usage[2]?.replaceAll(",", "") ?? 0),
+        };
+      }
+    }
+  }
+  const state = status === "completed" ? "finished" : status === "failed" ? "FAILED" : "cancelled";
+  return {
+    kind: "delegate",
+    runId,
+    agent,
+    status,
+    task,
+    resultPath,
+    activityPath,
+    duration: duration.length === 0 ? null : duration,
+    tokens,
+    error,
+    summary: `delegate ${agent} · ${state}`,
+  };
 }
 
 function mcpSummary(servers: string[], label: string): string {
@@ -557,6 +617,7 @@ export function isMcpNotice(message: string): boolean {
 /** The notice a message stands for, or null for an ordinary message. */
 export function parseNotice(message: string): ChatNotice | null {
   if (message.startsWith("[background job ")) return parseJob(message.split("\n"));
+  if (message.startsWith("[acp_delegate ")) return parseDelegate(message.split("\n"));
   if (message.startsWith(MCP_EVENTS_HEAD)) return parseMcp(message, false);
   if (message.startsWith(MCP_STATUS_HEAD)) return parseMcp(message, true);
   if (message.startsWith("Memory updated: ")) return parseMemoryDelta(message);

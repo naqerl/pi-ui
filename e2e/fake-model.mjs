@@ -73,6 +73,15 @@ function updateNotice(body) {
 }
 
 function responseFor(prompt, body = {}) {
+  if (prompt.includes("REPEAT_FIRST_INSTRUCTION")) {
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+    const users = messages
+      .filter((message) => message?.role === "user")
+      .map((message) => textOf(message.content))
+      .filter((text) => text.trim().length > 0);
+    const first = users[0]?.trim() ?? "(none)";
+    return `First user message: ${first.slice(0, 300)}\nUser messages: ${users.length}`;
+  }
   if (prompt.includes("WHATVERSION")) return `Update notice: ${updateNotice(body)}`;
   // The echo guard test wants the model to repeat a notice verbatim, trailer included.
   if (prompt.includes("MCP event data follows.") && prompt.includes("ECHO_MCP_NOTICE")) {
@@ -208,6 +217,16 @@ export function startFakeModelServer() {
     }
 
     const prompt = lastUserText(body);
+    if (
+      prompt
+        .replace(/<acp[^>]*>[^<]*<\/acp>\n?/g, "")
+        .trim()
+        .startsWith("DELEGATE_FAIL")
+    ) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "delegate failure requested by the test" } }));
+      return;
+    }
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
@@ -291,7 +310,10 @@ export function startFakeModelServer() {
     }
     if (last?.role === "tool") {
       const result = textOf(last.content).replace(/<acp[^>]*>[^<]*<\/acp>\n?/g, "");
-      const reply = `Tool result: ${result.split("\n")[0]}`;
+      const parentAsked = lastUserText(body).includes("DELEGATE_CLEAN_CONTEXT");
+      const reply = parentAsked
+        ? `Parent did not see the delegate transcript. ${result.split("\n")[0]}`
+        : `Tool result: ${result.split("\n")[0]}`;
       for (const piece of reply.match(/.{1,18}/gs) ?? []) writeEvent(res, chunkFor(piece));
       writeEvent(res, chunkFor("", "stop"));
       res.write("data: [DONE]\n\n");
@@ -299,6 +321,38 @@ export function startFakeModelServer() {
       return;
     }
 
+    if (prompt.includes("DELEGATE_PARTIAL")) {
+      writeEvent(res, chunkFor("Working on it"));
+      writeEvent(res, {
+        id: "chatcmpl-e2e",
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: "e2e-model",
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: `call_${Date.now()}_delegate_partial`,
+                  type: "function",
+                  function: {
+                    name: "bash",
+                    arguments: JSON.stringify({ command: "sleep 30; echo delegate-partial-done" }),
+                  },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      });
+      writeEvent(res, chunkFor("", "tool_calls"));
+      res.write("data: [DONE]\n\n");
+      res.end();
+      return;
+    }
     if (prompt.includes("SLOW")) {
       writeEvent(res, chunkFor("Working on it"));
       const heartbeat = setInterval(() => res.write(": keepalive\n\n"), 10_000);
