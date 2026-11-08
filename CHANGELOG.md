@@ -1,3 +1,9 @@
+## 1.6.122
+
+### Fixed
+
+- Dragging a dashboard widget no longer scatters the others: the layout the grid receives keeps its identity, the grid owns the layout while a gesture is in flight, a drag over an occupied cell is refused instead of displacing a chain, and the committed layout is clamped to 12 columns with overlaps pushed down.
+
 ## 1.6.121
 
 ### Fixed
