@@ -692,6 +692,8 @@ describe("MCP events against one shared app", { serial: true }, () => {
           { timeout: 20_000 },
         )
         .toBe(true);
+      // Every novel ID is delivered now; the distinct update is not silently dropped.
+      await expect.poll(() => chipCount(browser, "4 queued"), { timeout: 20_000 }).toBe(1);
     } finally {
       writeFileSync(release, "");
     }
@@ -711,7 +713,7 @@ describe("MCP events against one shared app", { serial: true }, () => {
         },
         { timeout: 30_000 },
       )
-      .toEqual({ run: "idle", count: 1, ids: expected });
+      .toEqual({ run: "idle", count: 1, ids: [...expected, `${prefix}-update`] });
 
     const subscription = (await mcpEvents(browser)).subscriptions.find(
       (item) => item.name === "stub-burst-update",

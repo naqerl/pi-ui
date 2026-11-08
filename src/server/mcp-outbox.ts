@@ -70,9 +70,13 @@ export class McpOutbox {
   }
 
   async enqueue(text: string, keys: string[] = []): Promise<void> {
+    await this.enqueueMany([text], keys);
+  }
+
+  async enqueueMany(texts: string[], keys: string[] = []): Promise<void> {
     if (this.closed) throw new Error("MCP outbox closed");
-    const item = { id: randomUUID(), text, at: new Date().toISOString() };
-    await this.update((items) => [...items, item], keys);
+    const added = texts.map((text) => ({ id: randomUUID(), text, at: new Date().toISOString() }));
+    await this.update((items) => [...items, ...added], keys);
   }
 
   /** Start after chat recovery, and after newly accepted batches have advanced the feed. */

@@ -368,8 +368,16 @@ boot.mcp.setSubmit((text, options) => {
           .filter((item) => !mcpOutbox.has(events.eventKey(item)));
         // Persist even a gap-only batch: missing data must be visible in chat too.
         if (novel.length > 0 || envelope.dropped > 0) {
-          await mcpOutbox.enqueue(
-            mcpEventText(envelope, novel),
+          const texts =
+            novel.length === 0
+              ? [mcpEventText(envelope, [])]
+              : novel.map((item, index) =>
+                  mcpEventText({ ...envelope, dropped: index === 0 ? envelope.dropped : 0 }, [
+                    item,
+                  ]),
+                );
+          await mcpOutbox.enqueueMany(
+            texts,
             novel.map((item) => events.eventKey(item)),
           );
         }

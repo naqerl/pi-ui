@@ -964,7 +964,7 @@ export class ChatService {
     this.hub.broadcast({
       event: "message.delta",
       data: {
-        text: this.currentText,
+        text: "",
         full: this.currentText,
         revision,
       } satisfies StreamTextDelta,
@@ -976,7 +976,7 @@ export class ChatService {
     this.hub.broadcast({
       event: "thinking.delta",
       data: {
-        text: this.currentThinking,
+        text: "",
         full: this.currentThinking,
         revision,
       } satisfies StreamTextDelta,
@@ -1855,6 +1855,7 @@ export class ChatService {
    * on every retry/restart; durable deduplicates both queued and placed submissions.
    * Pending batches still use the existing queued-MCP merging and chip renderer. */
   async submitMcpDelivery(item: { id: string; text: string; at: string }): Promise<void> {
+    this.lastMcpNoticeText = item.text;
     await this.submit(item.text, "queue", {
       requestId: `mcp-delivery:${item.id}`,
       queueKey: `mcp-delivery:${item.id}`,
