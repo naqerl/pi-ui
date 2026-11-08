@@ -1,3 +1,12 @@
+## 1.6.126
+
+### Fixed
+
+- The stale-epoch guard only covered one of the three places that re-seed the durable delivered-id set
+  (startup records, a late registry row, and the adapter's restore result). The restore path runs on
+  every reconnect and re-filled the set with ids from the old hub epoch, so event chips stayed dead.
+  All three now compare against the cursor they resume from.
+
 ## 1.6.125
 
 ### Fixed

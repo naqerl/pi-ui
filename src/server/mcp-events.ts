@@ -585,7 +585,7 @@ export class McpEventFeed {
     const record = this.savedRecord(stableId);
     if (record === undefined) return;
     this.restored.add(stableId);
-    this.seedDelivered(stableId, record.deliveredEventIds ?? [], true);
+    this.seedDelivered(stableId, record.deliveredEventIds ?? [], true, record.cursor ?? undefined);
   }
 
   /**
@@ -1098,7 +1098,7 @@ export class McpEventFeed {
         this.restored.add(incoming.stableId);
         if (args.restored === true) {
           // The restore result is enriched with our own durable delivered set.
-          this.seedDelivered(incoming.stableId, delivered, true);
+          this.seedDelivered(incoming.stableId, delivered, true, incoming.cursor ?? undefined);
         } else {
           this.seedSeen(incoming.stableId, delivered);
         }
