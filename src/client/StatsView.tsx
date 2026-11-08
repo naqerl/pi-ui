@@ -229,36 +229,95 @@ function snapResizeWidth(width: number): number {
   );
 }
 
+interface GridCell {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+function cellsOverlap(a: GridCell, b: GridCell): boolean {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
 /**
  * Merge RGL's gesture layout back into one section. RGL owns positions during
- * the gesture; this only commits the final cells and turns a resize into the
- * stored span, so w and span can never disagree.
+ * the gesture; this only commits the moved cell, turns a resize into the stored
+ * span, and pushes any widget the moved cell overlaps down exactly far enough
+ * to keep the saved grid free of two widgets in one cell.
  */
 function applyGridLayout(
   layout: DashboardLayout,
   sectionIndex: number,
   items: readonly Layout[],
   kind: "drag" | "resize",
-  resizedId?: string,
+  movedId?: string,
 ): DashboardLayout {
   const next = structuredClone(layout);
   const section = next.sections[sectionIndex];
   if (section === undefined) return layout;
   const byId = new Map(items.map((item) => [item.i, item]));
+  const movedItem = movedId === undefined ? undefined : byId.get(movedId);
+  const placed: GridCell[] = [];
+  const cells = new Map<string, GridCell>();
+  const place = (id: string, cell: GridCell) => {
+    let y = cell.y;
+    let collision = true;
+    while (collision) {
+      collision = false;
+      for (const other of placed) {
+        const candidate = { ...cell, y };
+        if (!cellsOverlap(candidate, other)) continue;
+        y = other.y + other.h;
+        collision = true;
+      }
+    }
+    const placedCell = { ...cell, y };
+    cells.set(id, placedCell);
+    placed.push(placedCell);
+    return placedCell;
+  };
+
+  // The moved widget wins its requested cell. Everything else keeps the stored
+  // cell unless the moved rectangle overlaps it, in which case it is pushed
+  // below the already-placed widgets in stored order.
+  if (movedId !== undefined && movedItem !== undefined) {
+    let w = Math.max(2, Math.min(GRID_COLUMNS, Math.round(movedItem.w)));
+    if (kind === "resize") w = snapResizeWidth(w);
+    place(movedId, {
+      x: Math.max(0, Math.min(GRID_COLUMNS - w, Math.round(movedItem.x))),
+      y: Math.max(0, Math.round(movedItem.y)),
+      w,
+      h: Math.max(2, Math.min(24, Math.round(movedItem.h))),
+    });
+  }
+
+  for (const slot of section.widgets) {
+    if (slot.id === movedId) continue;
+    const item = movedId === undefined ? byId.get(slot.id) : undefined;
+    const w = Math.max(
+      2,
+      Math.min(GRID_COLUMNS, item === undefined ? slotWidth(slot) : Math.round(item.w)),
+    );
+    const h = Math.max(2, Math.min(24, item === undefined ? slotHeight(slot) : Math.round(item.h)));
+    const x = Math.max(
+      0,
+      Math.min(GRID_COLUMNS - w, Math.round(item === undefined ? (slot.x ?? 0) : item.x)),
+    );
+    const y = Math.max(0, Math.round(item === undefined ? (slot.y ?? 0) : item.y));
+    place(slot.id, { x, y, w, h });
+  }
+
   section.widgets = section.widgets.map((slot) => {
-    const item = byId.get(slot.id);
-    if (item === undefined) return slot;
-    let w = Math.max(2, Math.min(GRID_COLUMNS, item.w));
-    if (kind === "resize" && slot.id === resizedId) w = snapResizeWidth(w);
-    const x = Math.max(0, Math.min(GRID_COLUMNS - w, item.x));
-    const h = Math.max(2, Math.min(24, item.h));
+    const cell = cells.get(slot.id);
+    if (cell === undefined) return slot;
     return {
       ...slot,
-      x,
-      y: Math.max(0, item.y),
-      w,
-      h,
-      span: spanForWidth(w),
+      x: cell.x,
+      y: cell.y,
+      w: cell.w,
+      h: cell.h,
+      span: spanForWidth(cell.w),
     };
   });
   return next;
@@ -1187,12 +1246,69 @@ function SectionGrid({
     index: number,
     layout: Layout[],
     kind: "drag" | "resize",
-    resizedId?: string,
+    movedId?: string,
   ) => void;
 }) {
   const { ref: gridRef, width } = useGridWidth(desktop);
-  const visible = section.widgets.filter((slot) => byId.has(slot.id));
+  // `byId` can be a fresh Map on every poll frame; the id set is what decides
+  // which stored slots are visible, so key the memo on that set instead.
+  const idSet = useMemo(() => new Set(byId.keys()), [byId]);
+  const idKey = useMemo(() => [...idSet].sort().join("\u0000"), [idSet]);
+  const visible = useMemo(() => {
+    const ids = new Set(idKey === "" ? [] : idKey.split("\u0000"));
+    return section.widgets.filter((slot) => ids.has(slot.id));
+  }, [section.widgets, idKey]);
   const items = useMemo(() => gridLayout({ ...section, widgets: visible }), [section, visible]);
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const [gestureLayout, setGestureLayout] = useState<Layout[] | null>(null);
+  const gesture = useRef<{ layout: Layout[]; frame: number | null } | null>(null);
+
+  const scheduleGestureLayout = useCallback((next: Layout[]) => {
+    const active = gesture.current;
+    if (active === null) return;
+    active.layout = next;
+    if (active.frame !== null) return;
+    active.frame = window.requestAnimationFrame(() => {
+      const current = gesture.current;
+      if (current === null) return;
+      current.frame = null;
+      setGestureLayout(current.layout);
+    });
+  }, []);
+
+  const beginGesture = useCallback(
+    (kind: "drag" | "resize") => {
+      const current = itemsRef.current;
+      gesture.current = { layout: current, frame: null };
+      setGestureLayout(current);
+      onGestureStart(kind);
+    },
+    [onGestureStart],
+  );
+
+  const endGesture = useCallback(
+    (next: Layout[], kind: "drag" | "resize", movedId?: string) => {
+      const active = gesture.current;
+      if (active?.frame !== null && active?.frame !== undefined) {
+        window.cancelAnimationFrame(active.frame);
+      }
+      gesture.current = null;
+      setGestureLayout(null);
+      onGestureStop(index, next, kind, movedId);
+    },
+    [index, onGestureStop],
+  );
+
+  useEffect(
+    () => () => {
+      if (gesture.current?.frame !== null && gesture.current?.frame !== undefined) {
+        window.cancelAnimationFrame(gesture.current.frame);
+      }
+    },
+    [],
+  );
+
   const cards = visible.map((slot) => {
     const widget = byId.get(slot.id) as Widget;
     const stored = values[widget.id];
@@ -1253,24 +1369,27 @@ function SectionGrid({
     <div ref={gridRef} className="dashboard-grid min-w-0" data-testid={`dashboard-grid-${index}`}>
       <GridLayout
         width={width}
-        layout={items}
+        layout={gestureLayout ?? items}
         cols={GRID_COLUMNS}
         rowHeight={GRID_ROW_HEIGHT}
         margin={[GRID_MARGIN, GRID_MARGIN]}
         containerPadding={[0, 0]}
         compactType={null}
         isDroppable={false}
-        preventCollision={false}
+        preventCollision
         isDraggable
         isResizable
         draggableHandle={DRAG_HANDLE}
         draggableCancel={DRAGGABLE_CANCEL}
         resizeHandles={["se"]}
         resizeHandle={resizeHandle}
-        onDragStart={() => onGestureStart("drag")}
-        onDragStop={(next) => onGestureStop(index, next, "drag")}
-        onResizeStart={() => onGestureStart("resize")}
-        onResizeStop={(next, _oldItem, newItem) => onGestureStop(index, next, "resize", newItem.i)}
+        onLayoutChange={(next) => scheduleGestureLayout(next)}
+        onDragStart={() => beginGesture("drag")}
+        onDrag={(next) => scheduleGestureLayout(next)}
+        onDragStop={(next, _oldItem, newItem) => endGesture(next, "drag", newItem.i)}
+        onResizeStart={() => beginGesture("resize")}
+        onResize={(next) => scheduleGestureLayout(next)}
+        onResizeStop={(next, _oldItem, newItem) => endGesture(next, "resize", newItem.i)}
       >
         {cards}
       </GridLayout>
@@ -1364,6 +1483,7 @@ export function StatsView({
   const saveTimer = useRef<number | undefined>(undefined);
   const saving = useRef(false);
   const mounted = useRef(true);
+  const gridGesture = useRef(false);
 
   useEffect(() => {
     mounted.current = true;
@@ -1387,7 +1507,7 @@ export function StatsView({
   }, [active]);
 
   useEffect(() => {
-    if (dashboard === null) return;
+    if (dashboard === null || gridGesture.current) return;
     const incoming = normalizeLayout(dashboard.layout);
     const json = JSON.stringify(incoming);
     if (!dirty.current && json !== layoutJson.current) {
@@ -1469,15 +1589,17 @@ export function StatsView({
   layoutRef.current = layout;
 
   const beginGridGesture = useCallback((kind: "drag" | "resize") => {
+    gridGesture.current = true;
     pageRef.current?.setAttribute("data-pager-lock", kind);
   }, []);
 
   const finishGridGesture = useCallback(
-    (sectionIndex: number, items: Layout[], kind: "drag" | "resize", resizedId?: string) => {
+    (sectionIndex: number, items: Layout[], kind: "drag" | "resize", movedId?: string) => {
+      gridGesture.current = false;
       pageRef.current?.removeAttribute("data-pager-lock");
       const current = layoutRef.current;
       if (current === null) return;
-      const next = applyGridLayout(current, sectionIndex, items, kind, resizedId);
+      const next = applyGridLayout(current, sectionIndex, items, kind, movedId);
       if (JSON.stringify(normalizeLayout(next)) === JSON.stringify(current)) return;
       commitLayout(next);
     },

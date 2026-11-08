@@ -171,7 +171,7 @@ async function tapPointer(
   }, selector);
 }
 
-test("drags a widget to the top, resizes it to half, and keeps both after reload", async ({
+test("drags a widget into free space, resizes it to half, and keeps both after reload", async ({
   app,
   browser,
   screen,
@@ -186,42 +186,64 @@ test("drags a widget to the top, resizes it to half, and keeps both after reload
   });
   await app.open("/?page=stats");
   await resetMinimalDashboard(browser);
-  patches.length = 0;
+  const status = await browser.evaluate(async () => {
+    const response = await fetch("/api/dashboard/layout", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sections: [
+          {
+            widgets: [
+              { id: "context", span: "full", x: 0, y: 0, w: 12, h: 2 },
+              { id: "tokens", span: "full", x: 0, y: 4, w: 12, h: 4 },
+              { id: "mcp", span: "full", x: 0, y: 10, w: 12, h: 4 },
+              { id: "mcp-events", span: "full", x: 0, y: 16, w: 12, h: 4 },
+              { id: "task-reopens", span: "full", x: 0, y: 22, w: 12, h: 4 },
+            ],
+          },
+        ],
+      }),
+    });
+    return response.status;
+  });
+  expect(status).toBe(200);
+  await app.open("/?page=stats");
   await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
   await expect(screen.getByTestId("widget-tokens")).toBeVisible({ timeout: 30_000 });
-  expect(
-    await browser.evaluate(() => ({
-      add: document.querySelectorAll('[data-testid="dashboard-add-section"]').length,
-      sections: document.querySelectorAll('[data-testid="dashboard-section"]').length,
-      widgets: document.querySelectorAll("[data-widget-id]").length,
-    })),
-  ).toEqual({ add: 0, sections: 1, widgets: 5 });
+  patches.length = 0;
 
-  await dragPointer(browser, '[data-widget-id="tokens"]', '[data-widget-id="context"]', 0, -18);
+  const before = await readDashboard(browser);
+  const slotsBefore = before.layout.sections.flatMap((section) => section.widgets);
+  const tokensBefore = slotsBefore.find((slot) => slot.id === "tokens");
+  const contextBefore = slotsBefore.find((slot) => slot.id === "context");
+  expect(tokensBefore?.y).toBe(4);
+  expect(contextBefore?.y).toBe(0);
+
+  // The target row is free: context ends at y=2, tokens starts at y=4.
+  await dragPointer(browser, '[data-widget-id="tokens"]', '[data-widget-id="context"]', 0, 168);
   await expect
-    .poll(
-      () =>
-        browser.evaluate(() => {
-          const page = document.querySelector("[data-testid=stats-page]");
-          return [...(page?.querySelectorAll("[data-widget-id]") ?? [])].map((item) =>
-            item.getAttribute("data-widget-id"),
-          );
-        }),
-      { timeout: 5_000 },
-    )
-    .toEqual(["tokens", "context", "mcp", "mcp-events", "task-reopens"]);
-
-  await expect.poll(() => patches.length, { timeout: 5_000 }).toBe(1);
-  const first = patches.at(-1);
-  expect(first?.sections[0]?.widgets.map((slot) => slot.id).slice(0, 2)).toEqual([
-    "tokens",
-    "context",
+    .poll(async () => {
+      const dashboard = await readDashboard(browser);
+      return dashboard.layout.sections
+        .flatMap((section) => section.widgets)
+        .find((slot) => slot.id === "tokens")?.y;
+    })
+    .toBe(2);
+  const afterDrag = await readDashboard(browser);
+  expect(
+    afterDrag.layout.sections.flatMap((section) =>
+      section.widgets.map((slot) => [slot.id, slot.x, slot.y]),
+    ),
+  ).toEqual([
+    ["context", 0, 0],
+    ["tokens", 0, 2],
+    ["mcp", 0, 10],
+    ["mcp-events", 0, 16],
+    ["task-reopens", 0, 22],
   ]);
-  expect(first?.sections[0]?.widgets[0]?.y).toBeLessThan(
-    first?.sections[0]?.widgets[1]?.y ?? Number.POSITIVE_INFINITY,
-  );
+  await expect.poll(() => patches.length, { timeout: 5_000 }).toBe(1);
 
-  // Resize the first full-width card down to half of the 12-column grid.
+  // Resize the full-width card down to half of the 12-column grid.
   await browser.evaluate(() => {
     const card = document.querySelector<HTMLElement>('[data-widget-id="tokens"]');
     const handle = card?.querySelector<HTMLElement>(".react-resizable-handle-se");
@@ -260,14 +282,17 @@ test("drags a widget to the top, resizes it to half, and keeps both after reload
     .poll(
       async () => {
         const dashboard = await readDashboard(browser);
-        const slot = dashboard.layout.sections
-          .flatMap((section) => section.widgets)
-          .find((item) => item.id === "tokens");
-        return slot === undefined ? null : [slot.span, slot.w];
+        const slots = dashboard.layout.sections.flatMap((section) => section.widgets);
+        const tokens = slots.find((item) => item.id === "tokens");
+        const context = slots.find((item) => item.id === "context");
+        return {
+          tokens: tokens === undefined ? null : [tokens.span, tokens.w],
+          context: context === undefined ? null : [context.x, context.y],
+        };
       },
       { timeout: 8_000 },
     )
-    .toEqual(["half", 6]);
+    .toEqual({ tokens: ["half", 6], context: [0, 0] });
   await expect.poll(() => patches.length, { timeout: 5_000 }).toBe(2);
   const resized = patches
     .at(-1)
@@ -275,6 +300,22 @@ test("drags a widget to the top, resizes it to half, and keeps both after reload
     .find((slot) => slot.id === "tokens");
   expect(resized?.span).toBe("half");
   expect(resized?.w).toBe(6);
+
+  // Polling re-renders must not move the committed cells after the drop.
+  await browser.evaluate(
+    () => new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 2_000)),
+  );
+  expect(
+    (await readDashboard(browser)).layout.sections.flatMap((section) =>
+      section.widgets.map((slot) => [slot.id, slot.x, slot.y]),
+    ),
+  ).toEqual([
+    ["context", 0, 0],
+    ["tokens", 0, 2],
+    ["mcp", 0, 10],
+    ["mcp-events", 0, 16],
+    ["task-reopens", 0, 22],
+  ]);
 
   // Reload: the stored coordinates and span drive the page again.
   await app.open("/?page=stats");
@@ -288,13 +329,16 @@ test("drags a widget to the top, resizes it to half, and keeps both after reload
     )
     .toBe("half");
   expect(
-    await browser.evaluate(() => {
-      const page = document.querySelector("[data-testid=stats-page]");
-      return [...(page?.querySelectorAll("[data-widget-id]") ?? [])]
-        .map((item) => item.getAttribute("data-widget-id"))
-        .slice(0, 2);
-    }),
-  ).toEqual(["tokens", "context"]);
+    (await readDashboard(browser)).layout.sections.flatMap((section) =>
+      section.widgets.map((slot) => [slot.id, slot.x, slot.y, slot.span]),
+    ),
+  ).toEqual([
+    ["context", 0, 0, "full"],
+    ["tokens", 0, 2, "half"],
+    ["mcp", 0, 10, "full"],
+    ["mcp-events", 0, 16, "full"],
+    ["task-reopens", 0, 22, "full"],
+  ]);
 
   // The route is only for this test's PATCH assertions; leaving it registered
   // would intercept layout writes in every later test in the file.
@@ -390,41 +434,120 @@ test("resizing one widget leaves its neighbours' widths and spans alone", async 
     .toEqual({ context: ["half", 5], tokens: ["half", 6] });
 });
 
-test("drags from the grip with a real mouse", async ({ app, browser, screen }) => {
+test("a real mouse drag of context by two columns and rows leaves neighbours still", async ({
+  app,
+  browser,
+  screen,
+}) => {
   await browser.setViewport({ width: 1280, height: 1000 });
   await app.open("/?page=stats");
   await resetMinimalDashboard(browser);
-  await expect(screen.getByTestId("widget-tokens")).toBeVisible({ timeout: 30_000 });
-  const before = await readDashboard(browser);
-  const startY = before.layout.sections
-    .flatMap((section) => section.widgets)
-    .find((slot) => slot.id === "tokens")?.y;
-  expect(startY).toBeDefined();
+  const status = await browser.evaluate(async () => {
+    const response = await fetch("/api/dashboard/layout", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sections: [
+          {
+            widgets: [
+              { id: "context", span: "third", x: 0, y: 0, w: 4, h: 2 },
+              { id: "tokens", span: "half", x: 6, y: 0, w: 6, h: 4 },
+              { id: "mcp", span: "full", x: 0, y: 6, w: 12, h: 4 },
+              { id: "mcp-events", span: "full", x: 0, y: 12, w: 12, h: 4 },
+              { id: "task-reopens", span: "full", x: 0, y: 18, w: 12, h: 4 },
+            ],
+          },
+        ],
+      }),
+    });
+    return response.status;
+  });
+  expect(status).toBe(200);
+  await app.open("/?page=stats");
+  await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
 
-  const grip = await browser
-    .locator('[data-widget-id="tokens"] [data-testid="dashboard-drag-handle"]')
-    .boundingBox();
-  const target = await browser.locator('[data-widget-id="context"]').boundingBox();
-  if (grip === null || target === null) throw new Error("missing drag geometry");
-  const x0 = grip.x + grip.width / 2;
-  const y0 = grip.y + grip.height / 2;
-  const x1 = target.x + target.width / 2;
-  const y1 = target.y + target.height / 4;
-  await browser.mouse.move(x0, y0);
+  const before = await readDashboard(browser);
+  const beforeSlots = before.layout.sections
+    .flatMap((section) => section.widgets)
+    .map((slot) => [slot.id, slot.x, slot.y]);
+  const geometry = await browser.evaluate(() => {
+    const grid = document.querySelector<HTMLElement>(".dashboard-grid");
+    const handle = document.querySelector<HTMLElement>(
+      '[data-widget-id="context"] [data-testid="dashboard-drag-handle"]',
+    );
+    if (grid === null || handle === null) return null;
+    const box = handle.getBoundingClientRect();
+    const width = grid.getBoundingClientRect().width;
+    const column = (width - 12 * 11) / 12 + 12;
+    return { x: box.left + box.width / 2, y: box.top + box.height / 2, column, row: 44 + 12 };
+  });
+  expect(geometry).not.toBeNull();
+  if (geometry === null) throw new Error("missing drag geometry");
+  const { x, y, column, row } = geometry;
+  await browser.mouse.move(x, y);
   await browser.mouse.down();
-  for (let step = 1; step <= 6; step += 1) {
-    await browser.mouse.move(x0 + ((x1 - x0) * step) / 6, y0 + ((y1 - y0) * step) / 6);
+  for (let step = 1; step <= 8; step += 1) {
+    await browser.mouse.move(x + (column * 2 * step) / 8, y + (row * 2 * step) / 8);
   }
   await browser.mouse.up();
 
   await expect
     .poll(async () => {
       const dashboard = await readDashboard(browser);
-      return dashboard.layout.sections
+      const slot = dashboard.layout.sections
         .flatMap((section) => section.widgets)
-        .find((slot) => slot.id === "tokens")?.y;
+        .find((item) => item.id === "context");
+      return slot === undefined ? null : [slot.x, slot.y];
     })
-    .toBeLessThan(startY ?? Number.POSITIVE_INFINITY);
+    .toEqual([2, 2]);
+  const afterSlots = (await readDashboard(browser)).layout.sections
+    .flatMap((section) => section.widgets)
+    .map((slot) => [slot.id, slot.x, slot.y]);
+  expect(afterSlots).toEqual([
+    ["tokens", 6, 0],
+    ["context", 2, 2],
+    ["mcp", 0, 6],
+    ["mcp-events", 0, 12],
+    ["task-reopens", 0, 18],
+  ]);
+  for (const [id, slotX, slotY] of beforeSlots) {
+    if (id === "context") continue;
+    expect(
+      afterSlots.some(
+        ([afterId, afterX, afterY]) => afterId === id && afterX === slotX && afterY === slotY,
+      ),
+    ).toBe(true);
+  }
+
+  // Polling keeps re-rendering the page; none of that may move a committed cell.
+  await browser.evaluate(
+    () => new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 2_000)),
+  );
+  expect(
+    (await readDashboard(browser)).layout.sections.flatMap((section) =>
+      section.widgets.map((slot) => [slot.id, slot.x, slot.y]),
+    ),
+  ).toEqual([
+    ["tokens", 6, 0],
+    ["context", 2, 2],
+    ["mcp", 0, 6],
+    ["mcp-events", 0, 12],
+    ["task-reopens", 0, 18],
+  ]);
+
+  await app.open("/?page=stats");
+  await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
+  expect(
+    (await readDashboard(browser)).layout.sections.flatMap((section) =>
+      section.widgets.map((slot) => [slot.id, slot.x, slot.y]),
+    ),
+  ).toEqual([
+    ["tokens", 6, 0],
+    ["context", 2, 2],
+    ["mcp", 0, 6],
+    ["mcp-events", 0, 12],
+    ["task-reopens", 0, 18],
+  ]);
 });
 
 test("creates a section through the agent, keeps drags inside it, then renames and deletes it", async ({
@@ -775,7 +898,11 @@ test("a phone drag cannot move a widget into another section", async ({ app, bro
   expect(await sections()).toEqual(before);
 });
 
-test("packs a free drag collision into the persisted layout", async ({ app, browser, screen }) => {
+test("refuses a drag onto an occupied cell and leaves every widget where it was", async ({
+  app,
+  browser,
+  screen,
+}) => {
   await browser.setViewport({ width: 1280, height: 1000 });
   await app.open("/?page=stats");
   await resetMinimalDashboard(browser);
@@ -803,92 +930,43 @@ test("packs a free drag collision into the persisted layout", async ({ app, brow
   expect(patched).toBe(200);
   await app.open("/?page=stats");
   await expect(screen.getByTestId("widget-tokens")).toBeVisible({ timeout: 30_000 });
-
-  const preview = await browser.evaluate(async () => {
-    const handle = document.querySelector<HTMLElement>(
-      '[data-widget-id="tokens"] [data-testid="dashboard-drag-handle"]',
+  const readCells = async () =>
+    (await readDashboard(browser)).layout.sections.flatMap((section) =>
+      section.widgets.map((slot) => ({
+        id: slot.id,
+        x: slot.x ?? 0,
+        y: slot.y ?? 0,
+        w: slot.w ?? 1,
+        h: slot.h ?? 1,
+      })),
     );
-    const card = document.querySelector<HTMLElement>('[data-widget-id="tokens"]');
-    const pushed = document.querySelector<HTMLElement>('[data-widget-id="mcp"]');
-    if (handle === null || card === null || pushed === null) throw new Error("missing card");
-    const start = handle.getBoundingClientRect();
-    const x = start.left + start.width / 2;
-    const y = start.top + start.height / 2;
-    const top = (element: HTMLElement) => element.getBoundingClientRect().top;
-    const before = { tokens: top(card), mcp: top(pushed) };
-    const fire = (type: string, clientY: number, buttons: number) =>
-      handle.dispatchEvent(
-        new PointerEvent(type, {
-          bubbles: true,
-          cancelable: true,
-          composed: true,
-          pointerId: 19,
-          pointerType: "mouse",
-          isPrimary: true,
-          clientX: x,
-          clientY,
-          button: 0,
-          buttons,
-        }),
-      );
-    fire("pointerdown", y, 1);
-    for (let step = 1; step <= 6; step += 1) fire("pointermove", y + (56 * step) / 6, 1);
-    await new Promise<void>((resolve) => {
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-    });
-    const during = {
-      tokens: top(card),
-      mcp: top(pushed),
-      dragging: card.classList.contains("react-draggable-dragging"),
-      placeholder: document.querySelectorAll(".react-grid-placeholder").length,
-    };
-    fire("pointerup", y + 56, 0);
-    return { before, during };
-  });
-  expect(preview.during.dragging).toBe(true);
-  expect(preview.during.placeholder).toBeGreaterThan(0);
-  expect(preview.during.tokens).toBeGreaterThan(preview.before.tokens);
-  expect(preview.during.mcp).toBeGreaterThan(preview.before.mcp);
+  const before = await readCells();
 
-  await expect
-    .poll(async () =>
-      browser.evaluate(async () => {
-        const dashboard = (await (await fetch("/api/dashboard")).json()) as {
-          layout: {
-            sections: { widgets: { id: string; x: number; y: number; w: number; h: number }[] }[];
-          };
-        };
-        const slots = dashboard.layout.sections.flatMap((section) => section.widgets);
-        const occupied = new Set<string>();
-        let overlap = false;
-        for (const slot of slots) {
-          for (let row = slot.y; row < slot.y + slot.h; row += 1) {
-            for (let column = slot.x; column < slot.x + slot.w; column += 1) {
-              const key = `${column}:${row}`;
-              if (occupied.has(key)) overlap = true;
-              occupied.add(key);
-            }
-          }
-        }
-        const grid = document.querySelector<HTMLElement>(".dashboard-grid");
-        if (grid === null) return null;
-        const top = grid.getBoundingClientRect().top;
-        const rendered = Object.fromEntries(
-          [...document.querySelectorAll<HTMLElement>("[data-widget-id]")].map((card) => [
-            card.dataset.widgetId,
-            Math.round((card.getBoundingClientRect().top - top) / 56),
-          ]),
-        );
-        return {
-          overlap,
-          stored: Object.fromEntries(slots.map((slot) => [slot.id, slot.y])),
-          rendered,
-        };
-      }),
-    )
-    .toEqual({
-      overlap: false,
-      stored: { context: 0, tokens: 5, mcp: 12, "mcp-events": 16, "task-reopens": 30 },
-      rendered: { context: 0, tokens: 5, mcp: 12, "mcp-events": 16, "task-reopens": 30 },
-    });
+  // One row down puts tokens over mcp; RGL must refuse rather than displace it.
+  await dragPointer(browser, '[data-widget-id="tokens"]', '[data-widget-id="mcp"]', 0, -168);
+  await browser.evaluate(
+    () => new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 1_000)),
+  );
+  const slots = await readCells();
+  expect(slots).toEqual(before);
+
+  // No cell may have moved by more than its own height, and none may overlap.
+  const beforeById = new Map(before.map((slot) => [slot.id, slot]));
+  for (const slot of slots) {
+    const previous = beforeById.get(slot.id);
+    if (previous === undefined) continue;
+    expect(Math.abs(slot.y - previous.y)).toBeLessThanOrEqual(previous.h);
+  }
+  const occupied = new Set<string>();
+  let overlap = false;
+  for (const slot of slots) {
+    for (let row = slot.y ?? 0; row < (slot.y ?? 0) + (slot.h ?? 1); row += 1) {
+      for (let column = slot.x ?? 0; column < (slot.x ?? 0) + (slot.w ?? 1); column += 1) {
+        const key = `${column}:${row}`;
+        if (occupied.has(key)) overlap = true;
+        occupied.add(key);
+      }
+    }
+  }
+  expect(overlap).toBe(false);
 });
