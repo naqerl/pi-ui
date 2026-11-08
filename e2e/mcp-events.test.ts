@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import type { JSONRPCMessage, Transport } from "@modelcontextprotocol/client";
 import { DurableExtensionShim } from "../src/server/durable-extensions.js";
 import { checkEventNotifications, eventRejection } from "../src/server/mcp-event-check.js";
 import { type ExtensionNotice, McpEventFeed } from "../src/server/mcp-events.js";
+import { deriveStableId, McpSubscriptionRegistry } from "../src/server/mcp-subscriptions.js";
 
 const SUBSCRIPTION_META = "io.modelcontextprotocol/subscriptionId";
 
@@ -339,4 +343,160 @@ test("a duplicate delivery never marks an unchipped id as delivered", () => {
   feed.markDelivered([item]);
   assert.deepEqual(feed.novelEvents([item]), [], "the committed chip removes the id");
   assert.equal(feed.ingest({ customType: "mcp-events", details: { events: [item] } }), false);
+});
+
+function liveEvent(eventId: string, server = "zeroshot") {
+  return {
+    subscription_id: "s1",
+    server,
+    event: {
+      eventId,
+      name: "hub",
+      timestamp: "2026-11-08T12:00:00.000Z",
+      cursor: eventId,
+      data: { kind: "hub.job", id: `job-${eventId}` },
+    },
+  };
+}
+
+function subscribedFeed(cursor = "hub:0"): McpEventFeed {
+  const feed = new McpEventFeed();
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe" },
+      result: {
+        subscription: {
+          id: "s1",
+          server: "zeroshot",
+          name: "hub",
+          status: "active",
+          cursor,
+        },
+      },
+    },
+  });
+  return feed;
+}
+
+test("a live event is one feed entry and one chip until the chip is committed", () => {
+  const feed = subscribedFeed();
+  const item = liveEvent("hub:10");
+  assert.equal(feed.ingest({ customType: "mcp-events", details: { events: [item] } }), true);
+  assert.equal(feed.state.events.length, 1);
+  assert.equal(feed.state.events[0]?.replayed, undefined);
+  assert.equal(feed.state.notice, "new event from zeroshot");
+  assert.deepEqual(feed.novelEvents([]), [item], "the live event is the pending chip");
+
+  feed.markDelivered([item]);
+  assert.deepEqual(feed.novelEvents([]), []);
+  assert.equal(feed.state.events[0]?.replayed, undefined);
+});
+
+test("a duplicate delivery of a committed event adds no second notice", () => {
+  const feed = subscribedFeed();
+  const item = liveEvent("hub:11");
+  assert.equal(feed.ingest({ customType: "mcp-events", details: { events: [item] } }), true);
+  feed.markDelivered([item]);
+  assert.equal(feed.ingest({ customType: "mcp-events", details: { events: [item] } }), false);
+  assert.equal(feed.state.events.filter((entry) => entry.id === "hub:11").length, 1);
+  assert.deepEqual(feed.novelEvents([item]), []);
+});
+
+test("a failed submission stays pending and the next drain chips it", () => {
+  const feed = subscribedFeed();
+  const item = liveEvent("hub:12");
+  assert.equal(feed.ingest({ customType: "mcp-events", details: { events: [item] } }), true);
+  const firstDrain = feed.novelEvents([]);
+  assert.deepEqual(firstDrain, [item]);
+  // The submission threw, so nothing was committed. The id is still pending,
+  // even when a duplicate delivery arrives before the retry.
+  assert.deepEqual(feed.novelEvents([]), [item], "a failed chip is retried on the next drain");
+  assert.equal(feed.ingest({ customType: "mcp-events", details: { events: [item] } }), false);
+  assert.equal(feed.state.events.filter((entry) => entry.id === "hub:12").length, 1);
+  assert.deepEqual(feed.novelEvents([]), [item], "the pending entry remains in the drain");
+
+  feed.markDelivered(firstDrain);
+  assert.deepEqual(feed.novelEvents([]), []);
+  assert.equal(feed.state.events[0]?.replayed, undefined, "the committed chip clears the flag");
+});
+
+test("an id seeded at restore that was never chipped still chips", () => {
+  const feed = new McpEventFeed();
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe", restored: true },
+      result: {
+        subscription: {
+          id: "s1",
+          server: "zeroshot",
+          name: "hub",
+          status: "active",
+          cursor: "hub:20",
+          deliveredEventIds: ["hub:21"],
+        },
+      },
+    },
+  });
+  const item = liveEvent("hub:21");
+  assert.deepEqual(feed.novelEvents([item]), [item], "adapter metadata is seen, not delivered");
+
+  assert.equal(feed.ingest({ customType: "mcp-events", details: { events: [item] } }), false);
+  assert.equal(feed.state.events[0]?.replayed, true);
+  assert.deepEqual(feed.novelEvents([]), [item], "the seeded id still owes a chip");
+
+  feed.markDelivered([item]);
+  assert.deepEqual(feed.novelEvents([]), []);
+  assert.equal(feed.state.events[0]?.replayed, undefined);
+});
+
+test("two events in one drain produce two chips, in order", () => {
+  const feed = subscribedFeed();
+  const first = liveEvent("hub:30");
+  const second = liveEvent("hub:31");
+  assert.equal(
+    feed.ingest({ customType: "mcp-events", details: { events: [first, second] } }),
+    true,
+  );
+  const chips = feed.novelEvents([]);
+  assert.deepEqual(chips, [first, second]);
+  for (const chip of chips) feed.markDelivered([chip]);
+  assert.deepEqual(feed.novelEvents([]), []);
+  assert.deepEqual(
+    feed.state.events.map((entry) => entry.id),
+    ["hub:30", "hub:31"],
+  );
+});
+
+test("a durable delivered set from an older event epoch cannot suppress live chips", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-mcp-epoch-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const stableId = deriveStableId("zeroshot", "hub", {});
+  const registry = new McpSubscriptionRegistry(dir);
+  await registry.record({
+    server: "zeroshot",
+    name: "hub",
+    stableId,
+    id: "old-adapter",
+    arguments: {},
+    cursor: "hub:40",
+    status: "active",
+    deliveredEventIds: ["hub:41", "hub:99999"],
+    updatedAt: "2026-11-01T00:00:00.000Z",
+  });
+  const feed = new McpEventFeed(registry);
+  await feed.hydrate();
+  const item = liveEvent("hub:41");
+  assert.deepEqual(feed.novelEvents([item]), [item], "the old epoch ids are only seen");
+  assert.equal(feed.ingest({ customType: "mcp-events", details: { events: [item] } }), false);
+  assert.deepEqual(feed.novelEvents([]), [item]);
+
+  feed.markDelivered([item]);
+  assert.deepEqual(feed.novelEvents([]), []);
+  // The stale window is gone from disk, not just ignored in memory.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const [saved] = await registry.read();
+  assert.deepEqual(saved?.deliveredEventIds, ["hub:41"]);
+  await registry.close();
 });

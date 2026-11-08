@@ -88,6 +88,19 @@ function sameArguments(first: Record<string, unknown>, second: Record<string, un
   return JSON.stringify(first) === JSON.stringify(second);
 }
 
+/**
+ * Trailing number of a cursor-style id (`hub:738` → 738). Hub ids are cursor
+ * strings, so a reinstall or a state reset restarts that numbering. A durable
+ * delivered set from the old generation can then contain ids the new stream
+ * will also hand out, which would make fresh events look delivered forever.
+ */
+function idSequence(value: string): number | undefined {
+  const match = /(\d+)$/.exec(value);
+  if (match === null) return undefined;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 function eventIdsFrom(value: unknown): string[] {
   if (!isRecord(value) || !Array.isArray(value.deliveredEventIds)) return [];
   return value.deliveredEventIds.filter(
@@ -201,6 +214,8 @@ export class McpEventFeed {
   private readonly restored = new Set<string>();
   /** Stable ids explicitly cancelled; a late status notice must not revive them. */
   private readonly cancelled = new Set<string>();
+  /** Stable ids whose restored delivered set belonged to an older id epoch. */
+  private readonly staleEpochs = new Set<string>();
   /** Every adapter id that ever represented a stable id, including replaced ones. */
   private readonly adapterAliases = new Map<string, string>();
   private events: McpEventView[] = [];
@@ -429,6 +444,17 @@ export class McpEventFeed {
     return result;
   }
 
+  /** Every event still awaiting a chip, in first-seen order. */
+  pendingEvents(): unknown[] {
+    return this.novelEvents([]);
+  }
+
+  /** True when this item belongs to a subscription whose durable set was an old epoch. */
+  isStaleEpoch(item: unknown): boolean {
+    const identity = this.itemIdentity(item);
+    return identity !== null && this.staleEpochs.has(identity.stableId);
+  }
+
   /**
    * Commit the chip for these adapter items. Call this only after their notice
    * was submitted; an id in the durable delivered set always means a chip exists.
@@ -496,7 +522,7 @@ export class McpEventFeed {
     for (const record of records) {
       const stableId = recordStableId(record);
       this.restored.add(stableId);
-      this.seedDelivered(stableId, record.deliveredEventIds ?? [], true);
+      this.seedDelivered(stableId, record.deliveredEventIds ?? [], true, record.cursor);
       // A restore rejected by the server has no live adapter session, but the
       // durable cancellation must still be visible in /api/state.
       if (record.status === "cancelled" || record.state === "cancelled") {
@@ -506,12 +532,42 @@ export class McpEventFeed {
     }
   }
 
-  private seedDelivered(stableId: string, ids: readonly string[], historical: boolean): void {
+  private seedDelivered(
+    stableId: string,
+    ids: readonly string[],
+    historical: boolean,
+    cursor?: string | null,
+  ): void {
     if (!historical || ids.length === 0) return;
     // Once this process has delivered something, a durable row is already
     // represented by the in-memory sets and must not be relabelled historical.
     const known = this.delivered.get(stableId);
     if (known !== undefined && known.size > 0) return;
+    // A restored set that reaches past the cursor being resumed cannot belong
+    // to this stream generation. Trusting it would mark every fresh event as a
+    // replay and silently suppress its chip, so remember those ids as merely
+    // seen and let the next live delivery commit the chip it owes.
+    const cursorSequence = cursor === undefined || cursor === null ? undefined : idSequence(cursor);
+    if (
+      cursorSequence !== undefined &&
+      ids.some((id) => {
+        const sequence = idSequence(id);
+        return sequence !== undefined && sequence > cursorSequence;
+      })
+    ) {
+      this.delivered.delete(stableId);
+      this.seedSeen(stableId, ids);
+      // Drop the stale window on disk too, so the next boot does not have to
+      // rediscover it and a later chip is not merged back into the old epoch.
+      this.registry?.clearDelivered?.(stableId);
+      if (!this.staleEpochs.has(stableId)) {
+        this.staleEpochs.add(stableId);
+        console.warn(
+          `mcp: ignoring delivered ids for ${stableId} from an older event epoch (cursor ${cursor})`,
+        );
+      }
+      return;
+    }
     const delivered = new Set<string>();
     for (const id of ids) {
       if (id.length === 0 || delivered.has(id)) continue;
@@ -552,7 +608,7 @@ export class McpEventFeed {
     const record = this.savedRecord(stableId);
     if (record === undefined) return;
     this.restored.add(stableId);
-    this.seedDelivered(stableId, record.deliveredEventIds ?? [], true);
+    this.seedDelivered(stableId, record.deliveredEventIds ?? [], true, record.cursor);
   }
 
   /**
@@ -713,6 +769,12 @@ export class McpEventFeed {
       // re-delivery; anything else is news, however old its timestamp looks.
       const delivered = this.isDelivered(stableId, eventId);
       const duplicate = eventId !== undefined && (delivered || this.isSeen(stableId, eventId));
+      // An observed id that was not chipped stays pending until a chip commit
+      // removes it. This is the drain's queue, so a failed or skipped
+      // submission is retried on the next drain instead of being lost.
+      if (eventId !== undefined && !delivered) {
+        this.rememberUnchipped(stableId, eventId, item);
+      }
 
       if (duplicate) {
         // A duplicate may move the cursor but it never commits a chip. If the
@@ -733,14 +795,7 @@ export class McpEventFeed {
               replayed: true,
             },
           ].slice(-EVENT_LIMIT);
-          if (eventId !== undefined && !delivered) {
-            this.rememberUnchipped(stableId, eventId, item);
-          }
           stateChanged = true;
-        } else if (eventId !== undefined && !delivered && existing.replayed === true) {
-          // Keep the original item: its timestamp and cursor are the ones the
-          // eventual chip must carry.
-          this.rememberUnchipped(stableId, eventId, item);
         }
         const tracked =
           subscriptionId === undefined ? undefined : this.viewForAdapter(subscriptionId);
@@ -1056,12 +1111,9 @@ export class McpEventFeed {
       const delivered = eventIdsFrom(raw);
       if (delivered.length > 0) {
         this.restored.add(incoming.stableId);
-        if (args.restored === true) {
-          // The restore result is enriched with our own durable delivered set.
-          this.seedDelivered(incoming.stableId, delivered, true);
-        } else {
-          this.seedSeen(incoming.stableId, delivered);
-        }
+        // Adapter metadata only proves these ids were seen. Only our own
+        // durable registry may claim a chip was committed.
+        this.seedSeen(incoming.stableId, delivered);
       }
       if (args.restored === true) this.restored.add(incoming.stableId);
       this.seedFromRegistry(incoming.stableId);

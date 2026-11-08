@@ -50,6 +50,7 @@ test("failed delivery survives restart with the same id, and completed IDs survi
   });
   await first.load();
   await first.enqueue("news", ["stable/A"]);
+  assert.equal(first.hasPending("stable/A"), true);
   first.start();
   // close waits for the in-flight attempt without discarding its durable record.
   await new Promise((resolve) => setTimeout(resolve, 25));
@@ -65,6 +66,7 @@ test("failed delivery survives restart with the same id, and completed IDs survi
   await new Promise((resolve) => setTimeout(resolve, 25));
   await second.close();
   assert.equal(delivered[0]?.id, attempted.id);
+  assert.equal(second.hasPending("stable/A"), false);
   assert.equal(JSON.parse(await readFile(path, "utf8")).pending.length, 0);
   const third = new McpOutbox(path, async () => {});
   await third.load();

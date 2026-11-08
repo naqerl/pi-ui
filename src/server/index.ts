@@ -362,9 +362,13 @@ boot.mcp.setSubmit((text, options) => {
   const envelope = mcpEventEnvelope(text);
   if (envelope !== null) {
     mcpIntake.enqueue(async () => {
-      const novel = events
-        .novelEvents(envelope.items)
-        .filter((item) => !mcpOutbox.has(events.eventKey(item)));
+      const novel = events.novelEvents(envelope.items).filter((item) => {
+        const key = events.eventKey(item);
+        if (mcpOutbox.hasPending(key)) return false;
+        // An old epoch's accepted-id list must not suppress a fresh chip; the
+        // feed already proved this item was not delivered.
+        return events.isStaleEpoch(item) || !mcpOutbox.has(key);
+      });
       // Persist even a gap-only batch: missing data must be visible in chat too.
       if (novel.length > 0 || envelope.dropped > 0) {
         const texts = mcpDeliveryTexts(

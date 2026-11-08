@@ -101,9 +101,12 @@ write-once list.
 Event IDs, not timestamps or `replayed` provenance, determine novelty. The
 durable delivered set means one thing only: a notice for that id was submitted
 and its chip was committed. Merely seeing an id — a duplicate push, adapter
-status metadata or a replay entry — never enters that set. `replayed: true` is a
-display fact, not a delivery decision, so a replayed entry that never produced a
-chip is offered again on the next drain with its original timestamp and cursor.
+status metadata, a restore result or a replay entry — never enters that set.
+`replayed: true` is a display fact, not a delivery decision, so every observed
+event without a committed chip stays pending and is offered again on the next
+drain with its original timestamp and cursor. A restored delivered set that
+reaches past the cursor being resumed belongs to an older event epoch; it is
+ignored rather than allowed to suppress fresh chips.
 
 Before a push batch advances its stored cursor, its exact novel subset is
 atomically saved in `DATA_DIR/mcp-outbox.json`. Pending batches retry FIFO and

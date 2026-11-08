@@ -495,6 +495,28 @@ export class McpSubscriptionRegistry {
     return this.cancel(stableId);
   }
 
+  /**
+   * Forget a delivered-id window that an event-epoch reset invalidated. A plain
+   * `record` merges ids, so clearing needs an explicit replacement.
+   */
+  async clearDelivered(stableId: string): Promise<void> {
+    await this.load();
+    let changed = false;
+    for (const [key, record] of this.records) {
+      if (recordStableId(record) !== stableId) continue;
+      if ((record.deliveredEventIds ?? []).length === 0) continue;
+      this.records.set(key, {
+        ...record,
+        deliveredEventIds: [],
+        updatedAt: new Date(this.now()).toISOString(),
+      });
+      changed = true;
+    }
+    if (!changed) return;
+    this.dirty = true;
+    await this.flush();
+  }
+
   /** Force the dirty registry to disk now, bypassing the throttle. */
   flush(): Promise<void> {
     if (this.timer !== undefined) {

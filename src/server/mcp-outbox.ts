@@ -6,6 +6,8 @@ export interface McpDelivery {
   id: string;
   text: string;
   at: string;
+  /** Stable event keys this delivery carries, for pending-deduplication. */
+  keys?: string[];
 }
 
 /** Persist before acknowledging the provider cursor. Delivery uses a durable request id,
@@ -69,13 +71,23 @@ export class McpOutbox {
     return this.seen.includes(key);
   }
 
+  /** True while a delivery carrying this key is still waiting to be submitted. */
+  hasPending(key: string): boolean {
+    return this.pending.some((item) => item.keys?.includes(key) === true);
+  }
+
   async enqueue(text: string, keys: string[] = []): Promise<void> {
     await this.enqueueMany([text], keys);
   }
 
   async enqueueMany(texts: string[], keys: string[] = []): Promise<void> {
     if (this.closed) throw new Error("MCP outbox closed");
-    const added = texts.map((text) => ({ id: randomUUID(), text, at: new Date().toISOString() }));
+    const added = texts.map((text) => ({
+      id: randomUUID(),
+      text,
+      at: new Date().toISOString(),
+      ...(keys.length === 0 ? {} : { keys: [...keys] }),
+    }));
     await this.update((items) => [...items, ...added], keys);
   }
 
