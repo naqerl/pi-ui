@@ -1,6 +1,16 @@
-import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  memo,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { projectsOf, sameProject } from "../shared/project";
+import { indexTasks, type TaskIndex } from "../shared/task-index";
 import { isStaleWorking, subtaskCount, taskState } from "../shared/task-status";
 import {
   compareTasks,
@@ -57,13 +67,16 @@ export function groupByProject<T extends { project?: string }>(
   items: T[],
 ): Array<[string | null, T[]]> {
   const groups = new Map<string, T[]>();
+  const names = new Map<string, string>();
   const loose: T[] = [];
   for (const item of items) {
     if (item.project === undefined) {
       loose.push(item);
       continue;
     }
-    const key = [...groups.keys()].find((name) => sameProject(name, item.project)) ?? item.project;
+    const folded = item.project.toLowerCase();
+    const key = names.get(folded) ?? item.project;
+    names.set(folded, key);
     const group = groups.get(key);
     if (group === undefined) groups.set(key, [item]);
     else group.push(item);
@@ -293,7 +306,9 @@ function Chevron({ open, className }: { open: boolean; className?: string }) {
   );
 }
 
-export function TasksView({
+export const TasksView = memo(TasksViewImpl);
+
+function TasksViewImpl({
   tasks: serverTasks,
   activity,
   ready,
@@ -315,17 +330,23 @@ export function TasksView({
   const lastSelectionRequest = useRef<number | null>(null);
   const now = new Date();
 
-  const tasks = serverTasks.flatMap((task) => {
-    if (!(task.id in optimisticTasks)) return [task];
-    const replacement = optimisticTasks[task.id];
-    return replacement === null ? [] : [replacement];
-  });
-
-  const stateOf = new Map<string, TaskState>();
-  for (const task of tasks) stateOf.set(task.id, taskState(tasks, task, activity));
+  const tasks = useMemo(
+    () =>
+      serverTasks.flatMap((task) => {
+        if (!(task.id in optimisticTasks)) return [task];
+        const replacement = optimisticTasks[task.id];
+        return replacement === null ? [] : [replacement];
+      }),
+    [serverTasks, optimisticTasks],
+  );
+  const facts = useMemo(() => indexTasks(tasks), [tasks]);
+  const stateOf = useMemo(
+    () => new Map(tasks.map((task) => [task.id, taskState(tasks, task, activity, facts)])),
+    [tasks, activity, facts],
+  );
   const state = (task: Task): TaskState => stateOf.get(task.id) ?? "ready";
-
-  const activeTasks = tasks.filter((task) => task.status !== "proposed");
+  const activeTasks = useMemo(() => tasks.filter((task) => task.status !== "proposed"), [tasks]);
+  const rowIndex = useMemo(() => indexTasks(activeTasks), [activeTasks]);
   const openTasks = activeTasks.filter(
     (task) => task.status !== "done" && task.status !== "backlog",
   );
@@ -340,20 +361,14 @@ export function TasksView({
   const ids = new Set(activeTasks.map((task) => task.id));
   const roots = activeTasks
     .filter((task) => task.parentId === null || !ids.has(task.parentId))
-    .sort((a, b) => compareTasks(activeTasks, a, b));
-  const hasChildren = (task: Task) => activeTasks.some((item) => item.parentId === task.id);
+    .sort(rowIndex.compare);
+  const hasChildren = (task: Task) => (rowIndex.children.get(task.id)?.length ?? 0) > 0;
   // A failed leaf already sits under "Needs you"; a failed parent stays in the tree with its subtasks.
   const activeRoots = roots.filter(
     (task) => task.status !== "done" && !(state(task) === "failed" && !hasChildren(task)),
   );
   // Open work is grouped by project once any task has one; grouped rows drop the label.
   const projectGroups = groupByProject(activeRoots);
-  // A project with only parked work moves behind every project that has live work.
-  projectGroups.sort(([, a], [, b]) => {
-    const parkedA = a.every((task) => task.status === "backlog");
-    const parkedB = b.every((task) => task.status === "backlog");
-    return parkedA === parkedB ? 0 : parkedA ? 1 : -1;
-  });
   const grouped = projectGroups.some(([name]) => name !== null);
   const doneRoots = roots.filter((task) => task.status === "done").sort(byCompletedDesc);
   const days = groupByDay(doneRoots, (task) => task.completedAt ?? task.createdAt);
@@ -556,6 +571,7 @@ export function TasksView({
 
   const rowProps = {
     tasks: activeTasks,
+    index: rowIndex,
     activity,
     state,
     selectedId: openTaskId,
@@ -594,13 +610,7 @@ export function TasksView({
         </Section>
       )}
       {activeRoots.length > 0 && (
-        <Section
-          title="Open"
-          count={openTasks.length - failedTasks.length}
-          id="active"
-          dark
-          collapsible
-        >
+        <Section title="Open" count={activeRoots.length} id="active" dark collapsible>
           {grouped ? (
             projectGroups.map(([name, items]) => (
               <Group
@@ -804,11 +814,11 @@ function Group({
     >
       <CollapsibleTrigger
         className={cn(
-          "flex h-9 w-full items-center gap-2 rounded-md text-left text-sm font-medium leading-5",
+          "flex min-h-9 w-full items-center gap-2 rounded-md py-1 text-left text-sm font-medium leading-5",
           dark ? "bg-foreground px-3 text-background" : "px-1 hover:bg-muted",
         )}
       >
-        <span className="min-w-0 flex-1 truncate">{label}</span>
+        <span className="min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere]">{label}</span>
         {dark ? (
           <>
             <Chevron open={open} className="text-background/80" />
@@ -833,7 +843,9 @@ export function subtreeMeasured(
   tasks: Task[],
   id: string,
   traces: Record<string, TaskTrace>,
+  index?: TaskIndex,
 ): TaskMeasured {
+  const children = (index ?? indexTasks(tasks)).children;
   const sum: TaskMeasured = { runs: 0, calls: 0, activeMs: 0, tokens: 0, cost: 0 };
   const seen = new Set<string>();
   const visit = (taskId: string) => {
@@ -847,7 +859,7 @@ export function subtreeMeasured(
       sum.tokens += own.tokens;
       sum.cost += own.cost;
     }
-    for (const child of tasks) if (child.parentId === taskId) visit(child.id);
+    for (const child of children.get(taskId) ?? []) visit(child.id);
   };
   visit(id);
   return sum;
@@ -965,13 +977,22 @@ function rowNote(
   state: TaskState,
   trace: TaskTrace | undefined,
   traces: Record<string, TaskTrace>,
+  index?: TaskIndex,
 ): string {
-  const children = subtaskCount(tasks, task.id);
+  const items = index?.children.get(task.id);
+  const children =
+    index === undefined
+      ? subtaskCount(tasks, task.id)
+      : {
+          total: items?.length ?? 0,
+          done: items?.filter((item) => item.status === "done").length ?? 0,
+        };
   const subtasks = children.total > 0 ? `${children.done} of ${children.total} subtasks done` : "";
   switch (state) {
     case "blocked": {
-      const names = liveBlockerIds(tasks, task).map((id) => {
-        const blocker = tasks.find((item) => item.id === id);
+      const names = (index?.blockers.get(task.id) ?? liveBlockerIds(tasks, task)).map((id) => {
+        const blocker =
+          index === undefined ? tasks.find((item) => item.id === id) : index.byId.get(id);
         return blocker === undefined ? id : plainInline(blocker.title);
       });
       if (names.length === 0) return subtasks;
@@ -980,7 +1001,7 @@ function rowNote(
     case "failed":
       return trace?.lastRun?.reason ?? subtasks;
     case "done": {
-      const summary = measuredSummary(subtreeMeasured(tasks, task.id, traces));
+      const summary = measuredSummary(subtreeMeasured(tasks, task.id, traces, index));
       return summary !== "" ? summary : subtasks;
     }
     default:
@@ -991,6 +1012,7 @@ function rowNote(
 export function TaskRow({
   task,
   tasks,
+  index,
   activity,
   state,
   depth,
@@ -1007,6 +1029,7 @@ export function TaskRow({
 }: {
   task: Task;
   tasks: Task[];
+  index?: TaskIndex;
   activity: TaskActivity | undefined;
   state: (task: Task) => TaskState;
   depth: number;
@@ -1025,7 +1048,9 @@ export function TaskRow({
 }) {
   const children = flat
     ? []
-    : tasks.filter((item) => item.parentId === task.id).sort((a, b) => compareTasks(tasks, a, b));
+    : index === undefined
+      ? tasks.filter((item) => item.parentId === task.id).sort((a, b) => compareTasks(tasks, a, b))
+      : (index.children.get(task.id) ?? []);
   const current = state(task);
   const done = task.status === "done";
   const backlog = task.status === "backlog";
@@ -1038,7 +1063,7 @@ export function TaskRow({
   const stale = current === "working" && isStaleWorking(task, activity);
   const note = [
     showProject && depth === 0 ? (task.project ?? "") : "",
-    rowNote(task, tasks, current, trace, activity?.traces ?? {}),
+    rowNote(task, tasks, current, trace, activity?.traces ?? {}, index),
   ]
     .filter((part) => part !== "")
     .join(" · ");
@@ -1156,7 +1181,7 @@ export function TaskRow({
             <InlineMarkdown text={task.title} />
           </span>
           {note !== "" && (
-            <span className="truncate text-xs leading-4 text-muted-foreground" title={note}>
+            <span className="whitespace-normal text-xs leading-4 text-muted-foreground [overflow-wrap:anywhere]">
               {note}
             </span>
           )}
@@ -1194,6 +1219,7 @@ export function TaskRow({
               key={child.id}
               task={child}
               tasks={tasks}
+              index={index}
               activity={activity}
               state={state}
               depth={depth + 1}

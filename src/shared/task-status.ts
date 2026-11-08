@@ -1,3 +1,4 @@
+import type { TaskIndex } from "./task-index.js";
 import { descendantIds, isActiveStatus, liveBlockerIds } from "./tasks.js";
 import type { Task, TaskActivity, TaskState, TaskTrace } from "./types.js";
 
@@ -112,6 +113,7 @@ export function taskState(
   tasks: readonly Task[],
   task: Task,
   activity: TaskActivity | undefined,
+  index?: TaskIndex,
 ): TaskState {
   if (task.status === "proposed") return "proposed";
   if (task.status === "backlog") return "backlog";
@@ -120,14 +122,25 @@ export function taskState(
   if (isWorking(task, activity)) return "working";
   if (task.lastWorkedAt !== undefined && task.lastWorkedAt !== null) {
     // A live blocker is still ledger truth, even for work attributed before it appeared.
-    if (liveBlockerIds(tasks, task).length > 0) return "blocked";
+    if (
+      (index === undefined ? liveBlockerIds(tasks, task) : (index.blockers.get(task.id) ?? []))
+        .length > 0
+    )
+      return "blocked";
     return "working";
   }
   if (isFailed(task, activity)) return "failed";
-  if (liveBlockerIds(tasks, task).length > 0) return "blocked";
-  const below = descendantIds(tasks, task.id);
-  if (below.size > 0 && tasks.some((item) => below.has(item.id) && item.status === "done")) {
-    return "partial";
+  if (
+    (index === undefined ? liveBlockerIds(tasks, task) : (index.blockers.get(task.id) ?? []))
+      .length > 0
+  )
+    return "blocked";
+  if (index !== undefined) {
+    if (index.doneBelow.has(task.id)) return "partial";
+  } else {
+    const below = descendantIds(tasks, task.id);
+    if (below.size > 0 && tasks.some((item) => below.has(item.id) && item.status === "done"))
+      return "partial";
   }
   return "ready";
 }
