@@ -1,3 +1,16 @@
+## 1.6.121
+
+### Fixed
+
+- MCP event novelty is based on stable event IDs, never timestamps. Exact novel subsets cross an atomic on-disk outbox before cursor acknowledgment; failed persistence blocks later batches, failed submissions retry FIFO, and stable durable request IDs make retries/restarts idempotent. Busy events retain their queue/cancel identities and burst merging; idle replay is delivered in bounded batches.
+- Restore resumes at the acknowledged cursor instead of dropping downtime. Heartbeat/status/list metadata cannot advance it. Provider replay-truncation warnings now become durable chat status chips, including warnings raised before the message sink is ready. The subscription watchdog removed in 1.6.120 stays removed.
+- Task projects retain A–Z order with No project last even with backlog-only projects. The Open count agrees with root/group counts; project names and blocker explanations wrap instead of clipping.
+
+### Performance
+
+- Index task relationships/blockers once per ledger and reuse them for state derivation, row children and subtree totals. Existing Working/status precedence is unchanged and covered by randomized indexed-versus-original equivalence tests.
+- Memoize the task page and historical message bubbles; batch draft paints per animation frame and coalesce snapshot refresh bursts with a trailing read. Full draft replacement remains replay-compatible without sending the same prefix twice in each SSE frame.
+
 ## 1.6.120
 
 ### Removed

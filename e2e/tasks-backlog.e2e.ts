@@ -169,8 +169,8 @@ test("a long press on Send parks the next task in the backlog", { timeout: 300_0
         muted: parkedStyle.backgroundColor !== liveStyle.backgroundColor,
         filtered: parkedStyle.filter !== "none" || parkedStyle.backdropFilter !== "none",
         parkedLast: ordered.at(-1) === `Open ${parkedName}`,
-        parkedGroupLast:
-          groups.indexOf(`task-project-${parkedGroup}`) >
+        projectOrderStable:
+          groups.indexOf(`task-project-${parkedGroup}`) <
           groups.indexOf(`task-project-${liveGroup}`),
         badges: { parked: parkedBadge, working: workingBadge },
       };
@@ -187,7 +187,7 @@ test("a long press on Send parks the next task in the backlog", { timeout: 300_0
     muted: true,
     filtered: true,
     parkedLast: true,
-    parkedGroupLast: true,
+    projectOrderStable: true,
     badges: { parked: expect.any(Object), working: expect.any(Object) },
   });
 

@@ -9,7 +9,7 @@ test("project order is stable with parked work, full labels wrap, and root count
   screen,
 }) => {
   // The test HOME is isolated; install the vendored real palette, not a route mock.
-  const theme = resolve(".e2e/home/.config/omarchy/themes/vantablack");
+  const theme = resolve(".e2e/home/.config/omarchy/themes/audit-vantablack");
   await mkdir(theme, { recursive: true });
   await copyFile(resolve("themes/omarchy/vantablack/colors.toml"), resolve(theme, "colors.toml"));
   await browser.setViewport({ width: 390, height: 844 });
@@ -18,7 +18,7 @@ test("project order is stable with parked work, full labels wrap, and root count
     const themeResponse = await fetch("/api/theme", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ slug: "vantablack" }),
+      body: JSON.stringify({ slug: "audit-vantablack" }),
     });
     if (!themeResponse.ok) throw new Error(await themeResponse.text());
     const add = async (title: string, project: string | null, extra = {}) => {
