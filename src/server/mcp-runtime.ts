@@ -24,7 +24,7 @@ import {
   type DurableExtensionTool,
 } from "./durable-extensions.js";
 import { checkEventNotifications } from "./mcp-event-check.js";
-import type { ExtensionNotice } from "./mcp-events.js";
+import { type ExtensionNotice, polledEventCursor } from "./mcp-events.js";
 import {
   type McpSubscriptionRecord,
   McpSubscriptionRegistry,
@@ -32,7 +32,6 @@ import {
   recordStableId,
   subscriptionEnabled,
 } from "./mcp-subscriptions.js";
-import { polledEventCursor } from "./mcp-subscriptions-watchdog.js";
 
 const require = createRequire(import.meta.url);
 const ADAPTER_ENTRY = pathToFileURL(require.resolve("@realmikekelly/pi-mcp-adapter")).href;

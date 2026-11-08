@@ -1,3 +1,14 @@
+## 1.6.120
+
+### Removed
+
+- The MCP subscription watchdog. It polled every subscription every 15 s to prove the far end still
+  knew it, and reopened a stream three heartbeats after silence. Both servers now answer a lost
+  session loudly (`NotFound -32023`), and the runtime already re-initialises on that, so the
+  watchdog was a second liveness mechanism guarding the same failure. A subscription that goes quiet
+  is now reported as quiet rather than retried: one mechanism, one truth. `polledEventCursor` moved
+  to `mcp-events.ts` because the model-facing poll path still uses it.
+
 ## 1.6.119
 
 ### Fixed

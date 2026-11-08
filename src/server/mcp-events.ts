@@ -61,6 +61,24 @@ export function eventCursor(event: Record<string, unknown>): string | null {
   return typeof event.cursor === "string" ? event.cursor : null;
 }
 
+/** Cursor reported by an events/poll response, wherever the server put it. */
+export function polledEventCursor(result: unknown): string | null {
+  if (!isRecord(result)) return null;
+  if (typeof result.cursor === "string") return result.cursor;
+  if (typeof result.nextCursor === "string") return result.nextCursor;
+  let found: string | null = null;
+  const add = (value: unknown): void => {
+    const item = isRecord(value) && isRecord(value.event) ? value.event : value;
+    const cursor = isRecord(item) ? eventCursor(item) : null;
+    if (cursor !== null) found = cursor;
+  };
+  if (Array.isArray(result.events)) {
+    for (const event of result.events) add(event);
+  }
+  add(result.event ?? result);
+  return found;
+}
+
 /** Cursors are opaque: a string from the server replaces whatever we had. */
 function serverCursor(current: string | null, incoming: string | null): string | null {
   return incoming ?? current;
