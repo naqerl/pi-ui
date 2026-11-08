@@ -3,10 +3,15 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { ChatService, mcpEventEnvelope, mcpEventText } from "../src/server/chat-service.js";
+import {
+  ChatService,
+  mcpDeliveryTexts,
+  mcpEventEnvelope,
+  mcpEventText,
+} from "../src/server/chat-service.js";
 import { DurableExtensionShim } from "../src/server/durable-extensions.js";
 import { McpEventFeed } from "../src/server/mcp-events.js";
-import { type McpDelivery, McpOutbox } from "../src/server/mcp-outbox.js";
+import { type McpDelivery, McpIntake, McpOutbox } from "../src/server/mcp-outbox.js";
 import { MCP_EVENTS_HEAD, MCP_STATUS_HEAD } from "../src/shared/notices.js";
 
 const event = (id: string) => ({
@@ -128,4 +133,32 @@ test("heartbeat, status and list metadata cannot skip past accepted push events"
     },
   });
   assert.equal(feed.state.subscriptions[0]?.cursor, "accepted-A");
+});
+
+test("idle replay bursts form one bounded delivery; busy bursts preserve per-event queue IDs", () => {
+  const envelope = {
+    head: MCP_EVENTS_HEAD,
+    items: Array.from({ length: 22 }, (_, i) => event(String(i))),
+    dropped: 0,
+  };
+  assert.equal(mcpDeliveryTexts(envelope, false).length, 1);
+  assert.equal(mcpDeliveryTexts(envelope, true).length, 22);
+  assert.equal(mcpEventEnvelope(mcpDeliveryTexts(envelope, false)[0] ?? "")?.items.length, 22);
+});
+
+test("a persistence failure blocks later cursor acknowledgments until retry succeeds", async () => {
+  const intake = new McpIntake(1);
+  const acknowledged: string[] = [];
+  let attempts = 0;
+  intake.enqueue(async () => {
+    if (++attempts === 1) throw new Error("injected disk failure");
+    acknowledged.push("A");
+  });
+  intake.enqueue(async () => {
+    acknowledged.push("B");
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await intake.close();
+  assert.deepEqual(acknowledged, ["A", "B"]);
+  assert.equal(attempts, 2);
 });

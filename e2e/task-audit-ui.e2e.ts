@@ -1,3 +1,5 @@
+import { copyFile, mkdir } from "node:fs/promises";
+import { resolve } from "node:path";
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
@@ -6,14 +8,19 @@ test("project order is stable with parked work, full labels wrap, and root count
   browser,
   screen,
 }) => {
+  // The test HOME is isolated; install the vendored real palette, not a route mock.
+  const theme = resolve(".e2e/home/.config/omarchy/themes/vantablack");
+  await mkdir(theme, { recursive: true });
+  await copyFile(resolve("themes/omarchy/vantablack/colors.toml"), resolve(theme, "colors.toml"));
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/?page=tasks");
   const seeded = await browser.evaluate(async () => {
-    await fetch("/api/theme", {
+    const themeResponse = await fetch("/api/theme", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ slug: "vantablack" }),
     });
+    if (!themeResponse.ok) throw new Error(await themeResponse.text());
     const add = async (title: string, project: string | null, extra = {}) => {
       const response = await fetch("/api/tasks", {
         method: "POST",
@@ -41,6 +48,9 @@ test("project order is stable with parked work, full labels wrap, and root count
   });
   expect(seeded).toBe(true);
   await app.open("/?page=tasks");
+  await expect
+    .poll(() => browser.evaluate(() => document.documentElement.dataset.mode ?? ""))
+    .toBe("dark");
   const order = () =>
     browser.evaluate(() =>
       [...document.querySelectorAll('[data-testid^="task-project-"]')].map((node) =>

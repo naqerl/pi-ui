@@ -114,7 +114,10 @@ server.setRequestHandler(
     });
 
     setTimeout(() => {
-      void notify("notifications/events/active", { cursor: params.cursor ?? null });
+      void notify("notifications/events/active", {
+        cursor: params.cursor ?? null,
+        ...(params.name === "old-stream" ? { truncated: true } : {}),
+      });
     }, 10);
 
     if (params.name === "old-stream") {

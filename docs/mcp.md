@@ -114,8 +114,8 @@ its “replay is truncated … some events are unavailable” warning now reache
 persistent chat status chip instead of a no-op UI notification. Unknown streams
 remain failures; no undocumented cursor reset is guessed.
 
-Live delivery uses durable per-batch chips and the existing queued-burst merger,
+Live delivery uses bounded idle batches and per-event busy deliveries with the existing queued-burst merger,
 not the old in-memory ten-minute coalescer. This keeps retry/restart identity
 stable without persisting mutable coalescer state. Filesystem persistence errors
-are logged and do not acknowledge the push cursor. Keep the data directory on
+retry FIFO and prevent later batches from overtaking the unacknowledged push cursor. Keep the data directory on
 persistent storage along with the conversation database.

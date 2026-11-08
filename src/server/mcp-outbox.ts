@@ -94,10 +94,13 @@ export class McpOutbox {
     try {
       while (!this.closed) {
         await this.writes;
-        const item = this.pending[0];
-        if (item === undefined) return;
-        await this.deliver(item);
-        await this.update((items) => items.filter((entry) => entry.id !== item.id));
+        const batch = this.pending.slice(0, 50);
+        if (batch.length === 0) return;
+        // A partial failure may replay already-submitted IDs. Durable request
+        // deduplication makes that safe and avoids one whole-file write per event.
+        for (const item of batch) await this.deliver(item);
+        const ids = new Set(batch.map((item) => item.id));
+        await this.update((items) => items.filter((entry) => !ids.has(entry.id)));
       }
     } catch (error) {
       console.error("[mcp] durable delivery pending; will retry", error);
@@ -113,5 +116,30 @@ export class McpOutbox {
     if (this.timer !== undefined) clearTimeout(this.timer);
     await this.draining;
     await this.writes;
+  }
+}
+
+/** Do not let a later cursor overtake a batch whose disk write failed. Shutdown
+ * leaves the cursor unacknowledged so the provider can replay it next time. */
+export class McpIntake {
+  private tail: Promise<void> = Promise.resolve();
+  private closed = false;
+  constructor(private readonly retryMs = 1_000) {}
+  enqueue(accept: () => Promise<void>): void {
+    this.tail = this.tail.then(async () => {
+      while (!this.closed) {
+        try {
+          await accept();
+          return;
+        } catch (error) {
+          console.error("[mcp] intake pending; cursor not acknowledged", error);
+          await new Promise((resolve) => setTimeout(resolve, this.retryMs));
+        }
+      }
+    });
+  }
+  async close(): Promise<void> {
+    this.closed = true;
+    await this.tail;
   }
 }

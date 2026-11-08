@@ -348,6 +348,17 @@ function splitMcpEvents(envelope: McpEventEnvelope, events: readonly unknown[]):
   return chunks;
 }
 
+/** Batch idle news into bounded turns; busy news keeps per-event queue/cancel identity. */
+export function mcpDeliveryTexts(envelope: McpEventEnvelope, busy: boolean): string[] {
+  const chunks = busy
+    ? envelope.items.map((item) => [item])
+    : splitMcpEvents(envelope, envelope.items);
+  if (chunks.length === 0 && envelope.dropped > 0) chunks.push([]);
+  return chunks.map((items, index) =>
+    mcpEventText({ ...envelope, dropped: index === 0 ? envelope.dropped : 0 }, items),
+  );
+}
+
 function mergedNoticeText(
   head: string,
   totalEvents: number,

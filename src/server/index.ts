@@ -13,14 +13,14 @@ import { PAGE_IDS, PAGE_PATHS } from "../shared/pages.js";
 import { parseCompletion, parseReopenReason, TASK_BODY_MAX_LENGTH } from "../shared/tasks.js";
 import type { TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
-import { ChatService, mcpEventEnvelope, mcpEventText } from "./chat-service.js";
+import { ChatService, mcpDeliveryTexts, mcpEventEnvelope } from "./chat-service.js";
 import { DashboardError, DashboardManager } from "./dashboard.js";
 import { DelegateManager } from "./delegates.js";
 import type { DiagramBridge } from "./diagram-tools.js";
 import { DiagramStore } from "./diagrams.js";
 import { JobManager, jobNotice } from "./jobs.js";
 import { McpEventFeed } from "./mcp-events.js";
-import { McpOutbox } from "./mcp-outbox.js";
+import { McpIntake, McpOutbox } from "./mcp-outbox.js";
 import { MAX_MEDIA_BYTES, MediaError, MediaStore, parseAttachmentIds } from "./media.js";
 import { composeInstructions, SnapshotCache, SnapshotController } from "./memory/snapshot.js";
 import { MemoryStore } from "./memory/store.js";
@@ -357,49 +357,39 @@ const mcpOutbox = new McpOutbox(resolve(dataDir, "mcp-outbox.json"), (item) =>
   chat.submitMcpDelivery(item),
 );
 await mcpOutbox.load();
-let acceptingMcp: Promise<void> = Promise.resolve();
+const mcpIntake = new McpIntake();
 boot.mcp.setSubmit((text, options) => {
   const envelope = mcpEventEnvelope(text);
   if (envelope !== null) {
-    acceptingMcp = acceptingMcp
-      .then(async () => {
-        const novel = events
-          .novelEvents(envelope.items)
-          .filter((item) => !mcpOutbox.has(events.eventKey(item)));
-        // Persist even a gap-only batch: missing data must be visible in chat too.
-        if (novel.length > 0 || envelope.dropped > 0) {
-          const texts =
-            novel.length === 0
-              ? [mcpEventText(envelope, [])]
-              : novel.map((item, index) =>
-                  mcpEventText({ ...envelope, dropped: index === 0 ? envelope.dropped : 0 }, [
-                    item,
-                  ]),
-                );
-          await mcpOutbox.enqueueMany(
-            texts,
-            novel.map((item) => events.eventKey(item)),
-          );
-        }
-        events.ingest({
-          customType: "mcp-events",
-          details: { events: envelope.items, dropped_events: envelope.dropped },
-        });
-        hub.broadcast({ event: "mcp.events", data: events.state });
-        mcpOutbox.start();
-      })
-      .catch((error: unknown) =>
-        console.error("[mcp] could not persist incoming events; cursor not acknowledged", error),
-      );
+    mcpIntake.enqueue(async () => {
+      const novel = events
+        .novelEvents(envelope.items)
+        .filter((item) => !mcpOutbox.has(events.eventKey(item)));
+      // Persist even a gap-only batch: missing data must be visible in chat too.
+      if (novel.length > 0 || envelope.dropped > 0) {
+        const texts = mcpDeliveryTexts(
+          { ...envelope, items: novel },
+          chat.getState() === "running",
+        );
+        await mcpOutbox.enqueueMany(
+          texts,
+          novel.map((item) => events.eventKey(item)),
+        );
+      }
+      events.ingest({
+        customType: "mcp-events",
+        details: { events: envelope.items, dropped_events: envelope.dropped },
+      });
+      hub.broadcast({ event: "mcp.events", data: events.state });
+      mcpOutbox.start();
+    });
     return;
   }
   if (isMcpNotice(text)) {
-    acceptingMcp = acceptingMcp
-      .then(async () => {
-        await mcpOutbox.enqueue(text);
-        mcpOutbox.start();
-      })
-      .catch((error: unknown) => console.error("[mcp] could not persist status notice", error));
+    mcpIntake.enqueue(async () => {
+      await mcpOutbox.enqueue(text);
+      mcpOutbox.start();
+    });
   } else {
     void chat
       .submit(text, options.deliverAs === "steer" ? "steer" : "queue")
@@ -1154,7 +1144,7 @@ let shuttingDown = false;
 async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
-  await acceptingMcp;
+  await mcpIntake.close();
   await mcpOutbox.close();
   chat.beginShutdown();
   await taskActivity.flush().catch((error: unknown) => {

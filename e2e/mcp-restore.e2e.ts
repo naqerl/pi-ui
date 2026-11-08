@@ -226,10 +226,24 @@ test("a restored subscription the server rejects is cancelled and never polled a
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     const state = await readState(spawned.url);
     const notices = mcpNotices(state);
-    expect(notices.filter((notice) => notice.ids.includes("old-stream-backlog"))).toHaveLength(0);
+    // A provider-reported replay gap is a durable MCP status chip, not a lost UI toast.
+    expect(
+      state.messages.some(
+        (message) =>
+          message.notice?.kind === "mcp" &&
+          message.text.includes("replay is truncated for old-stream"),
+      ),
+    ).toBe(true);
+    expect(notices.filter((notice) => notice.ids.includes("old-stream-backlog"))).toHaveLength(1);
     expect(
       notices.filter((notice) => notice.ids.some((id) => id.startsWith("burst-"))).length,
-    ).toBeLessThanOrEqual(1);
+    ).toBe(1);
+    expect(
+      notices
+        .flatMap((notice) => notice.ids)
+        .filter((id) => id.startsWith("burst-"))
+        .sort(),
+    ).toEqual(Array.from({ length: 22 }, (_, index) => `burst-${index + 1}`).sort());
     expect(
       notices.filter((notice) => notice.ids.some((id) => id.startsWith("gone-stream"))),
     ).toHaveLength(0);
@@ -238,9 +252,9 @@ test("a restored subscription the server rejects is cancelled and never polled a
     // One rejection at boot, then the dropped id is remembered.
     expect(calls.filter((line) => line.startsWith("poll:gone-stream:"))).toHaveLength(1);
     expect(calls.filter((line) => line.startsWith("stream:gone-stream:"))).toHaveLength(0);
-    // The known subscription resumes at the fresh server cursor, not the backlog cursor.
-    expect(calls).toContain("stream:old-stream:old-stream:1");
-    expect(calls).not.toContain("stream:old-stream:old:42");
+    // The acknowledged cursor is replayed; an unseen preboot ID is not thrown away.
+    expect(calls).toContain("stream:old-stream:old:42");
+    expect(calls).not.toContain("stream:old-stream:old-stream:1");
 
     // No events/poll on this server, so the catalog fallback must follow nextCursor.
     const pagedCalls = readFileSync(spawned.pagedLogPath, "utf8").split("\n").filter(Boolean);
