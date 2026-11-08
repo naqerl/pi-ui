@@ -52,6 +52,7 @@ import type {
   UsageSummary,
 } from "../shared/types";
 import { setDashboard } from "./dashboard-store";
+import { frameBatch, reduceDraft, refreshBatch } from "./stream-batch";
 import { isThinking } from "./working-state";
 
 const EMPTY_EVENTS: McpEventsState = {
@@ -210,6 +211,23 @@ export function useChat(options: UseChatOptions = {}) {
   const [liveTools, setLiveTools] = useState<ToolActivity[]>([]);
   const [draftText, setDraftText] = useState("");
   const [draftThinking, setDraftThinking] = useState("");
+  const draftBatch = useMemo(
+    () =>
+      frameBatch<{ kind: "text" | "thinking"; delta: StreamTextDelta }>(
+        (items) => {
+          const text = items.filter((item) => item.kind === "text").map((item) => item.delta);
+          const thinking = items
+            .filter((item) => item.kind === "thinking")
+            .map((item) => item.delta);
+          if (text.length > 0) setDraftText((current) => reduceDraft(current, text));
+          if (thinking.length > 0) setDraftThinking((current) => reduceDraft(current, thinking));
+        },
+        (run) => requestAnimationFrame(run),
+        (id) => cancelAnimationFrame(id),
+      ),
+    [],
+  );
+
   const [runState, setRunState] = useState<RunState>("idle");
   const [queue, setQueue] = useState<QueuedMessage[]>([]);
   const [mcp, setMcp] = useState<McpStatus>({ servers: [], unavailable: [] });
@@ -254,14 +272,18 @@ export function useChat(options: UseChatOptions = {}) {
     setTaskLedger(next);
   }, []);
 
-  const applyDraft = useCallback((draft: StreamDraftSync, adoptLower = false) => {
-    if (!adoptLower && draft.revision < draftRevision.current) return;
-    draftRevision.current = adoptLower
-      ? adoptSnapshotRevision(draftRevision.current, draft.revision)
-      : draft.revision;
-    setDraftText(draft.text);
-    setDraftThinking(draft.thinking);
-  }, []);
+  const applyDraft = useCallback(
+    (draft: StreamDraftSync, adoptLower = false) => {
+      if (!adoptLower && draft.revision < draftRevision.current) return;
+      draftRevision.current = adoptLower
+        ? adoptSnapshotRevision(draftRevision.current, draft.revision)
+        : draft.revision;
+      draftBatch.clear();
+      setDraftText(draft.text);
+      setDraftThinking(draft.thinking);
+    },
+    [draftBatch],
+  );
 
   const applyEvents = useCallback((state: McpEventsState) => {
     if (state.revision < eventsRevision.current) return;
@@ -287,7 +309,7 @@ export function useChat(options: UseChatOptions = {}) {
     retryDelay.current = RETRY_MIN_MS;
   }, []);
 
-  const refreshState = useCallback(async () => {
+  const readState = useCallback(async () => {
     const sequence = ++refreshSequence.current;
     try {
       const from = windowFrom.current ?? (fullHistory ? 0 : null);
@@ -355,6 +377,13 @@ export function useChat(options: UseChatOptions = {}) {
       scheduleRetry();
     }
   }, [applyDraft, applyEvents, applyTasks, clearRetry, fullHistory, scheduleRetry]);
+
+  const refreshes = useMemo(() => refreshBatch(readState), [readState]);
+  const refreshState = refreshes.request;
+  useEffect(() => {
+    refreshes.open();
+    return () => refreshes.close();
+  }, [refreshes]);
 
   refreshRef.current = refreshState;
 
@@ -499,6 +528,7 @@ export function useChat(options: UseChatOptions = {}) {
         setSteers((current) => mergeLiveSteers(current, data.steers ?? []));
       }
       if (data.state !== "running") {
+        draftBatch.clear();
         setDraftText("");
         setDraftThinking("");
         setLiveTools([]);
@@ -518,8 +548,7 @@ export function useChat(options: UseChatOptions = {}) {
       const revision = acceptDeltaRevision(draftRevision.current, data.revision);
       if (revision === null) return;
       draftRevision.current = revision;
-      if (typeof data.full === "string") setDraftText(data.full);
-      else setDraftText((current) => current + data.text);
+      draftBatch.push({ kind: "text", delta: data });
     });
 
     source.addEventListener("thinking.delta", (event) => {
@@ -528,8 +557,7 @@ export function useChat(options: UseChatOptions = {}) {
       const revision = acceptDeltaRevision(draftRevision.current, data.revision);
       if (revision === null) return;
       draftRevision.current = revision;
-      if (typeof data.full === "string") setDraftThinking(data.full);
-      else setDraftThinking((current) => current + data.text);
+      draftBatch.push({ kind: "thinking", delta: data });
     });
 
     source.addEventListener("message.done", (event) => {
@@ -547,6 +575,7 @@ export function useChat(options: UseChatOptions = {}) {
           }
         }
         if (jobActivity.length > 0) setActivity((current) => addJobActivity(current, jobActivity));
+        draftBatch.clear();
         setDraftText("");
         setDraftThinking("");
       }
@@ -588,6 +617,7 @@ export function useChat(options: UseChatOptions = {}) {
         pending: true,
       };
       setLiveTools((current) => [...current.filter((item) => item.id !== tool.id), tool]);
+      draftBatch.flush();
       setDraftThinking("");
       if (typeof data.toolsRevision === "number") {
         toolsRevision.current = Math.max(toolsRevision.current, data.toolsRevision);
@@ -617,8 +647,9 @@ export function useChat(options: UseChatOptions = {}) {
       window.removeEventListener("focus", refreshOnFocus);
       window.removeEventListener("pageshow", refreshOnFocus);
       source.close();
+      draftBatch.clear();
     };
-  }, [applyDraft, applyEvents, applyTasks, refreshState]);
+  }, [applyDraft, applyEvents, applyTasks, draftBatch, refreshState]);
 
   useEffect(() => {
     if (runState !== "running") return;
@@ -798,6 +829,7 @@ export function useChat(options: UseChatOptions = {}) {
         setQueue(data.queue);
         if (!data.queued && !(runState === "running")) {
           setRunState("running");
+          draftBatch.clear();
           setDraftText("");
           setDraftThinking("");
           setLiveTools([]);
@@ -826,7 +858,7 @@ export function useChat(options: UseChatOptions = {}) {
         return { ok: false, error: "Message was not sent" };
       }
     },
-    [runState, refreshState],
+    [runState, refreshState, draftBatch],
   );
 
   const cancelQueued = useCallback(async (id: string): Promise<boolean> => {

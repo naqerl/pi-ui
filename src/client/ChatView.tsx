@@ -1,5 +1,6 @@
 import {
   lazy,
+  memo,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
   Suspense,
@@ -442,6 +443,8 @@ export function MessageBubble({
     </div>
   );
 }
+
+const MemoMessageBubble = memo(MessageBubble);
 
 interface MemoryChipView {
   label: string;
@@ -1648,6 +1651,12 @@ export function ChatView({
     return true;
   };
 
+  const sendNoticeRef = useRef(handleSend);
+  sendNoticeRef.current = handleSend;
+  const steerNotice = useCallback((text: string) => {
+    void sendNoticeRef.current(text, "steer");
+  }, []);
+
   const addTask = async (
     text: string,
     attachments: string[],
@@ -1798,10 +1807,10 @@ export function ChatView({
                   {groups.map((group, index) => {
                     if (group.kind === "message") {
                       return (
-                        <MessageBubble
+                        <MemoMessageBubble
                           key={group.key}
                           message={group.message}
-                          onSteer={(text) => void handleSend(text, "steer")}
+                          onSteer={steerNotice}
                           onCancelQueued={cancelQueued}
                         />
                       );
