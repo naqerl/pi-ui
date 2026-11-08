@@ -1,3 +1,12 @@
+## 1.6.128
+
+### Added
+
+- Temporary diagnostic: `seedDelivered` appends its inputs and the epoch decision to
+  `/tmp/mcp-seed-diag.log`, so the last unknown in the silent-chip defect can be read instead of
+  inferred. Removed once the cause is confirmed.
+
+
 ## 1.6.127
 
 ### Fixed

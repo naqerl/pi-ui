@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs";
 import { toIsoTimestamp } from "../shared/time.js";
 import type { McpEventsState, McpEventView, McpSubscriptionView } from "../shared/types.js";
 import {
@@ -533,6 +534,20 @@ export class McpEventFeed {
       this.findByStableId(stableId)?.cursor ??
       undefined;
     const cursorSequence = resumeFrom === undefined ? undefined : idSequence(resumeFrom);
+    try {
+      appendFileSync(
+        "/tmp/mcp-seed-diag.log",
+        JSON.stringify({
+          event: "mcp-seed-diag",
+          stableId,
+          ids: ids.length,
+          cursor,
+          resumeFrom,
+          cursorSequence,
+          maxId: ids.map((id) => idSequence(id) ?? -1).sort((a, b) => b - a)[0],
+        }) + "\n",
+      );
+    } catch {}
     if (cursorSequence === undefined) {
       // Without a cursor there is nothing to compare against, and trusting the
       // set is what silently killed every chip. Treat it as unknown instead.
