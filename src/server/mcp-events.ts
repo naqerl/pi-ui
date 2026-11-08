@@ -88,6 +88,18 @@ function sameArguments(first: Record<string, unknown>, second: Record<string, un
   return JSON.stringify(first) === JSON.stringify(second);
 }
 
+/**
+ * Trailing number of a cursor-style id (`hub:738` → 738). Hub ids are cursor
+ * strings, so a reinstall or a state reset restarts the numbering; ids from an
+ * older generation then collide with fresh ones and would look delivered.
+ */
+function idSequence(value: string): number | undefined {
+  const match = /(\d+)$/.exec(value);
+  if (match === null) return undefined;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 function eventIdsFrom(value: unknown): string[] {
   if (!isRecord(value) || !Array.isArray(value.deliveredEventIds)) return [];
   return value.deliveredEventIds.filter(
@@ -496,7 +508,7 @@ export class McpEventFeed {
     for (const record of records) {
       const stableId = recordStableId(record);
       this.restored.add(stableId);
-      this.seedDelivered(stableId, record.deliveredEventIds ?? [], true);
+      this.seedDelivered(stableId, record.deliveredEventIds ?? [], true, record.cursor);
       // A restore rejected by the server has no live adapter session, but the
       // durable cancellation must still be visible in /api/state.
       if (record.status === "cancelled" || record.state === "cancelled") {
@@ -506,8 +518,29 @@ export class McpEventFeed {
     }
   }
 
-  private seedDelivered(stableId: string, ids: readonly string[], historical: boolean): void {
+  private seedDelivered(
+    stableId: string,
+    ids: readonly string[],
+    historical: boolean,
+    cursor?: string,
+  ): void {
     if (!historical || ids.length === 0) return;
+    // Ids ahead of the cursor we are resuming from cannot belong to it: the hub
+    // renumbered (reinstall, state reset) and this set is from the old epoch.
+    // Keeping it would mark every new event as a replay forever, so drop it and
+    // let the stream speak for itself.
+    const cursorSequence = cursor === undefined ? undefined : idSequence(cursor);
+    if (cursorSequence !== undefined) {
+      const ahead = ids.some((id) => {
+        const sequence = idSequence(id);
+        return sequence !== undefined && sequence > cursorSequence;
+      });
+      if (ahead) {
+        this.delivered.delete(stableId);
+        this.persistStaleEpoch(stableId, cursor);
+        return;
+      }
+    }
     // Once this process has delivered something, a durable row is already
     // represented by the in-memory sets and must not be relabelled historical.
     const known = this.delivered.get(stableId);
@@ -601,6 +634,13 @@ export class McpEventFeed {
 
   private forgetUnchipped(stableId: string, eventId: string): void {
     this.unchipped.delete(JSON.stringify([stableId, eventId]));
+  }
+
+  /** A durable set from an older hub epoch was discarded; say so once in the log. */
+  private persistStaleEpoch(stableId: string, cursor: string | undefined): void {
+    console.warn(
+      `mcp: dropped stale delivered-id set for ${stableId} (cursor ${cursor ?? "unknown"}) — the hub renumbered its ids`,
+    );
   }
 
   private recordDelivered(stableId: string, eventId: string): void {

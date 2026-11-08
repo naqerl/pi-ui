@@ -1,3 +1,13 @@
+## 1.6.124
+
+### Fixed
+
+- MCP event chips stopped arriving entirely once the hub renumbered its event ids (a reinstall or a
+  state reset restarts the cursor numbering): the durable delivered-id set then held ids the new stream
+  would never exceed, so every fresh event was classified as a replay and dropped without a chip. A
+  restored set whose ids sit ahead of the cursor being resumed is now discarded as a stale epoch, so
+  the stream is trusted again.
+
 ## 1.6.123
 
 ### Fixed
