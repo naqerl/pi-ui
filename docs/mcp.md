@@ -98,14 +98,22 @@ write-once list.
 
 ### Reliable event delivery
 
-Event IDs, not timestamps or `replayed` provenance, determine novelty. Before a
-push batch advances its stored cursor, its exact novel subset is atomically saved
-in `DATA_DIR/mcp-outbox.json`. Pending batches retry FIFO and survive restart.
-Each delivery uses the same durable `requestId` on every attempt, including a
-crash after submission but before removing the pending record. The outbox keeps
-the latest 10,000 accepted event identities across completed deliveries; the
-subscription registry also retains its per-stream delivered-ID window. Providers
-must supply stable event IDs. Retention is bounded, not an infinite replay ledger.
+Event IDs, not timestamps or `replayed` provenance, determine novelty. The
+durable delivered set means one thing only: a notice for that id was submitted
+and its chip was committed. Merely seeing an id — a duplicate push, adapter
+status metadata or a replay entry — never enters that set. `replayed: true` is a
+display fact, not a delivery decision, so a replayed entry that never produced a
+chip is offered again on the next drain with its original timestamp and cursor.
+
+Before a push batch advances its stored cursor, its exact novel subset is
+atomically saved in `DATA_DIR/mcp-outbox.json`. Pending batches retry FIFO and
+survive restart. Each delivery uses the same durable `requestId` on every
+attempt, including a crash after submission but before removing the pending
+record. A failed submission therefore leaves the id novel and the chip pending;
+the successful retry commits it exactly once. The outbox keeps the latest 10,000
+accepted event identities across completed deliveries; the subscription registry
+also retains its per-stream delivered-ID window. Providers must supply stable
+event IDs. Retention is bounded, not an infinite replay ledger.
 
 Startup recovery resumes from the stored push cursor. Poll probes,
 heartbeats, and status frames do not acknowledge events. A provider that can no

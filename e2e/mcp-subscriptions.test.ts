@@ -407,6 +407,8 @@ test("persists delivered ids so the next process can recognise the replay", asyn
     }),
     true,
   );
+  // The delivered set records a committed chip, not merely an observed event.
+  feed.markDelivered([eventItem("hub:7", null, "event-7")]);
   await registry.close();
 
   const restarted = new McpSubscriptionRegistry(dir);

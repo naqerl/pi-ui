@@ -191,10 +191,12 @@ function subscriptionFrom(value: unknown): McpSubscriptionView | null {
  */
 export class McpEventFeed {
   private readonly subscriptions = new Map<string, McpSubscriptionView>();
-  /** Event ids delivered for a stable id, including the historical ones. */
+  /** Event ids whose notice was submitted (a chip was committed) for a stable id. */
   private readonly delivered = new Map<string, Set<string>>();
-  /** The subset of `delivered` that came from a previous process. */
-  private readonly historical = new Map<string, Set<string>>();
+  /** Event ids observed in this process, chipped or not. */
+  private readonly seen = new Map<string, Set<string>>();
+  /** Replayed feed entries that have not produced a chip yet; the next drain retries them. */
+  private readonly unchipped = new Map<string, { stableId: string; item: unknown }>();
   /** Stable ids that existed before this feed started, so cursor fallback can replay. */
   private readonly restored = new Set<string>();
   /** Stable ids explicitly cancelled; a late status notice must not revive them. */
@@ -384,27 +386,98 @@ export class McpEventFeed {
     return JSON.stringify([stable, event.eventId ?? event]);
   }
 
-  /** Exact novel subset, without advancing cursor/ids. Persist it before ingesting. */
+  /** The durable identity and event id of one adapter item, when it has both. */
+  private itemIdentity(item: unknown): { stableId: string; eventId: string | undefined } | null {
+    if (!isRecord(item) || typeof item.server !== "string" || !isRecord(item.event)) return null;
+    const event = item.event;
+    const name = typeof event.name === "string" ? event.name : "event";
+    const current =
+      typeof item.subscription_id === "string"
+        ? this.viewForAdapter(item.subscription_id)
+        : undefined;
+    const stableId =
+      current?.stableId ?? deriveStableId(item.server, name, current?.arguments ?? {});
+    return {
+      stableId,
+      eventId: typeof event.eventId === "string" ? event.eventId : undefined,
+    };
+  }
+
+  /**
+   * Exact novel subset, without advancing cursor/ids. Persist it before ingesting.
+   * A replayed entry that never produced a chip is included again, with the
+   * original item, so the next drain can still commit exactly one chip for it.
+   */
   novelEvents(items: readonly unknown[]): unknown[] {
     const batch = new Set<string>();
-    return items.filter((item) => {
-      if (!isRecord(item) || typeof item.server !== "string" || !isRecord(item.event)) return false;
-      const event = item.event;
-      const name = typeof event.name === "string" ? event.name : "event";
-      const current =
-        typeof item.subscription_id === "string"
-          ? this.viewForAdapter(item.subscription_id)
-          : undefined;
-      const stableId =
-        current?.stableId ?? deriveStableId(item.server, name, current?.arguments ?? {});
-      const id = typeof event.eventId === "string" ? event.eventId : undefined;
-      if (this.isDelivered(stableId, id)) return false;
-      if (id === undefined) return true;
-      const key = JSON.stringify([stableId, id]);
-      if (batch.has(key)) return false;
+    const result: unknown[] = [];
+    const add = (item: unknown): void => {
+      const identity = this.itemIdentity(item);
+      if (identity === null) return;
+      if (this.isDelivered(identity.stableId, identity.eventId)) return;
+      if (identity.eventId === undefined) {
+        result.push(item);
+        return;
+      }
+      const key = JSON.stringify([identity.stableId, identity.eventId]);
+      if (batch.has(key)) return;
       batch.add(key);
-      return true;
-    });
+      result.push(item);
+    };
+    for (const entry of this.unchipped.values()) add(entry.item);
+    for (const item of items) add(item);
+    return result;
+  }
+
+  /**
+   * Commit the chip for these adapter items. Call this only after their notice
+   * was submitted; an id in the durable delivered set always means a chip exists.
+   */
+  markDelivered(items: readonly unknown[]): void;
+  markDelivered(stableId: string, eventId: string): void;
+  markDelivered(itemsOrStableId: readonly unknown[] | string, eventId?: string): void {
+    if (typeof itemsOrStableId === "string") {
+      if (eventId !== undefined && eventId.length > 0) {
+        this.recordDelivered(itemsOrStableId, eventId);
+      }
+      return;
+    }
+    for (const item of itemsOrStableId) {
+      const identity = this.itemIdentity(item);
+      if (identity?.eventId === undefined) continue;
+      this.recordDelivered(identity.stableId, identity.eventId);
+    }
+  }
+
+  /** Alternate names for callers that describe the committed notice as a chip. */
+  markChipped(items: readonly unknown[]): void;
+  markChipped(stableId: string, eventId: string): void;
+  markChipped(itemsOrStableId: readonly unknown[] | string, eventId?: string): void {
+    if (typeof itemsOrStableId === "string") {
+      this.markDelivered(itemsOrStableId, eventId ?? "");
+      return;
+    }
+    this.markDelivered(itemsOrStableId);
+  }
+
+  commitDelivered(items: readonly unknown[]): void;
+  commitDelivered(stableId: string, eventId: string): void;
+  commitDelivered(itemsOrStableId: readonly unknown[] | string, eventId?: string): void {
+    if (typeof itemsOrStableId === "string") {
+      this.markDelivered(itemsOrStableId, eventId ?? "");
+      return;
+    }
+    this.markDelivered(itemsOrStableId);
+  }
+
+  commit(items: readonly unknown[]): void;
+  commit(stableId: string, eventId: string): void;
+  commit(itemsOrStableId: readonly unknown[] | string, eventId?: string): void {
+    if (typeof itemsOrStableId === "string") {
+      this.markDelivered(itemsOrStableId, eventId ?? "");
+      return;
+    }
+    this.markDelivered(itemsOrStableId);
   }
 
   ingest(notice: ExtensionNotice): boolean {
@@ -440,20 +513,34 @@ export class McpEventFeed {
     const known = this.delivered.get(stableId);
     if (known !== undefined && known.size > 0) return;
     const delivered = new Set<string>();
-    const historicalIds = new Set<string>();
     for (const id of ids) {
       if (id.length === 0 || delivered.has(id)) continue;
       delivered.add(id);
-      historicalIds.add(id);
     }
     while (delivered.size > MAX_DELIVERED_EVENT_IDS) {
       const oldest = delivered.values().next().value;
       if (oldest === undefined) break;
       delivered.delete(oldest);
-      historicalIds.delete(oldest);
     }
     this.delivered.set(stableId, delivered);
-    this.historical.set(stableId, historicalIds);
+    this.seedSeen(stableId, delivered);
+  }
+
+  /** Adapter metadata proves an id was seen, never that pi-ui committed a chip. */
+  private seedSeen(stableId: string, ids: Iterable<string>): void {
+    let seen = this.seen.get(stableId);
+    if (seen === undefined) {
+      seen = new Set<string>();
+      this.seen.set(stableId, seen);
+    }
+    for (const id of ids) {
+      if (id.length > 0) seen.add(id);
+    }
+    while (seen.size > MAX_DELIVERED_EVENT_IDS) {
+      const oldest = seen.values().next().value;
+      if (oldest === undefined) break;
+      seen.delete(oldest);
+    }
   }
 
   private savedRecord(stableId: string): McpSubscriptionRecord | undefined {
@@ -468,32 +555,66 @@ export class McpEventFeed {
     this.seedDelivered(stableId, record.deliveredEventIds ?? [], true);
   }
 
-  private remember(stableId: string, eventId: string, historical: boolean): boolean {
+  /**
+   * Record an observation. `chipped` is the only way into the durable delivered
+   * set; seeing an id (even repeatedly) never implies its notice was submitted.
+   */
+  private remember(stableId: string, eventId: string, chipped: boolean): boolean {
+    let seen = this.seen.get(stableId);
+    if (seen === undefined) {
+      seen = new Set<string>();
+      this.seen.set(stableId, seen);
+    }
+    seen.add(eventId);
+    while (seen.size > MAX_DELIVERED_EVENT_IDS) {
+      const oldest = seen.values().next().value;
+      if (oldest === undefined) break;
+      seen.delete(oldest);
+    }
+    if (!chipped) return false;
     let delivered = this.delivered.get(stableId);
     if (delivered === undefined) {
       delivered = new Set<string>();
       this.delivered.set(stableId, delivered);
     }
-    let ids = this.historical.get(stableId);
-    if (ids === undefined) {
-      ids = new Set<string>();
-      this.historical.set(stableId, ids);
-    }
-    if (delivered.has(eventId)) {
-      if (historical) ids.add(eventId);
-      else ids.delete(eventId);
-      return false;
-    }
+    if (delivered.has(eventId)) return false;
     delivered.add(eventId);
-    if (historical) ids.add(eventId);
-    else ids.delete(eventId);
     while (delivered.size > MAX_DELIVERED_EVENT_IDS) {
       const oldest = delivered.values().next().value;
       if (oldest === undefined) break;
       delivered.delete(oldest);
-      ids.delete(oldest);
     }
     return true;
+  }
+
+  private rememberUnchipped(stableId: string, eventId: string, item: unknown): void {
+    const key = JSON.stringify([stableId, eventId]);
+    // Keep the first observation: the eventual chip must carry its timestamp
+    // and cursor, not those of a later duplicate delivery.
+    if (!this.unchipped.has(key)) this.unchipped.set(key, { stableId, item });
+    while (this.unchipped.size > MAX_DELIVERED_EVENT_IDS) {
+      const oldest = this.unchipped.keys().next().value;
+      if (oldest === undefined) break;
+      this.unchipped.delete(oldest);
+    }
+  }
+
+  private forgetUnchipped(stableId: string, eventId: string): void {
+    this.unchipped.delete(JSON.stringify([stableId, eventId]));
+  }
+
+  private recordDelivered(stableId: string, eventId: string): void {
+    const added = this.remember(stableId, eventId, true);
+    this.forgetUnchipped(stableId, eventId);
+    let changed = false;
+    this.events = this.events.map((entry) => {
+      if (entry.id !== eventId || entry.replayed !== true) return entry;
+      changed = true;
+      return { ...entry, replayed: undefined };
+    });
+    const view = this.findByStableId(stableId);
+    if (view !== undefined && (added || changed)) this.persist(view);
+    if (changed) this.touch();
   }
 
   private deliveredIds(stableId: string): string[] {
@@ -502,6 +623,10 @@ export class McpEventFeed {
 
   private isDelivered(stableId: string, eventId: string | undefined): boolean {
     return eventId !== undefined && this.delivered.get(stableId)?.has(eventId) === true;
+  }
+
+  private isSeen(stableId: string, eventId: string | undefined): boolean {
+    return eventId !== undefined && this.seen.get(stableId)?.has(eventId) === true;
   }
 
   private persist(subscription: McpSubscriptionView): void {
@@ -583,16 +708,18 @@ export class McpEventFeed {
         subscriptionId === undefined ? undefined : this.viewForAdapter(subscriptionId);
       const stableId =
         current?.stableId ?? deriveStableId(item.server, streamName, current?.arguments ?? {});
-      // Novelty belongs to the conversation, not to this process. An id the feed
-      // already delivered — in this process or before it started — is a
+      // Novelty belongs to the conversation, not to this process. An id whose
+      // chip was committed — in this process or before it started — is a
       // re-delivery; anything else is news, however old its timestamp looks.
-      const replay = this.isDelivered(stableId, eventId);
+      const delivered = this.isDelivered(stableId, eventId);
+      const duplicate = eventId !== undefined && (delivered || this.isSeen(stableId, eventId));
 
-      if (replay) {
-        // A restored stream may redeliver an event whose id we already stored
-        // before this process started. Keep it visibly marked, never a notice.
+      if (duplicate) {
+        // A duplicate may move the cursor but it never commits a chip. If the
+        // id was only seen before, keep the replay entry retryable for the next
+        // drain instead of silently recording it as delivered.
         if (this.trackCursor(item, streamName, cursor)) stateChanged = true;
-        if (eventId !== undefined) this.remember(stableId, eventId, true);
+        if (eventId !== undefined) this.remember(stableId, eventId, false);
         const existing = this.events.find((entry) => entry.id === id);
         if (existing === undefined) {
           this.events = [
@@ -606,7 +733,14 @@ export class McpEventFeed {
               replayed: true,
             },
           ].slice(-EVENT_LIMIT);
+          if (eventId !== undefined && !delivered) {
+            this.rememberUnchipped(stableId, eventId, item);
+          }
           stateChanged = true;
+        } else if (eventId !== undefined && !delivered && existing.replayed === true) {
+          // Keep the original item: its timestamp and cursor are the ones the
+          // eventual chip must carry.
+          this.rememberUnchipped(stableId, eventId, item);
         }
         const tracked =
           subscriptionId === undefined ? undefined : this.viewForAdapter(subscriptionId);
@@ -745,8 +879,9 @@ export class McpEventFeed {
       if (this.cancellationId(incoming.stableId) !== undefined) continue;
       const deliveredIds = eventIdsFrom(item);
       if (deliveredIds.length > 0) {
-        this.restored.add(incoming.stableId);
-        this.seedDelivered(incoming.stableId, deliveredIds, true);
+        // The adapter only knows which frames it pushed. That is not proof that
+        // pi-ui submitted a chip, so these ids may not enter the delivered set.
+        this.seedSeen(incoming.stableId, deliveredIds);
       }
       this.seedFromRegistry(incoming.stableId);
       const current = this.viewForAdapter(incoming.id);
@@ -885,7 +1020,7 @@ export class McpEventFeed {
         const delivered = eventIdsFrom(item);
         if (delivered.length > 0) {
           this.restored.add(incoming.stableId);
-          this.seedDelivered(incoming.stableId, delivered, true);
+          this.seedSeen(incoming.stableId, delivered);
         }
         this.seedFromRegistry(incoming.stableId);
         const current =
@@ -921,7 +1056,12 @@ export class McpEventFeed {
       const delivered = eventIdsFrom(raw);
       if (delivered.length > 0) {
         this.restored.add(incoming.stableId);
-        this.seedDelivered(incoming.stableId, delivered, true);
+        if (args.restored === true) {
+          // The restore result is enriched with our own durable delivered set.
+          this.seedDelivered(incoming.stableId, delivered, true);
+        } else {
+          this.seedSeen(incoming.stableId, delivered);
+        }
       }
       if (args.restored === true) this.restored.add(incoming.stableId);
       this.seedFromRegistry(incoming.stableId);

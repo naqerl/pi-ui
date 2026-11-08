@@ -32,6 +32,8 @@ test("preboot unseen IDs are news; A then [A,B,B] selects exactly B without adva
   assert.deepEqual(feed.novelEvents([a]), [a]);
   assert.deepEqual(feed.novelEvents([a]), [a]);
   feed.ingest({ customType: "mcp-events", details: { events: [a] } });
+  // Ingest only observes; the chip commit is what removes an id from novelty.
+  feed.markDelivered([a]);
   assert.deepEqual(feed.novelEvents([a, b, b]), [b]);
   const text = mcpEventText({ head: MCP_EVENTS_HEAD, items: [], dropped: 0 }, [b]);
   assert.deepEqual(mcpEventEnvelope(text)?.items, [b]);
@@ -161,4 +163,68 @@ test("a persistence failure blocks later cursor acknowledgments until retry succ
   await intake.close();
   assert.deepEqual(acknowledged, ["A", "B"]);
   assert.equal(attempts, 2);
+});
+
+test("a busy burst drains to exactly one chip per event id, with nothing left novel", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-outbox-busy-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const feed = new McpEventFeed();
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe" },
+      result: { subscription: { id: "s1", server: "hub", name: "hub", status: "active" } },
+    },
+  });
+  const items = Array.from({ length: 5 }, (_, index) => event(`busy-${index}`));
+  const delivered: McpDelivery[] = [];
+  const outbox = new McpOutbox(join(dir, "outbox.json"), async (item) => {
+    delivered.push(item);
+    const envelope = mcpEventEnvelope(item.text);
+    if (envelope !== null) feed.markDelivered(envelope.items);
+  });
+  await outbox.load();
+
+  const novel = feed.novelEvents(items);
+  assert.equal(novel.length, items.length);
+  const texts = mcpDeliveryTexts({ head: MCP_EVENTS_HEAD, items: novel, dropped: 0 }, true);
+  assert.equal(texts.length, items.length, "busy events keep per-event chip identity");
+  await outbox.enqueueMany(
+    texts,
+    novel.map((item) => feed.eventKey(item)),
+  );
+  feed.ingest({ customType: "mcp-events", details: { events: items } });
+  outbox.start();
+
+  for (let attempt = 0; attempt < 100 && delivered.length < items.length; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  await outbox.close();
+  assert.equal(delivered.length, items.length);
+  assert.equal(new Set(delivered.map((item) => item.id)).size, items.length);
+  assert.deepEqual(feed.novelEvents(items), [], "every committed id leaves the novel set");
+
+  feed.ingest({ customType: "mcp-events", details: { events: items } });
+  assert.equal(delivered.length, items.length, "duplicates add no chip");
+});
+
+test("a failed notice submission leaves ids novel, and the retry commits the chip", async () => {
+  const item = event("retry-1");
+  const text = mcpEventText({ head: MCP_EVENTS_HEAD, items: [item], dropped: 0 }, [item]);
+  const marked: unknown[] = [];
+  let attempts = 0;
+  const fake = {
+    eventFeed: { markDelivered: (items: readonly unknown[]) => marked.push(...items) },
+    submit: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("injected submission failure");
+    },
+  };
+  const delivery = { id: "delivery-retry", text, at: "2026-01-01T00:00:00Z" };
+  await assert.rejects(
+    ChatService.prototype.submitMcpDelivery.call(fake as unknown as ChatService, delivery),
+  );
+  assert.equal(marked.length, 0, "a failed submission cannot remove an id from novelty");
+  await ChatService.prototype.submitMcpDelivery.call(fake as unknown as ChatService, delivery);
+  assert.deepEqual(marked, [item], "the successful retry commits the chip");
 });

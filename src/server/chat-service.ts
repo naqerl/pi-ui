@@ -1775,10 +1775,12 @@ export class ChatService {
     const byNotice = new Map<string, { key: string; events: unknown[] }>();
     const firstNotices = new Set<string>();
     const immediate: unknown[] = [];
+    const committed: unknown[] = [];
     for (const item of envelope.items) {
       const decision = this.mcpNotices.observe(item);
       if (decision.mode === "immediate") {
         immediate.push(item);
+        committed.push(item);
         for (const noticeId of this.mcpNoticeEvents.keys()) {
           if (noticeId === decision.key || noticeId.startsWith(`${decision.key}#`)) {
             this.mcpNoticeEvents.delete(noticeId);
@@ -1808,6 +1810,7 @@ export class ChatService {
             : { key: decision.key, events: [] }));
       const next = [...current.events, item];
       byNotice.set(noticeId, { key: current.key, events: next });
+      committed.push(item);
       if (fresh) firstNotices.add(noticeId);
     }
 
@@ -1860,6 +1863,10 @@ export class ChatService {
         },
       });
     }
+
+    // The durable delivered set may only name ids whose notice was submitted.
+    // A failure above leaves them novel so the retry can still produce a chip.
+    this.eventFeed?.markDelivered(committed);
   }
 
   /** Durable outbox batches already contain only novel events. Use the same request id
@@ -1882,6 +1889,8 @@ export class ChatService {
         },
       },
     });
+    const envelope = mcpEventEnvelope(item.text);
+    if (envelope !== null) this.eventFeed?.markDelivered(envelope.items);
   }
 
   /** Sends a job result to the agent without placing a user message in the chat. */

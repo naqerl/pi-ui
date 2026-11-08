@@ -250,3 +250,93 @@ test("a skipped window is recorded as a gap instead of silence", () => {
   assert.equal(feed.state.gap?.dropped, 92);
   assert.equal(feed.state.notice, "92 events dropped while reconnecting");
 });
+
+test("status metadata is seen, not delivered, and an unchipped replay is retried", () => {
+  const feed = new McpEventFeed();
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe" },
+      result: { subscription: { id: "s1", server: "zeroshot", name: "hub", status: "active" } },
+    },
+  });
+  const item = {
+    subscription_id: "s1",
+    server: "zeroshot",
+    event: {
+      eventId: "hub:2",
+      name: "hub",
+      timestamp: "2026-11-07T11:40:00.000Z",
+      cursor: "hub:2",
+      data: { kind: "hub.job", id: "job-2" },
+    },
+  };
+  // The adapter says it pushed this id; that alone may not suppress a chip.
+  feed.ingest({
+    customType: "mcp-events-status",
+    details: {
+      subscriptions: [
+        {
+          id: "s1",
+          server: "zeroshot",
+          name: "hub",
+          status: "active",
+          deliveredEventIds: ["hub:2"],
+        },
+      ],
+    },
+  });
+  assert.deepEqual(feed.novelEvents([item]), [item], "status ids are still novel until chipped");
+
+  assert.equal(
+    feed.ingest({ customType: "mcp-events", details: { events: [item] } }),
+    false,
+    "the duplicate delivery itself is dropped",
+  );
+  assert.equal(feed.state.events.at(-1)?.replayed, true);
+  assert.equal(feed.state.subscriptions[0]?.cursor, "hub:2");
+
+  // A later duplicate with a different cursor must not replace the original
+  // timestamp/cursor that the eventual chip carries.
+  const duplicate = {
+    ...item,
+    event: { ...item.event, timestamp: "2026-11-07T11:45:00.000Z", cursor: "hub:3" },
+  };
+  assert.equal(feed.ingest({ customType: "mcp-events", details: { events: [duplicate] } }), false);
+  assert.deepEqual(feed.novelEvents([]), [item], "the next drain still offers the original item");
+
+  feed.markDelivered([item]);
+  assert.deepEqual(feed.novelEvents([item]), []);
+  assert.equal(feed.state.events.at(-1)?.replayed, undefined);
+});
+
+test("a duplicate delivery never marks an unchipped id as delivered", () => {
+  const feed = new McpEventFeed();
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe" },
+      result: { subscription: { id: "s1", server: "hub", name: "hub", status: "active" } },
+    },
+  });
+  const item = {
+    subscription_id: "s1",
+    server: "hub",
+    event: {
+      eventId: "hub:7",
+      name: "hub",
+      timestamp: "2026-11-07T11:40:00.000Z",
+      cursor: "hub:7",
+      data: { kind: "hub.job", id: "job-7" },
+    },
+  };
+  assert.equal(feed.ingest({ customType: "mcp-events", details: { events: [item] } }), true);
+  assert.equal(feed.ingest({ customType: "mcp-events", details: { events: [item] } }), false);
+  assert.deepEqual(feed.novelEvents([item]), [item], "no chip means still novel");
+  assert.equal(feed.state.subscriptions[0]?.cursor, "hub:7");
+  assert.equal(feed.state.events.filter((entry) => entry.id === "hub:7").length, 1);
+
+  feed.markDelivered([item]);
+  assert.deepEqual(feed.novelEvents([item]), [], "the committed chip removes the id");
+  assert.equal(feed.ingest({ customType: "mcp-events", details: { events: [item] } }), false);
+});
