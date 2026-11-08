@@ -1485,7 +1485,7 @@ export class McpRuntime {
       options,
     );
     try {
-      const subscription = await connection.subscribe(record.name, record.arguments, cursor);
+      const subscription = await connection.subscribe(record.name, record.arguments, null);
       this.directSubscriptions.set(subscription.id, connection);
       return {
         id: subscription.id,
@@ -1728,21 +1728,13 @@ export class McpRuntime {
         );
         return false;
       }
-      let cursor = record.cursor;
+      let cursor: string | null = null;
       if (probe.stale && probe.cursor !== null) {
-        // The server would replay from before this process began. Keep the
-        // subscription, but resume at its fresh cursor and drop the backlog.
-        cursor = probe.cursor;
-        const advanced: McpSubscriptionRecord = {
-          ...record,
-          cursor,
-          updatedAt: new Date().toISOString(),
-        };
-        this.pendingRestore.set(key, advanced);
-        await this.subscriptionStore?.record(advanced).catch(() => {});
-        record = advanced;
+        // Resume from now: a restart may lose the events it missed, and replaying
+        // them is what the policy used to drop anyway (SEP-3415: null = start now).
+        cursor = null;
         console.log(
-          `mcp: dropped pre-restart backlog for ${record.server}/${record.name} at ${cursor}`,
+          `mcp: resuming ${record.server}/${record.name} from now, not from ${record.cursor}`,
         );
       }
       const result = await this.shim.callTool("mcp_events", {

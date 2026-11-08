@@ -1,3 +1,13 @@
+## 1.6.119
+
+### Fixed
+
+- MCP events reach the chat again. Two changes: the policy no longer drops an event because the
+  server served it from a cursor (SEP-3415 dedupes by `eventId`, so the delivered-id set decides what
+  is news), and a restored subscription now resumes with `cursor: null` — start from now — instead of
+  replaying the backlog it missed while pi-ui was down. Events that happen during a restart are
+  dropped on purpose; the stream is live again immediately.
+
 ## 1.6.118
 
 ### Changed

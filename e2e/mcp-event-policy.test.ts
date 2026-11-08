@@ -151,17 +151,17 @@ test("an event with no subject is immediate and keyed by its event id", () => {
   assert.equal(notice.key, "github/push/push-1");
 });
 
-test("replayed events drop and terminal events bypass the window", () => {
+test("replayed events are news, and terminal events bypass the window", () => {
   const replayed = classifyNotice(
     event("zeroshot", "hub", { kind: "hub.run", runId: "run-1" }, { replayed: true }),
   );
-  assert.equal(replayed.mode, "drop");
-  assert.equal(replayed.reason, "replayed");
+  assert.notEqual(replayed.mode, "drop");
+  assert.equal(replayed.reason, "coalescible");
 
   const replayTruncated = classifyNotice(
     event("zeroshot", "hub", { kind: "hub.run", runId: "run-1" }, { replayTruncated: true }),
   );
-  assert.equal(replayTruncated.mode, "drop");
+  assert.notEqual(replayTruncated.mode, "drop");
 
   for (const data of [
     { kind: "hub.job", jobId: "j", state: "failed" },
@@ -420,7 +420,7 @@ test("a repeated has-been-running warning is redundant", () => {
   assert.equal(dropped.reason, "repeated-warning");
 });
 
-test("replayed events do not open a notice", () => {
+test("a replayed event opens a notice like any other", () => {
   const coalescer = new NoticeCoalescer({ now: () => START });
   const replayed = event(
     "zeroshot",
@@ -429,9 +429,7 @@ test("replayed events do not open a notice", () => {
     { replayed: true },
   );
   const decision = coalescer.observe(replayed);
-  assert.equal(decision.mode, "drop");
-  assert.equal(decision.action, "drop");
-  assert.equal(coalescer.notices().length, 0);
+  assert.notEqual(decision.action, "drop");
 });
 
 test("the same policy works for a second server with different payload names", () => {

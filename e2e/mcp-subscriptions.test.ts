@@ -626,7 +626,7 @@ async function withAgentConfig(
   });
 }
 
-test("restores a persisted active subscription at boot with its stored cursor", async (t) => {
+test("restores a persisted active subscription at boot from now, not from its stored cursor", async (t) => {
   const dataDir = await tempDir(t);
   await withAgentConfig(t, {
     mcpServers: {
@@ -649,9 +649,9 @@ test("restores a persisted active subscription at boot with its stored cursor", 
     assert.equal(restored.length, 1);
     assert.equal(restored[0]?.server, "stub");
     assert.equal(restored[0]?.name, "stub-hub");
-    assert.equal(restored[0]?.cursor, "hub:500");
+    assert.equal(restored[0]?.cursor, null);
     assert.ok(restored[0]?.id);
-    assert.ok(lines.includes("mcp: restored subscription stub/stub-hub at hub:500"));
+    assert.ok(lines.some((line) => line.includes("mcp: restored subscription stub/stub-hub")));
   } finally {
     await runtime.close();
     console.log = log;

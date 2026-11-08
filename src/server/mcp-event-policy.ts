@@ -429,7 +429,9 @@ function redundancyReason(
 /** Decide what to do with one event, optionally in the context of the previous one. */
 export function classifyNotice(input: unknown, previousInput?: unknown): ClassifiedNotice {
   const facts = factsFrom(input);
-  if (facts.replayed) return classification(facts, "drop", "replayed");
+  // A replay flag is provenance, not novelty: the hub serves anything after a cursor
+  // marked `replayed: true`, and dropping it silently starves the conversation
+  // (SEP-3415 dedupes by eventId, so the delivered-id set decides what is news).
   if (facts.terminal) return classification(facts, "immediate", "terminal-state");
 
   const previous = previousInput === undefined ? undefined : factsFrom(previousInput);
@@ -483,16 +485,6 @@ export class NoticeCoalescer {
     const facts = factsFrom(input);
     const key = keyFor(facts);
     const runKey = runKeyFor(facts);
-
-    if (facts.replayed) {
-      return {
-        ...classification(facts, "drop", "replayed"),
-        action: "drop",
-        first: false,
-        fold: false,
-        noticeId: null,
-      };
-    }
 
     if (facts.terminal) {
       this.open.delete(key);
