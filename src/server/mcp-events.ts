@@ -525,21 +525,28 @@ export class McpEventFeed {
     cursor?: string,
   ): void {
     if (!historical || ids.length === 0) return;
-    // Ids ahead of the cursor we are resuming from cannot belong to it: the hub
-    // renumbered (reinstall, state reset) and this set is from the old epoch.
-    // Keeping it would mark every new event as a replay forever, so drop it and
-    // let the stream speak for itself.
-    const cursorSequence = cursor === undefined ? undefined : idSequence(cursor);
-    if (cursorSequence !== undefined) {
-      const ahead = ids.some((id) => {
-        const sequence = idSequence(id);
-        return sequence !== undefined && sequence > cursorSequence;
-      });
-      if (ahead) {
-        this.delivered.delete(stableId);
-        this.persistStaleEpoch(stableId, cursor);
-        return;
-      }
+    // The cursor may arrive from any of three callers (startup record, registry
+    // row, restore result); resolve it here so no path can skip the epoch check.
+    const resumeFrom =
+      cursor ??
+      this.savedRecord(stableId)?.cursor ??
+      this.findByStableId(stableId)?.cursor ??
+      undefined;
+    const cursorSequence = resumeFrom === undefined ? undefined : idSequence(resumeFrom);
+    if (cursorSequence === undefined) {
+      // Without a cursor there is nothing to compare against, and trusting the
+      // set is what silently killed every chip. Treat it as unknown instead.
+      this.persistStaleEpoch(stableId, resumeFrom);
+      return;
+    }
+    const ahead = ids.some((id) => {
+      const sequence = idSequence(id);
+      return sequence !== undefined && sequence > cursorSequence;
+    });
+    if (ahead) {
+      this.delivered.delete(stableId);
+      this.persistStaleEpoch(stableId, resumeFrom);
+      return;
     }
     // Once this process has delivered something, a durable row is already
     // represented by the in-memory sets and must not be relabelled historical.

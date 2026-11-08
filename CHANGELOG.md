@@ -1,3 +1,13 @@
+## 1.6.127
+
+### Fixed
+
+- The epoch check now resolves the cursor inside `seedDelivered` itself, from the startup record,
+  the registry row or the live view, and refuses to trust a restored set when no cursor is known.
+  Before, a caller that passed no cursor (the restore result) skipped the check entirely, so the
+  poisoned set was re-seeded on every reconnect and no event chip could ever be produced.
+
+
 ## 1.6.126
 
 ### Fixed
