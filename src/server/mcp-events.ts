@@ -508,7 +508,7 @@ export class McpEventFeed {
     for (const record of records) {
       const stableId = recordStableId(record);
       this.restored.add(stableId);
-      this.seedDelivered(stableId, record.deliveredEventIds ?? [], true, record.cursor);
+      this.seedDelivered(stableId, record.deliveredEventIds ?? [], true, record.cursor ?? undefined);
       // A restore rejected by the server has no live adapter session, but the
       // durable cancellation must still be visible in /api/state.
       if (record.status === "cancelled" || record.state === "cancelled") {

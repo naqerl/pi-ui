@@ -1,3 +1,9 @@
+## 1.6.125
+
+### Fixed
+
+- Type error in the stale-epoch guard shipped in 1.6.124 (`record.cursor` is `string | null`). No behaviour change.
+
 ## 1.6.124
 
 ### Fixed
