@@ -763,6 +763,7 @@ export class McpEventFeed {
         current === undefined
           ? {
               ...incoming,
+              cursor: saved === undefined ? incoming.cursor : saved.cursor,
               state: incomingState,
               ...(incoming.lastEventAt === undefined && saved?.lastEventAt !== undefined
                 ? { lastEventAt: saved.lastEventAt }
@@ -894,7 +895,7 @@ export class McpEventFeed {
           ...incoming,
           stableId: current?.stableId ?? incoming.stableId,
           state: deriveSubscriptionState(incoming.status, incoming.state),
-          cursor: serverCursor(current?.cursor ?? null, incoming.cursor),
+          cursor: current === undefined ? incoming.cursor : current.cursor,
           recoveryFailures: current?.recoveryFailures ?? incoming.recoveryFailures,
           recoveryPending: current?.recoveryPending ?? incoming.recoveryPending,
           recoveryStartedAt: current?.recoveryStartedAt ?? incoming.recoveryStartedAt,
@@ -929,7 +930,12 @@ export class McpEventFeed {
         ...incoming,
         stableId: current?.stableId ?? incoming.stableId,
         state: deriveSubscriptionState(incoming.status, incoming.state),
-        cursor: serverCursor(current?.cursor ?? null, incoming.cursor),
+        cursor:
+          current === undefined
+            ? saved === undefined
+              ? incoming.cursor
+              : saved.cursor
+            : current.cursor,
         lastHeartbeatAt:
           current?.lastHeartbeatAt ?? incoming.lastHeartbeatAt ?? saved?.lastHeartbeatAt,
         lastPollAt: current?.lastPollAt ?? incoming.lastPollAt ?? saved?.lastPollAt,

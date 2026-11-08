@@ -99,3 +99,33 @@ test("boot-time events and the provider's replay-truncation warning reach the si
     `${MCP_STATUS_HEAD}\nhub: replay is truncated for hub; some events are unavailable.`,
   );
 });
+
+test("heartbeat, status and list metadata cannot skip past accepted push events", () => {
+  const feed = new McpEventFeed();
+  const subscription = { id: "s1", server: "hub", name: "hub", status: "active", cursor: "start" };
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: { args: { action: "subscribe" }, result: { subscription } },
+  });
+  const a = event("A");
+  feed.ingest({
+    customType: "mcp-events",
+    details: { events: [{ ...a, event: { ...a.event, cursor: "accepted-A" } }] },
+  });
+  feed.ingest({
+    customType: "mcp-events-traffic",
+    details: { subscription_id: "s1", cursor: "unseen-tail" },
+  });
+  feed.ingest({
+    customType: "mcp-events-status",
+    details: { subscriptions: [{ ...subscription, cursor: "unseen-tail" }] },
+  });
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "list" },
+      result: { subscriptions: [{ ...subscription, cursor: "unseen-tail" }] },
+    },
+  });
+  assert.equal(feed.state.subscriptions[0]?.cursor, "accepted-A");
+});

@@ -1431,7 +1431,7 @@ export class McpRuntime {
         details !== undefined && isRecord(details.subscription) ? details.subscription : {};
       return {
         ...(typeof raw.id === "string" ? { id: raw.id } : {}),
-        cursor: typeof raw.cursor === "string" ? raw.cursor : cursor,
+        cursor,
         status: typeof raw.status === "string" ? raw.status : "active",
         ...(typeof raw.endReason === "string" ? { endReason: raw.endReason } : {}),
       };
@@ -1488,7 +1488,7 @@ export class McpRuntime {
       this.directSubscriptions.set(subscription.id, connection);
       return {
         id: subscription.id,
-        cursor: subscription.cursor ?? cursor,
+        cursor,
         status: subscription.status,
       };
     } catch (error) {
@@ -1757,7 +1757,7 @@ export class McpRuntime {
         name: typeof raw.name === "string" ? raw.name : record.name,
         status: typeof raw.status === "string" ? raw.status : record.status,
         arguments: isRecord(raw.arguments) ? raw.arguments : record.arguments,
-        cursor: typeof raw.cursor === "string" ? raw.cursor : cursor,
+        cursor,
       };
       const restored: McpSubscriptionRecord = {
         ...record,
