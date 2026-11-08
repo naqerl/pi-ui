@@ -1,3 +1,9 @@
+## 1.6.123
+
+### Fixed
+
+- An MCP event id leaves the delivered set only when a chip for it was committed, so a stream that is active, heartbeat-fresh and cursor-advancing can no longer deliver nothing: duplicates advance the cursor without consuming novelty, a `replayed: true` entry that was never chipped is chipped on the next drain, and a failed notice submission keeps its chip for retry.
+
 ## 1.6.122
 
 ### Fixed
