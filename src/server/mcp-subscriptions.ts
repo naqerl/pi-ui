@@ -173,13 +173,6 @@ function normalizeEventIds(value: unknown): string[] {
   return result.slice(-MAX_DELIVERED_EVENT_IDS);
 }
 
-function mergedEventIds(
-  first: readonly string[] | undefined,
-  second: readonly string[] | undefined,
-): string[] {
-  return normalizeEventIds([...(first ?? []), ...(second ?? [])]);
-}
-
 function normalizeRecord(value: unknown): McpSubscriptionRecord | null {
   if (!isRecord(value)) return null;
   if (typeof value.server !== "string" || typeof value.name !== "string") return null;
@@ -319,10 +312,12 @@ function mergeRecord(
     id: latest.id ?? existing.id ?? incoming.id ?? null,
     status,
     enabled,
-    deliveredEventIds:
-      latest === incoming
-        ? mergedEventIds(existing.deliveredEventIds, incoming.deliveredEventIds)
-        : mergedEventIds(incoming.deliveredEventIds, existing.deliveredEventIds),
+    // The feed owns this set: it writes the whole thing on every change and must be
+    // able to shrink it (dropping ids from an older hub numbering). A union made
+    // removal impossible, so a poisoned set could never be cleared.
+    deliveredEventIds: normalizeEventIds(
+      latest.deliveredEventIds ?? existing.deliveredEventIds ?? incoming.deliveredEventIds ?? [],
+    ),
     ...(state === undefined ? {} : { state }),
     lastEventAt: latest.lastEventAt ?? existing.lastEventAt ?? incoming.lastEventAt,
     lastHeartbeatAt: latest.lastHeartbeatAt ?? existing.lastHeartbeatAt ?? incoming.lastHeartbeatAt,

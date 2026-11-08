@@ -1,3 +1,14 @@
+## 1.6.129
+
+### Fixed
+
+- The subscription registry merged the durable delivered-id list with what it already held, so the set
+  could only ever grow: a list poisoned with ids from an older hub numbering came back on every write
+  and every event was classified as a replay, which is why no MCP event chip appeared for days. The
+  feed now owns that list outright (the newest record wins, and it may shrink). Removes the temporary
+  diagnostic from 1.6.128.
+
+
 ## 1.6.128
 
 ### Added
