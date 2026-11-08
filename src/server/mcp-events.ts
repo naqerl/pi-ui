@@ -370,6 +370,43 @@ export class McpEventFeed {
     return undefined;
   }
 
+  /** Stable across adapter replacement/restart, never based on timestamps. */
+  eventKey(item: unknown): string {
+    if (!isRecord(item) || !isRecord(item.event)) return JSON.stringify(item);
+    const event = item.event;
+    const current =
+      typeof item.subscription_id === "string"
+        ? this.viewForAdapter(item.subscription_id)
+        : undefined;
+    const stable =
+      current?.stableId ??
+      deriveStableId(String(item.server), String(event.name ?? "event"), current?.arguments ?? {});
+    return JSON.stringify([stable, event.eventId ?? event]);
+  }
+
+  /** Exact novel subset, without advancing cursor/ids. Persist it before ingesting. */
+  novelEvents(items: readonly unknown[]): unknown[] {
+    const batch = new Set<string>();
+    return items.filter((item) => {
+      if (!isRecord(item) || typeof item.server !== "string" || !isRecord(item.event)) return false;
+      const event = item.event;
+      const name = typeof event.name === "string" ? event.name : "event";
+      const current =
+        typeof item.subscription_id === "string"
+          ? this.viewForAdapter(item.subscription_id)
+          : undefined;
+      const stableId =
+        current?.stableId ?? deriveStableId(item.server, name, current?.arguments ?? {});
+      const id = typeof event.eventId === "string" ? event.eventId : undefined;
+      if (this.isDelivered(stableId, id)) return false;
+      if (id === undefined) return true;
+      const key = JSON.stringify([stableId, id]);
+      if (batch.has(key)) return false;
+      batch.add(key);
+      return true;
+    });
+  }
+
   ingest(notice: ExtensionNotice): boolean {
     if (notice.customType === "mcp-events") return this.ingestEvents(notice.details);
     if (notice.customType === "mcp-events-status") return this.ingestStatuses(notice.details);
@@ -673,11 +710,9 @@ export class McpEventFeed {
       typeof details.timestamp === "string" && details.timestamp.length > 0
         ? details.timestamp
         : new Date().toISOString();
-    const cursor = typeof details.cursor === "string" ? details.cursor : null;
     const alive = current.state !== "active" || current.status === "failed";
     const next: McpSubscriptionView = {
       ...current,
-      ...(cursor === null ? {} : { cursor }),
       ...(alive ? { status: "active", state: "active" as const } : {}),
       lastHeartbeatAt: timestamp,
       lastError: undefined,
@@ -762,7 +797,7 @@ export class McpEventFeed {
           : {
               ...incoming,
               stableId: current.stableId,
-              cursor: serverCursor(current.cursor, incoming.cursor),
+              cursor: current.cursor,
               state:
                 current.state === "dead" && incoming.status !== "active"
                   ? "dead"

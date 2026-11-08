@@ -95,3 +95,27 @@ becomes three of these unless overridden) and `PI_MCP_STALL_MS`. A successful
 protocol connection also clears every stale boot failure for that server, so
 availability is recomputed from the latest observation rather than a
 write-once list.
+
+### Reliable event delivery
+
+Event IDs, not timestamps or `replayed` provenance, determine novelty. Before a
+push batch advances its stored cursor, its exact novel subset is atomically saved
+in `DATA_DIR/mcp-outbox.json`. Pending batches retry FIFO and survive restart.
+Each delivery uses the same durable `requestId` on every attempt, including a
+crash after submission but before removing the pending record. The outbox keeps
+the latest 10,000 accepted event identities across completed deliveries; the
+subscription registry also retains its per-stream delivered-ID window. Providers
+must supply stable event IDs. Retention is bounded, not an infinite replay ledger.
+
+Startup recovery resumes from the stored push cursor. Poll probes,
+heartbeats, and status frames do not acknowledge events. A provider that can no
+longer replay a cursor reports `truncated` through the installed event adapter;
+its “replay is truncated … some events are unavailable” warning now reaches a
+persistent chat status chip instead of a no-op UI notification. Unknown streams
+remain failures; no undocumented cursor reset is guessed.
+
+Live delivery uses durable per-batch chips and the existing queued-burst merger,
+not the old in-memory ten-minute coalescer. This keeps retry/restart identity
+stable without persisting mutable coalescer state. Filesystem persistence errors
+are logged and do not acknowledge the push cursor. Keep the data directory on
+persistent storage along with the conversation database.

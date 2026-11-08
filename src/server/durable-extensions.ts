@@ -8,6 +8,7 @@ import {
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import type { Static, TSchema } from "typebox";
+import { MCP_STATUS_HEAD } from "../shared/notices.js";
 import type { ExtensionNotice } from "./mcp-events.js";
 
 /**
@@ -66,12 +67,6 @@ export interface DurableSendOptions {
 
 export type DurableExtensionSink = (text: string, options: DurableSendOptions) => void;
 
-const emptyContext: DurableExtensionContext = {
-  ui: {
-    notify: () => {},
-  },
-};
-
 /** ` : 2 events from stub` style detail for the one-line notice log. */
 function noticeSummary(details: unknown): string {
   if (typeof details !== "object" || details === null) return "";
@@ -116,6 +111,7 @@ export class DurableExtensionShim implements DurableExtensionApi {
   private sink: DurableExtensionSink | undefined;
   private observer: ((notice: ExtensionNotice) => unknown) | undefined;
   private closed = false;
+  private readonly earlyMessages: Array<[DurableExtensionMessage, DurableSendOptions]> = [];
 
   setObserver(observer: ((notice: ExtensionNotice) => unknown) | undefined): void {
     this.observer = observer;
@@ -127,6 +123,10 @@ export class DurableExtensionShim implements DurableExtensionApi {
 
   setMessageSink(sink: DurableExtensionSink | undefined): void {
     this.sink = sink;
+    if (sink !== undefined) {
+      for (const [message, options] of this.earlyMessages.splice(0))
+        this.sendMessage(message, options);
+    }
   }
 
   registerTool(tool: DurableExtensionTool): void {
@@ -190,6 +190,10 @@ export class DurableExtensionShim implements DurableExtensionApi {
     options: DurableSendOptions = {},
   ): void => {
     const kind = message.customType ?? "message";
+    if (!this.closed && this.sink === undefined) {
+      this.earlyMessages.push([message, options]);
+      return;
+    }
     if (this.closed) {
       console.warn(`[mcp] ${kind} notice dropped: extension API is closed`);
       return;
@@ -234,7 +238,18 @@ export class DurableExtensionShim implements DurableExtensionApi {
     if (handlers === undefined) return;
     for (const handler of handlers) {
       if (this.closed) return;
-      await handler({ type: event }, emptyContext);
+      await handler(
+        { type: event },
+        {
+          ui: {
+            notify: (text) =>
+              this.sendMessage({
+                customType: "mcp-ui-status",
+                content: `${MCP_STATUS_HEAD}\n${text}`,
+              }),
+          },
+        },
+      );
     }
   }
 

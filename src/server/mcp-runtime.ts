@@ -1727,14 +1727,9 @@ export class McpRuntime {
         );
         return false;
       }
-      let cursor: string | null = null;
-      if (probe.stale && probe.cursor !== null) {
-        // Resume from now: a restart may lose the events it missed, and replaying
-        // them is what the policy used to drop anyway (SEP-3415: null = start now).
-        cursor = null;
-        console.log(
-          `mcp: resuming ${record.server}/${record.name} from now, not from ${record.cursor}`,
-        );
+      const cursor = record.cursor;
+      if (probe.stale) {
+        console.log(`mcp: replaying missed events for ${record.server}/${record.name}`);
       }
       const result = await this.shim.callTool("mcp_events", {
         action: "subscribe",

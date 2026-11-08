@@ -8,18 +8,19 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { OperatorNoticeRecord, TaskDecisionNoticeRecord } from "../shared/notices.js";
-import { isMcpNotice, MCP_EVENTS_HEAD } from "../shared/notices.js";
+import { isMcpNotice } from "../shared/notices.js";
 import { PAGE_IDS, PAGE_PATHS } from "../shared/pages.js";
 import { parseCompletion, parseReopenReason, TASK_BODY_MAX_LENGTH } from "../shared/tasks.js";
 import type { TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
-import { ChatService, dropMcpEventsBefore } from "./chat-service.js";
+import { ChatService, mcpEventEnvelope, mcpEventText } from "./chat-service.js";
 import { DashboardError, DashboardManager } from "./dashboard.js";
 import { DelegateManager } from "./delegates.js";
 import type { DiagramBridge } from "./diagram-tools.js";
 import { DiagramStore } from "./diagrams.js";
 import { JobManager, jobNotice } from "./jobs.js";
 import { McpEventFeed } from "./mcp-events.js";
+import { McpOutbox } from "./mcp-outbox.js";
 import { MAX_MEDIA_BYTES, MediaError, MediaStore, parseAttachmentIds } from "./media.js";
 import { composeInstructions, SnapshotCache, SnapshotController } from "./memory/snapshot.js";
 import { MemoryStore } from "./memory/store.js";
@@ -272,6 +273,9 @@ await events.hydrate();
 chat.setEventFeed(events);
 chat.setTaskActivity(taskActivity);
 boot.mcp.setObserver((notice) => {
+  // Event batches cross the durable outbox boundary in the message sink below.
+  // Never advance delivered IDs/cursors before their retryable text is on disk.
+  if (notice.customType === "mcp-events") return;
   const previous = events.state;
   const changed = events.ingest(notice);
   // A protocol connection can clear a boot failure, so keep the live status
@@ -349,19 +353,52 @@ jobs.setQuietNotifier((job, tail) => {
   });
 });
 delegates.setNotifier((text) => chat.submitDelegateNotice(text));
+const mcpOutbox = new McpOutbox(resolve(dataDir, "mcp-outbox.json"), (item) =>
+  chat.submitMcpDelivery(item),
+);
+await mcpOutbox.load();
+let acceptingMcp: Promise<void> = Promise.resolve();
 boot.mcp.setSubmit((text, options) => {
-  const deliverAs = options.deliverAs === "steer" ? "steer" : "queue";
-  const filtered = text.startsWith(MCP_EVENTS_HEAD)
-    ? dropMcpEventsBefore(text, boot.mcp.startedAt)
-    : text;
-  if (filtered === null) return;
-  const submission = isMcpNotice(filtered)
-    ? chat.submitMcpEventNotice(filtered, options.deliverAs)
-    : chat.submit(filtered, deliverAs);
-  void submission.catch((error: unknown) => {
-    console.error("[pi] MCP event message failed", error);
-  });
+  const envelope = mcpEventEnvelope(text);
+  if (envelope !== null) {
+    acceptingMcp = acceptingMcp
+      .then(async () => {
+        const novel = events
+          .novelEvents(envelope.items)
+          .filter((item) => !mcpOutbox.has(events.eventKey(item)));
+        // Persist even a gap-only batch: missing data must be visible in chat too.
+        if (novel.length > 0 || envelope.dropped > 0) {
+          await mcpOutbox.enqueue(
+            mcpEventText(envelope, novel),
+            novel.map((item) => events.eventKey(item)),
+          );
+        }
+        events.ingest({
+          customType: "mcp-events",
+          details: { events: envelope.items, dropped_events: envelope.dropped },
+        });
+        hub.broadcast({ event: "mcp.events", data: events.state });
+        mcpOutbox.start();
+      })
+      .catch((error: unknown) =>
+        console.error("[mcp] could not persist incoming events; cursor not acknowledged", error),
+      );
+    return;
+  }
+  if (isMcpNotice(text)) {
+    acceptingMcp = acceptingMcp
+      .then(async () => {
+        await mcpOutbox.enqueue(text);
+        mcpOutbox.start();
+      })
+      .catch((error: unknown) => console.error("[mcp] could not persist status notice", error));
+  } else {
+    void chat
+      .submit(text, options.deliverAs === "steer" ? "steer" : "queue")
+      .catch((error: unknown) => console.error("[pi] MCP message failed", error));
+  }
 });
+mcpOutbox.start();
 
 void bili
   .registerIdentity(String(boot.conversation.id))
@@ -1109,6 +1146,8 @@ let shuttingDown = false;
 async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
+  await acceptingMcp;
+  await mcpOutbox.close();
   chat.beginShutdown();
   await taskActivity.flush().catch((error: unknown) => {
     console.error("[pi] could not save task activity", error);
