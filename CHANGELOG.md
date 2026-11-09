@@ -1,3 +1,12 @@
+## 1.6.133
+
+### Fixed
+
+- A restored subscription that found its stream only after paging the event catalog resumes from the
+  position it recovered, instead of starting "in now" and silently skipping the window it just listed.
+  The caller’s cursor still wins when one is supplied — a zero position still means "start in now" — only
+  the no-cursor restore path falls back to the stored position.
+
 ## 1.6.132
 
 ### Fixed
