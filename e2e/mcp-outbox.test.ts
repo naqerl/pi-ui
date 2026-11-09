@@ -11,7 +11,12 @@ import {
 } from "../src/server/chat-service.js";
 import { DurableExtensionShim } from "../src/server/durable-extensions.js";
 import { McpEventFeed } from "../src/server/mcp-events.js";
-import { type McpDelivery, McpIntake, McpOutbox } from "../src/server/mcp-outbox.js";
+import {
+  type McpDelivery,
+  McpIntake,
+  McpOutbox,
+  mergeDeliveryTexts,
+} from "../src/server/mcp-outbox.js";
 import { MCP_EVENTS_HEAD, MCP_STATUS_HEAD } from "../src/shared/notices.js";
 
 const event = (id: string) => ({
@@ -146,6 +151,155 @@ test("idle replay bursts form one bounded delivery; busy bursts preserve per-eve
   assert.equal(mcpDeliveryTexts(envelope, false).length, 1);
   assert.equal(mcpDeliveryTexts(envelope, true).length, 22);
   assert.equal(mcpEventEnvelope(mcpDeliveryTexts(envelope, false)[0] ?? "")?.items.length, 22);
+});
+
+test("an over-cap merge keeps the split contract, its order and one carry summary per part", () => {
+  const events = Array.from({ length: 5 }, (_, index) => ({
+    ...event(`huge-${index + 1}`),
+    event: {
+      ...event(`huge-${index + 1}`).event,
+      data: { kind: "stub-huge.event", text: "x".repeat(7_000) },
+    },
+  }));
+  const texts = mergeDeliveryTexts(
+    events.map((item) =>
+      mcpEventText({ head: MCP_EVENTS_HEAD, items: [item], dropped: 0 }, [item]),
+    ),
+  );
+  assert.ok(texts.length >= 3, `expected several bounded parts, got ${texts.length}`);
+
+  let carried = 0;
+  const ids: string[] = [];
+  for (const text of texts) {
+    const summary = /carries (\d+) of (\d+) merged events; (\d+) remain\./.exec(text);
+    assert.ok(summary !== null, "every part names what it carries and what remains");
+    const count = Number(summary[1]);
+    assert.equal(Number(summary[2]), events.length);
+    assert.equal(Number(summary[3]), events.length - (carried + count));
+    carried += count;
+    const envelope = mcpEventEnvelope(text);
+    assert.equal(envelope?.items.length, count);
+    ids.push(
+      ...(envelope?.items ?? []).map(
+        (item) => (item as { event: { eventId: string } }).event.eventId,
+      ),
+    );
+  }
+  assert.equal(carried, events.length);
+  assert.deepEqual(
+    ids,
+    events.map((item) => item.event.eventId),
+  );
+  assert.equal(new Set(ids).size, ids.length);
+});
+
+test("an over-cap merge drains every part in order under one logical delivery id", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-outbox-parts-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "outbox.json");
+  const events = Array.from({ length: 5 }, (_, index) => ({
+    ...event(`parts-${index + 1}`),
+    event: {
+      ...event(`parts-${index + 1}`).event,
+      data: { kind: "stub-huge.event", text: "x".repeat(7_000) },
+    },
+  }));
+  const delivered: McpDelivery[] = [];
+  const outbox = new McpOutbox(path, async (item) => {
+    delivered.push(item);
+  });
+  await outbox.load();
+  await outbox.enqueueMany(
+    events.map((item) =>
+      mcpEventText({ head: MCP_EVENTS_HEAD, items: [item], dropped: 0 }, [item]),
+    ),
+    events.map((item) => item.event.eventId),
+  );
+  outbox.start();
+  for (let attempt = 0; attempt < 200 && delivered.length < 3; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  await outbox.close();
+
+  assert.ok(delivered.length >= 3, `expected several parts, got ${delivered.length}`);
+  const logicalIds = new Set(delivered.map((item) => item.id.replace(/:part:\d+$/, "")));
+  assert.equal(logicalIds.size, 1, "every part names the same logical delivery");
+  assert.deepEqual(
+    delivered.map((item) => /:part:(\d+)$/.exec(item.id)?.[1]),
+    delivered.map((_, index) => String(index)),
+    "parts are submitted in order",
+  );
+  let carried = 0;
+  const ids: string[] = [];
+  for (const item of delivered) {
+    const summary = /carries (\d+) of (\d+) merged events; (\d+) remain\./.exec(item.text);
+    assert.ok(summary !== null, "each part carries its own remainder summary");
+    const count = Number(summary[1]);
+    assert.equal(Number(summary[2]), events.length);
+    assert.equal(Number(summary[3]), events.length - (carried + count));
+    carried += count;
+    const envelope = mcpEventEnvelope(item.text);
+    assert.equal(envelope?.items.length, count);
+    ids.push(
+      ...(envelope?.items ?? []).map(
+        (eventItem) => (eventItem as { event: { eventId: string } }).event.eventId,
+      ),
+    );
+  }
+  assert.equal(carried, events.length);
+  assert.deepEqual(
+    ids,
+    events.map((item) => item.event.eventId),
+  );
+  assert.equal(JSON.parse(await readFile(path, "utf8")).pending.length, 0);
+});
+
+test("a failed removal after the last part never re-submits an earlier part", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-outbox-parts-removal-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "outbox.json");
+  const temp = `${path}.tmp`;
+  const events = Array.from({ length: 5 }, (_, index) => ({
+    ...event(`parts-removal-${index + 1}`),
+    event: {
+      ...event(`parts-removal-${index + 1}`).event,
+      data: { kind: "stub-huge.event", text: "x".repeat(7_000) },
+    },
+  }));
+  const delivered: string[] = [];
+  const outbox = new McpOutbox(
+    path,
+    async (item) => {
+      delivered.push(item.id);
+      if (/; 0 remain\./.test(item.text)) await mkdir(temp);
+    },
+    10,
+  );
+  await outbox.load();
+  await outbox.enqueueMany(
+    events.map((item) =>
+      mcpEventText({ head: MCP_EVENTS_HEAD, items: [item], dropped: 0 }, [item]),
+    ),
+  );
+  outbox.start();
+  for (let attempt = 0; attempt < 200 && delivered.length < 3; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  const submitted = [...delivered];
+  // Let the removal retry run while the temp path is still a directory.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(delivered, submitted, "a failed removal never replays a submitted part");
+  assert.equal(new Set(delivered).size, delivered.length);
+
+  await rm(temp, { recursive: true, force: true });
+  outbox.start();
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const pending = JSON.parse(await readFile(path, "utf8")) as { pending: McpDelivery[] };
+    if (pending.pending.length === 0) break;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  await outbox.close();
+  assert.deepEqual(delivered, submitted, "the removal retry only removes the delivered item");
 });
 
 test("a persistence failure blocks later cursor acknowledgments until retry succeeds", async () => {

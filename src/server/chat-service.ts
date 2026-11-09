@@ -1871,26 +1871,47 @@ export class ChatService {
 
   /** Durable outbox batches already contain only novel events. Use the same request id
    * on every retry/restart; durable deduplicates both queued and placed submissions.
-   * Pending batches still use the existing queued-MCP merging and chip renderer. */
-  async submitMcpDelivery(item: { id: string; text: string; at: string }): Promise<void> {
-    this.lastMcpNoticeText = item.text;
-    await this.submit(item.text, "queue", {
-      requestId: `mcp-delivery:${item.id}`,
-      queueKey: `mcp-delivery:${item.id}`,
-      entry: {
-        kind: MCP_NOTICE_ENTRY_KIND,
-        label: "MCP events",
-        data: {
-          noticeId: `mcp-delivery:${item.id}`,
-          key: `mcp-delivery:${item.id}`,
-          text: item.text,
-          at: item.at,
-          createdAt: item.at,
+   * An over-cap merge keeps one logical delivery but submits each bounded part with
+   * its own queue/cancel identity, in order. */
+  async submitMcpDelivery(item: {
+    id: string;
+    text: string;
+    at: string;
+    texts?: string[];
+    mergedChunk?: boolean;
+  }): Promise<void> {
+    const texts = item.texts !== undefined && item.texts.length > 0 ? item.texts : [item.text];
+    const base = `mcp-delivery:${item.id}`;
+    const multiPart = texts.length > 1 || item.mergedChunk === true;
+    for (let index = 0; index < texts.length; index++) {
+      const text = texts[index] ?? "";
+      const identity = texts.length === 1 ? base : `${base}:${index}`;
+      this.lastMcpNoticeText = text;
+      await this.submit(text, "queue", {
+        requestId: identity,
+        queueKey: identity,
+        entry: {
+          kind: MCP_NOTICE_ENTRY_KIND,
+          label: "MCP events",
+          data: {
+            noticeId: identity,
+            key: identity,
+            text,
+            at: item.at,
+            createdAt: item.at,
+            // These parts already carry their own carried/remaining summary, so
+            // the queue merger must not merge them again and duplicate the head.
+            ...(multiPart ? { mergedChunk: true } : {}),
+          },
         },
-      },
-    });
-    const envelope = mcpEventEnvelope(item.text);
-    if (envelope !== null) this.eventFeed?.markDelivered(envelope.items);
+      });
+    }
+    // Only a fully submitted delivery may remove its ids from the novel set, so a
+    // retry after a failed part still has the whole delivery to replay.
+    for (const text of texts) {
+      const envelope = mcpEventEnvelope(text);
+      if (envelope !== null) this.eventFeed?.markDelivered(envelope.items);
+    }
   }
 
   /** Sends a job result to the agent without placing a user message in the chat. */
