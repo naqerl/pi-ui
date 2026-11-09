@@ -1,20 +1,158 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { MCP_EVENTS_HEAD, MCP_EVENTS_TRAILER, parseMcpEventPayload } from "../shared/notices.js";
+
+/** Events kept in one waiting delivery. Older events are dropped and counted. */
+export const MAX_PENDING_MCP_EVENTS = 50;
 
 export interface McpDelivery {
   id: string;
   text: string;
   at: string;
+  /** Event keys folded into this delivery, so a restart keeps the dedupe set. */
+  keys?: string[];
+}
+
+interface DeliveryEnvelope {
+  head: string;
+  items: unknown[];
+  dropped: number;
+}
+
+const DROP_SUFFIX = / \d+ older events? dropped from this batch\.$/;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Parse the same envelope chat-service uses, without importing its whole module. */
+function deliveryEnvelope(text: string): DeliveryEnvelope | null {
+  if (!text.startsWith(MCP_EVENTS_HEAD)) return null;
+  const newline = text.indexOf("\n");
+  if (newline < 0) return null;
+  const payload = parseMcpEventPayload(text.slice(newline + 1));
+  if (payload === null || !Array.isArray(payload.events)) return null;
+  return {
+    head: text.slice(0, newline),
+    items: payload.events,
+    dropped: typeof payload.dropped_events === "number" ? payload.dropped_events : 0,
+  };
+}
+
+function deliveryText(envelope: DeliveryEnvelope, items: readonly unknown[]): string {
+  return `${envelope.head}\n${JSON.stringify({
+    events: items,
+    dropped_events: envelope.dropped,
+  })}\n${MCP_EVENTS_TRAILER}`;
+}
+
+/** One transient line, replaced rather than appended when another batch is folded in. */
+function batchHead(head: string, dropped: number): string {
+  const base = head.replace(DROP_SUFFIX, "");
+  if (dropped <= 0) return base;
+  const suffix = dropped === 1 ? "event" : "events";
+  return `${base} ${dropped} older ${suffix} dropped from this batch.`;
+}
+
+/** Event ids are the dedupe key, including across two subscriptions to one server. */
+function eventKey(item: unknown): string {
+  if (isRecord(item) && isRecord(item.event)) {
+    const event = item.event;
+    if (typeof event.eventId === "string" || typeof event.eventId === "number") {
+      return JSON.stringify([
+        typeof item.server === "string" ? item.server : "",
+        typeof event.name === "string" ? event.name : "event",
+        event.eventId,
+      ]);
+    }
+  }
+  return `event:${JSON.stringify(item)}`;
+}
+
+/** Join delivery texts into one bounded envelope (or one plain notice). */
+export function mergeDeliveryTexts(texts: readonly string[]): string {
+  if (texts.length === 0) return "";
+  // An identical notice queued twice (a replay) must not count its gap twice.
+  const uniqueTexts = [...new Set(texts)];
+  const envelopes = uniqueTexts.map(deliveryEnvelope);
+  if (envelopes.every((envelope) => envelope !== null)) {
+    const parsed = envelopes as DeliveryEnvelope[];
+    const head = parsed[0]?.head ?? MCP_EVENTS_HEAD;
+    let dropped = 0;
+    const events: unknown[] = [];
+    const seen = new Set<string>();
+    for (const envelope of parsed) {
+      dropped += envelope.dropped;
+      for (const item of envelope.items) {
+        const key = eventKey(item);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        events.push(item);
+      }
+    }
+    if (events.length > MAX_PENDING_MCP_EVENTS) {
+      dropped += events.length - MAX_PENDING_MCP_EVENTS;
+      events.splice(0, events.length - MAX_PENDING_MCP_EVENTS);
+    }
+    return deliveryText({ head: batchHead(head, dropped), items: events, dropped }, events);
+  }
+  // Status and raw notices have no event list. Keep one bounded text rather than
+  // turning a merged delivery into a second queue entry.
+  return uniqueTexts.join("\n\n");
+}
+
+function mergeKeys(items: readonly McpDelivery[]): string[] {
+  return [...new Set(items.flatMap((item) => item.keys ?? []))];
+}
+
+type DeliveryKind = "events" | "notice";
+
+function deliveryKind(item: McpDelivery): DeliveryKind {
+  return deliveryEnvelope(item.text) === null ? "notice" : "events";
+}
+
+function mergeItems(items: readonly McpDelivery[]): McpDelivery {
+  if (items.length === 1) return items[0] as McpDelivery;
+  const first = items[0];
+  if (first === undefined) throw new Error("Cannot merge an empty delivery");
+  return {
+    id: first.id,
+    text: mergeDeliveryTexts(items.map((item) => item.text)),
+    at: first.at,
+    ...(mergeKeys(items).length === 0 ? {} : { keys: mergeKeys(items) }),
+  };
+}
+
+/** Event envelopes and status/raw notices never share a text: a blank-line join
+ * would start with the event head but no longer parse as an envelope. Keep one
+ * waiting item of each kind and merge each kind with its own shape. */
+function mergeByKind(items: readonly McpDelivery[], freshMergedIds = false): McpDelivery[] {
+  const groups: Record<DeliveryKind, McpDelivery[]> = { events: [], notice: [] };
+  for (const item of items) groups[deliveryKind(item)].push(item);
+  return [groups.events, groups.notice]
+    .filter((group) => group.length > 0)
+    .map((group) => {
+      const merged = mergeItems(group);
+      // A single restored item keeps the durable id it was submitted under.
+      // Only a real merge of several old rows needs a new request id.
+      return freshMergedIds && group.length > 1 ? { ...merged, id: randomUUID() } : merged;
+    });
 }
 
 /** Persist before acknowledging the provider cursor. Delivery uses a durable request id,
- * so a crash after submission but before removal is harmless. One FIFO retry loop. */
+ * so a crash after submission but before removal is harmless. One waiting item, one FIFO
+ * retry loop: a burst while the first item is in flight is folded into the next delivery. */
 export class McpOutbox {
   private pending: McpDelivery[] = [];
   private seen: string[] = [];
   private writes: Promise<unknown> = Promise.resolve();
   private draining: Promise<void> | undefined;
+  private delivering: string | undefined;
+  /** Delivered, but its removal write has not succeeded yet. Keep it protected. */
+  private delivered: string | undefined;
+  /** A restored pending item may already be durable; never fold new events into its id. */
+  private restoredHead: string | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private closed = false;
 
@@ -38,7 +176,13 @@ export class McpOutbox {
         )
       )
         throw new Error("Invalid MCP outbox");
-      this.pending = data.pending;
+      // The first item may already have reached durable before the crash, so
+      // keep its request id and deliver it separately. An older file may hold
+      // one item per event behind it; that tail is the one waiting delivery.
+      const [head, ...tail] = data.pending as McpDelivery[];
+      const waiting = mergeByKind(tail, true);
+      this.pending = head === undefined ? [] : [head, ...waiting];
+      this.restoredHead = head?.id;
       this.seen = Array.isArray(data.seen) ? data.seen : [];
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -75,8 +219,29 @@ export class McpOutbox {
 
   async enqueueMany(texts: string[], keys: string[] = []): Promise<void> {
     if (this.closed) throw new Error("MCP outbox closed");
-    const added = texts.map((text) => ({ id: randomUUID(), text, at: new Date().toISOString() }));
-    await this.update((items) => [...items, ...added], keys);
+    if (texts.length === 0) {
+      // A gap-only batch has no novel text but its event keys still belong in
+      // the seen set. Keep any pending delivery exactly as it was.
+      if (keys.length > 0) await this.update((items) => items, keys);
+      return;
+    }
+    const added = texts.map(
+      (text): McpDelivery => ({ id: randomUUID(), text, at: new Date().toISOString() }),
+    );
+    await this.update((items) => {
+      // Resolve the protected item inside the serialized write. Capturing it
+      // before this callback lets an enqueue that runs while drain() is just
+      // starting merge into an item whose old text is already being delivered.
+      const protectedId = this.delivering ?? this.restoredHead;
+      const inFlight =
+        protectedId === undefined ? undefined : items.find((item) => item.id === protectedId);
+      const waiting = items.filter((item) => item.id !== protectedId);
+      const merged = mergeByKind([...waiting, ...added]).map((item) => ({
+        ...item,
+        keys: [...new Set([...(item.keys ?? []), ...keys])],
+      }));
+      return inFlight === undefined ? merged : [inFlight, ...merged];
+    }, keys);
   }
 
   /** Start after chat recovery, and after newly accepted batches have advanced the feed. */
@@ -94,15 +259,25 @@ export class McpOutbox {
     try {
       while (!this.closed) {
         await this.writes;
-        const batch = this.pending.slice(0, 50);
-        if (batch.length === 0) return;
-        // A partial failure may replay already-submitted IDs. Durable request
-        // deduplication makes that safe and avoids one whole-file write per event.
-        for (const item of batch) await this.deliver(item);
-        const ids = new Set(batch.map((item) => item.id));
-        await this.update((items) => items.filter((entry) => !ids.has(entry.id)));
+        const item = this.pending[0];
+        if (item === undefined) return;
+        this.delivering = item.id;
+        // A removal-write failure leaves a successfully delivered item in the
+        // file. Retry the removal, not the submission: its durable request id
+        // already names this exact text, so merging another event into it would
+        // be deduplicated away without ever reaching the chat.
+        if (this.delivered !== item.id) {
+          await this.deliver(item);
+          this.delivered = item.id;
+        }
+        await this.update((items) => items.filter((entry) => entry.id !== item.id));
+        if (this.restoredHead === item.id) this.restoredHead = undefined;
+        if (this.delivered === item.id) this.delivered = undefined;
+        this.delivering = undefined;
       }
     } catch (error) {
+      // Keep delivering/delivered set: an item already passed to deliver() must
+      // stay protected until its removal write succeeds.
       console.error("[mcp] durable delivery pending; will retry", error);
       if (!this.closed) {
         this.timer = setTimeout(() => this.start(), this.retryMs);

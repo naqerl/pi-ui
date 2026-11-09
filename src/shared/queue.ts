@@ -1,3 +1,4 @@
+import { MCP_EVENTS_HEAD, parseMcpEventPayload } from "./notices.js";
 import type { ChatMessage, QueuedMessage, QueuedNotice } from "./types.js";
 
 /** The entry kind a queued follow-up is placed as, so its pending bubble can share its id. */
@@ -49,8 +50,20 @@ export function isQueuedNotice(notice: ChatMessage["notice"]): notice is QueuedN
 /** One pending chip, with the ids it removes together when it stands for a burst. */
 export interface QueuedMessageGroup {
   item: QueuedMessage;
+  /** How many queued submissions this chip stands for. */
   count: number;
   ids: string[];
+  /** How many MCP events those submissions carry; defaults to the submission count. */
+  eventCount: number;
+}
+
+/** The number of events inside one MCP envelope, or undefined for another notice. */
+export function queuedNoticeEventCount(item: QueuedMessage): number | undefined {
+  if (!item.text.startsWith(MCP_EVENTS_HEAD)) return undefined;
+  const newline = item.text.indexOf("\n");
+  if (newline < 0) return undefined;
+  const payload = parseMcpEventPayload(item.text.slice(newline + 1));
+  return payload !== null && Array.isArray(payload.events) ? payload.events.length : undefined;
 }
 
 /**
@@ -63,12 +76,14 @@ export function mergeQueuedNotices(items: readonly QueuedMessage[]): QueuedMessa
   for (const item of items) {
     const previous = groups[groups.length - 1];
     const kind = item.notice?.kind;
+    const events = Math.max(1, queuedNoticeEventCount(item) ?? 1);
     if (kind !== undefined && previous !== undefined && previous.item.notice?.kind === kind) {
       previous.count += 1;
       previous.ids.push(item.id);
+      previous.eventCount += events;
       continue;
     }
-    groups.push({ item, count: 1, ids: [item.id] });
+    groups.push({ item, count: 1, ids: [item.id], eventCount: events });
   }
   return groups;
 }
@@ -84,6 +99,9 @@ export function queuedMessageIds(message: ChatMessage): string[] {
 
 /** The chat bubble for a follow-up the server holds until the running turn ends. */
 export function pendingQueuedMessage(item: QueuedMessage, group?: QueuedMessageGroup): ChatMessage {
+  // One delivery can carry a burst. Show its event count, not just the one
+  // submission that represents it. A grouped run adds the submissions together.
+  const count = Math.max(1, group?.eventCount ?? queuedNoticeEventCount(item) ?? 1);
   return {
     id: queuedMessageId(item),
     role: "user",
@@ -92,9 +110,8 @@ export function pendingQueuedMessage(item: QueuedMessage, group?: QueuedMessageG
     order: PENDING_QUEUE_ORDER,
     pendingQueue: true,
     queueId: item.id,
-    ...(group === undefined || group.count <= 1
-      ? {}
-      : { queueCount: group.count, queueIds: [...group.ids] }),
+    ...(count <= 1 ? {} : { queueCount: count }),
+    ...(group === undefined || group.count <= 1 ? {} : { queueIds: [...group.ids] }),
     ...(item.notice === undefined ? {} : { notice: item.notice }),
     ...(item.attachments === undefined || item.attachments.length === 0
       ? {}

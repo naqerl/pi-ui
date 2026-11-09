@@ -94,7 +94,10 @@ function sameArguments(first: Record<string, unknown>, second: Record<string, un
  * older generation then collide with fresh ones and would look delivered.
  */
 function idSequence(value: string): number | undefined {
-  const match = /(\d+)$/.exec(value);
+  // A cursor-style id (`hub:738`) or a bare sequence is comparable. A
+  // synthetic event id such as `event-5` has a trailing number but says
+  // nothing about the hub cursor.
+  const match = /^(\d+)$/.exec(value) ?? /:(\d+)$/.exec(value);
   if (match === null) return undefined;
   const parsed = Number(match[1]);
   return Number.isFinite(parsed) ? parsed : undefined;
@@ -508,7 +511,12 @@ export class McpEventFeed {
     for (const record of records) {
       const stableId = recordStableId(record);
       this.restored.add(stableId);
-      this.seedDelivered(stableId, record.deliveredEventIds ?? [], true, record.cursor ?? undefined);
+      this.seedDelivered(
+        stableId,
+        record.deliveredEventIds ?? [],
+        true,
+        record.cursor ?? undefined,
+      );
       // A restore rejected by the server has no live adapter session, but the
       // durable cancellation must still be visible in /api/state.
       if (record.status === "cancelled" || record.state === "cancelled") {

@@ -356,6 +356,36 @@ test("a single queued MCP event keeps its one-event envelope", async () => {
   assert.equal(submission.content, text, "the model still receives exactly today's text");
 });
 
+test("a queued batch chip counts the events it carries", () => {
+  const events = Array.from({ length: 10 }, (_, index) => ({
+    subscription_id: "sub-1",
+    server: "github",
+    event: {
+      eventId: `batch-${index}`,
+      name: "pull_request",
+      timestamp: AT,
+      data: { kind: "github.pull_request", jobId: "pr-42", action: "opened" },
+    },
+  }));
+  const text = `${MCP_EVENTS_HEAD}\n${JSON.stringify({
+    events,
+    dropped_events: 0,
+  })}\n${MCP_EVENTS_TRAILER}`;
+  const item: QueuedMessage = {
+    id: "batch-delivery",
+    text,
+    createdAt: AT,
+    notice: { kind: MCP_NOTICE_ENTRY_KIND, label: "MCP events", glyph: "↯" },
+  };
+  const message = pendingQueuedMessage(item);
+  assert.equal(message.queueCount, 10);
+  assert.equal(message.queueId, "batch-delivery");
+  const markup = render(message, () => undefined);
+  assert.equal((markup.match(/data-testid="queued-notice-chip"/g) ?? []).length, 1);
+  assert.match(markup, /MCP events/);
+  assert.match(markup, /10 queued/);
+});
+
 test("a bounded merge counts down the events still remaining", () => {
   const events = Array.from({ length: 5 }, (_, index) => ({
     eventId: `big-${index}`,

@@ -276,6 +276,83 @@ function newer(first: McpSubscriptionRecord, second: McpSubscriptionRecord): boo
   return Date.parse(second.updatedAt) >= Date.parse(first.updatedAt);
 }
 
+function parseTime(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function hasUsableCursor(record: McpSubscriptionRecord): boolean {
+  return typeof record.cursor === "string" && record.cursor.length > 0;
+}
+
+function isCancelledRecord(record: McpSubscriptionRecord): boolean {
+  // `failed`, `stopped` and `ended` also persist `enabled: false`, but they are
+  // not an operator cancellation. Only a cancelled row wins over a live one.
+  return record.status === "cancelled";
+}
+
+/** The timestamp that best describes when this row last observed its stream. */
+function observedAt(record: McpSubscriptionRecord): number {
+  return (
+    parseTime(record.lastEventAt) ??
+    parseTime(record.lastHeartbeatAt) ??
+    parseTime(record.lastPollAt) ??
+    parseTime(record.updatedAt) ??
+    0
+  );
+}
+
+/**
+ * One row per server + stream name. Prefer real event activity over a bare
+ * `updatedAt`, then a usable cursor, then the newest observation. An explicit
+ * cancellation of the same stable identity stays cancelled.
+ */
+function preferRecord(
+  first: McpSubscriptionRecord,
+  second: McpSubscriptionRecord,
+): McpSubscriptionRecord {
+  if (recordStableId(first) === recordStableId(second)) {
+    const firstCancelled = isCancelledRecord(first);
+    const secondCancelled = isCancelledRecord(second);
+    if (firstCancelled !== secondCancelled) return firstCancelled ? first : second;
+  }
+  const firstEventAt = parseTime(first.lastEventAt);
+  const secondEventAt = parseTime(second.lastEventAt);
+  if (firstEventAt !== undefined || secondEventAt !== undefined) {
+    const firstAt = firstEventAt ?? Number.NEGATIVE_INFINITY;
+    const secondAt = secondEventAt ?? Number.NEGATIVE_INFINITY;
+    if (firstAt !== secondAt) return firstAt > secondAt ? first : second;
+  }
+  const firstCursor = hasUsableCursor(first);
+  const secondCursor = hasUsableCursor(second);
+  if (firstCursor !== secondCursor) return firstCursor ? first : second;
+  const firstAt = observedAt(first);
+  const secondAt = observedAt(second);
+  return secondAt > firstAt ? second : first;
+}
+
+/** Collapse old duplicate rows before they can restore two streams at boot. */
+function dedupeByServerName(records: readonly McpSubscriptionRecord[]): {
+  records: McpSubscriptionRecord[];
+  dropped: Map<string, number>;
+} {
+  const byName = new Map<string, McpSubscriptionRecord>();
+  const dropped = new Map<string, number>();
+  for (const record of records) {
+    const nameKey = `${record.server}\u0000${record.name}`;
+    const existing = byName.get(nameKey);
+    if (existing === undefined) {
+      byName.set(nameKey, record);
+      continue;
+    }
+    byName.set(nameKey, preferRecord(existing, record));
+    const label = `${record.server}/${record.name}`;
+    dropped.set(label, (dropped.get(label) ?? 0) + 1);
+  }
+  return { records: [...byName.values()], dropped };
+}
+
 /** Merge two observations of the same subscription. The newest observation wins. */
 function mergeRecord(
   existing: McpSubscriptionRecord,
@@ -571,10 +648,23 @@ export class McpSubscriptionRegistry {
       return false;
     }
     let migrated = false;
+    const incoming: McpSubscriptionRecord[] = [];
     for (const value of document.subscriptions) {
       const record = normalizeRecord(value);
       if (record === null) continue;
       if (needsRewrite(value)) migrated = true;
+      incoming.push(record);
+    }
+    const deduped = dedupeByServerName(incoming);
+    if (deduped.dropped.size > 0) {
+      migrated = true;
+      const count = [...deduped.dropped.values()].reduce((sum, value) => sum + value, 0);
+      const names = [...deduped.dropped.keys()].join(", ");
+      this.log(
+        `mcp: dropped ${count} duplicate subscription row${count === 1 ? "" : "s"} for ${names}`,
+      );
+    }
+    for (const record of deduped.records) {
       const key = recordKey(record);
       const existing = this.records.get(key);
       this.records.set(key, existing === undefined ? record : mergeRecord(existing, record));

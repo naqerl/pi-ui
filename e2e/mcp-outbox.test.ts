@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -165,7 +165,7 @@ test("a persistence failure blocks later cursor acknowledgments until retry succ
   assert.equal(attempts, 2);
 });
 
-test("a busy burst drains to exactly one chip per event id, with nothing left novel", async (t) => {
+test("a busy burst drains as one delivery, with nothing left novel", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "pi-outbox-busy-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const feed = new McpEventFeed();
@@ -188,7 +188,7 @@ test("a busy burst drains to exactly one chip per event id, with nothing left no
   const novel = feed.novelEvents(items);
   assert.equal(novel.length, items.length);
   const texts = mcpDeliveryTexts({ head: MCP_EVENTS_HEAD, items: novel, dropped: 0 }, true);
-  assert.equal(texts.length, items.length, "busy events keep per-event chip identity");
+  assert.equal(texts.length, items.length, "busy events still arrive as separate texts");
   await outbox.enqueueMany(
     texts,
     novel.map((item) => feed.eventKey(item)),
@@ -196,16 +196,304 @@ test("a busy burst drains to exactly one chip per event id, with nothing left no
   feed.ingest({ customType: "mcp-events", details: { events: items } });
   outbox.start();
 
-  for (let attempt = 0; attempt < 100 && delivered.length < items.length; attempt += 1) {
+  for (let attempt = 0; attempt < 100 && delivered.length === 0; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   await outbox.close();
-  assert.equal(delivered.length, items.length);
-  assert.equal(new Set(delivered.map((item) => item.id)).size, items.length);
+  assert.equal(delivered.length, 1, "one drain pass submits the whole burst");
+  assert.equal(mcpEventEnvelope(delivered[0]?.text ?? "")?.items.length, items.length);
   assert.deepEqual(feed.novelEvents(items), [], "every committed id leaves the novel set");
 
   feed.ingest({ customType: "mcp-events", details: { events: items } });
-  assert.equal(delivered.length, items.length, "duplicates add no chip");
+  assert.equal(delivered.length, 1, "duplicates add no chip");
+});
+
+test("ten events arriving during one delivery become one new batch", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-outbox-fold-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "outbox.json");
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let started!: () => void;
+  const firstStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const delivered: McpDelivery[] = [];
+  const outbox = new McpOutbox(path, async (item) => {
+    delivered.push(item);
+    if (delivered.length === 1) {
+      started();
+      await gate;
+    }
+  });
+  await outbox.load();
+  const first = event("first");
+  await outbox.enqueue(
+    mcpEventText({ head: MCP_EVENTS_HEAD, items: [first], dropped: 0 }, [first]),
+  );
+  outbox.start();
+  await firstStarted;
+  assert.equal(delivered.length, 1);
+
+  const burst = Array.from({ length: 10 }, (_, index) => event(`fold-${index}`));
+  await outbox.enqueueMany(
+    burst.map((item) => mcpEventText({ head: MCP_EVENTS_HEAD, items: [item], dropped: 0 }, [item])),
+    burst.map((item) => `fold-${item.event.eventId}`),
+  );
+  const during = JSON.parse(await readFile(path, "utf8")) as { pending: McpDelivery[] };
+  assert.equal(during.pending.length, 2, "one in-flight item and one waiting item");
+  assert.equal(mcpEventEnvelope(during.pending[1]?.text ?? "")?.items.length, 10);
+
+  release();
+  for (let attempt = 0; attempt < 100 && delivered.length < 2; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  await outbox.close();
+  assert.equal(delivered.length, 2, "the burst is one delivery after the in-flight one");
+  const envelope = mcpEventEnvelope(delivered[1]?.text ?? "");
+  assert.deepEqual(
+    envelope?.items.map((item) => (item as { event: { eventId: string } }).event.eventId),
+    burst.map((item) => item.event.eventId),
+  );
+  assert.equal(JSON.parse(await readFile(path, "utf8")).pending.length, 0);
+});
+
+test("an enqueue racing the start of a restored delivery is not lost", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-outbox-race-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "outbox.json");
+  const first = event("restored-a");
+  const second = event("racing-b");
+  await writeFile(
+    path,
+    JSON.stringify({
+      version: 1,
+      pending: [
+        {
+          id: "delivery-a",
+          text: mcpEventText({ head: MCP_EVENTS_HEAD, items: [first], dropped: 0 }, [first]),
+          at: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+      seen: [],
+    }),
+  );
+  const delivered: McpDelivery[] = [];
+  const outbox = new McpOutbox(path, async (item) => {
+    delivered.push(item);
+  });
+  await outbox.load();
+  outbox.start();
+  // The drain yields before it takes the restored item. This enqueue must not
+  // be folded into the request id whose old text is already being delivered.
+  await outbox.enqueue(
+    mcpEventText({ head: MCP_EVENTS_HEAD, items: [second], dropped: 0 }, [second]),
+    ["racing-b"],
+  );
+  for (let attempt = 0; attempt < 100 && delivered.length < 2; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  await outbox.close();
+  assert.equal(delivered.length, 2);
+  const ids = delivered.map(
+    (item) =>
+      (mcpEventEnvelope(item.text)?.items[0] as { event: { eventId: string } } | undefined)?.event
+        .eventId,
+  );
+  assert.deepEqual(ids, ["restored-a", "racing-b"]);
+  assert.equal(JSON.parse(await readFile(path, "utf8")).pending.length, 0);
+});
+
+test("restoring two pending items keeps a distinct request id for the tail", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-outbox-restore-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "outbox.json");
+  const first = event("durable-a");
+  const second = event("undelivered-b");
+  await writeFile(
+    path,
+    JSON.stringify({
+      version: 1,
+      pending: [
+        {
+          id: "delivery-a",
+          text: mcpEventText({ head: MCP_EVENTS_HEAD, items: [first], dropped: 0 }, [first]),
+          at: "2026-01-01T00:00:00.000Z",
+        },
+        {
+          id: "delivery-b",
+          text: mcpEventText({ head: MCP_EVENTS_HEAD, items: [second], dropped: 0 }, [second]),
+          at: "2026-01-01T00:00:01.000Z",
+        },
+      ],
+      seen: [],
+    }),
+  );
+  const delivered: McpDelivery[] = [];
+  const outbox = new McpOutbox(path, async (item) => {
+    delivered.push(item);
+    // The first request may already be durable; replaying its id is a no-op.
+    // The tail must still arrive under a fresh id rather than A's.
+  });
+  await outbox.load();
+  outbox.start();
+  for (let attempt = 0; attempt < 100 && delivered.length < 2; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  await outbox.close();
+  assert.equal(delivered.length, 2);
+  assert.equal(delivered[0]?.id, "delivery-a");
+  assert.equal(delivered[1]?.id, "delivery-b");
+  assert.equal(mcpEventEnvelope(delivered[0]?.text ?? "")?.items.length, 1);
+  assert.deepEqual(
+    (
+      mcpEventEnvelope(delivered[1]?.text ?? "")?.items[0] as
+        | { event: { eventId: string } }
+        | undefined
+    )?.event.eventId,
+    "undelivered-b",
+    "the tail carries only the event it restored",
+  );
+});
+
+test("a failed removal write never folds a new event into the delivered id", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-outbox-removal-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "outbox.json");
+  const temp = `${path}.tmp`;
+  const first = event("delivered-a");
+  const second = event("after-removal-b");
+  const delivered: McpDelivery[] = [];
+  const outbox = new McpOutbox(path, async (item) => {
+    delivered.push(item);
+    if (delivered.length === 1) {
+      // The submission succeeds; the following removal write fails because
+      // the temp path is now a directory.
+      await mkdir(temp);
+    }
+  });
+  await outbox.load();
+  await outbox.enqueue(
+    mcpEventText({ head: MCP_EVENTS_HEAD, items: [first], dropped: 0 }, [first]),
+    ["delivered-a"],
+  );
+  outbox.start();
+  for (let attempt = 0; attempt < 100 && delivered.length < 1; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  // Let the successful delivery reach its failed removal write.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const failed = JSON.parse(await readFile(path, "utf8")) as { pending: McpDelivery[] };
+  assert.equal(failed.pending.length, 1, "the delivered item remains for its removal retry");
+  assert.equal(failed.pending[0]?.id, delivered[0]?.id);
+  assert.equal(
+    mcpEventEnvelope(failed.pending[0]?.text ?? "")?.items.length,
+    1,
+    "the first item was not merged before the new event arrived",
+  );
+
+  await rm(temp, { recursive: true, force: true });
+  await outbox.enqueue(
+    mcpEventText({ head: MCP_EVENTS_HEAD, items: [second], dropped: 0 }, [second]),
+    ["after-removal-b"],
+  );
+  outbox.start();
+  for (let attempt = 0; attempt < 100 && delivered.length < 2; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  await outbox.close();
+  assert.equal(delivered.length, 2, "the retry removes the old item, then delivers the new one");
+  assert.notEqual(delivered[1]?.id, delivered[0]?.id);
+  assert.deepEqual(
+    delivered.map(
+      (item) =>
+        (mcpEventEnvelope(item.text)?.items[0] as { event: { eventId: string } } | undefined)?.event
+          .eventId,
+    ),
+    ["delivered-a", "after-removal-b"],
+  );
+  assert.equal(JSON.parse(await readFile(path, "utf8")).pending.length, 0);
+});
+
+test("a status notice waits beside an event batch without corrupting it", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-outbox-status-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const status = `${MCP_STATUS_HEAD}\n${JSON.stringify({
+    subscriptions: [{ id: "s1", server: "hub", name: "hub", status: "reconnecting" }],
+    dropped_statuses: 0,
+  })}`;
+  const delivered: McpDelivery[] = [];
+  const outbox = new McpOutbox(join(dir, "outbox.json"), async (item) => {
+    delivered.push(item);
+  });
+  await outbox.load();
+  const item = event("status-mix");
+  await outbox.enqueue(mcpEventText({ head: MCP_EVENTS_HEAD, items: [item], dropped: 0 }, [item]), [
+    JSON.stringify(["hub/hub", "status-mix"]),
+  ]);
+  await outbox.enqueue(status);
+  outbox.start();
+  for (let attempt = 0; attempt < 100 && delivered.length < 2; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  await outbox.close();
+  assert.equal(delivered.length, 2);
+  const eventDelivery = delivered.find((entry) => mcpEventEnvelope(entry.text) !== null);
+  assert.ok(eventDelivery !== undefined, "the event text still parses as an envelope");
+  assert.equal(mcpEventEnvelope(eventDelivery.text)?.items.length, 1);
+  assert.ok(delivered.some((entry) => entry.text.startsWith(MCP_STATUS_HEAD)));
+});
+
+test("a duplicate event id in one waiting batch appears once", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-outbox-dedupe-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const delivered: McpDelivery[] = [];
+  const outbox = new McpOutbox(join(dir, "outbox.json"), async (item) => {
+    delivered.push(item);
+  });
+  await outbox.load();
+  const twice = event("same");
+  const text = mcpEventText({ head: MCP_EVENTS_HEAD, items: [twice], dropped: 0 }, [twice]);
+  await outbox.enqueueMany([text, text], ["same"]);
+  outbox.start();
+  for (let attempt = 0; attempt < 100 && delivered.length === 0; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  await outbox.close();
+  assert.equal(delivered.length, 1);
+  assert.equal(mcpEventEnvelope(delivered[0]?.text ?? "")?.items.length, 1);
+});
+
+test("a burst above the bound keeps the newest events and reports the drop", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-outbox-bound-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "outbox.json");
+  const delivered: McpDelivery[] = [];
+  const outbox = new McpOutbox(path, async (item) => {
+    delivered.push(item);
+  });
+  await outbox.load();
+  const burst = Array.from({ length: 60 }, (_, index) => event(`bound-${index}`));
+  await outbox.enqueueMany(
+    burst.map((item) => mcpEventText({ head: MCP_EVENTS_HEAD, items: [item], dropped: 0 }, [item])),
+  );
+  outbox.start();
+  for (let attempt = 0; attempt < 100 && delivered.length === 0; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  await outbox.close();
+  assert.equal(delivered.length, 1);
+  const envelope = mcpEventEnvelope(delivered[0]?.text ?? "");
+  assert.equal(envelope?.items.length, 50);
+  assert.equal(envelope?.dropped, 10);
+  assert.match(delivered[0]?.text ?? "", /10 older events dropped from this batch\./);
+  assert.deepEqual(
+    envelope?.items.map((item) => (item as { event: { eventId: string } }).event.eventId),
+    burst.slice(10).map((item) => item.event.eventId),
+  );
+  assert.equal(JSON.parse(await readFile(path, "utf8")).pending.length, 0);
 });
 
 test("a failed notice submission leaves ids novel, and the retry commits the chip", async () => {

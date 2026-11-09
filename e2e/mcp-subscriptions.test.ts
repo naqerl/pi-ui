@@ -788,3 +788,87 @@ test("a historical id with a null cursor is still a replay, not a live notice", 
   assert.equal(feed.state.subscriptions[0]?.cursor, "hub:8");
   await registry.close();
 });
+
+test("two rows for one server and name load as the newer subscription", async (t) => {
+  const dir = await tempDir(t);
+  const older = subscription({
+    server: "zeroshot",
+    name: "hub",
+    arguments: { stream: "snapshot" },
+    cursor: "hub:snapshot:2:1382",
+    status: "failed",
+    enabled: false,
+    updatedAt: "2026-11-08T20:00:00.000Z",
+    deliveredEventIds: [],
+  });
+  const newer = subscription({
+    server: "zeroshot",
+    name: "hub",
+    arguments: {},
+    cursor: "hub:328",
+    status: "reconnecting",
+    updatedAt: "2026-11-08T21:00:00.000Z",
+    lastEventAt: "2026-11-08T21:05:00.000Z",
+    deliveredEventIds: ["hub:327"],
+  });
+  await writeFile(
+    join(dir, "mcp-subscriptions.json"),
+    JSON.stringify({ version: 1, subscriptions: [older, newer] }),
+  );
+
+  const lines: string[] = [];
+  const registry = new McpSubscriptionRegistry(dir, { log: (line) => lines.push(line) });
+  const records = await registry.read();
+  assert.equal(records.length, 1);
+  assert.equal(records[0]?.cursor, "hub:328");
+  assert.equal(records[0]?.status, "reconnecting");
+  assert.deepEqual(records[0]?.deliveredEventIds, ["hub:327"]);
+  assert.equal(
+    lines.filter((line) => line.includes("duplicate subscription")).length,
+    1,
+    "the drop is logged once",
+  );
+  await registry.close();
+
+  const document = JSON.parse(await readFile(join(dir, "mcp-subscriptions.json"), "utf8")) as {
+    subscriptions: McpSubscriptionRecord[];
+  };
+  assert.equal(document.subscriptions.length, 1);
+  assert.equal(document.subscriptions[0]?.cursor, "hub:328");
+});
+
+test("same-argument rows keep the newer live subscription over a failed one", async (t) => {
+  const dir = await tempDir(t);
+  const failed = subscription({
+    server: "zeroshot",
+    name: "hub",
+    arguments: {},
+    cursor: "hub:snapshot:2:1382",
+    status: "failed",
+    enabled: false,
+    updatedAt: "2026-11-08T20:00:00.000Z",
+    deliveredEventIds: [],
+  });
+  const reconnecting = subscription({
+    server: "zeroshot",
+    name: "hub",
+    arguments: {},
+    cursor: "hub:328",
+    status: "reconnecting",
+    updatedAt: "2026-11-08T21:00:00.000Z",
+    lastEventAt: "2026-11-08T21:05:00.000Z",
+    deliveredEventIds: ["hub:327"],
+  });
+  await writeFile(
+    join(dir, "mcp-subscriptions.json"),
+    JSON.stringify({ version: 1, subscriptions: [failed, reconnecting] }),
+  );
+
+  const registry = new McpSubscriptionRegistry(dir, { log: () => {} });
+  const records = await registry.read();
+  assert.equal(records.length, 1);
+  assert.equal(records[0]?.status, "reconnecting");
+  assert.equal(records[0]?.cursor, "hub:328");
+  assert.deepEqual(records[0]?.deliveredEventIds, ["hub:327"]);
+  await registry.close();
+});
