@@ -727,6 +727,8 @@ interface RestoreProbe {
   readonly cursor: string | null;
   readonly stale: boolean;
   readonly reason?: string;
+  /** The catalog fallback had to page before it found this stream. */
+  readonly catalogPaged?: boolean;
 }
 
 function errorCode(error: unknown): number | undefined {
@@ -1366,7 +1368,10 @@ export class McpRuntime {
   }
 
   /** The event catalog, used only when a server cannot answer the cursor probe. */
-  private async listEventNames(server: string, wanted: string): Promise<string[]> {
+  private async listEventNames(
+    server: string,
+    wanted: string,
+  ): Promise<{ names: string[]; paged: boolean }> {
     const session = await this.pollSession(server);
     try {
       const names: string[] = [];
@@ -1383,12 +1388,12 @@ export class McpRuntime {
           }
         }
         // Stop at the first page that names the stream we are restoring.
-        if (names.includes(wanted)) return names;
+        if (names.includes(wanted)) return { names, paged: cursor !== undefined };
         const next =
           typeof result.nextCursor === "string" && result.nextCursor.length > 0
             ? result.nextCursor
             : undefined;
-        if (next === undefined) return names;
+        if (next === undefined) return { names, paged: cursor !== undefined };
         // Match pi-mcp-events: reject a repeated cursor or an endless catalog.
         if (cursors.has(next) || cursors.size >= 100) {
           throw new Error("events/list pagination did not terminate");
@@ -1413,11 +1418,19 @@ export class McpRuntime {
    */
   async reopenSubscription(
     record: McpSubscriptionRecord,
-    cursor: string | null,
+    cursor: string | null | undefined,
   ): Promise<{ id?: string; cursor: string | null; status: string; endReason?: string }> {
-    // The caller chose this cursor. A zero position means "start in now"; it
-    // must not be replaced by a different stored position.
-    const sent = hasPosition(cursor) ? cursor : null;
+    // When the caller supplies a cursor it wins: a real position resumes there
+    // and a zero position means "start in now", never the stored position.
+    // Only "no cursor at all" falls back to the record's usable position.
+    const sent =
+      cursor === null || cursor === undefined
+        ? hasPosition(record.cursor)
+          ? record.cursor
+          : null
+        : hasPosition(cursor)
+          ? cursor
+          : null;
     logStartFromNow(record, sent);
     if (this.toolNames.includes("mcp_events")) {
       if (record.id !== null && record.id !== undefined && record.id.length > 0) {
@@ -1694,8 +1707,8 @@ export class McpRuntime {
     // Older servers may not implement events/poll. Their catalog still tells us
     // whether the stream name itself disappeared.
     try {
-      const names = await this.listEventNames(record.server, record.name);
-      if (!names.includes(record.name)) {
+      const catalog = await this.listEventNames(record.server, record.name);
+      if (!catalog.names.includes(record.name)) {
         return {
           missing: true,
           cursor: record.cursor,
@@ -1703,7 +1716,7 @@ export class McpRuntime {
           reason: `event ${record.name} is not in the server catalog`,
         };
       }
-      return { missing: false, cursor: record.cursor, stale: false };
+      return { missing: false, cursor: record.cursor, stale: false, catalogPaged: catalog.paged };
     } catch (error) {
       if (isUnknownSubscriptionError(error)) {
         return { missing: true, cursor: record.cursor, stale: false, reason: errorText(error) };
@@ -1740,7 +1753,16 @@ export class McpRuntime {
         );
         return false;
       }
-      const cursor = hasPosition(record.cursor) ? record.cursor : null;
+      // A paged catalog is the restore-after-paging path: the client only knows
+      // the position it recovered by paging, so the record's stored cursor is
+      // the stream's resume point even when it ends in zero. Anywhere else a
+      // zero stored cursor is still "no position" and starts in now.
+      const cursor =
+        probe.catalogPaged === true
+          ? record.cursor
+          : hasPosition(record.cursor)
+            ? record.cursor
+            : null;
       logStartFromNow(record, cursor);
       if (probe.stale) {
         console.log(`mcp: replaying missed events for ${record.server}/${record.name}`);
