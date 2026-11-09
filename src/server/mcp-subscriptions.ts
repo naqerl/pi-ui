@@ -282,8 +282,20 @@ function parseTime(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+/**
+ * True when a cursor names a real position. Cursors are opaque, so only the
+ * trailing sequence is inspected: `hub:0`, `x:0` and `prefix:0` all mean the
+ * stream's zero point, which a subscribe must treat as "start in now".
+ */
+export function hasPosition(cursor: string | null | undefined): cursor is string {
+  if (typeof cursor !== "string" || cursor.trim().length === 0) return false;
+  const match = /:(\d+)$/.exec(cursor) ?? /^(\d+)$/.exec(cursor);
+  if (match === null) return true;
+  return Number(match[1]) !== 0;
+}
+
 function hasUsableCursor(record: McpSubscriptionRecord): boolean {
-  return typeof record.cursor === "string" && record.cursor.length > 0;
+  return hasPosition(record.cursor);
 }
 
 function isCancelledRecord(record: McpSubscriptionRecord): boolean {

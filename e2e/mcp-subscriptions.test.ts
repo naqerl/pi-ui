@@ -8,6 +8,7 @@ import { McpEventFeed } from "../src/server/mcp-events.js";
 import { startMcpRuntime } from "../src/server/mcp-runtime.js";
 import {
   deriveStableId,
+  hasPosition,
   type McpSubscriptionRecord,
   McpSubscriptionRegistry,
 } from "../src/server/mcp-subscriptions.js";
@@ -871,4 +872,156 @@ test("same-argument rows keep the newer live subscription over a failed one", as
   assert.equal(records[0]?.cursor, "hub:328");
   assert.deepEqual(records[0]?.deliveredEventIds, ["hub:327"]);
   await registry.close();
+});
+
+test("a zero cursor is not a position", () => {
+  for (const cursor of [null, undefined, "", "hub:0", "x:0", "prefix:0", "hub:0:0"]) {
+    assert.equal(hasPosition(cursor), false, `${String(cursor)} is no position`);
+  }
+  for (const cursor of ["hub:361", "x:1", "hub:snapshot:2:1382", "start"]) {
+    assert.equal(hasPosition(cursor), true, `${cursor} is a position`);
+  }
+});
+
+test("restores a zero cursor from now and keeps a real cursor", async (t) => {
+  await withAgentConfig(t, {
+    mcpServers: {
+      stub: { command: process.execPath, args: [resolve("e2e/stub-mcp.mjs")] },
+    },
+    web: { command: process.execPath, disabled: true },
+  });
+
+  for (const [stored, sent] of [
+    ["hub:0", null],
+    ["hub:361", "hub:361"],
+  ] as const) {
+    const dataDir = await tempDir(t);
+    const runtime = await startMcpRuntime({ dataDir });
+    const lines: string[] = [];
+    const log = console.log;
+    try {
+      const calls: Record<string, unknown>[] = [];
+      const original = runtime.shim.callTool.bind(runtime.shim);
+      runtime.shim.callTool = async (name, params, signal) => {
+        const request =
+          typeof params === "object" && params !== null ? (params as Record<string, unknown>) : {};
+        if (name === "mcp_events" && request.action === "subscribe") calls.push(request);
+        return original(name, params, signal);
+      };
+      await runtime.subscriptionRegistry?.record(
+        subscription({ server: "stub", name: "stub-hub", cursor: stored, status: "active" }),
+      );
+      console.log = (line: unknown) => lines.push(String(line));
+      await runtime.restoreSubscriptions();
+      const subscribe = calls.find((call) => call.action === "subscribe");
+      assert.equal(subscribe?.cursor, sent, `stored ${stored} subscribes at ${String(sent)}`);
+      if (stored === "hub:0") {
+        assert.ok(
+          lines.includes("mcp: stub/stub-hub restarted from now (stored cursor hub:0)"),
+          "a start-in-now is logged once",
+        );
+      } else {
+        assert.ok(
+          !lines.some((line) => line.includes("restarted from now")),
+          "a real cursor does not claim a restart",
+        );
+      }
+    } finally {
+      console.log = log;
+      await runtime.close();
+    }
+  }
+});
+
+test("a restore stores the cursor the server answered with", async (t) => {
+  await withAgentConfig(t, {
+    mcpServers: {
+      stub: { command: process.execPath, args: [resolve("e2e/stub-mcp.mjs")] },
+    },
+    web: { command: process.execPath, disabled: true },
+  });
+  const dataDir = await tempDir(t);
+  const runtime = await startMcpRuntime({ dataDir });
+  try {
+    const original = runtime.shim.callTool.bind(runtime.shim);
+    runtime.shim.callTool = async (name, params, signal) => {
+      const request =
+        typeof params === "object" && params !== null ? (params as Record<string, unknown>) : {};
+      if (name === "mcp_events" && request.action === "subscribe") {
+        return {
+          content: [],
+          details: {
+            subscription: {
+              id: "server-answer",
+              server: "stub",
+              name: "stub-hub",
+              status: "active",
+              cursor: "hub:777",
+            },
+          },
+        };
+      }
+      return original(name, params, signal);
+    };
+    await runtime.subscriptionRegistry?.record(
+      subscription({ server: "stub", name: "stub-hub", cursor: "hub:0", status: "active" }),
+    );
+    await runtime.restoreSubscriptions();
+    assert.equal(runtime.restoredSubscriptions[0]?.cursor, "hub:777");
+    const [saved] = (await runtime.subscriptionRegistry?.read()) ?? [];
+    assert.equal(saved?.cursor, "hub:777");
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("reopenSubscription returns the server's cursor, not its argument", async (t) => {
+  await withAgentConfig(t, {
+    mcpServers: {
+      stub: { command: process.execPath, args: [resolve("e2e/stub-mcp.mjs")] },
+    },
+    web: { command: process.execPath, disabled: true },
+  });
+  const dataDir = await tempDir(t);
+  const runtime = await startMcpRuntime({ dataDir });
+  try {
+    const calls: Record<string, unknown>[] = [];
+    const original = runtime.shim.callTool.bind(runtime.shim);
+    runtime.shim.callTool = async (name, params, signal) => {
+      const request =
+        typeof params === "object" && params !== null ? (params as Record<string, unknown>) : {};
+      if (name === "mcp_events" && request.action === "subscribe") {
+        calls.push(request);
+        return {
+          content: [],
+          details: {
+            subscription: {
+              id: "server-answer",
+              server: "stub",
+              name: "stub-hub",
+              status: "active",
+              cursor: "hub:999",
+            },
+          },
+        };
+      }
+      return original(name, params, signal);
+    };
+
+    const resumed = await runtime.reopenSubscription(
+      subscription({ id: "old", server: "stub", name: "stub-hub", cursor: "hub:361" }),
+      "hub:361",
+    );
+    assert.equal(calls.at(-1)?.cursor, "hub:361", "a real cursor still resumes");
+    assert.equal(resumed.cursor, "hub:999", "the returned cursor is the server's");
+
+    const restarted = await runtime.reopenSubscription(
+      subscription({ id: "old", server: "stub", name: "stub-hub", cursor: "hub:0" }),
+      "hub:0",
+    );
+    assert.equal(calls.at(-1)?.cursor, null, "a zero cursor starts in now");
+    assert.equal(restarted.cursor, "hub:999");
+  } finally {
+    await runtime.close();
+  }
 });

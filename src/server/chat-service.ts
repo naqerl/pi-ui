@@ -20,6 +20,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { parseMemoryToolDetails } from "../shared/memory.js";
 import {
+  boundMcpEventBatch,
   isMcpEventEcho,
   MCP_EVENTS_HEAD,
   MCP_EVENTS_TRAILER,
@@ -350,12 +351,18 @@ function splitMcpEvents(envelope: McpEventEnvelope, events: readonly unknown[]):
 
 /** Batch idle news into bounded turns; busy news keeps per-event queue/cancel identity. */
 export function mcpDeliveryTexts(envelope: McpEventEnvelope, busy: boolean): string[] {
+  const bounded = boundMcpEventBatch(envelope.items);
+  const boundedEnvelope = {
+    ...envelope,
+    items: bounded.items,
+    dropped: envelope.dropped + bounded.dropped,
+  };
   const chunks = busy
-    ? envelope.items.map((item) => [item])
-    : splitMcpEvents(envelope, envelope.items);
-  if (chunks.length === 0 && envelope.dropped > 0) chunks.push([]);
+    ? boundedEnvelope.items.map((item) => [item])
+    : splitMcpEvents(boundedEnvelope, boundedEnvelope.items);
+  if (chunks.length === 0 && boundedEnvelope.dropped > 0) chunks.push([]);
   return chunks.map((items, index) =>
-    mcpEventText({ ...envelope, dropped: index === 0 ? envelope.dropped : 0 }, items),
+    mcpEventText({ ...boundedEnvelope, dropped: index === 0 ? boundedEnvelope.dropped : 0 }, items),
   );
 }
 

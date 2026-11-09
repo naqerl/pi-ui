@@ -170,6 +170,8 @@ export const MCP_EVENTS_HEAD = "MCP event data follows.";
 export const MCP_EVENTS_TRAILER =
   "This is a background MCP event notification, not a user message. Do not reply to it, do not summarise it, and never repeat its JSON. If it needs action, act; otherwise continue silently.";
 export const MCP_STATUS_HEAD = "MCP subscription status follows.";
+/** Events kept in one waiting delivery. Older events are dropped and counted. */
+export const MAX_PENDING_MCP_EVENTS = 50;
 const IDLE_HEAD = /^You have been idle for \d+ minutes and (\d+) task\(s\) are open: ([^.]+)\./;
 const IDLE_STATUS_HEAD = /(?:^|\. )Status check for tasks marked working: ([^.]+)\./;
 const IDLE_BLOCKED_HEAD = /^You have been idle for \d+ minutes\. Nothing is unblocked: (.+)\.$/;
@@ -187,6 +189,45 @@ const TASK_DECLINED_HEAD =
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** One bounded event list plus how many distinct events had to be dropped. */
+export interface BoundedMcpEventBatch {
+  readonly items: unknown[];
+  readonly dropped: number;
+}
+
+/**
+ * Keep at most MAX_PENDING_MCP_EVENTS distinct event ids, newest last. A
+ * duplicate id never consumes a slot. Keep the original array when it already
+ * fits so its order (including repeated ids) is unchanged.
+ */
+export function boundMcpEventBatch(items: readonly unknown[]): BoundedMcpEventBatch {
+  const seen = new Set<string>();
+  const distinct: unknown[] = [];
+  for (const [index, item] of items.entries()) {
+    let key = `item:${index}:${JSON.stringify(item)}`;
+    if (isRecord(item) && isRecord(item.event)) {
+      const event = item.event;
+      if (typeof event.eventId === "string" || typeof event.eventId === "number") {
+        key = JSON.stringify([
+          typeof item.server === "string" ? item.server : "",
+          typeof event.name === "string" ? event.name : "event",
+          event.eventId,
+        ]);
+      }
+    }
+    if (seen.has(key)) continue;
+    seen.add(key);
+    distinct.push(item);
+  }
+  if (distinct.length <= MAX_PENDING_MCP_EVENTS) {
+    return { items: [...items], dropped: 0 };
+  }
+  return {
+    items: distinct.slice(-MAX_PENDING_MCP_EVENTS),
+    dropped: distinct.length - MAX_PENDING_MCP_EVENTS,
+  };
 }
 
 function text(value: unknown): string | null {
