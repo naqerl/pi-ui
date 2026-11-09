@@ -1,17 +1,26 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { MCP_EVENTS_HEAD, MCP_EVENTS_TRAILER, parseMcpEventPayload } from "../shared/notices.js";
+import { MCP_EVENTS_HEAD, parseMcpEventPayload } from "../shared/notices.js";
+import { mcpEventText, mcpMergedNoticeTexts } from "./chat-service.js";
 
 /** Events kept in one waiting delivery. Older events are dropped and counted. */
 export const MAX_PENDING_MCP_EVENTS = 50;
 
 export interface McpDelivery {
   id: string;
+  /** The first text of the delivery; also the whole delivery when it fits. */
   text: string;
   at: string;
+  /** Every text of an over-cap merged delivery, in order. Absent when text is enough. */
+  texts?: string[];
   /** Event keys folded into this delivery, so a restart keeps the dedupe set. */
   keys?: string[];
+}
+
+/** All texts one delivery renders, including a merged delivery that had to split. */
+export function deliveryTexts(item: McpDelivery): string[] {
+  return item.texts !== undefined && item.texts.length > 0 ? item.texts : [item.text];
 }
 
 interface DeliveryEnvelope {
@@ -21,12 +30,13 @@ interface DeliveryEnvelope {
 }
 
 const DROP_SUFFIX = / \d+ older events? dropped from this batch\.$/;
+const SUMMARY_SUFFIX = / This notice carries \d+ of \d+ merged events; \d+ remain\.$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Parse the same envelope chat-service uses, without importing its whole module. */
+/** Parse the same envelope shape chat-service renders and splits. */
 function deliveryEnvelope(text: string): DeliveryEnvelope | null {
   if (!text.startsWith(MCP_EVENTS_HEAD)) return null;
   const newline = text.indexOf("\n");
@@ -40,16 +50,9 @@ function deliveryEnvelope(text: string): DeliveryEnvelope | null {
   };
 }
 
-function deliveryText(envelope: DeliveryEnvelope, items: readonly unknown[]): string {
-  return `${envelope.head}\n${JSON.stringify({
-    events: items,
-    dropped_events: envelope.dropped,
-  })}\n${MCP_EVENTS_TRAILER}`;
-}
-
 /** One transient line, replaced rather than appended when another batch is folded in. */
 function batchHead(head: string, dropped: number): string {
-  const base = head.replace(DROP_SUFFIX, "");
+  const base = head.replace(SUMMARY_SUFFIX, "").replace(DROP_SUFFIX, "");
   if (dropped <= 0) return base;
   const suffix = dropped === 1 ? "event" : "events";
   return `${base} ${dropped} older ${suffix} dropped from this batch.`;
@@ -70,9 +73,9 @@ function eventKey(item: unknown): string {
   return `event:${JSON.stringify(item)}`;
 }
 
-/** Join delivery texts into one bounded envelope (or one plain notice). */
-export function mergeDeliveryTexts(texts: readonly string[]): string {
-  if (texts.length === 0) return "";
+/** Join delivery texts into bounded envelopes (or one plain notice). */
+export function mergeDeliveryTexts(texts: readonly string[]): string[] {
+  if (texts.length === 0) return [];
   // An identical notice queued twice (a replay) must not count its gap twice.
   const uniqueTexts = [...new Set(texts)];
   const envelopes = uniqueTexts.map(deliveryEnvelope);
@@ -95,11 +98,16 @@ export function mergeDeliveryTexts(texts: readonly string[]): string {
       dropped += events.length - MAX_PENDING_MCP_EVENTS;
       events.splice(0, events.length - MAX_PENDING_MCP_EVENTS);
     }
-    return deliveryText({ head: batchHead(head, dropped), items: events, dropped }, events);
+    const envelope = { head: batchHead(head, dropped), items: events, dropped };
+    // A gap-only batch has no events to split, but must still reach chat.
+    if (events.length === 0) return [mcpEventText(envelope, [])];
+    // Keep the split contract: an over-cap merge renders several bounded parts,
+    // each carrying the remaining count, instead of one oversized notice.
+    return mcpMergedNoticeTexts(envelope, events);
   }
   // Status and raw notices have no event list. Keep one bounded text rather than
   // turning a merged delivery into a second queue entry.
-  return uniqueTexts.join("\n\n");
+  return [uniqueTexts.join("\n\n")];
 }
 
 function mergeKeys(items: readonly McpDelivery[]): string[] {
@@ -116,10 +124,13 @@ function mergeItems(items: readonly McpDelivery[]): McpDelivery {
   if (items.length === 1) return items[0] as McpDelivery;
   const first = items[0];
   if (first === undefined) throw new Error("Cannot merge an empty delivery");
+  const texts = mergeDeliveryTexts(items.flatMap((item) => deliveryTexts(item)));
+  const [text = "", ...rest] = texts;
   return {
     id: first.id,
-    text: mergeDeliveryTexts(items.map((item) => item.text)),
+    text,
     at: first.at,
+    ...(rest.length === 0 ? {} : { texts }),
     ...(mergeKeys(items).length === 0 ? {} : { keys: mergeKeys(items) }),
   };
 }
@@ -172,7 +183,10 @@ export class McpOutbox {
           (item: McpDelivery) =>
             typeof item.id !== "string" ||
             typeof item.text !== "string" ||
-            typeof item.at !== "string",
+            typeof item.at !== "string" ||
+            (item.texts !== undefined &&
+              (!Array.isArray(item.texts) ||
+                item.texts.some((text: unknown) => typeof text !== "string"))),
         )
       )
         throw new Error("Invalid MCP outbox");

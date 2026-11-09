@@ -11,7 +11,12 @@ import {
 } from "../src/server/chat-service.js";
 import { DurableExtensionShim } from "../src/server/durable-extensions.js";
 import { McpEventFeed } from "../src/server/mcp-events.js";
-import { type McpDelivery, McpIntake, McpOutbox } from "../src/server/mcp-outbox.js";
+import {
+  type McpDelivery,
+  McpIntake,
+  McpOutbox,
+  mergeDeliveryTexts,
+} from "../src/server/mcp-outbox.js";
 import { MCP_EVENTS_HEAD, MCP_STATUS_HEAD } from "../src/shared/notices.js";
 
 const event = (id: string) => ({
@@ -146,6 +151,46 @@ test("idle replay bursts form one bounded delivery; busy bursts preserve per-eve
   assert.equal(mcpDeliveryTexts(envelope, false).length, 1);
   assert.equal(mcpDeliveryTexts(envelope, true).length, 22);
   assert.equal(mcpEventEnvelope(mcpDeliveryTexts(envelope, false)[0] ?? "")?.items.length, 22);
+});
+
+test("an over-cap merge keeps the split contract, its order and one carry summary per part", () => {
+  const events = Array.from({ length: 5 }, (_, index) => ({
+    ...event(`huge-${index + 1}`),
+    event: {
+      ...event(`huge-${index + 1}`).event,
+      data: { kind: "stub-huge.event", text: "x".repeat(7_000) },
+    },
+  }));
+  const texts = mergeDeliveryTexts(
+    events.map((item) =>
+      mcpEventText({ head: MCP_EVENTS_HEAD, items: [item], dropped: 0 }, [item]),
+    ),
+  );
+  assert.ok(texts.length >= 3, `expected several bounded parts, got ${texts.length}`);
+
+  let carried = 0;
+  const ids: string[] = [];
+  for (const text of texts) {
+    const summary = /carries (\d+) of (\d+) merged events; (\d+) remain\./.exec(text);
+    assert.ok(summary !== null, "every part names what it carries and what remains");
+    const count = Number(summary[1]);
+    assert.equal(Number(summary[2]), events.length);
+    assert.equal(Number(summary[3]), events.length - (carried + count));
+    carried += count;
+    const envelope = mcpEventEnvelope(text);
+    assert.equal(envelope?.items.length, count);
+    ids.push(
+      ...(envelope?.items ?? []).map(
+        (item) => (item as { event: { eventId: string } }).event.eventId,
+      ),
+    );
+  }
+  assert.equal(carried, events.length);
+  assert.deepEqual(
+    ids,
+    events.map((item) => item.event.eventId),
+  );
+  assert.equal(new Set(ids).size, ids.length);
 });
 
 test("a persistence failure blocks later cursor acknowledgments until retry succeeds", async () => {
