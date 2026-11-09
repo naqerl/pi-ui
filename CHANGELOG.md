@@ -1,3 +1,12 @@
+## 1.6.131
+
+### Fixed
+
+- A merged MCP burst that exceeds the notice text limit is split into bounded multi-part notices
+  instead of one over-long chip that the e2e contract read as a false remainder. `submitMcpDelivery`
+  keeps one identity per part (`<id>#<n>`), so a retry replays the parts a previous attempt did not
+  commit instead of re-sending one coalesced blob.
+
 ## 1.6.130
 
 ### Fixed
