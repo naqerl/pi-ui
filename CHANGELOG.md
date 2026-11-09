@@ -1,3 +1,21 @@
+## 1.6.130
+
+### Fixed
+
+- The MCP outbox queued one chat submission per event, so a busy hub turned into a queue of ~200
+  pending deliveries (189 of them cancelled by hand). A burst is now folded into one waiting
+  delivery: events are deduplicated by `server/name/eventId` across subscriptions, the batch is
+  bounded at 50 with the older ones counted in the head ("N older events dropped from this batch"),
+  and a gap-only batch adds its dedupe keys without queueing a second entry. Status and raw notices
+  keep their own waiting item so they are never merged into an event envelope.
+- Delivery is one item at a time instead of a batch of 50, which removes the source of a duplicate
+  submission: an item already passed to `deliver()` stays protected until its removal write
+  succeeds, so a failed removal retries the removal rather than re-submitting a text that has been
+  merged with a newer event.
+- A second subscription to the same server no longer replays what the first one delivered: the
+  subscription store deduplicates by server, name and arguments and drops the stale record.
+
+
 ## 1.6.129
 
 ### Fixed
