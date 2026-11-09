@@ -26,6 +26,7 @@ import {
 import { checkEventNotifications } from "./mcp-event-check.js";
 import { type ExtensionNotice, polledEventCursor } from "./mcp-events.js";
 import {
+  hasPosition,
   type McpSubscriptionRecord,
   McpSubscriptionRegistry,
   recordKey,
@@ -208,6 +209,14 @@ const eventsStreamModule = (await import(EVENTS_STREAM_ENTRY)) as EventsStreamMo
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** A stored zero cursor is not a position: say once that the stream starts now. */
+function logStartFromNow(record: McpSubscriptionRecord, sent: string | null): void {
+  const stored = record.cursor;
+  if (sent !== null || typeof stored !== "string" || stored.length === 0) return;
+  if (hasPosition(stored)) return;
+  console.log(`mcp: ${record.server}/${record.name} restarted from now (stored cursor ${stored})`);
 }
 
 function stringRecord(value: unknown): Record<string, string> | undefined {
@@ -1406,6 +1415,8 @@ export class McpRuntime {
     record: McpSubscriptionRecord,
     cursor: string | null,
   ): Promise<{ id?: string; cursor: string | null; status: string; endReason?: string }> {
+    const sent = hasPosition(cursor) ? cursor : hasPosition(record.cursor) ? record.cursor : null;
+    logStartFromNow(record, sent);
     if (this.toolNames.includes("mcp_events")) {
       if (record.id !== null && record.id !== undefined && record.id.length > 0) {
         await this.shim
@@ -1417,7 +1428,7 @@ export class McpRuntime {
         server: record.server,
         name: record.name,
         arguments: record.arguments,
-        cursor,
+        cursor: sent,
       });
       const details = isRecord(result.details) ? result.details : undefined;
       if (result.isError === true) {
@@ -1431,12 +1442,12 @@ export class McpRuntime {
         details !== undefined && isRecord(details.subscription) ? details.subscription : {};
       return {
         ...(typeof raw.id === "string" ? { id: raw.id } : {}),
-        cursor,
+        cursor: typeof raw.cursor === "string" ? raw.cursor : sent,
         status: typeof raw.status === "string" ? raw.status : "active",
         ...(typeof raw.endReason === "string" ? { endReason: raw.endReason } : {}),
       };
     }
-    return this.reopenDirect(record, cursor);
+    return this.reopenDirect(record, sent);
   }
 
   private async reopenDirect(
@@ -1484,11 +1495,11 @@ export class McpRuntime {
       options,
     );
     try {
-      const subscription = await connection.subscribe(record.name, record.arguments, null);
+      const subscription = await connection.subscribe(record.name, record.arguments, cursor);
       this.directSubscriptions.set(subscription.id, connection);
       return {
         id: subscription.id,
-        cursor,
+        cursor: subscription.cursor ?? cursor,
         status: subscription.status,
       };
     } catch (error) {
@@ -1727,7 +1738,8 @@ export class McpRuntime {
         );
         return false;
       }
-      const cursor = record.cursor;
+      const cursor = hasPosition(record.cursor) ? record.cursor : null;
+      logStartFromNow(record, cursor);
       if (probe.stale) {
         console.log(`mcp: replaying missed events for ${record.server}/${record.name}`);
       }
@@ -1757,7 +1769,7 @@ export class McpRuntime {
         name: typeof raw.name === "string" ? raw.name : record.name,
         status: typeof raw.status === "string" ? raw.status : record.status,
         arguments: isRecord(raw.arguments) ? raw.arguments : record.arguments,
-        cursor,
+        cursor: typeof raw.cursor === "string" ? raw.cursor : cursor,
       };
       const restored: McpSubscriptionRecord = {
         ...record,

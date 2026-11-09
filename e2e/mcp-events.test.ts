@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { JSONRPCMessage, Transport } from "@modelcontextprotocol/client";
+import { mcpDeliveryTexts, mcpEventEnvelope } from "../src/server/chat-service.js";
 import { DurableExtensionShim } from "../src/server/durable-extensions.js";
 import { checkEventNotifications, eventRejection } from "../src/server/mcp-event-check.js";
 import { type ExtensionNotice, McpEventFeed } from "../src/server/mcp-events.js";
+import { MAX_PENDING_MCP_EVENTS } from "../src/server/mcp-outbox.js";
+import { MCP_EVENTS_HEAD } from "../src/shared/notices.js";
 
 const SUBSCRIPTION_META = "io.modelcontextprotocol/subscriptionId";
 
@@ -339,4 +342,82 @@ test("a duplicate delivery never marks an unchipped id as delivered", () => {
   feed.markDelivered([item]);
   assert.deepEqual(feed.novelEvents([item]), [], "the committed chip removes the id");
   assert.equal(feed.ingest({ customType: "mcp-events", details: { events: [item] } }), false);
+});
+
+test("a subscribe keeps the cursor the server answered with, not the one sent", () => {
+  const feed = new McpEventFeed();
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe", server: "hub", name: "hub", cursor: "hub:0" },
+      result: {
+        subscription: {
+          id: "s1",
+          server: "hub",
+          name: "hub",
+          status: "active",
+          cursor: "hub:361",
+        },
+      },
+    },
+  });
+  assert.equal(feed.state.subscriptions[0]?.cursor, "hub:361");
+
+  // The same rule repairs a record restored from a zero cursor: the restore
+  // result is the server's answer, so the stored position self-corrects.
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe", server: "hub", name: "hub", cursor: null, restored: true },
+      result: {
+        subscription: {
+          id: "s2",
+          server: "hub",
+          name: "hub",
+          status: "active",
+          cursor: "hub:400",
+        },
+      },
+    },
+  });
+  assert.equal(feed.state.subscriptions[0]?.cursor, "hub:400", "the restored record adopts it");
+  assert.equal(feed.state.subscriptions.length, 1);
+});
+
+test("a subscribe burst above the cap keeps the newest ids and records one gap", () => {
+  const feed = new McpEventFeed();
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe" },
+      result: { subscription: { id: "s1", server: "hub", name: "hub", status: "active" } },
+    },
+  });
+  const burst = Array.from({ length: 60 }, (_, index) => ({
+    subscription_id: "s1",
+    server: "hub",
+    event: {
+      eventId: `hub:${index + 1}`,
+      name: "hub",
+      timestamp: "2026-11-07T11:40:00.000Z",
+      cursor: `hub:${index + 1}`,
+      data: { kind: "hub.job", id: `job-${index + 1}` },
+    },
+  }));
+
+  const texts = mcpDeliveryTexts({ head: MCP_EVENTS_HEAD, items: burst, dropped: 0 }, true);
+  assert.equal(texts.length, MAX_PENDING_MCP_EVENTS, "nothing enqueues one delivery per event");
+  const last = mcpEventEnvelope(texts.at(-1) ?? "");
+  assert.equal(last?.items.length, 1);
+  assert.equal(
+    (last?.items[0] as { event: { eventId: string } } | undefined)?.event.eventId,
+    "hub:60",
+    "the newest event survives",
+  );
+
+  feed.ingest({ customType: "mcp-events", details: { events: burst } });
+  assert.equal(feed.state.gap?.dropped, 10);
+  assert.equal(feed.state.events.length, MAX_PENDING_MCP_EVENTS);
+  assert.equal(feed.state.events[0]?.id, "hub:11", "the oldest ids are the ones dropped");
+  assert.equal(feed.state.events.at(-1)?.id, "hub:60");
 });

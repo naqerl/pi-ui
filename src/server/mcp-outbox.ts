@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { MCP_EVENTS_HEAD, parseMcpEventPayload } from "../shared/notices.js";
+import {
+  MAX_PENDING_MCP_EVENTS,
+  MCP_EVENTS_HEAD,
+  parseMcpEventPayload,
+} from "../shared/notices.js";
 import { mcpEventText, mcpMergedNoticeTexts } from "./chat-service.js";
 
 /** Events kept in one waiting delivery. Older events are dropped and counted. */
-export const MAX_PENDING_MCP_EVENTS = 50;
+export { MAX_PENDING_MCP_EVENTS };
 
 export interface McpDelivery {
   id: string;

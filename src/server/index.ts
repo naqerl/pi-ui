@@ -8,7 +8,7 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { OperatorNoticeRecord, TaskDecisionNoticeRecord } from "../shared/notices.js";
-import { isMcpNotice } from "../shared/notices.js";
+import { boundMcpEventBatch, isMcpNotice } from "../shared/notices.js";
 import { PAGE_IDS, PAGE_PATHS } from "../shared/pages.js";
 import { parseCompletion, parseReopenReason, TASK_BODY_MAX_LENGTH } from "../shared/tasks.js";
 import type { TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
@@ -362,23 +362,30 @@ boot.mcp.setSubmit((text, options) => {
   const envelope = mcpEventEnvelope(text);
   if (envelope !== null) {
     mcpIntake.enqueue(async () => {
+      // A subscribe can hand us a retained history. Bound it once here so the
+      // outbox receives at most one delivery per event up to the cap, newest
+      // only, and the drop is visible as the same gap the feed records.
+      const batch = boundMcpEventBatch(envelope.items);
+      const dropped = envelope.dropped + batch.dropped;
       const novel = events
-        .novelEvents(envelope.items)
+        .novelEvents(batch.items)
         .filter((item) => !mcpOutbox.has(events.eventKey(item)));
+      const boundedNovel = boundMcpEventBatch(novel);
+      const deliveryDropped = dropped + boundedNovel.dropped;
       // Persist even a gap-only batch: missing data must be visible in chat too.
-      if (novel.length > 0 || envelope.dropped > 0) {
+      if (boundedNovel.items.length > 0 || deliveryDropped > 0) {
         const texts = mcpDeliveryTexts(
-          { ...envelope, items: novel },
+          { ...envelope, items: boundedNovel.items, dropped: deliveryDropped },
           chat.getState() === "running",
         );
         await mcpOutbox.enqueueMany(
           texts,
-          novel.map((item) => events.eventKey(item)),
+          boundedNovel.items.map((item) => events.eventKey(item)),
         );
       }
       events.ingest({
         customType: "mcp-events",
-        details: { events: envelope.items, dropped_events: envelope.dropped },
+        details: { events: batch.items, dropped_events: dropped },
       });
       hub.broadcast({ event: "mcp.events", data: events.state });
       mcpOutbox.start();

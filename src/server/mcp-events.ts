@@ -1,3 +1,4 @@
+import { boundMcpEventBatch } from "../shared/notices.js";
 import { toIsoTimestamp } from "../shared/time.js";
 import type { McpEventsState, McpEventView, McpSubscriptionView } from "../shared/types.js";
 import {
@@ -733,16 +734,21 @@ export class McpEventFeed {
     if (!isRecord(details) || !Array.isArray(details.events)) return false;
     let stateChanged = false;
     let deliveredNew = false;
-    // A reconnecting stream drops what it cannot replay and says how much. That
-    // count is the only honest witness of a gap, so record it rather than
-    // letting the missing window look like quietness.
-    const dropped = typeof details.dropped_events === "number" ? details.dropped_events : 0;
+    // One subscribe can hand us a whole retained history. Bound the batch
+    // before it reaches the ledger: only the newest ids may become notices, and
+    // the rest are one gap instead of a queue of deliveries.
+    const batch = boundMcpEventBatch(details.events);
+    const reportedDropped = typeof details.dropped_events === "number" ? details.dropped_events : 0;
+    const dropped = reportedDropped + batch.dropped;
     if (dropped > 0) {
       this.gap = { dropped, at: new Date().toISOString() };
-      this.notice = `${dropped} events dropped while reconnecting`;
+      this.notice =
+        reportedDropped > 0
+          ? `${dropped} events dropped while reconnecting`
+          : `${dropped} older events dropped from this batch`;
       stateChanged = true;
     }
-    for (const item of details.events) {
+    for (const item of batch.items) {
       if (!isRecord(item) || typeof item.server !== "string" || !isRecord(item.event)) continue;
       const event = item.event;
       const streamName = typeof event.name === "string" ? event.name : "event";
@@ -1108,12 +1114,16 @@ export class McpEventFeed {
       }
       if (cancellationId !== undefined) this.cancelled.delete(incoming.stableId);
       const current = this.viewForAdapter(incoming.id) ?? this.findByStableId(incoming.stableId);
+      // The server's answer is the position. Only when it named none do we keep
+      // the cursor we asked from; a restored record then self-corrects here.
+      const sentCursor = typeof args.cursor === "string" ? args.cursor : null;
+      const answerCursor = incoming.cursor ?? sentCursor;
       const delivered = eventIdsFrom(raw);
       if (delivered.length > 0) {
         this.restored.add(incoming.stableId);
         if (args.restored === true) {
           // The restore result is enriched with our own durable delivered set.
-          this.seedDelivered(incoming.stableId, delivered, true, incoming.cursor ?? undefined);
+          this.seedDelivered(incoming.stableId, delivered, true, answerCursor ?? undefined);
         } else {
           this.seedSeen(incoming.stableId, delivered);
         }
@@ -1125,12 +1135,7 @@ export class McpEventFeed {
         ...incoming,
         stableId: current?.stableId ?? incoming.stableId,
         state: deriveSubscriptionState(incoming.status, incoming.state),
-        cursor:
-          current === undefined
-            ? saved === undefined
-              ? incoming.cursor
-              : saved.cursor
-            : current.cursor,
+        cursor: answerCursor,
         lastHeartbeatAt:
           current?.lastHeartbeatAt ?? incoming.lastHeartbeatAt ?? saved?.lastHeartbeatAt,
         lastPollAt: current?.lastPollAt ?? incoming.lastPollAt ?? saved?.lastPollAt,
