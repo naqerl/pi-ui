@@ -1021,6 +1021,16 @@ test("reopenSubscription returns the server's cursor, not its argument", async (
     );
     assert.equal(calls.at(-1)?.cursor, null, "a zero cursor starts in now");
     assert.equal(restarted.cursor, "hub:999");
+
+    await runtime.reopenSubscription(
+      subscription({ id: "old", server: "stub", name: "stub-hub", cursor: "hub:361" }),
+      "hub:0",
+    );
+    assert.equal(
+      calls.at(-1)?.cursor,
+      null,
+      "the cursor it was given wins over a different stored position",
+    );
   } finally {
     await runtime.close();
   }

@@ -1415,7 +1415,9 @@ export class McpRuntime {
     record: McpSubscriptionRecord,
     cursor: string | null,
   ): Promise<{ id?: string; cursor: string | null; status: string; endReason?: string }> {
-    const sent = hasPosition(cursor) ? cursor : hasPosition(record.cursor) ? record.cursor : null;
+    // The caller chose this cursor. A zero position means "start in now"; it
+    // must not be replaced by a different stored position.
+    const sent = hasPosition(cursor) ? cursor : null;
     logStartFromNow(record, sent);
     if (this.toolNames.includes("mcp_events")) {
       if (record.id !== null && record.id !== undefined && record.id.length > 0) {
