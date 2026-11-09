@@ -1,3 +1,12 @@
+## 1.6.132
+
+### Fixed
+
+- A subscription whose stored cursor is a zero position (`hub:0`) no longer replays the server's whole
+  history on connect. `reopenSubscription` sends the cursor the caller chose and treats a zero position as
+  "start in now" instead of falling back to another stored position, and a subscribe burst is bounded, so a
+  reconnect costs one notice rather than a queue of them.
+
 ## 1.6.131
 
 ### Fixed
