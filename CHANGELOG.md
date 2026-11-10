@@ -1,3 +1,16 @@
+## 1.6.141
+
+### Fixed
+
+- A status notice for a subscription pi-ui does not track is no longer shown in the chat. The
+  adapter keeps reporting a generation the app never subscribed to (typically one from before a
+  restart) and every such notice started a turn; an unknown or superseded subscription now stays
+  silent.
+- The restore e2e stub now lists `flood-stream` in its `events/list` catalog, which is what
+  `events/subscribe` validates against. The row used to stay pending forever because the follow-up
+  subscribe failed on an unknown name, so 1.6.140's "start from now" path was never exercised by
+  the suite.
+
 ## 1.6.140
 
 ### Fixed
