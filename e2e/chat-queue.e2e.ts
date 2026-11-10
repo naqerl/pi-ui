@@ -150,6 +150,37 @@ test("keeps the client key on a send that loses the start race", async ({
   await expect(screen.getByRole("button", { name: "Send" })).toBeVisible({ timeout: 15_000 });
 });
 
+test("a repeated client message id gets one answer", async ({ app, browser, screen }) => {
+  await app.open("/");
+  await expect(screen.getByRole("button", { name: "Send" })).toBeVisible({ timeout: 15_000 });
+  const tag = Date.now();
+  const text = `retry once ${tag}`;
+  const key = `retry-${tag}`;
+  const statuses = await browser.evaluate(
+    async ({ text, key }: { text: string; key: string }) => {
+      const send = async () => {
+        const response = await fetch("/api/message", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text, mode: "queue", queueKey: key }),
+        });
+        return { status: response.status, body: await response.json() };
+      };
+      return [await send(), await send()];
+    },
+    { text, key },
+  );
+  expect(statuses[0]?.status).toBe(202);
+  expect(statuses[1]?.status).toBe(409);
+  expect(statuses[1]?.body.duplicate).toBe(true);
+
+  await expect(screen.getByText(`Echo: ${text}`, { exact: false })).toBeVisible({
+    timeout: 20_000,
+  });
+  await expect(browser.locator('[data-role="user"]').filter({ hasText: text })).toHaveCount(1);
+  await expect(browser.locator('[data-role="assistant"]').filter({ hasText: text })).toHaveCount(1);
+});
+
 test("keeps the composer focused after send on a coarse-pointer mobile viewport", async ({
   app,
   browser,
