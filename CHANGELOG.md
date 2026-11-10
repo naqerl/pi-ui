@@ -1,3 +1,11 @@
+## 1.6.139
+
+### Changed
+
+- The e2e wall-clock guard allows 720 s instead of 660 s. A green suite with three Playwright
+  retries measured 666 s and failed CI without a single failing test, so the guard was rejecting
+  flaky-retry overhead rather than a slow suite.
+
 ## 1.6.138
 
 ### Changed
