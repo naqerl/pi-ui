@@ -249,9 +249,9 @@ test("a restored subscription the server rejects is cancelled and never polled a
       ),
     ).toHaveLength(2);
     expect(state.messages.some((message) => message.text.includes("from flood:9"))).toBe(true);
-    expect(notices.filter((notice) => notice.ids.some((id) => id.startsWith("flood-")))).toHaveLength(
-      0,
-    );
+    expect(
+      notices.filter((notice) => notice.ids.some((id) => id.startsWith("flood-"))),
+    ).toHaveLength(0);
     expect(notices.filter((notice) => notice.ids.includes("old-stream-backlog"))).toHaveLength(0);
     expect(state.mcpEvents?.gap?.from).toBe("old:42");
     expect(state.mcpEvents?.gap?.missedSince).toBe(OLD_BACKLOG_AT);
