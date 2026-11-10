@@ -8,7 +8,7 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { OperatorNoticeRecord, TaskDecisionNoticeRecord } from "../shared/notices.js";
-import { boundMcpEventBatch, isMcpNotice } from "../shared/notices.js";
+import { boundMcpEventBatch, isMcpNotice, MCP_STATUS_HEAD } from "../shared/notices.js";
 import { PAGE_IDS, PAGE_PATHS } from "../shared/pages.js";
 import {
   parseCompletion,
@@ -413,15 +413,20 @@ boot.mcp.setSubmit((text, options) => {
     return;
   }
   if (isMcpNotice(text)) {
-    // The observer above already ingested this notice. A status for an older
-    // generation is still feed state, but it is not news while a different
-    // subscription for the same stream is live; announcing it would look like
-    // an outage. Only authentic notices reach the outbox.
-    if (options.customType === "mcp-events-status" && events.isSupersededStatus(options.details)) {
-      return;
+    // The observer above already ingested this notice. A status that names no
+    // tracked subscription is not news about this app: the adapter mints a new
+    // id per connection, so a dead pre-restart generation must stay silent even
+    // when it is the same stream. With no id to attribute, the existing
+    // `(server, name)` supersession rule still decides. Only authentic notices
+    // reach the outbox.
+    let delivered = text;
+    if (text.startsWith(MCP_STATUS_HEAD)) {
+      const filtered = events.filterStatusNotice(text, options.details, options.customType);
+      if (filtered === null) return;
+      delivered = filtered;
     }
     mcpIntake.enqueue(async () => {
-      await mcpOutbox.enqueue(text);
+      await mcpOutbox.enqueue(delivered);
       mcpOutbox.start();
     });
   } else {

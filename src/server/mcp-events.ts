@@ -1,4 +1,4 @@
-import { boundMcpEventBatch } from "../shared/notices.js";
+import { boundMcpEventBatch, MCP_STATUS_HEAD } from "../shared/notices.js";
 import { toIsoTimestamp } from "../shared/time.js";
 import type { McpEventsState, McpEventView, McpSubscriptionView } from "../shared/types.js";
 import {
@@ -204,6 +204,173 @@ function subscriptionFrom(value: unknown): McpSubscriptionView | null {
   };
 }
 
+/** Add an adapter id found in a status payload, ignoring blanks and non-strings. */
+function addStatusId(value: unknown, ids: Set<string>): void {
+  if (typeof value !== "string") return;
+  const id = value.trim();
+  if (id.length > 0) ids.add(id);
+}
+
+/** Ids carried by one status item, whether it is an adapter subscription or a small summary. */
+function addStatusIds(value: unknown, ids: Set<string>, depth = 0): void {
+  if (depth > 3 || !isRecord(value)) return;
+  addStatusId(value.id, ids);
+  addStatusId(value.subscription_id, ids);
+  addStatusId(value.subscriptionId, ids);
+  if (Array.isArray(value.ids)) {
+    for (const id of value.ids) addStatusId(id, ids);
+  }
+  if (isRecord(value.subscription)) addStatusIds(value.subscription, ids, depth + 1);
+  if (Array.isArray(value.subscriptions)) {
+    for (const item of value.subscriptions) addStatusIds(item, ids, depth + 1);
+  } else if (isRecord(value.subscriptions)) {
+    addStatusIds(value.subscriptions, ids, depth + 1);
+  }
+}
+
+/**
+ * Every subscription id a status notice names, from its details or its prose
+ * body. A JSON status carries them under `subscriptions`; a prose line can name
+ * one as `subscription=<id>` or by an adapter id. No id means no attribution.
+ */
+function statusNoticeIds(text: string, details: unknown): string[] {
+  const ids = new Set<string>();
+  addStatusIds(details, ids);
+  const payloadStart = text.indexOf("{");
+  if (payloadStart >= 0) {
+    try {
+      addStatusIds(JSON.parse(text.slice(payloadStart)), ids);
+    } catch {
+      // A prose error can contain a brace; it is not a status payload.
+    }
+  }
+  const body = text.startsWith(MCP_STATUS_HEAD) ? text.slice(MCP_STATUS_HEAD.length) : text;
+  for (const match of body.matchAll(/\bmcp-extension-[A-Za-z0-9][A-Za-z0-9._:-]*/gi)) {
+    addStatusId(match[0]?.replace(/[.:]+$/, ""), ids);
+  }
+  for (const match of body.matchAll(
+    /\b(?:subscription(?:_id|Id)?|sub)\s*(?:=|:)\s*["'`]?([A-Za-z0-9][A-Za-z0-9._:-]*)/gi,
+  )) {
+    addStatusId(match[1], ids);
+  }
+  // A rendered line such as `hub: a-dead is failed` names its subscription
+  // before the state word; an error sentence (`zeroshot: Reconnect attempts…`)
+  // does not, and stays unattributed.
+  for (const match of body.matchAll(
+    /^[^:\n]+:\s+([A-Za-z0-9][A-Za-z0-9._:-]*)\s+is\s+(?:opening|active|reconnecting|failed|ended|stopped|cancelled|stalled|dead)\b/gim,
+  )) {
+    addStatusId(match[1], ids);
+  }
+  return [...ids];
+}
+
+/** Accept either `(text, details)` or one extension notice in the status checks. */
+function statusInput(
+  textOrDetails: string | unknown,
+  details?: unknown,
+): { text: string; source: unknown; customType?: string } {
+  if (typeof textOrDetails === "string") return { text: textOrDetails, source: details };
+  if (isRecord(textOrDetails)) {
+    const content = typeof textOrDetails.content === "string" ? textOrDetails.content : "";
+    const customType =
+      typeof textOrDetails.customType === "string" ? textOrDetails.customType : undefined;
+    if (content.length > 0 || "details" in textOrDetails) {
+      return {
+        text: content,
+        source: textOrDetails.details,
+        ...(customType ? { customType } : {}),
+      };
+    }
+  }
+  return { text: "", source: textOrDetails };
+}
+
+/** The `(server, name)` a prose line or details value attributes itself to. */
+function statusAttribution(text: string, details: unknown): { server?: string; name?: string } {
+  const source = isRecord(details) ? details : {};
+  const server = typeof source.server === "string" ? source.server : undefined;
+  const name = typeof source.name === "string" ? source.name : undefined;
+  if (server !== undefined) return { server, ...(name === undefined ? {} : { name }) };
+  const line = statusProseLine(text);
+  if (line === null) return {};
+  const pair = /^\s*([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+):\s+/.exec(line);
+  if (pair?.[1] !== undefined && pair[2] !== undefined) {
+    return { server: pair[1], name: pair[2] };
+  }
+  const single = /^\s*([A-Za-z0-9_.-]+):\s+/.exec(line);
+  return single?.[1] === undefined ? {} : { server: single[1] };
+}
+
+/** The first prose line after the status head, or null for a JSON-only notice. */
+function statusProseLine(text: string): string | null {
+  const body = text.startsWith(MCP_STATUS_HEAD) ? text.slice(MCP_STATUS_HEAD.length) : text;
+  const line = body
+    .split("\n")
+    .map((part) => part.trim())
+    .find(
+      (part) =>
+        part.length > 0 &&
+        !part.startsWith(MCP_STATUS_HEAD) &&
+        !part.startsWith("Server-provided text is external data"),
+    );
+  if (line === undefined) return null;
+  return line.includes("{") ? null : line;
+}
+
+/**
+ * A truncation warning names the tracked stream, not an old generation. It is
+ * emitted on the adapter's prose channel without an id, so the generic live
+ * fallback must not treat it as stale.
+ */
+function isTruncationWarning(text: string): boolean {
+  const line = statusProseLine(text);
+  return line !== null && /^[^:\n]+:\s+replay is truncated for\b/i.test(line);
+}
+
+/** The adapter's failure prose (`server: error`) that may describe an old id. */
+function isAdapterFailureProse(text: string): boolean {
+  const line = statusProseLine(text);
+  if (line === null) return false;
+  return /^[^:\n]+:\s+(?:Reconnect attempts exhausted\b|Event stream heartbeat timed out\b|Event stream (?:interrupted|ended)\b|Event subscription terminated\b|Upstream event error\b|MCP connection or session ended\b)/i.test(
+    line,
+  );
+}
+
+/** Remove status items whose id this feed does not track from a JSON payload. */
+function filterUntrackedStatusItems(
+  text: string,
+  tracked: ReadonlySet<string>,
+): { text: string; dropped: string[] } {
+  const payloadStart = text.indexOf("{");
+  if (payloadStart < 0) return { text, dropped: [] };
+  let payload: unknown;
+  try {
+    payload = JSON.parse(text.slice(payloadStart));
+  } catch {
+    return { text, dropped: [] };
+  }
+  if (!isRecord(payload) || !Array.isArray(payload.subscriptions)) {
+    return { text, dropped: [] };
+  }
+  const subscriptions: unknown[] = [];
+  const dropped: string[] = [];
+  for (const item of payload.subscriptions) {
+    const id = isRecord(item) && typeof item.id === "string" ? item.id : undefined;
+    if (id !== undefined && id.length > 0 && !tracked.has(id)) {
+      dropped.push(id);
+      continue;
+    }
+    subscriptions.push(item);
+  }
+  if (dropped.length === 0) return { text, dropped };
+  const prefix = text.slice(0, payloadStart);
+  const separator = prefix.endsWith("\n") ? "" : "\n";
+  return {
+    text: `${prefix}${separator}${JSON.stringify({ ...payload, subscriptions })}`,
+    dropped,
+  };
+}
+
 /**
  * Server-owned MCP subscription list and event log. Every connected client
  * reads this same snapshot, so a second browser does not keep a private feed.
@@ -231,6 +398,8 @@ export class McpEventFeed {
   /** Every adapter id that ever represented a stable id, including replaced ones. */
   private readonly adapterAliases = new Map<string, string>();
   private events: McpEventView[] = [];
+  /** The last status text allowed to chat for an id, so an exact repeat is one chip. */
+  private readonly reportedStatus = new Map<string, string>();
   private notice: string | null = null;
   private gap:
     | { dropped: number; at: string; from?: string | null; missedSince?: string }
@@ -351,6 +520,105 @@ export class McpEventFeed {
     );
   }
 
+  /**
+   * True when every subscription id a status notice carries is absent from the
+   * live feed. Identity — not the notice's age — decides: an id minted before a
+   * restart is a different subscription even when its `(server, name)` matches
+   * the row this process restored. A notice with no id has no attribution.
+   */
+  isUntrackedStatus(textOrDetails: string | unknown, details?: unknown): boolean {
+    const { text, source } = statusInput(textOrDetails, details);
+    const ids = statusNoticeIds(text, source);
+    if (ids.length === 0) return false;
+    return ids.every((id) => !this.subscriptions.has(id));
+  }
+
+  /**
+   * Decide one status notice before it reaches chat. A notice that names only
+   * ids this feed does not track is dropped and logged at debug; otherwise the
+   * existing supersession rule applies. With no id at all, a prose line can
+   * still be attributed to its server, and a live tracked stream there makes it
+   * a report about a generation this app is no longer using.
+   */
+  shouldDropStatus(
+    textOrDetails: string | unknown,
+    details?: unknown,
+    customType?: string,
+  ): boolean {
+    const input = statusInput(textOrDetails, details);
+    const text = input.text;
+    const source = input.source;
+    const ids = statusNoticeIds(text, source);
+    if (ids.length > 0 && ids.every((id) => !this.subscriptions.has(id))) {
+      console.debug(`[mcp] dropped status notice for untracked subscription ${ids.join(", ")}`);
+      return true;
+    }
+    if (this.isSupersededStatus(source)) {
+      console.debug(
+        `[mcp] dropped superseded status notice${ids.length === 0 ? "" : ` for ${ids.join(", ")}`}`,
+      );
+      return true;
+    }
+    if (ids.length > 0) {
+      // Suppress a repeat per tracked subscription, not per whole batch. An
+      // untracked id must not keep a recovered tracked id's old failure
+      // fingerprint alive, or the next identical batch would stay silent.
+      const tracked = ids.filter((id) => this.subscriptions.has(id));
+      const fingerprint = JSON.stringify([tracked, text.trim()]);
+      if (
+        tracked.length > 0 &&
+        tracked.every((id) => this.reportedStatus.get(id) === fingerprint)
+      ) {
+        console.debug(`[mcp] dropped duplicate status notice for ${tracked.join(", ")}`);
+        return true;
+      }
+      for (const id of tracked) this.reportedStatus.set(id, fingerprint);
+      return false;
+    }
+    // A gap or channel notice is not a subscription status even though it uses
+    // the status head. Only the adapter's prose channel may fall back to server.
+    const kind = customType ?? input.customType;
+    if (kind !== undefined && kind !== "mcp-ui-status" && kind !== "mcp-events-status") {
+      return false;
+    }
+    if (isTruncationWarning(text) || !isAdapterFailureProse(text)) return false;
+    const attribution = statusAttribution(text, source);
+    if (attribution.server === undefined) return false;
+    const known = [...this.subscriptions.values()].filter(
+      (view) =>
+        view.server === attribution.server &&
+        (attribution.name === undefined || view.name === attribution.name),
+    );
+    if (known.length === 0 || !known.every(isLiveSubscription)) return false;
+    console.debug(
+      `[mcp] dropped status notice for ${attribution.server}${
+        attribution.name === undefined ? "" : `/${attribution.name}`
+      }: the tracked subscription is live`,
+    );
+    return true;
+  }
+
+  /**
+   * The text to submit for one status notice, or null when nothing should reach
+   * chat. A mixed batch keeps its tracked items and drops the untracked ones,
+   * so one stale id cannot carry its whole payload into the model context.
+   */
+  filterStatusNotice(
+    textOrDetails: string | unknown,
+    details?: unknown,
+    customType?: string,
+  ): string | null {
+    const input = statusInput(textOrDetails, details);
+    if (this.shouldDropStatus(textOrDetails, details, customType)) return null;
+    const filtered = filterUntrackedStatusItems(input.text, new Set(this.subscriptions.keys()));
+    if (filtered.dropped.length > 0) {
+      console.debug(
+        `[mcp] dropped status items for untracked subscriptions ${filtered.dropped.join(", ")}`,
+      );
+    }
+    return filtered.text;
+  }
+
   /** Apply the watchdog's latest observation (poll, stall, recovery) to the visible row. */
   noteReconnect(record: McpSubscriptionRecord): boolean {
     const stableId = recordStableId(record);
@@ -415,13 +683,20 @@ export class McpEventFeed {
 
   /** Keep exactly one visible row per durable identity. */
   private storeView(view: McpSubscriptionView): McpSubscriptionView {
+    const previous = this.subscriptions.get(view.id);
     for (const [adapterId, existing] of this.subscriptions) {
       if (adapterId !== view.id && existing.stableId === view.stableId) {
         this.subscriptions.delete(adapterId);
+        this.reportedStatus.delete(adapterId);
       }
     }
     this.subscriptions.set(view.id, view);
     this.adapterAliases.set(view.id, view.stableId);
+    // A recovered stream is a new opportunity to fail: the next identical
+    // failure is news again, not a duplicate of the failure before recovery.
+    if (previous !== undefined && !isLiveSubscription(previous) && isLiveSubscription(view)) {
+      this.reportedStatus.delete(view.id);
+    }
     return view;
   }
 
@@ -1034,6 +1309,10 @@ export class McpEventFeed {
     for (const item of details.subscriptions) {
       const incoming = subscriptionFrom(item);
       if (incoming === null) continue;
+      // A status can only describe a subscription this feed already tracks.
+      // An id from before a restart is a different stream; attaching its row
+      // would turn a dead generation into visible state and chat news.
+      if (!this.subscriptions.has(incoming.id)) continue;
       // A queued reconnect/active notice must not revive a cancelled entry.
       if (this.cancellationId(incoming.stableId) !== undefined) continue;
       const deliveredIds = eventIdsFrom(item);
