@@ -760,13 +760,20 @@ function pollEvent(item: unknown): Record<string, unknown> | undefined {
 
 /**
  * A restart is allowed to replay what it missed while it was down, but only
- * for a short window. A stream whose first missed event predates this process
- * by more than the grace horizon is old history, not a restart: resuming it
- * would replay days of backlog into the chat queue.
+ * for a short window and only for a handful of events. A stream whose first
+ * missed event predates this process by more than the grace horizon is old
+ * history, not a restart: resuming it would replay days of backlog into the
+ * chat queue. A short outage on a busy hub is the same problem in miniature —
+ * ten minutes can hold a hundred events — so a full probe page means "this is
+ * a backlog, not a handful", however recent it looks.
  */
 const RESTORE_GRACE_MS = 15 * 60_000;
-/** Enough probe events to put a number on a recent replay without pulling history. */
-const RESTORE_PROBE_MAX_EVENTS = 100;
+/**
+ * Probe page size, and the replay bound: anything this big is summarised as a
+ * gap instead of replayed. A restart that missed a few events still delivers
+ * them; one that missed a burst reports the burst in one line.
+ */
+const RESTORE_PROBE_MAX_EVENTS = 25;
 
 interface RestoreBacklog {
   readonly stale: boolean;
@@ -791,10 +798,14 @@ function pollBacklog(response: unknown, startedAt: number): RestoreBacklog {
     if (first === undefined || parsed < first) first = parsed;
   }
   const truncated = response.truncated === true;
+  // A full probe page means the backlog is at least this large: whatever its
+  // timestamps say, replaying it is a flood, so it is the old case too.
+  const fullPage = events.length >= RESTORE_PROBE_MAX_EVENTS;
   // An untimestamped truncated answer is still a backlog, so it is the old
   // case. A timestamped answer decides by the first missed event.
-  const stale = first === undefined ? truncated : first < startedAt - RESTORE_GRACE_MS;
-  return { stale, count: events.length, truncated };
+  const stale =
+    fullPage || (first === undefined ? truncated : first < startedAt - RESTORE_GRACE_MS);
+  return { stale, count: events.length, truncated: truncated || fullPage };
 }
 
 const CHANNEL_RETRY_DELAYS_MS = [1_000, 5_000, 15_000, 60_000, 300_000] as const;

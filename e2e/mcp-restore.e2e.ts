@@ -79,6 +79,7 @@ async function startRestoreApp(
     subscription("restore", "gone-stream", "old:9"),
     subscription("restore", "old-stream", "old:42", OLD_BACKLOG_AT),
     subscription("restore", "recent-stream", "recent:41", startedRecentAt),
+    subscription("restore", "flood-stream", "flood:9", startedRecentAt),
     subscription("restore", "live-stream", "live:0"),
     subscription("restore", "burst-stream", "burst:0"),
     subscription("paged", "paged-stream", "paged:0"),
@@ -197,6 +198,7 @@ test("a restored subscription the server rejects is cancelled and never polled a
             live: subscriptions.find((item) => item.name === "live-stream")?.status,
             paged: subscriptions.find((item) => item.name === "paged-stream")?.status,
             recent: subscriptions.find((item) => item.name === "recent-stream")?.cursor,
+            flood: subscriptions.find((item) => item.name === "flood-stream")?.cursor,
             restored: subscriptions.map((item) => item.name).sort(),
           };
         },
@@ -208,8 +210,10 @@ test("a restored subscription the server rejects is cancelled and never polled a
         live: "active",
         paged: "active",
         recent: "recent-stream:1",
+        flood: null,
         restored: [
           "burst-stream",
+          "flood-stream",
           "gone-stream",
           "live-stream",
           "old-stream",
@@ -235,14 +239,19 @@ test("a restored subscription the server rejects is cancelled and never polled a
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     const state = await readState(spawned.url);
     const notices = mcpNotices(state);
-    // The old backlog is one gap status chip, never a replayed event chip.
+    // Two backlogs are one gap status chip each, never a replayed event chip:
+    // the old one by its timestamp, the flood one by its size.
     expect(
       state.messages.filter(
         (message) =>
           message.role === "user" &&
           message.text.includes("events were missed while pi was not running"),
       ),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
+    expect(state.messages.some((message) => message.text.includes("from flood:9"))).toBe(true);
+    expect(notices.filter((notice) => notice.ids.some((id) => id.startsWith("flood-")))).toHaveLength(
+      0,
+    );
     expect(notices.filter((notice) => notice.ids.includes("old-stream-backlog"))).toHaveLength(0);
     expect(state.mcpEvents?.gap?.from).toBe("old:42");
     expect(state.mcpEvents?.gap?.missedSince).toBe(OLD_BACKLOG_AT);
@@ -270,6 +279,9 @@ test("a restored subscription the server rejects is cancelled and never polled a
     expect(calls).toContain("stream:old-stream:null");
     expect(calls).not.toContain("stream:old-stream:old:42");
     expect(calls).toContain("stream:recent-stream:recent:41");
+    // A burst that fills the probe page is a backlog even when it is recent.
+    expect(calls).toContain("stream:flood-stream:null");
+    expect(calls).not.toContain("stream:flood-stream:flood:9");
 
     // No events/poll on this server, so the catalog fallback must follow nextCursor.
     const pagedCalls = readFileSync(spawned.pagedLogPath, "utf8").split("\n").filter(Boolean);

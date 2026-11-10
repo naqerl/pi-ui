@@ -99,6 +99,22 @@ if (mode !== "paged") {
           cursor: "recent-stream:1",
         };
       }
+      if (params.name === "flood-stream") {
+        // A busy hub after a short outage: twenty-five events, every one of
+        // them recent. Only the size gives it away as a backlog.
+        return {
+          events: Array.from({ length: 25 }, (_, index) => ({
+            event: {
+              eventId: `flood-${index + 1}`,
+              name: "flood-stream",
+              timestamp: recentTimestamp,
+              cursor: `flood-stream:${index + 1}`,
+              data: { kind: "flood-stream.event", id: `flood-${index + 1}`, state: "created" },
+            },
+          })),
+          cursor: "flood-stream:25",
+        };
+      }
       if (params.name === "idle-stream") return { events: [], cursor: "idle:7" };
       if (params.name === "live-stream") return { events: [], cursor: "live-stream:0" };
       if (params.name === "burst-stream") return { events: [], cursor: "burst-stream:0" };
