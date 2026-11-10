@@ -353,7 +353,7 @@ dashboard.setHost({
 });
 jobs.onChange(() => dashboard.broadcast());
 jobs.setNotifier((job, tail) => {
-  void chat.submitJobNotice(jobNotice(job, tail)).catch((error: unknown) => {
+  void chat.submitJobNotice(jobNotice(job, tail), job.id).catch((error: unknown) => {
     console.error(`[pi] background job ${job.id} message failed`, error);
   });
 });
@@ -894,13 +894,14 @@ app.post("/api/message", async (c) => {
   }
 
   try {
-    return c.json(
-      await chat.submit(text, mode, {
-        attachments,
-        ...(typeof rawQueueKey === "string" ? { queueKey: rawQueueKey } : {}),
-      }),
-      202,
-    );
+    const result = await chat.submit(text, mode, {
+      attachments,
+      ...(typeof rawQueueKey === "string" ? { queueKey: rawQueueKey } : {}),
+    });
+    // A repeated queueKey is a retry of a send that is already queued or in the
+    // transcript. 409 lets the client drop its optimistic copy and refresh
+    // instead of placing a second entry and starting a second turn.
+    return c.json(result, result.duplicate === true ? 409 : 202);
   } catch (error) {
     if (error instanceof MediaError)
       return c.text(error.status === 404 ? "Unknown attachment" : error.message, 400);

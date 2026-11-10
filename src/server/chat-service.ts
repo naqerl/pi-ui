@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
@@ -33,13 +33,13 @@ import {
   type TaskDecisionNoticeRecord,
   taskDecisionPrompt,
 } from "../shared/notices.js";
-import { QUEUE_ENTRY_KIND, queuedNoticeGlyph } from "../shared/queue.js";
+import { pendingQueuedMessage, QUEUE_ENTRY_KIND, queuedNoticeGlyph } from "../shared/queue.js";
 import {
   QUIET_AFTER_MS as DEFAULT_QUIET_AFTER_MS,
   type DurableRunFacts,
   reconcileRunState,
 } from "../shared/run-health.js";
-import { steerDropReason, steerFromInboxItem } from "../shared/steers.js";
+import { pendingSteerMessage, steerDropReason, steerFromInboxItem } from "../shared/steers.js";
 import {
   type ChatMessage,
   type McpEventsState,
@@ -483,6 +483,94 @@ function memoryDeltaTopic(record: MemoryWriteRecord): MemoryDeltaTopic | undefin
   };
 }
 
+/** A content-derived identity for a notice a source may report more than once. */
+function noticeTextKey(prefix: string, text: string): string {
+  return `${prefix}:${createHash("sha256").update(text).digest("hex").slice(0, 32)}`;
+}
+
+/** The text-derived identity of a notice kind, used by sources without a durable id. */
+function noticeTextIdentity(kind: string, text: string): string | undefined {
+  if (kind === JOB_NOTICE_ENTRY_KIND) return noticeTextKey("job", text);
+  if (kind === DELEGATE_NOTICE_ENTRY_KIND) return noticeTextKey("delegate", text);
+  if (kind === TASK_DECISION_ENTRY_KIND) return noticeTextKey("task-decision", text);
+  if (kind === MEMORY_DELTA_ENTRY_KIND) return noticeTextKey("memory-delta", text);
+  if (kind === MCP_NOTICE_ENTRY_KIND) return noticeTextKey("mcp", text);
+  return undefined;
+}
+
+/**
+ * The identity a notice keeps across re-deliveries. Sources that carry a durable id
+ * (a job, a proposal, a memory batch) use it; others, such as MCP status and event
+ * windows, use their exact text. A user message only gets an identity from its
+ * client key, so the same words typed twice remain two messages.
+ */
+function noticeIdentityKey(kind: string, data: unknown, text: string): string | undefined {
+  const record = isRecord(data) ? data : {};
+  if (typeof record.queueKey === "string" && record.queueKey.length > 0) return record.queueKey;
+  const field = (name: string): string | undefined =>
+    typeof record[name] === "string" && record[name].length > 0
+      ? (record[name] as string)
+      : undefined;
+  if (kind === JOB_NOTICE_ENTRY_KIND) {
+    const jobId = field("jobId");
+    return jobId === undefined ? noticeTextIdentity(kind, text) : `job:${jobId}`;
+  }
+  if (kind === DELEGATE_NOTICE_ENTRY_KIND) {
+    const runId = field("runId");
+    return runId === undefined ? noticeTextIdentity(kind, text) : `delegate:${runId}`;
+  }
+  if (kind === TASK_DECISION_ENTRY_KIND) {
+    const proposalId = field("proposalId");
+    return proposalId === undefined
+      ? noticeTextIdentity(kind, text)
+      : `task-decision:${proposalId}`;
+  }
+  if (kind === MEMORY_DELTA_ENTRY_KIND) {
+    const deltaId = field("deltaId");
+    return deltaId === undefined ? noticeTextIdentity(kind, text) : `memory-delta:${deltaId}`;
+  }
+  return noticeTextIdentity(kind, text);
+}
+
+/** Every identity a notice submission can match, including older text-only entries. */
+function noticeIdentityKeys(kind: string, data: unknown, text: string): string[] {
+  const keys = [noticeIdentityKey(kind, data, text), noticeTextIdentity(kind, text)].flatMap(
+    (key) => (key === undefined ? [] : [key]),
+  );
+  return [...new Set(keys)];
+}
+
+/** The queue key a submission carries: a client key, or a notice's own identity. */
+function submissionKey(text: string, options: SubmitOptions): string | undefined {
+  if (options.queueKey !== undefined) return options.queueKey;
+  if (options.entry === undefined) return undefined;
+  return noticeIdentityKey(options.entry.kind, options.entry.data, text);
+}
+
+/** Every identity a submission can use to find an existing queue item or entry. */
+function submissionKeys(text: string, options: SubmitOptions): string[] {
+  const primary = submissionKey(text, options);
+  if (primary === undefined) return [];
+  if (options.entry === undefined) return [primary];
+  return [
+    ...new Set([primary, ...noticeIdentityKeys(options.entry.kind, options.entry.data, text)]),
+  ];
+}
+
+/** The keys a persisted queue item is restored under, including markers from older builds. */
+function markerItemKeys(item: QueuedMessage): string[] {
+  const primary =
+    item.key !== undefined && item.key.length > 0
+      ? item.key
+      : ((item.notice === undefined
+          ? undefined
+          : noticeIdentityKey(item.notice.kind, { text: item.text }, item.text)) ?? `q-${item.id}`);
+  if (item.notice === undefined) return [primary];
+  return [
+    ...new Set([primary, ...noticeIdentityKeys(item.notice.kind, { text: item.text }, item.text)]),
+  ];
+}
+
 /** The short chip text for a queued application entry. */
 function entryNoticeLabel(kind: string, label?: string): string {
   if (label !== undefined && label.trim().length > 0) return label.trim();
@@ -505,7 +593,13 @@ export interface SubmittedMessage {
   placed: boolean;
   queue: QueuedMessage[];
   steers: QueuedMessage[];
+  /** The client message id was already queued or placed; nothing new was admitted. */
+  duplicate?: boolean;
 }
+
+type ExistingSubmission =
+  | { readonly entry: EntryRecord }
+  | { readonly item: QueuedMessage; readonly steer: boolean };
 
 export class ChatService {
   private runState: RunState;
@@ -552,6 +646,8 @@ export class ChatService {
   private readonly queued = new Map<string, QueuedRun>();
   /** Steers durable holds in its inbox for the next turn boundary, by submission id. */
   private readonly steers = new Map<string, QueuedMessage>();
+  /** Serializes submissions that carry the same client/notice identity. */
+  private readonly submissionLocks = new Map<string, Promise<void>>();
   private marker: RunMarker | undefined;
   private markerWrites: Promise<void> = Promise.resolve();
   /** Coalesced state writes: many queue mutations in one tick become one marker write. */
@@ -1070,7 +1166,125 @@ export class ChatService {
     return frames;
   }
 
+  /**
+   * Admits one message. A submission carrying a client key or notice identity
+   * is serialized and checked against the queue and transcript first, so a
+   * retry, reconnect or re-delivered source item cannot place a second entry
+   * or start a second turn.
+   */
   async submit(
+    text: string,
+    mode: MessageMode = "queue",
+    options: SubmitOptions = {},
+  ): Promise<SubmittedMessage> {
+    const keys = submissionKeys(text, options);
+    const key = keys[0];
+    if (key === undefined) return this.submitMessage(text, mode, options);
+    const previous = this.submissionLocks.get(key) ?? Promise.resolve();
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => held);
+    this.submissionLocks.set(key, tail);
+    try {
+      await previous;
+      const existing = await this.findExistingSubmission(keys);
+      if (existing !== undefined) return this.duplicateSubmission(existing, mode);
+      return await this.submitMessage(text, mode, options);
+    } finally {
+      release();
+      if (this.submissionLocks.get(key) === tail) this.submissionLocks.delete(key);
+    }
+  }
+
+  /** The existing queue item or transcript entry a repeated identity already has. */
+  private async findExistingSubmission(
+    keys: readonly string[],
+  ): Promise<ExistingSubmission | undefined> {
+    const wanted = new Set(keys);
+    for (const queued of this.queued.values()) {
+      if (queued.item.key !== undefined && wanted.has(queued.item.key)) {
+        return { item: queued.item, steer: false };
+      }
+    }
+    for (const steer of this.steers.values()) {
+      if (steer.key !== undefined && wanted.has(steer.key)) return { item: steer, steer: true };
+    }
+    let entries: readonly EntryRecord[];
+    try {
+      entries = (await this.conversation.context(SESSION_CONTEXT)).entries;
+    } catch (error) {
+      // A transient read failure must not turn a retry into a duplicate send.
+      console.error("[pi] could not check the transcript for a duplicate message", error);
+      return undefined;
+    }
+    const entry = entries.find((candidate) =>
+      this.entryIdentityKeys(candidate).some((identity) => wanted.has(identity)),
+    );
+    return entry === undefined ? undefined : { entry };
+  }
+
+  /** Every stable identity an entry carries, including the text form older builds used. */
+  private entryIdentityKeys(entry: EntryRecord): string[] {
+    const data = isRecord(entry.data) ? entry.data : undefined;
+    const keys: string[] = [];
+    if (typeof data?.queueKey === "string" && data.queueKey.length > 0) keys.push(data.queueKey);
+    if (
+      (entry.kind === QUEUE_ENTRY_KIND || entry.kind === STEER_ENTRY_KIND) &&
+      typeof data?.key === "string" &&
+      data.key.length > 0
+    ) {
+      keys.push(data.key);
+    }
+    if (typeof data?.text === "string") {
+      keys.push(...noticeIdentityKeys(entry.kind, data, data.text));
+    }
+    return [...new Set(keys)];
+  }
+
+  private duplicateSubmission(existing: ExistingSubmission, mode: MessageMode): SubmittedMessage {
+    let message: ChatMessage;
+    if ("entry" in existing) {
+      const built = buildTranscript([existing.entry], this.mediaRef, this.diagramRevision)
+        .messages[0];
+      // Job notices render as activity, not a transcript message. The duplicate
+      // answer still needs a quiet placeholder; the caller never appends it.
+      message = built ?? this.fallbackEntryMessage(existing.entry);
+    } else {
+      message = existing.steer
+        ? pendingSteerMessage(existing.item)
+        : pendingQueuedMessage(existing.item);
+    }
+    const placed = "entry" in existing;
+    return {
+      message,
+      mode: mode === "steer" || ("item" in existing && existing.steer) ? "steer" : mode,
+      queued: !placed && mode !== "steer",
+      placed,
+      queue: this.queueItems(),
+      steers: this.steerItems(),
+      duplicate: true,
+    };
+  }
+
+  /** A quiet stand-in for a placed entry that only contributes an activity row. */
+  private fallbackEntryMessage(entry: EntryRecord): ChatMessage {
+    const data = isRecord(entry.data) ? entry.data : undefined;
+    const text = typeof data?.text === "string" ? data.text : "";
+    const queueKey = this.entryIdentityKeys(entry).find((key) => !key.startsWith("q-"));
+    const notice = parseNotice(text);
+    return {
+      id: queueKey === undefined ? `m-${entry.id}` : `m-${queueKey}`,
+      role: "user",
+      text,
+      ...(notice === null ? {} : { notice }),
+      timestamp: typeof data?.createdAt === "string" ? data.createdAt : new Date().toISOString(),
+      order: entry.id * 10_000,
+    };
+  }
+
+  private async submitMessage(
     text: string,
     mode: MessageMode = "queue",
     options: SubmitOptions = {},
@@ -1105,25 +1319,26 @@ export class ChatService {
     timing.beforeTurnMs = Date.now() - beforeTurnStart;
     const startsRun = this.runState !== "running" && this.queued.size === 0;
     const startedAt = new Date().toISOString();
-    const steerKey = steer ? (options.queueKey ?? randomUUID()) : undefined;
+    const identity = submissionKey(text, options);
+    const steerKey = steer ? (identity ?? randomUUID()) : undefined;
     // A queued follow-up gets an application entry with a stable key, so its pending bubble
     // and the placed transcript message share one id instead of remounting at the handoff.
     const queueKey =
-      !steer && !startsRun && options.entry === undefined
-        ? (options.queueKey ?? randomUUID())
-        : undefined;
-    const entryKey =
-      !steer && !startsRun && options.entry !== undefined
-        ? (options.queueKey ?? randomUUID())
-        : undefined;
+      !steer && !startsRun && options.entry === undefined ? (identity ?? randomUUID()) : undefined;
+    // A notice carries its identity even when it starts the turn, so a re-delivered
+    // source item finds the placed entry instead of appending a second chip.
+    const entryKey = !steer && options.entry !== undefined ? (identity ?? randomUUID()) : undefined;
     // An idle client send also carries its key into the placed entry, so the optimistic
     // bubble and its transcript message share one id even though nothing is queued.
-    const placedKey =
-      !steer && startsRun && options.entry === undefined ? options.queueKey : undefined;
+    const placedKey = !steer && startsRun && options.entry === undefined ? identity : undefined;
     // A submit that checked startsRun before another one won the run can still be queued
     // by durable. Reuse the placed key there too, or the chip and the optimistic bubble
     // would get different ids and render the same message twice.
     const pendingKey = queueKey ?? entryKey ?? placedKey;
+    // Only recovery and MCP deliveries need a durable request id. Aliasing it to
+    // the client key would keep a cancelled submission's id consumed and turn a
+    // later retry into a silent 202 that is neither queued nor in the transcript.
+    const requestId = options.requestId;
     const notice =
       options.entry === undefined
         ? undefined
@@ -1160,7 +1375,7 @@ export class ChatService {
           type: "input",
           content,
           whenBusy: steer ? "steer" : "followUp",
-          ...(options.requestId === undefined ? {} : { requestId: options.requestId }),
+          ...(requestId === undefined ? {} : { requestId }),
           ...(steer
             ? {
                 entry: {
@@ -1335,6 +1550,9 @@ export class ChatService {
     if (!(await this.withdraw(id, "move a queued message into the run"))) return null;
     return this.submit(queued.item.text, "steer", {
       ...(queued.item.attachments === undefined ? {} : { attachments: queued.item.attachments }),
+      ...(queued.item.key === undefined
+        ? {}
+        : { queueKey: queued.item.key, requestId: `queue-steer:${queued.item.key}` }),
     });
   }
 
@@ -1370,17 +1588,28 @@ export class ChatService {
   private async restorePersistedQueue(): Promise<void> {
     const marker = this.marker;
     if (marker === undefined || marker.stopRequested) return;
+    let skipped = false;
     for (const item of marker.queue) {
+      const keys = markerItemKeys(item);
+      const key = keys[0] as string;
+      // The marker is written as the queue changes, but a crash can land between
+      // durable placing the item and the view retiring its chip. The transcript
+      // is authoritative: never submit an item that already has an entry.
+      if ((await this.findExistingSubmission(keys)) !== undefined) {
+        skipped = true;
+        continue;
+      }
       try {
         await this.submit(item.text, "queue", {
           requestId: `run-queue:${marker.idempotencyKey}:${item.id}`,
-          queueKey: item.key ?? `q-${item.id}`,
+          queueKey: key,
           ...(item.attachments === undefined ? {} : { attachments: item.attachments }),
         });
       } catch (error) {
         console.error("[pi] could not restore a queued message", error);
       }
     }
+    if (skipped) await this.persistMarkerState();
   }
 
   private async persistMarkerState(): Promise<void> {
@@ -1940,12 +2169,16 @@ export class ChatService {
   }
 
   /** Sends a job result to the agent without placing a user message in the chat. */
-  async submitJobNotice(text: string): Promise<void> {
-    await this.submit(text, "queue", {
+  async submitJobNotice(text: string, jobId?: string): Promise<SubmittedMessage> {
+    return this.submit(text, "queue", {
       entry: {
         kind: JOB_NOTICE_ENTRY_KIND,
         label: "Background job",
-        data: { text, createdAt: new Date().toISOString() },
+        data: {
+          text,
+          createdAt: new Date().toISOString(),
+          ...(jobId === undefined ? {} : { jobId }),
+        },
       },
     });
   }
@@ -2933,6 +3166,9 @@ export class ChatService {
     try {
       await this.submit(queued.item.text, "queue", {
         ...(queued.item.attachments === undefined ? {} : { attachments: queued.item.attachments }),
+        ...(queued.item.key === undefined
+          ? {}
+          : { queueKey: queued.item.key, requestId: `resubmit:${queued.item.key}` }),
       });
     } catch (error) {
       console.error("[pi] could not start the next queued message", error);
