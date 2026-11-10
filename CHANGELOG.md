@@ -1,3 +1,9 @@
+## 1.6.136
+
+### Added
+
+- `task_release`: the agent can move a `working` task back to `open` with a reason when the work is parked or the claim was wrong, so the badge stops claiming progress. The release is recorded as `releasedAt`/`releaseReason` and shown in the task details.
+
 ## 1.6.135
 
 ### Added
