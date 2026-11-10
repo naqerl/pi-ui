@@ -37,6 +37,15 @@ function startedAtOf(value: number | string | Date | undefined): number {
 const LIVE_STATUS = new Set(["opening", "active", "reconnecting"]);
 const EVENT_LIMIT = 100;
 
+/**
+ * A stream the user could still be depending on. `failed` is deliberately not
+ * live: retry exhaustion is the outage the status notice must announce.
+ */
+function isLiveSubscription(view: McpSubscriptionView): boolean {
+  if (view.state === "cancelled" || view.state === "dead" || view.state === "stalled") return false;
+  return view.status === "active" || view.status === "reconnecting" || view.status === "opening";
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -302,6 +311,38 @@ export class McpEventFeed {
   /** Alternate name for `cancel`, kept for callers that think in identity. */
   cancelByStableId(stableId: string): McpSubscriptionView | null {
     return this.cancel(stableId);
+  }
+
+  /**
+   * True only for a status notice about a generation superseded by another
+   * subscription for the same `(server, name)`. Ingest such a notice, but do
+   * not submit it to chat: the user depends on that other generation.
+   *
+   * The predicate runs after `ingestStatuses`, so the incoming id is already
+   * known. It compares against *other* ids, never absence. A sibling is
+   * superseding when it is live, or when it owns the same durable identity:
+   * the current row stays authoritative even after its own failure, and its
+   * failure notice is the one the user needs. A notice that names the live id
+   * itself, or one with no sibling at all, is authentic and must reach chat.
+   */
+  isSupersededStatus(details: unknown): boolean {
+    if (!isRecord(details) || !Array.isArray(details.subscriptions)) return false;
+    const incoming: McpSubscriptionView[] = [];
+    for (const item of details.subscriptions) {
+      const subscription = subscriptionFrom(item);
+      if (subscription !== null) incoming.push(subscription);
+    }
+    if (incoming.length === 0) return false;
+    const known = [...this.subscriptions.values()];
+    return incoming.every((item) =>
+      known.some(
+        (view) =>
+          view.id !== item.id &&
+          view.server === item.server &&
+          view.name === item.name &&
+          (view.stableId === item.stableId || isLiveSubscription(view)),
+      ),
+    );
   }
 
   /** Apply the watchdog's latest observation (poll, stall, recovery) to the visible row. */
@@ -945,9 +986,11 @@ export class McpEventFeed {
         this.seedSeen(incoming.stableId, deliveredIds);
       }
       this.seedFromRegistry(incoming.stableId);
-      const current = this.viewForAdapter(incoming.id);
-      // Once a newer adapter id owns this stable id, a notice for the old id
-      // is stale and must not move the visible row back.
+      const current = this.viewForAdapter(incoming.id) ?? this.findByStableId(incoming.stableId);
+      // Once an adapter id owns this stable id, a status for a different id is
+      // stale: it must not move the visible row back, even when the incoming
+      // status happens to look live. The owning row stays authoritative until
+      // a subscribe result names a real successor.
       if (current !== undefined && current.id !== incoming.id) continue;
       const saved = this.savedRecord(incoming.stableId);
       const reconnects =

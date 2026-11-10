@@ -63,6 +63,9 @@ interface DurableExtensionContent {
 export interface DurableSendOptions {
   readonly triggerTurn?: boolean;
   readonly deliverAs?: "steer" | "followUp" | "nextTurn";
+  /** Extension notice identity, forwarded so the sink can tell notices apart. */
+  readonly customType?: string;
+  readonly details?: unknown;
 }
 
 export type DurableExtensionSink = (text: string, options: DurableSendOptions) => void;
@@ -217,7 +220,11 @@ export class DurableExtensionShim implements DurableExtensionApi {
       return;
     }
     try {
-      this.sink(text, options);
+      this.sink(text, {
+        ...options,
+        ...(message.customType === undefined ? {} : { customType: message.customType }),
+        ...(message.details === undefined ? {} : { details: message.details }),
+      });
     } catch (error) {
       console.error(`[mcp] ${kind} notice submit failed`, error);
     }

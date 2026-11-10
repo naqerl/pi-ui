@@ -12,6 +12,7 @@ import {
   type McpSubscriptionRecord,
   McpSubscriptionRegistry,
 } from "../src/server/mcp-subscriptions.js";
+import { MCP_STATUS_HEAD } from "../src/shared/notices.js";
 
 async function tempDir(t: { after: (fn: () => Promise<void>) => void }): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "pi-mcp-subs-"));
@@ -533,6 +534,151 @@ test("a late status notice cannot revive a cancelled stable id", async (t) => {
   assert.equal(saved?.status, "cancelled");
   assert.equal(saved?.enabled, false);
   await registry.close();
+});
+
+function liveHubSubscription(feed: McpEventFeed, id: string): void {
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe" },
+      result: { subscription: { id, server: "hub", name: "hub", status: "active" } },
+    },
+  });
+}
+
+function statusNotice(id: string, status: string) {
+  return {
+    customType: "mcp-events-status",
+    content: `${MCP_STATUS_HEAD}\nhub: ${id} is ${status}.`,
+    details: { subscriptions: [{ id, server: "hub", name: "hub", status }] },
+  };
+}
+
+/** The index sink: ingest through the observer, suppress a superseded status. */
+function statusSink(feed: McpEventFeed) {
+  const submitted: string[] = [];
+  const shim = new DurableExtensionShim();
+  shim.setObserver((notice) => {
+    feed.ingest(notice);
+  });
+  shim.setMessageSink((text, options) => {
+    if (options.customType === "mcp-events-status" && feed.isSupersededStatus(options.details)) {
+      return;
+    }
+    submitted.push(text);
+  });
+  return { shim, submitted };
+}
+
+test("a terminal status for a superseded generation leaves the live row and is not submitted", () => {
+  const feed = new McpEventFeed();
+  liveHubSubscription(feed, "b-live");
+  const { shim, submitted } = statusSink(feed);
+
+  shim.sendMessage(statusNotice("a-dead", "failed"));
+
+  assert.equal(feed.findByStableId(deriveStableId("hub", "hub", {}))?.id, "b-live");
+  assert.equal(feed.findByStableId(deriveStableId("hub", "hub", {}))?.status, "active");
+  assert.deepEqual(submitted, [], "the live sibling makes the dead generation noise");
+});
+
+test("a terminal status for the live id itself is submitted exactly once", () => {
+  const feed = new McpEventFeed();
+  liveHubSubscription(feed, "b-live");
+  const { shim, submitted } = statusSink(feed);
+
+  shim.sendMessage(statusNotice("b-live", "failed"));
+
+  assert.equal(feed.state.subscriptions[0]?.id, "b-live");
+  assert.equal(feed.state.subscriptions[0]?.status, "failed");
+  assert.equal(submitted.length, 1, "the user must hear about their own stream failing");
+});
+
+test("a terminal status with no live sibling is submitted", () => {
+  const feed = new McpEventFeed();
+  const { shim, submitted } = statusSink(feed);
+
+  shim.sendMessage(statusNotice("a-dead", "failed"));
+
+  assert.equal(feed.state.subscriptions[0]?.status, "failed");
+  assert.equal(submitted.length, 1, "nothing is being hidden when no live sibling exists");
+});
+
+test("two dead generations stay silent while one live sibling serves the stream", () => {
+  const feed = new McpEventFeed();
+  liveHubSubscription(feed, "b-live");
+  const { shim, submitted } = statusSink(feed);
+
+  shim.sendMessage(statusNotice("a1-dead", "failed"));
+  shim.sendMessage(statusNotice("a2-dead", "ended"));
+
+  assert.equal(feed.state.subscriptions[0]?.id, "b-live");
+  assert.equal(feed.state.subscriptions[0]?.status, "active");
+  assert.deepEqual(submitted, [], "no notice per dead generation");
+});
+
+test("a superseded generation stays silent while it reconnects and then fails", () => {
+  const feed = new McpEventFeed();
+  liveHubSubscription(feed, "b-live");
+  const { shim, submitted } = statusSink(feed);
+
+  shim.sendMessage(statusNotice("a-dead", "reconnecting"));
+  shim.sendMessage(statusNotice("a-dead", "failed"));
+
+  assert.equal(feed.state.subscriptions[0]?.id, "b-live");
+  assert.equal(feed.state.subscriptions[0]?.status, "active");
+  assert.deepEqual(submitted, [], "a live-looking stale status is still superseded");
+});
+
+test("live activity on the owning id keeps a later dead generation silent", () => {
+  const feed = new McpEventFeed();
+  liveHubSubscription(feed, "b-live");
+  const { shim, submitted } = statusSink(feed);
+
+  shim.sendMessage(statusNotice("a-dead", "failed"));
+  feed.ingest({
+    customType: "mcp-events-traffic",
+    details: {
+      subscription_id: "b-live",
+      cursor: "hub:740",
+      timestamp: "2026-11-10T02:44:00.000Z",
+    },
+  });
+  shim.sendMessage(statusNotice("a-dead", "failed"));
+
+  assert.equal(feed.state.subscriptions[0]?.id, "b-live");
+  assert.equal(feed.state.subscriptions[0]?.status, "active");
+  assert.equal(feed.state.subscriptions[0]?.lastHeartbeatAt, "2026-11-10T02:44:00.000Z");
+  assert.deepEqual(submitted, [], "heartbeat traffic must not revive the dead generation");
+});
+
+test("the live id's own reconnecting notice is the only one for its generation", () => {
+  const feed = new McpEventFeed();
+  liveHubSubscription(feed, "b-live");
+  const { shim, submitted } = statusSink(feed);
+
+  shim.sendMessage(statusNotice("a-dead", "failed"));
+  shim.sendMessage(statusNotice("b-live", "reconnecting"));
+  shim.sendMessage(statusNotice("a-dead", "failed"));
+
+  assert.equal(feed.state.subscriptions[0]?.id, "b-live");
+  assert.equal(feed.state.subscriptions[0]?.status, "reconnecting");
+  assert.equal(submitted.length, 1, "one notice for the live id, not one per generation");
+  assert.match(submitted[0] ?? "", /b-live is reconnecting/);
+});
+
+test("the current id's failure is the only notice when an older generation fails later", () => {
+  const feed = new McpEventFeed();
+  liveHubSubscription(feed, "b-live");
+  const { shim, submitted } = statusSink(feed);
+
+  shim.sendMessage(statusNotice("b-live", "failed"));
+  shim.sendMessage(statusNotice("a-dead", "failed"));
+
+  assert.equal(feed.state.subscriptions[0]?.id, "b-live");
+  assert.equal(feed.state.subscriptions[0]?.status, "failed");
+  assert.equal(submitted.length, 1, "the authoritative failure is reported once");
+  assert.match(submitted[0] ?? "", /b-live is failed/);
 });
 
 test("cancelling again after a resubscribe stops every live adapter id", async (t) => {

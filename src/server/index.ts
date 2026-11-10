@@ -393,6 +393,13 @@ boot.mcp.setSubmit((text, options) => {
     return;
   }
   if (isMcpNotice(text)) {
+    // The observer above already ingested this notice. A status for an older
+    // generation is still feed state, but it is not news while a different
+    // subscription for the same stream is live; announcing it would look like
+    // an outage. Only authentic notices reach the outbox.
+    if (options.customType === "mcp-events-status" && events.isSupersededStatus(options.details)) {
+      return;
+    }
     mcpIntake.enqueue(async () => {
       await mcpOutbox.enqueue(text);
       mcpOutbox.start();
