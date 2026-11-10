@@ -199,6 +199,33 @@ test("a tagged task keeps working after the run, and is stale after an hour", ()
   assert.equal(taskState([blocked, blocker], blocked, activity()), "blocked");
 });
 
+test("a released task is ready even when a late attributed call stamped it", () => {
+  const at = Date.parse(NOW);
+  const releasedAt = new Date(at - 2 * 60 * 60_000).toISOString();
+  const lastWorkedAt = new Date(Date.parse(releasedAt) + 2).toISOString();
+  const released = task("a", {
+    releasedAt,
+    releaseReason: "Waiting for capacity",
+    lastWorkedAt,
+    workingSince: releasedAt,
+  });
+  const live = activity({
+    running: true,
+    runId: "r1",
+    traces: {
+      a: trace({
+        lastActivityAt: lastWorkedAt,
+        lastRun: { id: "r1", outcome: "running", at: NOW },
+      }),
+    },
+  });
+
+  assert.equal(taskState([released], released, activity()), "ready");
+  assert.equal(taskState([released], released, live), "ready", "release outranks an old trace");
+  assert.equal(isStaleWorking(released, activity()), false);
+  assert.equal(isStaleWorking(released, live), false);
+});
+
 test("a restart keeps working from lastWorkedAt even when its old run is interrupted", () => {
   const at = Date.parse(NOW);
   const lastWorkedAt = new Date(at - 2 * 60 * 60_000).toISOString();

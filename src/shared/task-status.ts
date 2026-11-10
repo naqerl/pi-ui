@@ -1,5 +1,5 @@
 import type { TaskIndex } from "./task-index.js";
-import { descendantIds, isActiveStatus, liveBlockerIds } from "./tasks.js";
+import { descendantIds, isActiveStatus, isReleasedTask, liveBlockerIds } from "./tasks.js";
 import type { Task, TaskActivity, TaskState, TaskTrace } from "./types.js";
 
 /** Kept for callers that still name the old recency window; working now lasts until the run ends. */
@@ -74,6 +74,7 @@ export function isStaleWorking(
   at: number = nowOf(activity),
 ): boolean {
   if (!isActiveStatus(task.status)) return false;
+  if (isReleasedTask(task)) return false;
   const marked = instant(task.workingSince);
   const touched = lastWorkedAtMs(task, activity);
   const last = marked === null ? touched : touched === null ? marked : Math.max(marked, touched);
@@ -119,15 +120,18 @@ export function taskState(
   if (task.status === "backlog") return "backlog";
   if (task.status === "done") return "done";
   if (task.status === "working") return "working";
-  if (isWorking(task, activity)) return "working";
-  if (task.lastWorkedAt !== undefined && task.lastWorkedAt !== null) {
-    // A live blocker is still ledger truth, even for work attributed before it appeared.
-    if (
-      (index === undefined ? liveBlockerIds(tasks, task) : (index.blockers.get(task.id) ?? []))
-        .length > 0
-    )
-      return "blocked";
-    return "working";
+  // A release is the last transition: it clears any older attribution that would show working.
+  if (!isReleasedTask(task)) {
+    if (isWorking(task, activity)) return "working";
+    if (task.lastWorkedAt !== undefined && task.lastWorkedAt !== null) {
+      // A live blocker is still ledger truth, even for work attributed before it appeared.
+      if (
+        (index === undefined ? liveBlockerIds(tasks, task) : (index.blockers.get(task.id) ?? []))
+          .length > 0
+      )
+        return "blocked";
+      return "working";
+    }
   }
   if (isFailed(task, activity)) return "failed";
   if (

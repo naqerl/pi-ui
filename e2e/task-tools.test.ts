@@ -56,6 +56,7 @@ test("task tools list, mark done, and create a blocker", async () => {
       "task_done",
       "task_reopen",
       "task_working",
+      "task_release",
       "task_edit",
       "propose_task",
       "task_block",
@@ -212,4 +213,67 @@ test("task_working refuses a done task and points at task_reopen", async () => {
   assert.equal(task?.status, "done");
   assert.deepEqual(task?.completion, completion);
   assert.equal(task?.reopens, undefined);
+});
+
+test("task_release parks a working task and refuses everything else", async () => {
+  const created = (await bridge.store.create("Release the badge", null)).tasks.find(
+    (task) => task.title === "Release the badge",
+  );
+  assert.ok(created);
+  assert.equal(text(await call("task_working", { id: created.id, note: "start" })).isError, false);
+
+  const blank = text(await call("task_release", { id: created.id, reason: "   " }));
+  assert.equal(blank.isError, true);
+  assert.match(blank.text, /A release needs a reason/);
+  const short = text(await call("task_release", { id: created.id, reason: "ab" }));
+  assert.equal(short.isError, true);
+  assert.match(short.text, /at least 3 characters/);
+  const long = text(await call("task_release", { id: created.id, reason: "x".repeat(501) }));
+  assert.equal(long.isError, true);
+  assert.match(long.text, /at most 500 characters/);
+  assert.equal(
+    bridge.store.ledger().tasks.find((task) => task.id === created.id)?.status,
+    "working",
+    "a refused release leaves the badge alone",
+  );
+
+  const released = text(
+    await call("task_release", { id: created.id, reason: "Waiting for the nightly build" }),
+  );
+  assert.equal(released.isError, false);
+  assert.match(released.text, new RegExp(`${created.id} open Release the badge`));
+  assert.match(released.text, /released: Waiting for the nightly build/);
+  const open = bridge.store.ledger().tasks.find((task) => task.id === created.id);
+  assert.equal(open?.status, "open");
+  assert.equal(open?.releaseReason, "Waiting for the nightly build");
+  assert.equal(typeof open?.releasedAt, "string");
+  assert.equal(open?.workingSince, undefined);
+  assert.equal(open?.lastWorkedAt, null);
+
+  const again = text(await call("task_release", { id: created.id, reason: "Release it twice" }));
+  assert.equal(again.isError, true);
+  assert.match(again.text, /Only a working task can be released/);
+
+  assert.equal(
+    text(await call("task_working", { id: created.id, note: "actually still working" })).isError,
+    false,
+  );
+  const reclaimed = bridge.store.ledger().tasks.find((task) => task.id === created.id);
+  assert.equal(reclaimed?.status, "working");
+  assert.equal(reclaimed?.releasedAt, undefined);
+  assert.equal(reclaimed?.releaseReason, undefined);
+
+  const finished = (await bridge.store.create("Released after finishing", null)).tasks.find(
+    (task) => task.title === "Released after finishing",
+  );
+  assert.ok(finished);
+  assert.equal(
+    text(await call("task_done", { id: finished.id, evidence: "e2e/task-tools.test.ts" })).isError,
+    false,
+  );
+  const refusedDone = text(
+    await call("task_release", { id: finished.id, reason: "Park the finished task" }),
+  );
+  assert.equal(refusedDone.isError, true);
+  assert.match(refusedDone.text, /Task is done/);
 });

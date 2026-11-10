@@ -9,6 +9,8 @@ import {
   descendantIds,
   hasOpenDescendant,
   isActiveStatus,
+  isReleasedTask,
+  parseReleaseReason,
   parseReopenReason,
   TASK_BODY_MAX_LENGTH,
 } from "../shared/tasks.js";
@@ -127,6 +129,11 @@ function withoutWorkingSince(task: Task): Task {
   return rest;
 }
 
+function withoutRelease(task: Task): Task {
+  const { releasedAt: _releasedAt, releaseReason: _releaseReason, ...rest } = task;
+  return rest;
+}
+
 /** A title the ledger can store, or a 400 that names the field. */
 function normalizeTitle(value: unknown): string {
   if (typeof value !== "string") throw new TaskError("title must be a string", 400);
@@ -184,6 +191,8 @@ function isTask(value: unknown): value is Task {
       task.lastWorkedAt === null ||
       typeof task.lastWorkedAt === "string") &&
     (task.workingSince === undefined || typeof task.workingSince === "string") &&
+    (task.releasedAt === undefined || typeof task.releasedAt === "string") &&
+    (task.releaseReason === undefined || typeof task.releaseReason === "string") &&
     (task.attachments === undefined ||
       (Array.isArray(task.attachments) &&
         task.attachments.every((id) => typeof id === "string"))) &&
@@ -319,6 +328,7 @@ export class TaskStore {
   /**
    * Remember that a tool call was attributed to this task. Only open work is touched: a closed
    * task keeps its empty stamp, and a call that finishes after `task_done` must not revive it.
+   * A released task is open but no longer working, so a late call must not revive it either.
    */
   noteWorked(id: string, at: number | string | Date = Date.now()): Promise<TaskLedger> {
     const date = at instanceof Date ? at : new Date(at);
@@ -327,7 +337,9 @@ export class TaskStore {
     return this.commit((tasks) => {
       const index = tasks.findIndex((task) => task.id === id);
       const current = tasks[index];
-      if (current === undefined || !isActiveStatus(current.status)) return tasks;
+      if (current === undefined || !isActiveStatus(current.status) || isReleasedTask(current)) {
+        return tasks;
+      }
       if (current.lastWorkedAt === stamp) return tasks;
       const copy = tasks.slice();
       copy[index] = { ...current, lastWorkedAt: stamp };
@@ -511,6 +523,8 @@ export class TaskStore {
       project?: string | null;
       /** Why a done task is coming back; required only when moving done to open. */
       reopenReason?: string;
+      /** Why a working task is being parked; required only when releasing to open. */
+      releaseReason?: string;
       /** Who reopened it. The tool passes "agent"; the HTTP API defaults to the operator. */
       reopenedBy?: TaskReopen["by"];
     },
@@ -523,6 +537,9 @@ export class TaskStore {
       patch.project === undefined
     ) {
       return Promise.reject(new TaskError("Nothing to update", 400));
+    }
+    if (patch.releaseReason !== undefined && patch.status !== "open") {
+      return Promise.reject(new TaskError('releaseReason requires status "open"', 400));
     }
     return this.commit((tasks) => {
       const index = tasks.findIndex((task) => task.id === id);
@@ -586,6 +603,7 @@ export class TaskStore {
             reopenedAt: at,
           };
           next = withoutWorkingSince(next);
+          next = withoutRelease(next);
         } else if (patch.status === "done") {
           next = {
             ...next,
@@ -604,6 +622,7 @@ export class TaskStore {
             lastWorkedAt: null,
           };
           next = withoutWorkingSince(next);
+          next = withoutRelease(next);
         } else if (patch.status === "proposed") {
           next = {
             ...next,
@@ -615,6 +634,7 @@ export class TaskStore {
             lastWorkedAt: null,
           };
           next = withoutWorkingSince(next);
+          next = withoutRelease(next);
         } else if (patch.status === "working") {
           const stamp = new Date().toISOString();
           next = {
@@ -629,7 +649,17 @@ export class TaskStore {
             lastWorkedAt: stamp,
             ...(current.status === "proposed" ? { proposedAt: null } : {}),
           };
+          next = withoutRelease(next);
         } else {
+          let releaseReason: string | undefined;
+          if (patch.status === "open" && patch.releaseReason !== undefined) {
+            if (current.status !== "working") {
+              throw new TaskError("Only a working task can be released", 409);
+            }
+            const parsed = parseReleaseReason(patch.releaseReason);
+            if (!parsed.ok) throw new TaskError(parsed.error, 400);
+            releaseReason = parsed.reason;
+          }
           next = {
             ...next,
             status: patch.status,
@@ -637,8 +667,12 @@ export class TaskStore {
             // Reopening starts an untouched task; an already-open task keeps its stamp.
             ...(current.status === "open" ? {} : { lastWorkedAt: null }),
             ...(current.status === "proposed" ? { proposedAt: null } : {}),
+            ...(releaseReason === undefined
+              ? {}
+              : { releasedAt: new Date().toISOString(), releaseReason }),
           };
           next = withoutWorkingSince(next);
+          if (releaseReason === undefined) next = withoutRelease(next);
         }
       }
       if (patch.blockedBy !== undefined) {

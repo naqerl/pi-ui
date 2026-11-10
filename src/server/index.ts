@@ -10,7 +10,12 @@ import { streamSSE } from "hono/streaming";
 import type { OperatorNoticeRecord, TaskDecisionNoticeRecord } from "../shared/notices.js";
 import { boundMcpEventBatch, isMcpNotice } from "../shared/notices.js";
 import { PAGE_IDS, PAGE_PATHS } from "../shared/pages.js";
-import { parseCompletion, parseReopenReason, TASK_BODY_MAX_LENGTH } from "../shared/tasks.js";
+import {
+  parseCompletion,
+  parseReleaseReason,
+  parseReopenReason,
+  TASK_BODY_MAX_LENGTH,
+} from "../shared/tasks.js";
 import type { TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
 import { ChatService, mcpDeliveryTexts, mcpEventEnvelope } from "./chat-service.js";
@@ -148,7 +153,7 @@ const memoryWrites: { current?: (record: MemoryWriteRecord) => void | Promise<vo
 const memoryBlock = await memorySnapshot.get(memory, "first_turn");
 const baseInstructions = `${await buildPiSystemPrompt(cwd, catalog.runtime)}
 
-Tasks are a shared todo ledger on the tasks page. You can list them with task_list, mark one done with task_done (with evidence a reviewer can check), reopen a done task with task_reopen when the operator says it is still wrong, edit a title, body or project with task_edit, and create a blocker for one with task_block. Every task needs human approval: write down work you think is worth doing with propose_task, and a human can approve it from the tasks page. A proposal is not a task and does not appear in task_list; use task_proposals to read the waiting proposals. A done blocker does not block. A task with an open subtask cannot be marked done. You cannot add a task that blocks nothing or delete one. Keep the task you are doing in the working state with task_working: while exactly one task is working, the tools you call are measured against its time and cost. If no task or several tasks are working, calls are not charged to any task.
+Tasks are a shared todo ledger on the tasks page. You can list them with task_list, mark one done with task_done (with evidence a reviewer can check), reopen a done task with task_reopen when the operator says it is still wrong, edit a title, body or project with task_edit, and create a blocker for one with task_block. Every task needs human approval: write down work you think is worth doing with propose_task, and a human can approve it from the tasks page. A proposal is not a task and does not appear in task_list; use task_proposals to read the waiting proposals. A done blocker does not block. A task with an open subtask cannot be marked done. You cannot add a task that blocks nothing or delete one. Keep the task you are doing in the working state with task_working: while exactly one task is working, the tools you call are measured against its time and cost. If no task or several tasks are working, calls are not charged to any task. When the work is parked — queued, scheduled or waiting on another task — or when a working claim turns out to be wrong, release it with task_release and a reason; never use a release as a way to stop tracking real work. A released task is open again and no longer counts as working.
 
 Draw a diagram into the chat with draw_diagram (Mermaid source) and revise it later with replace_diagram and the id from the first result. The drawing is part of your reply; do not repeat its source in your text.
 
@@ -759,6 +764,7 @@ app.patch("/api/tasks/:id", async (c) => {
     completion?: TaskCompletion;
     project?: string | null;
     reopenReason?: string;
+    releaseReason?: string;
   } = {};
   if ("title" in body) {
     if (typeof body.title !== "string") return c.text("title must be a string", 400);
@@ -793,6 +799,11 @@ app.patch("/api/tasks/:id", async (c) => {
     const parsed = parseReopenReason(body.reopenReason);
     if (!parsed.ok) return c.text(parsed.error, 400);
     patch.reopenReason = parsed.reason;
+  }
+  if ("releaseReason" in body) {
+    const parsed = parseReleaseReason(body.releaseReason);
+    if (!parsed.ok) return c.text(parsed.error, 400);
+    patch.releaseReason = parsed.reason;
   }
   // Evidence is optional here: a human ticking a task off may have nothing to point at.
   if ("completion" in body && body.completion !== null && body.completion !== undefined) {

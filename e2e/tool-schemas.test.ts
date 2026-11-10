@@ -113,6 +113,7 @@ const REQUIRED_APP_TOOLS = [
   "task_view",
   "task_done",
   "task_working",
+  "task_release",
   "task_edit",
   "propose_task",
   "task_block",

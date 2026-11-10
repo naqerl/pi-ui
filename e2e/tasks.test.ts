@@ -887,6 +887,34 @@ test("lastWorkedAt survives a restart and clears when the task closes or reopens
   }
 });
 
+test("a released task ignores a late attributed call", async () => {
+  const { directory, store } = await temporaryStore();
+  try {
+    const task = (await store.create("Park the work", null)).tasks[0];
+    assert.ok(task);
+    await store.update(task.id, { status: "working" });
+    await store.update(task.id, { status: "open", releaseReason: "Waiting for capacity" });
+    const released = store.ledger().tasks.find((item) => item.id === task.id);
+    assert.equal(released?.status, "open");
+    assert.equal(released?.releaseReason, "Waiting for capacity");
+    assert.equal(released?.workingSince, undefined);
+    assert.equal(released?.lastWorkedAt, null);
+
+    // The release tool's own end-of-call attribution used to land here and revive the badge.
+    await store.noteWorked(
+      task.id,
+      new Date(Date.parse(released?.releasedAt ?? "2026-01-01T00:00:00.000Z") + 2),
+    );
+    const after = store.ledger().tasks.find((item) => item.id === task.id);
+    assert.equal(after?.status, "open");
+    assert.equal(after?.lastWorkedAt, null);
+    assert.equal(after?.workingSince, undefined);
+    assert.equal(after?.releaseReason, "Waiting for capacity");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("loads a task record written before completions existed", async () => {
   const { directory, file, store, bridge } = await temporaryStore();
   try {

@@ -1913,6 +1913,14 @@ export function TaskDetail({
           </section>
         )}
         <TaskTimes task={task} />
+        {task.releaseReason !== undefined && (
+          <p
+            data-testid={`task-released-${task.id}`}
+            className="text-xs leading-4 text-muted-foreground [overflow-wrap:anywhere]"
+          >
+            {`released${task.releasedAt === undefined ? "" : ` ${formatDateTime(task.releasedAt)}`} · ${task.releaseReason}`}
+          </p>
+        )}
         {task.createdBy !== undefined && (
           <p
             data-testid="task-created-by"

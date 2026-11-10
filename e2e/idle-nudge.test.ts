@@ -155,6 +155,28 @@ test("a persisted working task is stale only when nothing newer touched it", () 
   );
 });
 
+test("a released task is not stale-working", () => {
+  const now = Date.parse("2026-10-31T12:00:00.000Z");
+  const old = new Date(now - 2 * 60 * 60_000).toISOString();
+  const released = {
+    id: "r1",
+    title: "Parked behind capacity",
+    status: "open" as const,
+    blockedBy: [],
+    releasedAt: old,
+    releaseReason: "Waiting for the next build slot",
+    // The release's own attributed call used to land just after the release and revive this.
+    lastWorkedAt: new Date(Date.parse(old) + 2).toISOString(),
+  };
+
+  assert.deepEqual(
+    staleWorkedTasks([released], now),
+    [],
+    "an open task released after its last call is not a stale working badge",
+  );
+  assert.deepEqual(workingTaskIds([released]), []);
+});
+
 test("an hour-stale working task is actualized and a freshly worked one is not", () => {
   const now = Date.parse("2026-10-31T12:00:00.000Z");
   const hour = 60 * 60_000;

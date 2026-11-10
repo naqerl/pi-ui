@@ -1,5 +1,5 @@
 import { STALE_WORKING_MS } from "./task-status.js";
-import { isActiveStatus } from "./tasks.js";
+import { isActiveStatus, isReleasedTask } from "./tasks.js";
 import type { Task, TaskActivity } from "./types.js";
 
 /**
@@ -40,6 +40,10 @@ export type IdleTask = Pick<Task, "id"> & {
   readonly lastWorkedAt?: string | null;
   /** When task_working marked this task working, when the caller has it. */
   readonly workingSince?: string;
+  /** When task_release moved this task back to open, when the caller has it. */
+  readonly releasedAt?: string;
+  /** Why the task was released, when the caller has it. */
+  readonly releaseReason?: string;
   /** When the task was closed, or null while it is open. */
   readonly completedAt?: string | null;
   /** Older ledgers may spell the closure timestamp this way. */
@@ -75,6 +79,8 @@ export function lastTouchedAt(task: IdleTask): number | null {
 export function staleWorkedTasks(tasks: readonly IdleTask[], at: number = Date.now()): IdleTask[] {
   return tasks.filter((task) => {
     if (!isActiveStatus(task.status)) return false;
+    // A release is the last transition, even if an older attributed call left a stamp behind.
+    if (isReleasedTask(task)) return false;
     const marked = instant(task.workingSince);
     const touched = lastTouchedAt(task);
     const last = marked === null ? touched : touched === null ? marked : Math.max(marked, touched);

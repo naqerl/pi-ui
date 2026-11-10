@@ -39,6 +39,20 @@ export function isActiveStatus(status: string): boolean {
   return status === "open" || status === "working";
 }
 
+/**
+ * True when the task's last ledger transition was a release back to open. A released task is
+ * open work, but it is not working: its old activity stamps must not revive the badge.
+ */
+export function isReleasedTask(task: {
+  status: string;
+  releasedAt?: string;
+  releaseReason?: string;
+}): boolean {
+  return (
+    task.status === "open" && (task.releasedAt !== undefined || task.releaseReason !== undefined)
+  );
+}
+
 /** Active tasks in `blockedBy`. A done blocker does not keep the task blocked. */
 export function liveBlockerIds(tasks: readonly Task[], task: Task): string[] {
   const open = new Set(tasks.filter((item) => isActiveStatus(item.status)).map((item) => item.id));
@@ -164,6 +178,34 @@ export function parseReopenReason(input: unknown): ReopenReasonParseResult {
     return {
       ok: false,
       error: `reason must be at most ${TASK_REOPEN_REASON_MAX_LENGTH} characters`,
+    };
+  }
+  return { ok: true, reason };
+}
+
+/** The shortest release reason the ledger, the tool and the API accept, in characters. */
+export const TASK_RELEASE_REASON_MIN_LENGTH = 3;
+/** The longest release reason the ledger, the tool and the API accept, in characters. */
+export const TASK_RELEASE_REASON_MAX_LENGTH = 500;
+
+export type ReleaseReasonParseResult = { ok: true; reason: string } | { ok: false; error: string };
+
+/** Validate why a working task is being released: trimmed, 3–500 characters. */
+export function parseReleaseReason(input: unknown): ReleaseReasonParseResult {
+  if (typeof input !== "string" || input.trim().length === 0) {
+    return { ok: false, error: "A release needs a reason" };
+  }
+  const reason = input.trim();
+  if (reason.length < TASK_RELEASE_REASON_MIN_LENGTH) {
+    return {
+      ok: false,
+      error: `reason must be at least ${TASK_RELEASE_REASON_MIN_LENGTH} characters`,
+    };
+  }
+  if (reason.length > TASK_RELEASE_REASON_MAX_LENGTH) {
+    return {
+      ok: false,
+      error: `reason must be at most ${TASK_RELEASE_REASON_MAX_LENGTH} characters`,
     };
   }
   return { ok: true, reason };

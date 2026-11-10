@@ -8,6 +8,7 @@ import {
   compareTasks,
   liveBlockerIds,
   parseCompletion,
+  parseReleaseReason,
   parseReopenReason,
   TASK_BODY_MAX_LENGTH,
 } from "../shared/tasks.js";
@@ -99,6 +100,14 @@ const workingSchema = Type.Object({
       description: "What you are working on, up to 200 characters. Echoed back, not stored.",
     }),
   ),
+});
+
+const releaseSchema = Type.Object({
+  id: Type.String({ description: "Task id from task_list." }),
+  reason: Type.String({
+    description:
+      "Why the work is being parked, in one or two sentences, at least 3 and up to 500 characters.",
+  }),
 });
 
 const WORKING_NOTE_MAX_LENGTH = 200;
@@ -339,6 +348,49 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
         }
         if (note !== undefined) lines.push(`note: ${note}`);
         return { output: [{ type: "text", text: lines.join("\n") }] };
+      },
+    }),
+    defineTool({
+      name: "task_release",
+      description:
+        "Release a working task back to open when the work is parked — queued, scheduled or waiting on another task — or when the working claim turns out to be wrong. The reason is recorded and shown in the task details. Only a working task can be released. Do not use this to stop tracking real work: if you are still doing it, keep it working with task_working instead.",
+      parameters: releaseSchema,
+      async execute(args) {
+        const current = bridge.store.ledger().tasks.find((task) => task.id === args.id);
+        if (current === undefined || current.status === "backlog") {
+          return failure(new TaskError("Unknown task", 404));
+        }
+        if (current.status === "done") {
+          return failure(
+            new TaskError("Task is done; use task_reopen with a reason to reopen it", 409),
+          );
+        }
+        if (current.status === "proposed") {
+          return failure(new TaskError("Task is not open; a proposal must be approved first", 409));
+        }
+        if (current.status !== "working") {
+          return failure(new TaskError("Only a working task can be released", 409));
+        }
+        const parsed = parseReleaseReason(args.reason);
+        if (!parsed.ok) return failure(new TaskError(parsed.error, 400));
+        try {
+          const ledger = await bridge.store.update(args.id, {
+            status: "open",
+            releaseReason: parsed.reason,
+          });
+          bridge.publish(ledger);
+          const task = ledger.tasks.find((item) => item.id === args.id);
+          return {
+            output: [
+              {
+                type: "text",
+                text: `${args.id} open ${task?.title ?? current.title}\nreleased: ${parsed.reason}`,
+              },
+            ],
+          };
+        } catch (error) {
+          return failure(error);
+        }
       },
     }),
     defineTool({

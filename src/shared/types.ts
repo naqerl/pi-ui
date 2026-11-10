@@ -380,11 +380,19 @@ export interface Task {
   createdBy?: "operator" | "agent";
   /**
    * When a tool call was last attributed to this task while it was working, or null before the
-   * first one and after the task is closed or reopened. The badge stays until it is finished.
+   * first one and after the task is released, closed or reopened. The badge stays until it is
+   * finished.
    */
   lastWorkedAt?: string | null;
-  /** When task_working last moved this task to working; cleared when it closes or reopens. */
+  /**
+   * When task_working last moved this task to working; cleared when it is released, closed or
+   * reopened.
+   */
   workingSince?: string;
+  /** When task_release last moved this task back to open; cleared by the next transition. */
+  releasedAt?: string;
+  /** Why the task was released, shown in the task details; cleared by the next transition. */
+  releaseReason?: string;
   /** When the task was closed, or null while it is open. */
   completedAt: string | null;
   /** The report recorded when the task was closed, or null while it is open. */
