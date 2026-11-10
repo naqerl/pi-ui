@@ -1,3 +1,12 @@
+## 1.6.134
+
+### Fixed
+
+- A status notice about a subscription that another live subscription has already superseded no longer
+  reaches the chat. The notice is still ingested, so the feed stays truthful, but announcing the death of
+  a generation the user is no longer using read as an outage that had not happened. A notice naming the
+  live subscription itself, or one with no sibling at all, is still delivered.
+
 ## 1.6.133
 
 ### Fixed
