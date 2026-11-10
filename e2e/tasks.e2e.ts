@@ -122,7 +122,10 @@ test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300
       const background = getComputedStyle(card).backgroundColor;
       const match = background.match(/^rgba?\(([^)]+)\)$/);
       const parts = match?.[1]?.split(/[,\s/]+/).filter(Boolean) ?? [];
-      const alpha = parts.length === 4 ? Number(parts[3]) : 1;
+      // Modern colour spaces (oklch/oklab) put alpha after a slash.
+      const slashAlpha = background.match(/\/\s*([\d.]+)\s*\)$/);
+      const alpha =
+        slashAlpha !== null ? Number(slashAlpha[1]) : parts.length === 4 ? Number(parts[3]) : 1;
       return { background, alpha, page };
     };
     return {
@@ -130,10 +133,12 @@ test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300
       child: read("Store tasks.json"),
     };
   });
+  // The selected first row is the only opaque card; the normal child is translucent.
   expect(cards?.parent?.background).not.toBe(cards?.parent?.page);
   expect(cards?.parent?.alpha).toBe(1);
-  expect(cards?.child?.background).toBe(cards?.parent?.background);
-  expect(cards?.child?.alpha).toBe(1);
+  expect(cards?.child?.background).not.toBe(cards?.child?.page);
+  expect(cards?.child?.background).not.toBe(cards?.parent?.background);
+  expect(cards?.child?.alpha).toBeLessThan(1);
 
   // A parent with an open subtask cannot be completed from its card menu either.
   await browser.evaluate(() => {

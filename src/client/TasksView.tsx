@@ -176,30 +176,18 @@ function byCompletedDesc(a: Task, b: Task): number {
 function Heading({
   children,
   count,
-  dark = false,
   chevron,
 }: {
   children: ReactNode;
   count?: number;
-  dark?: boolean;
   chevron?: ReactNode;
 }) {
   return (
-    <h2
-      className={cn(
-        "flex h-9 items-center gap-2 rounded-md text-sm font-medium leading-5",
-        dark ? "bg-foreground px-3 text-background" : "px-1 text-foreground",
-      )}
-    >
+    <h2 className="flex h-9 items-center gap-2 rounded-md border-b border-border/70 px-1 text-sm font-medium leading-5 text-foreground">
       <span className="min-w-0 flex-1 truncate">{children}</span>
       {chevron}
       {count !== undefined && (
-        <span
-          className={cn(
-            "shrink-0 text-sm font-normal leading-5 tabular-nums",
-            dark ? "text-background/80" : "text-muted-foreground",
-          )}
-        >
+        <span className="shrink-0 text-sm font-normal leading-5 tabular-nums text-muted-foreground">
           {count}
         </span>
       )}
@@ -212,14 +200,12 @@ function Section({
   title,
   count,
   children,
-  dark = false,
   collapsible = false,
 }: {
   id: string;
   title: string;
   count?: number;
   children: ReactNode;
-  dark?: boolean;
   collapsible?: boolean;
 }) {
   const [open, setOpen] = useState(true);
@@ -231,21 +217,11 @@ function Section({
         data-testid={`task-section-${id}`}
         data-open={open ? "true" : "false"}
       >
-        <CollapsibleTrigger
-          className={cn(
-            "flex h-9 w-full items-center gap-2 rounded-md px-3 text-left text-sm font-medium leading-5",
-            dark ? "bg-foreground text-background" : "text-foreground hover:bg-muted",
-          )}
-        >
+        <CollapsibleTrigger className="flex h-9 w-full items-center gap-2 rounded-md border-b border-border/70 px-3 text-left text-sm font-medium leading-5 text-foreground hover:bg-muted">
           <span className="min-w-0 flex-1 truncate">{title}</span>
-          <Chevron open={open} className={dark ? "text-background/80" : undefined} />
+          <Chevron open={open} />
           {count !== undefined && (
-            <span
-              className={cn(
-                "shrink-0 text-sm font-normal leading-5 tabular-nums",
-                dark ? "text-background/80" : "text-muted-foreground",
-              )}
-            >
+            <span className="shrink-0 text-sm font-normal leading-5 tabular-nums text-muted-foreground">
               {count}
             </span>
           )}
@@ -256,9 +232,7 @@ function Section({
   }
   return (
     <section className="flex flex-col" data-testid={`task-section-${id}`}>
-      <Heading count={count} dark={dark}>
-        {title}
-      </Heading>
+      <Heading count={count}>{title}</Heading>
       <div className={`${TASK_STACK} pt-2`}>{children}</div>
     </section>
   );
@@ -610,7 +584,7 @@ function TasksViewImpl({
         </Section>
       )}
       {activeRoots.length > 0 && (
-        <Section title="Open" count={activeRoots.length} id="active" dark collapsible>
+        <Section title="Open" count={activeRoots.length} id="active" collapsible>
           {grouped ? (
             projectGroups.map(([name, items]) => (
               <Group
@@ -652,7 +626,7 @@ function TasksViewImpl({
               label={doneDayLabel(key, now)}
               count={items.length}
               defaultOpen={key === today}
-              dark
+              separator
             >
               {items.length === 0 ? (
                 <p className="px-1 text-sm leading-5 text-muted-foreground">
@@ -796,6 +770,7 @@ function Group({
   defaultOpen,
   children,
   dark = false,
+  separator = false,
 }: {
   testId: string;
   label: string;
@@ -803,6 +778,7 @@ function Group({
   defaultOpen: boolean;
   children: ReactNode;
   dark?: boolean;
+  separator?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
@@ -815,7 +791,9 @@ function Group({
       <CollapsibleTrigger
         className={cn(
           "flex min-h-9 w-full items-center gap-2 rounded-md py-1 text-left text-sm font-medium leading-5",
-          dark ? "bg-foreground px-3 text-background" : "px-1 hover:bg-muted",
+          dark && "bg-foreground px-3 text-background",
+          separator && "border-b border-border/70 px-3 text-foreground hover:bg-muted",
+          !dark && !separator && "px-1 hover:bg-muted",
         )}
       >
         <span className="min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere]">{label}</span>
@@ -823,6 +801,13 @@ function Group({
           <>
             <Chevron open={open} className="text-background/80" />
             <span className="shrink-0 text-sm font-normal leading-5 tabular-nums text-background/80">
+              {count}
+            </span>
+          </>
+        ) : separator ? (
+          <>
+            <Chevron open={open} />
+            <span className="shrink-0 text-sm font-normal leading-5 tabular-nums text-muted-foreground">
               {count}
             </span>
           </>
@@ -1103,10 +1088,9 @@ export function TaskRow({
         aria-label={`Open ${plainInline(task.title)}`}
         aria-describedby={describedBy.length > 0 ? describedBy.join(" ") : undefined}
         className={cn(
-          "flex min-h-11 w-full cursor-pointer select-none items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 text-left hover:bg-muted",
-          backlog &&
-            "border-dashed bg-surface/60 text-muted-foreground backdrop-blur-sm saturate-0",
-          selected && "ring-1 ring-foreground",
+          "flex min-h-11 w-full cursor-pointer select-none items-center gap-3 rounded-md border border-border bg-surface/60 px-3 py-2 text-left backdrop-blur-sm hover:bg-muted",
+          backlog && "border-dashed text-muted-foreground saturate-0",
+          selected && "border-border bg-surface",
         )}
         style={{
           WebkitTouchCallout: "none",
@@ -1266,8 +1250,8 @@ function ProposedTask({
         aria-current={selected ? "true" : undefined}
         aria-label={`Open proposal ${plainInline(task.title)}`}
         className={cn(
-          "flex min-h-11 w-full cursor-pointer select-none flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-border bg-surface px-3 py-2 text-left hover:bg-muted",
-          selected && "ring-1 ring-foreground",
+          "flex min-h-11 w-full cursor-pointer select-none flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-border bg-surface/60 px-3 py-2 text-left backdrop-blur-sm hover:bg-muted",
+          selected && "border-border bg-surface",
         )}
         onClick={onOpen}
         onKeyDown={(event) => {
