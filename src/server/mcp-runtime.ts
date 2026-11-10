@@ -729,6 +729,8 @@ interface RestoreProbe {
   readonly reason?: string;
   /** The catalog fallback had to page before it found this stream. */
   readonly catalogPaged?: boolean;
+  /** What the cursor probe would have replayed, when it answered with events. */
+  readonly backlog?: RestoreBacklog;
 }
 
 function errorCode(error: unknown): number | undefined {
@@ -756,22 +758,43 @@ function pollEvent(item: unknown): Record<string, unknown> | undefined {
   return isRecord(item.event) ? item.event : item;
 }
 
-/** True when the server's poll answer still points at events from before this process. */
-function pollHasOldBacklog(response: unknown, startedAt: number): boolean {
-  if (!isRecord(response)) return false;
-  if (response.truncated === true) return true;
+/**
+ * A restart is allowed to replay what it missed while it was down, but only
+ * for a short window. A stream whose first missed event predates this process
+ * by more than the grace horizon is old history, not a restart: resuming it
+ * would replay days of backlog into the chat queue.
+ */
+const RESTORE_GRACE_MS = 15 * 60_000;
+/** Enough probe events to put a number on a recent replay without pulling history. */
+const RESTORE_PROBE_MAX_EVENTS = 100;
+
+interface RestoreBacklog {
+  readonly stale: boolean;
+  readonly count: number;
+  readonly truncated: boolean;
+}
+
+/** Describe what the server's poll answer would replay from this cursor. */
+function pollBacklog(response: unknown, startedAt: number): RestoreBacklog {
+  if (!isRecord(response)) return { stale: false, count: 0, truncated: false };
   const events = Array.isArray(response.events)
     ? response.events
     : response.event === undefined
       ? []
       : [response.event];
+  let first: number | undefined;
   for (const item of events) {
     const event = pollEvent(item);
     const raw = event?.timestamp;
     const parsed = typeof raw === "number" ? raw : typeof raw === "string" ? Date.parse(raw) : NaN;
-    if (Number.isFinite(parsed) && parsed < startedAt) return true;
+    if (!Number.isFinite(parsed)) continue;
+    if (first === undefined || parsed < first) first = parsed;
   }
-  return false;
+  const truncated = response.truncated === true;
+  // An untimestamped truncated answer is still a backlog, so it is the old
+  // case. A timestamped answer decides by the first missed event.
+  const stale = first === undefined ? truncated : first < startedAt - RESTORE_GRACE_MS;
+  return { stale, count: events.length, truncated };
 }
 
 const CHANNEL_RETRY_DELAYS_MS = [1_000, 5_000, 15_000, 60_000, 300_000] as const;
@@ -1207,6 +1230,8 @@ export class McpRuntime {
   /** Restored entries the server rejected; never retried by this process. */
   private readonly dropped = new Set<string>();
   private readonly restoring = new Set<string>();
+  /** Stable ids that already announced the backlog they did not replay. */
+  private readonly restoreGaps = new Set<string>();
   /** Direct fallback streams, used only when the mcp_events tool is not registered. */
   private readonly directSubscriptions = new Map<string, EventsStreamConnection>();
   /** One reusable poll session per server; a new one per tick would leak transports. */
@@ -1604,10 +1629,12 @@ export class McpRuntime {
   }
 
   /**
-   * Subscribe again to every persisted active/reconnecting entry with its
-   * stored cursor. pi-mcp-events resolves its own subscription id; the
-   * mapping is kept so a cursor advance still targets the persisted entry.
-   * Failures stay in `pendingRestore` and are retried when the server answers.
+   * Subscribe again to every persisted active/reconnecting entry. A recent
+   * cursor resumes where pi stopped; a backlog older than the restore grace
+   * window starts in now and is reported as one gap. pi-mcp-events resolves
+   * its own subscription id; the mapping is kept so a cursor advance still
+   * targets the persisted entry. Failures stay in `pendingRestore` and are
+   * retried when the server answers.
    */
   async restoreSubscriptions(): Promise<RestoredMcpSubscription[]> {
     if (this.subscriptionStore === undefined) return [];
@@ -1692,11 +1719,22 @@ export class McpRuntime {
   private async probeRestore(record: McpSubscriptionRecord): Promise<RestoreProbe> {
     let probeFailure: unknown;
     try {
-      const response = await this.pollEvents(record.server, record.name, record.cursor, 1);
+      const response = await this.pollEvents(
+        record.server,
+        record.name,
+        record.cursor,
+        RESTORE_PROBE_MAX_EVENTS,
+      );
+      const backlog = pollBacklog(response, this.startedAt);
+      // Only what the poll actually shows decides staleness. An idle
+      // subscription legitimately has an old lastEventAt while its cursor is
+      // current; treating that as a backlog would throw away the position and
+      // report a gap for events that do not exist.
       return {
         missing: false,
         cursor: polledEventCursor(response) ?? record.cursor,
-        stale: pollHasOldBacklog(response, this.startedAt),
+        stale: backlog.stale,
+        backlog,
       };
     } catch (error) {
       if (isUnknownSubscriptionError(error)) {
@@ -1738,6 +1776,42 @@ export class McpRuntime {
     console.warn(`mcp: dropped restored subscription ${record.server}/${record.name}: ${reason}`);
   }
 
+  /**
+   * One durable gap record for a backlog this process deliberately did not
+   * replay. It is status text, not an event chip: the model learns that events
+   * were missed, without receiving days of history as individual deliveries.
+   */
+  private noteRestoreGap(record: McpSubscriptionRecord, backlog: RestoreBacklog): void {
+    const stableId = recordStableId(record);
+    if (this.restoreGaps.has(stableId)) return;
+    this.restoreGaps.add(stableId);
+    const from = record.cursor;
+    const missedSince = record.lastEventAt ?? "unknown";
+    const at = new Date().toISOString();
+    const count = backlog.count;
+    // A truncated probe counted only its first page, so say "at least".
+    const label = count > 0 ? `${count}${backlog.truncated ? "+" : ""}` : "Some";
+    const text = `${label} events were missed while pi was not running (from ${
+      from ?? "no position"
+    } since ${missedSince}).`;
+    console.log(`mcp: ${record.server}/${record.name} did not replay its old backlog; ${text}`);
+    this.shim.sendMessage({
+      customType: "mcp-events-gap",
+      content: `${MCP_STATUS_HEAD}\n${text}`,
+      display: true,
+      details: {
+        kind: "restore-gap",
+        server: record.server,
+        name: record.name,
+        from,
+        missedSince,
+        at,
+        count,
+        truncated: backlog.truncated,
+      } as DurableExtensionMessage["details"],
+    });
+  }
+
   private async restoreSubscription(record: McpSubscriptionRecord): Promise<boolean> {
     const key = recordKey(record);
     const stableId = recordStableId(record);
@@ -1757,15 +1831,20 @@ export class McpRuntime {
       // the position it recovered by paging, so the record's stored cursor is
       // the stream's resume point even when it ends in zero. Anywhere else a
       // zero stored cursor is still "no position" and starts in now.
+      const stale = probe.stale && probe.catalogPaged !== true;
       const cursor =
         probe.catalogPaged === true
           ? record.cursor
-          : hasPosition(record.cursor)
-            ? record.cursor
-            : null;
+          : stale
+            ? null
+            : hasPosition(record.cursor)
+              ? record.cursor
+              : null;
       logStartFromNow(record, cursor);
-      if (probe.stale) {
-        console.log(`mcp: replaying missed events for ${record.server}/${record.name}`);
+      if (stale) {
+        console.log(
+          `mcp: starting ${record.server}/${record.name} from now; its backlog predates this process`,
+        );
       }
       const result = await this.shim.callTool("mcp_events", {
         action: "subscribe",
@@ -1809,6 +1888,9 @@ export class McpRuntime {
       console.log(
         `mcp: restored subscription ${record.server}/${record.name} at ${subscription.cursor ?? "null"}`,
       );
+      // Record the skipped window only after the new cursor is live, so a
+      // failed restore cannot claim a gap it did not actually start from.
+      if (stale && probe.backlog !== undefined) this.noteRestoreGap(record, probe.backlog);
       this.deliverNotice({
         customType: "mcp-events-tool",
         details: {
