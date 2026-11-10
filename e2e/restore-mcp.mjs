@@ -15,7 +15,17 @@ const recentTimestamp = new Date(Date.now() - 2_000).toISOString();
 const names =
   mode === "paged"
     ? ["first-a", "first-b", "paged-stream"]
-    : ["gone-stream", "old-stream", "recent-stream", "idle-stream", "live-stream", "burst-stream"];
+    : [
+        "gone-stream",
+        "old-stream",
+        "recent-stream",
+        "idle-stream",
+        "live-stream",
+        "burst-stream",
+        // events/poll probes this stream too, and events/subscribe rejects a
+        // name its catalog does not list, so the catalog must include it.
+        "flood-stream",
+      ];
 
 function log(line) {
   if (logPath !== undefined && logPath.length > 0) appendFileSync(logPath, `${line}\n`);

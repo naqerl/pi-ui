@@ -250,11 +250,14 @@ test("a restored subscription the server rejects is cancelled and never polled a
     ).toHaveLength(2);
     expect(state.messages.some((message) => message.text.includes("from flood:9"))).toBe(true);
     expect(
+      state.messages.some((message) =>
+        message.text.includes(`from old:42 since ${OLD_BACKLOG_AT}`),
+      ),
+    ).toBe(true);
+    expect(
       notices.filter((notice) => notice.ids.some((id) => id.startsWith("flood-"))),
     ).toHaveLength(0);
     expect(notices.filter((notice) => notice.ids.includes("old-stream-backlog"))).toHaveLength(0);
-    expect(state.mcpEvents?.gap?.from).toBe("old:42");
-    expect(state.mcpEvents?.gap?.missedSince).toBe(OLD_BACKLOG_AT);
     expect(notices.filter((notice) => notice.ids.includes("recent-stream-backlog"))).toHaveLength(
       1,
     );
@@ -309,7 +312,11 @@ test("a restored subscription the server rejects is cancelled and never polled a
 test("a restore whose backlog predates this process starts from now and reports one gap", async ({
   app,
 }) => {
-  const spawned = await startRestoreApp();
+  // Only the age-stale stream, so the latest gap is unambiguously its own;
+  // the size-stale flood stream has its own assertion in the first test.
+  const spawned = await startRestoreApp([
+    subscription("restore", "old-stream", "old:42", OLD_BACKLOG_AT),
+  ]);
   try {
     await app.open(`${spawned.url}/`);
 
