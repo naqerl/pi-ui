@@ -1,3 +1,15 @@
+## 1.6.135
+
+### Added
+
+- A dashboard widget can be dragged from one section into another. The grid follows the pointer past a
+  section heading, the widget keeps its own width, and a drop outside any section returns it to where it
+  started instead of leaving a hole behind.
+
+### Fixed
+
+- Resizing the browser under a drag no longer leaves the dragged widget at the old pointer position.
+
 ## 1.6.134
 
 ### Fixed
