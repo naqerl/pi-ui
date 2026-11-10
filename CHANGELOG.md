@@ -1,3 +1,14 @@
+## 1.6.142
+
+### Fixed
+
+- A send that is retried or re-delivered with the same client message id no longer becomes a second
+  transcript row and a second turn: the placed entry is reused and the caller settles against it.
+  One operator message had been answered seven times, each copy starting its own turn.
+- A queue item that has been handed to the model is retired, so a harness restart cannot replay it.
+- The desktop task detail no longer reserves a tall empty band above the description — the header
+  gap is gone and the body starts where the title ends.
+
 ## 1.6.141
 
 ### Fixed
