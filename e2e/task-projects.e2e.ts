@@ -323,11 +323,7 @@ test("subtasks take their parent's project and the detail edits it in place", as
   ]);
 });
 
-test("project headers share the Open header's solid fill in both themes", async ({
-  app,
-  browser,
-  screen,
-}) => {
+test("project headers keep their solid fill in both themes", async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 390, height: 844 });
   const tag = Date.now();
   const title = `Header task ${tag}`;
@@ -392,15 +388,13 @@ test("project headers share the Open header's solid fill in both themes", async 
     }, `task-project-${project}`);
 
     expect(styles).not.toBeNull();
-    // The project bar is the same solid, inverted header as Open, not a muted row.
+    // Project bars keep the solid, inverted header; the status sections above
+    // them are now thin rules instead of filled pills.
     expect(styles?.grouped.background).not.toBe("rgba(0, 0, 0, 0)");
-    expect(styles?.grouped.background).toBe(styles?.open.background);
     expect(styles?.grouped.background).not.toBe(styles?.page);
     expect(styles?.grouped.titleColor).not.toBe(styles?.foreground);
-    expect(styles?.grouped.titleColor).toBe(styles?.open.titleColor);
-    expect(styles?.grouped.countColor).toBe(styles?.open.countColor);
-    expect(styles?.grouped.chevronColor).toBe(styles?.open.chevronColor);
-    // On a phone the same row keeps Open's height, padding and radius without wrapping.
+    expect(styles?.open.background).toBe("rgba(0, 0, 0, 0)");
+    // On a phone the project row keeps Open's height, padding and radius without wrapping.
     expect(styles?.grouped.height).toBe(styles?.open.height);
     expect(styles?.grouped.paddingLeft).toBe(styles?.open.paddingLeft);
     expect(styles?.grouped.paddingRight).toBe(styles?.open.paddingRight);

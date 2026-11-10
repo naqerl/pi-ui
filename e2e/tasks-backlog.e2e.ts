@@ -166,7 +166,7 @@ test("a long press on Send parks the next task in the backlog", { timeout: 300_0
         ...document.querySelectorAll<HTMLElement>('[data-testid^="task-project-"]'),
       ].map((item) => item.dataset.testid ?? "");
       return {
-        muted: parkedStyle.backgroundColor !== liveStyle.backgroundColor,
+        muted: parkedStyle.color !== liveStyle.color,
         filtered: parkedStyle.filter !== "none" || parkedStyle.backdropFilter !== "none",
         parkedLast: ordered.at(-1) === `Open ${parkedName}`,
         projectOrderStable:

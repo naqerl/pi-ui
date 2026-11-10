@@ -580,8 +580,10 @@ test("shows the single task list without filter tabs and groups done work by day
     const labelBox = label.getBoundingClientRect();
     const chevronBox = chevron.getBoundingClientRect();
     const countBox = count.getBoundingClientRect();
+    const style = getComputedStyle(trigger);
     return {
-      dark: getComputedStyle(trigger).backgroundColor === getComputedStyle(document.body).color,
+      rule: style.borderBottomWidth === "1px" && style.borderBottomStyle === "solid",
+      filled: style.backgroundColor === getComputedStyle(document.body).color,
       labelLeft: labelBox.right <= chevronBox.left + 1,
       chevronLeftOfCount: chevronBox.right <= countBox.left + 1,
       chevronBeforeCount:
@@ -589,7 +591,8 @@ test("shows the single task list without filter tabs and groups done work by day
     };
   });
   expect(header).toEqual({
-    dark: true,
+    rule: true,
+    filled: false,
     labelLeft: true,
     chevronLeftOfCount: true,
     chevronBeforeCount: true,
@@ -756,4 +759,137 @@ test("uses one gap between every section header and the cards below it", async (
   const gap = values[0] ?? 0;
   expect(Math.abs(gap - 8)).toBeLessThanOrEqual(1);
   for (const value of values) expect(Math.abs(value - gap)).toBeLessThanOrEqual(1);
+});
+
+test("uses stats-style section rules and blurs cards with a solid selected card", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  const now = new Date();
+  const today = new Date(now);
+  today.setHours(12, 0, 0, 0);
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  const key = (date: Date) =>
+    `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+      date.getDate(),
+    ).padStart(2, "0")}`;
+  const at = (date: Date) => date.toISOString();
+  await browser.setViewport({ width: 1280, height: 800 });
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({
+      json: {
+        conversationId: "task-separator-e2e",
+        messages: [],
+        activity: [],
+        run: "idle",
+        queue: [],
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 },
+        context: { tokens: 0, window: null, percent: null },
+        tasks: {
+          revision: 1_000_000,
+          tasks: [
+            {
+              id: "thin-open",
+              title: "Thin separator open",
+              status: "open",
+              parentId: null,
+              blockedBy: [],
+              createdAt: at(yesterday),
+              proposedAt: null,
+              completedAt: null,
+              completion: null,
+            },
+            {
+              id: "thin-done",
+              title: "Thin separator done",
+              status: "done",
+              parentId: null,
+              blockedBy: [],
+              createdAt: at(today),
+              proposedAt: null,
+              completedAt: at(today),
+              completion: { evidence: "e2e/tasks-views.e2e.ts" },
+            },
+          ],
+        },
+      },
+    });
+  });
+  await app.open("/?page=tasks");
+  await expect(screen.getByTestId("task-thin-open")).toBeVisible();
+  await expect(screen.getByTestId("task-thin-done")).toBeVisible();
+
+  const styles = await browser.evaluate((doneKey) => {
+    const header = (selector: string) => {
+      const element = document.querySelector<HTMLElement>(selector);
+      if (element === null) return null;
+      const style = getComputedStyle(element);
+      return {
+        rule:
+          element.classList.contains("border-b") && element.classList.contains("border-border/70"),
+        filled:
+          element.classList.contains("bg-foreground") ||
+          style.backgroundColor === getComputedStyle(document.body).color,
+      };
+    };
+    const card = document.querySelector<HTMLElement>(
+      '[data-testid="task-thin-done"] [data-task-card]',
+    );
+    if (card === null) return null;
+    return {
+      open: header('[data-testid="task-section-active"] [data-slot="collapsible-trigger"]'),
+      done: header(`[data-testid="task-day-${doneKey}"] [data-slot="collapsible-trigger"]`),
+      card: {
+        translucent: card.classList.contains("bg-surface/60"),
+        blur: card.classList.contains("backdrop-blur-sm"),
+        ring: [...card.classList].some((name) => name.startsWith("ring-")),
+        selected: card.getAttribute("aria-current") === "true",
+      },
+    };
+  }, key(today));
+
+  expect(styles?.open?.rule).toBe(true);
+  expect(styles?.open?.filled).toBe(false);
+  expect(styles?.done?.rule).toBe(true);
+  expect(styles?.done?.filled).toBe(false);
+  expect(styles?.card).toEqual({
+    translucent: true,
+    blur: true,
+    ring: false,
+    selected: false,
+  });
+
+  await screen.getByRole("button", { name: "Open Thin separator done" }).click();
+  await expect
+    .poll(() =>
+      browser.evaluate(
+        () =>
+          document
+            .querySelector('[data-testid="task-thin-done"] [data-task-card]')
+            ?.getAttribute("aria-current") === "true",
+      ),
+    )
+    .toBe(true);
+  const selected = await browser.evaluate(() => {
+    const card = document.querySelector<HTMLElement>(
+      '[data-testid="task-thin-done"] [data-task-card]',
+    );
+    if (card === null) return null;
+    return {
+      opaque: card.classList.contains("bg-surface"),
+      translucent: card.classList.contains("bg-surface/60"),
+      blur: card.classList.contains("backdrop-blur-sm"),
+      ring: [...card.classList].filter((name) => name.startsWith("ring-")),
+      border: card.classList.contains("border-border"),
+    };
+  });
+  expect(selected).toEqual({
+    opaque: true,
+    translucent: false,
+    blur: true,
+    ring: [],
+    border: true,
+  });
 });
