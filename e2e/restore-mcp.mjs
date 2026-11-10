@@ -10,10 +10,12 @@ import { z } from "zod";
 const logPath = process.env.RESTORE_MCP_LOG;
 const mode = process.env.RESTORE_MCP_MODE === "paged" ? "paged" : "poll";
 const oldTimestamp = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+// A restart a moment ago: the missed event is seconds old, so replay is right.
+const recentTimestamp = new Date(Date.now() - 2_000).toISOString();
 const names =
   mode === "paged"
     ? ["first-a", "first-b", "paged-stream"]
-    : ["gone-stream", "old-stream", "live-stream", "burst-stream"];
+    : ["gone-stream", "old-stream", "recent-stream", "idle-stream", "live-stream", "burst-stream"];
 
 function log(line) {
   if (logPath !== undefined && logPath.length > 0) appendFileSync(logPath, `${line}\n`);
@@ -81,6 +83,23 @@ if (mode !== "paged") {
           cursor: "old-stream:1",
         };
       }
+      if (params.name === "recent-stream") {
+        return {
+          events: [
+            {
+              event: {
+                eventId: "recent-stream-backlog",
+                name: "recent-stream",
+                timestamp: recentTimestamp,
+                cursor: "recent-stream:1",
+                data: { kind: "recent-stream.event", id: "recent-1", state: "created" },
+              },
+            },
+          ],
+          cursor: "recent-stream:1",
+        };
+      }
+      if (params.name === "idle-stream") return { events: [], cursor: "idle:7" };
       if (params.name === "live-stream") return { events: [], cursor: "live-stream:0" };
       if (params.name === "burst-stream") return { events: [], cursor: "burst-stream:0" };
       throw new ProtocolError(-32023, "Subscription not found");
@@ -116,7 +135,8 @@ server.setRequestHandler(
     setTimeout(() => {
       void notify("notifications/events/active", {
         cursor: params.cursor ?? null,
-        ...(params.name === "old-stream" ? { truncated: true } : {}),
+        // Only a client that kept the stale cursor is told its replay is truncated.
+        ...(params.name === "old-stream" && params.cursor === "old:42" ? { truncated: true } : {}),
       });
     }, 10);
 
@@ -134,6 +154,27 @@ server.setRequestHandler(
         } else {
           void notify("notifications/events/heartbeat", { cursor: params.cursor ?? null });
         }
+      }, 50);
+    }
+
+    if (params.name === "recent-stream") {
+      setTimeout(() => {
+        if (params.cursor === "recent:41") {
+          void notify("notifications/events/event", {
+            eventId: "recent-stream-backlog",
+            name: "recent-stream",
+            timestamp: recentTimestamp,
+            cursor: "recent-stream:1",
+            data: { kind: "recent-stream.event", id: "recent-1", state: "created" },
+          });
+        }
+        void notify("notifications/events/heartbeat", { cursor: "recent-stream:1" });
+      }, 50);
+    }
+
+    if (params.name === "idle-stream") {
+      setTimeout(() => {
+        void notify("notifications/events/heartbeat", { cursor: "idle:7" });
       }, 50);
     }
 

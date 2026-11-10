@@ -52,7 +52,7 @@ async function waitForHealth(baseUrl: string, child: ChildProcess, logs: () => s
   throw new Error(`app did not answer within 90 seconds\n${logs()}`);
 }
 
-function subscription(server: string, name: string, cursor: string) {
+function subscription(server: string, name: string, cursor: string, lastEventAt?: string) {
   return {
     server,
     name,
@@ -66,31 +66,31 @@ function subscription(server: string, name: string, cursor: string) {
     status: "active",
     enabled: true,
     deliveredEventIds: [],
+    ...(lastEventAt === undefined ? {} : { lastEventAt }),
     updatedAt: new Date().toISOString(),
   };
 }
 
-async function startRestoreApp(): Promise<RestoreApp> {
+const OLD_BACKLOG_AT = "2026-11-05T20:33:23.582Z";
+const startedRecentAt = new Date(Date.now() - 3_000).toISOString();
+
+async function startRestoreApp(
+  subscriptions = [
+    subscription("restore", "gone-stream", "old:9"),
+    subscription("restore", "old-stream", "old:42", OLD_BACKLOG_AT),
+    subscription("restore", "recent-stream", "recent:41", startedRecentAt),
+    subscription("restore", "live-stream", "live:0"),
+    subscription("restore", "burst-stream", "burst:0"),
+    subscription("paged", "paged-stream", "paged:0"),
+  ],
+): Promise<RestoreApp> {
   const dataDir = mkdtempSync(join(tmpdir(), "pi-ui-restore-data-"));
   const agentDir = mkdtempSync(join(tmpdir(), "pi-ui-restore-agent-"));
   const logPath = join(dataDir, "restore-calls.log");
   const pagedLogPath = join(dataDir, "paged-calls.log");
   writeFileSync(
     join(dataDir, "mcp-subscriptions.json"),
-    JSON.stringify(
-      {
-        version: 1,
-        subscriptions: [
-          subscription("restore", "gone-stream", "old:9"),
-          subscription("restore", "old-stream", "old:42"),
-          subscription("restore", "live-stream", "live:0"),
-          subscription("restore", "burst-stream", "burst:0"),
-          subscription("paged", "paged-stream", "paged:0"),
-        ],
-      },
-      null,
-      2,
-    ),
+    JSON.stringify({ version: 1, subscriptions }, null, 2),
   );
   writeFileSync(
     join(agentDir, "mcp.json"),
@@ -196,6 +196,7 @@ test("a restored subscription the server rejects is cancelled and never polled a
             old: subscriptions.find((item) => item.name === "old-stream")?.cursor,
             live: subscriptions.find((item) => item.name === "live-stream")?.status,
             paged: subscriptions.find((item) => item.name === "paged-stream")?.status,
+            recent: subscriptions.find((item) => item.name === "recent-stream")?.cursor,
             restored: subscriptions.map((item) => item.name).sort(),
           };
         },
@@ -203,10 +204,18 @@ test("a restored subscription the server rejects is cancelled and never polled a
       )
       .toEqual({
         gone: "cancelled",
-        old: "old-stream:1",
+        old: null,
         live: "active",
         paged: "active",
-        restored: ["burst-stream", "gone-stream", "live-stream", "old-stream", "paged-stream"],
+        recent: "recent-stream:1",
+        restored: [
+          "burst-stream",
+          "gone-stream",
+          "live-stream",
+          "old-stream",
+          "paged-stream",
+          "recent-stream",
+        ],
       });
 
     // The healthy restore still delivers its new event as a chat notice.
@@ -226,15 +235,20 @@ test("a restored subscription the server rejects is cancelled and never polled a
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     const state = await readState(spawned.url);
     const notices = mcpNotices(state);
-    // A provider-reported replay gap is a durable MCP status chip, not a lost UI toast.
+    // The old backlog is one gap status chip, never a replayed event chip.
     expect(
-      state.messages.some(
+      state.messages.filter(
         (message) =>
-          message.notice?.kind === "mcp" &&
-          message.text.includes("replay is truncated for old-stream"),
+          message.role === "user" &&
+          message.text.includes("events were missed while pi was not running"),
       ),
-    ).toBe(true);
-    expect(notices.filter((notice) => notice.ids.includes("old-stream-backlog"))).toHaveLength(1);
+    ).toHaveLength(1);
+    expect(notices.filter((notice) => notice.ids.includes("old-stream-backlog"))).toHaveLength(0);
+    expect(state.mcpEvents?.gap?.from).toBe("old:42");
+    expect(state.mcpEvents?.gap?.missedSince).toBe(OLD_BACKLOG_AT);
+    expect(notices.filter((notice) => notice.ids.includes("recent-stream-backlog"))).toHaveLength(
+      1,
+    );
     expect(
       notices.filter((notice) => notice.ids.some((id) => id.startsWith("burst-"))).length,
     ).toBe(1);
@@ -252,9 +266,10 @@ test("a restored subscription the server rejects is cancelled and never polled a
     // One rejection at boot, then the dropped id is remembered.
     expect(calls.filter((line) => line.startsWith("poll:gone-stream:"))).toHaveLength(1);
     expect(calls.filter((line) => line.startsWith("stream:gone-stream:"))).toHaveLength(0);
-    // The acknowledged cursor is replayed; an unseen preboot ID is not thrown away.
-    expect(calls).toContain("stream:old-stream:old:42");
-    expect(calls).not.toContain("stream:old-stream:old-stream:1");
+    // An old backlog starts from now; a recent one still replays its cursor.
+    expect(calls).toContain("stream:old-stream:null");
+    expect(calls).not.toContain("stream:old-stream:old:42");
+    expect(calls).toContain("stream:recent-stream:recent:41");
 
     // No events/poll on this server, so the catalog fallback must follow nextCursor.
     const pagedCalls = readFileSync(spawned.pagedLogPath, "utf8").split("\n").filter(Boolean);
@@ -269,8 +284,122 @@ test("a restored subscription the server rejects is cancelled and never polled a
     expect(persisted.subscriptions.find((item) => item.name === "gone-stream")?.status).toBe(
       "cancelled",
     );
-    expect(persisted.subscriptions.find((item) => item.name === "old-stream")?.cursor).toBe(
-      "old-stream:1",
+    expect(persisted.subscriptions.find((item) => item.name === "old-stream")?.cursor).toBeNull();
+    expect(persisted.subscriptions.find((item) => item.name === "recent-stream")?.cursor).toBe(
+      "recent-stream:1",
+    );
+  } finally {
+    await spawned.stop();
+    rmSync(spawned.dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a restore whose backlog predates this process starts from now and reports one gap", async ({
+  app,
+}) => {
+  const spawned = await startRestoreApp();
+  try {
+    await app.open(`${spawned.url}/`);
+
+    await expect
+      .poll(
+        async () => {
+          const state = await readState(spawned.url);
+          const gap = state.mcpEvents?.gap;
+          return gap === undefined ? "" : `${gap.from}|${gap.missedSince}`;
+        },
+        { timeout: 60_000 },
+      )
+      .toBe(`old:42|${OLD_BACKLOG_AT}`);
+
+    const state = await readState(spawned.url);
+    expect(
+      state.messages.filter(
+        (message) =>
+          message.role === "user" &&
+          message.text.includes("events were missed while pi was not running"),
+      ),
+    ).toHaveLength(1);
+    expect(mcpNotices(state).flatMap((notice) => notice.ids)).not.toContain("old-stream-backlog");
+
+    const calls = readFileSync(spawned.logPath, "utf8").split("\n").filter(Boolean);
+    expect(calls).toContain("stream:old-stream:null");
+    expect(calls).not.toContain("stream:old-stream:old:42");
+  } finally {
+    await spawned.stop();
+    rmSync(spawned.dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a restore a few seconds behind still replays", async ({ app }) => {
+  const spawned = await startRestoreApp();
+  try {
+    await app.open(`${spawned.url}/`);
+
+    await expect
+      .poll(
+        async () => {
+          const state = await readState(spawned.url);
+          return state.mcpEvents?.subscriptions.find((item) => item.name === "recent-stream")
+            ?.cursor;
+        },
+        { timeout: 60_000 },
+      )
+      .toBe("recent-stream:1");
+
+    const state = await readState(spawned.url);
+    expect(
+      mcpNotices(state)
+        .flatMap((notice) => notice.ids)
+        .filter((id) => id === "recent-stream-backlog"),
+    ).toHaveLength(1);
+    const calls = readFileSync(spawned.logPath, "utf8").split("\n").filter(Boolean);
+    expect(calls).toContain("stream:recent-stream:recent:41");
+  } finally {
+    await spawned.stop();
+    rmSync(spawned.dataDir, { recursive: true, force: true });
+  }
+});
+
+test("an old lastEventAt with an empty poll keeps the current cursor and records no gap", async ({
+  app,
+}) => {
+  const spawned = await startRestoreApp([
+    subscription("restore", "idle-stream", "idle:7", OLD_BACKLOG_AT),
+  ]);
+  try {
+    await app.open(`${spawned.url}/`);
+
+    await expect
+      .poll(
+        async () => {
+          const state = await readState(spawned.url);
+          return state.mcpEvents?.subscriptions.find((item) => item.name === "idle-stream")?.cursor;
+        },
+        { timeout: 60_000 },
+      )
+      .toBe("idle:7");
+
+    const state = await readState(spawned.url);
+    expect(state.mcpEvents?.gap).toBeUndefined();
+    expect(
+      state.messages.some(
+        (message) =>
+          message.role === "user" &&
+          message.text.includes("events were missed while pi was not running"),
+      ),
+    ).toBe(false);
+
+    const calls = readFileSync(spawned.logPath, "utf8").split("\n").filter(Boolean);
+    expect(calls).toContain("stream:idle-stream:idle:7");
+    expect(calls).not.toContain("stream:idle-stream:null");
+
+    await spawned.stop();
+    const persisted = JSON.parse(
+      readFileSync(join(spawned.dataDir, "mcp-subscriptions.json"), "utf8"),
+    ) as { subscriptions: Array<{ name: string; cursor: string | null }> };
+    expect(persisted.subscriptions.find((item) => item.name === "idle-stream")?.cursor).toBe(
+      "idle:7",
     );
   } finally {
     await spawned.stop();

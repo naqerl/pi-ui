@@ -13,7 +13,12 @@ import { PAGE_IDS, PAGE_PATHS } from "../shared/pages.js";
 import { parseCompletion, parseReopenReason, TASK_BODY_MAX_LENGTH } from "../shared/tasks.js";
 import type { TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
-import { ChatService, mcpDeliveryTexts, mcpEventEnvelope } from "./chat-service.js";
+import {
+  ChatService,
+  mcpDeliveryTexts,
+  mcpEventEnvelope,
+  mcpRestoreDeliveryTexts,
+} from "./chat-service.js";
 import { DashboardError, DashboardManager } from "./dashboard.js";
 import { DelegateManager } from "./delegates.js";
 import type { DiagramBridge } from "./diagram-tools.js";
@@ -374,10 +379,20 @@ boot.mcp.setSubmit((text, options) => {
       const deliveryDropped = dropped + boundedNovel.dropped;
       // Persist even a gap-only batch: missing data must be visible in chat too.
       if (boundedNovel.items.length > 0 || deliveryDropped > 0) {
-        const texts = mcpDeliveryTexts(
-          { ...envelope, items: boundedNovel.items, dropped: deliveryDropped },
-          chat.getState() === "running",
-        );
+        // A restore may be replaying a continuous backlog. Give it one bounded
+        // chip plus a gap instead of one busy delivery per replayed event; the
+        // outbox merger cannot be relied on when batches arrive continuously.
+        const restored = events.isRestoreBatch(boundedNovel.items);
+        const texts = restored
+          ? mcpRestoreDeliveryTexts({
+              ...envelope,
+              items: boundedNovel.items,
+              dropped: deliveryDropped,
+            })
+          : mcpDeliveryTexts(
+              { ...envelope, items: boundedNovel.items, dropped: deliveryDropped },
+              chat.getState() === "running",
+            );
         await mcpOutbox.enqueueMany(
           texts,
           boundedNovel.items.map((item) => events.eventKey(item)),

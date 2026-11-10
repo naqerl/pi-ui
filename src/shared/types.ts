@@ -266,7 +266,14 @@ export interface McpEventsState {
    * stream drops events rather than replaying them). `dropped` is the count it
    * named; the feed never invents one.
    */
-  gap?: { dropped: number; at: string };
+  gap?: {
+    dropped: number;
+    at: string;
+    /** Cursor the restore would have resumed from when it skipped an old backlog. */
+    from?: string | null;
+    /** The last event this process had seen before the skipped window. */
+    missedSince?: string;
+  };
   revision: number;
 }
 

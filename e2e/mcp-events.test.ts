@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { JSONRPCMessage, Transport } from "@modelcontextprotocol/client";
-import { mcpDeliveryTexts, mcpEventEnvelope } from "../src/server/chat-service.js";
+import {
+  mcpDeliveryTexts,
+  mcpEventEnvelope,
+  mcpRestoreDeliveryTexts,
+} from "../src/server/chat-service.js";
 import { DurableExtensionShim } from "../src/server/durable-extensions.js";
 import { checkEventNotifications, eventRejection } from "../src/server/mcp-event-check.js";
 import { type ExtensionNotice, McpEventFeed } from "../src/server/mcp-events.js";
@@ -420,4 +424,44 @@ test("a subscribe burst above the cap keeps the newest ids and records one gap",
   assert.equal(feed.state.events.length, MAX_PENDING_MCP_EVENTS);
   assert.equal(feed.state.events[0]?.id, "hub:11", "the oldest ids are the ones dropped");
   assert.equal(feed.state.events.at(-1)?.id, "hub:60");
+});
+
+test("a restore burst above the merge cap is one chip plus a gap, never N chips", () => {
+  const feed = new McpEventFeed();
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe", restored: true },
+      result: { subscription: { id: "s1", server: "hub", name: "hub", status: "active" } },
+    },
+  });
+  const burst = Array.from({ length: 60 }, (_, index) => ({
+    subscription_id: "s1",
+    server: "hub",
+    event: {
+      eventId: `hub:${index + 1}`,
+      name: "hub",
+      timestamp: "2026-11-07T11:40:00.000Z",
+      cursor: `hub:${index + 1}`,
+      data: { kind: "hub.job", id: `job-${index + 1}` },
+    },
+  }));
+  assert.equal(feed.isRestoreBatch(burst), true, "the restored stream owns this replay");
+
+  const texts = mcpRestoreDeliveryTexts({ head: MCP_EVENTS_HEAD, items: burst, dropped: 0 });
+  assert.equal(texts.length, 2, "one event chip and one gap chip, not one per event");
+  const events = mcpEventEnvelope(texts[0] ?? "");
+  const gap = mcpEventEnvelope(texts[1] ?? "");
+  assert.equal(events?.items.length, MAX_PENDING_MCP_EVENTS);
+  assert.equal(
+    (events?.items[0] as { event: { eventId: string } } | undefined)?.event.eventId,
+    "hub:11",
+    "the oldest ids are the ones dropped",
+  );
+  assert.equal(
+    (events?.items.at(-1) as { event: { eventId: string } } | undefined)?.event.eventId,
+    "hub:60",
+  );
+  assert.equal(gap?.items.length, 0);
+  assert.equal(gap?.dropped, 10);
 });

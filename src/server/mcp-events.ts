@@ -36,6 +36,8 @@ function startedAtOf(value: number | string | Date | undefined): number {
 
 const LIVE_STATUS = new Set(["opening", "active", "reconnecting"]);
 const EVENT_LIMIT = 100;
+/** A restored stream is capped for this long; a continuous replay cannot outrun the outbox. */
+const RESTORE_CAP_WINDOW_MS = 15 * 60_000;
 
 /**
  * A stream the user could still be depending on. `failed` is deliberately not
@@ -230,7 +232,11 @@ export class McpEventFeed {
   private readonly adapterAliases = new Map<string, string>();
   private events: McpEventView[] = [];
   private notice: string | null = null;
-  private gap: { dropped: number; at: string } | undefined;
+  private gap:
+    | { dropped: number; at: string; from?: string | null; missedSince?: string }
+    | undefined;
+  /** Stable ids recently restored; their first batches may be a replay burst. */
+  private readonly restoreBatchUntil = new Map<string, number>();
   private revision = 0;
   private readonly startedAt: number;
 
@@ -461,6 +467,23 @@ export class McpEventFeed {
   }
 
   /**
+   * True when every item belongs to a stream restored in this process and the
+   * restore cap window is still open. A replay arrives as a continuous run of
+   * batches; treating each batch as a burst keeps it to one chip plus a gap,
+   * so it cannot outrun the outbox merger.
+   */
+  isRestoreBatch(items: readonly unknown[]): boolean {
+    if (items.length === 0) return false;
+    const now = Date.now();
+    return items.every((item) => {
+      const identity = this.itemIdentity(item);
+      if (identity === null) return false;
+      const until = this.restoreBatchUntil.get(identity.stableId);
+      return until !== undefined && until >= now;
+    });
+  }
+
+  /**
    * Exact novel subset, without advancing cursor/ids. Persist it before ingesting.
    * A replayed entry that never produced a chip is included again, with the
    * original item, so the next drain can still commit exactly one chip for it.
@@ -542,6 +565,34 @@ export class McpEventFeed {
     if (notice.customType === "mcp-events-status") return this.ingestStatuses(notice.details);
     if (notice.customType === "mcp-events-tool") return this.ingestTool(notice.details);
     if (notice.customType === "mcp-events-traffic") return this.ingestTraffic(notice.details);
+    if (notice.customType === "mcp-events-gap") return this.ingestGap(notice.details);
+    return false;
+  }
+
+  /** Record a window a restore deliberately skipped instead of replaying it. */
+  private ingestGap(details: unknown): boolean {
+    if (!isRecord(details)) return false;
+    const raw = typeof details.count === "number" ? details.count : 0;
+    const count = Number.isFinite(raw) ? Math.max(0, Math.floor(raw)) : 0;
+    const at =
+      typeof details.at === "string" && details.at.length > 0
+        ? details.at
+        : new Date().toISOString();
+    const from = typeof details.from === "string" ? details.from : null;
+    const missedSince =
+      typeof details.missedSince === "string" && details.missedSince.length > 0
+        ? details.missedSince
+        : undefined;
+    const truncated = details.truncated === true;
+    const label = count > 0 ? `${count}${truncated ? "+" : ""}` : "Some";
+    this.gap = {
+      dropped: count,
+      at,
+      from,
+      ...(missedSince === undefined ? {} : { missedSince }),
+    };
+    this.notice = `${label} events were missed while pi was not running`;
+    this.touch();
     return false;
   }
 
@@ -553,6 +604,9 @@ export class McpEventFeed {
     for (const record of records) {
       const stableId = recordStableId(record);
       this.restored.add(stableId);
+      // Events can arrive before the subscribe result is observed. Open the
+      // replay cap from the durable row so that early burst is still one batch.
+      this.restoreBatchUntil.set(stableId, Date.now() + RESTORE_CAP_WINDOW_MS);
       this.seedDelivered(
         stableId,
         record.deliveredEventIds ?? [],
@@ -642,6 +696,9 @@ export class McpEventFeed {
     const record = this.savedRecord(stableId);
     if (record === undefined) return;
     this.restored.add(stableId);
+    if (!this.restoreBatchUntil.has(stableId)) {
+      this.restoreBatchUntil.set(stableId, Date.now() + RESTORE_CAP_WINDOW_MS);
+    }
     this.seedDelivered(stableId, record.deliveredEventIds ?? [], true, record.cursor ?? undefined);
   }
 
@@ -1171,7 +1228,10 @@ export class McpEventFeed {
           this.seedSeen(incoming.stableId, delivered);
         }
       }
-      if (args.restored === true) this.restored.add(incoming.stableId);
+      if (args.restored === true) {
+        this.restored.add(incoming.stableId);
+        this.restoreBatchUntil.set(incoming.stableId, Date.now() + RESTORE_CAP_WINDOW_MS);
+      }
       this.seedFromRegistry(incoming.stableId);
       const saved = this.savedRecord(incoming.stableId);
       const subscription: McpSubscriptionView = {
