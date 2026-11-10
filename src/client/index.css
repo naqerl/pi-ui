@@ -352,6 +352,13 @@
   z-index: 20;
 }
 
+/* Cross-section drags outline the section that will receive the card. An
+   outline is painted, not laid out, so it cannot intercept the pointer. */
+.dashboard-section[data-drop-target] > [data-section-heading] {
+  outline: 2px dashed color-mix(in oklch, var(--foreground) 55%, transparent);
+  outline-offset: 2px;
+}
+
 .dashboard-grid .react-grid-item > .react-resizable-handle {
   display: block;
   width: 18px;

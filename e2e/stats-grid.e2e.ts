@@ -550,12 +550,12 @@ test("a real mouse drag of context by two columns and rows leaves neighbours sti
   ]);
 });
 
-test("creates a section through the agent, keeps drags inside it, then renames and deletes it", async ({
+test("creates a section through the agent, moves a widget into it, then renames and deletes it", async ({
   app,
   browser,
   screen,
 }) => {
-  await browser.setViewport({ width: 1280, height: 1600 });
+  await browser.setViewport({ width: 1280, height: 1800 });
   const calls = [
     {
       name: "dashboard_upsert",
@@ -618,9 +618,51 @@ test("creates a section through the agent, keeps drags inside it, then renames a
     .poll(async () => (await readDashboard(browser)).layout.sections[0]?.title)
     .toBe("Runtime");
 
-  // A drag cannot move a widget into another section; RGL keeps it in its own
-  // grid, so the agent-created section stays untouched.
-  await dragPointer(browser, '[data-widget-id="mcp"]', '[data-section-index="1"]');
+  // Crossing the Agent heading moves mcp out of the first grid and appends it
+  // below the card the agent already placed there.
+  const drop = await browser.evaluate(() => {
+    const handle = document.querySelector<HTMLElement>(
+      '[data-widget-id="mcp"] [data-testid="dashboard-drag-handle"]',
+    );
+    const heading = document.querySelector<HTMLElement>(
+      '[data-section-index="1"] [data-section-heading]',
+    );
+    const grid = document.querySelector<HTMLElement>('[data-section-index="1"] .dashboard-grid');
+    if (handle === null || heading === null || grid === null) return null;
+    const from = handle.getBoundingClientRect();
+    const head = heading.getBoundingClientRect();
+    const box = grid.getBoundingClientRect();
+    return {
+      x0: from.left + from.width / 2,
+      y0: from.top + from.height / 2,
+      x1: box.left + box.width / 2,
+      y1: box.top + 24,
+      headingTop: head.top,
+    };
+  });
+  expect(drop).not.toBeNull();
+  if (drop === null) throw new Error("missing cross-section drag geometry");
+  await browser.mouse.move(drop.x0, drop.y0);
+  await browser.mouse.down();
+  for (let step = 1; step <= 10; step += 1) {
+    await browser.mouse.move(
+      drop.x0 + ((drop.x1 - drop.x0) * step) / 10,
+      drop.y0 + ((drop.y1 - drop.y0) * step) / 10,
+    );
+  }
+  expect(
+    await browser.evaluate(
+      () =>
+        document
+          .querySelector<HTMLElement>('[data-section-index="1"]')
+          ?.hasAttribute("data-drop-target") ?? false,
+    ),
+  ).toBe(true);
+  // The delete below reuses the same debounced save path, so wait for the
+  // cross-section PATCH response instead of racing its 600 ms timer.
+  const saved = browser.waitForResponse("**/api/dashboard/layout", { timeout: 10_000 });
+  await browser.mouse.up();
+  await saved;
   await expect
     .poll(async () => {
       const dashboard = await readDashboard(browser);
@@ -628,7 +670,18 @@ test("creates a section through the agent, keeps drags inside it, then renames a
         section.widgets.map((slot) => slot.id).sort(),
       );
     })
-    .toEqual([["context", "mcp", "mcp-events", "task-reopens", "tokens"], ["agent-note"]]);
+    .toEqual([
+      ["context", "mcp-events", "task-reopens", "tokens"],
+      ["agent-note", "mcp"],
+    ]);
+  expect(
+    await browser.evaluate(
+      () =>
+        document
+          .querySelector<HTMLElement>('[data-section-index="1"]')
+          ?.hasAttribute("data-drop-target") ?? false,
+    ),
+  ).toBe(false);
 
   await screen.getByTestId("section-delete-1").tap();
   await expect
@@ -969,4 +1022,360 @@ test("refuses a drag onto an occupied cell and leaves every widget where it was"
     }
   }
   expect(overlap).toBe(false);
+});
+
+test("a widget dragged past a heading lands in the next section", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 1280, height: 1200 });
+  await app.open("/?page=stats");
+  await resetMinimalDashboard(browser);
+  const patched = await browser.evaluate(async () => {
+    const response = await fetch("/api/dashboard/layout", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sections: [
+          {
+            title: "A",
+            widgets: [
+              { id: "context", span: "full", x: 0, y: 0, w: 12, h: 2 },
+              { id: "tokens", span: "half", x: 3, y: 2, w: 6, h: 4 },
+            ],
+          },
+          {
+            title: "B",
+            widgets: [
+              { id: "mcp", span: "full", x: 0, y: 0, w: 12, h: 4 },
+              { id: "mcp-events", span: "full", x: 0, y: 4, w: 12, h: 4 },
+            ],
+          },
+          {
+            title: "C",
+            widgets: [{ id: "task-reopens", span: "full", x: 0, y: 0, w: 12, h: 4 }],
+          },
+        ],
+      }),
+    });
+    return response.status;
+  });
+  expect(patched).toBe(200);
+  await app.open("/?page=stats");
+  await expect(screen.getByTestId("widget-tokens")).toBeVisible({ timeout: 30_000 });
+
+  const drag = await browser.evaluate(() => {
+    const handle = document.querySelector<HTMLElement>(
+      '[data-widget-id="tokens"] [data-testid="dashboard-drag-handle"]',
+    );
+    const heading = document.querySelector<HTMLElement>(
+      '[data-section-index="1"] [data-section-heading]',
+    );
+    const grid = document.querySelector<HTMLElement>('[data-section-index="1"] .dashboard-grid');
+    if (handle === null || heading === null || grid === null) return null;
+    const from = handle.getBoundingClientRect();
+    const head = heading.getBoundingClientRect();
+    const box = grid.getBoundingClientRect();
+    return {
+      x0: from.left + from.width / 2,
+      y0: from.top + from.height / 2,
+      crossingY: head.bottom + 8,
+      target: {
+        headingTop: Math.round(head.top),
+        headingBottom: Math.round(head.bottom),
+        gridTop: Math.round(box.top),
+        gridBottom: Math.round(box.bottom),
+        gridRight: Math.round(box.right),
+      },
+      headingTop: head.top,
+    };
+  });
+  expect(drag).not.toBeNull();
+  if (drag === null) throw new Error("missing cross-section drag geometry");
+  expect(drag.headingTop).toBeGreaterThan(drag.y0);
+
+  await browser.mouse.move(drag.x0, drag.y0);
+  await browser.mouse.down();
+  // Cross the heading in several moves so the page sees a real drag, not a
+  // single teleport across the container boundary.
+  for (let step = 1; step <= 12; step += 1) {
+    await browser.mouse.move(drag.x0, drag.y0 + ((drag.crossingY - drag.y0) * step) / 12);
+  }
+  // The source grid must not grow and shove the destination down while the
+  // pointer is over the old target. Read the live rect and drop there.
+  const live = await browser.evaluate(() => {
+    const heading = document.querySelector<HTMLElement>(
+      '[data-section-index="1"] [data-section-heading]',
+    );
+    const grid = document.querySelector<HTMLElement>('[data-section-index="1"] .dashboard-grid');
+    if (heading === null || grid === null) throw new Error("missing live target");
+    const head = heading.getBoundingClientRect();
+    const box = grid.getBoundingClientRect();
+    return {
+      headingTop: Math.round(head.top),
+      headingBottom: Math.round(head.bottom),
+      gridTop: Math.round(box.top),
+      gridBottom: Math.round(box.bottom),
+      gridRight: Math.round(box.right),
+    };
+  });
+  expect(live).toEqual(drag.target);
+  const x1 = live.gridRight - 24;
+  const y1 = live.gridTop + 24;
+  for (let step = 1; step <= 6; step += 1) {
+    await browser.mouse.move(
+      drag.x0 + ((x1 - drag.x0) * step) / 6,
+      drag.crossingY + ((y1 - drag.crossingY) * step) / 6,
+    );
+  }
+  await expect
+    .poll(() =>
+      browser.evaluate(
+        () =>
+          document
+            .querySelector<HTMLElement>('[data-section-index="1"]')
+            ?.hasAttribute("data-drop-target") ?? false,
+      ),
+    )
+    .toBe(true);
+  await browser.mouse.up();
+
+  await expect
+    .poll(async () => {
+      const dashboard = await readDashboard(browser);
+      return dashboard.layout.sections.map((section) => section.widgets.map((slot) => slot.id));
+    })
+    .toEqual([["context"], ["mcp", "mcp-events", "tokens"], ["task-reopens"]]);
+  const after = await readDashboard(browser);
+  const tokens = after.layout.sections
+    .flatMap((section) => section.widgets)
+    .find((slot) => slot.id === "tokens");
+  expect(tokens).toMatchObject({ span: "half", x: 6, y: 8, w: 6, h: 4 });
+  expect(
+    await browser.evaluate(
+      () =>
+        document
+          .querySelector<HTMLElement>('[data-section-index="1"]')
+          ?.hasAttribute("data-drop-target") ?? false,
+    ),
+  ).toBe(false);
+
+  // The destination stays the destination after a reload and a fresh read.
+  await app.open("/?page=stats");
+  await expect(screen.getByTestId("widget-tokens")).toBeVisible({ timeout: 30_000 });
+  await expect
+    .poll(async () => {
+      const dashboard = await readDashboard(browser);
+      return dashboard.layout.sections.map((section) => section.widgets.map((slot) => slot.id));
+    })
+    .toEqual([["context"], ["mcp", "mcp-events", "tokens"], ["task-reopens"]]);
+  expect(
+    await browser.evaluate(
+      () =>
+        document
+          .querySelector<HTMLElement>('[data-widget-id="tokens"]')
+          ?.closest<HTMLElement>("[data-section-index]")?.dataset.sectionIndex ?? null,
+    ),
+  ).toBe("1");
+});
+
+test("dragging within a section still only reorders it", async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 1200 });
+  await app.open("/?page=stats");
+  await resetMinimalDashboard(browser);
+  const patched = await browser.evaluate(async () => {
+    const response = await fetch("/api/dashboard/layout", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sections: [
+          {
+            title: "A",
+            widgets: [
+              { id: "context", span: "full", x: 0, y: 0, w: 12, h: 2 },
+              { id: "tokens", span: "full", x: 0, y: 4, w: 12, h: 4 },
+              { id: "mcp", span: "full", x: 0, y: 12, w: 12, h: 4 },
+            ],
+          },
+          {
+            title: "B",
+            widgets: [
+              { id: "mcp-events", span: "full", x: 0, y: 0, w: 12, h: 4 },
+              { id: "task-reopens", span: "full", x: 0, y: 4, w: 12, h: 4 },
+            ],
+          },
+        ],
+      }),
+    });
+    return response.status;
+  });
+  expect(patched).toBe(200);
+  await app.open("/?page=stats");
+  await expect(screen.getByTestId("widget-tokens")).toBeVisible({ timeout: 30_000 });
+
+  const drag = await browser.evaluate(() => {
+    const handle = document.querySelector<HTMLElement>(
+      '[data-widget-id="tokens"] [data-testid="dashboard-drag-handle"]',
+    );
+    const grid = document.querySelector<HTMLElement>('[data-section-index="0"] .dashboard-grid');
+    if (handle === null || grid === null) return null;
+    const from = handle.getBoundingClientRect();
+    const box = grid.getBoundingClientRect();
+    return {
+      x0: from.left + from.width / 2,
+      y0: from.top + from.height / 2,
+      x1: from.left + from.width / 2,
+      // A free four-row band below context and above the mcp card.
+      y1: box.top + 8 * (44 + 12) + 20,
+    };
+  });
+  expect(drag).not.toBeNull();
+  if (drag === null) throw new Error("missing within-section drag geometry");
+
+  await browser.mouse.move(drag.x0, drag.y0);
+  await browser.mouse.down();
+  for (let step = 1; step <= 8; step += 1) {
+    await browser.mouse.move(
+      drag.x0 + ((drag.x1 - drag.x0) * step) / 8,
+      drag.y0 + ((drag.y1 - drag.y0) * step) / 8,
+    );
+  }
+  await browser.mouse.up();
+
+  // The section membership does not change, so wait for the committed cell.
+  await expect
+    .poll(async () => {
+      const dashboard = await readDashboard(browser);
+      return {
+        sections: dashboard.layout.sections.map((section) =>
+          section.widgets.map((slot) => slot.id),
+        ),
+        tokensY: dashboard.layout.sections[0]?.widgets.find((slot) => slot.id === "tokens")?.y,
+      };
+    })
+    .toEqual({
+      sections: [
+        ["context", "tokens", "mcp"],
+        ["mcp-events", "task-reopens"],
+      ],
+      tokensY: 8,
+    });
+  const after = await readDashboard(browser);
+  const tokens = after.layout.sections[0]?.widgets.find((slot) => slot.id === "tokens");
+  const untouched = after.layout.sections[1]?.widgets.map((slot) => [slot.id, slot.y]);
+  expect(tokens).toMatchObject({ x: 0, y: 8, w: 12, h: 4, span: "full" });
+  expect(untouched).toEqual([
+    ["mcp-events", 0],
+    ["task-reopens", 4],
+  ]);
+});
+
+test("a drop outside every section changes nothing", async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 1200 });
+  await app.open("/?page=stats");
+  await resetMinimalDashboard(browser);
+  const patched = await browser.evaluate(async () => {
+    const response = await fetch("/api/dashboard/layout", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sections: [
+          {
+            title: "A",
+            widgets: [
+              { id: "context", span: "full", x: 0, y: 0, w: 12, h: 2 },
+              { id: "tokens", span: "full", x: 0, y: 4, w: 12, h: 4 },
+            ],
+          },
+          {
+            title: "B",
+            widgets: [
+              { id: "mcp", span: "full", x: 0, y: 0, w: 12, h: 4 },
+              { id: "mcp-events", span: "full", x: 0, y: 4, w: 12, h: 4 },
+            ],
+          },
+          {
+            title: "C",
+            widgets: [{ id: "task-reopens", span: "full", x: 0, y: 0, w: 12, h: 4 }],
+          },
+        ],
+      }),
+    });
+    return response.status;
+  });
+  expect(patched).toBe(200);
+  await app.open("/?page=stats");
+  await expect(screen.getByTestId("widget-tokens")).toBeVisible({ timeout: 30_000 });
+
+  const patches: PatchBody[] = [];
+  await browser.route("**/api/dashboard/layout", async (route) => {
+    if (route.request.method === "PATCH") {
+      patches.push(JSON.parse(route.request.postData ?? "{}") as PatchBody);
+    }
+    await route.continue();
+  });
+  const before = await readDashboard(browser);
+  const beforeSections = before.layout.sections;
+  const drag = await browser.evaluate(() => {
+    const handle = document.querySelector<HTMLElement>(
+      '[data-widget-id="tokens"] [data-testid="dashboard-drag-handle"]',
+    );
+    const firstGrid = document.querySelector<HTMLElement>(
+      '[data-section-index="0"] .dashboard-grid',
+    );
+    const secondHeading = document.querySelector<HTMLElement>(
+      '[data-section-index="1"] [data-section-heading]',
+    );
+    const lastGrid = document.querySelector<HTMLElement>(
+      '[data-section-index="2"] .dashboard-grid',
+    );
+    if (handle === null || firstGrid === null || secondHeading === null || lastGrid === null) {
+      return null;
+    }
+    const from = handle.getBoundingClientRect();
+    const first = firstGrid.getBoundingClientRect();
+    const heading = secondHeading.getBoundingClientRect();
+    const last = lastGrid.getBoundingClientRect();
+    return {
+      x: from.left + from.width / 2,
+      y: from.top + from.height / 2,
+      gapY: (first.bottom + heading.top) / 2,
+      belowY: Math.min(window.innerHeight - 8, last.bottom + 80),
+    };
+  });
+  expect(drag).not.toBeNull();
+  if (drag === null) throw new Error("missing outside-section drag geometry");
+
+  const dragTo = async (y: number) => {
+    await browser.mouse.move(drag.x, drag.y);
+    await browser.mouse.down();
+    for (let step = 1; step <= 8; step += 1) {
+      await browser.mouse.move(drag.x, drag.y + ((y - drag.y) * step) / 8);
+    }
+    await browser.mouse.up();
+    await browser.evaluate(
+      () => new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 900)),
+    );
+  };
+
+  // The gap between two sections belongs to neither of them.
+  await dragTo(drag.gapY);
+  expect(patches.length).toBe(0);
+  expect((await readDashboard(browser)).layout.sections).toEqual(beforeSections);
+
+  // Empty space below the last section is outside too; it must not delete.
+  await dragTo(drag.belowY);
+  expect(patches.length).toBe(0);
+  expect((await readDashboard(browser)).layout.sections).toEqual(beforeSections);
+  expect(
+    await browser.evaluate(
+      () =>
+        document
+          .querySelector<HTMLElement>('[data-widget-id="tokens"]')
+          ?.closest<HTMLElement>("[data-section-index]")?.dataset.sectionIndex ?? null,
+    ),
+  ).toBe("0");
+
+  await browser.unroute("**/api/dashboard/layout");
 });

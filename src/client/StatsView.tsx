@@ -323,6 +323,83 @@ function applyGridLayout(
   return next;
 }
 
+interface SectionBand {
+  index: number;
+  element: HTMLElement;
+  heading: DOMRect;
+  grid: DOMRect;
+}
+
+interface GridDropPoint {
+  y: number;
+}
+
+/** The grid band wins; a heading belongs to the section it titles. */
+function sectionAtY(bands: readonly SectionBand[], y: number): SectionBand | undefined {
+  for (const band of bands) {
+    if (y >= band.grid.top && y <= band.grid.bottom) return band;
+  }
+  for (const band of bands) {
+    if (y >= band.heading.top && y <= band.heading.bottom) return band;
+  }
+  return undefined;
+}
+
+/** Move one slot as-is into another section, below everything already there. */
+function moveSlotToSection(
+  layout: DashboardLayout,
+  fromIndex: number,
+  toIndex: number,
+  items: readonly Layout[],
+  movedId: string,
+): DashboardLayout {
+  const next = structuredClone(layout);
+  const from = next.sections[fromIndex];
+  const to = next.sections[toIndex];
+  if (from === undefined || to === undefined) return layout;
+  const at = from.widgets.findIndex((slot) => slot.id === movedId);
+  const stored = from.widgets[at];
+  if (stored === undefined) return layout;
+  const item = items.find((candidate) => candidate.i === movedId);
+  const w = Math.max(2, Math.min(GRID_COLUMNS, Math.round(item?.w ?? slotWidth(stored))));
+  const h = Math.max(2, Math.min(24, Math.round(item?.h ?? slotHeight(stored))));
+  const x = Math.max(0, Math.min(GRID_COLUMNS - w, Math.round(item?.x ?? stored.x ?? 0)));
+  const y = to.widgets.reduce(
+    (bottom, slot) => Math.max(bottom, (slot.y ?? 0) + slotHeight(slot)),
+    0,
+  );
+  from.widgets.splice(at, 1);
+  to.widgets.push({ ...stored, x, y, w, h, span: spanForWidth(w) });
+  return next;
+}
+
+function pointerY(event: MouseEvent | TouchEvent | undefined): number | undefined {
+  if (event === undefined) return undefined;
+  if ("changedTouches" in event) {
+    const touch = event.changedTouches[0] ?? event.touches[0];
+    return touch === undefined ? undefined : touch.clientY;
+  }
+  return Number.isFinite(event.clientY) ? event.clientY : undefined;
+}
+
+function dropPointFromEvent(
+  event: MouseEvent | TouchEvent | undefined,
+  grid: HTMLDivElement | null,
+  // RGL 1.5.4 passes null here; the DOM placeholder is the reliable fallback.
+  placeholder: Layout | null,
+): GridDropPoint | undefined {
+  // RGL can hand a synthetic stop event with zeroed coordinates; that is not
+  // a drop at the top of the page, so use the rendered placeholder instead.
+  const y = pointerY(event);
+  if (y !== undefined && y !== 0) return { y };
+  const rect = grid?.querySelector<HTMLElement>(".react-grid-placeholder")?.getBoundingClientRect();
+  if (rect !== undefined && rect.height > 0) return { y: rect.top + rect.height / 2 };
+  const gridRect = grid?.getBoundingClientRect();
+  if (gridRect === undefined || placeholder === null) return undefined;
+  const pitch = GRID_ROW_HEIGHT + GRID_MARGIN;
+  return { y: gridRect.top + placeholder.y * pitch + (placeholder.h * pitch) / 2 };
+}
+
 function viewerId(): string {
   const key = "pi-dashboard-viewer";
   try {
@@ -1213,10 +1290,14 @@ function SectionTitle({
   const className =
     "theme-radius flex items-center border border-border/70 bg-surface px-2 py-1 pr-20";
   if (title === undefined) {
-    return <div className={`${className} text-muted-foreground`}>{field}</div>;
+    return (
+      <div className={`${className} text-muted-foreground`} data-section-heading="">
+        {field}
+      </div>
+    );
   }
   return (
-    <h2 className={className}>
+    <h2 className={className} data-section-heading="">
       <span className="sr-only">{title}</span>
       {field}
     </h2>
@@ -1232,6 +1313,7 @@ function SectionGrid({
   desktop,
   onRemove,
   onGestureStart,
+  onGestureMove,
   onGestureStop,
 }: {
   index: number;
@@ -1242,11 +1324,13 @@ function SectionGrid({
   desktop: boolean;
   onRemove: (id: string) => void;
   onGestureStart: (kind: "drag" | "resize") => void;
+  onGestureMove: (index: number, event: MouseEvent) => void;
   onGestureStop: (
     index: number,
     layout: Layout[],
     kind: "drag" | "resize",
     movedId?: string,
+    drop?: GridDropPoint,
   ) => void;
 }) {
   const { ref: gridRef, width } = useGridWidth(desktop);
@@ -1262,6 +1346,7 @@ function SectionGrid({
   const itemsRef = useRef(items);
   itemsRef.current = items;
   const [gestureLayout, setGestureLayout] = useState<Layout[] | null>(null);
+  const [frozenHeight, setFrozenHeight] = useState<number | null>(null);
   const gesture = useRef<{ layout: Layout[]; frame: number | null } | null>(null);
 
   const scheduleGestureLayout = useCallback((next: Layout[]) => {
@@ -1280,22 +1365,31 @@ function SectionGrid({
   const beginGesture = useCallback(
     (kind: "drag" | "resize") => {
       const current = itemsRef.current;
+      if (kind === "drag") {
+        // RGL grows the source container with the dragged row. Freeze it for
+        // the gesture so sections below keep the rects snapshotted at start.
+        const height = gridRef.current?.getBoundingClientRect().height ?? 0;
+        setFrozenHeight(height > 0 ? height : null);
+      } else {
+        setFrozenHeight(null);
+      }
       gesture.current = { layout: current, frame: null };
       setGestureLayout(current);
       onGestureStart(kind);
     },
-    [onGestureStart],
+    [gridRef, onGestureStart],
   );
 
   const endGesture = useCallback(
-    (next: Layout[], kind: "drag" | "resize", movedId?: string) => {
+    (next: Layout[], kind: "drag" | "resize", movedId?: string, drop?: GridDropPoint) => {
       const active = gesture.current;
       if (active?.frame !== null && active?.frame !== undefined) {
         window.cancelAnimationFrame(active.frame);
       }
       gesture.current = null;
+      setFrozenHeight(null);
       setGestureLayout(null);
-      onGestureStop(index, next, kind, movedId);
+      onGestureStop(index, next, kind, movedId, drop);
     },
     [index, onGestureStop],
   );
@@ -1374,6 +1468,8 @@ function SectionGrid({
         rowHeight={GRID_ROW_HEIGHT}
         margin={[GRID_MARGIN, GRID_MARGIN]}
         containerPadding={[0, 0]}
+        autoSize={frozenHeight === null}
+        style={frozenHeight === null ? undefined : { height: frozenHeight }}
         compactType={null}
         isDroppable={false}
         preventCollision
@@ -1385,8 +1481,18 @@ function SectionGrid({
         resizeHandle={resizeHandle}
         onLayoutChange={(next) => scheduleGestureLayout(next)}
         onDragStart={() => beginGesture("drag")}
-        onDrag={(next) => scheduleGestureLayout(next)}
-        onDragStop={(next, _oldItem, newItem) => endGesture(next, "drag", newItem.i)}
+        onDrag={(next, _oldItem, _newItem, _placeholder, event) => {
+          scheduleGestureLayout(next);
+          onGestureMove(index, event);
+        }}
+        onDragStop={(next, _oldItem, newItem, placeholder, event) =>
+          endGesture(
+            next,
+            "drag",
+            newItem.i,
+            dropPointFromEvent(event, gridRef.current, placeholder),
+          )
+        }
         onResizeStart={() => beginGesture("resize")}
         onResize={(next) => scheduleGestureLayout(next)}
         onResizeStop={(next, _oldItem, newItem) => endGesture(next, "resize", newItem.i)}
@@ -1587,23 +1693,102 @@ export function StatsView({
 
   const layoutRef = useRef<DashboardLayout | null>(null);
   layoutRef.current = layout;
+  const dragBands = useRef<SectionBand[] | null>(null);
+  const highlightedSection = useRef<number | null>(null);
 
-  const beginGridGesture = useCallback((kind: "drag" | "resize") => {
-    gridGesture.current = true;
-    pageRef.current?.setAttribute("data-pager-lock", kind);
+  const clearDropTarget = useCallback(() => {
+    const root = pageRef.current;
+    if (root !== null) {
+      for (const node of root.querySelectorAll<HTMLElement>(
+        "[data-section-index][data-drop-target]",
+      )) {
+        node.removeAttribute("data-drop-target");
+      }
+    }
+    highlightedSection.current = null;
+  }, []);
+
+  const beginGridGesture = useCallback(
+    (kind: "drag" | "resize") => {
+      gridGesture.current = true;
+      pageRef.current?.setAttribute("data-pager-lock", kind);
+      if (kind === "resize") {
+        dragBands.current = null;
+        return;
+      }
+      const root = pageRef.current;
+      const bands: SectionBand[] = [];
+      if (root !== null) {
+        for (const area of root.querySelectorAll<HTMLElement>("[data-section-index]")) {
+          const index = Number(area.dataset.sectionIndex);
+          const heading = area.querySelector<HTMLElement>("[data-section-heading]");
+          const grid = area.querySelector<HTMLElement>(".dashboard-grid");
+          if (!Number.isInteger(index) || heading === null || grid === null) continue;
+          bands.push({
+            index,
+            element: area,
+            heading: heading.getBoundingClientRect(),
+            grid: grid.getBoundingClientRect(),
+          });
+        }
+      }
+      dragBands.current = bands.length === 0 ? null : bands;
+      clearDropTarget();
+    },
+    [clearDropTarget],
+  );
+
+  const moveGridGesture = useCallback((sourceIndex: number, event: MouseEvent) => {
+    const bands = dragBands.current;
+    if (bands === null || !Number.isFinite(event.clientY)) return;
+    const target = sectionAtY(bands, event.clientY);
+    const next = target !== undefined && target.index !== sourceIndex ? target.index : null;
+    if (next === highlightedSection.current) return;
+    const root = pageRef.current;
+    if (root !== null) {
+      for (const node of root.querySelectorAll<HTMLElement>(
+        "[data-section-index][data-drop-target]",
+      )) {
+        node.removeAttribute("data-drop-target");
+      }
+    }
+    if (next !== null) {
+      bands.find((band) => band.index === next)?.element.setAttribute("data-drop-target", "");
+    }
+    highlightedSection.current = next;
   }, []);
 
   const finishGridGesture = useCallback(
-    (sectionIndex: number, items: Layout[], kind: "drag" | "resize", movedId?: string) => {
+    (
+      sectionIndex: number,
+      items: Layout[],
+      kind: "drag" | "resize",
+      movedId?: string,
+      drop?: GridDropPoint,
+    ) => {
       gridGesture.current = false;
       pageRef.current?.removeAttribute("data-pager-lock");
+      const bands = dragBands.current;
+      dragBands.current = null;
+      clearDropTarget();
       const current = layoutRef.current;
       if (current === null) return;
-      const next = applyGridLayout(current, sectionIndex, items, kind, movedId);
+      let next: DashboardLayout;
+      if (kind === "drag" && movedId !== undefined && drop !== undefined && bands !== null) {
+        const target = sectionAtY(bands, drop.y);
+        // Outside every heading and grid the drop is cancelled, not committed.
+        if (target === undefined) return;
+        next =
+          target.index === sectionIndex
+            ? applyGridLayout(current, sectionIndex, items, kind, movedId)
+            : moveSlotToSection(current, sectionIndex, target.index, items, movedId);
+      } else {
+        next = applyGridLayout(current, sectionIndex, items, kind, movedId);
+      }
       if (JSON.stringify(normalizeLayout(next)) === JSON.stringify(current)) return;
       commitLayout(next);
     },
-    [commitLayout],
+    [clearDropTarget, commitLayout],
   );
 
   // The stacked mobile layout has no RGL grid, so it keeps the older pointer
@@ -2067,7 +2252,7 @@ export function StatsView({
         {viewLayout?.sections.map((section, index) => (
           <div
             key={sectionKey(index)}
-            className="relative flex flex-col gap-2"
+            className="dashboard-section relative flex flex-col gap-2"
             data-testid="dashboard-section"
             data-section-index={index}
           >
@@ -2093,6 +2278,7 @@ export function StatsView({
               desktop={desktop}
               onRemove={remove}
               onGestureStart={beginGridGesture}
+              onGestureMove={moveGridGesture}
               onGestureStop={finishGridGesture}
             />
           </div>
