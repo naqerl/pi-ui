@@ -33,7 +33,7 @@ import {
   type TaskDecisionNoticeRecord,
   taskDecisionPrompt,
 } from "../shared/notices.js";
-import { QUEUE_ENTRY_KIND, queuedNoticeGlyph } from "../shared/queue.js";
+import { QUEUE_ENTRY_KIND, queuedNoticeGlyph, queueKeyFromEntryData } from "../shared/queue.js";
 import {
   QUIET_AFTER_MS as DEFAULT_QUIET_AFTER_MS,
   type DurableRunFacts,
@@ -249,6 +249,8 @@ interface McpQueueItemInfo {
   readonly text: string;
   readonly createdAt: string;
   readonly key: string;
+  /** The durable key for a replacement submission a merge had to create. */
+  readonly requestId?: string;
 }
 
 function inboxItemText(item: InboxInputItem): string | null {
@@ -460,6 +462,21 @@ function submitTimingEnabled(): boolean {
   return (process.env.DEBUG ?? "")
     .split(",")
     .some((part) => part === "pi" || part === "pi:*" || part === "*");
+}
+
+/** The durable key for a queued submission, reused when a restart replays its marker item. */
+function queueRequestId(queueKey: string): string {
+  return `queue:${queueKey}`;
+}
+
+/** The client key an entry carries, for matching a retried send to its placed message. */
+function clientKeyFromEntry(entry: EntryRecord): string | undefined {
+  if (!isRecord(entry.data)) return undefined;
+  if (typeof entry.data.queueKey === "string" && entry.data.queueKey.length > 0) {
+    return entry.data.queueKey;
+  }
+  if (entry.kind !== QUEUE_ENTRY_KIND && entry.kind !== STEER_ENTRY_KIND) return undefined;
+  return queueKeyFromEntryData(entry.data);
 }
 
 /** The queued application entry, carrying a stable key so its chip and placed notice share an id. */
@@ -1085,6 +1102,20 @@ export class ChatService {
       broadcastMs: 0,
     };
     this.idleNudge.noteActivity();
+    // A retried send whose client message id is already on the transcript is the same
+    // message: return that entry instead of placing a second one and starting a turn.
+    const duplicate =
+      options.queueKey === undefined ? undefined : await this.placedClientMessage(options.queueKey);
+    if (duplicate !== undefined) {
+      return {
+        message: duplicate,
+        mode,
+        queued: false,
+        placed: true,
+        queue: this.queueItems(),
+        steers: this.steerItems(),
+      };
+    }
     const steer = mode === "steer";
     const attachments = options.attachments ?? [];
     if (attachments.length > 0) this.assertAcceptsImages();
@@ -1124,6 +1155,10 @@ export class ChatService {
     // by durable. Reuse the placed key there too, or the chip and the optimistic bubble
     // would get different ids and render the same message twice.
     const pendingKey = queueKey ?? entryKey ?? placedKey;
+    // The same durable key is stored on the queued item, so restoration replays the
+    // original submission instead of admitting a second one for the same message.
+    const requestId =
+      options.requestId ?? (pendingKey === undefined ? undefined : queueRequestId(pendingKey));
     const notice =
       options.entry === undefined
         ? undefined
@@ -1160,7 +1195,7 @@ export class ChatService {
           type: "input",
           content,
           whenBusy: steer ? "steer" : "followUp",
-          ...(options.requestId === undefined ? {} : { requestId: options.requestId }),
+          ...(requestId === undefined ? {} : { requestId }),
           ...(steer
             ? {
                 entry: {
@@ -1209,6 +1244,7 @@ export class ChatService {
           text,
           createdAt: new Date().toISOString(),
           ...(pendingKey === undefined ? {} : { key: pendingKey }),
+          ...(requestId === undefined ? {} : { requestId }),
           ...(notice === undefined ? {} : { notice }),
           ...(attachments.length > 0 ? { attachments } : {}),
         },
@@ -1257,6 +1293,7 @@ export class ChatService {
           text,
           createdAt: new Date().toISOString(),
           ...(pendingKey === undefined ? {} : { key: pendingKey }),
+          ...(requestId === undefined ? {} : { requestId }),
           ...(notice === undefined ? {} : { notice }),
           ...(attachments.length > 0 ? { attachments } : {}),
         },
@@ -1370,20 +1407,95 @@ export class ChatService {
   private async restorePersistedQueue(): Promise<void> {
     const marker = this.marker;
     if (marker === undefined || marker.stopRequested) return;
+    // Reacquire the submissions a pre-requestId marker named, instead of admitting
+    // them again under a new key. The old restore used `run-queue:<marker>:<item>`;
+    // newer markers carry the request id they admitted.
+    let live: Awaited<ReturnType<Harness["inspect"]>>["submissions"] = [];
+    try {
+      const inspection = await this.harness.inspect(SESSION_CONTEXT);
+      live = inspection.submissions.filter(
+        (record) => String(record.conversationId) === String(this.conversation.id),
+      );
+    } catch (error) {
+      console.error("[pi] could not inspect queued submissions", error);
+    }
+    const byId = new Map(live.map((record) => [String(record.id), record]));
+    const byRequest = new Map(
+      live.flatMap((record) =>
+        record.requestId === undefined ? [] : [[record.requestId, record] as const],
+      ),
+    );
+    const failed: QueuedMessage[] = [];
+    let adopted = false;
     for (const item of marker.queue) {
+      const queueKey = item.key ?? `q-${item.id}`;
+      const legacyRequestId = `run-queue:${marker.idempotencyKey}:${item.id}`;
+      const existing =
+        byId.get(item.id) ??
+        (item.requestId === undefined ? undefined : byRequest.get(item.requestId)) ??
+        byRequest.get(legacyRequestId);
+      if (existing !== undefined) {
+        if (existing.status !== "queued") continue;
+        const submission = await this.harness.submission(existing.id, SESSION_CONTEXT);
+        if (submission === undefined) {
+          failed.push(item);
+          continue;
+        }
+        const id = String(existing.id);
+        this.queued.set(id, {
+          item: {
+            ...item,
+            id,
+            key: queueKey,
+            requestId: existing.requestId ?? item.requestId ?? legacyRequestId,
+          },
+          submission,
+        });
+        adopted = true;
+        void this.monitorSubmission(submission, false, id);
+        continue;
+      }
       try {
         await this.submit(item.text, "queue", {
-          requestId: `run-queue:${marker.idempotencyKey}:${item.id}`,
-          queueKey: item.key ?? `q-${item.id}`,
+          requestId: item.requestId ?? legacyRequestId,
+          queueKey,
           ...(item.attachments === undefined ? {} : { attachments: item.attachments }),
         });
       } catch (error) {
         console.error("[pi] could not restore a queued message", error);
+        failed.push(item);
       }
     }
+    // Adopted submissions do not themselves ask durable for a boundary. If they are
+    // still waiting and no run is live, continue once so they are placed and answered.
+    if (this.queued.size > 0) {
+      try {
+        const facts = await this.durableRunFacts();
+        if (!facts.run) {
+          await this.conversation.submit({ type: "continue" }, SESSION_CONTEXT);
+        }
+      } catch (error) {
+        console.error("[pi] could not resume the restored queue", error);
+      }
+    }
+    if (adopted) this.broadcastQueue();
+    // Retire only items this pass actually handled; a failed restore stays in the
+    // marker so the next restart can retry it instead of dropping the message.
+    const current = this.marker ?? marker;
+    const queue = [...this.queueItems()];
+    for (const item of failed) {
+      const tracked = queue.some(
+        (candidate) =>
+          candidate.id === item.id ||
+          (item.key !== undefined && candidate.key !== undefined && candidate.key === item.key),
+      );
+      if (!tracked) queue.push(item);
+    }
+    this.marker = { ...current, queue, updatedAt: new Date().toISOString() };
+    await this.flushMarkerState();
   }
 
-  private async persistMarkerState(): Promise<void> {
+  private async persistMarkerState(flush = false): Promise<void> {
     const marker = this.marker;
     if (marker === undefined) return;
     this.marker = {
@@ -1393,6 +1505,10 @@ export class ChatService {
     };
     // The in-memory marker is authoritative and last-write-wins; one disk write per
     // tick is enough, and the caller no longer waits for it before broadcasting.
+    if (flush) {
+      await this.flushMarkerState();
+      return;
+    }
     this.scheduleMarkerWrite();
   }
 
@@ -1438,6 +1554,14 @@ export class ChatService {
         console.error("[pi] could not clear the run marker", error);
       });
     await this.markerWrites;
+  }
+
+  /** The transcript message a retried client send already produced, if it is placed. */
+  private async placedClientMessage(queueKey: string): Promise<ChatMessage | undefined> {
+    const context = await this.conversation.context(SESSION_CONTEXT);
+    const entry = context.entries.find((candidate) => clientKeyFromEntry(candidate) === queueKey);
+    if (entry === undefined) return undefined;
+    return buildTranscript([entry], this.mediaRef, this.diagramRevision).messages[0];
   }
 
   private async submittedMessage(
@@ -1527,7 +1651,8 @@ export class ChatService {
         }
       }
       if (queuedId !== undefined && this.queued.delete(queuedId)) {
-        await this.persistMarkerState();
+        // Delivery is the point this queue item must leave the durable marker too.
+        await this.persistMarkerState(true);
         this.broadcastQueue();
       }
       if (startsRun && this.queued.size === 0) this.setRunState("idle");
@@ -1674,6 +1799,7 @@ export class ChatService {
               reused !== undefined && typeof base.queueKey === "string" && base.queueKey.length > 0
                 ? base.queueKey
                 : randomUUID();
+            const requestId = reused === undefined ? queueRequestId(queueKey) : undefined;
             // A fresh id keeps a later display update for one source notice
             // from becoming the group's first entry and hiding the merge.
             const noticeId = `mcp/merged#${randomUUID()}`;
@@ -1697,6 +1823,7 @@ export class ChatService {
                 conversationId: this.conversation.id,
                 type: "input",
                 status: "queued",
+                ...(requestId === undefined ? {} : { requestId }),
               });
               replacements.push({
                 id: record.id,
@@ -1712,6 +1839,7 @@ export class ChatService {
                 text,
                 createdAt: merged.createdAt,
                 key: queueKey,
+                ...(requestId === undefined ? {} : { requestId }),
               });
             }
             carriedBefore += events.length;
@@ -1749,6 +1877,7 @@ export class ChatService {
             text: info.text,
             createdAt: info.createdAt,
             key: info.key,
+            ...(info.requestId === undefined ? {} : { requestId: info.requestId }),
             notice: {
               kind: MCP_NOTICE_ENTRY_KIND,
               label: "MCP events",
@@ -2422,7 +2551,8 @@ export class ChatService {
   }
 
   private async publishQueueRetirement(): Promise<void> {
-    await this.persistMarkerState();
+    // A delivered item must be gone from the marker before any restart can read it.
+    await this.persistMarkerState(true);
     this.broadcastQueue();
     this.hub.broadcast({
       event: "message.done",

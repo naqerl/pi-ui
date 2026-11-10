@@ -124,6 +124,8 @@ export interface QueuedMessage {
   attachments?: string[];
   /** Stable key the transcript entry carries once this steer is placed. */
   key?: string;
+  /** Durable request id, so a restart replays the same submission instead of adding another. */
+  requestId?: string;
   /** A machine notice queued as a chip instead of a user bubble. */
   notice?: QueuedNotice;
 }
