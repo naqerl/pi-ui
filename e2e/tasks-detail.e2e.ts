@@ -244,6 +244,22 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     await expect(screen.getByTestId("task-detail")).toBeVisible();
     await expectProjectAboveBody(browser);
     await expect(screen.getByTestId("task-filters")).toHaveCount(0);
+
+    const contentTop = await browser.evaluate(() => {
+      const pane = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
+      const title = document.querySelector<HTMLElement>('[data-testid="task-title"]');
+      const description = document.querySelector<HTMLElement>('[data-testid="task-body-section"]');
+      if (pane === null || title === null || description === null) return null;
+      const paneTop = pane.getBoundingClientRect().top;
+      return {
+        title: title.getBoundingClientRect().top - paneTop,
+        description: description.getBoundingClientRect().top - paneTop,
+      };
+    });
+    expect(contentTop).not.toBeNull();
+    expect(contentTop?.title ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(24);
+    expect(contentTop?.description ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(100);
+
     const sides = await browser.evaluate(() => {
       const list = document.querySelector<HTMLElement>('[data-testid="task-list"]');
       const detail = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
