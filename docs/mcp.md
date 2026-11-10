@@ -31,11 +31,17 @@ pi-ui asks the server whether that cursor still belongs to a live subscription
 with an `events/poll` probe; a server that does not implement the probe is
 checked through `events/list`. A `NotFound` (`-32023`) or unknown stream marks
 the row `cancelled`, persists it, logs `mcp: dropped restored subscription …`,
-and never retries it in this process. A server that still knows the stream but
-would replay from before this process started keeps the subscription at the
-fresh cursor it returned, dropping that backlog. Each successful restore logs
-one line, `mcp: restored subscription <server>/<name> at <cursor>`. If a server
-is unavailable, its entry stays in the registry and is retried when that server
+and never retries it in this process. If the cursor probe would replay a
+backlog whose first event predates this process by more than a 15-minute grace
+window, the restore subscribes with `cursor: null` and records one gap
+(`from`, `missedSince` from `lastEventAt`, and `at`) instead of replaying it.
+The gap reaches chat as a single “N events were missed while pi was not
+running” status chip. A recent backlog — the ordinary “pi restarted a moment
+ago” case — still replays from its stored cursor. The paged-catalog fallback
+also keeps its recovered cursor, because that is a position rather than a
+backlog. Each successful restore logs one line,
+`mcp: restored subscription <server>/<name> at <cursor>`. If a server is
+unavailable, its entry stays in the registry and is retried when that server
 answers again.
 
 A restart therefore starts from the last cursor instead of `null` ("start from
@@ -115,12 +121,17 @@ accepted event identities across completed deliveries; the subscription registry
 also retains its per-stream delivered-ID window. Providers must supply stable
 event IDs. Retention is bounded, not an infinite replay ledger.
 
-Startup recovery resumes from the stored push cursor. Poll probes,
-heartbeats, and status frames do not acknowledge events. A provider that can no
-longer replay a cursor reports `truncated` through the installed event adapter;
-its “replay is truncated … some events are unavailable” warning now reaches a
-persistent chat status chip instead of a no-op UI notification. Unknown streams
-remain failures; no undocumented cursor reset is guessed.
+Startup recovery resumes from the stored push cursor when that backlog is
+recent; an old backlog starts from now and reports one gap instead. Poll
+probes, heartbeats, and status frames do not acknowledge events. A provider
+that can no longer replay a cursor reports `truncated` through the installed
+event adapter; its “replay is truncated … some events are unavailable” warning
+now reaches a persistent chat status chip instead of a no-op UI notification.
+A restored stream stays capped for its first 15 minutes: a replayed burst
+produces at most one merged event chip per batch, plus one gap chip for events
+beyond `MAX_PENDING_MCP_EVENTS`, so a continuous replay cannot outrun the
+outbox merger. Unknown streams remain failures; no undocumented cursor reset is
+guessed.
 
 Live delivery uses bounded idle batches and per-event busy deliveries with the existing queued-burst merger,
 not the old in-memory ten-minute coalescer. This keeps retry/restart identity

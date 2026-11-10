@@ -366,6 +366,24 @@ export function mcpDeliveryTexts(envelope: McpEventEnvelope, busy: boolean): str
   );
 }
 
+/**
+ * A restored subscription may replay continuously. Unlike a busy live stream,
+ * it must not produce one delivery per event: cap the batch at the merge limit
+ * and turn the remainder into one gap text. The result is at most one event
+ * chip and one gap chip, however long the replay runs.
+ */
+export function mcpRestoreDeliveryTexts(envelope: McpEventEnvelope): string[] {
+  const bounded = boundMcpEventBatch(envelope.items);
+  const dropped = envelope.dropped + bounded.dropped;
+  const boundedEnvelope = { ...envelope, items: bounded.items, dropped };
+  if (bounded.items.length === 0) {
+    return dropped > 0 ? [mcpEventText(boundedEnvelope, [])] : [];
+  }
+  const events = mcpEventText({ ...boundedEnvelope, dropped: 0 }, bounded.items);
+  if (dropped === 0) return [events];
+  return [events, mcpEventText(boundedEnvelope, [])];
+}
+
 function mergedNoticeText(
   head: string,
   totalEvents: number,
