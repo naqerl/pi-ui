@@ -1629,31 +1629,33 @@ export function TaskDetail({
       className={cn(wide && "h-full min-h-0")}
     >
       <CardHeader className={cn(wide && "min-h-0 flex-1 overflow-hidden")}>
-        <div className="flex min-h-8 items-center gap-2">
-          {!wide && (
-            <Button
-              variant="ghost"
-              size="sm"
-              data-testid="task-detail-back"
-              aria-label="Back to tasks"
-              onClick={onClose}
-              className="-ml-2 shrink-0 rounded-md px-2"
-            >
-              Back
-            </Button>
-          )}
-          <span className="min-w-0 flex-1 truncate text-xs leading-4 text-muted-foreground">
-            {parent !== undefined && (
-              <button
-                type="button"
-                className="underline-offset-4 hover:underline"
-                onClick={() => onOpen(parent.id)}
+        {(parent !== undefined || !wide) && (
+          <div className={cn("flex items-center gap-2", !wide && "min-h-8")}>
+            {!wide && (
+              <Button
+                variant="ghost"
+                size="sm"
+                data-testid="task-detail-back"
+                aria-label="Back to tasks"
+                onClick={onClose}
+                className="-ml-2 shrink-0 rounded-md px-2"
               >
-                {plainInline(parent.title)}
-              </button>
+                Back
+              </Button>
             )}
-          </span>
-        </div>
+            <span className="min-w-0 flex-1 truncate text-xs leading-4 text-muted-foreground">
+              {parent !== undefined && (
+                <button
+                  type="button"
+                  className="underline-offset-4 hover:underline"
+                  onClick={() => onOpen(parent.id)}
+                >
+                  {plainInline(parent.title)}
+                </button>
+              )}
+            </span>
+          </div>
+        )}
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
             {editingTitle ? (
