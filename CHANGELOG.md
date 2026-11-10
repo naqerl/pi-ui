@@ -1,3 +1,11 @@
+## 1.6.138
+
+### Changed
+
+- Task list sections use a thin rule and a muted count instead of an inverted pill, matching the stats page.
+  Task cards sit on a translucent, blurred surface so the page reads through them; the opened task keeps an
+  opaque card instead of a ring, and backlog keeps its dashed, desaturated treatment.
+
 ## 1.6.137
 
 ### Fixed
