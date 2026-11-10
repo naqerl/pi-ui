@@ -1,3 +1,12 @@
+## 1.6.140
+
+### Fixed
+
+- A restored MCP subscription is bounded by size as well as by age. The restore probe now asks for 25
+  events instead of 100, and a hub that answers a page request with the full page is treated as stale,
+  so it starts from now. A reconnect can no longer drain a four-day backlog into the chat queue, which
+  is what produced the surge of queued events after the hub's events extension was fixed.
+
 ## 1.6.139
 
 ### Changed
