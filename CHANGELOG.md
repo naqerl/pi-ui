@@ -1,3 +1,13 @@
+## 1.6.137
+
+### Fixed
+
+- A restored MCP subscription no longer replays history. If the events it missed are older than a fifteen
+  minute grace window, the stream starts from now and the missed window is reported once as a gap, so a
+  restart can no longer pour days of backlog into the chat queue.
+- A replay burst is capped and merged, so a reconnect delivers a bounded number of notices instead of one
+  per event.
+
 ## 1.6.136
 
 ### Added
