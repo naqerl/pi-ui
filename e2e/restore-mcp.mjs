@@ -10,6 +10,8 @@ import { z } from "zod";
 const logPath = process.env.RESTORE_MCP_LOG;
 const mode = process.env.RESTORE_MCP_MODE === "paged" ? "paged" : "poll";
 const oldTimestamp = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+// A stream can hand over a backlog from its adapter, not only a fresh replay.
+const staleBatchTimestamp = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
 // A restart a moment ago: the missed event is seconds old, so replay is right.
 const recentTimestamp = new Date(Date.now() - 2_000).toISOString();
 const names =
@@ -22,6 +24,9 @@ const names =
         "idle-stream",
         "live-stream",
         "burst-stream",
+        "stale-batch-stream",
+        "mixed-batch-stream",
+        "fresh-batch-stream",
         // events/poll probes this stream too, and events/subscribe rejects a
         // name its catalog does not list, so the catalog must include it.
         "flood-stream",
@@ -128,6 +133,9 @@ if (mode !== "paged") {
       if (params.name === "idle-stream") return { events: [], cursor: "idle:7" };
       if (params.name === "live-stream") return { events: [], cursor: "live-stream:0" };
       if (params.name === "burst-stream") return { events: [], cursor: "burst-stream:0" };
+      if (params.name.endsWith("-batch-stream")) {
+        return { events: [], cursor: `${params.name}:0` };
+      }
       throw new ProtocolError(-32023, "Subscription not found");
     },
   );
@@ -229,13 +237,33 @@ server.setRequestHandler(
           void notify("notifications/events/event", {
             eventId: `burst-${index}`,
             name: "burst-stream",
-            timestamp: oldTimestamp,
+            timestamp: recentTimestamp,
             cursor: `burst-stream:${index}`,
             data: { kind: "burst-stream.event", id: `burst-${index}`, state: "created" },
           });
         }
         void notify("notifications/events/heartbeat", { cursor: "burst-stream:22" });
       }, 2_000);
+    }
+
+    if (params.name.endsWith("-batch-stream")) {
+      const prefix = params.name.replace(/-stream$/, "");
+      const batch = Array.from({ length: 40 }, (_, index) => {
+        const old =
+          params.name === "stale-batch-stream" ||
+          (params.name === "mixed-batch-stream" && index < 3);
+        return {
+          eventId: `${prefix}-${index + 1}`,
+          name: params.name,
+          timestamp: old ? staleBatchTimestamp : new Date().toISOString(),
+          cursor: `${params.name}:${index + 1}`,
+          data: { kind: `${prefix}.event`, id: `${prefix}-${index + 1}`, state: "created" },
+        };
+      });
+      setTimeout(() => {
+        for (const event of batch) void notify("notifications/events/event", event);
+        void notify("notifications/events/heartbeat", { cursor: `${params.name}:40` });
+      }, 500);
     }
 
     await closed;

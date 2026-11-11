@@ -36,8 +36,19 @@ function startedAtOf(value: number | string | Date | undefined): number {
 
 const LIVE_STATUS = new Set(["opening", "active", "reconnecting"]);
 const EVENT_LIMIT = 100;
+/**
+ * A restart is allowed to replay what it missed while it was down, but only
+ * for a short window and only for a handful of events. A stream whose first
+ * missed event predates this process by more than the grace horizon is old
+ * history, not a restart: resuming it would replay days of backlog into the
+ * chat queue. A short outage on a busy hub is the same problem in miniature —
+ * ten minutes can hold a hundred events — so a full probe page means "this is
+ * a backlog, not a handful", however recent it looks. This is also the age
+ * gate for the stream itself, so every ingest path uses the same horizon.
+ */
+export const RESTORE_GRACE_MS = 15 * 60_000;
 /** A restored stream is capped for this long; a continuous replay cannot outrun the outbox. */
-const RESTORE_CAP_WINDOW_MS = 15 * 60_000;
+const RESTORE_CAP_WINDOW_MS = RESTORE_GRACE_MS;
 
 /**
  * A stream the user could still be depending on. `failed` is deliberately not
@@ -50,6 +61,80 @@ function isLiveSubscription(view: McpSubscriptionView): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** One bounded event list plus how many events were too old to deliver. */
+export interface FreshMcpEvents {
+  readonly items: unknown[];
+  readonly dropped: number;
+}
+
+function eventTimestampMs(event: Record<string, unknown>): number | undefined {
+  const raw = event.timestamp;
+  const parsed =
+    typeof raw === "number"
+      ? raw
+      : typeof raw === "string"
+        ? Date.parse(raw)
+        : raw instanceof Date
+          ? raw.getTime()
+          : NaN;
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function eventLabel(item: Record<string, unknown>): string {
+  const event = isRecord(item.event) ? item.event : {};
+  const server = typeof item.server === "string" ? item.server : "unknown";
+  const name = typeof event.name === "string" ? event.name : "event";
+  const id = typeof event.eventId === "string" ? ` ${event.eventId}` : "";
+  return `${server}/${name}${id}`;
+}
+
+/**
+ * A stream can reconnect and hand over its adapter's own buffered backlog,
+ * not only the replay the cursor probe saw. The only thing pi-ui can judge is
+ * whether an event is news, so each event is tested against the restore grace
+ * individually: one old sibling must not drop a fresh event, and one fresh
+ * sibling must not carry an old event into the queue. An event without a usable
+ * timestamp cannot be judged, so it is delivered as before and logged.
+ */
+export function filterStaleMcpEvents(
+  items: readonly unknown[],
+  startedAt: number,
+  log = true,
+): FreshMcpEvents {
+  const cutoff = startedAt - RESTORE_GRACE_MS;
+  const fresh: unknown[] = [];
+  let dropped = 0;
+  for (const item of items) {
+    if (!isRecord(item) || !isRecord(item.event)) {
+      fresh.push(item);
+      continue;
+    }
+    const at = eventTimestampMs(item.event);
+    if (at === undefined) {
+      if (log) {
+        console.debug(
+          `[mcp] delivering ${eventLabel(item)} without a usable timestamp; its age cannot be judged`,
+        );
+      }
+      fresh.push(item);
+      continue;
+    }
+    if (at < cutoff) {
+      dropped += 1;
+      if (log) {
+        console.debug(
+          `[mcp] dropped ${eventLabel(item)} older than the restore grace (${new Date(
+            at,
+          ).toISOString()} < ${new Date(cutoff).toISOString()})`,
+        );
+      }
+      continue;
+    }
+    fresh.push(item);
+  }
+  return { items: fresh, dropped };
 }
 
 function oneLine(value: string): string {
@@ -377,11 +462,11 @@ function filterUntrackedStatusItems(
  *
  * Replay detection is keyed by the durable stable id, not the adapter id: the
  * registry keeps the last `MAX_DELIVERED_EVENT_IDS` event ids for each stable
- * id. Novelty is judged from that id set alone, per conversation: an id already
- * delivered is a re-delivery and never becomes a chat notice, and an id the
- * conversation has not seen is news even when it was produced while this
- * process was down. Process boot time deliberately plays no part — a restart of
- * the server is not a restart of the conversation.
+ * id. Novelty is judged from that id set per conversation: an id already
+ * delivered is a re-delivery and never becomes a chat notice, and a novel id is
+ * news even when it was produced while this process was down. Age is a separate
+ * gate: an event older than the restore grace is news for neither the queue nor
+ * the ledger, because the stream itself can hand over a stale adapter backlog.
  */
 export class McpEventFeed {
   private readonly subscriptions = new Map<string, McpSubscriptionView>();
@@ -759,6 +844,15 @@ export class McpEventFeed {
   }
 
   /**
+   * Keep only the events that are news for this process. The delivery path runs
+   * this before it bounds a batch or writes the outbox, so an old adapter
+   * backlog never occupies a queue slot and never evicts a fresh sibling.
+   */
+  filterStaleEvents(items: readonly unknown[], log = true): FreshMcpEvents {
+    return filterStaleMcpEvents(items, this.startedAt, log);
+  }
+
+  /**
    * Exact novel subset, without advancing cursor/ids. Persist it before ingesting.
    * A replayed entry that never produced a chip is included again, with the
    * original item, so the next drain can still commit exactly one chip for it.
@@ -1107,12 +1201,13 @@ export class McpEventFeed {
     if (!isRecord(details) || !Array.isArray(details.events)) return false;
     let stateChanged = false;
     let deliveredNew = false;
-    // One subscribe can hand us a whole retained history. Bound the batch
-    // before it reaches the ledger: only the newest ids may become notices, and
-    // the rest are one gap instead of a queue of deliveries.
-    const batch = boundMcpEventBatch(details.events);
+    // A stream may hand over old adapter history and a subscribe may hand us a
+    // whole retained history. Age first, then size: dropping stale events must
+    // not consume the batch bound and evict a fresh sibling.
+    const aged = filterStaleMcpEvents(details.events, this.startedAt);
+    const batch = boundMcpEventBatch(aged.items);
     const reportedDropped = typeof details.dropped_events === "number" ? details.dropped_events : 0;
-    const dropped = reportedDropped + batch.dropped;
+    const dropped = reportedDropped + aged.dropped + batch.dropped;
     if (dropped > 0) {
       this.gap = { dropped, at: new Date().toISOString() };
       this.notice =
