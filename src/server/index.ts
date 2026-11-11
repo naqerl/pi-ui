@@ -962,7 +962,8 @@ app.post("/api/queue/:id", async (c) => {
   if (action === "cancel") {
     const ok = await chat.cancelQueued(id);
     if (!ok) return c.notFound();
-    return c.json({ ok: true, queue: (await chat.getSnapshot()).queue });
+    const snapshot = await chat.getSnapshot();
+    return c.json({ ok: true, queue: snapshot.queue, queueRevision: snapshot.queueRevision });
   }
   if (action === "steer") {
     const result = await chat.steerQueued(id);
@@ -986,7 +987,13 @@ app.post("/api/steer/:id", async (c) => {
   if (action !== "unsend") return c.text('Action must be "unsend"', 400);
   const steer = await chat.unsendSteer(id);
   if (steer === null) return c.text("The steer was already delivered", 409);
-  return c.json({ ok: true, steer, steers: chat.getRunStatus().steers ?? [] });
+  const status = chat.getRunStatus();
+  return c.json({
+    ok: true,
+    steer,
+    steers: status.steers ?? [],
+    queueRevision: status.queueRevision,
+  });
 });
 
 app.post("/api/stop", async (c) => {
