@@ -307,7 +307,9 @@ test("paints the pi-ui update note with the theme accent", async ({ app, browser
               accent: getComputedStyle(document.documentElement)
                 .getPropertyValue("--accent")
                 .trim(),
-              warning: note.textContent?.includes("⚠") ?? false,
+              warning:
+                (note.textContent?.includes("⚠") ?? false) ||
+                note.querySelector('[data-icon="warning"]') !== null,
             };
       }),
     )

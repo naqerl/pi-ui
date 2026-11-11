@@ -12,8 +12,10 @@ import {
   type OperatorNoticeDetails,
   type TaskDecisionNoticeDetails,
 } from "../shared/notices";
+import { noticeIconName } from "../shared/queue";
 import { formatDateTime, formatTime } from "../shared/time";
 import type { ChatMessage } from "../shared/types";
+import { CloseIcon, NoticeIcon } from "./icons";
 import { cn } from "./lib/utils";
 
 /** The instant a notice is about: the newest MCP event, or when the notice was recorded. */
@@ -42,15 +44,10 @@ function noticeLabel(notice: ChatNotice): string {
   return notice.kind === "interrupted" ? notice.note : notice.summary;
 }
 
-function noticeGlyph(notice: ChatNotice): string {
-  if (notice.kind === "job") return "⚙";
-  if (notice.kind === "delegate") return "◈";
-  if (notice.kind === "mcp") return "↯";
-  if (notice.kind === "memory" || notice.kind === "memory-delta") return "✎";
-  if (notice.kind === "idle") return "◷";
-  if (notice.kind === "decision") return notice.decision === "approved" ? "✓" : "✕";
-  if (notice.kind === "operator") return "◇";
-  return "⚠";
+function noticeIcon(notice: ChatNotice) {
+  return notice.kind === "decision"
+    ? noticeIconName(notice.kind, notice.decision)
+    : noticeIconName(notice.kind);
 }
 
 /** The shared chip surface for chat notices and tool-activity chips. */
@@ -87,7 +84,7 @@ export function ChipButton({
       title={title}
       onClick={onClick}
       className={cn(
-        "flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-mono text-[11px] leading-5 shadow-sm backdrop-blur-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
+        "inline-flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-mono text-[11px] leading-5 shadow-sm backdrop-blur-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
         tone === "warning"
           ? "border-status-warn/40 bg-status-warn/10 text-status-warn hover:border-status-warn/60 hover:text-status-warn"
           : tone === "destructive"
@@ -131,9 +128,7 @@ export function NoticeLine({
           notice.kind === "interrupted" ? "warning" : failed(notice) ? "destructive" : "default"
         }
       >
-        <span aria-hidden="true" className="shrink-0">
-          {noticeGlyph(notice)}
-        </span>
+        <NoticeIcon name={noticeIcon(notice)} size={14} />
         <span className="min-w-0 truncate" data-testid="chat-notice-summary">
           {label}
         </span>
@@ -234,7 +229,7 @@ function NoticeDialog({
             onClick={onClose}
             className="-mr-1 shrink-0 rounded-md px-2 py-1 font-mono text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
           >
-            ✕
+            <CloseIcon size={16} />
           </button>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 text-sm">

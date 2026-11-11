@@ -63,6 +63,7 @@ import {
 } from "./components/ui/chart";
 import { getDashboard, setDashboard, subscribeDashboard } from "./dashboard-store";
 import { haptic } from "./haptics";
+import { CloseIcon, DotIcon, GripIcon, MoreIcon, TrendDownIcon, TrendUpIcon } from "./icons";
 import { Markdown } from "./markdown";
 
 export interface ChatStats {
@@ -964,15 +965,21 @@ function ViewBody({ id, view, chart }: { id: string; view: WidgetView; chart?: S
                   <span
                     className={
                       view.trend === "up"
-                        ? "text-status-ok"
+                        ? "inline-flex items-center gap-1 text-status-ok"
                         : view.trend === "down"
-                          ? "text-status-bad"
-                          : "text-muted-foreground"
+                          ? "inline-flex items-center gap-1 text-status-bad"
+                          : "inline-flex items-center gap-1 text-muted-foreground"
                     }
                     data-testid={`stat-${id}-delta`}
                   >
-                    {" "}
-                    {view.trend === "up" ? "▲" : view.trend === "down" ? "▼" : "•"} {view.delta}
+                    {view.trend === "up" ? (
+                      <TrendUpIcon size={10} />
+                    ) : view.trend === "down" ? (
+                      <TrendDownIcon size={10} />
+                    ) : (
+                      <DotIcon size={10} />
+                    )}
+                    {view.delta}
                   </span>
                 )}
               </dd>
@@ -1175,7 +1182,7 @@ function WidgetCard({
             data-no-press
             onClick={(event) => event.stopPropagation()}
           >
-            ⠿
+            <GripIcon size={14} />
           </button>
           <h2
             className="min-w-0 text-[11px] uppercase tracking-wide text-muted-foreground [overflow-wrap:anywhere]"
@@ -1206,7 +1213,7 @@ function WidgetCard({
             aria-expanded={menu}
             onClick={() => setMenu((open) => !open)}
           >
-            ⋯
+            <MoreIcon size={16} />
           </button>
         </span>
       </div>
@@ -2266,7 +2273,7 @@ export function StatsView({
                 disabled={viewLayout.sections.length <= 1}
                 onClick={() => deleteSection(index)}
               >
-                ✕
+                <CloseIcon size={12} />
               </button>
             </div>
             <SectionGrid
