@@ -265,11 +265,7 @@ test("shows a failed task action beside the control and keeps a long title", asy
   await expect(screen.getByTestId("composer-error")).toHaveCount(0);
 });
 
-test("shows created and closed times at the bottom right of a task card", async ({
-  app,
-  browser,
-  screen,
-}) => {
+test("shows task metadata on one bottom line under the title", async ({ app, browser, screen }) => {
   const now = Date.now();
   const at = (agoMs: number) => new Date(now - agoMs).toISOString();
   // The done list keys groups by calendar day and only opens today's group, so
@@ -295,6 +291,7 @@ test("shows created and closed times at the bottom right of a task card", async 
               id: "open-card",
               title: "Keep the ledger open",
               status: "open",
+              project: "Alpha",
               parentId: null,
               blockedBy: [],
               createdAt: at(3_600_000),
@@ -306,8 +303,10 @@ test("shows created and closed times at the bottom right of a task card", async 
               id: "done-card",
               title: "Close the ledger",
               status: "done",
+              project: "Ledger",
               parentId: null,
               blockedBy: [],
+              attachments: [`${"a".repeat(32)}.png`, `${"b".repeat(32)}.png`],
               createdAt: at(7_200_000),
               proposedAt: null,
               completedAt: closedToday,
@@ -326,47 +325,110 @@ test("shows created and closed times at the bottom right of a task card", async 
     const measure = (id: string) => {
       const card = document.querySelector(`[data-testid="task-${id}"] [data-task-card]`);
       if (!(card instanceof HTMLElement)) return null;
-      const times = card.querySelector('[data-testid="task-card-times"]');
+      const meta = card.querySelector('[data-testid="task-card-meta"]');
       const title = card.querySelector(".line-clamp-2");
-      if (!(times instanceof HTMLElement) || !(title instanceof HTMLElement)) return null;
+      if (!(meta instanceof HTMLElement) || !(title instanceof HTMLElement)) return null;
       const cardBox = card.getBoundingClientRect();
-      const timesBox = times.getBoundingClientRect();
+      const metaBox = meta.getBoundingClientRect();
       const titleBox = title.getBoundingClientRect();
-      const lineHeight = Number.parseFloat(getComputedStyle(title).lineHeight) || titleBox.height;
+      const lineHeight = Number.parseFloat(getComputedStyle(meta).lineHeight) || metaBox.height;
       return {
-        created: times.textContent?.includes("Created") ?? false,
-        closed: times.textContent?.includes("Closed") ?? false,
-        rightInside: timesBox.right <= cardBox.right + 0.5,
-        leftInside: timesBox.left >= cardBox.left - 0.5,
-        belowTitle: timesBox.top >= titleBox.top + lineHeight - 0.5,
-        noOverflow: card.scrollWidth <= card.clientWidth,
+        text: meta.textContent ?? "",
+        belowTitle: metaBox.top >= titleBox.bottom - 0.5,
+        rightInside: metaBox.right <= cardBox.right + 0.5,
+        leftInside: metaBox.left >= cardBox.left - 0.5,
+        oneLine: metaBox.height <= lineHeight + 1,
+        noOverflow: card.scrollWidth <= card.clientWidth && meta.scrollWidth <= meta.clientWidth,
       };
     };
     return { open: measure("open-card"), done: measure("done-card") };
   });
-  expect(layout?.open).toEqual({
-    created: true,
-    closed: false,
+  expect(layout?.open).toMatchObject({
+    belowTitle: true,
     rightInside: true,
     leftInside: true,
-    belowTitle: true,
+    oneLine: true,
     noOverflow: true,
   });
-  expect(layout?.done).toEqual({
-    created: true,
-    closed: true,
+  // The card sits under the Alpha project header, so the row drops the repeated label.
+  expect(layout?.open?.text).not.toContain("Alpha");
+  expect(layout?.open?.text).toContain("open");
+  expect(layout?.open?.text).toContain("Created");
+  expect(layout?.open?.text).not.toContain("Closed");
+  expect(layout?.done).toMatchObject({
+    belowTitle: true,
     rightInside: true,
     leftInside: true,
-    belowTitle: true,
+    oneLine: true,
     noOverflow: true,
   });
+  expect(layout?.done?.text).toContain("Ledger");
+  expect(layout?.done?.text).toContain("done");
+  expect(layout?.done?.text).toContain("Created");
+  expect(layout?.done?.text).toContain("Closed");
+  expect(layout?.done?.text).toContain("2 images");
 });
 
-test("keeps the id chip at the top right above the created line", async ({
-  app,
-  browser,
-  screen,
-}) => {
+test("keeps the card metadata inside one row at phone width", async ({ app, browser, screen }) => {
+  const at = new Date(Date.now() - 60_000).toISOString();
+  await browser.setViewport({ width: 390, height: 844 });
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({
+      json: {
+        conversationId: "task-card-phone-e2e",
+        messages: [],
+        activity: [],
+        run: "idle",
+        queue: [],
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 },
+        context: { tokens: 0, window: null, percent: null },
+        tasks: {
+          revision: 1_000_000,
+          tasks: [
+            {
+              id: "phone-meta",
+              title: "Keep the phone metadata from spilling out of the card",
+              status: "done",
+              project: "A project name long enough to need truncating on a narrow phone card",
+              parentId: null,
+              blockedBy: [],
+              attachments: [1, 2, 3, 4, 5].map((index) => `${String(index).repeat(32)}.png`),
+              createdAt: at,
+              proposedAt: null,
+              completedAt: at,
+              completion: { evidence: "e2e/tasks-views.e2e.ts" },
+            },
+          ],
+        },
+      },
+    });
+  });
+  await app.open("/?page=tasks");
+  await expect(screen.getByTestId("task-phone-meta")).toBeVisible();
+
+  const layout = await browser.evaluate(() => {
+    const card = document.querySelector<HTMLElement>(
+      '[data-testid="task-phone-meta"] [data-task-card]',
+    );
+    const meta = card?.querySelector<HTMLElement>('[data-testid="task-card-meta"]');
+    if (!(card instanceof HTMLElement) || !(meta instanceof HTMLElement)) return null;
+    const cardBox = card.getBoundingClientRect();
+    const metaBox = meta.getBoundingClientRect();
+    return {
+      text: meta.textContent ?? "",
+      metaInside: metaBox.left >= cardBox.left - 0.5 && metaBox.right <= cardBox.right + 0.5,
+      cardNoOverflow: card.scrollWidth <= card.clientWidth,
+      pageNoOverflow: document.documentElement.scrollWidth <= window.innerWidth,
+    };
+  });
+  expect(layout?.text).toContain("A project name long enough");
+  expect(layout?.text).toContain("5 images");
+  expect(layout?.metaInside).toBe(true);
+  expect(layout?.cardNoOverflow).toBe(true);
+  expect(layout?.pageNoOverflow).toBe(true);
+});
+
+test("keeps the id chip on the card's bottom metadata line", async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 1280, height: 800 });
   await app.open("/?page=tasks");
   const composer = screen.getByRole("textbox", "New task");
@@ -381,15 +443,16 @@ test("keeps the id chip at the top right above the created line", async ({
     );
     const chip = card?.querySelector<HTMLElement>('[data-testid^="task-id-"]');
     const title = card?.querySelector<HTMLElement>(".line-clamp-2");
+    const meta = card?.querySelector<HTMLElement>('[data-testid="task-card-meta"]');
     if (
       !(card instanceof HTMLElement) ||
       !(chip instanceof HTMLElement) ||
-      !(title instanceof HTMLElement)
+      !(title instanceof HTMLElement) ||
+      !(meta instanceof HTMLElement)
     ) {
       return null;
     }
     const style = getComputedStyle(chip);
-    const box = card.getBoundingClientRect();
     const describedBy = (card.getAttribute("aria-describedby") ?? "")
       .split(/\s+/)
       .filter((part) => part !== "");
@@ -398,9 +461,10 @@ test("keeps the id chip at the top right above the created line", async ({
       title: chip.getAttribute("title"),
       label: chip.getAttribute("aria-label"),
       classes: chip.className,
+      metaClasses: meta.className,
       background: style.backgroundColor,
       afterTitle: (chip.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_PRECEDING) !== 0,
-      rightAligned: Math.abs(box.right - chip.getBoundingClientRect().right) <= 16,
+      inMeta: meta.contains(chip),
       idCount: card.querySelectorAll('[data-testid^="task-id-"]').length,
       describedBy,
       describedIsChip: describedBy.some((part) => document.getElementById(part) === chip),
@@ -411,9 +475,11 @@ test("keeps the id chip at the top right above the created line", async ({
   expect(cardId?.label).toBe(`task ${cardId?.id}`);
   expect(cardId?.classes).toContain("font-mono");
   expect(cardId?.classes).toContain("text-[11px]");
+  expect(cardId?.metaClasses).toContain("min-w-0");
+  expect(cardId?.metaClasses).toContain("truncate");
   expect(cardId?.background).toBe("rgba(0, 0, 0, 0)");
   expect(cardId?.afterTitle).toBe(true);
-  expect(cardId?.rightAligned).toBe(true);
+  expect(cardId?.inMeta).toBe(true);
   expect(cardId?.idCount).toBe(1);
   expect(cardId?.describedBy).toContain(`task-id-${cardId?.id}`);
   expect(cardId?.describedIsChip).toBe(true);
@@ -540,6 +606,32 @@ test("shows the single task list without filter tabs and groups done work by day
     };
   });
   expect(openHeader).toEqual({ countRight: true, chevron: true, chevronBeforeCount: true });
+
+  const headingStyle = await browser.evaluate(() => {
+    const read = (element: Element | null) => {
+      if (!(element instanceof HTMLElement)) return null;
+      const style = getComputedStyle(element);
+      return {
+        background: style.backgroundColor,
+        paddingLeft: style.paddingLeft,
+        paddingRight: style.paddingRight,
+        fontSize: style.fontSize,
+        fontWeight: style.fontWeight,
+        lineHeight: style.lineHeight,
+        height: Math.round(element.getBoundingClientRect().height),
+      };
+    };
+    return {
+      needs: read(document.querySelector('[data-testid="task-section-needs"] h2')),
+      open: read(
+        document.querySelector(
+          '[data-testid="task-section-active"] [data-slot="collapsible-trigger"]',
+        ),
+      ),
+    };
+  });
+  expect(headingStyle?.needs).not.toBeNull();
+  expect(headingStyle?.needs).toEqual(headingStyle?.open);
 
   await screen.getByRole("tab", "Chat").tap();
   await expect(screen.getByRole("textbox", "Message")).toBeVisible();
