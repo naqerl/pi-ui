@@ -80,6 +80,14 @@ export function NoticeIcon({ name, ...props }: IconProps & { name: NoticeIconNam
   );
 }
 
+export function CheckIcon(props: IconProps) {
+  return (
+    <Icon name="check" {...props}>
+      <path d="m5 12 4 4L19 6" />
+    </Icon>
+  );
+}
+
 export function CloseIcon(props: IconProps) {
   return (
     <Icon name="close" {...props}>
