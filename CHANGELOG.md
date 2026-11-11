@@ -1,3 +1,13 @@
+## 1.6.144
+
+### Fixed
+
+- A status notice for a subscription this app does not track no longer reaches the chat, on the
+  plain-text status channel as well as the JSON one, so a dead adapter generation stops announcing
+  itself every couple of minutes.
+- A reconnecting subscription resumes at the last delivered cursor instead of replaying from the
+  restore point, so a reconnect no longer floods the chat with the history it already showed.
+
 ## 1.6.143
 
 ### Changed
