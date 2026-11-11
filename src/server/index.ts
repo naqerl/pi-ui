@@ -8,7 +8,7 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { OperatorNoticeRecord, TaskDecisionNoticeRecord } from "../shared/notices.js";
-import { boundMcpEventBatch, isMcpNotice, MCP_STATUS_HEAD } from "../shared/notices.js";
+import { boundMcpEventBatch, isMcpNotice } from "../shared/notices.js";
 import { PAGE_IDS, PAGE_PATHS } from "../shared/pages.js";
 import {
   parseCompletion,
@@ -31,6 +31,7 @@ import { DiagramStore } from "./diagrams.js";
 import { JobManager, jobNotice } from "./jobs.js";
 import { McpEventFeed } from "./mcp-events.js";
 import { McpIntake, McpOutbox } from "./mcp-outbox.js";
+import { acceptMcpStatusNotice } from "./mcp-status-intake.js";
 import { MAX_MEDIA_BYTES, MediaError, MediaStore, parseAttachmentIds } from "./media.js";
 import { composeInstructions, SnapshotCache, SnapshotController } from "./memory/snapshot.js";
 import { MemoryStore } from "./memory/store.js";
@@ -419,12 +420,8 @@ boot.mcp.setSubmit((text, options) => {
     // when it is the same stream. With no id to attribute, the existing
     // `(server, name)` supersession rule still decides. Only authentic notices
     // reach the outbox.
-    let delivered = text;
-    if (text.startsWith(MCP_STATUS_HEAD)) {
-      const filtered = events.filterStatusNotice(text, options.details, options.customType);
-      if (filtered === null) return;
-      delivered = filtered;
-    }
+    const delivered = acceptMcpStatusNotice(events, text, options.details, options.customType);
+    if (delivered === null) return;
     mcpIntake.enqueue(async () => {
       await mcpOutbox.enqueue(delivered);
       mcpOutbox.start();

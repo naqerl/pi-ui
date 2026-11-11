@@ -181,6 +181,30 @@ interface QueuedRun {
   submission: Submission;
 }
 
+/**
+ * The status marker is the extension's prose channel. A notice that no longer
+ * names a tracked subscription must not become a user turn here, even when a
+ * caller bypasses the intake filter in index.ts. The duplicate fingerprint is
+ * left to the intake, which sees the notice first.
+ */
+function filterStatusForChat(eventFeed: McpEventFeed | undefined, text: string): string | null {
+  if (eventFeed === undefined || !text.startsWith(MCP_STATUS_HEAD)) return text;
+  return eventFeed.filterStatusNotice(text, undefined, undefined, { markReported: false });
+}
+
+/**
+ * The outbox delivers text the intake already accepted. Enforce only identity
+ * here: re-running health/deduplication would turn an accepted recovery back
+ * into a "still healthy" repeat and drop it.
+ */
+function filterStatusIdentityForDelivery(
+  eventFeed: McpEventFeed | undefined,
+  text: string,
+): string | null {
+  if (eventFeed === undefined || !text.startsWith(MCP_STATUS_HEAD)) return text;
+  return eventFeed.filterStatusIdentityNotice(text);
+}
+
 interface SubmitOptions {
   /** Durable deduplication key, used by recovery and queue restoration. */
   requestId?: string;
@@ -1907,17 +1931,19 @@ export class ChatService {
   ): Promise<void> {
     const envelope = mcpEventEnvelope(text);
     if (envelope === null) {
+      const delivered = filterStatusForChat(this.eventFeed, text);
+      if (delivered === null) return;
       const at = new Date().toISOString();
-      const status = text.startsWith(MCP_STATUS_HEAD);
+      const status = delivered.startsWith(MCP_STATUS_HEAD);
       const kind = status ? "status" : "notice";
-      await this.submit(text, deliverAs === "steer" ? "steer" : "queue", {
+      await this.submit(delivered, deliverAs === "steer" ? "steer" : "queue", {
         entry: {
           kind: MCP_NOTICE_ENTRY_KIND,
           label: status ? "MCP status" : "MCP notice",
           data: {
             noticeId: `mcp/${kind}#${randomUUID()}`,
             key: `mcp/${kind}`,
-            text,
+            text: delivered,
             at,
             createdAt: at,
           },
@@ -2039,9 +2065,11 @@ export class ChatService {
     const multiPart = texts.length > 1 || item.mergedChunk === true;
     for (let index = 0; index < texts.length; index++) {
       const text = texts[index] ?? "";
+      const delivered = filterStatusIdentityForDelivery(this.eventFeed, text);
+      if (delivered === null) continue;
       const identity = texts.length === 1 ? base : `${base}:${index}`;
-      this.lastMcpNoticeText = text;
-      await this.submit(text, "queue", {
+      this.lastMcpNoticeText = delivered;
+      await this.submit(delivered, "queue", {
         requestId: identity,
         queueKey: identity,
         entry: {
@@ -2050,7 +2078,7 @@ export class ChatService {
           data: {
             noticeId: identity,
             key: identity,
-            text,
+            text: delivered,
             at: item.at,
             createdAt: item.at,
             // These parts already carry their own carried/remaining summary, so

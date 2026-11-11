@@ -12,6 +12,7 @@ import {
   Server,
   WebStandardStreamableHTTPServerTransport,
 } from "@modelcontextprotocol/server";
+import { z } from "zod";
 
 const mode = process.env.SESSION_DROP_MODE ?? "drop-once";
 const statePath = process.env.SESSION_DROP_STATE;
@@ -31,6 +32,7 @@ let grown = false;
 let firstSessionId;
 let dropArmed = false;
 let dropped = false;
+let droppedStream = false;
 
 function tools() {
   const listed = [
@@ -59,13 +61,80 @@ function tools() {
   return listed;
 }
 
-function createMcpServer() {
+function createMcpServer(holder) {
   const server = new Server(
     { name: "session-drop-mcp", version: "1.0.0" },
-    { capabilities: { tools: { listChanged: true } } },
+    { capabilities: { tools: { listChanged: true }, experimental: { events: {} } } },
   );
+  holder.server = server;
 
   server.setRequestHandler("tools/list", async () => ({ tools: tools() }));
+
+  server.setRequestHandler(
+    "events/list",
+    { params: z.object({ cursor: z.string().optional() }).passthrough() },
+    async () => ({
+      events: [
+        {
+          name: "drop-stream",
+          delivery: ["push"],
+          description: "A stream whose first transport session is dropped mid-run.",
+        },
+      ],
+    }),
+  );
+
+  server.setRequestHandler(
+    "events/stream",
+    {
+      params: z
+        .object({
+          name: z.string(),
+          arguments: z.record(z.string(), z.unknown()).optional(),
+          cursor: z.string().nullable().optional(),
+        })
+        .passthrough(),
+    },
+    async (params, ctx) => {
+      const cursor = typeof params.cursor === "string" ? params.cursor : null;
+      log(`stream:${params.name}:${cursor ?? "null"}`);
+      const meta = { "io.modelcontextprotocol/subscriptionId": String(ctx.mcpReq.id) };
+      const notify = (method, extra) =>
+        holder.server.notification({ method, params: { _meta: meta, ...extra } });
+      const closed = new Promise((resolve) => {
+        if (ctx.mcpReq.signal.aborted) {
+          resolve();
+          return;
+        }
+        ctx.mcpReq.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      const resumed = cursor ?? "drop:1";
+      if (mode === "event-drop" && params.name === "drop-stream" && !droppedStream) {
+        droppedStream = true;
+        log("drop-stream");
+        setTimeout(() => {
+          void notify("notifications/events/active", { cursor: resumed });
+        }, 10);
+        // Stay silent: the extension's 65 s heartbeat timeout starts the
+        // reconnect, which must carry this same cursor back to the server.
+        await closed;
+        return {};
+      }
+      setTimeout(() => {
+        void notify("notifications/events/active", { cursor: resumed });
+      }, 10);
+      setTimeout(() => {
+        void notify("notifications/events/heartbeat", { cursor: resumed });
+      }, 100);
+      const heartbeat = setInterval(() => {
+        void notify("notifications/events/heartbeat", { cursor: resumed });
+      }, 5_000);
+      heartbeat.unref?.();
+      await closed;
+      clearInterval(heartbeat);
+      return {};
+    },
+  );
 
   server.setRequestHandler("tools/call", async (request) => {
     if (mode === "method-not-found") {
@@ -86,7 +155,8 @@ function createMcpServer() {
 }
 
 async function createSession(id) {
-  const server = createMcpServer();
+  const holder = {};
+  const server = createMcpServer(holder);
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: () => id,
     enableJsonResponse: true,
@@ -94,6 +164,7 @@ async function createSession(id) {
       sessions.delete(id);
     },
   });
+  holder.transport = transport;
   await server.connect(transport);
   const session = { id, server, transport, sseReady: false, pendingGrow: false };
   sessions.set(id, session);
