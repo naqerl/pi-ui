@@ -1,3 +1,12 @@
+## 1.6.150
+
+### Added
+
+- The Tasks page creates work with a plus button instead of a list composer. Each new
+  task opens its own planning chat: a dedicated agent that can only inspect the repo
+  and edit that task's title, markdown body and project. The body uses the same
+  markdown and mermaid rendering as the main chat, and follow-ups stay on that task.
+
 ## 1.6.149
 
 ### Fixed
