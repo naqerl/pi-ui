@@ -995,6 +995,9 @@ app.post("/api/stop", async (c) => {
 });
 
 app.get("/api/stream", (c) => {
+  // State changes are written as they happen. A buffering reverse proxy would otherwise
+  // hold a small frame until the next heartbeat, so tell it not to buffer this stream.
+  c.header("X-Accel-Buffering", "no");
   return streamSSE(c, async (stream) => {
     let tail = Promise.resolve();
     const enqueue = (write: () => Promise<unknown>): Promise<void> => {
@@ -1011,6 +1014,7 @@ app.get("/api/stream", (c) => {
     };
     hub.add(client);
 
+    // Keepalive only: a change is pushed by its own `hub.broadcast`, not by this tick.
     const heartbeat = setInterval(() => {
       void enqueue(() => stream.write(": heartbeat\n\n"));
     }, 20_000);

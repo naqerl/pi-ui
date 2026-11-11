@@ -573,6 +573,48 @@ test("approving a proposal records one operator notice without a push", async ()
   }
 });
 
+test("approving returns only after the decision's queue entry is placed", async () => {
+  const notices: OperatorNoticeRecord[] = [];
+  let release: (() => void) | undefined;
+  let started: (() => void) | undefined;
+  const entered = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const { directory, store } = await temporaryStore({
+    notify: () => undefined,
+    notice: (record) => {
+      notices.push(record);
+      started?.();
+      return new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    },
+    pushWindowMs: 0,
+  });
+  try {
+    await store.propose(
+      "Deliver the decision with the write",
+      "The approval must not return while the model entry is still waiting to be queued.",
+    );
+    const proposal = store.ledger().tasks[0];
+    assert.ok(proposal);
+
+    let settled = false;
+    const update = store.update(proposal.id, { status: "open" }).then((ledger) => {
+      settled = true;
+      return ledger;
+    });
+    await entered;
+    assert.equal(settled, false);
+    release?.();
+    const ledger = await update;
+    assert.equal(ledger.tasks.find((task) => task.id === proposal.id)?.status, "open");
+    assert.equal(notices.length, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("declining a proposal records one operator notice without a push", async () => {
   const pushes: PushNotification[] = [];
   const notices: OperatorNoticeRecord[] = [];

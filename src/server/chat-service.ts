@@ -5,6 +5,7 @@ import {
   AssistantEntry,
   CompactionEntry,
   type Conversation,
+  ConversationBusy,
   type ConversationView,
   type ConversationWatch,
   type EntryRecord,
@@ -469,6 +470,11 @@ function queueRequestId(queueKey: string): string {
   return `queue:${queueKey}`;
 }
 
+/** The durable key for a proposal decision, so a retried approval cannot place two entries. */
+function decisionRequestId(proposalId: string): string {
+  return `decision:${proposalId}`;
+}
+
 /** The client key an entry carries, for matching a retried send to its placed message. */
 function clientKeyFromEntry(entry: EntryRecord): string | undefined {
   if (!isRecord(entry.data)) return undefined;
@@ -569,6 +575,8 @@ export class ChatService {
   private readonly queued = new Map<string, QueuedRun>();
   /** Steers durable holds in its inbox for the next turn boundary, by submission id. */
   private readonly steers = new Map<string, QueuedMessage>();
+  /** One event-driven wake for inputs a finished run left queued; see `drainQueuedInputs`. */
+  private queueDrain: Promise<void> | undefined;
   private marker: RunMarker | undefined;
   private markerWrites: Promise<void> = Promise.resolve();
   /** Coalesced state writes: many queue mutations in one tick become one marker write. */
@@ -857,6 +865,8 @@ export class ChatService {
         );
       }
       this.reconcileRun(facts);
+      // A failed run keeps its queued inputs. No nudge should be needed to start them.
+      if (!facts.run) void this.drainQueuedInputs(facts);
     } catch (error) {
       console.error("[pi] could not check the run state", error);
     } finally {
@@ -884,6 +894,48 @@ export class ChatService {
     if (next === this.runState) return;
     console.warn(`[pi] run state reconciled with durable: ${this.runState} -> ${next}`);
     this.setRunState(next);
+    if (next !== "running") void this.drainQueuedInputs(facts);
+  }
+
+  /**
+   * Starts a run for inputs a finished run left queued. Durable keeps follow-ups after a
+   * failed run until the next submission; without this wake a queued message (or an
+   * approval) waits for the idle nudge, which is minutes away and unrelated to delivery.
+   * Submissions wake the drain on admission; this covers a run that ended after them.
+   */
+  private drainQueuedInputs(known?: DurableRunFacts): Promise<void> {
+    if (this.closed || this.shuttingDown || this.marker?.stopRequested === true) {
+      return Promise.resolve();
+    }
+    if (this.queued.size === 0 && this.steers.size === 0) return Promise.resolve();
+    // Known-stale facts need no drain at all, not even a resolved guard; a caller may
+    // hand fresh facts in the same tick after an early return.
+    if (known !== undefined && (known.run || known.inbox === 0)) return Promise.resolve();
+    if (this.queueDrain !== undefined) return this.queueDrain;
+    const work = (async () => {
+      try {
+        const facts = known ?? (await this.durableRunFacts());
+        // A live run already owns its boundary; an empty inbox has nothing to start.
+        if (facts.run || facts.inbox === 0) return;
+        // A stop that arrived while the view was read owns the queue now.
+        if (this.marker?.stopRequested === true) return;
+        await this.conversation.submit({ type: "continue" }, SESSION_CONTEXT);
+      } catch (error) {
+        // A run that started between the check and the continue owns the queue now.
+        if (!(error instanceof ConversationBusy)) {
+          console.error("[pi] could not drain the queued inputs", error);
+        }
+      }
+    })();
+    // Attach cleanup before storing the guard. A known-facts early return resolves in a
+    // microtask, so clearing in the work itself could race the assignment and leave a
+    // resolved promise here forever. The identity check keeps a later drain untouched.
+    let run: Promise<void>;
+    run = work.finally(() => {
+      if (this.queueDrain === run) this.queueDrain = undefined;
+    });
+    this.queueDrain = run;
+    return run;
   }
 
   /** Keep the run marker on disk while the process winds down. */
@@ -1314,6 +1366,9 @@ export class ChatService {
       timing.broadcastMs += Date.now() - broadcastStart;
     }
 
+    // Placement wakes the drain at once: a queue admitted after a failed run must not
+    // wait for the next nudge or an unrelated message before it starts.
+    if (queued) void this.drainQueuedInputs();
     void this.monitorSubmission(submission, startsRun, queued ? id : undefined);
     logSubmitTiming({
       ...timing,
@@ -1655,6 +1710,8 @@ export class ChatService {
         await this.persistMarkerState(true);
         this.broadcastQueue();
       }
+      // A withdrawn queue item can leave successors behind after a failed run.
+      if (queuedId !== undefined) void this.drainQueuedInputs();
       if (startsRun && this.queued.size === 0) this.setRunState("idle");
       else this.maybeClearMarker();
     }
@@ -2188,6 +2245,8 @@ export class ChatService {
       const text = taskDecisionPrompt(record);
       const createdAt = new Date().toISOString();
       await this.submit(text, "queue", {
+        // The decision entry and its queue placement share one durable admission key.
+        requestId: decisionRequestId(key),
         entry: {
           kind: TASK_DECISION_ENTRY_KIND,
           label: record.decision === "approved" ? "Proposal approved" : "Proposal declined",
@@ -2607,6 +2666,8 @@ export class ChatService {
       case "run_end":
         this.setRunState("idle");
         await this.flushMemoryDelta();
+        // A run that failed keeps its queued inputs; start them here, not on a nudge tick.
+        await this.drainQueuedInputs();
         return;
 
       case "message_update":
@@ -2634,10 +2695,14 @@ export class ChatService {
           event.entry.kind === QUEUE_ENTRY_KIND ||
           event.entry.kind === MCP_NOTICE_ENTRY_KIND ||
           event.entry.kind === DELEGATE_NOTICE_ENTRY_KIND ||
-          event.entry.kind === MEMORY_DELTA_ENTRY_KIND
+          event.entry.kind === MEMORY_DELTA_ENTRY_KIND ||
+          event.entry.kind === TASK_DECISION_ENTRY_KIND ||
+          event.entry.kind === IDLE_NUDGE_ENTRY_KIND
         ) {
           // Send the placed entry before the queue update retires its pending bubble, so the
           // same message id hands over without a frame where neither copy is on screen.
+          // A decision or nudge chip is a user-facing state change of its own: push it now
+          // instead of waiting for the run it started to end and refresh the whole chat.
           const placedMessage = buildTranscript([event.entry], this.mediaRef, this.diagramRevision)
             .messages[0];
           if (event.entry.kind === STEER_ENTRY_KIND) {

@@ -766,9 +766,11 @@ export class TaskStore {
     }
     if (changes.length === 0) return;
 
-    // The ledger is saved; delivering a decision to the live chat session can wait for a
-    // running turn. recordDecisionNotice handles its own failures, so never hold this write.
-    for (const change of changes) void this.recordDecisionNotice(change);
+    // The ledger is already saved. Place the decision's chat entry before returning: the
+    // two writes are separate commits by design (a notice failure must not undo the task),
+    // but the caller now returns only after the queue owns the entry. A busy run still
+    // queues it immediately; the model reads it at the next boundary.
+    const decisions = changes.map((change) => this.recordDecisionNotice(change));
 
     // A decision stays in the chat. Drop its proposal's pending push, which
     // would otherwise describe a state the ledger has already left.
@@ -777,16 +779,16 @@ export class TaskStore {
       this.pendingChanges.delete(change.task.id);
       return false;
     });
-    if (notifiable.length === 0) return;
-
-    // A write that arrives while another write is already queued belongs to a
-    // burst. A lone change still goes out with the write that caused it.
-    if (this.pushWindowMs > 0 && (this.pendingChanges.size > 0 || this.queuedCommits > 1)) {
-      this.queueBurst(notifiable, next);
-      return;
+    if (notifiable.length > 0) {
+      // A write that arrives while another write is already queued belongs to a
+      // burst. A lone change still goes out with the write that caused it.
+      if (this.pushWindowMs > 0 && (this.pendingChanges.size > 0 || this.queuedCommits > 1)) {
+        this.queueBurst(notifiable, next);
+      } else {
+        await Promise.all(notifiable.map((change) => this.sendIndividual(change)));
+      }
     }
-
-    await Promise.all(notifiable.map((change) => this.sendIndividual(change)));
+    await Promise.all(decisions);
   }
 
   private queueBurst(changes: readonly PendingTaskChange[], next: readonly Task[]): void {
