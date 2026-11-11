@@ -1,9 +1,29 @@
 // biome-ignore-all lint/suspicious/noArrayIndexKey: Markdown tokens have no ids; their order is the identity.
 import { Lexer, lexer, type Token, type Tokens } from "marked";
-import { Fragment, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  lazy,
+  type ReactNode,
+  Suspense,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import type { Task } from "../shared/types";
 import { taskForCode, useTaskLink } from "./task-link";
+
+const MarkdownDiagram = lazy(() =>
+  import("./lazy-diagram").then((module) => ({ default: module.MarkdownDiagram })),
+);
+
+function isDiagramFence(lang: string | undefined): boolean {
+  if (lang === undefined) return false;
+  const name = lang.trim().toLowerCase().split(/\s+/)[0] ?? "";
+  return name === "mermaid" || name === "pele";
+}
 
 const headingClasses: Record<number, string> = {
   1: "mt-4 mb-1 text-base font-semibold tracking-tight first:mt-0",
@@ -145,7 +165,7 @@ function blockToken(token: Token, key: string): ReactNode {
         </p>
       );
     case "code":
-      return <CodeBlock key={key} text={token.text} />;
+      return <CodeBlock key={key} text={token.text} lang={token.lang} />;
     case "blockquote": {
       const node = token as Tokens.Blockquote;
       return (
@@ -308,7 +328,24 @@ function useHoverCapablePointer() {
   return hoverCapable;
 }
 
-function CodeBlock({ text }: { text: string }) {
+function CodeBlock({ text, lang }: { text: string; lang?: string }) {
+  if (isDiagramFence(lang)) {
+    return (
+      <Suspense
+        fallback={
+          <pre className="max-w-full overflow-x-auto whitespace-pre border border-border bg-muted px-3 py-2.5 font-mono text-xs leading-relaxed [overflow-wrap:normal]">
+            <code className="font-mono">{text}</code>
+          </pre>
+        }
+      >
+        <MarkdownDiagram source={text} />
+      </Suspense>
+    );
+  }
+  return <TextCodeBlock text={text} />;
+}
+
+function TextCodeBlock({ text }: { text: string }) {
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
   const hoverCapable = useHoverCapablePointer();
   const feedback = state !== "idle";

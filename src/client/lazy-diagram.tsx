@@ -40,3 +40,15 @@ export function DiagramSvg({
     <div className="diagram-svg" dangerouslySetInnerHTML={{ __html: result.svg }} />
   );
 }
+
+/** A mermaid fence in Markdown, drawn with the same renderer as a chat diagram part. */
+export function MarkdownDiagram({ source }: { source: string }) {
+  return (
+    <div
+      data-testid="markdown-diagram"
+      className="theme-radius overflow-hidden border border-border bg-background p-2"
+    >
+      <DiagramSvg source={source} />
+    </div>
+  );
+}

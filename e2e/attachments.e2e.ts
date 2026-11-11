@@ -139,29 +139,41 @@ test("sends an image without text and removes a preview", async ({ app, browser,
 test("attaches an image to a new task", async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/?page=tasks");
-  const field = screen.getByRole("textbox", "New task");
-  await expect(field).toBeVisible();
-  await expect(screen.getByRole("button", "Attach image to task")).toBeVisible();
+  await expect(screen.getByTestId("new-task-button")).toBeVisible();
 
-  expect(await attachImage(browser)).toBe(true);
-  expect(await waitReady(browser)).toEqual(["ready"]);
-  // A task still needs a title.
-  expect(
-    await browser.evaluate(
-      () =>
-        document.querySelector<HTMLButtonElement>('button[aria-label="Add task"]')?.disabled ??
-        null,
-    ),
-  ).toBe(true);
+  const created = await browser.evaluate(async () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 64;
+    canvas.height = 40;
+    const context = canvas.getContext("2d");
+    if (context === null) return { ok: false, error: "no canvas" };
+    context.fillStyle = "#e11d48";
+    context.fillRect(0, 0, 64, 40);
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (blob === null) return { ok: false, error: "no blob" };
+    const uploaded = await fetch("/api/media", {
+      method: "POST",
+      headers: { "Content-Type": "image/png" },
+      body: blob,
+    });
+    if (!uploaded.ok) return { ok: false, error: await uploaded.text() };
+    const media = (await uploaded.json()) as { id: string };
+    const response = await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: "Fix the layout in this screenshot",
+        attachments: [media.id],
+      }),
+    });
+    if (!response.ok) return { ok: false, error: await response.text() };
+    return { ok: true, error: null };
+  });
+  expect(created).toEqual({ ok: true, error: null });
 
-  await field.fill("Fix the layout in this screenshot");
-  await screen.getByRole("button", "Add task").tap();
-  // Scope to the list: the composer draft still carries the title until the
-  // create round-trip resolves, so a page-wide text match can see both.
   await expect(
     screen.getByTestId("task-list").getByText("Fix the layout in this screenshot", { exact: true }),
   ).toBeVisible();
-  // Rows stay slim; the attachment shows in the task's detail.
   await screen.getByRole("button", "Open Fix the layout in this screenshot").tap();
   await expect(screen.getByTestId("task-attachments")).toBeVisible();
 

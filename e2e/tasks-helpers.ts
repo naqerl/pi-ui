@@ -1,5 +1,5 @@
 import type { Browser } from "@e2e-dev/web";
-import { expect } from "e2e";
+import { expect, type Locator } from "e2e";
 
 /** Deletes the named tasks and proves the shared ledger no longer has them. */
 export async function removeTasks(browser: Browser, titles: readonly string[]) {
@@ -14,4 +14,29 @@ export async function removeTasks(browser: Browser, titles: readonly string[]) {
     return (await matching()).length;
   }, titles);
   expect(left).toBe(0);
+}
+
+type TaskScreen = { getByTestId: (id: string) => Locator };
+
+/** Create an open task from the plus button and first message in the embedded chat. */
+export async function createOpenTask(
+  screen: TaskScreen,
+  title: string,
+  options?: { project?: string },
+) {
+  await screen.getByTestId("new-task-button").tap();
+  const input = screen.getByTestId("task-agent-input");
+  await expect(input).toBeVisible();
+  const text = options?.project === undefined ? title : `@${options.project} ${title}`;
+  await input.fill(text);
+  await screen.getByTestId("task-agent-send").tap();
+  const expected = title.split("\n")[0] ?? title;
+  await expect(screen.getByTestId("task-title")).toContainText(expected);
+}
+
+/** Close a mobile task detail so the list is visible again. No-op on the desktop split. */
+export async function backToTaskList(screen: TaskScreen) {
+  const back = screen.getByTestId("task-detail-back");
+  if ((await back.count()) === 0) return;
+  if (await back.isVisible()) await back.tap();
 }

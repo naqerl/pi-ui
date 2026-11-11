@@ -1,5 +1,6 @@
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
+import { createOpenTask } from "./tasks-helpers";
 
 test("switches to tasks with a horizontal swipe and back again", async ({
   app,
@@ -77,7 +78,7 @@ test("switches to tasks with a horizontal swipe and back again", async ({
     }, direction);
 
   expect(await swipe("forward")).toBe("tasks");
-  await expect(screen.getByRole("textbox", "New task")).toBeVisible();
+  await expect(screen.getByTestId("new-task-button")).toBeVisible();
   expect(await browser.evaluate(() => new URLSearchParams(location.search).get("page"))).toBe(
     "tasks",
   );
@@ -209,9 +210,7 @@ test("shows a failed task action beside the control and keeps a long title", asy
   screen,
 }) => {
   await app.open("/?page=tasks");
-  const composer = screen.getByRole("textbox", "New task");
-  await composer.fill("Write the notice");
-  await screen.getByRole("button", "Add task").tap();
+  await createOpenTask(screen, "Write the notice");
   const failNextPatch = (message: string) =>
     browser.evaluate((text) => {
       const original = window.fetch.bind(window);
@@ -257,8 +256,7 @@ test("shows a failed task action beside the control and keeps a long title", asy
   await expect(screen.getByTestId("task-error")).toHaveCount(0);
 
   const longTitle = "M".repeat(450);
-  await screen.getByRole("textbox", "New task").fill(longTitle);
-  await screen.getByRole("button", "Add task").tap();
+  await createOpenTask(screen, longTitle);
   await expect(screen.getByText(longTitle, { exact: true })).toBeVisible();
   await expect(screen.getByTestId("composer-error")).toHaveCount(0);
 });

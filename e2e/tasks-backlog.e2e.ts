@@ -1,5 +1,6 @@
 import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
+import { createOpenTask } from "./tasks-helpers";
 
 async function removeTasks(browser: Browser, titles: readonly string[]) {
   const left = await browser.evaluate(async (names) => {
@@ -15,15 +16,14 @@ async function removeTasks(browser: Browser, titles: readonly string[]) {
   expect(left).toBe(0);
 }
 
-test("a long press on Send parks the next task in the backlog", { timeout: 300_000 }, async ({
+test("open work stays grouped by project when some tasks are parked", { timeout: 300_000 }, async ({
   app,
   browser,
   screen,
 }) => {
   await browser.setViewport({ width: 1280, height: 844 });
   await app.open("/?page=tasks");
-  const composer = screen.getByRole("textbox", "New task");
-  await expect(composer).toBeVisible();
+  await expect(screen.getByTestId("new-task-button")).toBeVisible();
   await expect(screen.getByTestId("task-filters")).toHaveCount(0);
   await expect(screen.getByTestId("task-filter-active")).toHaveCount(0);
   await expect(screen.getByTestId("task-filter-blocked")).toHaveCount(0);
@@ -76,49 +76,14 @@ test("a long press on Send parks the next task in the backlog", { timeout: 300_0
   );
   expect(workingStatus).toBe(200);
 
-  // A short press still makes a normal task in a project.
-  await composer.fill(`@${liveProject} ${liveTitle}`);
-  await screen.getByRole("button", "Add task").tap();
+  // A plus-created task can be parked from its detail.
+  await createOpenTask(screen, liveTitle, { project: liveProject });
   await expect(screen.getByText(liveTitle, { exact: true })).toBeVisible();
 
-  await composer.fill(`@${liveProject} ${parkedTitle}`);
-  await browser.evaluate(async () => {
-    const button = document.querySelector<HTMLButtonElement>('[data-testid="add-task"]');
-    if (button === null) return null;
-    const box = button.getBoundingClientRect();
-    const x = box.left + box.width / 2;
-    const y = box.top + box.height / 2;
-    const fire = (type: string) =>
-      button.dispatchEvent(
-        new PointerEvent(type, {
-          bubbles: true,
-          cancelable: true,
-          pointerId: 21,
-          pointerType: "touch",
-          isPrimary: true,
-          clientX: x,
-          clientY: y,
-          button: 0,
-          buttons: type === "pointerup" ? 0 : 1,
-        }),
-      );
-    fire("pointerdown");
-    await new Promise<void>((resolve) => {
-      window.setTimeout(resolve, 560);
-    });
-    fire("pointerup");
-    return null;
-  });
-  // The timer-driven mode change commits after the pointer events; wait for it.
-  await expect(screen.getByTestId("add-task")).toHaveAttribute("aria-pressed", "true");
-  await expect(screen.getByTestId("backlog-chip")).toHaveText("Backlog");
-  await expect(composer).toHaveAttribute("placeholder", "New backlog task");
-
-  await screen.getByRole("button", "Add task").tap();
+  await createOpenTask(screen, parkedTitle, { project: liveProject });
+  await screen.getByTestId("task-detail-backlog").tap();
   await expect(screen.getByText(liveTitle, { exact: true })).toBeVisible();
   await expect(screen.getByText(parkedTitle, { exact: true })).toBeVisible();
-  await expect(screen.getByTestId("add-task")).toHaveAttribute("aria-pressed", "false");
-  await expect(screen.getByTestId("backlog-chip")).toHaveCount(0);
   await expect(screen.getByTestId("task-filters")).toHaveCount(0);
   await expect(screen.getByTestId("task-filter-active")).toHaveCount(0);
   await expect(screen.getByTestId("task-filter-blocked")).toHaveCount(0);

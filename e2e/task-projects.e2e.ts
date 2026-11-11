@@ -1,5 +1,6 @@
 import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
+import { backToTaskList, createOpenTask } from "./tasks-helpers";
 
 // The e2e server and its task store are shared by every test file: leave no projects behind.
 async function removeTasks(browser: Browser, titles: readonly string[]) {
@@ -24,7 +25,7 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
 }) => {
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/?page=tasks");
-  const composer = screen.getByRole("textbox", "New task");
+  await expect(screen.getByTestId("new-task-button")).toBeVisible();
   const taskList = screen.getByTestId("task-list");
   // A just-added task can appear as both its optimistic row and the settled row
   // for a moment; wait for exactly one visible match instead of sampling both.
@@ -33,12 +34,14 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
     await expect.poll(() => matches.count(), { timeout: 15_000 }).toBe(1);
     await expect(matches).toBeVisible();
   };
-  await expect(composer).toBeVisible();
-  // No project pickers: @ in the title is the only way to set one.
+  // No project pickers: @ in the first message is the only way to set one at create time.
   await expect(screen.getByTestId("composer-project")).toHaveCount(0);
   await expect(screen.getByTestId("task-project-filter")).toHaveCount(0);
 
   // An unknown name offers a new project; Enter accepts it, then Enter submits.
+  await screen.getByTestId("new-task-button").tap();
+  const composer = screen.getByTestId("task-agent-input");
+  await expect(composer).toBeVisible();
   await composer.tap();
   await browser.keyboard.type("Diff the maps @citydiff");
   const suggestions = screen.getByTestId("project-suggestions");
@@ -47,16 +50,19 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
   await expect(suggestions).toHaveCount(0);
   await expect(composer).toHaveValue("Diff the maps @citydiff ");
   await browser.keyboard.press("Enter");
-  await expectTaskTitle("Diff the maps");
+  await expect(screen.getByTestId("task-title")).toContainText("Diff the maps");
   await expect(composer).toHaveValue("");
+  await backToTaskList(screen);
+  await expectTaskTitle("Diff the maps");
 
   // Without @ a task has no project, whatever was used last.
-  await composer.fill("Loose end");
-  await screen.getByRole("button", "Add task").tap();
+  await createOpenTask(screen, "Loose end");
+  await backToTaskList(screen);
   await expectTaskTitle("Loose end");
-  await expect(composer).toHaveValue("");
 
   // @ lists the known projects, filtered as you type.
+  await screen.getByTestId("new-task-button").tap();
+  await expect(composer).toBeVisible();
   await composer.tap();
   await browser.keyboard.type("Fix the login @ci");
   await expect(suggestions).toBeVisible();
@@ -64,18 +70,23 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
   await browser.keyboard.press("Enter");
   await expect(composer).toHaveValue("Fix the login @citydiff ");
   await browser.keyboard.press("Enter");
+  await expect(screen.getByTestId("task-title")).toContainText("Fix the login");
+  await backToTaskList(screen);
   await expectTaskTitle("Fix the login");
 
   // A tap accepts a suggestion too.
+  await screen.getByTestId("new-task-button").tap();
   await composer.tap();
   await browser.keyboard.type("Write the docs @zero");
   await screen.getByTestId("project-suggestion-zero").tap();
   await expect(composer).toHaveValue("Write the docs @zero ");
-  await screen.getByRole("button", "Add task").tap();
+  await screen.getByTestId("task-agent-send").tap();
+  await expect(screen.getByTestId("task-title")).toContainText("Write the docs");
+  await backToTaskList(screen);
   await expectTaskTitle("Write the docs");
-  await expect(composer).toHaveValue("");
 
   // Escape closes the list and keeps the text.
+  await screen.getByTestId("new-task-button").tap();
   await composer.tap();
   await browser.keyboard.type("Draft @c");
   await expect(suggestions).toBeVisible();
@@ -83,6 +94,7 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
   await expect(suggestions).toHaveCount(0);
   await expect(composer).toHaveValue("Draft @c");
   await composer.fill("");
+  await backToTaskList(screen);
 
   const citydiff = screen.getByTestId("task-project-citydiff");
   await expect(citydiff).toBeVisible();
@@ -122,15 +134,13 @@ test("project suggestions come only from open tasks", { timeout: 300_000 }, asyn
   const alphaTitle = `Alpha work ${tag}`;
   const betaTitle = `Beta work ${tag}`;
   const gammaTitle = `Gamma work ${tag}`;
-  const composer = screen.getByRole("textbox", "New task");
-
   const addTask = async (title: string, project: string) => {
-    await composer.fill(`${title} @${project}`);
-    await screen.getByRole("button", "Add task").click();
+    await createOpenTask(screen, title, { project });
     await expect(screen.getByRole("button", { name: `Open ${title}` })).toBeVisible();
   };
 
   const typeMention = async () => {
+    const composer = screen.getByTestId("task-agent-input");
     await composer.fill("");
     await composer.tap();
     await browser.keyboard.type("@");
@@ -199,9 +209,7 @@ test("a working task keeps its project in the vocabulary and spelling", async ({
   const lower = `piu${tag}`;
   const title = `Working project ${tag}`;
   const second = `Working project two ${tag}`;
-  const composer = screen.getByRole("textbox", "New task");
-  await composer.fill(`${title} @${project}`);
-  await screen.getByRole("button", "Add task").click();
+  await createOpenTask(screen, title, { project });
   await expect(screen.getByRole("button", { name: `Open ${title}` })).toBeVisible();
 
   // Working is live work: the server reuses the spelling and the client keeps the
@@ -238,6 +246,7 @@ test("a working task keeps its project in the vocabulary and spelling", async ({
 
   await app.open("/?page=tasks");
   const typeMention = async () => {
+    const composer = screen.getByTestId("task-agent-input");
     await composer.fill("");
     await composer.tap();
     await browser.keyboard.type("@");

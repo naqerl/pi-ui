@@ -163,6 +163,14 @@ export function MinusIcon(props: IconProps) {
   );
 }
 
+export function PlusIcon(props: IconProps) {
+  return (
+    <Icon name="plus" {...props}>
+      <path d="M12 5v14M5 12h14" />
+    </Icon>
+  );
+}
+
 export function GripIcon(props: IconProps) {
   return (
     <Icon name="grip" {...props}>

@@ -1,6 +1,7 @@
 import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
 import { IdleNudge } from "../src/server/idle-nudge.js";
+import { createOpenTask } from "./tasks-helpers";
 
 test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300_000 }, async ({
   app,
@@ -12,17 +13,14 @@ test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300
   await expect(screen.getByRole("textbox", "Message")).toBeVisible();
 
   await screen.getByRole("tab", "Tasks").tap();
-  const composer = screen.getByRole("textbox", "New task");
-  await expect(composer).toBeVisible();
-
-  await composer.fill("Write the ledger");
-  await screen.getByRole("button", "Add task").tap();
+  await expect(screen.getByTestId("new-task-button")).toBeVisible();
+  await createOpenTask(screen, "Write the ledger");
   const list = screen.getByTestId("task-list");
   await expect(list.getByText("Write the ledger", { exact: true })).toBeVisible();
   expect(await browser.evaluate(() => document.querySelector("[data-task-check]") === null)).toBe(
     true,
   );
-  await expect(composer).toHaveValue("");
+  await expect(screen.getByTestId("task-agent-input")).toHaveValue("");
   await expect(screen.getByTestId("subtask-progress")).toHaveCount(0);
 
   const mouseHold = await browser.evaluate(async () => {
@@ -170,8 +168,7 @@ test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300
   });
   await expect(screen.getByTestId("task-menu")).toHaveCount(0);
 
-  await screen.getByRole("textbox", "New task").fill("Review the diff");
-  await screen.getByRole("button", "Add task").tap();
+  await createOpenTask(screen, "Review the diff");
   await expect(list.getByText("Review the diff", { exact: true })).toBeVisible();
 
   // The blocker link is a ledger fact; seed it through the API and keep asserting the display.
@@ -244,7 +241,7 @@ test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300
     "tasks",
   );
   await app.open("/?page=tasks");
-  await expect(screen.getByRole("textbox", "New task")).toBeVisible();
+  await expect(screen.getByTestId("new-task-button")).toBeVisible();
   await expect(list.getByText("Write the ledger", { exact: true })).toBeVisible();
   await expect(list.getByText("Store tasks.json", { exact: true })).toBeVisible();
   await expect(list.getByText("1 of 1 subtasks done", { exact: true })).toBeVisible();
@@ -283,7 +280,6 @@ test("paints a task card before the create response and reconciles it to the led
   screen,
 }) => {
   await app.open("/?page=tasks");
-  const composer = screen.getByRole("textbox", "New task");
   const list = screen.getByTestId("task-list");
   let release: () => void = () => undefined;
   const gate = new Promise<void>((resolve) => {
@@ -301,10 +297,9 @@ test("paints a task card before the create response and reconciles it to the led
     await route.continue();
   });
 
-  const title = `Painted task ${Date.now()}`;
-  await composer.fill(title);
+  const title = "New task";
   try {
-    await screen.getByRole("button", "Add task").tap();
+    await screen.getByTestId("new-task-button").tap();
     await expect(list.getByText(title, { exact: true })).toBeVisible({ timeout: 1_500 });
     // The card is painted first; the POST that carries it may be dispatched a tick
     // later, so poll for it instead of reading the counter once.
@@ -316,8 +311,6 @@ test("paints a task card before the create response and reconciles it to the led
   } finally {
     release();
   }
-
-  await expect(composer).toHaveValue("");
   const final = await browser.evaluate(async (needle) => {
     const deadline = performance.now() + 10_000;
     while (performance.now() < deadline) {
@@ -351,15 +344,11 @@ test("retires an optimistic task card when the create fails and keeps the draft"
     }
     await route.fulfill({ status: 500, body: "Task list is full" });
   });
-  const composer = screen.getByRole("textbox", "New task");
   const list = screen.getByTestId("task-list");
-  const title = `Rejected task ${Date.now()}`;
-  await composer.fill(title);
-  await screen.getByRole("button", "Add task").tap();
+  await screen.getByTestId("new-task-button").tap();
 
   await expect(screen.getByTestId("composer-error")).toHaveText("Task list is full");
-  await expect(composer).toHaveValue(title);
-  await expect(list.getByText(title, { exact: true })).toHaveCount(0);
+  await expect(list.getByText("New task", { exact: true })).toHaveCount(0);
 });
 
 test("create and propose share the insert and differ only in their proposal fields", async ({
@@ -777,14 +766,13 @@ test("a press compresses buttons and role buttons until release, unless reduced 
   await app.open("/?page=tasks");
   await expect(screen.getByTestId(`task-${taskId}`)).toBeVisible();
 
-  await screen.getByRole("textbox", "New task").fill(`Button press ${Date.now()}`);
-  const buttonSelector = '[data-testid="add-task"]';
-  await expect(screen.getByTestId("add-task")).toBeVisible();
+  const buttonSelector = '[data-testid="new-task-button"]';
+  await expect(screen.getByTestId("new-task-button")).toBeVisible();
   expect(await transformOf(buttonSelector)).toBe("none");
 
   const buttonPoint = await pointOf(buttonSelector);
   expect(buttonPoint).not.toBeNull();
-  if (buttonPoint === null) throw new Error("Add task has no box");
+  if (buttonPoint === null) throw new Error("New task has no box");
   // Synthetic pointer events do not enter :active, so hold a real pointer to read the press.
   await browser.mouse.move(buttonPoint.x, buttonPoint.y);
   await browser.mouse.down();
@@ -803,10 +791,9 @@ test("a press compresses buttons and role buttons until release, unless reduced 
   await browser.mouse.up();
 
   await browser.emulateMedia({ reducedMotion: "reduce" });
-  await screen.getByRole("textbox", "New task").fill(`${title} reduced`);
   const reducedPoint = await pointOf(buttonSelector);
   expect(reducedPoint).not.toBeNull();
-  if (reducedPoint === null) throw new Error("Add task has no box");
+  if (reducedPoint === null) throw new Error("New task has no box");
   await browser.mouse.move(reducedPoint.x, reducedPoint.y);
   await browser.mouse.down();
   await settle();
