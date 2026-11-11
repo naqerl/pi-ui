@@ -14,6 +14,7 @@ import {
 } from "../shared/notices";
 import { formatDateTime, formatTime } from "../shared/time";
 import type { ChatMessage } from "../shared/types";
+import { Icon, noticeIconName } from "./icons";
 import { cn } from "./lib/utils";
 
 /** The instant a notice is about: the newest MCP event, or when the notice was recorded. */
@@ -42,15 +43,9 @@ function noticeLabel(notice: ChatNotice): string {
   return notice.kind === "interrupted" ? notice.note : notice.summary;
 }
 
-function noticeGlyph(notice: ChatNotice): string {
-  if (notice.kind === "job") return "⚙";
-  if (notice.kind === "delegate") return "◈";
-  if (notice.kind === "mcp") return "↯";
-  if (notice.kind === "memory" || notice.kind === "memory-delta") return "✎";
-  if (notice.kind === "idle") return "◷";
-  if (notice.kind === "decision") return notice.decision === "approved" ? "✓" : "✕";
-  if (notice.kind === "operator") return "◇";
-  return "⚠";
+function noticeIcon(notice: ChatNotice) {
+  if (notice.kind === "decision") return notice.decision === "approved" ? "check" : "x";
+  return noticeIconName(notice.kind);
 }
 
 /** The shared chip surface for chat notices and tool-activity chips. */
@@ -131,9 +126,7 @@ export function NoticeLine({
           notice.kind === "interrupted" ? "warning" : failed(notice) ? "destructive" : "default"
         }
       >
-        <span aria-hidden="true" className="shrink-0">
-          {noticeGlyph(notice)}
-        </span>
+        <Icon name={noticeIcon(notice)} className="size-3.5" />
         <span className="min-w-0 truncate" data-testid="chat-notice-summary">
           {label}
         </span>
@@ -234,7 +227,7 @@ function NoticeDialog({
             onClick={onClose}
             className="-mr-1 shrink-0 rounded-md px-2 py-1 font-mono text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
           >
-            ✕
+            <Icon name="x" className="size-4" />
           </button>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 text-sm">
