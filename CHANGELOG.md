@@ -1,3 +1,11 @@
+## 1.6.147
+
+### Fixed
+
+- A sent message no longer blinks out of the transcript while the server confirms it: a state
+  snapshot read before the send committed could rebuild the chat without the pending row.
+- A late state snapshot or live frame can no longer undo a newer queue or steer change, because
+  queue and steer updates now carry a monotonic revision.
 ## 1.6.146
 
 ### Fixed
