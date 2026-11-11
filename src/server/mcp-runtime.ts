@@ -24,7 +24,7 @@ import {
   type DurableExtensionTool,
 } from "./durable-extensions.js";
 import { checkEventNotifications } from "./mcp-event-check.js";
-import { type ExtensionNotice, polledEventCursor } from "./mcp-events.js";
+import { type ExtensionNotice, polledEventCursor, RESTORE_GRACE_MS } from "./mcp-events.js";
 import {
   hasPosition,
   type McpSubscriptionRecord,
@@ -764,16 +764,6 @@ function pollEvent(item: unknown): Record<string, unknown> | undefined {
   return isRecord(item.event) ? item.event : item;
 }
 
-/**
- * A restart is allowed to replay what it missed while it was down, but only
- * for a short window and only for a handful of events. A stream whose first
- * missed event predates this process by more than the grace horizon is old
- * history, not a restart: resuming it would replay days of backlog into the
- * chat queue. A short outage on a busy hub is the same problem in miniature —
- * ten minutes can hold a hundred events — so a full probe page means "this is
- * a backlog, not a handful", however recent it looks.
- */
-const RESTORE_GRACE_MS = 15 * 60_000;
 /**
  * Probe page size, and the replay bound: anything this big is summarised as a
  * gap instead of replayed. A restart that missed a few events still delivers

@@ -373,18 +373,25 @@ boot.mcp.setSubmit((text, options) => {
   const envelope = mcpEventEnvelope(text);
   if (envelope !== null) {
     mcpIntake.enqueue(async () => {
-      // A subscribe can hand us a retained history. Bound it once here so the
-      // outbox receives at most one delivery per event up to the cap, newest
-      // only, and the drop is visible as the same gap the feed records.
-      const batch = boundMcpEventBatch(envelope.items);
-      const dropped = envelope.dropped + batch.dropped;
+      // A stream can hand over its adapter's retained history, and a subscribe
+      // can hand us a retained history. Age first, then bound: an old sibling
+      // must not occupy a slot or evict a fresh event. The feed applies the same
+      // gate again when it ingests the original batch, so its gap count matches.
+      const aged = events.filterStaleEvents(envelope.items, false);
+      const batch = boundMcpEventBatch(aged.items);
+      const dropped = envelope.dropped + aged.dropped + batch.dropped;
       const novel = events
         .novelEvents(batch.items)
         .filter((item) => !mcpOutbox.has(events.eventKey(item)));
       const boundedNovel = boundMcpEventBatch(novel);
       const deliveryDropped = dropped + boundedNovel.dropped;
-      // Persist even a gap-only batch: missing data must be visible in chat too.
-      if (boundedNovel.items.length > 0 || deliveryDropped > 0) {
+      // A batch made only of events older than the grace has no news to report.
+      // The feed still records the gap and the debug log, but the stream's old
+      // history must not create a chat entry (or a turn) on its own.
+      const staleOnly = envelope.dropped === 0 && aged.dropped > 0 && aged.items.length === 0;
+      // Persist a gap-only batch when something other than age was dropped:
+      // missing data must stay visible in chat too.
+      if (!staleOnly && (boundedNovel.items.length > 0 || deliveryDropped > 0)) {
         // A restore may be replaying a continuous backlog. Give it one bounded
         // chip plus a gap instead of one busy delivery per replayed event; the
         // outbox merger cannot be relied on when batches arrive continuously.
@@ -406,7 +413,7 @@ boot.mcp.setSubmit((text, options) => {
       }
       events.ingest({
         customType: "mcp-events",
-        details: { events: batch.items, dropped_events: dropped },
+        details: { events: envelope.items, dropped_events: envelope.dropped },
       });
       hub.broadcast({ event: "mcp.events", data: events.state });
       mcpOutbox.start();

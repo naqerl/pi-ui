@@ -39,7 +39,17 @@ The gap reaches chat as a single “N events were missed while pi was not
 running” status chip. A recent backlog — the ordinary “pi restarted a moment
 ago” case — still replays from its stored cursor. The paged-catalog fallback
 also keeps its recovered cursor, because that is a position rather than a
-backlog. Each successful restore logs one line,
+backlog.
+
+The same grace is applied per event to every batch that arrives on a stream,
+not only to what the cursor probe predicts. An adapter that reconnects can hand
+over its own buffered backlog; an event older than the grace is counted as
+dropped, kept out of the queue and never delivered, while a fresh sibling in
+the same batch is delivered normally. The “N older events dropped from this
+batch” line and the debug log keep the drop visible. An event without a usable
+timestamp cannot be judged, so it is delivered as before and logged.
+
+Each successful restore logs one line,
 `mcp: restored subscription <server>/<name> at <cursor>`. If a server is
 unavailable, its entry stays in the registry and is retried when that server
 answers again.
@@ -104,9 +114,10 @@ write-once list.
 
 ### Reliable event delivery
 
-Event IDs, not timestamps or `replayed` provenance, determine novelty. The
-durable delivered set means one thing only: a notice for that id was submitted
-and its chip was committed. Merely seeing an id — a duplicate push, adapter
+Event IDs, not `replayed` provenance, determine novelty. Age is a separate
+gate: an event older than the restore grace is not news, however unfamiliar its
+id. The durable delivered set means one thing only: a notice for that id was
+submitted and its chip was committed. Merely seeing an id — a duplicate push, adapter
 status metadata or a replay entry — never enters that set. `replayed: true` is a
 display fact, not a delivery decision, so a replayed entry that never produced a
 chip is offered again on the next drain with its original timestamp and cursor.

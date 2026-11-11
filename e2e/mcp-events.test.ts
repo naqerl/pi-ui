@@ -175,7 +175,7 @@ test("the feed shows data.kind as the event name and keeps each subscription's c
   );
 });
 
-test("an event produced before this process started is news, not a replay", () => {
+test("an event produced before this process started but inside the grace is news", () => {
   const feed = new McpEventFeed(undefined, { startedAt: "2026-11-07T12:00:00.000Z" });
   feed.ingest({
     customType: "mcp-events-tool",
@@ -194,7 +194,7 @@ test("an event produced before this process started is news, not a replay", () =
           event: {
             eventId: "hub:900",
             name: "hub",
-            timestamp: "2026-11-07T11:30:34.640Z",
+            timestamp: "2026-11-07T11:50:34.640Z",
             cursor: "hub:900",
             data: { kind: "hub.run", labels: { task: "abc1" } },
           },
@@ -205,6 +205,45 @@ test("an event produced before this process started is news, not a replay", () =
   assert.equal(changed, true);
   assert.equal(feed.state.notice, "new event from zeroshot");
   assert.equal(feed.state.events.at(-1)?.replayed, undefined, "not marked as a replay");
+});
+
+test("the stream age gate drops old siblings but keeps fresh and unjudgeable events", () => {
+  const feed = new McpEventFeed(undefined, { startedAt: "2026-11-07T12:00:00.000Z" });
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe" },
+      result: { subscription: { id: "s1", server: "zeroshot", name: "hub", status: "active" } },
+    },
+  });
+  const event = (id: string, timestamp?: string) => ({
+    subscription_id: "s1",
+    server: "zeroshot",
+    event: {
+      eventId: id,
+      name: "hub",
+      ...(timestamp === undefined ? {} : { timestamp }),
+      cursor: `hub:${id.slice(4)}`,
+      data: { kind: "hub.job", id },
+    },
+  });
+  const changed = feed.ingest({
+    customType: "mcp-events",
+    details: {
+      events: [
+        event("hub:901", "2026-11-07T11:30:00.000Z"),
+        event("hub:902", "2026-11-07T11:50:00.000Z"),
+        event("hub:903"),
+      ],
+    },
+  });
+  assert.equal(changed, true);
+  assert.deepEqual(
+    feed.state.events.map((item) => item.id),
+    ["hub:902", "hub:903"],
+    "one old sibling neither poisons the fresh one nor takes the untimestamped one with it",
+  );
+  assert.equal(feed.state.gap?.dropped, 1);
 });
 
 test("the same event id twice is one entry and one notice", () => {
@@ -226,7 +265,7 @@ test("the same event id twice is one entry and one notice", () => {
           event: {
             eventId: id,
             name: "hub",
-            timestamp: "2026-11-07T11:40:00.000Z",
+            timestamp: "2026-11-07T11:50:00.000Z",
             cursor: "hub:901",
             data: { kind: "hub.job", labels: { task: "abc1" } },
           },
@@ -273,7 +312,7 @@ test("status metadata is seen, not delivered, and an unchipped replay is retried
     event: {
       eventId: "hub:2",
       name: "hub",
-      timestamp: "2026-11-07T11:40:00.000Z",
+      timestamp: "2026-11-07T11:50:00.000Z",
       cursor: "hub:2",
       data: { kind: "hub.job", id: "job-2" },
     },
@@ -332,7 +371,7 @@ test("a duplicate delivery never marks an unchipped id as delivered", () => {
     event: {
       eventId: "hub:7",
       name: "hub",
-      timestamp: "2026-11-07T11:40:00.000Z",
+      timestamp: "2026-11-07T11:50:00.000Z",
       cursor: "hub:7",
       data: { kind: "hub.job", id: "job-7" },
     },
@@ -460,7 +499,7 @@ test("a subscribe burst above the cap keeps the newest ids and records one gap",
     event: {
       eventId: `hub:${index + 1}`,
       name: "hub",
-      timestamp: "2026-11-07T11:40:00.000Z",
+      timestamp: "2026-11-07T11:50:00.000Z",
       cursor: `hub:${index + 1}`,
       data: { kind: "hub.job", id: `job-${index + 1}` },
     },
@@ -498,7 +537,7 @@ test("a restore burst above the merge cap is one chip plus a gap, never N chips"
     event: {
       eventId: `hub:${index + 1}`,
       name: "hub",
-      timestamp: "2026-11-07T11:40:00.000Z",
+      timestamp: "2026-11-07T11:50:00.000Z",
       cursor: `hub:${index + 1}`,
       data: { kind: "hub.job", id: `job-${index + 1}` },
     },

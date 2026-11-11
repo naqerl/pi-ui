@@ -248,7 +248,11 @@ test("a restored subscription the server rejects is cancelled and never polled a
           message.text.includes("events were missed while pi was not running"),
       ),
     ).toHaveLength(2);
-    expect(state.messages.some((message) => message.text.includes("from flood:9"))).toBe(true);
+    expect(
+      state.messages.some((message) =>
+        message.text.includes("25+ events were missed while pi was not running (from flood:9"),
+      ),
+    ).toBe(true);
     expect(
       state.messages.some((message) =>
         message.text.includes(`from old:42 since ${OLD_BACKLOG_AT}`),
@@ -366,12 +370,18 @@ test("a restore a few seconds behind still replays", async ({ app }) => {
       )
       .toBe("recent-stream:1");
 
-    const state = await readState(spawned.url);
-    expect(
-      mcpNotices(state)
-        .flatMap((notice) => notice.ids)
-        .filter((id) => id === "recent-stream-backlog"),
-    ).toHaveLength(1);
+    // The cursor advances before the queued notice is committed to chat.
+    await expect
+      .poll(
+        async () => {
+          const state = await readState(spawned.url);
+          return mcpNotices(state)
+            .flatMap((notice) => notice.ids)
+            .filter((id) => id === "recent-stream-backlog").length;
+        },
+        { timeout: 30_000 },
+      )
+      .toBe(1);
     const calls = readFileSync(spawned.logPath, "utf8").split("\n").filter(Boolean);
     expect(calls).toContain("stream:recent-stream:recent:41");
   } finally {
@@ -420,6 +430,107 @@ test("an old lastEventAt with an empty poll keeps the current cursor and records
     expect(persisted.subscriptions.find((item) => item.name === "idle-stream")?.cursor).toBe(
       "idle:7",
     );
+  } finally {
+    await spawned.stop();
+    rmSync(spawned.dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a stream batch older than the restore grace is counted and never delivered", async ({
+  app,
+}) => {
+  const spawned = await startRestoreApp([
+    subscription("restore", "stale-batch-stream", "stale-batch:40"),
+  ]);
+  try {
+    await app.open(`${spawned.url}/`);
+
+    await expect
+      .poll(
+        async () => {
+          const state = await readState(spawned.url);
+          return state.mcpEvents?.gap?.dropped ?? 0;
+        },
+        { timeout: 60_000 },
+      )
+      .toBe(40);
+
+    // Let any late delivery surface before asserting that the batch never
+    // became a chat entry or an event chip.
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    const state = await readState(spawned.url);
+    expect(state.messages).toHaveLength(0);
+    expect(mcpNotices(state).flatMap((notice) => notice.ids)).toHaveLength(0);
+    expect(state.mcpEvents?.events).toHaveLength(0);
+    expect(state.mcpEvents?.notice).toBe("40 older events dropped from this batch");
+  } finally {
+    await spawned.stop();
+    rmSync(spawned.dataDir, { recursive: true, force: true });
+  }
+});
+
+test("old events in a stream batch do not drop or delay its fresh siblings", async ({ app }) => {
+  const spawned = await startRestoreApp([
+    subscription("restore", "mixed-batch-stream", "mixed-batch:40"),
+  ]);
+  try {
+    await app.open(`${spawned.url}/`);
+
+    const freshIds = Array.from({ length: 37 }, (_, index) => `mixed-batch-${index + 4}`).sort();
+    await expect
+      .poll(
+        async () => {
+          const state = await readState(spawned.url);
+          return mcpNotices(state)
+            .flatMap((notice) => notice.ids)
+            .filter((id) => id.startsWith("mixed-batch-"))
+            .sort();
+        },
+        { timeout: 60_000 },
+      )
+      .toEqual(freshIds);
+
+    const state = await readState(spawned.url);
+    expect(state.mcpEvents?.gap?.dropped).toBe(3);
+    expect(
+      state.messages.some((message) =>
+        message.text.includes("3 older events dropped from this batch"),
+      ),
+    ).toBe(true);
+  } finally {
+    await spawned.stop();
+    rmSync(spawned.dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a stream batch entirely within the restore grace is delivered whole", async ({ app }) => {
+  const spawned = await startRestoreApp([
+    subscription("restore", "fresh-batch-stream", "fresh-batch:40"),
+  ]);
+  try {
+    await app.open(`${spawned.url}/`);
+
+    const freshIds = Array.from({ length: 40 }, (_, index) => `fresh-batch-${index + 1}`).sort();
+    await expect
+      .poll(
+        async () => {
+          const state = await readState(spawned.url);
+          return mcpNotices(state)
+            .flatMap((notice) => notice.ids)
+            .filter((id) => id.startsWith("fresh-batch-"))
+            .sort();
+        },
+        { timeout: 60_000 },
+      )
+      .toEqual(freshIds);
+
+    const state = await readState(spawned.url);
+    expect(state.mcpEvents?.gap).toBeUndefined();
+    expect(
+      state.messages.some((message) =>
+        message.text.includes("older events dropped from this batch"),
+      ),
+    ).toBe(false);
   } finally {
     await spawned.stop();
     rmSync(spawned.dataDir, { recursive: true, force: true });
