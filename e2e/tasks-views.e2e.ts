@@ -78,7 +78,7 @@ test("switches to tasks with a horizontal swipe and back again", async ({
     }, direction);
 
   expect(await swipe("forward")).toBe("tasks");
-  await expect(screen.getByTestId("new-task-button")).toBeVisible();
+  await expect(screen.getByRole("textbox", "New task")).toBeVisible();
   expect(await browser.evaluate(() => new URLSearchParams(location.search).get("page"))).toBe(
     "tasks",
   );

@@ -63,6 +63,10 @@ export function useTaskChat(taskId: string, closed: boolean) {
     setReady(false);
     setError(null);
     draftRevision.current = 0;
+    if (taskId.startsWith("fixture-")) {
+      setReady(true);
+      return;
+    }
     void refresh();
 
     const draftBatch = frameBatch<{ kind: "text"; delta: StreamTextDelta }>(

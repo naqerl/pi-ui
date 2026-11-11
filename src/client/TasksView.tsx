@@ -42,13 +42,18 @@ import { InlineMarkdown, Markdown, plainInline } from "./markdown";
 import { mediaUrl } from "./media-client";
 import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
 import { TaskAgentChat } from "./TaskAgentChat";
+import { type TaskDetailModel, TaskDetailVariant, TasksComposerDock } from "./TaskDetailVariants";
 import { removeTask, type TaskOutcome, updateTask } from "./task-client";
+import { FIXTURE_PLAN_ID, mergeFixtureTasks } from "./task-detail-fixture";
+import { useTaskDetailFixture, useTaskDetailVariant } from "./task-detail-query";
 import { TaskLinkProvider } from "./task-link";
+import { useWide, WIDE_QUERY } from "./use-wide";
+
+export { useWide, WIDE_QUERY };
 
 const LONG_PRESS_MS = 500;
 /** A pointer sequence this long after the menu opened cannot still be the dismissing tap. */
 const CARD_CLICK_IGNORE_MS = 700;
-const WIDE_QUERY = "(min-width: 1024px)";
 /** Past days of the done list shown at first; "Show older days" adds this many more. */
 const DAY_PAGE = 7;
 /** One vertical rhythm for every header and card stack on the tasks page. */
@@ -64,6 +69,8 @@ interface TasksViewProps {
   onLedger: (ledger: TaskLedger) => void;
   /** A task id another page asked to open, with a request count so repeats still open it. */
   selection?: { id: string; request: number } | null;
+  /** True while a task detail covers the mobile list, so the page composer can hide. */
+  onMobileDetailChange?: (open: boolean) => void;
 }
 
 /** Root tasks split into one group per project, A–Z, with "No project" (null) last. */
@@ -113,20 +120,6 @@ function cardPointerToken(event: Event): CardPointerToken {
   const token = { sequence: ++cardPointerSequence };
   cardPointerTokens.set(event, token);
   return token;
-}
-
-function useWide(): boolean {
-  const [wide, setWide] = useState(
-    () => typeof window !== "undefined" && window.matchMedia(WIDE_QUERY).matches,
-  );
-  useEffect(() => {
-    const query = window.matchMedia(WIDE_QUERY);
-    const update = () => setWide(query.matches);
-    update();
-    query.addEventListener("change", update);
-    return () => query.removeEventListener("change", update);
-  }, []);
-  return wide;
 }
 
 /** A local calendar day as `YYYY-MM-DD`, the key the day groups sort and match on. */
@@ -313,18 +306,24 @@ function Chevron({ open, className }: { open: boolean; className?: string }) {
 export const TasksView = memo(TasksViewImpl);
 
 function TasksViewImpl({
-  tasks: serverTasks,
+  tasks: incomingTasks,
   activity,
   ready,
   footerClearance,
   onLedger,
   selection = null,
+  onMobileDetailChange,
 }: TasksViewProps) {
   const wide = useWide();
+  const variant = useTaskDetailVariant();
+  const fixtureOn = useTaskDetailFixture();
+  const serverTasks = fixtureOn ? mergeFixtureTasks(incomingTasks) : incomingTasks;
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [problem, setProblem] = useState<{ id: string; message: string } | null>(null);
   const [statusPending, setStatusPending] = useState<Record<string, boolean>>({});
-  const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+  const [openTaskId, setOpenTaskId] = useState<string | null>(() =>
+    fixtureOn ? FIXTURE_PLAN_ID : null,
+  );
   const [reopenTaskId, setReopenTaskId] = useState<string | null>(null);
   const [dayLimit, setDayLimit] = useState(DAY_PAGE);
   // A decision paints its row before the request returns; null means the row is gone.
@@ -449,6 +448,11 @@ function TasksViewImpl({
     openDetail(selection.id);
   }, [openDetail, selection]);
 
+  useEffect(() => {
+    onMobileDetailChange?.(!wide && openTaskId !== null);
+    return () => onMobileDetailChange?.(false);
+  }, [onMobileDetailChange, openTaskId, wide]);
+
   const closeDetail = useCallback(() => {
     if (!wide && taskDetailHistory()?.piTaskDetailId !== undefined) {
       window.history.back();
@@ -487,8 +491,12 @@ function TasksViewImpl({
   }, [wide, firstVisibleId, tasks]);
 
   useEffect(() => {
+    if (fixtureOn) {
+      openDetail(FIXTURE_PLAN_ID);
+      return;
+    }
     if (!wide) setOpenTaskId(null);
-  }, [wide]);
+  }, [wide, fixtureOn, openDetail]);
 
   const armCardClickIgnore = useCallback((token: CardPointerToken) => {
     const guard = cardClickGuard.current;
@@ -733,31 +741,50 @@ function TasksViewImpl({
       <div
         className={
           wide
-            ? "mx-auto grid h-full min-h-0 w-full max-w-[1200px] grid-cols-[minmax(360px,440px)_1fr] gap-6 px-4"
+            ? cn(
+                "mx-auto grid h-full min-h-0 w-full gap-6 px-4",
+                variant === 4
+                  ? "max-w-[1440px] grid-cols-[minmax(280px,340px)_minmax(320px,1fr)_minmax(340px,420px)]"
+                  : "max-w-[1200px] grid-cols-[minmax(360px,440px)_1fr]",
+              )
             : "mx-auto flex w-full max-w-[72ch] flex-col gap-4 px-4"
         }
         style={{ paddingTop: 16, paddingBottom: footerClearance + 16 }}
       >
         {wide ? (
           <>
-            <div
-              className={cn(
-                "min-h-0 min-w-0 overflow-x-hidden overflow-y-auto overscroll-contain",
-                SCROLLBAR_GUTTER,
-              )}
-            >
-              {list}
+            <div className="flex h-full min-h-0 min-w-0 flex-col">
+              <div
+                className={cn(
+                  "min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain",
+                  SCROLLBAR_GUTTER,
+                )}
+              >
+                {list}
+              </div>
+              <TasksComposerDock variant={variant} wide={wide} />
             </div>
-            <div className="flex min-h-0 min-w-0 flex-col">
-              {detail ?? (
+            {variant === 4 ? (
+              (detail ?? (
                 <Card
                   data-testid="task-detail-empty"
-                  className="items-center px-4 py-10 text-sm text-muted-foreground"
+                  className="col-span-2 items-center px-4 py-10 text-sm text-foreground/75"
                 >
                   Select a task to see its details.
                 </Card>
-              )}
-            </div>
+              ))
+            ) : (
+              <div className="flex h-full min-h-0 min-w-0 flex-col">
+                {detail ?? (
+                  <Card
+                    data-testid="task-detail-empty"
+                    className="items-center px-4 py-10 text-sm text-foreground/75"
+                  >
+                    Select a task to see its details.
+                  </Card>
+                )}
+              </div>
+            )}
           </>
         ) : (
           (detail ?? list)
@@ -1450,6 +1477,7 @@ export function TaskDetail({
   /** Called after an inline edit saves, so the tasks page takes the new ledger. */
   onLedger?: (ledger: TaskLedger) => void;
 }) {
+  const variant = useTaskDetailVariant();
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(task.title);
   const [titleError, setTitleError] = useState<string | null>(null);
@@ -1660,6 +1688,68 @@ export function TaskDetail({
     state === "failed" && trace?.lastRun?.reason !== undefined ? trace.lastRun.reason : null;
   const badge = stateBadge(state, trace) ?? "Open";
   const title = plainInline(task.title);
+  if (variant >= 1 && variant <= 5) {
+    const model: TaskDetailModel = {
+      task,
+      tasks,
+      state,
+      trace,
+      wide,
+      statusPending,
+      notice,
+      editingTitle,
+      titleDraft,
+      titleError,
+      titleRef,
+      setTitleDraft,
+      setTitleError,
+      setEditingTitle,
+      saveTitle,
+      editingBody,
+      bodyDraft,
+      bodyError,
+      bodyRef,
+      bodyEditorRef,
+      bodyIgnoreBlur,
+      setBodyDraft,
+      setBodyError,
+      setEditingBody,
+      beginBodyEdit,
+      saveBody,
+      projectDraft,
+      projectError,
+      projectOpen,
+      projectMatches,
+      activeProject,
+      projectAnchor,
+      setProjectDraft,
+      setProjectError,
+      setProjectOpen,
+      setProjectActive,
+      saveProject,
+      acceptProject,
+      done,
+      proposed,
+      parked,
+      backlogLabel,
+      openChildren,
+      parent,
+      children,
+      blockers,
+      reason,
+      badge,
+      title,
+      projects,
+      onClose,
+      onOpen,
+      onStatus,
+      onApprove,
+      onDismiss,
+      onRemove,
+      onLedger,
+    };
+    return <TaskDetailVariant variant={variant as 1 | 2 | 3 | 4 | 5} model={model} />;
+  }
 
   return (
     <Card

@@ -9,8 +9,7 @@ test("the plus button creates a task and opens its planning chat", { timeout: 18
 }) => {
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/?page=tasks");
-  await expect(screen.getByTestId("new-task-button")).toBeVisible();
-  await expect(screen.getByRole("textbox", "New task")).toHaveCount(0);
+  await expect(screen.getByRole("textbox", "New task")).toBeVisible();
   await expect(screen.getByRole("textbox", "Message")).toHaveCount(0);
 
   const title = `Design the inbox ${Date.now()}`;

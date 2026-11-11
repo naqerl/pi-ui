@@ -593,7 +593,7 @@ describe("pager horizontal gestures", { serial: true }, () => {
     expect(typed.value).toBe("a draft1");
   });
 
-  test("ctrl+j from the tasks page returns to chat and focuses the draft", async ({
+  test("ctrl+j focuses the composer in place on the tasks page", async ({
     app,
     browser,
     screen,
@@ -618,16 +618,12 @@ describe("pager horizontal gestures", { serial: true }, () => {
     await browser.keyboard.press("Alt+3");
     await waitFrames();
     expect(await page()).toBe("tasks");
-    await expect(screen.getByTestId("new-task-button")).toBeVisible();
-    await expect(screen.getByRole("textbox", "Message")).toHaveCount(0);
 
-    // The tasks page no longer mounts the chat composer, so the shortcut
-    // pages back to chat like it does from the collapsed stats dock.
     await browser.keyboard.press("Control+j");
     await waitFrames();
     const tasks = await browser.evaluate(() => {
       const textarea = document.querySelector<HTMLTextAreaElement>(
-        'textarea[aria-label="Message"]',
+        '[data-testid="composer-body"] textarea',
       );
       return {
         page: document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
@@ -637,7 +633,7 @@ describe("pager horizontal gestures", { serial: true }, () => {
         end: textarea?.value.length ?? null,
       };
     });
-    expect(tasks.page).toBe("chat");
+    expect(tasks.page).toBe("tasks");
     expect(tasks.active).toBe(true);
     expect(tasks.value).toBe("a draft");
     expect(tasks.caret).toBe(tasks.end);

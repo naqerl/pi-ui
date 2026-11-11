@@ -139,7 +139,7 @@ test("sends an image without text and removes a preview", async ({ app, browser,
 test("attaches an image to a new task", async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/?page=tasks");
-  await expect(screen.getByTestId("new-task-button")).toBeVisible();
+  await expect(screen.getByRole("textbox", "New task")).toBeVisible();
 
   const created = await browser.evaluate(async () => {
     const canvas = document.createElement("canvas");

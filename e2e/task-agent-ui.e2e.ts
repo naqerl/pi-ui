@@ -44,7 +44,7 @@ test("captures the tasks page and embedded planning chat in vantablack", async (
   await expect
     .poll(() => browser.evaluate(() => document.documentElement.dataset.mode ?? ""))
     .toBe("dark");
-  await expect(screen.getByTestId("new-task-button")).toBeVisible();
+  await expect(screen.getByRole("textbox", "New task")).toBeVisible();
   await expect(
     screen.getByTestId("task-list").getByText("Design the notification inbox"),
   ).toBeVisible();

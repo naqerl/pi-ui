@@ -9,6 +9,8 @@ import { haptic } from "./haptics";
 import { loadMarkdown } from "./lazy-markdown";
 import { cn } from "./lib/utils";
 import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
+import { FIXTURE_CHAT, FIXTURE_PLAN_ID } from "./task-detail-fixture";
+import { readTaskDetailFixture } from "./task-detail-query";
 import { useTaskChat } from "./use-task-chat";
 
 void loadMarkdown();
@@ -68,11 +70,12 @@ export function TaskAgentChat({ task, projects }: { task: Task; projects: string
           partial: true,
         };
 
+  const fixtureChat = readTaskDetailFixture() && task.id === FIXTURE_PLAN_ID;
   const rows = useMemo(() => {
-    const list = [...chat.messages];
+    const list = fixtureChat ? [...FIXTURE_CHAT] : [...chat.messages];
     if (draftMessage !== null) list.push(draftMessage);
     return list;
-  }, [chat.messages, draftMessage]);
+  }, [chat.messages, draftMessage, fixtureChat]);
 
   useEffect(() => {
     const node = scrollerRef.current;
@@ -138,7 +141,7 @@ export function TaskAgentChat({ task, projects }: { task: Task; projects: string
         className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 py-3"
       >
         {rows.length === 0 && (
-          <p className="px-1 py-6 text-center text-sm text-muted-foreground">
+          <p className="px-1 py-6 text-center text-sm text-foreground/75">
             {done
               ? "This task has no planning chat."
               : "Tell the agent what this task should be. It will write the title and a design in the body, without changing any files."}
@@ -226,7 +229,7 @@ export function TaskAgentChat({ task, projects }: { task: Task; projects: string
                 }
               }}
             />
-            <div className="flex h-9 w-9 shrink-0 items-stretch">
+            <div className="flex h-11 w-11 shrink-0 items-stretch">
               {chat.run === "running" && value.trim().length === 0 ? (
                 <Button
                   type="button"
@@ -234,7 +237,7 @@ export function TaskAgentChat({ task, projects }: { task: Task; projects: string
                   size="icon"
                   aria-label="Stop"
                   data-testid="task-agent-stop"
-                  className="h-9 w-full hover:bg-foreground/10"
+                  className="h-11 w-full hover:bg-foreground/10"
                   onClick={() => {
                     haptic([12, 40, 12]);
                     void chat.stop();
@@ -249,7 +252,7 @@ export function TaskAgentChat({ task, projects }: { task: Task; projects: string
                   size="icon"
                   aria-label="Send"
                   data-testid="task-agent-send"
-                  className="h-9 w-full hover:bg-foreground/10"
+                  className="h-11 w-full hover:bg-foreground/10"
                   disabled={value.trim().length === 0}
                 >
                   <SendIcon />

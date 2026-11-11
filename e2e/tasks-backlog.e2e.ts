@@ -23,7 +23,7 @@ test("open work stays grouped by project when some tasks are parked", { timeout:
 }) => {
   await browser.setViewport({ width: 1280, height: 844 });
   await app.open("/?page=tasks");
-  await expect(screen.getByTestId("new-task-button")).toBeVisible();
+  await expect(screen.getByRole("textbox", "New task")).toBeVisible();
   await expect(screen.getByTestId("task-filters")).toHaveCount(0);
   await expect(screen.getByTestId("task-filter-active")).toHaveCount(0);
   await expect(screen.getByTestId("task-filter-blocked")).toHaveCount(0);

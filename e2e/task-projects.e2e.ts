@@ -25,7 +25,7 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
 }) => {
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/?page=tasks");
-  await expect(screen.getByTestId("new-task-button")).toBeVisible();
+  await expect(screen.getByRole("textbox", "New task")).toBeVisible();
   const taskList = screen.getByTestId("task-list");
   // A just-added task can appear as both its optimistic row and the settled row
   // for a moment; wait for exactly one visible match instead of sampling both.

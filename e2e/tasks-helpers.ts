@@ -1,5 +1,5 @@
 import type { Browser } from "@e2e-dev/web";
-import { expect, type Locator } from "e2e";
+import { expect, type Locator, type Screen } from "e2e";
 
 /** Deletes the named tasks and proves the shared ledger no longer has them. */
 export async function removeTasks(browser: Browser, titles: readonly string[]) {
@@ -16,20 +16,17 @@ export async function removeTasks(browser: Browser, titles: readonly string[]) {
   expect(left).toBe(0);
 }
 
-type TaskScreen = { getByTestId: (id: string) => Locator };
+type TaskScreen = Pick<Screen, "getByTestId" | "getByRole">;
 
-/** Open a fresh untitled task and return its planning-chat input. */
+/** Focus the tasks-page composer, going back to the list first on mobile. */
 export async function openNewTaskComposer(screen: TaskScreen): Promise<Locator> {
-  await screen.getByTestId("new-task-button").tap();
-  // Wait until the new blank task is selected; otherwise a previous
-  // detail's composer can swallow the first message.
-  await expect(screen.getByTestId("task-title")).toHaveText("New task");
-  const input = screen.getByTestId("task-agent-input");
+  await backToTaskList(screen);
+  const input = screen.getByRole("textbox", "New task");
   await expect(input).toBeVisible();
   return input;
 }
 
-/** Create an open task from the plus button and first message in the embedded chat. */
+/** Create an open task from the text composer and wait until its detail is open. */
 export async function createOpenTask(
   screen: TaskScreen,
   title: string,
@@ -38,7 +35,7 @@ export async function createOpenTask(
   const input = await openNewTaskComposer(screen);
   const text = options?.project === undefined ? title : `@${options.project} ${title}`;
   await input.fill(text);
-  await screen.getByTestId("task-agent-send").tap();
+  await screen.getByRole("button", "Add task").tap();
   const expected = title.split("\n")[0] ?? title;
   await expect(screen.getByTestId("task-title")).toContainText(expected);
 }

@@ -421,7 +421,7 @@ describe("stats page transitions against a shared app", { serial: true }, () => 
     await screen.getByRole("tab", "Tasks").tap();
     await expect(dock).toBeVisible();
     await expect(body).toBeVisible();
-    await expect(screen.getByTestId("new-task-button")).toBeVisible();
+    await expect(screen.getByRole("textbox", "New task")).toBeVisible();
     await expect(body).toHaveAttribute("data-collapsed", "false");
     await expect(slide).toBeVisible();
   });

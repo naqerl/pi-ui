@@ -12,11 +12,12 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import type { MemoryPathMatch, MemoryReadRange, MemoryToolDetails } from "../shared/memory";
 import { pageIdFromPath } from "../shared/pages";
 import { acceptMention, mentionAt, parseProjectToken, projectsOf } from "../shared/project";
 import { isQueuedNotice, queuedMessageIds, resolveNoticeIconName } from "../shared/queue";
-import { DEFAULT_NEW_TASK_TITLE, isActiveStatus } from "../shared/tasks";
+import { isActiveStatus } from "../shared/tasks";
 import { formatDateTime, formatTime } from "../shared/time";
 import type {
   ActivityItem,
@@ -55,11 +56,13 @@ import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
 import { RunErrorHeader } from "./RunErrorHeader";
 import type { ChatStats } from "./StatsView";
 import { createTask } from "./task-client";
+import { useTaskDetailVariant } from "./task-detail-query";
 import { TaskLinkProvider } from "./task-link";
 import { groupTimeline, type TimelineGroup } from "./timeline-groups";
 import type { SendOutcome, TimelineItem } from "./use-chat";
 import { usePager } from "./use-pager";
 import { useStickToBottom } from "./use-stick-to-bottom";
+import { useWide } from "./use-wide";
 import { WorkingIndicator } from "./WorkingIndicator";
 
 interface ChatViewProps {
@@ -819,46 +822,20 @@ function useAttachments() {
   return { items, add, remove, clear, restore };
 }
 
-function NewTaskButton({
-  error,
-  onDismissError,
-  onCreate,
-}: {
-  error: string | null;
-  onDismissError: () => void;
-  onCreate: () => void;
-}) {
-  return (
-    <div className="flex flex-col">
-      {error !== null && (
-        <p
-          id="composer-error"
-          role="alert"
-          data-testid="composer-error"
-          className="px-3 pt-1.5 font-mono text-[11px] leading-4 text-destructive"
-        >
-          {error}
-        </p>
-      )}
-      <div className="flex items-center justify-center p-1.5">
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          aria-label="New task"
-          data-testid="new-task-button"
-          className="h-11 w-11 hover:bg-foreground/10"
-          onClick={() => {
-            haptic();
-            if (error !== null) onDismissError();
-            onCreate();
-          }}
-        >
-          <PlusIcon />
-        </Button>
-      </div>
-    </div>
-  );
+function useComposerSlot(active: boolean): HTMLElement | null {
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    if (!active) {
+      setSlot(null);
+      return;
+    }
+    const read = () => document.getElementById("tasks-composer-slot");
+    setSlot(read());
+    const observer = new MutationObserver(() => setSlot(read()));
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [active]);
+  return slot;
 }
 
 function PlusIcon() {
@@ -1494,6 +1471,11 @@ export function ChatView({
   );
   const activityTriggerRef = useRef<HTMLButtonElement | null>(null);
   const tasksPage = pager.page === TASKS_PAGE;
+  const variant = useTaskDetailVariant();
+  const wideLayout = useWide();
+  const portalComposer = tasksPage && wideLayout && variant >= 1;
+  const composerSlot = useComposerSlot(portalComposer);
+
   // An error belongs to the page it was raised on.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on page change only
   useEffect(() => setComposerError(null), [pager.page]);
@@ -1505,6 +1487,8 @@ export function ChatView({
   );
   const [pageAnimating, setPageAnimating] = useState(false);
   const [taskSelection, setTaskSelection] = useState<{ id: string; request: number } | null>(null);
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
+  const hideTasksComposer = (tasksPage && mobileDetailOpen) || portalComposer;
   const lastPagerState = useRef({ page: pager.page, dragging: pager.dragging });
   const shownTasks = useMemo(
     () =>
@@ -1572,20 +1556,27 @@ export function ChatView({
       // A dialog owns the focus while it is open, including its own text fields.
       const active = document.activeElement;
       if (active instanceof Element && active.closest('[role="dialog"]') !== null) return;
-      const focusComposer = () => {
-        const element = composerRef.current;
-        if (element === null) return;
+      const focusField = (element: HTMLTextAreaElement) => {
         element.focus({ preventScroll: true });
         const end = element.value.length;
         element.setSelectionRange(end, end);
       };
+      const taskChat = document.querySelector<HTMLTextAreaElement>(
+        '[data-testid="task-agent-input"]',
+      );
+      if (taskChat !== null && taskChat.offsetParent !== null) {
+        focusField(taskChat);
+        return;
+      }
       const element = composerRef.current;
       if (element !== null && element.closest("[inert]") === null) {
-        focusComposer();
+        focusField(element);
         return;
       }
       pager.setPage(CHAT_PAGE);
-      requestAnimationFrame(focusComposer);
+      requestAnimationFrame(() => {
+        if (composerRef.current !== null) focusField(composerRef.current);
+      });
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
@@ -1752,50 +1743,26 @@ export function ChatView({
     retire();
     setComposerError(null);
     applyTasks(outcome.ledger);
-    return true;
-  };
-
-  const createBlankTask = async () => {
-    const known = new Set(tasks.map((task) => task.id));
-    const key = newTaskKey();
-    const created: OptimisticTask = {
-      key,
-      knownIds: known,
-      task: {
-        id: `pending-${key}`,
-        title: DEFAULT_NEW_TASK_TITLE,
-        status: "open",
-        parentId: null,
-        blockedBy: [],
-        createdAt: new Date().toISOString(),
-        completedAt: null,
-        completion: null,
-        createdBy: "operator",
-      },
-    };
-    const retire = () =>
-      setOptimisticTasks((current) => current.filter((item) => item.key !== key));
-    setOptimisticTasks((current) => [...current, created]);
-    const outcome = await createTask(DEFAULT_NEW_TASK_TITLE, null);
-    if (!outcome.ok) {
-      retire();
-      setComposerError(outcome.error);
-      return false;
+    if (options?.backlog !== true) {
+      const opened = outcome.ledger.tasks
+        .filter((task) => !created.knownIds.has(task.id))
+        .sort((left, right) => (left.createdAt < right.createdAt ? 1 : -1))[0];
+      if (opened !== undefined) {
+        openTaskFromChat(opened.id);
+        void fetch(`/api/tasks/${encodeURIComponent(opened.id)}/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: title }),
+        }).catch((error: unknown) => {
+          console.error("[pi] could not start the task agent", error);
+        });
+        requestAnimationFrame(() => {
+          window.dispatchEvent(new Event("pi-focus-task-chat"));
+        });
+      }
     }
-    retire();
-    setComposerError(null);
-    applyTasks(outcome.ledger);
-    const opened = outcome.ledger.tasks
-      .filter((task) => !known.has(task.id))
-      .sort((left, right) => (left.createdAt < right.createdAt ? 1 : -1))[0];
-    if (opened !== undefined) openTaskFromChat(opened.id);
-    requestAnimationFrame(() => {
-      window.dispatchEvent(new Event("pi-focus-task-chat"));
-    });
     return true;
   };
-  const createBlankTaskRef = useRef(createBlankTask);
-  createBlankTaskRef.current = createBlankTask;
 
   const openActivity = (run: string, trigger: HTMLButtonElement) => {
     activityTriggerRef.current = trigger;
@@ -1951,6 +1918,7 @@ export function ChatView({
                   footerClearance={0}
                   onLedger={applyTasks}
                   selection={taskSelection}
+                  onMobileDetailChange={setMobileDetailOpen}
                 />
               </Suspense>
             </section>
@@ -2035,41 +2003,44 @@ export function ChatView({
           </div>
           <div
             data-testid="composer-body"
-            data-hidden={statsPage ? "true" : "false"}
-            data-collapsed={statsPage ? "true" : "false"}
-            aria-hidden={statsPage ? true : undefined}
-            inert={statsPage ? true : undefined}
+            data-hidden={statsPage || hideTasksComposer ? "true" : "false"}
+            data-collapsed={statsPage || hideTasksComposer ? "true" : "false"}
+            aria-hidden={statsPage || hideTasksComposer ? true : undefined}
+            inert={statsPage || hideTasksComposer ? true : undefined}
             className="composer-body"
           >
-            <div>
-              {/* Keep the chat composer mounted so a draft survives a trip to
-                  Tasks; hide it from the accessibility tree and show the plus. */}
-              <div
-                hidden={tasksPage}
-                inert={tasksPage ? true : undefined}
-                aria-hidden={tasksPage ? true : undefined}
-              >
+            {composerSlot ? (
+              createPortal(
                 <Composer
-                  tasksPage={false}
+                  tasksPage={tasksPage}
                   running={running}
                   send={handleSend}
                   stop={stop}
-                  unsendSteer={pendingSteers > 0 ? unsendSteer : undefined}
+                  unsendSteer={!tasksPage && pendingSteers > 0 ? unsendSteer : undefined}
                   addTask={addTask}
                   projects={projects}
-                  error={tasksPage ? null : composerError}
+                  error={composerError}
+                  onDismissError={() => setComposerError(null)}
+                  textareaRef={composerRef}
+                />,
+                composerSlot,
+              )
+            ) : (
+              <div>
+                <Composer
+                  tasksPage={tasksPage}
+                  running={running}
+                  send={handleSend}
+                  stop={stop}
+                  unsendSteer={!tasksPage && pendingSteers > 0 ? unsendSteer : undefined}
+                  addTask={addTask}
+                  projects={projects}
+                  error={composerError}
                   onDismissError={() => setComposerError(null)}
                   textareaRef={composerRef}
                 />
               </div>
-              {tasksPage ? (
-                <NewTaskButton
-                  error={composerError}
-                  onDismissError={() => setComposerError(null)}
-                  onCreate={() => void createBlankTask()}
-                />
-              ) : null}
-            </div>
+            )}
           </div>
         </div>
       </div>
