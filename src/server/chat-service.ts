@@ -1377,6 +1377,7 @@ export class ChatService {
         },
         submission,
       });
+      this.markQueueChanged();
       const markerStart = Date.now();
       await this.persistMarkerState();
       timing.markerMs += Date.now() - markerStart;
@@ -1393,6 +1394,7 @@ export class ChatService {
         ...(notice === undefined ? {} : { notice }),
         ...(attachments.length > 0 ? { attachments } : {}),
       });
+      this.markQueueChanged();
     }
 
     const statusStart = Date.now();
@@ -1407,7 +1409,7 @@ export class ChatService {
     timing.statusMs = Date.now() - statusStart;
     // An idle steer is already in the transcript; the response carries it, so no pending bubble
     // is left behind. A queued steer stays tracked until its entry is actually appended.
-    if (steer && placed) this.steers.delete(id);
+    if (steer && placed && this.steers.delete(id)) this.markQueueChanged();
     if (steer) {
       const broadcastStart = Date.now();
       this.broadcastQueue();
@@ -1427,6 +1429,7 @@ export class ChatService {
         },
         submission,
       });
+      this.markQueueChanged();
       const markerStart = Date.now();
       await this.persistMarkerState();
       timing.markerMs += Date.now() - markerStart;
@@ -1434,6 +1437,7 @@ export class ChatService {
       this.broadcastQueue();
       timing.broadcastMs += Date.now() - broadcastStart;
     } else if (!queued && queuedInitially && this.queued.delete(id)) {
+      this.markQueueChanged();
       const markerStart = Date.now();
       await this.persistMarkerState();
       timing.markerMs += Date.now() - markerStart;
@@ -1466,6 +1470,7 @@ export class ChatService {
     const queued = this.queued.get(id);
     if (!queued) return false;
     this.queued.delete(id);
+    this.markQueueChanged();
     await this.persistMarkerState();
     this.broadcastQueue();
     const aborted = await this.withdraw(id, "cancel a queued message");
@@ -1482,6 +1487,7 @@ export class ChatService {
     if (item === undefined) return null;
     const aborted = await this.withdraw(id, "take back a steer");
     this.steers.delete(id);
+    this.markQueueChanged();
     this.broadcastQueue();
     return aborted ? item : null;
   }
@@ -1505,6 +1511,7 @@ export class ChatService {
     const queued = this.queued.get(id);
     if (!queued) return null;
     this.queued.delete(id);
+    this.markQueueChanged();
     await this.persistMarkerState();
     this.broadcastQueue();
     // A message durable already placed is in the transcript; sending it again would duplicate it.
@@ -1533,7 +1540,7 @@ export class ChatService {
     } finally {
       const clearedQueue = this.queued.size > 0;
       this.queued.clear();
-      if (clearedQueue && wasRunning) this.queueRevision += 1;
+      if (clearedQueue) this.markQueueChanged();
       // Pending steers stay until their submissions settle, so each one can be reported as
       // dropped with the reason instead of vanishing when the run stops.
       if (wasRunning) {
@@ -1592,6 +1599,7 @@ export class ChatService {
           },
           submission,
         });
+        this.markQueueChanged();
         adopted = true;
         void this.monitorSubmission(submission, false, id);
         continue;
@@ -1797,6 +1805,7 @@ export class ChatService {
         }
       }
       if (queuedId !== undefined && this.queued.delete(queuedId)) {
+        this.markQueueChanged();
         // Delivery is the point this queue item must leave the durable marker too.
         await this.persistMarkerState(true);
         this.broadcastQueue();
@@ -1847,7 +1856,7 @@ export class ChatService {
     // Consuming a steer is a queue mutation too: without a new revision, an older
     // snapshot that still lists it could be accepted after the handoff and put the
     // pending bubble back beside the delivered row.
-    if (removed) this.queueRevision += 1;
+    if (removed) this.markQueueChanged();
     return removed;
   }
 
@@ -1865,7 +1874,7 @@ export class ChatService {
   /** A pending steer durable dropped is reported as failed, never silently removed. */
   private dropSteer(id: string, reason: string): boolean {
     if (!this.steers.delete(id)) return false;
-    this.queueRevision += 1;
+    this.markQueueChanged();
     this.hub.broadcast([
       {
         event: "steer.dropped",
@@ -2013,13 +2022,17 @@ export class ChatService {
       }, SESSION_CONTEXT);
 
       if (changes.infos.length === 0 && changes.removed.length === 0) return;
-      for (const id of changes.removed) this.queued.delete(id);
+      if (changes.removed.length > 0) {
+        for (const id of changes.removed) this.queued.delete(id);
+        this.markQueueChanged();
+      }
       for (const info of changes.infos) {
         const id = String(info.id);
         const existing = this.queued.get(id);
         if (existing !== undefined) {
           existing.item.text = info.text;
           existing.item.createdAt = info.createdAt;
+          this.markQueueChanged();
           continue;
         }
         const submission = await this.harness.submission(info.id, SESSION_CONTEXT);
@@ -2039,6 +2052,7 @@ export class ChatService {
           },
           submission,
         });
+        this.markQueueChanged();
       }
       await this.persistMarkerState();
       this.broadcastQueue();
@@ -2694,9 +2708,9 @@ export class ChatService {
         continue;
       }
       this.queued.delete(id);
+      this.markQueueChanged();
       removed = true;
     }
-    if (removed) this.queueRevision += 1;
     if (removed) await this.publishQueueRetirement();
   }
 
@@ -2707,6 +2721,7 @@ export class ChatService {
       this.queued.delete(id);
       removed = true;
     }
+    if (removed) this.markQueueChanged();
     return removed;
   }
 
@@ -3066,6 +3081,7 @@ export class ChatService {
         const steer = steerFromInboxItem(item);
         if (steer === undefined || this.steers.has(steer.id)) continue;
         this.steers.set(steer.id, steer);
+        this.markQueueChanged();
       }
     } catch (error) {
       console.error("[pi] could not read pending steers", error);
@@ -3101,8 +3117,12 @@ export class ChatService {
     }
   }
 
-  private broadcastQueue(): void {
+  /** Marks the pending lists changed before an await can interleave a snapshot read. */
+  private markQueueChanged(): void {
     this.queueRevision += 1;
+  }
+
+  private broadcastQueue(): void {
     this.hub.broadcast({
       event: "run.state",
       data: this.getRunStatus(),
@@ -3300,6 +3320,7 @@ export class ChatService {
     const [id, queued] = first.value;
     const settled = await queued.submission.status(SESSION_CONTEXT).catch(() => undefined);
     this.queued.delete(id);
+    this.markQueueChanged();
     await this.persistMarkerState();
     this.broadcastQueue();
     if (settled?.status === "placed" || settled?.status === "done") return;

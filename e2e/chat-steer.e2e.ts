@@ -252,22 +252,29 @@ test("does not revive a consumed steer from a snapshot read before delivery", as
     const pending = browser.locator('[data-pending-steer="true"]').filter({ hasText: text });
     await expect(pending).toHaveCount(1);
 
-    const pendingRowId = () =>
-      browser.evaluate((needle: string) => {
-        const row = [...document.querySelectorAll<HTMLElement>('[data-pending-steer="true"]')].find(
-          (candidate) => (candidate.textContent ?? "").includes(needle),
-        );
-        return row?.getAttribute("data-message-id") ?? "";
-      }, text);
-    // Wait for the send response to replace the optimistic copy with the tracked steer.
-    const optimisticId = await pendingRowId();
-    await expect.poll(async () => (await pendingRowId()) !== optimisticId).toBe(true);
+    // Read the snapshot only once the server tracks the steer, so it is a valid
+    // pre-delivery answer rather than racing the send response.
+    const stale = (await browser.evaluate(async (needle: string) => {
+      const deadline = performance.now() + 10_000;
+      while (performance.now() < deadline) {
+        const response = await fetch("/api/state", { cache: "no-store" });
+        if (response.ok) {
+          const snapshot = (await response.json()) as {
+            steers?: { id?: string; text?: string }[];
+          };
+          if (snapshot.steers?.some((steer) => steer.text === needle)) {
+            return snapshot as unknown as JsonValue;
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return null;
+    }, text)) as { steers?: { id?: string; text?: string }[] } | null;
+    expect(stale).not.toBeNull();
+    const tracked = stale?.steers?.find((steer) => steer.text === text);
+    expect(tracked?.id).toBeTruthy();
+    await expect(pending).toHaveAttribute("data-message-id", `steer-pending-${tracked?.id ?? ""}`);
 
-    // A snapshot read while the steer is still pending is a valid server answer.
-    const stale = await browser.evaluate(async () => {
-      const response = await fetch("/api/state", { cache: "no-store" });
-      return (await response.json()) as JsonValue;
-    });
     let serveStale = false;
     let served = 0;
     await browser.route("**/api/state**", async (route) => {
@@ -276,7 +283,7 @@ test("does not revive a consumed steer from a snapshot read before delivery", as
         return;
       }
       served += 1;
-      await route.fulfill({ json: stale });
+      await route.fulfill({ json: stale as JsonValue });
     });
 
     writeFileSync(release, "");

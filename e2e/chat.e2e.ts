@@ -897,3 +897,126 @@ test("keeps a sent bubble on every frame through a delayed response and stale st
   expect(result.frames).toBeGreaterThan(0);
   expect(result.missing, JSON.stringify(result)).toBe(0);
 });
+
+// The queued form is a different handoff from the placed form: the fake server answers
+// with a queue item after a delay, and the optimistic id must survive that swap.
+test("keeps a queued send visible on every frame while its response is held", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await openChat(app, browser);
+  const composer = screen.getByRole("textbox", "Message");
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let request: { text?: string; mode?: string; queueKey?: string } = {};
+  await browser.route("**/api/message", async (route) => {
+    request = JSON.parse(route.request.postData ?? "{}") as {
+      text?: string;
+      mode?: string;
+      queueKey?: string;
+    };
+    await gate;
+    const key = request.queueKey ?? "queued-key";
+    const createdAt = new Date().toISOString();
+    await route.fulfill({
+      status: 202,
+      json: {
+        message: {
+          id: `m-pending-${key}`,
+          role: "user",
+          text: request.text ?? "",
+          timestamp: createdAt,
+          order: Number.MAX_SAFE_INTEGER,
+        },
+        mode: request.mode ?? "queue",
+        queued: true,
+        placed: false,
+        queue: [
+          {
+            id: `queue-${key}`,
+            text: request.text ?? "",
+            createdAt,
+            key,
+          },
+        ],
+        steers: [],
+      },
+    });
+  });
+
+  const text = `queued frame send ${Date.now()}`;
+  await browser.evaluate((needle: string) => {
+    const state = { armed: false, started: false, id: "", frames: 0, missing: 0 };
+    (window as unknown as { __queuedFrames?: typeof state }).__queuedFrames = state;
+    const send = document.querySelector<HTMLButtonElement>('button[aria-label="Send"]');
+    send?.addEventListener(
+      "click",
+      () => {
+        state.armed = true;
+      },
+      { capture: true },
+    );
+    const tick = () => {
+      state.frames += 1;
+      if (state.armed) {
+        const rows = [...document.querySelectorAll<HTMLElement>('[data-role="user"]')].filter(
+          (row) => (row.textContent ?? "").includes(needle),
+        );
+        if (!state.started) {
+          if (rows.length > 0) {
+            state.started = true;
+            state.id = rows[0]?.getAttribute("data-message-id") ?? "";
+          }
+        } else if (!rows.some((row) => row.getAttribute("data-message-id") === state.id)) {
+          state.missing += 1;
+        }
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    return true;
+  }, text);
+
+  try {
+    await composer.fill(text);
+    await screen.getByRole("button", { name: "Send" }).tap();
+    const pendingSend = browser.locator('[data-pending-send="true"]').filter({ hasText: text });
+    await expect.poll(() => pendingSend.isVisible(), { timeout: 10_000 }).toBe(true);
+    const optimisticId = await browser.evaluate((needle: string) => {
+      const row = [...document.querySelectorAll<HTMLElement>('[data-pending-send="true"]')].find(
+        (candidate) => (candidate.textContent ?? "").includes(needle),
+      );
+      return row?.getAttribute("data-message-id") ?? "";
+    }, text);
+    expect(optimisticId).not.toBe("");
+    expect(request.text).toBe(text);
+
+    release();
+    const queued = browser.locator('[data-pending-queue="true"]').filter({ hasText: text });
+    await expect(queued).toHaveCount(1, { timeout: 10_000 });
+    await expect(queued).toHaveAttribute("data-message-id", optimisticId);
+    await expect(browser.locator('[data-role="user"]').filter({ hasText: text })).toHaveCount(1);
+  } finally {
+    release();
+  }
+
+  const result = await browser.evaluate(() => {
+    const state = (
+      window as unknown as {
+        __queuedFrames?: { started: boolean; id: string; frames: number; missing: number };
+      }
+    ).__queuedFrames;
+    return {
+      started: state?.started ?? false,
+      id: state?.id ?? "",
+      frames: state?.frames ?? 0,
+      missing: state?.missing ?? -1,
+    };
+  });
+  expect(result.started).toBe(true);
+  expect(result.frames).toBeGreaterThan(0);
+  expect(result.missing, JSON.stringify(result)).toBe(0);
+});
