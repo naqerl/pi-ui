@@ -1,3 +1,10 @@
+## 1.6.149
+
+### Fixed
+
+- A proposal decision shows its result at once: the Dismiss/Approve row renders the outcome from the
+  request the moment it is sent, and a late state snapshot no longer replaces it with the previous
+  state before the server has confirmed.
 ## 1.6.148
 
 ### Fixed
