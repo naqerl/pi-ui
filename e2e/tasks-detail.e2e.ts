@@ -1,6 +1,6 @@
 import { type Browser, describe, test } from "@e2e-dev/web";
 import { expect } from "e2e";
-import { isTaskChatUrl } from "./tasks-helpers";
+import { isTaskChatUrl, openTaskActions } from "./tasks-helpers";
 
 const at = (second: number) => new Date(Date.UTC(2026, 0, 1, 12, 0, second)).toISOString();
 
@@ -224,13 +224,15 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     ).toEqual({ pathname: "/", page: "tasks" });
   });
 
-  test("on a desktop the first task is selected and the detail stays beside the list", async ({
+  test("on a desktop a selected task stays beside the list and Escape closes it", async ({
     app,
     browser,
     screen,
   }) => {
     await openSnapshot(app, browser, snapshot, 1280, 800);
     await expect(screen.getByTestId("tasks-page")).toHaveAttribute("data-layout", "split");
+    await expect(screen.getByTestId("task-detail-empty")).toBeVisible();
+    await screen.getByRole("button", { name: "Open proposal Clean the cache" }).tap();
     await expect(screen.getByTestId("task-detail-empty")).toHaveCount(0);
     await expect(screen.getByTestId("task-detail")).toHaveAttribute(
       "aria-label",
@@ -259,7 +261,7 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     });
     expect(contentTop).not.toBeNull();
     expect(contentTop?.title ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(24);
-    expect(contentTop?.description ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(100);
+    expect(contentTop?.description ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(160);
 
     const sides = await browser.evaluate(() => {
       const list = document.querySelector<HTMLElement>('[data-testid="task-list"]');
@@ -297,9 +299,10 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     expect(body?.rationaleInside).toBe(true);
     expect(body?.aboveComposer).toBe(true);
 
-    // The task page is persistent on desktop: Escape and a missing close button leave it open.
+    // Escape closes the desktop detail so the nav dock can return to full width.
     await browser.keyboard.press("Escape");
-    await expect(screen.getByTestId("task-detail")).toHaveAttribute("aria-label", "Ship the modal");
+    await expect(screen.getByTestId("task-detail")).toHaveCount(0);
+    await expect(screen.getByTestId("task-detail-empty")).toBeVisible();
   });
 
   test("body markdown links and copy controls stay interactive until the text is clicked", async ({
@@ -562,11 +565,13 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     await expect(detail.getByTestId("task-history")).toHaveCount(0);
     await expect(detail).not.toContainText("earlier events");
 
-    const toggle = detail.getByTestId("task-detail-backlog");
+    await openTaskActions(screen);
+    const toggle = screen.getByTestId("task-detail-backlog");
     await expect(toggle).toHaveText("Backlog");
     await toggle.tap();
     await expect.poll(() => ship.status).toBe("backlog");
-    await expect(toggle).toHaveText("Reopen");
+    await openTaskActions(screen);
+    await expect(screen.getByTestId("task-detail-backlog")).toHaveText("Reopen");
     await expect(
       screen.getByTestId("task-project-Pi UI").getByRole("button", { name: "Open Ship the modal" }),
     ).toBeVisible();

@@ -56,7 +56,6 @@ import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
 import { RunErrorHeader } from "./RunErrorHeader";
 import type { ChatStats } from "./StatsView";
 import { createTask } from "./task-client";
-import { useTaskDetailVariant } from "./task-detail-query";
 import { TaskLinkProvider } from "./task-link";
 import { groupTimeline, type TimelineGroup } from "./timeline-groups";
 import type { SendOutcome, TimelineItem } from "./use-chat";
@@ -903,8 +902,9 @@ function AttachmentStrip({
   );
 }
 
-function Composer({
+export function Composer({
   tasksPage,
+  projectMentions,
   running,
   send,
   stop,
@@ -914,8 +914,15 @@ function Composer({
   error,
   onDismissError,
   textareaRef,
+  inputTestId,
+  sendTestId,
+  attachTestId,
+  inputLabel,
+  placeholder,
 }: {
   tasksPage: boolean;
+  /** When set, @project suggestions work even if this is not the create-task composer. */
+  projectMentions?: boolean;
   running: boolean;
   send: (text: string, mode?: MessageMode, attachments?: string[]) => Promise<boolean>;
   stop: () => Promise<void>;
@@ -932,6 +939,11 @@ function Composer({
   error: string | null;
   onDismissError: () => void;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
+  inputTestId?: string;
+  sendTestId?: string;
+  attachTestId?: string;
+  inputLabel?: string;
+  placeholder?: string;
 }) {
   const [value, setValue] = useState("");
   const [caret, setCaret] = useState<number | null>(null);
@@ -942,7 +954,8 @@ function Composer({
   const suppressAddClick = useRef(false);
   // Bumped by every user edit, so a failed send can tell an untouched composer from a new draft.
   const draftRevision = useRef(0);
-  const mention = tasksPage && caret !== null ? mentionAt(value, caret) : null;
+  const mentions = projectMentions ?? tasksPage;
+  const mention = mentions && caret !== null ? mentionAt(value, caret) : null;
   const suggestions = mention === null ? [] : projectSuggestions(projects, mention.query);
   const suggesting = mention !== null && dismissedAt !== mention.start && suggestions.length > 0;
   const active = suggesting ? Math.min(activeIndex, suggestions.length - 1) : -1;
@@ -1162,6 +1175,18 @@ function Composer({
         event.preventDefault();
         void submit(running ? "steer" : "queue");
       }}
+      onDragOver={(event) => {
+        if (![...event.dataTransfer.types].includes("Files")) return;
+        event.preventDefault();
+      }}
+      onDrop={(event) => {
+        const files = [...event.dataTransfer.files].filter((file) =>
+          file.type.startsWith("image/"),
+        );
+        if (files.length === 0) return;
+        event.preventDefault();
+        addAttachments(files);
+      }}
     >
       {suggesting && (
         <ProjectSuggestions
@@ -1190,7 +1215,7 @@ function Composer({
           accept={ATTACH_ACCEPT}
           multiple
           hidden
-          data-testid="attach-input"
+          data-testid={attachTestId ?? "attach-input"}
           onChange={(event) => {
             const files = event.target.files;
             if (files !== null) addAttachments([...files]);
@@ -1211,24 +1236,27 @@ function Composer({
         </div>
         <Textarea
           ref={textareaRef}
+          data-testid={inputTestId}
           aria-invalid={error !== null ? true : undefined}
           aria-errormessage={error !== null ? "composer-error" : undefined}
-          aria-label={tasksPage ? "New task" : "Message"}
+          aria-label={inputLabel ?? (tasksPage ? "New task" : "Message")}
           rows={1}
           className={cn("bg-transparent", backlog && "placeholder:text-muted-foreground/60")}
           value={value}
-          aria-autocomplete={tasksPage ? "list" : undefined}
+          aria-autocomplete={mentions ? "list" : undefined}
           aria-controls={suggesting ? "project-suggestions" : undefined}
           aria-activedescendant={suggesting ? `project-suggestion-${active}` : undefined}
           onSelect={(event) => {
-            if (tasksPage) setCaret(event.currentTarget.selectionStart);
+            if (mentions) setCaret(event.currentTarget.selectionStart);
           }}
           onBlur={() => setCaret(null)}
-          placeholder={tasksPage ? (backlog ? "New backlog task" : "New task") : "Message pi"}
+          placeholder={
+            placeholder ?? (tasksPage ? (backlog ? "New backlog task" : "New task") : "Message pi")
+          }
           onChange={(event) => {
             draftRevision.current += 1;
             setValue(event.target.value);
-            if (tasksPage) {
+            if (mentions) {
               setCaret(event.target.selectionStart);
               setActiveIndex(0);
               setDismissedAt(null);
@@ -1336,6 +1364,7 @@ function Composer({
               variant="ghost"
               size="icon"
               aria-label="Stop"
+              data-testid={sendTestId === "task-agent-send" ? "task-agent-stop" : undefined}
               className={ACTION_BUTTON_CLASS}
               onClick={() => {
                 haptic([12, 40, 12]);
@@ -1351,6 +1380,7 @@ function Composer({
               variant="ghost"
               size="icon"
               aria-label="Steer"
+              data-testid={sendTestId}
               className={ACTION_BUTTON_CLASS}
               disabled={!canSend}
               onClick={() => void submit("steer")}
@@ -1364,6 +1394,7 @@ function Composer({
               variant="ghost"
               size="icon"
               aria-label="Send"
+              data-testid={sendTestId}
               className={ACTION_BUTTON_CLASS}
               disabled={!canSend}
             >
@@ -1471,9 +1502,8 @@ export function ChatView({
   );
   const activityTriggerRef = useRef<HTMLButtonElement | null>(null);
   const tasksPage = pager.page === TASKS_PAGE;
-  const variant = useTaskDetailVariant();
   const wideLayout = useWide();
-  const portalComposer = tasksPage && wideLayout && variant >= 1;
+  const portalComposer = tasksPage && wideLayout;
   const composerSlot = useComposerSlot(portalComposer);
 
   // An error belongs to the page it was raised on.
@@ -1488,6 +1518,9 @@ export function ChatView({
   const [pageAnimating, setPageAnimating] = useState(false);
   const [taskSelection, setTaskSelection] = useState<{ id: string; request: number } | null>(null);
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
+  const [wideDetailOpen, setWideDetailOpen] = useState(false);
+  const tasksDock = tasksPage && wideLayout ? (wideDetailOpen ? "mid" : "full") : undefined;
+
   const hideTasksComposer = (tasksPage && mobileDetailOpen) || portalComposer;
   const lastPagerState = useRef({ page: pager.page, dragging: pager.dragging });
   const shownTasks = useMemo(
@@ -1625,6 +1658,24 @@ export function ChatView({
     const active = document.activeElement;
     if (footer !== null && active instanceof HTMLElement && footer.contains(active)) active.blur();
   }, [statsPage]);
+
+  useLayoutEffect(() => {
+    const footer = footerRef.current;
+    const shell = footer?.closest(".chat-shell");
+    if (!(shell instanceof HTMLElement)) return;
+    if (tasksDock === undefined) {
+      shell.style.removeProperty("--tasks-dock-height");
+      return;
+    }
+    const sync = () => {
+      shell.style.setProperty("--tasks-dock-height", `${footer?.offsetHeight ?? 0}px`);
+    };
+    sync();
+    if (footer === null) return;
+    const observer = new ResizeObserver(sync);
+    observer.observe(footer);
+    return () => observer.disconnect();
+  }, [tasksDock]);
 
   // Re-run the stick sync when the transcript changes. The scroller's own
   // ResizeObserver keeps the end pinned while the dock animates below it.
@@ -1802,7 +1853,7 @@ export function ChatView({
   );
 
   const content = (
-    <div className="chat-shell min-h-0">
+    <div className="chat-shell min-h-0" data-tasks-dock={tasksDock} data-testid="chat-shell">
       {interrupted && (
         <div
           role="status"
@@ -1919,6 +1970,7 @@ export function ChatView({
                   onLedger={applyTasks}
                   selection={taskSelection}
                   onMobileDetailChange={setMobileDetailOpen}
+                  onWideDetailChange={setWideDetailOpen}
                 />
               </Suspense>
             </section>

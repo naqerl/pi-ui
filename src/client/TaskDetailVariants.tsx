@@ -4,44 +4,23 @@ import { formatDateTime } from "../shared/time";
 import type { Task, TaskLedger, TaskState, TaskTrace } from "../shared/types";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
-import { Card, CardContent, CardFooter, CardHeader } from "./components/ui/card";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "./components/ui/dropdown-menu";
+import { MoreIcon, RefreshIcon } from "./icons";
 import { cn } from "./lib/utils";
-import { InlineMarkdown, Markdown, plainInline } from "./markdown";
+import { InlineMarkdown, Markdown } from "./markdown";
 import { mediaUrl } from "./media-client";
 import { type ProjectSuggestion, ProjectSuggestions } from "./ProjectSuggestions";
 import { TaskAgentChat } from "./TaskAgentChat";
+import { useTitleCardVariant } from "./task-detail-query";
 
 function shortId(id: string): string {
   return id.slice(0, 4);
-}
-
-function TaskIdBadge({ id, testId }: { id: string; testId: string }) {
-  return (
-    <Badge
-      variant="outline"
-      data-testid={testId}
-      title={id}
-      className="font-mono text-[10px] leading-4 text-foreground/75"
-    >
-      {shortId(id)}
-    </Badge>
-  );
-}
-
-function ReopenBadge({ task, testId }: { task: Task; testId: string }) {
-  const count = task.reopens?.length ?? 0;
-  if (count === 0) return null;
-  return (
-    <Badge
-      variant="outline"
-      data-testid={testId}
-      title={`Reopened ${count} time${count === 1 ? "" : "s"}`}
-      className="h-4 px-1.5 text-[10px] font-normal leading-4 text-foreground/75"
-    >
-      {count}
-    </Badge>
-  );
 }
 
 function CreatedTimes({ task }: { task: Task }) {
@@ -69,8 +48,6 @@ function CreatedTimes({ task }: { task: Task }) {
 
 const SCROLLBAR_GUTTER = "[scrollbar-gutter:stable]";
 const QUIET = "text-foreground/75";
-const STACK = "flex min-h-0 flex-col gap-3";
-
 export type TaskDetailVariantId = 1 | 2 | 3 | 4 | 5;
 
 export interface TaskDetailModel {
@@ -133,10 +110,6 @@ export interface TaskDetailModel {
   onLedger?: (ledger: TaskLedger) => void;
 }
 
-function hit(wide: boolean, className?: string) {
-  return cn("rounded-md", !wide && "min-h-11", className);
-}
-
 function ErrorLine({ children }: { children: ReactNode }) {
   return (
     <p role="alert" data-testid="task-error" className="px-1 text-xs leading-4 text-destructive">
@@ -149,39 +122,7 @@ function SectionLabel({ children }: { children: ReactNode }) {
   return <h3 className="text-sm font-medium leading-5 text-foreground">{children}</h3>;
 }
 
-function BackRow({ model }: { model: TaskDetailModel }) {
-  const { parent, wide, onClose, onOpen } = model;
-  if (parent === undefined && wide) return null;
-  return (
-    <div className={cn("flex items-center gap-2", !wide && "min-h-11")}>
-      {!wide && (
-        <Button
-          variant="ghost"
-          size="sm"
-          data-testid="task-detail-back"
-          aria-label="Back to tasks"
-          onClick={onClose}
-          className={hit(wide, "-ml-2 shrink-0 px-3")}
-        >
-          Back
-        </Button>
-      )}
-      <span className={cn("min-w-0 flex-1 truncate text-xs leading-4", QUIET)}>
-        {parent !== undefined && (
-          <button
-            type="button"
-            className="underline-offset-4 hover:underline"
-            onClick={() => onOpen(parent.id)}
-          >
-            {plainInline(parent.title)}
-          </button>
-        )}
-      </span>
-    </div>
-  );
-}
-
-function TitleField({ model }: { model: TaskDetailModel }) {
+function TitleField({ model, className }: { model: TaskDetailModel; className?: string }) {
   const {
     task,
     editingTitle,
@@ -217,7 +158,10 @@ function TitleField({ model }: { model: TaskDetailModel }) {
               setEditingTitle(false);
             }
           }}
-          className="block w-full min-w-0 resize-none overflow-hidden border-0 bg-transparent p-0 text-lg font-semibold leading-7 text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-1 focus-visible:ring-foreground"
+          className={cn(
+            "block w-full min-w-0 resize-none overflow-hidden border-0 bg-transparent p-0 text-base font-semibold leading-5 text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-1 focus-visible:ring-foreground",
+            className,
+          )}
         />
         {titleError !== null && <ErrorLine>{titleError}</ErrorLine>}
       </div>
@@ -232,35 +176,27 @@ function TitleField({ model }: { model: TaskDetailModel }) {
         aria-label="Task title"
         tabIndex={0}
         data-testid="task-title"
-        className="min-w-0 cursor-text outline-none focus-visible:ring-1 focus-visible:ring-foreground"
+        className={cn(
+          "min-w-0 cursor-text outline-none focus-visible:ring-1 focus-visible:ring-foreground",
+          className,
+        )}
         onFocus={() => {
           setTitleDraft(task.title);
           setTitleError(null);
           setEditingTitle(true);
         }}
       >
-        <h2 className="min-w-0 text-lg font-semibold leading-7 [overflow-wrap:anywhere]">
+        <h2
+          className={cn(
+            "min-w-0 text-base font-semibold leading-5 [overflow-wrap:anywhere]",
+            className,
+          )}
+        >
           <InlineMarkdown text={task.title} />
         </h2>
       </div>
       {titleError !== null && <ErrorLine>{titleError}</ErrorLine>}
     </div>
-  );
-}
-
-function Badges({ model }: { model: TaskDetailModel }) {
-  const { task, state, badge } = model;
-  return (
-    <span className="mt-1 flex shrink-0 flex-wrap items-center justify-end gap-1.5">
-      <ReopenBadge task={task} testId={`task-detail-reopens-${task.id}`} />
-      <TaskIdBadge id={task.id} testId="task-detail-id" />
-      <Badge
-        data-testid="task-state"
-        variant={state === "working" || state === "failed" ? "default" : "outline"}
-      >
-        {badge}
-      </Badge>
-    </span>
   );
 }
 
@@ -383,7 +319,7 @@ function BodyField({ model, fill }: { model: TaskDetailModel; fill?: boolean }) 
     return (
       <div
         data-testid="task-body-section"
-        className={cn("flex min-w-0 flex-col gap-1", grow && "min-h-0 flex-1")}
+        className={cn("flex min-w-0 flex-col gap-1", grow && "min-h-32 flex-1")}
       >
         <div
           ref={bodyEditorRef}
@@ -439,7 +375,7 @@ function BodyField({ model, fill }: { model: TaskDetailModel; fill?: boolean }) 
       {...{ tabIndex: 0 }}
       className={cn(
         "flex min-w-0 cursor-text flex-col gap-1 outline-none focus-visible:ring-1 focus-visible:ring-foreground",
-        grow && "min-h-0 flex-1",
+        grow && "min-h-32 flex-1",
       )}
       onClick={(event) => {
         if (event.target instanceof Element && event.target.closest("a, button") !== null) {
@@ -463,7 +399,7 @@ function BodyField({ model, fill }: { model: TaskDetailModel; fill?: boolean }) 
             ? cn(
                 "overflow-y-auto",
                 SCROLLBAR_GUTTER,
-                grow ? "min-h-0 flex-1" : "max-h-[min(60vh,40rem)]",
+                grow ? "min-h-0 max-h-full flex-1" : "max-h-[min(60vh,40rem)]",
               )
             : QUIET,
         )}
@@ -522,7 +458,10 @@ function MetaBlock({ model }: { model: TaskDetailModel }) {
         </p>
       )}
       {task.rationale !== undefined && task.rationale.length > 0 && (
-        <div data-testid="task-rationale" className="min-w-0">
+        <div
+          data-testid="task-rationale"
+          className={cn("min-w-0", model.wide && "max-h-40 overflow-y-auto")}
+        >
           <p className="whitespace-pre-wrap pr-1 text-sm leading-5 [overflow-wrap:anywhere]">
             {task.rationale}
           </p>
@@ -615,7 +554,7 @@ function Attachments({ model }: { model: TaskDetailModel }) {
   );
 }
 
-function ActionButtons({ model }: { model: TaskDetailModel }) {
+export function TaskActionsMenu({ model }: { model: TaskDetailModel }) {
   const {
     task,
     title,
@@ -631,461 +570,383 @@ function ActionButtons({ model }: { model: TaskDetailModel }) {
     onDismiss,
     onRemove,
   } = model;
-  const btn = hit(wide, "shrink-0");
-  if (proposed) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          data-testid="task-detail-menu"
+          aria-label={`Actions for ${title}`}
+          className={cn("shrink-0 rounded-md", !wide && "min-h-11 min-w-11")}
+        >
+          <MoreIcon size={18} />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" data-testid="task-detail-menu-content">
+        {proposed ? (
+          <>
+            <DropdownMenuItem onSelect={onApprove} aria-label={`Approve ${title} proposal`}>
+              Approve
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={statusPending}
+              data-testid="task-detail-backlog"
+              onSelect={() => onStatus(task, parked ? "open" : "backlog")}
+            >
+              {backlogLabel}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              variant="destructive"
+              onSelect={onDismiss}
+              aria-label={`Dismiss ${title} proposal`}
+            >
+              Dismiss
+            </DropdownMenuItem>
+          </>
+        ) : (
+          <>
+            {!done && (
+              <DropdownMenuItem
+                disabled={statusPending}
+                data-testid="task-detail-backlog"
+                onSelect={() => onStatus(task, parked ? "open" : "backlog")}
+              >
+                {backlogLabel}
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuItem
+              data-testid="task-detail-status"
+              disabled={openChildren && !done}
+              title={openChildren && !done ? "Finish open subtasks first" : undefined}
+              onSelect={() => {
+                if (openChildren && !done) return;
+                onStatus(task, done ? "open" : "done");
+              }}
+            >
+              {done ? "Reopen…" : "Mark done"}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              variant="destructive"
+              data-testid="task-detail-remove"
+              onSelect={onRemove}
+              aria-label={`Remove ${title} task`}
+            >
+              Remove
+            </DropdownMenuItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function MetaLine({
+  model,
+  includeCreated = false,
+}: {
+  model: TaskDetailModel;
+  includeCreated?: boolean;
+}) {
+  const created = formatDateTime(model.task.createdAt);
+  return (
+    <div
+      data-testid="task-header-meta"
+      className={cn(
+        "flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs leading-4",
+        QUIET,
+      )}
+    >
+      <Badge
+        data-testid="task-state"
+        variant={model.state === "working" || model.state === "failed" ? "default" : "outline"}
+        className="h-5 px-1.5 text-[10px] font-normal leading-4"
+      >
+        {model.badge}
+      </Badge>
+      {(model.task.reopens?.length ?? 0) > 0 && (
+        <Badge
+          variant="outline"
+          data-testid={`task-detail-reopens-${model.task.id}`}
+          title={`Reopened ${model.task.reopens?.length} time${model.task.reopens?.length === 1 ? "" : "s"}`}
+          className="h-5 gap-1 px-1.5 text-[10px] font-normal leading-4 text-foreground/75"
+        >
+          <RefreshIcon size={11} />
+          {model.task.reopens?.length}
+        </Badge>
+      )}
+      <span data-testid="task-detail-id" title={model.task.id} className="font-mono">
+        {shortId(model.task.id)}
+      </span>
+      {model.task.project !== undefined && model.task.project.length > 0 && (
+        <span data-testid="task-header-project">@{model.task.project}</span>
+      )}
+      {includeCreated && (
+        <time dateTime={model.task.createdAt} title={created}>
+          {created}
+        </time>
+      )}
+    </div>
+  );
+}
+
+function TitleCard({
+  model,
+  variant,
+  tabs,
+}: {
+  model: TaskDetailModel;
+  variant: number;
+  tabs?: ReactNode;
+}) {
+  const back = !model.wide ? (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      data-testid="task-detail-back"
+      aria-label="Back to tasks"
+      onClick={model.onClose}
+      className="-ml-2 min-h-11 shrink-0 rounded-md px-3"
+    >
+      Back
+    </Button>
+  ) : null;
+  const menu = <TaskActionsMenu model={model} />;
+  const title = (className?: string) => (
+    <div className="min-w-0 flex-1">
+      <TitleField model={model} className={className} />
+    </div>
+  );
+
+  if (variant === 1) {
     return (
-      <>
-        <Button
-          variant="outline"
-          size="sm"
-          className={btn}
-          onClick={onDismiss}
-          aria-label={`Dismiss ${title} proposal`}
-        >
-          Dismiss
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          data-testid="task-detail-backlog"
-          className={btn}
-          disabled={statusPending}
-          onClick={() => onStatus(task, parked ? "open" : "backlog")}
-        >
-          {backlogLabel}
-        </Button>
-        <span className="flex-1" />
-        <Button
-          size="sm"
-          className={btn}
-          onClick={onApprove}
-          aria-label={`Approve ${title} proposal`}
-        >
-          Approve
-        </Button>
-      </>
+      <header data-titlecard="1" className="flex flex-col gap-1">
+        <div className="flex items-center gap-1">
+          {back}
+          {title("truncate")}
+          {menu}
+        </div>
+        <MetaLine model={model} />
+        {tabs}
+      </header>
     );
   }
-  return (
-    <>
-      {!done && (
-        <Button
-          variant="outline"
-          size="sm"
-          data-testid="task-detail-backlog"
-          className={btn}
-          disabled={statusPending}
-          onClick={() => onStatus(task, parked ? "open" : "backlog")}
+
+  if (variant === 3) {
+    return (
+      <header data-titlecard="3" className="flex flex-col gap-1">
+        <div className="flex items-center gap-1">
+          {back}
+          {title("truncate")}
+          {menu}
+        </div>
+        {tabs}
+      </header>
+    );
+  }
+
+  if (variant === 4) {
+    return (
+      <header data-titlecard="4" className="flex flex-col gap-1">
+        <div className="flex items-center gap-1">
+          {back}
+          {title("truncate")}
+          {tabs}
+          {menu}
+        </div>
+        <MetaLine model={model} />
+      </header>
+    );
+  }
+
+  if (variant === 5) {
+    return (
+      <header data-titlecard="5" className="flex flex-col gap-1">
+        <div className="flex items-start gap-1">
+          {back}
+          {title(
+            "[display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden",
+          )}
+          {menu}
+        </div>
+        <p
+          data-testid="task-header-meta"
+          className={cn("min-w-0 truncate text-xs leading-4", QUIET)}
         >
-          {backlogLabel}
-        </Button>
-      )}
-      <Button
-        variant="outline"
-        size="sm"
-        className={btn}
-        onClick={onRemove}
-        aria-label={`Remove ${title} task`}
-      >
-        Remove
-      </Button>
-      <span className="flex-1" />
-      <Button
-        size="sm"
-        variant={done ? "outline" : "default"}
-        data-testid="task-detail-status"
-        aria-disabled={openChildren}
-        title={openChildren ? "Finish open subtasks first" : undefined}
-        className={cn(btn, "aria-disabled:opacity-50")}
-        onClick={() => {
-          if (openChildren) return;
-          onStatus(task, done ? "open" : "done");
-        }}
-      >
-        {done ? "Reopen…" : "Mark done"}
-      </Button>
-    </>
+          <span data-testid="task-state">{model.badge}</span>
+          {" · "}
+          <span data-testid="task-detail-id">{shortId(model.task.id)}</span>
+          {model.task.project !== undefined && model.task.project.length > 0 && (
+            <>
+              {" · "}
+              <span data-testid="task-header-project">{model.task.project}</span>
+            </>
+          )}
+        </p>
+        {tabs}
+      </header>
+    );
+  }
+
+  return (
+    <header data-titlecard="2" className="flex flex-col gap-1">
+      <div className="flex items-start gap-1">
+        {back}
+        <div className="min-w-0 flex-1">
+          <TitleField
+            model={model}
+            className="[display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden"
+          />
+          <MetaLine model={model} />
+        </div>
+        {menu}
+      </div>
+      {tabs}
+    </header>
   );
 }
 
-function ActionsCard({ model }: { model: TaskDetailModel }) {
+function PlanSections({
+  model,
+  includeAppBarMeta,
+}: {
+  model: TaskDetailModel;
+  includeAppBarMeta?: boolean;
+}) {
   return (
-    <Card>
-      <CardFooter
-        className={cn("flex flex-wrap gap-2 p-3", model.wide && "shrink-0")}
-        data-testid="task-detail-actions"
-      >
-        <ActionButtons model={model} />
-      </CardFooter>
-      {model.notice !== null && (
-        <CardContent className="px-3 pb-3">
-          <ErrorLine>{model.notice}</ErrorLine>
-        </CardContent>
+    <div
+      className={cn(
+        "flex min-h-0 flex-col gap-3",
+        model.wide ? "flex-1 overflow-hidden" : undefined,
       )}
-    </Card>
-  );
-}
-
-function ChatCard({ model, fill }: { model: TaskDetailModel; fill?: boolean }) {
-  return (
-    <Card
-      className={cn(fill === true && "min-h-0 flex-1 overflow-hidden")}
-      data-testid="task-chat-card"
     >
-      <CardHeader
-        className={cn("gap-1 p-3 pb-2", fill === true && "min-h-0 flex-1 overflow-hidden")}
-      >
-        <h3 className="text-sm font-medium leading-5">Planning chat</h3>
-        <div
-          className={cn("flex min-h-0 min-w-0 flex-col", fill === true && "flex-1 overflow-hidden")}
-        >
-          <TaskAgentChat task={model.task} projects={model.projects} />
-        </div>
-      </CardHeader>
-    </Card>
-  );
-}
-
-function HeaderCard({ model, compact }: { model: TaskDetailModel; compact?: boolean }) {
-  return (
-    <Card>
-      <CardHeader className={cn("p-4", compact === true && "gap-2 p-3")}>
-        <BackRow model={model} />
-        <div className={cn("flex gap-3", compact === true ? "items-center" : "items-start")}>
-          <div className="min-w-0 flex-1">
-            <TitleField model={model} />
-          </div>
-          <Badges model={model} />
-        </div>
-        <ProjectField model={model} />
-      </CardHeader>
-    </Card>
-  );
-}
-
-function PlanCard({ model, fill }: { model: TaskDetailModel; fill?: boolean }) {
-  return (
-    <Card className={cn(fill === true && "min-h-0 flex-1 overflow-hidden")}>
-      <CardHeader className={cn("p-4", fill === true && "min-h-0 flex-1 overflow-hidden")}>
+      {includeAppBarMeta && <MetaLine model={model} includeCreated />}
+      <ProjectField model={model} />
+      <section className={cn("flex min-h-0 flex-col gap-2", model.wide && "min-h-0 flex-1")}>
         <SectionLabel>Plan</SectionLabel>
-        <BodyField model={model} fill={fill} />
-      </CardHeader>
-    </Card>
-  );
-}
-
-function RelationsCard({ model }: { model: TaskDetailModel }) {
-  return (
-    <Card>
-      <CardHeader className="p-4">
+        <BodyField model={model} fill={model.wide} />
+      </section>
+      <div
+        className={cn(
+          "flex flex-col gap-3",
+          model.wide && "min-h-0 max-h-[40%] shrink-0 overflow-y-auto",
+        )}
+      >
         <MetaBlock model={model} />
-        <div className="flex flex-col gap-3 pt-1">
-          <Blockers model={model} />
-          <Subtasks model={model} />
-          <Attachments model={model} />
-        </div>
-      </CardHeader>
-    </Card>
+        <Blockers model={model} />
+        <Subtasks model={model} />
+        <Attachments model={model} />
+        {model.notice !== null && <ErrorLine>{model.notice}</ErrorLine>}
+      </div>
+    </div>
   );
 }
 
-function VariantStacked({ model }: { model: TaskDetailModel }) {
-  return (
-    <article
-      data-testid="task-detail"
-      data-variant="1"
-      aria-label={model.title}
-      className={cn(STACK, model.wide && "h-full min-h-0 overflow-y-auto", SCROLLBAR_GUTTER)}
-    >
-      <HeaderCard model={model} />
-      <PlanCard model={model} />
-      <RelationsCard model={model} />
-      <ActionsCard model={model} />
-      <ChatCard model={model} fill={model.wide} />
-    </article>
-  );
-}
-
-function VariantTabs({ model }: { model: TaskDetailModel }) {
-  const [tab, setTab] = useState<"overview" | "plan" | "chat">("plan");
+function TabBar({
+  tab,
+  onTab,
+  compact,
+}: {
+  tab: "plan" | "chat";
+  onTab: (tab: "plan" | "chat") => void;
+  compact?: boolean;
+}) {
   const tabs = [
-    { id: "overview" as const, label: "Overview" },
     { id: "plan" as const, label: "Plan" },
     { id: "chat" as const, label: "Chat" },
   ];
   return (
-    <article
-      data-testid="task-detail"
-      data-variant="2"
-      aria-label={model.title}
-      className={cn(STACK, model.wide && "h-full min-h-0")}
+    <div
+      role="tablist"
+      aria-label="Task sections"
+      className={cn("flex gap-1", compact ? "shrink-0" : "border-b border-border")}
     >
-      <HeaderCard model={model} />
-      <ActionsCard model={model} />
-      <Card className={cn("min-h-0", model.wide && "flex-1 overflow-hidden")}>
-        <CardHeader className={cn("gap-3 p-3", model.wide && "min-h-0 flex-1 overflow-hidden")}>
-          <div
-            role="tablist"
-            aria-label="Task sections"
-            className="flex gap-1 border-b border-border"
-          >
-            {tabs.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                role="tab"
-                aria-selected={tab === item.id}
-                data-testid={`task-tab-${item.id}`}
-                className={cn(
-                  "min-h-11 flex-1 px-3 text-sm font-medium leading-5",
-                  tab === item.id
-                    ? "border-b-2 border-foreground text-foreground"
-                    : cn("border-b-2 border-transparent", QUIET),
-                )}
-                onClick={() => setTab(item.id)}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
-          <div className={cn("min-h-0", model.wide && "flex-1 overflow-hidden")}>
-            {tab === "overview" && (
-              <div
-                className={cn(
-                  "flex flex-col gap-3",
-                  model.wide && cn("h-full overflow-y-auto", SCROLLBAR_GUTTER),
-                )}
-              >
-                <MetaBlock model={model} />
-                <Blockers model={model} />
-                <Subtasks model={model} />
-                <Attachments model={model} />
-              </div>
-            )}
-            {tab === "plan" && <BodyField model={model} fill={model.wide} />}
-            {tab === "chat" && (
-              <div className={cn("flex min-h-0 flex-col", model.wide && "h-full overflow-hidden")}>
-                <TaskAgentChat task={model.task} projects={model.projects} />
-              </div>
-            )}
-          </div>
-        </CardHeader>
-      </Card>
-    </article>
-  );
-}
-
-function VariantChatFirst({ model }: { model: TaskDetailModel }) {
-  return (
-    <article
-      data-testid="task-detail"
-      data-variant="3"
-      aria-label={model.title}
-      className={cn(STACK, model.wide && "h-full min-h-0")}
-    >
-      <HeaderCard model={model} compact />
-      <Collapsible
-        defaultOpen
-        className={cn("min-h-0 overflow-hidden", model.wide ? "max-h-[42%]" : "max-h-[48vh]")}
-      >
-        <Card className="max-h-full overflow-hidden">
-          <CardHeader className="p-3">
-            <CollapsibleTrigger
-              data-testid="task-details-toggle"
-              className={cn(
-                "flex w-full items-center justify-between text-left text-sm font-medium leading-5",
-                !model.wide && "min-h-11",
-              )}
-            >
-              Task details
-              <span className={cn("text-xs", QUIET)}>Title, plan, and links</span>
-            </CollapsibleTrigger>
-            <CollapsibleContent
-              className={cn("flex flex-col gap-3 overflow-y-auto pt-3", SCROLLBAR_GUTTER)}
-            >
-              <BodyField model={model} />
-              <MetaBlock model={model} />
-              <Blockers model={model} />
-              <Subtasks model={model} />
-              <Attachments model={model} />
-              <div className="flex flex-wrap gap-2" data-testid="task-detail-actions">
-                <ActionButtons model={model} />
-              </div>
-              {model.notice !== null && <ErrorLine>{model.notice}</ErrorLine>}
-            </CollapsibleContent>
-          </CardHeader>
-        </Card>
-      </Collapsible>
-      <ChatCard model={model} fill />
-    </article>
-  );
-}
-
-function DetailColumn({ model }: { model: TaskDetailModel }) {
-  return (
-    <div className={cn(STACK, "h-full min-h-0")}>
-      <div
-        className={cn("min-h-0 flex-1 overflow-y-auto", SCROLLBAR_GUTTER, "flex flex-col gap-3")}
-      >
-        <HeaderCard model={model} />
-        <PlanCard model={model} />
-        <RelationsCard model={model} />
-      </div>
-      <ActionsCard model={model} />
-    </div>
-  );
-}
-
-function VariantSplit({ model }: { model: TaskDetailModel }) {
-  if (!model.wide) {
-    return (
-      <article
-        data-testid="task-detail"
-        data-variant="4"
-        aria-label={model.title}
-        className={STACK}
-      >
-        <HeaderCard model={model} />
-        <PlanCard model={model} />
-        <RelationsCard model={model} />
-        <ActionsCard model={model} />
-        <ChatCard model={model} />
-      </article>
-    );
-  }
-  return (
-    <div data-testid="task-detail" data-variant="4" className="contents">
-      <DetailColumn model={model} />
-      <ChatCard model={model} fill />
-    </div>
-  );
-}
-
-function AccordionSection({
-  title,
-  testId,
-  defaultOpen,
-  wide,
-  children,
-}: {
-  title: string;
-  testId: string;
-  defaultOpen?: boolean;
-  wide: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <Collapsible defaultOpen={defaultOpen} className="border-b border-border last:border-b-0">
-      <CollapsibleTrigger
-        data-testid={testId}
-        className={cn(
-          "flex w-full items-center justify-between px-4 py-3 text-left text-sm font-medium leading-5",
-          !wide && "min-h-11",
-        )}
-      >
-        {title}
-      </CollapsibleTrigger>
-      <CollapsibleContent className="px-4 pb-4">{children}</CollapsibleContent>
-    </Collapsible>
-  );
-}
-
-function VariantAccordion({ model }: { model: TaskDetailModel }) {
-  return (
-    <article
-      data-testid="task-detail"
-      data-variant="5"
-      aria-label={model.title}
-      className={cn(STACK, model.wide && "h-full min-h-0")}
-    >
-      <HeaderCard model={model} compact />
-      <ActionsCard model={model} />
-      <Card className="overflow-hidden py-0">
-        <AccordionSection title="Plan" testId="task-acc-plan" defaultOpen wide={model.wide}>
-          <BodyField model={model} />
-        </AccordionSection>
-        <AccordionSection
-          title="Blocked by"
-          testId="task-acc-blockers"
-          defaultOpen
-          wide={model.wide}
+      {tabs.map((item) => (
+        <button
+          key={item.id}
+          type="button"
+          role="tab"
+          aria-selected={tab === item.id}
+          data-testid={`task-tab-${item.id}`}
+          className={cn(
+            "min-h-11 px-3 text-sm font-medium leading-5",
+            compact ? "rounded-md" : "flex-1",
+            tab === item.id
+              ? compact
+                ? "bg-foreground text-background"
+                : "border-b-2 border-foreground text-foreground"
+              : cn(compact ? "text-foreground/75" : "border-b-2 border-transparent", QUIET),
+          )}
+          onClick={() => onTab(item.id)}
         >
-          {model.blockers.length > 0 ? (
-            <Blockers model={model} heading={false} />
-          ) : (
-            <p className={cn("text-sm leading-5", QUIET)}>No blockers</p>
-          )}
-        </AccordionSection>
-        <AccordionSection title="Subtasks" testId="task-acc-subtasks" defaultOpen wide={model.wide}>
-          {model.children.length > 0 ? (
-            <Subtasks model={model} heading={false} />
-          ) : (
-            <p className={cn("text-sm leading-5", QUIET)}>No subtasks</p>
-          )}
-        </AccordionSection>
-        <AccordionSection title="Activity" testId="task-acc-meta" defaultOpen wide={model.wide}>
-          <MetaBlock model={model} />
-          <div className="pt-3">
-            <Attachments model={model} />
+          {item.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function MobileDetail({ model }: { model: TaskDetailModel }) {
+  const [tab, setTab] = useState<"plan" | "chat">("plan");
+  const titlecard = useTitleCardVariant();
+  const tabs = <TabBar tab={tab} onTab={setTab} compact={titlecard === 4} />;
+  return (
+    <article
+      data-testid="task-detail"
+      data-layout="mobile"
+      aria-label={model.title}
+      className="flex min-h-0 flex-1 flex-col gap-2"
+    >
+      <TitleCard model={model} variant={titlecard} tabs={tabs} />
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        {tab === "plan" ? (
+          <div className={cn("min-h-0 flex-1 overflow-y-auto", SCROLLBAR_GUTTER)}>
+            <PlanSections model={model} includeAppBarMeta={titlecard === 3} />
           </div>
-        </AccordionSection>
-      </Card>
-      <ChatCard model={model} fill={model.wide} />
+        ) : (
+          <TaskAgentChat task={model.task} projects={model.projects} variant="pane" />
+        )}
+      </div>
     </article>
   );
 }
 
-export function TaskDetailVariant({
-  variant,
-  model,
-}: {
-  variant: TaskDetailVariantId;
-  model: TaskDetailModel;
-}) {
-  if (variant === 2) return <VariantTabs model={model} />;
-  if (variant === 3) return <VariantChatFirst model={model} />;
-  if (variant === 4) return <VariantSplit model={model} />;
-  if (variant === 5) return <VariantAccordion model={model} />;
-  return <VariantStacked model={model} />;
+function DesktopPlan({ model }: { model: TaskDetailModel }) {
+  return (
+    <article
+      data-testid="task-detail"
+      data-layout="desktop"
+      aria-label={model.title}
+      className="flex h-full min-h-0 flex-col gap-3 overflow-hidden px-3 pt-3"
+    >
+      <TitleCard model={model} variant={2} />
+      <PlanSections model={model} />
+    </article>
+  );
 }
 
-export function TasksComposerDock({ variant, wide }: { variant: number; wide: boolean }) {
-  if (!wide || variant < 1) return null;
-  const slot = (
-    <div id="tasks-composer-slot" data-testid="tasks-composer-slot" className="min-h-0 min-w-0" />
-  );
-  if (variant === 5) {
-    return (
-      <Card className="mt-3 shrink-0 p-3" data-testid="tasks-composer-chrome">
-        <p className={cn("mb-2 text-xs font-medium leading-4", QUIET)}>Add a task</p>
-        {slot}
-      </Card>
-    );
-  }
-  if (variant === 2) {
-    return (
-      <div
-        className="mt-3 shrink-0 rounded-md border border-border bg-surface p-3"
-        data-testid="tasks-composer-chrome"
-      >
-        <p className={cn("mb-2 text-xs font-medium leading-4", QUIET)}>New task</p>
-        {slot}
-      </div>
-    );
-  }
-  if (variant === 3) {
-    return (
-      <div
-        className="mt-2 shrink-0 border-t border-border pt-2"
-        data-testid="tasks-composer-chrome"
-      >
-        {slot}
-      </div>
-    );
-  }
+export function TaskDetailVariant({ model }: { model: TaskDetailModel }) {
+  if (model.wide) return <DesktopPlan model={model} />;
+  return <MobileDetail model={model} />;
+}
+
+export function TaskPlanChat({ model }: { model: TaskDetailModel }) {
+  return <TaskAgentChat task={model.task} projects={model.projects} variant="pane" />;
+}
+
+export function TasksComposerDock({ wide }: { wide: boolean }) {
+  if (!wide) return null;
   return (
-    <div className="mt-3 shrink-0 border-t border-border pt-3" data-testid="tasks-composer-chrome">
-      {slot}
+    <div className="glass-composer theme-radius shrink-0" data-testid="tasks-composer-chrome">
+      <div
+        id="tasks-composer-slot"
+        data-testid="tasks-composer-slot"
+        className="min-h-0 min-w-0 px-2 py-1"
+      />
     </div>
   );
 }

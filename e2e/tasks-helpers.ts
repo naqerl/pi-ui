@@ -55,3 +55,26 @@ export function isTaskChatUrl(url: string): boolean {
     return false;
   }
 }
+
+/** Open the task-detail kebab so action items exist in the document (they portal). */
+export async function openTaskActions(screen: TaskScreen) {
+  const content = screen.getByTestId("task-detail-menu-content");
+  if ((await content.count()) > 0 && (await content.isVisible())) return;
+  const menu = screen.getByTestId("task-detail-menu");
+  await expect(menu).toBeVisible();
+  await menu.tap();
+  await expect(content).toBeVisible();
+}
+
+/** Open the kebab and tap a menu item by test id (status, backlog, remove). */
+export async function chooseTaskAction(screen: TaskScreen, testId: string) {
+  await openTaskActions(screen);
+  await screen.getByTestId(testId).tap();
+}
+
+/** Switch the mobile detail to the Chat tab. No-op when the tab is already selected or hidden. */
+export async function openTaskChatTab(screen: TaskScreen) {
+  const tab = screen.getByTestId("task-tab-chat");
+  if ((await tab.count()) === 0) return;
+  if (await tab.isVisible()) await tab.tap();
+}

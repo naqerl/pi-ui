@@ -1,6 +1,6 @@
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
-import { createOpenTask } from "./tasks-helpers";
+import { createOpenTask, openTaskChatTab } from "./tasks-helpers";
 
 test("the plus button creates a task and opens its planning chat", { timeout: 180_000 }, async ({
   app,
@@ -17,6 +17,7 @@ test("the plus button creates a task and opens its planning chat", { timeout: 18
   await expect(screen.getByTestId("task-detail")).toBeVisible();
   await expect(screen.getByTestId("task-title")).toContainText(title);
   await expect(screen.getByTestId("task-project-input")).toHaveValue("pi-ui");
+  await openTaskChatTab(screen);
   await expect(screen.getByTestId("task-agent-chat")).toBeVisible();
   await expect(
     screen.getByTestId("task-agent-transcript").getByText(title, { exact: true }),

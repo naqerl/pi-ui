@@ -2,6 +2,7 @@ import { copyFile, mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
+import { openTaskChatTab } from "./tasks-helpers";
 
 test("captures the tasks page and embedded planning chat in vantablack", async ({
   app,
@@ -51,8 +52,9 @@ test("captures the tasks page and embedded planning chat in vantablack", async (
   await app.screenshot("tasks-agent-mobile-list-vantablack");
 
   await screen.getByRole("button", { name: "Open Design the notification inbox" }).tap();
-  await expect(screen.getByTestId("task-agent-chat")).toBeVisible();
   await expect(screen.getByTestId("markdown-diagram")).toBeVisible({ timeout: 15_000 });
+  await openTaskChatTab(screen);
+  await expect(screen.getByTestId("task-agent-chat")).toBeVisible();
   const input = screen.getByTestId("task-agent-input");
   await input.fill("Add a mute switch to the design.");
   await screen.getByTestId("task-agent-send").tap();

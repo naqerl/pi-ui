@@ -178,6 +178,7 @@ class FakeSession implements TaskAgentSession {
   closed = false;
   stopped = 0;
   submitted: string[] = [];
+  attachments: string[][] = [];
   readonly hub = new StreamHub();
   run: RunState = "idle";
 
@@ -202,8 +203,9 @@ class FakeSession implements TaskAgentSession {
     };
   }
 
-  async submit(text: string) {
+  async submit(text: string, attachments: string[] = []) {
     this.submitted.push(text);
+    this.attachments.push(attachments);
     this.run = "running";
     return this.snapshot();
   }
@@ -273,5 +275,42 @@ test("the agent session is created on first use, stopped when the task is done, 
   await assert.rejects(access(manager.taskDir(created.id)));
 
   await store.remove(created.id);
+  await manager.close();
+});
+
+test("the manager forwards image attachments to the task agent session", async () => {
+  const fakes = new Map<string, FakeSession>();
+  const manager = new TaskAgentManager({
+    dataDir: directory,
+    cwd: directory,
+    models: {} as never,
+    model: undefined,
+    store,
+    publish: () => undefined,
+    baseInstructions: "base",
+    openSession: async (taskId) => {
+      const session = new FakeSession(taskId);
+      fakes.set(taskId, session);
+      return session;
+    },
+  });
+
+  const created = (await store.create("Plan the screenshot review", null)).tasks.find(
+    (item) => item.title === "Plan the screenshot review",
+  );
+  assert.ok(created);
+
+  const snapshot = await manager.submit(created.id, "look at this", ["media-1"]);
+  const fake = fakes.get(created.id);
+  assert.ok(fake);
+  assert.deepEqual(fake.submitted, ["look at this"]);
+  assert.deepEqual(fake.attachments, [["media-1"]]);
+  assert.equal(snapshot.messages.at(-1)?.text, "look at this");
+
+  const imageOnly = await manager.submit(created.id, "  ", ["media-2"]);
+  assert.deepEqual(fake.submitted, ["look at this", ""]);
+  assert.deepEqual(fake.attachments, [["media-1"], ["media-2"]]);
+  assert.equal(imageOnly.messages.at(-1)?.text, "");
+
   await manager.close();
 });

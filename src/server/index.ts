@@ -312,6 +312,7 @@ const taskAgents = new TaskAgentManager({
   cwd,
   models: catalog.runtime,
   model: catalog.model,
+  media,
   store: taskStore,
   publish: (ledger) => {
     taskBridge.publish(ledger);
@@ -725,6 +726,7 @@ function taskFailure(c: Context, error: unknown) {
 function taskAgentFailure(c: Context, error: unknown) {
   if (error instanceof TaskAgentError) return c.text(error.message, error.status as 400);
   if (error instanceof TaskError) return c.text(error.message, error.status as 400);
+  if (error instanceof MediaError) return c.text(error.message, error.status as 400);
   console.error("[pi] task agent failed", error);
   return c.text("Could not update the task agent", 500);
 }
@@ -933,8 +935,20 @@ app.post("/api/tasks/:id/chat", async (c) => {
     typeof body === "object" && body !== null && "text" in body && typeof body.text === "string"
       ? body.text
       : "";
+  let attachments: string[] = [];
   try {
-    return c.json(await taskAgents.submit(c.req.param("id"), text), 202);
+    attachments = parseAttachmentIds(
+      media,
+      typeof body === "object" && body !== null && "attachments" in body
+        ? body.attachments
+        : undefined,
+    );
+    for (const id of attachments) await media.read(id);
+  } catch (error) {
+    return taskAgentFailure(c, error);
+  }
+  try {
+    return c.json(await taskAgents.submit(c.req.param("id"), text, attachments), 202);
   } catch (error) {
     return taskAgentFailure(c, error);
   }

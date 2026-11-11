@@ -1,7 +1,7 @@
 import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
 import { IdleNudge } from "../src/server/idle-nudge.js";
-import { createOpenTask } from "./tasks-helpers";
+import { chooseTaskAction, createOpenTask, openTaskActions } from "./tasks-helpers";
 
 test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300_000 }, async ({
   app,
@@ -190,6 +190,7 @@ test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300
   await expect(list.getByText("Blocked by Review the diff", { exact: true })).toBeVisible();
 
   await screen.getByRole("button", { name: "Open Write the ledger" }).tap();
+  await openTaskActions(screen);
   const parentStatus = screen.getByTestId("task-detail-status");
   await expect(parentStatus).toBeVisible();
   await expect(parentStatus).toHaveAttribute("aria-disabled", "true");
@@ -210,6 +211,7 @@ test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300
     };
   });
   expect(blockedTap).toEqual({ disabled: "true", label: "Mark done" });
+  await browser.keyboard.press("Escape");
 
   await browser.evaluate(() => {
     const card = [...document.querySelectorAll("[data-task-card]")].find((item) =>
@@ -230,11 +232,11 @@ test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300
   await screen.getByRole("menuitem", "Mark done Review the diff").tap();
   await expect(list.getByText("Blocked by Review the diff", { exact: true })).not.toBeVisible();
   await screen.getByRole("button", { name: "Open Store tasks.json" }).tap();
-  await screen.getByTestId("task-detail-status").tap();
+  await chooseTaskAction(screen, "task-detail-status");
   await expect(screen.getByTestId("task-state")).toHaveText("Done");
   await expect(list.getByText("1 of 1 subtasks done", { exact: true })).toBeVisible();
   await screen.getByRole("button", { name: "Open Write the ledger" }).tap();
-  await screen.getByTestId("task-detail-status").tap();
+  await chooseTaskAction(screen, "task-detail-status");
   await expect(screen.getByTestId("task-state")).toHaveText("Done");
 
   expect(await browser.evaluate(() => new URLSearchParams(location.search).get("page"))).toBe(
@@ -575,8 +577,8 @@ test("reopens a done task with a reason and keeps the old completion", async ({
     const card = screen.getByTestId(`task-${id}`);
     await expect(card).toHaveAttribute("data-state", "ready");
     await expect(screen.getByTestId(`task-reopens-${id}`)).toHaveText("1");
-    await expect(screen.getByTestId(`task-detail-reopens-${id}`)).toHaveText("1");
     await screen.getByRole("button", { name: `Open ${title}` }).tap();
+    await expect(screen.getByTestId(`task-detail-reopens-${id}`)).toHaveText("1");
     const reopenBlock = screen.getByTestId("task-reopen");
     await expect(reopenBlock).toContainText(reason);
     await expect(screen.getByTestId("task-modal-completion")).toHaveCount(0);

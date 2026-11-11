@@ -139,16 +139,19 @@ export function useTaskChat(taskId: string, closed: boolean) {
   }, [closed, refresh, run]);
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, attachments: string[] = []) => {
       if (closed) return false;
       const trimmed = text.trim();
-      if (trimmed.length === 0) return false;
+      if (trimmed.length === 0 && attachments.length === 0) return false;
       setError(null);
       try {
         const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/chat`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: trimmed }),
+          body: JSON.stringify({
+            text: trimmed,
+            ...(attachments.length > 0 ? { attachments } : {}),
+          }),
         });
         if (!response.ok) {
           const message = (await response.text()).trim();

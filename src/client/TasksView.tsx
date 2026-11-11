@@ -38,14 +38,13 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./component
 import { haptic } from "./haptics";
 import { CheckIcon, CloseIcon, RefreshIcon } from "./icons";
 import { cn } from "./lib/utils";
-import { InlineMarkdown, Markdown, plainInline } from "./markdown";
-import { mediaUrl } from "./media-client";
-import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
+import { InlineMarkdown, plainInline } from "./markdown";
+import { projectSuggestions } from "./ProjectSuggestions";
 import { TaskAgentChat } from "./TaskAgentChat";
 import { type TaskDetailModel, TaskDetailVariant, TasksComposerDock } from "./TaskDetailVariants";
 import { removeTask, type TaskOutcome, updateTask } from "./task-client";
 import { FIXTURE_PLAN_ID, mergeFixtureTasks } from "./task-detail-fixture";
-import { useTaskDetailFixture, useTaskDetailVariant } from "./task-detail-query";
+import { useTaskDetailFixture } from "./task-detail-query";
 import { TaskLinkProvider } from "./task-link";
 import { useWide, WIDE_QUERY } from "./use-wide";
 
@@ -71,6 +70,8 @@ interface TasksViewProps {
   selection?: { id: string; request: number } | null;
   /** True while a task detail covers the mobile list, so the page composer can hide. */
   onMobileDetailChange?: (open: boolean) => void;
+  /** True while a task is open in the desktop three-column layout. */
+  onWideDetailChange?: (open: boolean) => void;
 }
 
 /** Root tasks split into one group per project, A–Z, with "No project" (null) last. */
@@ -313,10 +314,11 @@ function TasksViewImpl({
   onLedger,
   selection = null,
   onMobileDetailChange,
+  onWideDetailChange,
 }: TasksViewProps) {
   const wide = useWide();
-  const variant = useTaskDetailVariant();
   const fixtureOn = useTaskDetailFixture();
+  const midColRef = useRef<HTMLDivElement>(null);
   const serverTasks = fixtureOn ? mergeFixtureTasks(incomingTasks) : incomingTasks;
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [problem, setProblem] = useState<{ id: string; message: string } | null>(null);
@@ -453,6 +455,11 @@ function TasksViewImpl({
     return () => onMobileDetailChange?.(false);
   }, [onMobileDetailChange, openTaskId, wide]);
 
+  useEffect(() => {
+    onWideDetailChange?.(wide && openTaskId !== null);
+    return () => onWideDetailChange?.(false);
+  }, [onWideDetailChange, openTaskId, wide]);
+
   const closeDetail = useCallback(() => {
     if (!wide && taskDetailHistory()?.piTaskDetailId !== undefined) {
       window.history.back();
@@ -475,20 +482,11 @@ function TasksViewImpl({
     return () => window.removeEventListener("popstate", onPop);
   }, [wide]);
 
-  // The first row the list shows, used when the desktop has nothing selected.
-  const firstVisibleId =
-    proposedTasks[0]?.id ??
-    failedTasks[0]?.id ??
-    (grouped ? projectGroups.flatMap(([, items]) => items) : activeRoots)[0]?.id ??
-    doneRoots[0]?.id ??
-    null;
   useEffect(() => {
-    if (!wide) return;
-    setOpenTaskId((current) => {
-      if (current !== null && tasks.some((task) => task.id === current)) return current;
-      return firstVisibleId;
-    });
-  }, [wide, firstVisibleId, tasks]);
+    if (openTaskId !== null && !tasks.some((task) => task.id === openTaskId)) {
+      setOpenTaskId(null);
+    }
+  }, [openTaskId, tasks]);
 
   useEffect(() => {
     if (fixtureOn) {
@@ -545,13 +543,13 @@ function TasksViewImpl({
   }, [armCardClickIgnore, menu]);
 
   useEffect(() => {
-    if (openTaskId === null || menu !== null || wide) return;
+    if (openTaskId === null || menu !== null) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") closeDetail();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [closeDetail, openTaskId, menu, wide]);
+  }, [closeDetail, openTaskId, menu]);
 
   const openMenu = (id: string, x: number, y: number) => {
     setMenu({ id, x, y });
@@ -729,6 +727,28 @@ function TasksViewImpl({
       />
     );
 
+  useLayoutEffect(() => {
+    if (!wide) return;
+    const mid = midColRef.current;
+    const root = mid?.closest(".chat-shell");
+    if (!(mid instanceof HTMLElement) || !(root instanceof HTMLElement)) return;
+    const update = () => {
+      const midRect = mid.getBoundingClientRect();
+      const rootRect = root.getBoundingClientRect();
+      root.style.setProperty("--tasks-mid-left", `${Math.round(midRect.left - rootRect.left)}px`);
+      root.style.setProperty("--tasks-mid-width", `${Math.round(midRect.width)}px`);
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(mid);
+    observer.observe(root);
+    window.addEventListener("resize", update);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", update);
+    };
+  }, [wide]);
+
   const content = (
     <div
       className={cn(
@@ -741,19 +761,15 @@ function TasksViewImpl({
       <div
         className={
           wide
-            ? cn(
-                "mx-auto grid h-full min-h-0 w-full gap-6 px-4",
-                variant === 4
-                  ? "max-w-[1440px] grid-cols-[minmax(280px,340px)_minmax(320px,1fr)_minmax(340px,420px)]"
-                  : "max-w-[1200px] grid-cols-[minmax(360px,440px)_1fr]",
-              )
+            ? "tasks-split grid h-full min-h-0 w-full grid-cols-[minmax(260px,320px)_minmax(280px,1fr)_minmax(300px,400px)] gap-4 px-4"
             : "mx-auto flex w-full max-w-[72ch] flex-col gap-4 px-4"
         }
-        style={{ paddingTop: 16, paddingBottom: footerClearance + 16 }}
+        style={wide ? { paddingTop: 16 } : { paddingTop: 16, paddingBottom: footerClearance + 16 }}
+        data-tasks-split={wide ? (openTask !== undefined ? "open" : "closed") : undefined}
       >
         {wide ? (
           <>
-            <div className="flex h-full min-h-0 min-w-0 flex-col">
+            <div data-col="side" className="flex h-full min-h-0 min-w-0 flex-col">
               <div
                 className={cn(
                   "min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain",
@@ -762,29 +778,36 @@ function TasksViewImpl({
               >
                 {list}
               </div>
-              <TasksComposerDock variant={variant} wide={wide} />
+              <TasksComposerDock wide={wide} />
             </div>
-            {variant === 4 ? (
-              (detail ?? (
-                <Card
+            <div
+              ref={midColRef}
+              data-col="mid"
+              data-testid="tasks-mid-col"
+              className="flex h-full min-h-0 min-w-0 flex-col"
+            >
+              {detail ?? (
+                <div
                   data-testid="task-detail-empty"
-                  className="col-span-2 items-center px-4 py-10 text-sm text-foreground/75"
+                  className="flex flex-1 items-center justify-center px-4 py-10 text-sm text-foreground/75"
                 >
                   Select a task to see its details.
-                </Card>
-              ))
-            ) : (
-              <div className="flex h-full min-h-0 min-w-0 flex-col">
-                {detail ?? (
-                  <Card
-                    data-testid="task-detail-empty"
-                    className="items-center px-4 py-10 text-sm text-foreground/75"
-                  >
-                    Select a task to see its details.
-                  </Card>
-                )}
-              </div>
-            )}
+                </div>
+              )}
+            </div>
+            <div
+              data-col="side"
+              data-testid="tasks-chat-col"
+              className="flex h-full min-h-0 min-w-0 flex-col"
+            >
+              {openTask !== undefined ? (
+                <TaskAgentChat
+                  task={openTask}
+                  projects={projectsOf(tasks.filter((item) => isActiveStatus(item.status)))}
+                  variant="pane"
+                />
+              ) : null}
+            </div>
           </>
         ) : (
           (detail ?? list)
@@ -925,28 +948,6 @@ export function shortTaskId(id: string): string {
   return id.slice(0, 4);
 }
 
-function TaskIdBadge({
-  id,
-  testId = `task-id-${id}`,
-  className,
-}: {
-  id: string;
-  testId?: string;
-  className?: string;
-}) {
-  return (
-    <Badge
-      variant="outline"
-      data-testid={testId}
-      title={id}
-      className={cn("font-mono text-[10px] leading-4 text-muted-foreground", className)}
-    >
-      {shortTaskId(id)}
-    </Badge>
-  );
-}
-
-/** The bare task id beside the title, so a card carries the handle agents use. */
 function TaskIdChip({ id, className }: { id: string; className?: string }) {
   return (
     <span
@@ -1441,10 +1442,6 @@ export function TaskTimes({ task }: { task: Task }) {
   );
 }
 
-function SubHeading({ children }: { children: ReactNode }) {
-  return <h3 className="text-sm font-medium leading-5">{children}</h3>;
-}
-
 export function TaskDetail({
   task,
   tasks,
@@ -1477,7 +1474,6 @@ export function TaskDetail({
   /** Called after an inline edit saves, so the tasks page takes the new ledger. */
   onLedger?: (ledger: TaskLedger) => void;
 }) {
-  const variant = useTaskDetailVariant();
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(task.title);
   const [titleError, setTitleError] = useState<string | null>(null);
@@ -1688,7 +1684,7 @@ export function TaskDetail({
     state === "failed" && trace?.lastRun?.reason !== undefined ? trace.lastRun.reason : null;
   const badge = stateBadge(state, trace) ?? "Open";
   const title = plainInline(task.title);
-  if (variant >= 1 && variant <= 5) {
+  {
     const model: TaskDetailModel = {
       task,
       tasks,
@@ -1748,491 +1744,8 @@ export function TaskDetail({
       onRemove,
       onLedger,
     };
-    return <TaskDetailVariant variant={variant as 1 | 2 | 3 | 4 | 5} model={model} />;
+    return <TaskDetailVariant model={model} />;
   }
-
-  return (
-    <Card
-      data-testid="task-detail"
-      aria-label={title}
-      role="article"
-      className={cn(wide && "h-full min-h-0")}
-    >
-      <CardHeader className={cn(wide && "min-h-0 flex-1 overflow-hidden")}>
-        {(parent !== undefined || !wide) && (
-          <div className={cn("flex items-center gap-2", !wide && "min-h-8")}>
-            {!wide && (
-              <Button
-                variant="ghost"
-                size="sm"
-                data-testid="task-detail-back"
-                aria-label="Back to tasks"
-                onClick={onClose}
-                className="-ml-2 shrink-0 rounded-md px-2"
-              >
-                Back
-              </Button>
-            )}
-            <span className="min-w-0 flex-1 truncate text-xs leading-4 text-muted-foreground">
-              {parent !== undefined && (
-                <button
-                  type="button"
-                  className="underline-offset-4 hover:underline"
-                  onClick={() => onOpen(parent.id)}
-                >
-                  {plainInline(parent.title)}
-                </button>
-              )}
-            </span>
-          </div>
-        )}
-        <div className="flex items-start gap-3">
-          <div className="min-w-0 flex-1">
-            {editingTitle ? (
-              <div className="flex min-w-0 flex-col gap-1">
-                <textarea
-                  ref={titleRef}
-                  aria-label="Task title"
-                  aria-invalid={titleError !== null ? true : undefined}
-                  data-testid="task-title-input"
-                  rows={Math.max(1, titleDraft.split("\n").length)}
-                  value={titleDraft}
-                  onChange={(event) => {
-                    setTitleDraft(event.target.value);
-                    setTitleError(null);
-                  }}
-                  onBlur={(event) => void saveTitle(event.currentTarget.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape") {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      setTitleDraft(task.title);
-                      setTitleError(null);
-                      setEditingTitle(false);
-                    }
-                  }}
-                  className="block w-full min-w-0 resize-none overflow-hidden border-0 bg-transparent p-0 text-lg font-semibold leading-7 text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-1 focus-visible:ring-foreground"
-                />
-                {titleError !== null && <ErrorText>{titleError}</ErrorText>}
-              </div>
-            ) : (
-              <div className="flex w-full min-w-0 flex-col gap-1">
-                {/* biome-ignore lint/a11y/useSemanticElements: the read-only markdown is replaced by a textarea when focused. */}
-                <div
-                  role="textbox"
-                  aria-readonly="true"
-                  aria-label="Task title"
-                  tabIndex={0}
-                  data-testid="task-title"
-                  className="min-w-0 cursor-text outline-none focus-visible:ring-1 focus-visible:ring-foreground"
-                  onFocus={() => {
-                    setTitleDraft(task.title);
-                    setTitleError(null);
-                    setEditingTitle(true);
-                  }}
-                >
-                  <h2 className="min-w-0 text-lg font-semibold leading-7 [overflow-wrap:anywhere]">
-                    <InlineMarkdown text={task.title} />
-                  </h2>
-                </div>
-                {titleError !== null && <ErrorText>{titleError}</ErrorText>}
-              </div>
-            )}
-          </div>
-          <span className="mt-1 flex shrink-0 items-center gap-1.5">
-            <ReopenBadge task={task} testId={`task-detail-reopens-${task.id}`} />
-            <TaskIdBadge id={task.id} testId="task-detail-id" />
-            <Badge
-              data-testid="task-state"
-              variant={state === "working" || state === "failed" ? "default" : "outline"}
-            >
-              {badge}
-            </Badge>
-          </span>
-        </div>
-        <div className="flex min-w-0 flex-col gap-1" data-testid="task-project-line">
-          <div className="flex min-w-0 items-center gap-3">
-            <span className="shrink-0 text-xs leading-4 text-muted-foreground">Project</span>
-            <div ref={projectAnchor} className="min-w-0 flex-1">
-              {projectMatches.length > 0 && (
-                <ProjectSuggestions
-                  anchor={projectAnchor}
-                  items={projectMatches}
-                  active={activeProject}
-                  onHover={setProjectActive}
-                  onAccept={(item) => acceptProject(item.name)}
-                />
-              )}
-              <input
-                type="text"
-                aria-label="Task project"
-                data-testid="task-project-input"
-                value={projectDraft}
-                placeholder="No project"
-                aria-autocomplete="list"
-                aria-controls={projectMatches.length > 0 ? "project-suggestions" : undefined}
-                aria-activedescendant={
-                  projectMatches.length > 0 ? `project-suggestion-${activeProject}` : undefined
-                }
-                onChange={(event) => {
-                  setProjectDraft(event.target.value);
-                  setProjectError(null);
-                  setProjectActive(0);
-                  setProjectOpen(true);
-                }}
-                onFocus={() => setProjectActive(0)}
-                onBlur={() => {
-                  setProjectOpen(false);
-                  void saveProject();
-                }}
-                onKeyDown={(event) => {
-                  if (projectMatches.length > 0) {
-                    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-                      event.preventDefault();
-                      const count = projectMatches.length;
-                      setProjectActive(
-                        (activeProject + (event.key === "ArrowDown" ? 1 : count - 1)) % count,
-                      );
-                      return;
-                    }
-                    if (event.key === "Enter" || event.key === "Tab") {
-                      event.preventDefault();
-                      const item = projectMatches[activeProject];
-                      if (item !== undefined) acceptProject(item.name);
-                      return;
-                    }
-                    if (event.key === "Escape") {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      setProjectOpen(false);
-                      return;
-                    }
-                  }
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    setProjectOpen(false);
-                    void saveProject();
-                  } else if (event.key === "Escape") {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setProjectDraft(task.project ?? "");
-                    setProjectError(null);
-                    setProjectOpen(false);
-                  }
-                }}
-                className="h-8 w-full min-w-0 rounded-md border border-border bg-background px-2 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-foreground"
-              />
-            </div>
-          </div>
-          {projectError !== null && <ErrorText>{projectError}</ErrorText>}
-        </div>
-        {editingBody ? (
-          <div
-            data-testid="task-body-section"
-            className={cn("flex min-w-0 flex-col gap-1", wide && "min-h-0 flex-1")}
-          >
-            <div
-              ref={bodyEditorRef}
-              className={cn("flex min-w-0 flex-col", wide && "min-h-0 flex-1 overflow-hidden")}
-            >
-              <textarea
-                ref={bodyRef}
-                aria-label="Task body"
-                data-testid="task-body-input"
-                rows={1}
-                maxLength={TASK_BODY_MAX_LENGTH}
-                value={bodyDraft}
-                placeholder="Write markdown…"
-                onChange={(event) => {
-                  setBodyDraft(event.target.value);
-                  setBodyError(null);
-                }}
-                onBlur={(event) => {
-                  if (bodyIgnoreBlur.current) {
-                    bodyIgnoreBlur.current = false;
-                    return;
-                  }
-                  void saveBody(event.currentTarget.value);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    bodyIgnoreBlur.current = true;
-                    setBodyDraft(task.body ?? "");
-                    setBodyError(null);
-                    setEditingBody(false);
-                  }
-                }}
-                className={cn(
-                  "block w-full min-w-0 resize-none border-0 bg-transparent p-0 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-foreground",
-                  wide
-                    ? "overflow-hidden"
-                    : cn("max-h-[min(60vh,40rem)] overflow-y-auto", SCROLLBAR_GUTTER),
-                )}
-              />
-            </div>
-            {bodyError !== null && <ErrorText>{bodyError}</ErrorText>}
-          </div>
-        ) : (
-          // biome-ignore lint/a11y/useSemanticElements: the body keeps its markdown descendants instead of becoming a fieldset.
-          <div
-            data-testid="task-body-section"
-            role="group"
-            aria-label="Task body"
-            {...{ tabIndex: 0 }}
-            className={cn(
-              "flex min-w-0 cursor-text flex-col gap-1 outline-none focus-visible:ring-1 focus-visible:ring-foreground",
-              wide && "min-h-0 flex-1",
-            )}
-            onClick={(event) => {
-              if (event.target instanceof Element && event.target.closest("a, button") !== null) {
-                return;
-              }
-              beginBodyEdit();
-            }}
-            onKeyDown={(event) => {
-              if (event.target !== event.currentTarget) return;
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                beginBodyEdit();
-              }
-            }}
-          >
-            <div
-              data-testid={
-                task.body !== undefined && task.body.length > 0 ? "task-body" : undefined
-              }
-              className={cn(
-                "min-w-0 cursor-text text-sm leading-5",
-                task.body !== undefined && task.body.length > 0
-                  ? cn(
-                      "overflow-y-auto",
-                      SCROLLBAR_GUTTER,
-                      wide ? "min-h-0 max-h-full flex-1" : "max-h-[min(60vh,40rem)]",
-                    )
-                  : "text-muted-foreground",
-              )}
-            >
-              {task.body !== undefined && task.body.length > 0 ? (
-                <div className="pr-1">
-                  <Markdown text={task.body} />
-                </div>
-              ) : (
-                <p className="whitespace-pre-wrap break-words">Write markdown…</p>
-              )}
-            </div>
-          </div>
-        )}
-        <div
-          className={cn(
-            "flex min-h-0 min-w-0 flex-col",
-            wide ? "min-h-0 flex-1 overflow-hidden" : "pt-1",
-          )}
-        >
-          <TaskAgentChat task={task} projects={projects} />
-        </div>
-      </CardHeader>
-      <CardContent
-        className={cn(
-          "flex flex-col gap-4",
-          wide && cn("max-h-[40vh] min-h-0 shrink-0 overflow-y-auto", SCROLLBAR_GUTTER),
-        )}
-      >
-        {task.reopens !== undefined && task.reopens.length > 0 && (
-          <section
-            data-testid="task-reopen"
-            className="flex flex-col gap-1 rounded-md border border-border bg-surface px-3 py-2"
-          >
-            <SubHeading>Last reopen</SubHeading>
-            <p className="whitespace-pre-wrap text-sm leading-5 [overflow-wrap:anywhere]">
-              {task.reopens[task.reopens.length - 1]?.reason}
-            </p>
-            <time
-              dateTime={task.reopens[task.reopens.length - 1]?.at}
-              title={formatDateTime(task.reopens[task.reopens.length - 1]?.at ?? "")}
-              className="text-xs leading-4 text-muted-foreground"
-            >
-              {formatDateTime(task.reopens[task.reopens.length - 1]?.at ?? "")}
-            </time>
-          </section>
-        )}
-        <TaskTimes task={task} />
-        {task.releaseReason !== undefined && (
-          <p
-            data-testid={`task-released-${task.id}`}
-            className="text-xs leading-4 text-muted-foreground [overflow-wrap:anywhere]"
-          >
-            {`released${task.releasedAt === undefined ? "" : ` ${formatDateTime(task.releasedAt)}`} · ${task.releaseReason}`}
-          </p>
-        )}
-        {task.createdBy !== undefined && (
-          <p
-            data-testid="task-created-by"
-            className="font-mono text-xs leading-4 text-muted-foreground"
-          >
-            {task.createdBy === "agent" ? "Created by the agent" : "Created by the operator"}
-          </p>
-        )}
-        {reason !== null && (
-          <p data-testid="task-failure" className="text-sm leading-5 text-muted-foreground">
-            {reason}
-          </p>
-        )}
-        {task.rationale !== undefined && task.rationale.length > 0 && (
-          <div
-            data-testid="task-rationale"
-            className={cn("min-w-0", wide && cn("max-h-40 overflow-y-auto", SCROLLBAR_GUTTER))}
-          >
-            <p className="whitespace-pre-wrap pr-1 text-sm leading-5 [overflow-wrap:anywhere]">
-              {task.rationale}
-            </p>
-          </div>
-        )}
-        {done && (
-          <section className="flex flex-col gap-1" data-testid="task-modal-completion">
-            <SubHeading>Evidence</SubHeading>
-            {task.completion == null ? (
-              <p className="text-sm leading-5 text-muted-foreground">No evidence recorded</p>
-            ) : (
-              <p
-                data-testid="task-evidence"
-                className="whitespace-pre-wrap text-sm leading-5 [overflow-wrap:anywhere]"
-              >
-                {task.completion.evidence}
-              </p>
-            )}
-          </section>
-        )}
-        {blockers.length > 0 && (
-          <section className="flex flex-col gap-1">
-            <SubHeading>Blocked by</SubHeading>
-            <ul className="flex flex-col gap-1">
-              {blockers.map((blocker) => (
-                <li
-                  key={blocker.id}
-                  className="flex min-h-6 items-center gap-2 text-sm leading-5 [overflow-wrap:anywhere]"
-                >
-                  <span className="min-w-0 flex-1">{blocker.title}</span>
-                  {blocker.done && <Badge variant="outline">Done</Badge>}
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
-        {children.length > 0 && (
-          <section className="flex flex-col gap-1">
-            <SubHeading>Subtasks</SubHeading>
-            <ul className="flex flex-col gap-1">
-              {children.map((child) => (
-                <li key={child.id} className="flex min-h-6 items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => onOpen(child.id)}
-                    className="min-w-0 flex-1 text-left text-sm leading-5 underline-offset-4 hover:underline"
-                  >
-                    <InlineMarkdown text={child.title} />
-                  </button>
-                  {child.status === "done" && <Badge variant="outline">Done</Badge>}
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
-        {task.attachments !== undefined && task.attachments.length > 0 && (
-          <section className="flex flex-wrap gap-2" data-testid="task-attachments">
-            {task.attachments.map((id, index) => (
-              <img
-                key={id}
-                src={mediaUrl(id)}
-                alt={`Task attachment ${index + 1}`}
-                loading="lazy"
-                draggable={false}
-                className="block size-16 rounded-md border border-border object-cover"
-              />
-            ))}
-          </section>
-        )}
-        {notice !== null && <ErrorText>{notice}</ErrorText>}
-      </CardContent>
-      <CardFooter
-        className={cn("flex-wrap gap-2", wide && "shrink-0")}
-        data-testid="task-detail-actions"
-      >
-        {proposed ? (
-          <>
-            <Button
-              variant="outline"
-              size="sm"
-              className="shrink-0 rounded-md"
-              onClick={onDismiss}
-              aria-label={`Dismiss ${title} proposal`}
-            >
-              Dismiss
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              data-testid="task-detail-backlog"
-              className="shrink-0 rounded-md"
-              disabled={statusPending}
-              onClick={() => onStatus(task, parked ? "open" : "backlog")}
-            >
-              {backlogLabel}
-            </Button>
-            <span className="flex-1" />
-            <Button
-              size="sm"
-              className="shrink-0 rounded-md"
-              onClick={onApprove}
-              aria-label={`Approve ${title} proposal`}
-            >
-              Approve
-            </Button>
-          </>
-        ) : (
-          <>
-            {!done && (
-              <Button
-                variant="outline"
-                size="sm"
-                data-testid="task-detail-backlog"
-                className="shrink-0 rounded-md"
-                disabled={statusPending}
-                onClick={() => onStatus(task, parked ? "open" : "backlog")}
-              >
-                {backlogLabel}
-              </Button>
-            )}
-            <Button
-              variant="outline"
-              size="sm"
-              className="shrink-0 rounded-md"
-              onClick={onRemove}
-              aria-label={`Remove ${title} task`}
-            >
-              Remove
-            </Button>
-            <span className="flex-1" />
-            <Button
-              size="sm"
-              variant={done ? "outline" : "default"}
-              data-testid="task-detail-status"
-              aria-disabled={openChildren}
-              title={openChildren ? "Finish open subtasks first" : undefined}
-              className="shrink-0 rounded-md aria-disabled:opacity-50"
-              onClick={() => {
-                if (openChildren) return;
-                onStatus(task, done ? "open" : "done");
-              }}
-            >
-              {done ? "Reopen…" : "Mark done"}
-            </Button>
-          </>
-        )}
-      </CardFooter>
-    </Card>
-  );
 }
 
 function TaskMenu({

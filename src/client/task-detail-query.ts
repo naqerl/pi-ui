@@ -33,3 +33,22 @@ export function useTaskDetailFixture(): boolean {
   }, []);
   return on;
 }
+
+/** 1–5 are mobile title-card proposals; 0 falls back to the default pick. */
+export const DEFAULT_TITLE_CARD = 2;
+
+export function readTitleCardVariant(): number {
+  if (typeof window === "undefined") return DEFAULT_TITLE_CARD;
+  const value = Number(new URLSearchParams(window.location.search).get("titlecard"));
+  return Number.isInteger(value) && value >= 1 && value <= 5 ? value : DEFAULT_TITLE_CARD;
+}
+
+export function useTitleCardVariant(): number {
+  const [variant, setVariant] = useState(readTitleCardVariant);
+  useEffect(() => {
+    const sync = () => setVariant(readTitleCardVariant());
+    window.addEventListener("popstate", sync);
+    return () => window.removeEventListener("popstate", sync);
+  }, []);
+  return variant;
+}

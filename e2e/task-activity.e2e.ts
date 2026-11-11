@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
+import { chooseTaskAction } from "./tasks-helpers";
 
 // A call belongs to the one task marked working, never to a per-call tag; its measurements stay
 // on that task after the run ends, and the badge survives the turn.
@@ -95,6 +96,6 @@ test("tool calls made while one task is working are charged to it", async ({
   await expect(screen.getByTestId("task-detail")).not.toContainText("Run started");
 
   // Finishing the task is what clears the badge; the run ending did not.
-  await screen.getByTestId("task-detail-status").tap();
+  await chooseTaskAction(screen, "task-detail-status");
   await expect(screen.getByTestId("task-state")).toHaveText("Done");
 });

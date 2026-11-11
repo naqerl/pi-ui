@@ -1,6 +1,6 @@
 import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
-import { createOpenTask } from "./tasks-helpers";
+import { chooseTaskAction, createOpenTask } from "./tasks-helpers";
 
 async function removeTasks(browser: Browser, titles: readonly string[]) {
   const left = await browser.evaluate(async (names) => {
@@ -82,7 +82,7 @@ test("open work stays grouped by project when some tasks are parked", { timeout:
   await expect(taskList.getByText(liveTitle, { exact: true })).toBeVisible();
 
   await createOpenTask(screen, parkedTitle, { project: liveProject });
-  await screen.getByTestId("task-detail-backlog").tap();
+  await chooseTaskAction(screen, "task-detail-backlog");
   await expect(taskList.getByText(liveTitle, { exact: true })).toBeVisible();
   await expect(taskList.getByText(parkedTitle, { exact: true })).toBeVisible();
   await expect(screen.getByTestId("task-filters")).toHaveCount(0);
@@ -105,9 +105,10 @@ test("open work stays grouped by project when some tasks are parked", { timeout:
   const page = await browser.evaluate(
     ({ parkedName, liveName, workingName, liveGroup, parkedGroup }) => {
       const card = (name: string) =>
-        [...document.querySelectorAll<HTMLElement>("[data-task-card]")].find(
-          (item) => item.getAttribute("aria-label") === `Open ${name}`,
-        );
+        [...document.querySelectorAll<HTMLElement>("[data-task-card]")].find((item) => {
+          const label = item.getAttribute("aria-label") ?? "";
+          return label === `Open ${name}` || label.includes(name);
+        });
       const badgeStyle = (name: string) => {
         const badge = card(name)?.querySelector<HTMLElement>('[data-testid^="task-badge-"]');
         if (badge === undefined || badge === null) return null;
@@ -152,6 +153,7 @@ test("open work stays grouped by project when some tasks are parked", { timeout:
       parkedGroup: parkedProject,
     },
   );
+
   expect(page).toEqual({
     muted: true,
     filtered: true,

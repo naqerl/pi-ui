@@ -25,6 +25,7 @@ import { parseProjectToken, projectsOf, sameProject } from "../shared/project.js
 import { DEFAULT_NEW_TASK_TITLE, TASK_BODY_MAX_LENGTH } from "../shared/tasks.js";
 import type { ChatMessage, RunState, StreamRunState, Task, TaskLedger } from "../shared/types.js";
 import { withConversationIdentity } from "./billion-context.js";
+import type { MediaStore } from "./media.js";
 import { buildTranscript, SESSION_CONTEXT } from "./session.js";
 import type { SseFrame } from "./sse.js";
 import { StreamHub } from "./stream-hub.js";
@@ -59,7 +60,7 @@ export interface TaskAgentSession {
   closed: boolean;
   running(): boolean;
   snapshot(): Promise<TaskAgentChatSnapshot>;
-  submit(text: string): Promise<TaskAgentChatSnapshot>;
+  submit(text: string, attachments?: string[]): Promise<TaskAgentChatSnapshot>;
   stop(): Promise<void>;
   close(): Promise<void>;
   replayFrames(): SseFrame[];
@@ -79,6 +80,8 @@ export interface TaskAgentManagerOptions {
   readonly openSession?: (taskId: string, manager: TaskAgentManager) => Promise<TaskAgentSession>;
   /** Forward session frames onto the main /api/stream so the browser can reuse that EventSource. */
   readonly relay?: (taskId: string, frame: SseFrame) => void;
+  /** Used to resolve image attachments sent in the plan chat. */
+  readonly media?: MediaStore;
 }
 
 /**
@@ -297,7 +300,11 @@ class DurableTaskAgentSession implements TaskAgentSession {
     private readonly harness: Harness,
     private readonly conversation: Conversation,
     private readonly relay?: (frame: SseFrame) => void,
+    private readonly media?: MediaStore,
   ) {}
+
+  private readonly mediaRef = (data: string, mimeType: string) =>
+    this.media?.refFor(data, mimeType);
 
   private emit(frame: SseFrame): void {
     this.hub.broadcast(frame);
@@ -348,7 +355,7 @@ class DurableTaskAgentSession implements TaskAgentSession {
 
   async snapshot(): Promise<TaskAgentChatSnapshot> {
     const context = await this.conversation.context(SESSION_CONTEXT);
-    const built = buildTranscript(context.entries);
+    const built = buildTranscript(context.entries, this.mediaRef);
     return {
       taskId: this.taskId,
       messages: visibleTaskAgentMessages(built.messages),
@@ -426,7 +433,7 @@ class DurableTaskAgentSession implements TaskAgentSession {
     if (draftChanged) this.publishDraft();
 
     if (newEntries.length > 0) {
-      const built = buildTranscript(newEntries);
+      const built = buildTranscript(newEntries, this.mediaRef);
       for (const message of visibleTaskAgentMessages(built.messages)) {
         this.emit({ event: "message.done", data: { message } });
       }
@@ -445,13 +452,24 @@ class DurableTaskAgentSession implements TaskAgentSession {
     }
   }
 
-  async submit(text: string): Promise<TaskAgentChatSnapshot> {
+  async submit(text: string, attachments: string[] = []): Promise<TaskAgentChatSnapshot> {
     if (this.closed) throw new TaskAgentError("Task agent has been closed", 409);
+    if (attachments.length > 0 && this.media === undefined) {
+      throw new TaskAgentError("Images cannot be sent in this session", 400);
+    }
+    const images =
+      attachments.length === 0 || this.media === undefined
+        ? []
+        : await this.media.images(attachments);
+    const content =
+      images.length === 0
+        ? text
+        : [...(text.length > 0 ? [{ type: "text" as const, text }] : []), ...images];
     // Model requests go through billion-context; they must carry this
     // conversation's id, not the main chat's, or the turn can hang or
     // attach itself to the parent session.
     const submission = await this.identity(() =>
-      this.conversation.submit({ type: "input", content: text }, SESSION_CONTEXT),
+      this.conversation.submit({ type: "input", content }, SESSION_CONTEXT),
     );
     this.setRunState("running");
     void this.identity(() => submission.wait(SESSION_CONTEXT))
@@ -546,17 +564,25 @@ export class TaskAgentManager {
     return (await this.ensure(taskId)).snapshot();
   }
 
-  async submit(taskId: string, text: string): Promise<TaskAgentChatSnapshot> {
+  async submit(
+    taskId: string,
+    text: string,
+    attachments: string[] = [],
+  ): Promise<TaskAgentChatSnapshot> {
     const task = this.options.store.ledger().tasks.find((item) => item.id === taskId);
     if (task === undefined) throw new TaskAgentError("Unknown task", 404);
     if (task.status === "done") {
       throw new TaskAgentError("Task is done", 409);
     }
     const trimmed = text.trim();
-    if (trimmed.length === 0) throw new TaskAgentError("Message text is required", 400);
+    if (trimmed.length === 0 && attachments.length === 0) {
+      throw new TaskAgentError("Message text is required", 400);
+    }
     const known = projectsOf(this.options.store.ledger().tasks);
-    const patch = openingTaskPatch(task, trimmed, known);
-    if (patch.message.length === 0) throw new TaskAgentError("Message text is required", 400);
+    const patch = trimmed.length === 0 ? { message: "" } : openingTaskPatch(task, trimmed, known);
+    if (patch.message.length === 0 && attachments.length === 0) {
+      throw new TaskAgentError("Message text is required", 400);
+    }
     if (patch.title !== undefined || patch.project !== undefined) {
       const ledger = await this.options.store.update(taskId, {
         ...(patch.title === undefined ? {} : { title: patch.title }),
@@ -565,7 +591,7 @@ export class TaskAgentManager {
       this.options.publish(ledger);
     }
     const session = await this.ensure(taskId);
-    return session.submit(patch.message);
+    return session.submit(patch.message, attachments);
   }
 
   async stopRun(taskId: string): Promise<void> {
@@ -703,6 +729,7 @@ export class TaskAgentManager {
       harness,
       conversation,
       this.options.relay === undefined ? undefined : (frame) => this.options.relay?.(taskId, frame),
+      this.options.media,
     );
     await session.start();
     return session;

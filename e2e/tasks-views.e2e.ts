@@ -1,6 +1,6 @@
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
-import { createOpenTask } from "./tasks-helpers";
+import { chooseTaskAction, createOpenTask, openTaskActions } from "./tasks-helpers";
 
 test("switches to tasks with a horizontal swipe and back again", async ({
   app,
@@ -231,10 +231,11 @@ test("shows a failed task action beside the control and keeps a long title", asy
 
   await failNextPatch("Open subtasks");
   await screen.getByRole("button", { name: "Open Write the notice" }).tap();
-  await screen.getByTestId("task-detail-status").tap();
+  await chooseTaskAction(screen, "task-detail-status");
   await expect(screen.getByTestId("task-detail").getByTestId("task-error")).toHaveText(
     "Open subtasks",
   );
+  await openTaskActions(screen);
   await expect(screen.getByTestId("task-detail-status")).toHaveText("Mark done");
   const cardError = await browser.evaluate(() => {
     const error = document.querySelector("[data-testid=task-error]");
@@ -251,7 +252,7 @@ test("shows a failed task action beside the control and keeps a long title", asy
   });
   expect(cardError).toBe(true);
 
-  await screen.getByTestId("task-detail-status").tap();
+  await chooseTaskAction(screen, "task-detail-status");
   await expect(screen.getByTestId("task-state")).toHaveText("Done");
   await expect(screen.getByTestId("task-error")).toHaveCount(0);
 

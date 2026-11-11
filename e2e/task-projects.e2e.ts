@@ -1,6 +1,11 @@
 import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
-import { backToTaskList, createOpenTask, openNewTaskComposer } from "./tasks-helpers";
+import {
+  backToTaskList,
+  chooseTaskAction,
+  createOpenTask,
+  openNewTaskComposer,
+} from "./tasks-helpers";
 
 // The e2e server and its task store are shared by every test file: leave no projects behind.
 async function removeTasks(browser: Browser, titles: readonly string[]) {
@@ -49,8 +54,9 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
   await expect(composer).toHaveValue("Diff the maps @citydiff ");
   await browser.keyboard.press("Enter");
   await expect(screen.getByTestId("task-title")).toContainText("Diff the maps");
-  await expect(composer).toHaveValue("");
   await backToTaskList(screen);
+  composer = await openNewTaskComposer(screen);
+  await expect(composer).toHaveValue("");
   await expectTaskTitle("Diff the maps");
 
   // Without @ a task has no project, whatever was used last.
@@ -77,7 +83,7 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
   await browser.keyboard.type("Write the docs @zero");
   await screen.getByTestId("project-suggestion-zero").tap();
   await expect(composer).toHaveValue("Write the docs @zero ");
-  await screen.getByTestId("task-agent-send").tap();
+  await screen.getByRole("button", "Add task").tap();
   await expect(screen.getByTestId("task-title")).toContainText("Write the docs");
   await backToTaskList(screen);
   await expectTaskTitle("Write the docs");
@@ -138,6 +144,7 @@ test("project suggestions come only from open tasks", { timeout: 300_000 }, asyn
 
   const typeMention = async () => {
     const composer = screen.getByTestId("task-agent-input");
+    await expect(composer).toBeVisible();
     await composer.fill("");
     await composer.tap();
     await browser.keyboard.type("@");
@@ -145,6 +152,8 @@ test("project suggestions come only from open tasks", { timeout: 300_000 }, asyn
 
   await addTask(alphaTitle, alpha);
   await addTask(betaTitle, beta);
+  await screen.getByRole("button", { name: `Open ${betaTitle}` }).click();
+  await expect(screen.getByTestId("task-agent-input")).toBeVisible();
 
   await typeMention();
   await expect(screen.getByTestId(`project-suggestion-${alpha}`)).toBeVisible();
@@ -161,11 +170,13 @@ test("project suggestions come only from open tasks", { timeout: 300_000 }, asyn
 
   // Closing the last alpha task removes its name from every suggestion list.
   await screen.getByRole("button", { name: `Open ${alphaTitle}` }).click();
-  await screen.getByTestId("task-detail-status").click();
+  await chooseTaskAction(screen, "task-detail-status");
   await expect(screen.getByTestId("task-state")).toHaveText("Done");
   await expect(screen.getByTestId(`task-project-${alpha}`)).toHaveCount(0);
 
   await screen.getByRole("button", { name: `Open ${betaTitle}` }).click();
+  await expect(screen.getByTestId("task-title")).toContainText(betaTitle);
+  await expect(screen.getByTestId("task-agent-input")).toBeVisible();
   await betaProject.fill("@");
   await expect(screen.getByTestId(`project-suggestion-${beta}`)).toBeVisible();
   await expect(screen.getByTestId(`project-suggestion-${alpha}`)).toHaveCount(0);
@@ -179,7 +190,7 @@ test("project suggestions come only from open tasks", { timeout: 300_000 }, asyn
   // A deleted task's project never becomes a remembered suggestion.
   await addTask(gammaTitle, gamma);
   await screen.getByRole("button", { name: `Open ${gammaTitle}` }).click();
-  await screen.getByRole("button", { name: `Remove ${gammaTitle} task` }).click();
+  await chooseTaskAction(screen, "task-detail-remove");
   await expect(screen.getByText(gammaTitle, { exact: true })).toHaveCount(0);
 
   await typeMention();
@@ -242,6 +253,7 @@ test("a working task keeps its project in the vocabulary and spelling", async ({
   expect(stored).toEqual({ patched: 200, created: 201, working: project, second: project });
 
   await app.open("/?page=tasks");
+  await screen.getByRole("button", { name: `Open ${title}` }).click();
   const typeMention = async () => {
     const composer = screen.getByTestId("task-agent-input");
     await composer.fill("");
