@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
+import { isTaskChatUrl } from "./tasks-helpers";
 
 type Proposal = { id: string; title: string };
 
@@ -455,6 +456,10 @@ test("approving while the agent is mid-turn flips the row before the response la
     releasePatch = resolve;
   });
   await browser.route("**/api/tasks/**", async (route) => {
+    if (isTaskChatUrl(route.request.url)) {
+      await route.continue();
+      return;
+    }
     if (route.request.method === "PATCH" && route.request.url.includes(proposal?.id ?? "")) {
       await gate;
     }
@@ -586,6 +591,10 @@ test("declining removes the proposal immediately and records one declined chip a
     releaseDelete = resolve;
   });
   await browser.route("**/api/tasks/**", async (route) => {
+    if (isTaskChatUrl(route.request.url)) {
+      await route.continue();
+      return;
+    }
     if (route.request.method === "DELETE" && route.request.url.includes(proposal?.id ?? "")) {
       await gate;
     }
@@ -650,6 +659,10 @@ test("a failed approval rolls the proposal back and shows the error", async ({
     releasePatch = resolve;
   });
   await browser.route("**/api/tasks/**", async (route) => {
+    if (isTaskChatUrl(route.request.url)) {
+      await route.continue();
+      return;
+    }
     if (route.request.method === "PATCH" && route.request.url.includes(proposal?.id ?? "")) {
       await gate;
       await route.fulfill({ status: 500, body: "Decision rejected" });

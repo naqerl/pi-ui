@@ -1,5 +1,6 @@
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
+import { isTaskChatUrl } from "./tasks-helpers";
 
 const at = new Date(Date.UTC(2026, 0, 1, 12, 0, 0)).toISOString();
 
@@ -50,6 +51,10 @@ test("vibrates once for an approval and not for the selected tab", async ({
   });
   await browser.emulateMedia({ reducedMotion: "no-preference" });
   await browser.route("**/api/tasks/**", async (route) => {
+    if (isTaskChatUrl(route.request.url)) {
+      await route.continue();
+      return;
+    }
     await route.fulfill({ json: ledger });
   });
   await browser.route("**/api/state**", async (route) => {

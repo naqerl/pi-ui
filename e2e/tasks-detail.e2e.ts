@@ -1,5 +1,6 @@
 import { type Browser, describe, test } from "@e2e-dev/web";
 import { expect } from "e2e";
+import { isTaskChatUrl } from "./tasks-helpers";
 
 const at = (second: number) => new Date(Date.UTC(2026, 0, 1, 12, 0, second)).toISOString();
 
@@ -466,6 +467,10 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     let patches = 0;
     let deletes = 0;
     await browser.route("**/api/tasks/**", async (route) => {
+      if (isTaskChatUrl(route.request.url)) {
+        await route.continue();
+        return;
+      }
       if (route.request.method === "PATCH") patches += 1;
       if (route.request.method === "DELETE") deletes += 1;
       await route.fulfill({ json: JSON.parse(JSON.stringify(snapshot.tasks)) });
@@ -531,6 +536,10 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     await browser.setViewport({ width: 1280, height: 800 });
     await browser.unrouteAll();
     await browser.route("**/api/tasks/**", async (route) => {
+      if (isTaskChatUrl(route.request.url)) {
+        await route.continue();
+        return;
+      }
       if (route.request.method === "PATCH") {
         const patch = JSON.parse(route.request.postData ?? "{}") as { status?: string };
         const id = decodeURIComponent(new URL(route.request.url).pathname.split("/").pop() ?? "");

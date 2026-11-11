@@ -1668,7 +1668,7 @@ export function TaskDetail({
       role="article"
       className={cn(wide && "h-full min-h-0")}
     >
-      <CardHeader className={cn(wide && "min-h-0 shrink-0")}>
+      <CardHeader className={cn(wide && "min-h-0 flex-1 overflow-hidden")}>
         {(parent !== undefined || !wide) && (
           <div className={cn("flex items-center gap-2", !wide && "min-h-8")}>
             {!wide && (
@@ -1919,7 +1919,7 @@ export function TaskDetail({
                   ? cn(
                       "overflow-y-auto",
                       SCROLLBAR_GUTTER,
-                      wide ? "min-h-0 max-h-[min(30vh,16rem)]" : "max-h-[min(40vh,16rem)]",
+                      wide ? "min-h-0 max-h-full flex-1" : "max-h-[min(60vh,40rem)]",
                     )
                   : "text-muted-foreground",
               )}
@@ -1934,19 +1934,19 @@ export function TaskDetail({
             </div>
           </div>
         )}
+        <div
+          className={cn(
+            "flex min-h-0 min-w-0 flex-col",
+            wide ? "min-h-0 flex-1 overflow-hidden" : "pt-1",
+          )}
+        >
+          <TaskAgentChat task={task} projects={projects} />
+        </div>
       </CardHeader>
-      <div
-        className={cn(
-          "flex min-h-0 min-w-0 flex-col px-4 pb-3",
-          wide ? "flex-1 overflow-hidden" : "",
-        )}
-      >
-        <TaskAgentChat task={task} projects={projects} />
-      </div>
       <CardContent
         className={cn(
           "flex flex-col gap-4",
-          wide && cn("max-h-[24vh] min-h-0 shrink-0 overflow-y-auto", SCROLLBAR_GUTTER),
+          wide && cn("max-h-[40vh] min-h-0 shrink-0 overflow-y-auto", SCROLLBAR_GUTTER),
         )}
       >
         {task.reopens !== undefined && task.reopens.length > 0 && (

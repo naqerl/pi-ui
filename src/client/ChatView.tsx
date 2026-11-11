@@ -1579,17 +1579,6 @@ export function ChatView({
         const end = element.value.length;
         element.setSelectionRange(end, end);
       };
-      const taskInput = document.querySelector<HTMLTextAreaElement>(
-        '[data-testid="task-agent-input"]',
-      );
-      if (taskInput !== null && taskInput.closest("[inert]") === null) {
-        taskInput.focus({ preventScroll: true });
-        return;
-      }
-      if (document.querySelector('[data-testid="tasks-page"]') !== null) {
-        void createBlankTaskRef.current();
-        return;
-      }
       const element = composerRef.current;
       if (element !== null && element.closest("[inert]") === null) {
         focusComposer();
@@ -2053,13 +2042,13 @@ export function ChatView({
             className="composer-body"
           >
             <div>
-              {tasksPage ? (
-                <NewTaskButton
-                  error={composerError}
-                  onDismissError={() => setComposerError(null)}
-                  onCreate={() => void createBlankTask()}
-                />
-              ) : (
+              {/* Keep the chat composer mounted so a draft survives a trip to
+                  Tasks; hide it from the accessibility tree and show the plus. */}
+              <div
+                hidden={tasksPage}
+                inert={tasksPage ? true : undefined}
+                aria-hidden={tasksPage ? true : undefined}
+              >
                 <Composer
                   tasksPage={false}
                   running={running}
@@ -2068,11 +2057,18 @@ export function ChatView({
                   unsendSteer={pendingSteers > 0 ? unsendSteer : undefined}
                   addTask={addTask}
                   projects={projects}
-                  error={composerError}
+                  error={tasksPage ? null : composerError}
                   onDismissError={() => setComposerError(null)}
                   textareaRef={composerRef}
                 />
-              )}
+              </div>
+              {tasksPage ? (
+                <NewTaskButton
+                  error={composerError}
+                  onDismissError={() => setComposerError(null)}
+                  onCreate={() => void createBlankTask()}
+                />
+              ) : null}
             </div>
           </div>
         </div>

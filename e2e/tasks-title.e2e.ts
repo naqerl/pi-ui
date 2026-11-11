@@ -1,6 +1,6 @@
 import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
-
+import { isTaskChatUrl } from "./tasks-helpers";
 import { removeTasks } from "./tasks-helpers.js";
 
 async function blur(browser: Browser) {
@@ -19,6 +19,10 @@ test("edits a task title in place, grows to two lines, and refuses an empty one"
   await browser.setViewport({ width: 1280, height: 800 });
   let patches = 0;
   await browser.route("**/api/tasks/**", async (route) => {
+    if (isTaskChatUrl(route.request.url)) {
+      await route.continue();
+      return;
+    }
     if (route.request.method === "PATCH") patches += 1;
     await route.continue();
   });

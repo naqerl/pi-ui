@@ -49,3 +49,12 @@ export async function backToTaskList(screen: TaskScreen) {
   if ((await back.count()) === 0) return;
   if (await back.isVisible()) await back.tap();
 }
+
+/** Task-agent chat routes must not be fulfilled as a task ledger. */
+export function isTaskChatUrl(url: string): boolean {
+  try {
+    return /\/api\/tasks\/[^/]+\/chat(?:\/|$)/.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}

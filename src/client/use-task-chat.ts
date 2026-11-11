@@ -29,10 +29,12 @@ export function useTaskChat(taskId: string, closed: boolean) {
   taskIdRef.current = taskId;
 
   const applySnapshot = useCallback((snapshot: TaskAgentSnapshot) => {
-    setMessages(snapshot.messages);
-    setRun(snapshot.run);
-    setDraftText(snapshot.draft.text);
-    draftRevision.current = snapshot.draft.revision;
+    const messages = Array.isArray(snapshot.messages) ? snapshot.messages : [];
+    const draft = snapshot.draft;
+    setMessages(messages);
+    setRun(snapshot.run === "running" ? "running" : "idle");
+    setDraftText(typeof draft?.text === "string" ? draft.text : "");
+    draftRevision.current = typeof draft?.revision === "number" ? draft.revision : 0;
     setReady(true);
   }, []);
 
