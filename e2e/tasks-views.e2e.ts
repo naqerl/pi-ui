@@ -1,8 +1,6 @@
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
-import { removeTasks } from "./tasks-helpers.js";
-
 test("switches to tasks with a horizontal swipe and back again", async ({
   app,
   browser,
@@ -362,65 +360,98 @@ test("shows created and closed times at the bottom right of a task card", async 
   });
 });
 
-test("keeps the id chip at the top right above the created line", async ({
+test("keeps every card detail on one clipped meta line below a long title", async ({
   app,
   browser,
   screen,
 }) => {
-  await browser.setViewport({ width: 1280, height: 800 });
-  await app.open("/?page=tasks");
-  const composer = screen.getByRole("textbox", "New task");
-  await composer.fill("Chip anchor");
-  await screen.getByRole("button", "Add task").tap();
-  const list = screen.getByTestId("task-list");
-  await expect(list.getByText("Chip anchor", { exact: true })).toBeVisible();
-
-  const cardId = await browser.evaluate(() => {
-    const card = [...document.querySelectorAll("[data-task-card]")].find((item) =>
-      item.textContent?.includes("Chip anchor"),
-    );
-    const chip = card?.querySelector<HTMLElement>('[data-testid^="task-id-"]');
-    const title = card?.querySelector<HTMLElement>(".line-clamp-2");
-    if (
-      !(card instanceof HTMLElement) ||
-      !(chip instanceof HTMLElement) ||
-      !(title instanceof HTMLElement)
-    ) {
-      return null;
-    }
-    const style = getComputedStyle(chip);
-    const box = card.getBoundingClientRect();
-    const describedBy = (card.getAttribute("aria-describedby") ?? "")
-      .split(/\s+/)
-      .filter((part) => part !== "");
-    return {
-      id: chip.textContent?.trim() ?? "",
-      title: chip.getAttribute("title"),
-      label: chip.getAttribute("aria-label"),
-      classes: chip.className,
-      background: style.backgroundColor,
-      afterTitle: (chip.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_PRECEDING) !== 0,
-      rightAligned: Math.abs(box.right - chip.getBoundingClientRect().right) <= 16,
-      idCount: card.querySelectorAll('[data-testid^="task-id-"]').length,
-      describedBy,
-      describedIsChip: describedBy.some((part) => document.getElementById(part) === chip),
-    };
+  const now = new Date();
+  const longTitle =
+    "Ship the release checklist through the complete deployment pipeline without losing context";
+  const longProject = "alpha-with-an-extremely-long-project-name-that-must-not-push-the-card";
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({
+      json: {
+        conversationId: "task-meta-e2e",
+        messages: [],
+        activity: [],
+        run: "idle",
+        queue: [],
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 },
+        context: { tokens: 0, window: null, percent: null },
+        tasks: {
+          revision: 1_000_000,
+          tasks: [
+            {
+              id: "meta-card",
+              title: longTitle,
+              status: "open",
+              project: longProject,
+              parentId: null,
+              blockedBy: [],
+              createdAt: now.toISOString(),
+              proposedAt: null,
+              completedAt: null,
+              completion: null,
+            },
+          ],
+        },
+      },
+    });
   });
-  expect(cardId?.id).toHaveLength(4);
-  expect(cardId?.title).toBe(cardId?.id);
-  expect(cardId?.label).toBe(`task ${cardId?.id}`);
-  expect(cardId?.classes).toContain("font-mono");
-  expect(cardId?.classes).toContain("text-[11px]");
-  expect(cardId?.background).toBe("rgba(0, 0, 0, 0)");
-  expect(cardId?.afterTitle).toBe(true);
-  expect(cardId?.rightAligned).toBe(true);
-  expect(cardId?.idCount).toBe(1);
-  expect(cardId?.describedBy).toContain(`task-id-${cardId?.id}`);
-  expect(cardId?.describedIsChip).toBe(true);
-  await expect(composer).toHaveValue("");
-  await expect(screen.getByTestId("subtask-progress")).toHaveCount(0);
 
-  await removeTasks(browser, ["Chip anchor"]);
+  const layout = async () =>
+    browser.evaluate(() => {
+      const card = document.querySelector<HTMLElement>(
+        '[data-testid="task-meta-card"] [data-task-card]',
+      );
+      const title = card?.querySelector<HTMLElement>(".line-clamp-2");
+      const meta = card?.querySelector<HTMLElement>('[data-testid="task-card-meta"]');
+      const chip = card?.querySelector<HTMLElement>('[data-testid="task-id-meta-card"]');
+      const times = card?.querySelector<HTMLElement>('[data-testid="task-card-times"]');
+      if (
+        !(card instanceof HTMLElement) ||
+        !(title instanceof HTMLElement) ||
+        !(meta instanceof HTMLElement) ||
+        !(chip instanceof HTMLElement) ||
+        !(times instanceof HTMLElement)
+      ) {
+        return null;
+      }
+      const cardBox = card.getBoundingClientRect();
+      const titleBox = title.getBoundingClientRect();
+      const metaBox = meta.getBoundingClientRect();
+      const chipBox = chip.getBoundingClientRect();
+      const timesBox = times.getBoundingClientRect();
+      return {
+        id: chip.textContent?.trim() ?? "",
+        metaBelowTitle: metaBox.top >= titleBox.bottom - 0.5,
+        metaInsideCard: metaBox.left >= cardBox.left - 0.5 && metaBox.right <= cardBox.right + 0.5,
+        idInsideMeta: chipBox.left >= metaBox.left - 0.5 && chipBox.right <= metaBox.right + 0.5,
+        timesInsideMeta:
+          timesBox.left >= metaBox.left - 0.5 && timesBox.right <= metaBox.right + 0.5,
+        idReadable: chipBox.width > 0 && chip.textContent?.trim().length === 4,
+        metaClipped: getComputedStyle(meta).overflowX === "hidden",
+        cardOverflow: card.scrollWidth > card.clientWidth,
+        pageOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      };
+    });
+
+  for (const width of [1280, 900, 390]) {
+    await browser.setViewport({ width, height: 800 });
+    await app.open("/?page=tasks");
+    await expect(screen.getByTestId("task-meta-card")).toBeVisible();
+    const result = await layout();
+    expect(result?.id).toHaveLength(4);
+    expect(result?.metaBelowTitle).toBe(true);
+    expect(result?.metaInsideCard).toBe(true);
+    expect(result?.idInsideMeta).toBe(true);
+    expect(result?.timesInsideMeta).toBe(true);
+    expect(result?.idReadable).toBe(true);
+    expect(result?.metaClipped).toBe(true);
+    expect(result?.cardOverflow).toBe(false);
+    expect(result?.pageOverflow).toBe(false);
+  }
 });
 
 test("shows the single task list without filter tabs and groups done work by day", async ({
@@ -524,22 +555,38 @@ test("shows the single task list without filter tabs and groups done work by day
   await expect(screen.getByTestId("task-open-task")).toBeVisible();
   await expect(screen.getByTestId("task-blocked-task")).toBeVisible();
 
-  const openHeader = await browser.evaluate(() => {
-    const open = document.querySelector<HTMLElement>(
-      '[data-testid="task-section-active"] [data-slot="collapsible-trigger"]',
-    );
-    const openCount = open?.querySelectorAll<HTMLElement>("span")[1];
-    const openChevron = open?.querySelector("svg");
-    if (open == null || openCount == null || !(openChevron instanceof SVGElement)) return null;
-    const openBox = open.getBoundingClientRect();
-    return {
-      countRight: openCount.getBoundingClientRect().right > openBox.left + openBox.width / 2,
-      chevron: true,
-      chevronBeforeCount:
-        (openChevron.compareDocumentPosition(openCount) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+  const headers = await browser.evaluate(() => {
+    const measure = (id: string) => {
+      const header = document.querySelector<HTMLElement>(
+        `[data-testid="${id}"] [data-slot="collapsible-trigger"]`,
+      );
+      const count = header?.querySelectorAll<HTMLElement>("span")[1];
+      const chevron = header?.querySelector("svg");
+      if (header == null || count == null || !(chevron instanceof SVGElement)) return null;
+      const box = header.getBoundingClientRect();
+      const style = getComputedStyle(header);
+      return {
+        background: style.backgroundColor,
+        color: style.color,
+        font: style.font,
+        height: box.height,
+        paddingLeft: style.paddingLeft,
+        paddingRight: style.paddingRight,
+        countRight: count.getBoundingClientRect().right > box.left + box.width / 2,
+        chevron: true,
+        chevronBeforeCount:
+          (chevron.compareDocumentPosition(count) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+      };
     };
+    return { needs: measure("task-section-needs"), open: measure("task-section-active") };
   });
-  expect(openHeader).toEqual({ countRight: true, chevron: true, chevronBeforeCount: true });
+  expect(headers.needs).not.toBeNull();
+  expect(headers.needs).toEqual(headers.open);
+  expect(headers.open).toMatchObject({
+    countRight: true,
+    chevron: true,
+    chevronBeforeCount: true,
+  });
 
   await screen.getByRole("tab", "Chat").tap();
   await expect(screen.getByRole("textbox", "Message")).toBeVisible();
