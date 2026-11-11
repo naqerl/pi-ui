@@ -10,6 +10,8 @@ import { z } from "zod";
 const logPath = process.env.RESTORE_MCP_LOG;
 const mode = process.env.RESTORE_MCP_MODE === "paged" ? "paged" : "poll";
 const oldTimestamp = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+// The incident: an adapter buffers a two-day-old event and pushes it as news.
+const veryOldTimestamp = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
 // A restart a moment ago: the missed event is seconds old, so replay is right.
 const recentTimestamp = new Date(Date.now() - 2_000).toISOString();
 const names =
@@ -25,6 +27,8 @@ const names =
         // events/poll probes this stream too, and events/subscribe rejects a
         // name its catalog does not list, so the catalog must include it.
         "flood-stream",
+        "mixed-stream",
+        "duplicate-stream",
       ];
 
 function log(line) {
@@ -128,6 +132,10 @@ if (mode !== "paged") {
       if (params.name === "idle-stream") return { events: [], cursor: "idle:7" };
       if (params.name === "live-stream") return { events: [], cursor: "live-stream:0" };
       if (params.name === "burst-stream") return { events: [], cursor: "burst-stream:0" };
+      if (params.name === "mixed-stream") return { events: [], cursor: params.cursor ?? "mixed:5" };
+      if (params.name === "duplicate-stream") {
+        return { events: [], cursor: params.cursor ?? "dup:5" };
+      }
       throw new ProtocolError(-32023, "Subscription not found");
     },
   );
@@ -229,13 +237,54 @@ server.setRequestHandler(
           void notify("notifications/events/event", {
             eventId: `burst-${index}`,
             name: "burst-stream",
-            timestamp: oldTimestamp,
+            // Recent, so this remains a size-cap test after old events became
+            // undeliverable on every channel.
+            timestamp: recentTimestamp,
             cursor: `burst-stream:${index}`,
             data: { kind: "burst-stream.event", id: `burst-${index}`, state: "created" },
           });
         }
         void notify("notifications/events/heartbeat", { cursor: "burst-stream:22" });
       }, 2_000);
+    }
+
+    if (params.name === "mixed-stream") {
+      setTimeout(() => {
+        // The stale event reaches the feed directly, not through the poll
+        // probe. It must not become a chip just because its id is unseen.
+        void notify("notifications/events/event", {
+          eventId: "mixed-stale",
+          name: "mixed-stream",
+          timestamp: veryOldTimestamp,
+          cursor: "mixed:6",
+          data: { kind: "mixed-stream.event", id: "mixed-stale", state: "created" },
+        });
+        void notify("notifications/events/event", {
+          eventId: "mixed-fresh",
+          name: "mixed-stream",
+          timestamp: new Date().toISOString(),
+          cursor: "mixed:7",
+          data: { kind: "mixed-stream.event", id: "mixed-fresh", state: "created" },
+        });
+        void notify("notifications/events/heartbeat", { cursor: "mixed:7" });
+      }, 100);
+    }
+
+    if (params.name === "duplicate-stream") {
+      setTimeout(() => {
+        // The adapter suppresses a repeated id inside one connection, so the
+        // duplicate reaches pi-ui after a process restart. On the second run
+        // the resumed cursor is dup:6, and the same id arrives at dup:7.
+        const cursor = params.cursor === "dup:6" ? "dup:7" : "dup:6";
+        void notify("notifications/events/event", {
+          eventId: "duplicate-1",
+          name: "duplicate-stream",
+          timestamp: new Date().toISOString(),
+          cursor,
+          data: { kind: "duplicate-stream.event", id: "duplicate-1", state: "created" },
+        });
+        void notify("notifications/events/heartbeat", { cursor });
+      }, 100);
     }
 
     await closed;
