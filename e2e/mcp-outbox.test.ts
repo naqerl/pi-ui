@@ -600,6 +600,73 @@ test("a status notice waits beside an event batch without corrupting it", async 
   assert.ok(delivered.some((entry) => entry.text.startsWith(MCP_STATUS_HEAD)));
 });
 
+test("outbox delivery keeps the recovery the intake already accepted", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-outbox-recovery-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const feed = new McpEventFeed();
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe" },
+      result: { subscription: { id: "b-live", server: "hub", name: "hub", status: "active" } },
+    },
+  });
+  const submitted: string[] = [];
+  const fake = {
+    eventFeed: feed,
+    submit: async (text: string) => {
+      submitted.push(text);
+    },
+  };
+  const outbox = new McpOutbox(join(dir, "outbox.json"), async (item) => {
+    await ChatService.prototype.submitMcpDelivery.call(fake as unknown as ChatService, item);
+  });
+  await outbox.load();
+  const queued: Promise<void>[] = [];
+  const shim = new DurableExtensionShim();
+  shim.setObserver((notice) => {
+    feed.ingest(notice);
+  });
+  shim.setMessageSink((text, options) => {
+    const filtered = feed.filterStatusNotice(text, options.details, options.customType);
+    if (filtered !== null) queued.push(outbox.enqueue(filtered));
+  });
+  const notice = (status: string) => ({
+    customType: "mcp-events-status",
+    content: `${MCP_STATUS_HEAD}\n${JSON.stringify({
+      subscriptions: [{ id: "b-live", server: "hub", name: "hub", status }],
+    })}`,
+    details: { subscriptions: [{ id: "b-live", server: "hub", name: "hub", status }] },
+  });
+  const waitFor = async (check: () => boolean) => {
+    for (let attempt = 0; attempt < 100 && !check(); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.ok(check());
+  };
+
+  try {
+    shim.sendMessage(notice("reconnecting"));
+    await Promise.all(queued.splice(0));
+    outbox.start();
+    await waitFor(() => submitted.length === 1);
+
+    shim.sendMessage(notice("active"));
+    await Promise.all(queued.splice(0));
+    outbox.start();
+    await waitFor(() => submitted.length === 2);
+
+    // The intake still drops a repeated healthy status after the recovery.
+    shim.sendMessage(notice("active"));
+    assert.equal(queued.length, 0);
+  } finally {
+    await outbox.close();
+  }
+
+  assert.match(submitted[0] ?? "", /reconnecting/);
+  assert.match(submitted[1] ?? "", /active/);
+});
+
 test("a duplicate event id in one waiting batch appears once", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "pi-outbox-dedupe-"));
   t.after(() => rm(dir, { recursive: true, force: true }));

@@ -211,6 +211,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** A zero cursor is not a position: never return it to a caller as a resume point. */
+function positionCursor(answer: unknown, fallback: string | null): string | null {
+  if (typeof answer === "string" && hasPosition(answer)) return answer;
+  return fallback !== null && hasPosition(fallback) ? fallback : null;
+}
+
 /** A stored zero cursor is not a position: say once that the stream starts now. */
 function logStartFromNow(record: McpSubscriptionRecord, sent: string | null): void {
   const stored = record.cursor;
@@ -1493,7 +1499,7 @@ export class McpRuntime {
         details !== undefined && isRecord(details.subscription) ? details.subscription : {};
       return {
         ...(typeof raw.id === "string" ? { id: raw.id } : {}),
-        cursor: typeof raw.cursor === "string" ? raw.cursor : sent,
+        cursor: positionCursor(raw.cursor, sent),
         status: typeof raw.status === "string" ? raw.status : "active",
         ...(typeof raw.endReason === "string" ? { endReason: raw.endReason } : {}),
       };
@@ -1550,7 +1556,7 @@ export class McpRuntime {
       this.directSubscriptions.set(subscription.id, connection);
       return {
         id: subscription.id,
-        cursor: subscription.cursor ?? cursor,
+        cursor: positionCursor(subscription.cursor, cursor),
         status: subscription.status,
       };
     } catch (error) {
@@ -1838,13 +1844,12 @@ export class McpRuntime {
         );
         return false;
       }
-      // A paged catalog is the restore-after-paging path: the client only knows
-      // the position it recovered by paging, so the record's stored cursor is
-      // the stream's resume point even when it ends in zero. Anywhere else a
-      // zero stored cursor is still "no position" and starts in now.
+      // A paged catalog is the restore-after-paging path: a real stored
+      // position is the stream's resume point. A zero cursor is never handed
+      // to the transport, even on that fallback.
       const stale = probe.stale && probe.catalogPaged !== true;
       const cursor =
-        probe.catalogPaged === true
+        probe.catalogPaged === true && hasPosition(record.cursor)
           ? record.cursor
           : stale
             ? null
@@ -1883,7 +1888,7 @@ export class McpRuntime {
         name: typeof raw.name === "string" ? raw.name : record.name,
         status: typeof raw.status === "string" ? raw.status : record.status,
         arguments: isRecord(raw.arguments) ? raw.arguments : record.arguments,
-        cursor: typeof raw.cursor === "string" ? raw.cursor : cursor,
+        cursor: positionCursor(raw.cursor, cursor),
       };
       const restored: McpSubscriptionRecord = {
         ...record,
