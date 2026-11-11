@@ -36,6 +36,7 @@ import { Button } from "./components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader } from "./components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
 import { haptic } from "./haptics";
+import { RefreshIcon } from "./icons";
 import { cn } from "./lib/utils";
 import { InlineMarkdown, Markdown, plainInline } from "./markdown";
 import { mediaUrl } from "./media-client";
@@ -930,9 +931,10 @@ function ReopenBadge({ task, testId }: { task: Task; testId?: string }) {
       variant="outline"
       data-testid={testId ?? `task-reopens-${task.id}`}
       title={`Reopened ${count} time${count === 1 ? "" : "s"}`}
-      className="h-4 px-1.5 text-[10px] font-normal leading-4 text-muted-foreground"
+      className="h-4 gap-1 px-1.5 text-[10px] font-normal leading-4 text-muted-foreground"
     >
-      ↻ {count}
+      <RefreshIcon size={11} />
+      {count}
     </Badge>
   );
 }

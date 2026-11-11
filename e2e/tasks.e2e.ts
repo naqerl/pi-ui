@@ -577,8 +577,8 @@ test("reopens a done task with a reason and keeps the old completion", async ({
     await app.open("/?page=tasks");
     const card = screen.getByTestId(`task-${id}`);
     await expect(card).toHaveAttribute("data-state", "ready");
-    await expect(screen.getByTestId(`task-reopens-${id}`)).toHaveText("↻ 1");
-    await expect(screen.getByTestId(`task-detail-reopens-${id}`)).toHaveText("↻ 1");
+    await expect(screen.getByTestId(`task-reopens-${id}`)).toHaveText("1");
+    await expect(screen.getByTestId(`task-detail-reopens-${id}`)).toHaveText("1");
     await screen.getByRole("button", { name: `Open ${title}` }).tap();
     const reopenBlock = screen.getByTestId("task-reopen");
     await expect(reopenBlock).toContainText(reason);
@@ -679,7 +679,7 @@ test("refuses a reopen without a reason and counts the second reopen", async ({
     expect(reopened?.reopens?.length).toBe(2);
     expect(reopened?.reopens?.[1]?.reason).toBe(secondReason);
     expect(reopened?.reopens?.[1]?.by).toBe("operator");
-    await expect(screen.getByTestId(`task-reopens-${id}`)).toHaveText("↻ 2");
+    await expect(screen.getByTestId(`task-reopens-${id}`)).toHaveText("2");
   } finally {
     await deleteReopenTasks(browser, [title]);
   }

@@ -1,8 +1,10 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { noticeIconName } from "../shared/queue";
 import { formatTime } from "../shared/time";
 import type { ActivityItem, DelegateRunStatus, DelegateRunView } from "../shared/types";
 import { activitySummary } from "./activity-format";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
+import { ChevronIcon, CloseIcon, NoticeIcon } from "./icons";
 import { cn } from "./lib/utils";
 import { PiMenu } from "./PiMenu";
 import { groupTimeline } from "./timeline-groups";
@@ -101,12 +103,11 @@ function JobActivityRow({ activity }: { activity: Extract<ActivityItem, { kind: 
           failed ? "text-destructive" : "text-muted-foreground",
         )}
       >
-        <span className="inline-block w-3 shrink-0 transition-transform group-data-[state=open]:rotate-90">
-          ▸
-        </span>
-        <span aria-hidden="true" className="shrink-0">
-          ⚙
-        </span>
+        <ChevronIcon
+          size={14}
+          className="shrink-0 transition-transform group-data-[state=open]:rotate-90"
+        />
+        <NoticeIcon name={noticeIconName("job")} size={18} />
         <span
           data-testid="activity-job-summary"
           className="min-w-0 flex-1 [overflow-wrap:anywhere]"
@@ -202,12 +203,11 @@ function DelegateRunRow({ run }: { run: DelegateRunView }) {
           failed ? "text-destructive" : "text-muted-foreground",
         )}
       >
-        <span className="inline-block w-3 shrink-0 transition-transform group-data-[state=open]:rotate-90">
-          ▸
-        </span>
-        <span aria-hidden="true" className="shrink-0">
-          ◈
-        </span>
+        <ChevronIcon
+          size={14}
+          className="shrink-0 transition-transform group-data-[state=open]:rotate-90"
+        />
+        <NoticeIcon name={noticeIconName("delegate")} size={18} />
         <span
           data-testid="activity-delegate-summary"
           className="min-w-0 flex-1 [overflow-wrap:anywhere]"
@@ -328,9 +328,10 @@ function ActivityRow({ activity }: { activity: ActivityItem }) {
           failed ? "text-destructive" : "text-muted-foreground",
         )}
       >
-        <span className="inline-block w-3 shrink-0 transition-transform group-data-[state=open]:rotate-90">
-          ▸
-        </span>
+        <ChevronIcon
+          size={14}
+          className="shrink-0 transition-transform group-data-[state=open]:rotate-90"
+        />
         <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{activitySummary(activity)}</span>
       </CollapsibleTrigger>
       <CollapsibleContent>
@@ -393,7 +394,7 @@ export function ActivityView({ timeline, ready, run: runProp, dialog }: Activity
               onClick={dialog.onClose}
               className="-mr-1 shrink-0 rounded-md px-2 py-1 font-mono text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
             >
-              ✕
+              <CloseIcon size={16} />
             </button>
           </>
         )}

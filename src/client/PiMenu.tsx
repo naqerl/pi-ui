@@ -8,6 +8,7 @@ import type {
   StreamTheme,
 } from "../shared/types";
 import { haptic } from "./haptics";
+import { ChevronLeftIcon, DotIcon } from "./icons";
 import { PushSettings } from "./PushSettings";
 import { applyTheme } from "./theme";
 
@@ -272,7 +273,7 @@ export function PiMenu() {
                   className="flex w-full items-center gap-2 border-b border-border px-3 py-2 text-left text-xs text-muted-foreground hover:text-foreground"
                   onClick={() => setSection("menu")}
                 >
-                  <span aria-hidden="true">◂</span>
+                  <ChevronLeftIcon size={14} />
                   Theme
                 </button>
                 <div className="max-h-64 overflow-y-auto">
@@ -293,11 +294,7 @@ export function PiMenu() {
                         onClick={() => choose(theme)}
                       >
                         <span>{theme.name}</span>
-                        {current && (
-                          <span aria-hidden="true" className="font-mono text-[11px]">
-                            ●
-                          </span>
-                        )}
+                        {current && <DotIcon size={10} />}
                       </button>
                     );
                   })}
@@ -310,7 +307,7 @@ export function PiMenu() {
                   className="flex w-full items-center gap-2 border-b border-border px-3 py-2 text-left text-xs text-muted-foreground hover:text-foreground"
                   onClick={() => setSection("menu")}
                 >
-                  <span aria-hidden="true">◂</span>
+                  <ChevronLeftIcon size={14} />
                   Model
                 </button>
                 <div className="max-h-64 overflow-y-auto">
@@ -345,11 +342,7 @@ export function PiMenu() {
                               </span>
                             )}
                           </span>
-                          {current && (
-                            <span aria-hidden="true" className="font-mono text-[11px]">
-                              ●
-                            </span>
-                          )}
+                          {current && <DotIcon size={10} />}
                         </button>
                       </div>
                     );

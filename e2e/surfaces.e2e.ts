@@ -60,7 +60,7 @@ test("paints the composer dock and latest button apart from the page", async ({
     if (main !== null) main.scrollTop = 0;
     return true;
   });
-  await expect(browser.locator("button").filter({ hasText: "↓ latest" })).toBeVisible();
+  await expect(browser.locator('[data-testid="latest-button"]')).toBeVisible();
 
   const styles = await browser.evaluate(() => {
     const read = (element: Element | null) => {
@@ -68,9 +68,7 @@ test("paints the composer dock and latest button apart from the page", async ({
       return getComputedStyle(element).backgroundColor;
     };
     const dock = document.querySelector('[data-testid="composer-dock"]');
-    const latest = Array.from(document.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("↓ latest"),
-    );
+    const latest = document.querySelector('[data-testid="latest-button"]');
     return {
       page: getComputedStyle(document.body).backgroundColor,
       dock: read(dock),
@@ -385,7 +383,7 @@ test("keeps the latest button still across an extra scroll event", async ({
     if (main !== null) main.scrollTop = 0;
     return true;
   });
-  const latest = browser.locator("button").filter({ hasText: "↓ latest" });
+  const latest = browser.locator('[data-testid="latest-button"]');
   await expect(latest).toBeVisible();
   const before = await latest.boundingBox();
   expect(before).not.toBeNull();

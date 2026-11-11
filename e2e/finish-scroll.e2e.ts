@@ -13,9 +13,7 @@ function replyPosition() {
   return {
     gap: Math.round(target.getBoundingClientRect().top - main.getBoundingClientRect().top),
     atEnd: main.scrollHeight - main.scrollTop - main.clientHeight < 4,
-    latest: [...document.querySelectorAll("button")].some(
-      (button) => button.textContent?.trim() === "↓ latest",
-    ),
+    latest: document.querySelector('[data-testid="latest-button"]') !== null,
   };
 }
 
@@ -41,7 +39,7 @@ for (const width of [390, 1280]) {
     expect(position?.atEnd).toBe(false);
     expect(position?.latest).toBe(true);
 
-    await screen.getByRole("button", "↓ latest").tap();
+    await screen.getByTestId("latest-button").tap();
     const after = await browser.evaluate(replyPosition);
     expect(after?.atEnd).toBe(true);
   });
@@ -60,7 +58,7 @@ test("leaves the scroll alone when the reader scrolled away during the run", asy
   await screen.getByRole("button", "Send").tap();
   await expect(screen.getByRole("button", "Send")).toBeVisible({ timeout: 15_000 });
   await new Promise((resolve) => setTimeout(resolve, 400));
-  await screen.getByRole("button", "↓ latest").tap();
+  await screen.getByTestId("latest-button").tap();
 
   await composer.fill("LONGDRIP reply while I read");
   await screen.getByRole("button", "Send").tap();

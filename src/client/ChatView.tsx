@@ -15,7 +15,7 @@ import {
 import type { MemoryPathMatch, MemoryReadRange, MemoryToolDetails } from "../shared/memory";
 import { pageIdFromPath } from "../shared/pages";
 import { acceptMention, mentionAt, parseProjectToken, projectsOf } from "../shared/project";
-import { isQueuedNotice, queuedMessageIds, queuedNoticeGlyph } from "../shared/queue";
+import { isQueuedNotice, queuedMessageIds, resolveNoticeIconName } from "../shared/queue";
 import { isActiveStatus } from "../shared/tasks";
 import { formatDateTime, formatTime } from "../shared/time";
 import type {
@@ -35,6 +35,15 @@ import { Button } from "./components/ui/button";
 import { Textarea } from "./components/ui/textarea";
 import { DiagramPart } from "./DiagramPart";
 import { haptic } from "./haptics";
+import {
+  ArrowDownIcon,
+  ChevronDownIcon,
+  ChevronIcon,
+  ChevronUpIcon,
+  CloseIcon,
+  NoticeIcon,
+  SearchIcon,
+} from "./icons";
 import { DeferredMarkdown, loadMarkdown } from "./lazy-markdown";
 import { cn } from "./lib/utils";
 import { ATTACH_ACCEPT, mediaUrl, uploadMedia } from "./media-client";
@@ -271,7 +280,7 @@ function QueuedNoticeChip({
 }) {
   const queueIds = queuedMessageIds(message);
   const count = message.queueCount ?? 1;
-  const glyph = notice.glyph ?? queuedNoticeGlyph(notice.kind);
+  const icon = resolveNoticeIconName(notice.glyph, notice.kind);
   const cancelAll = async () => {
     if (onCancelQueued === undefined) return;
     haptic();
@@ -285,10 +294,8 @@ function QueuedNoticeChip({
       data-testid="queued-notice-chip"
       className="flex justify-center px-2 py-0.5"
     >
-      <div className="flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border border-foreground/10 bg-background/40 px-2.5 py-0.5 font-mono text-[11px] leading-5 text-foreground/80 backdrop-blur-md">
-        <span aria-hidden="true" className="shrink-0">
-          {glyph}
-        </span>
+      <div className="inline-flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border border-foreground/10 bg-background/40 px-2.5 py-0.5 font-mono text-[11px] leading-5 text-foreground/80 backdrop-blur-md">
+        <NoticeIcon name={icon} size={14} />
         <span className="min-w-0 truncate">{notice.label}</span>
         <span className="shrink-0 tabular-nums">{count} queued</span>
         {queueIds.length > 0 && onCancelQueued !== undefined && (
@@ -299,7 +306,7 @@ function QueuedNoticeChip({
             className="shrink-0 font-mono text-[11px] leading-none text-foreground hover:text-destructive"
             onClick={() => cancelAll()}
           >
-            ×
+            <CloseIcon size={12} />
           </button>
         )}
       </div>
@@ -345,8 +352,9 @@ export function MessageBubble({
       return <VersionUpdateCard message={message} />;
     }
     return (
-      <div className="px-2 py-1 text-center font-mono text-[11px] text-muted-foreground">
-        ⚠ {message.text}
+      <div className="flex items-center justify-center gap-1.5 px-2 py-1 text-center font-mono text-[11px] text-muted-foreground">
+        <NoticeIcon name="warning" size={14} />
+        {message.text}
       </div>
     );
   }
@@ -518,14 +526,12 @@ function MemoryActivityChip({ items }: { items: ActivityItem[] }) {
         controls={detailsId}
         onClick={() => setOpen((current) => !current)}
       >
-        <span aria-hidden="true" className="shrink-0">
-          ⌕
-        </span>
+        <SearchIcon size={14} />
         <span className="min-w-0 truncate" data-testid="memory-search-chip-summary">
           {view.label}
         </span>
-        <span aria-hidden="true" className="shrink-0 text-[9px] opacity-60">
-          {open ? "▴" : "▾"}
+        <span aria-hidden="true" className="shrink-0 opacity-60">
+          {open ? <ChevronUpIcon size={12} /> : <ChevronDownIcon size={12} />}
         </span>
       </ChipButton>
       {open && (
@@ -612,9 +618,7 @@ function ActivityGroup({
         aria-label={`Run activity: ${parts.join(", ")}`}
         className="theme-radius flex min-h-9 w-fit min-w-0 max-w-full items-start gap-2 border border-border/70 bg-surface px-2.5 py-2 text-left font-mono text-xs leading-5 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40 sm:min-h-0 sm:py-1.5"
       >
-        <span aria-hidden="true" className="inline-block w-3 shrink-0">
-          ▸
-        </span>
+        <ChevronIcon size={14} className="shrink-0" />
         {/* Each piece stays whole and the line wraps between pieces on a narrow screen. */}
         <span className="flex min-w-0 flex-wrap gap-x-1.5">
           {parts.map((part, index) => (
@@ -864,7 +868,7 @@ function AttachmentStrip({
             className="absolute -top-1.5 -right-1.5 grid size-5 place-items-center rounded-full bg-foreground font-mono text-[11px] leading-none text-background"
             onClick={() => onRemove(item.key)}
           >
-            ×
+            <CloseIcon size={12} />
           </button>
         </li>
       ))}
@@ -1740,9 +1744,10 @@ export function ChatView({
       {interrupted && (
         <div
           role="status"
-          className="shrink-0 border-b border-border bg-muted py-1.5 text-center font-mono text-[11px] text-foreground"
+          className="flex shrink-0 items-center justify-center gap-1.5 border-b border-border bg-muted py-1.5 text-center font-mono text-[11px] text-foreground"
         >
-          ⚠ run interrupted — the last response may be partial
+          <NoticeIcon name="warning" size={14} />
+          run interrupted — the last response may be partial
         </div>
       )}
 
@@ -1868,10 +1873,12 @@ export function ChatView({
           >
             <button
               type="button"
-              className="pointer-events-auto bg-foreground px-2 py-1 font-mono text-[11px] text-background"
+              data-testid="latest-button"
+              className="pointer-events-auto inline-flex items-center gap-1.5 bg-foreground px-2 py-1 font-mono text-[11px] text-background"
               onClick={stick.scrollToBottom}
             >
-              ↓ latest
+              <ArrowDownIcon size={14} />
+              latest
             </button>
           </div>
         )}

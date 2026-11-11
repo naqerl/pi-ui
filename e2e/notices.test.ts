@@ -23,7 +23,7 @@ import {
   memoryUndoPrompt,
   parseNotice,
 } from "../src/shared/notices.js";
-import { isQueuedNotice, queuedNoticeGlyph } from "../src/shared/queue.js";
+import { isQueuedNotice, queuedNoticeGlyph, resolveNoticeIconName } from "../src/shared/queue.js";
 import type { ChatMessage } from "../src/shared/types.js";
 
 function job(overrides: Partial<JobRecord>): JobRecord {
@@ -176,7 +176,8 @@ test("a failed job chip keeps its destructive styling", () => {
   assert.match(markup, /class="[^"]*\btext-destructive\b/);
   assert.match(markup, /class="[^"]*\bhover:text-destructive\b/);
   assert.match(markup, /class="[^"]*\bbackdrop-blur-md\b/);
-  assert.match(markup, /⚙/);
+  assert.match(markup, /data-icon="job"/);
+  assert.doesNotMatch(markup, /⚙/);
 });
 
 test("an interrupted run becomes one warning chip after the partial reply", () => {
@@ -219,7 +220,8 @@ test("an interrupted run becomes one warning chip after the partial reply", () =
 
   const markup = renderToStaticMarkup(createElement(NoticeLine, { message, notice }));
   assert.match(markup, /data-notice-kind="interrupted"/);
-  assert.match(markup, /⚠/);
+  assert.match(markup, /data-icon="warning"/);
+  assert.doesNotMatch(markup, /⚠/);
   assert.match(markup, /class="[^"]*\bbackdrop-blur-md\b/);
   assert.match(markup, /class="[^"]*\bborder-status-warn\/40\b/);
   assert.match(markup, /class="[^"]*\bbg-status-warn\/10\b/);
@@ -413,9 +415,16 @@ test("a notify_operator call becomes an operator chip with its question and reas
     createElement(NoticeLine, { message, notice: message.notice as ChatNotice }),
   );
   assert.match(html, /operator · Deploy or wait\?/);
-  assert.match(html, /◇/);
-  assert.doesNotMatch(html, /✉/);
-  assert.equal(queuedNoticeGlyph("operator"), "◇");
+  assert.match(html, /data-icon="operator"/);
+  assert.doesNotMatch(html, /◇/);
+  assert.equal(queuedNoticeGlyph("operator"), "operator");
+});
+
+test("a stored notice icon name is used only when the client knows it", () => {
+  assert.equal(resolveNoticeIconName("mcp", "ui.job-notice"), "mcp");
+  assert.equal(resolveNoticeIconName("legacy-glyph", "ui.job-notice"), "job");
+  assert.equal(resolveNoticeIconName(undefined, "ui.mcp-notice"), "mcp");
+  assert.equal(queuedNoticeGlyph("ui.job-notice"), "job");
 });
 
 test("recording an interrupted run sends no push", async (t) => {
