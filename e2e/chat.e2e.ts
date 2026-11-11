@@ -1,5 +1,5 @@
 import { type Browser, beforeEach, describe, test } from "@e2e-dev/web";
-import { expect } from "e2e";
+import { expect, type JsonValue } from "e2e";
 
 const longThread = {
   conversationId: "chat-scroller-e2e",
@@ -747,4 +747,276 @@ test("keeps every frame inside the budget while the composer body animates", asy
   expect(result?.end ?? 0).toBeGreaterThan((result?.start ?? 0) + 20);
   expect((result?.frames.length ?? 0) > 6).toBe(true);
   expect(Math.max(...(result?.frames ?? [0]))).toBeLessThanOrEqual(24);
+});
+
+// A state snapshot is a read of the server at one moment. If it was read before a send
+// committed but lands after the optimistic copy retired, replacing the window with it
+// removes the sent row until the next push. Sample every frame to catch that gap.
+test("keeps a sent bubble on every frame through a delayed response and stale state push", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  // Hold the send response after the server has accepted it, so the bubble must
+  // survive the optimistic-to-confirmed handoff while the request is still open.
+  await browser.addInitScript(`
+    (() => {
+      const original = window.fetch.bind(window);
+      let release = null;
+      window.__releaseSendResponse = () => {
+        const resume = release;
+        release = null;
+        if (resume) resume();
+      };
+      window.fetch = async (...args) => {
+        const response = await original(...args);
+        if (String(args[0]).includes("/api/message") && window.__holdSendResponse === true) {
+          await new Promise((resolve) => {
+            release = resolve;
+          });
+        }
+        return response;
+      };
+    })();
+  `);
+  await openChat(app, browser);
+  const composer = screen.getByRole("textbox", "Message");
+  await expect(composer).toBeVisible({ timeout: 30_000 });
+
+  // Read a snapshot from before the send, then serve it on demand after confirmation.
+  const stale = await browser.evaluate(async () => {
+    const response = await fetch("/api/state", { cache: "no-store" });
+    return (await response.json()) as JsonValue;
+  });
+  let serveStale = false;
+  let served = 0;
+  await browser.route("**/api/state**", async (route) => {
+    if (!serveStale) {
+      await route.continue();
+      return;
+    }
+    served += 1;
+    await route.fulfill({ json: stale });
+  });
+
+  const text = `frame continuous send ${Date.now()}`;
+  await browser.evaluate((needle: string) => {
+    const state = { armed: false, started: false, id: "", frames: 0, missing: 0 };
+    (window as unknown as { __sendFrames?: typeof state }).__sendFrames = state;
+    const send = document.querySelector<HTMLButtonElement>('button[aria-label="Send"]');
+    send?.addEventListener(
+      "click",
+      () => {
+        state.armed = true;
+      },
+      { capture: true },
+    );
+    const tick = () => {
+      state.frames += 1;
+      if (state.armed) {
+        const rows = [...document.querySelectorAll<HTMLElement>('[data-role="user"]')].filter(
+          (row) => (row.textContent ?? "").includes(needle),
+        );
+        if (!state.started) {
+          if (rows.length > 0) {
+            state.started = true;
+            state.id = rows[0]?.getAttribute("data-message-id") ?? "";
+          }
+        } else if (!rows.some((row) => row.getAttribute("data-message-id") === state.id)) {
+          state.missing += 1;
+        }
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    return true;
+  }, text);
+
+  await browser.evaluate(() => {
+    (window as unknown as { __holdSendResponse?: boolean }).__holdSendResponse = true;
+    return true;
+  });
+  await composer.fill(text);
+  await screen.getByRole("button", { name: "Send" }).tap();
+  await expect(composer).toHaveValue("");
+  // The server confirms through SSE while the HTTP response is still held.
+  await expect(screen.getByText(`Echo: ${text}`, { exact: false })).toBeVisible({
+    timeout: 15_000,
+  });
+  await browser.evaluate(() => {
+    const target = window as unknown as {
+      __holdSendResponse?: boolean;
+      __releaseSendResponse?: () => void;
+    };
+    target.__holdSendResponse = false;
+    target.__releaseSendResponse?.();
+    return true;
+  });
+  await expect(browser.locator('[data-role="user"]').filter({ hasText: text })).toHaveCount(1);
+
+  const painted = await browser.evaluate(() => {
+    const state = (window as unknown as { __sendFrames?: { started: boolean; id: string } })
+      .__sendFrames;
+    return { started: state?.started ?? false, id: state?.id ?? "" };
+  });
+  expect(painted.started).toBe(true);
+  expect(painted.id).not.toBe("");
+
+  // The late snapshot has no row for this send. It must not take the row away.
+  serveStale = true;
+  await browser.evaluate(() => {
+    window.dispatchEvent(new Event("focus"));
+    return true;
+  });
+  await expect.poll(() => served).toBeGreaterThan(0);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  await expect(browser.locator(`[data-message-id="${painted.id}"]`)).toHaveCount(1);
+  await expect(browser.locator('[data-role="user"]').filter({ hasText: text })).toHaveCount(1);
+
+  serveStale = false;
+  await browser.evaluate(() => {
+    window.dispatchEvent(new Event("focus"));
+    return true;
+  });
+  await expect(browser.locator(`[data-message-id="${painted.id}"]`)).toHaveCount(1);
+
+  const result = await browser.evaluate(() => {
+    const state = (
+      window as unknown as {
+        __sendFrames?: { started: boolean; id: string; frames: number; missing: number };
+      }
+    ).__sendFrames;
+    return {
+      started: state?.started ?? false,
+      id: state?.id ?? "",
+      frames: state?.frames ?? 0,
+      missing: state?.missing ?? -1,
+    };
+  });
+  expect(result.id).toBe(painted.id);
+  expect(result.frames).toBeGreaterThan(0);
+  expect(result.missing, JSON.stringify(result)).toBe(0);
+});
+
+// The queued form is a different handoff from the placed form: the fake server answers
+// with a queue item after a delay, and the optimistic id must survive that swap.
+test("keeps a queued send visible on every frame while its response is held", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await openChat(app, browser);
+  const composer = screen.getByRole("textbox", "Message");
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let request: { text?: string; mode?: string; queueKey?: string } = {};
+  await browser.route("**/api/message", async (route) => {
+    request = JSON.parse(route.request.postData ?? "{}") as {
+      text?: string;
+      mode?: string;
+      queueKey?: string;
+    };
+    await gate;
+    const key = request.queueKey ?? "queued-key";
+    const createdAt = new Date().toISOString();
+    await route.fulfill({
+      status: 202,
+      json: {
+        message: {
+          id: `m-pending-${key}`,
+          role: "user",
+          text: request.text ?? "",
+          timestamp: createdAt,
+          order: Number.MAX_SAFE_INTEGER,
+        },
+        mode: request.mode ?? "queue",
+        queued: true,
+        placed: false,
+        queue: [
+          {
+            id: `queue-${key}`,
+            text: request.text ?? "",
+            createdAt,
+            key,
+          },
+        ],
+        steers: [],
+      },
+    });
+  });
+
+  const text = `queued frame send ${Date.now()}`;
+  await browser.evaluate((needle: string) => {
+    const state = { armed: false, started: false, id: "", frames: 0, missing: 0 };
+    (window as unknown as { __queuedFrames?: typeof state }).__queuedFrames = state;
+    const send = document.querySelector<HTMLButtonElement>('button[aria-label="Send"]');
+    send?.addEventListener(
+      "click",
+      () => {
+        state.armed = true;
+      },
+      { capture: true },
+    );
+    const tick = () => {
+      state.frames += 1;
+      if (state.armed) {
+        const rows = [...document.querySelectorAll<HTMLElement>('[data-role="user"]')].filter(
+          (row) => (row.textContent ?? "").includes(needle),
+        );
+        if (!state.started) {
+          if (rows.length > 0) {
+            state.started = true;
+            state.id = rows[0]?.getAttribute("data-message-id") ?? "";
+          }
+        } else if (!rows.some((row) => row.getAttribute("data-message-id") === state.id)) {
+          state.missing += 1;
+        }
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    return true;
+  }, text);
+
+  try {
+    await composer.fill(text);
+    await screen.getByRole("button", { name: "Send" }).tap();
+    const pendingSend = browser.locator('[data-pending-send="true"]').filter({ hasText: text });
+    await expect.poll(() => pendingSend.isVisible(), { timeout: 10_000 }).toBe(true);
+    const optimisticId = await browser.evaluate((needle: string) => {
+      const row = [...document.querySelectorAll<HTMLElement>('[data-pending-send="true"]')].find(
+        (candidate) => (candidate.textContent ?? "").includes(needle),
+      );
+      return row?.getAttribute("data-message-id") ?? "";
+    }, text);
+    expect(optimisticId).not.toBe("");
+    expect(request.text).toBe(text);
+
+    release();
+    const queued = browser.locator('[data-pending-queue="true"]').filter({ hasText: text });
+    await expect(queued).toHaveCount(1, { timeout: 10_000 });
+    await expect(queued).toHaveAttribute("data-message-id", optimisticId);
+    await expect(browser.locator('[data-role="user"]').filter({ hasText: text })).toHaveCount(1);
+  } finally {
+    release();
+  }
+
+  const result = await browser.evaluate(() => {
+    const state = (
+      window as unknown as {
+        __queuedFrames?: { started: boolean; id: string; frames: number; missing: number };
+      }
+    ).__queuedFrames;
+    return {
+      started: state?.started ?? false,
+      id: state?.id ?? "",
+      frames: state?.frames ?? 0,
+      missing: state?.missing ?? -1,
+    };
+  });
+  expect(result.started).toBe(true);
+  expect(result.frames).toBeGreaterThan(0);
+  expect(result.missing, JSON.stringify(result)).toBe(0);
 });

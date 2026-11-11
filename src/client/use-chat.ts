@@ -190,9 +190,33 @@ const HISTORY_PAGE = 30;
 const RETRY_MIN_MS = 1_000;
 const RETRY_MAX_MS = 30_000;
 
-/** Keeps every held item below `from`, then the snapshot's items from `from` up. */
-function mergeWindow<T extends { order: number }>(current: T[], from: number, fresh: T[]): T[] {
-  return [...current.filter((item) => item.order < from), ...fresh];
+/**
+ * Keeps every held item below `from`, then the snapshot's items from `from` up.
+ * A held row above the snapshot's newest row arrived after the server read it
+ * (an SSE message or a send response), so it stays: replacing the window would
+ * make a just-committed send blink out until the next state push. Rows the
+ * snapshot already has by id or steer key are not copied twice.
+ */
+function mergeWindow<T extends { order: number; id: string }>(
+  current: T[],
+  from: number,
+  fresh: T[],
+  same?: (left: T, right: T) => boolean,
+): T[] {
+  let newest = Number.NEGATIVE_INFINITY;
+  for (const item of fresh) if (item.order > newest) newest = item.order;
+  const freshIds = new Set(fresh.map((item) => item.id));
+  const added = current.filter((item) => {
+    if (item.order < from || item.order <= newest) return false;
+    if (freshIds.has(item.id)) return false;
+    return same === undefined || !fresh.some((candidate) => same(item, candidate));
+  });
+  return [...current.filter((item) => item.order < from), ...fresh, ...added];
+}
+
+/** The same transcript row can arrive as a provisional copy before its entry is placed. */
+function sameMessage(left: ChatMessage, right: ChatMessage): boolean {
+  return left.id === right.id || (left.steerKey !== undefined && left.steerKey === right.steerKey);
 }
 
 /** Adds an older page in front of what is held, skipping anything already there. */
@@ -237,6 +261,8 @@ export function useChat(options: UseChatOptions = {}) {
   const [dismissedErrors, setDismissedErrors] = useState<ReadonlySet<string>>(() => new Set());
   const [delegates, setDelegates] = useState<DelegateRunView[]>([]);
   const [queue, setQueue] = useState<QueuedMessage[]>([]);
+  /** Newest queue/steer revision applied; a snapshot below it is stale for those lists. */
+  const queueRevision = useRef(0);
   const [mcp, setMcp] = useState<McpStatus>({ servers: [], unavailable: [] });
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [context, setContext] = useState<ContextUsage | null>(null);
@@ -316,6 +342,14 @@ export function useChat(options: UseChatOptions = {}) {
     retryDelay.current = RETRY_MIN_MS;
   }, []);
 
+  /** True when this queue/steer update is at least as new as the one already shown. */
+  const acceptQueueRevision = useCallback((revision: number | undefined): boolean => {
+    if (revision === undefined) return true;
+    if (revision < queueRevision.current) return false;
+    queueRevision.current = revision;
+    return true;
+  }, []);
+
   const readState = useCallback(async () => {
     const sequence = ++refreshSequence.current;
     try {
@@ -329,6 +363,9 @@ export function useChat(options: UseChatOptions = {}) {
       const snapshot = (await response.json()) as Snapshot;
       if (sequence !== refreshSequence.current) return;
       const snapshotFrom = snapshot.from ?? 0;
+      // The first snapshot may have been read before a send committed. Keep what
+      // the response or SSE already painted instead of taking it off screen.
+      const firstSnapshot = conversationRef.current === null;
       const sameConversation = conversationRef.current === snapshot.conversationId;
       conversationRef.current = snapshot.conversationId;
       if (!sameConversation || windowFrom.current === null || snapshotFrom < windowFrom.current) {
@@ -340,8 +377,8 @@ export function useChat(options: UseChatOptions = {}) {
       const freshActivity = [...snapshot.activity, ...fresh.activity].sort(
         (a, b) => a.order - b.order,
       );
-      if (sameConversation) {
-        setMessages((current) => mergeWindow(current, snapshotFrom, fresh.messages));
+      if (sameConversation || firstSnapshot) {
+        setMessages((current) => mergeWindow(current, snapshotFrom, fresh.messages, sameMessage));
         setActivity((current) => mergeWindow(current, snapshotFrom, freshActivity));
       } else {
         setMessages(fresh.messages);
@@ -363,13 +400,17 @@ export function useChat(options: UseChatOptions = {}) {
       setRunState(snapshot.run);
       if (snapshot.runError !== undefined) setRunError(snapshot.runError);
       if (snapshot.delegates !== undefined) setDelegates(snapshot.delegates);
-      setQueue(snapshot.queue);
-      setSteers((current) =>
-        rebuildSteersFromSnapshot(
-          consumeSteersInMessages(current, snapshot.messages),
-          snapshot.steers ?? [],
-        ),
-      );
+      // A send response or live queue update can land after this snapshot was
+      // read. Its revision wins; otherwise the pending bubble would blink out.
+      if (acceptQueueRevision(snapshot.queueRevision)) {
+        setQueue(snapshot.queue);
+        setSteers((current) =>
+          rebuildSteersFromSnapshot(
+            consumeSteersInMessages(current, snapshot.messages),
+            snapshot.steers ?? [],
+          ),
+        );
+      }
       setMcp(snapshot.mcp ?? { servers: [], unavailable: [] });
       setUsage(snapshot.usage ?? null);
       setContext(snapshot.context ?? null);
@@ -385,7 +426,15 @@ export function useChat(options: UseChatOptions = {}) {
       // Keep the state already on screen and try again rather than showing an empty chat.
       scheduleRetry();
     }
-  }, [applyDraft, applyEvents, applyTasks, clearRetry, fullHistory, scheduleRetry]);
+  }, [
+    acceptQueueRevision,
+    applyDraft,
+    applyEvents,
+    applyTasks,
+    clearRetry,
+    fullHistory,
+    scheduleRetry,
+  ]);
 
   const refreshes = useMemo(() => refreshBatch(readState), [readState]);
   const refreshState = refreshes.request;
@@ -455,6 +504,8 @@ export function useChat(options: UseChatOptions = {}) {
       const revisions = resetStreamRevisions();
       draftRevision.current = revisions.draft;
       toolsRevision.current = revisions.tools;
+      // A restarted server counts its queue revisions from zero again.
+      queueRevision.current = 0;
       void refreshState();
     };
     source.onerror = () => {
@@ -542,9 +593,11 @@ export function useChat(options: UseChatOptions = {}) {
       if (!data) return;
       setRunState(data.state);
       setRunError(data.runError ?? null);
-      if (data.queue !== undefined) setQueue(data.queue);
-      if (data.steers !== undefined) {
-        setSteers((current) => mergeLiveSteers(current, data.steers ?? []));
+      if (acceptQueueRevision(data.queueRevision)) {
+        if (data.queue !== undefined) setQueue(data.queue);
+        if (data.steers !== undefined) {
+          setSteers((current) => mergeLiveSteers(current, data.steers ?? []));
+        }
       }
       if (data.state !== "running") {
         draftBatch.clear();
@@ -668,7 +721,7 @@ export function useChat(options: UseChatOptions = {}) {
       source.close();
       draftBatch.clear();
     };
-  }, [applyDraft, applyEvents, applyTasks, draftBatch, refreshState]);
+  }, [acceptQueueRevision, applyDraft, applyEvents, applyTasks, draftBatch, refreshState]);
 
   // A snapshot, SSE message, queue update or older page can confirm a pending send at any
   // time. Retire the optimistic copy then, not only when its own fetch response arrives.
@@ -837,7 +890,8 @@ export function useChat(options: UseChatOptions = {}) {
         // The queue and the place message use the same client key, so dropping the
         // optimistic copy in this same batch never blanks the bubble.
         retire();
-        setQueue(data.queue);
+        const queueIsNewest = acceptQueueRevision(data.queueRevision);
+        if (queueIsNewest) setQueue(data.queue);
         if (!data.queued && !(runState === "running")) {
           setRunState("running");
           draftBatch.clear();
@@ -860,7 +914,7 @@ export function useChat(options: UseChatOptions = {}) {
             setSteers((current) => consumeSteer(current, message.steerKey));
           }
         }
-        if (data.steers !== undefined) {
+        if (data.steers !== undefined && queueIsNewest) {
           setSteers((current) => rebuildSteersFromSnapshot(current, data.steers ?? []));
         }
         return { ok: true };
@@ -869,24 +923,32 @@ export function useChat(options: UseChatOptions = {}) {
         return { ok: false, error: "Message was not sent" };
       }
     },
-    [runState, refreshState, draftBatch],
+    [runState, refreshState, draftBatch, acceptQueueRevision],
   );
 
-  const cancelQueued = useCallback(async (id: string): Promise<boolean> => {
-    try {
-      const response = await fetch(`/api/queue/${encodeURIComponent(id)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "cancel" }),
-      });
-      if (!response.ok) return false;
-      const data = (await response.json()) as { queue?: QueuedMessage[] };
-      if (data.queue !== undefined) setQueue(data.queue);
-      return true;
-    } catch {
-      return false;
-    }
-  }, []);
+  const cancelQueued = useCallback(
+    async (id: string): Promise<boolean> => {
+      try {
+        const response = await fetch(`/api/queue/${encodeURIComponent(id)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "cancel" }),
+        });
+        if (!response.ok) return false;
+        const data = (await response.json()) as {
+          queue?: QueuedMessage[];
+          queueRevision?: number;
+        };
+        if (acceptQueueRevision(data.queueRevision) && data.queue !== undefined) {
+          setQueue(data.queue);
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [acceptQueueRevision],
+  );
 
   /** Takes back the newest steer the run has not reached; null when there is none left to take. */
   const unsendSteer = useCallback(async (): Promise<QueuedMessage | null> => {
@@ -909,13 +971,19 @@ export function useChat(options: UseChatOptions = {}) {
         await refreshState();
         return null;
       }
-      const data = (await response.json()) as { steer: QueuedMessage; steers: QueuedMessage[] };
-      setSteers((current) => rebuildSteersFromSnapshot(current, data.steers));
+      const data = (await response.json()) as {
+        steer: QueuedMessage;
+        steers: QueuedMessage[];
+        queueRevision?: number;
+      };
+      if (acceptQueueRevision(data.queueRevision)) {
+        setSteers((current) => rebuildSteersFromSnapshot(current, data.steers));
+      }
       return data.steer;
     } catch {
       return null;
     }
-  }, [steers, refreshState]);
+  }, [steers, refreshState, acceptQueueRevision]);
 
   const steerQueued = useCallback(
     async (id: string): Promise<boolean> => {
@@ -931,14 +999,16 @@ export function useChat(options: UseChatOptions = {}) {
         }
         if (!response.ok) return false;
         const data = (await response.json()) as SubmitMessageResponse;
-        setQueue(data.queue);
+        if (acceptQueueRevision(data.queueRevision)) {
+          setQueue(data.queue);
+        }
         setRunState("running");
         return true;
       } catch {
         return false;
       }
     },
-    [refreshState],
+    [refreshState, acceptQueueRevision],
   );
 
   const stop = useCallback(async () => {

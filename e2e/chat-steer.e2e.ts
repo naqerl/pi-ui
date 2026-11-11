@@ -3,7 +3,7 @@ import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "@e2e-dev/web";
-import { expect } from "e2e";
+import { expect, type JsonValue } from "e2e";
 
 test("shows one Stop while the field is empty, then one Steer while it has text", async ({
   app,
@@ -228,4 +228,85 @@ test("keeps an accepted steer visible until its transcript entry arrives", async
     return target.__steerWatch?.gap ?? false;
   });
   expect(gap).toBe(false);
+});
+
+test("does not revive a consumed steer from a snapshot read before delivery", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await app.open("/");
+  const tag = Date.now();
+  const release = join(tmpdir(), `pi-ui-steer-snapshot-${tag}-${randomUUID()}`);
+  const wait = `for i in $(seq 600); do [ -e '${release}' ] && break; sleep 0.1; done; echo released`;
+  const calls = [{ name: "bash", arguments: { command: wait } }];
+  const composer = screen.getByRole("textbox", "Message");
+  try {
+    await composer.fill(`TOOLCALLS ${JSON.stringify(calls)}`);
+    await screen.getByRole("button", "Send").tap();
+    await expect(screen.getByRole("button", "Stop")).toBeVisible();
+
+    const text = `steer stale snapshot ${tag}`;
+    await composer.fill(text);
+    await composer.press("Enter");
+    const pending = browser.locator('[data-pending-steer="true"]').filter({ hasText: text });
+    await expect(pending).toHaveCount(1);
+
+    // Read the snapshot only once the server tracks the steer, so it is a valid
+    // pre-delivery answer rather than racing the send response.
+    const stale = (await browser.evaluate(async (needle: string) => {
+      const deadline = performance.now() + 10_000;
+      while (performance.now() < deadline) {
+        const response = await fetch("/api/state", { cache: "no-store" });
+        if (response.ok) {
+          const snapshot = (await response.json()) as {
+            steers?: { id?: string; text?: string }[];
+          };
+          if (snapshot.steers?.some((steer) => steer.text === needle)) {
+            return snapshot as unknown as JsonValue;
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return null;
+    }, text)) as { steers?: { id?: string; text?: string }[] } | null;
+    expect(stale).not.toBeNull();
+    const tracked = stale?.steers?.find((steer) => steer.text === text);
+    expect(tracked?.id).toBeTruthy();
+    await expect(pending).toHaveAttribute("data-message-id", `steer-pending-${tracked?.id ?? ""}`);
+
+    let serveStale = false;
+    let served = 0;
+    await browser.route("**/api/state**", async (route) => {
+      if (!serveStale) {
+        await route.continue();
+        return;
+      }
+      served += 1;
+      await route.fulfill({ json: stale as JsonValue });
+    });
+
+    writeFileSync(release, "");
+    const delivered = browser.locator('[data-role="user"]').filter({ hasText: text });
+    await expect(pending).toHaveCount(0, { timeout: 20_000 });
+    await expect(delivered).toHaveCount(1);
+
+    // The steer is already in the transcript. The older snapshot still lists it as
+    // pending; its stale revision must not put that pending bubble back.
+    serveStale = true;
+    await browser.evaluate(() => {
+      window.dispatchEvent(new Event("focus"));
+      return true;
+    });
+    await expect.poll(() => served).toBeGreaterThan(0);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await expect(pending).toHaveCount(0);
+    await expect(delivered).toHaveCount(1);
+  } finally {
+    writeFileSync(release, "");
+    await browser.evaluate(async () => {
+      await fetch("/api/stop", { method: "POST" });
+      return true;
+    });
+  }
 });
