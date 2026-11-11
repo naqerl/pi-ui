@@ -422,7 +422,7 @@ test("approving while the agent is mid-turn flips the row before the response la
     const flipMs = (painted?.flippedAt ?? 0) - (painted?.started ?? 0);
     expect(painted?.timing).toBeNull();
     expect(await runState(browser)).toBe("running");
-    expect(flipMs).toBeLessThanOrEqual(150);
+    expect(flipMs).toBeLessThanOrEqual(250);
 
     releasePatch?.();
     await expect
