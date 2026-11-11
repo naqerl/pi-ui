@@ -639,7 +639,8 @@ test("the nudge is a notice chip with a distinct transcript kind", () => {
   const markup = renderToStaticMarkup(createElement(NoticeLine, { message, notice }));
   assert.match(markup, /data-notice-kind="idle"/);
   assert.match(markup, /idle · 2 task\(s\) open: a1, b2/);
-  assert.match(markup, /◷/);
+  assert.match(markup, /data-icon="idle"/);
+  assert.doesNotMatch(markup, /◷/);
   assert.match(markup, /class="[^"]*\bbackdrop-blur-md\b/);
   assert.match(markup, /class="[^"]*\bbg-surface\/90\b/);
   assert.doesNotMatch(markup, /data-role="user"/);

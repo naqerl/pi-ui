@@ -1,6 +1,12 @@
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { MessageBubble } from "../src/client/ChatView";
+import { NoticeLine } from "../src/client/NoticeView";
 import { parseNotice } from "../src/shared/notices";
+import { pendingQueuedMessage } from "../src/shared/queue";
+import type { ChatMessage } from "../src/shared/types";
 
 type Page = { evaluate: <T, A = undefined>(fn: (arg: A) => T | Promise<T>, arg?: A) => Promise<T> };
 
@@ -220,6 +226,89 @@ const snapshot = {
   context: { tokens: 0, window: null, percent: null },
 };
 
+/** Paints standalone notice markup over the loaded app styles so an artifact can show it. */
+async function showMarkup(browser: Page, markup: string): Promise<void> {
+  await browser.evaluate((html) => {
+    document.body.innerHTML = `<main style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--background);color:var(--foreground)">${html}</main>`;
+  }, markup);
+}
+
+test("job chips and the activity row use aligned svg icons", async ({ app, browser }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  const parsed = parseNotice(jobText);
+  if (parsed === null) throw new Error("the fixture job notice did not parse");
+  const noticeMessage: ChatMessage = {
+    id: "job-notice",
+    role: "system",
+    text: jobText,
+    timestamp: at(17),
+    order: 20_000,
+  };
+  const noticeMarkup = renderToStaticMarkup(
+    createElement(NoticeLine, { message: noticeMessage, notice: parsed }),
+  );
+  const queuedMarkup = renderToStaticMarkup(
+    createElement(MessageBubble, {
+      message: pendingQueuedMessage({
+        id: "q-job-1",
+        text: jobText,
+        createdAt: at(18),
+        notice: { kind: "ui.job-notice", label: "Background job", glyph: "job" },
+      }),
+      onCancelQueued: () => undefined,
+    }),
+  );
+
+  await app.open("/");
+  await showMarkup(browser, queuedMarkup);
+  await app.screenshot("queued-job-chip");
+  const queuedIcon = await browser.evaluate(() => {
+    const icon = document.querySelector<SVGElement>(
+      '[data-testid="queued-notice-chip"] svg[data-icon="job"]',
+    );
+    return icon === null
+      ? null
+      : { width: icon.getAttribute("width"), height: icon.getAttribute("height") };
+  });
+  expect(queuedIcon).toEqual({ width: "14", height: "14" });
+
+  await showMarkup(browser, noticeMarkup);
+  await app.screenshot("job-notice-chip");
+  const noticeIcon = await browser.evaluate(() => {
+    const icon = document.querySelector<SVGElement>(
+      '[data-testid="chat-notice"] svg[data-icon="job"]',
+    );
+    return icon === null
+      ? null
+      : { width: icon.getAttribute("width"), height: icon.getAttribute("height") };
+  });
+  expect(noticeIcon).toEqual({ width: "14", height: "14" });
+
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({
+      json: JSON.parse(
+        JSON.stringify({
+          ...snapshot,
+          conversationId: "notices-job-icon-e2e",
+          messages: [message("job", "user", jobText, 17, 20_000)],
+        }),
+      ),
+    });
+  });
+  await app.open("/activity");
+  await expect.poll(async () => (await jobRows(browser)).length, { timeout: 10_000 }).toBe(1);
+  const activityIcon = await browser.evaluate(() => {
+    const icon = document.querySelector<SVGElement>(
+      '[data-testid="activity-job"] svg[data-icon="job"]',
+    );
+    return icon === null
+      ? null
+      : { width: icon.getAttribute("width"), height: icon.getAttribute("height") };
+  });
+  expect(activityIcon).toEqual({ width: "18", height: "18" });
+  await app.screenshot("activity-job-row");
+});
+
 test("an MCP event notice shows the server, event and payload", async ({
   app,
   browser,
@@ -425,6 +514,7 @@ test("an interrupted run keeps its partial reply and shows a warning-toned chip"
     const computed = {
       classes: node.className,
       text: node.textContent ?? "",
+      warningIcon: node.querySelector('[data-icon="warning"]') !== null,
       background: style.backgroundColor,
       warningBackground: warning.backgroundColor,
       color: style.color,
@@ -436,7 +526,8 @@ test("an interrupted run keeps its partial reply and shows a warning-toned chip"
     return computed;
   });
   expect(chip).not.toBeNull();
-  expect(chip?.text ?? "").toContain("⚠");
+  expect(chip?.warningIcon).toBe(true);
+  expect(chip?.text ?? "").not.toContain("⚠");
   expect(chip?.background).toBe(chip?.warningBackground);
   expect(chip?.color).toBe(chip?.warningColor);
   expect(chip?.border).toBe(chip?.warningBorder);

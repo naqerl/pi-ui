@@ -173,12 +173,12 @@ test("a queued MCP notice renders as a blurred chip", async () => {
   assert.deepEqual(item.notice, {
     kind: MCP_NOTICE_ENTRY_KIND,
     label: "MCP events",
-    glyph: "↯",
+    glyph: "mcp",
   });
 
   const markup = render(pendingQueuedMessage(item), () => undefined);
   assert.match(markup, /data-pending-queue="true"/);
-  assert.match(markup, /↯/);
+  assert.match(markup, /data-icon="mcp"/);
   assert.match(markup, /MCP events/);
   assert.match(markup, /1 queued/);
   assert.doesNotMatch(markup, /MCP event data follows/);
@@ -190,7 +190,7 @@ test("a queued MCP notice renders as a blurred chip", async () => {
   assert.doesNotMatch(markup, /\bbg-surface\b/);
   assert.doesNotMatch(markup, /\bopacity-60\b/);
   assert.match(markup, /aria-label="cancel"/);
-  assert.match(markup, />×</);
+  assert.match(markup, /data-icon="close"/);
 });
 
 test("an immediate MCP event queues as a chip while the agent reads the envelope", async () => {
@@ -201,7 +201,7 @@ test("an immediate MCP event queues as a chip while the agent reads the envelope
   assert.deepEqual(item.notice, {
     kind: MCP_NOTICE_ENTRY_KIND,
     label: "MCP events",
-    glyph: "↯",
+    glyph: "mcp",
   });
 
   const markup = render(pendingQueuedMessage(item), () => undefined);
@@ -375,7 +375,7 @@ test("a queued batch chip counts the events it carries", () => {
     id: "batch-delivery",
     text,
     createdAt: AT,
-    notice: { kind: MCP_NOTICE_ENTRY_KIND, label: "MCP events", glyph: "↯" },
+    notice: { kind: MCP_NOTICE_ENTRY_KIND, label: "MCP events", glyph: "mcp" },
   };
   const message = pendingQueuedMessage(item);
   assert.equal(message.queueCount, 10);
@@ -442,7 +442,7 @@ test("a burst of one notice kind is one chip that cancels every id", async () =>
 
   const markup = render(message, () => undefined);
   assert.equal((markup.match(/data-testid="queued-notice-chip"/g) ?? []).length, 1);
-  assert.match(markup, /↯/);
+  assert.match(markup, /data-icon="mcp"/);
   assert.match(markup, /MCP events/);
   assert.match(markup, /3 queued/);
   assert.match(markup, /aria-label="cancel"/);
@@ -459,7 +459,7 @@ test("a burst of one notice kind is one chip that cancels every id", async () =>
   assert.ok(button !== null);
   await button.props.onClick?.();
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(cancelled, ["1", "2", "3"], "the × removes the whole group");
+  assert.deepEqual(cancelled, ["1", "2", "3"], "the close icon removes the whole group");
 });
 
 test("a human queued message breaks a notice run without moving", () => {
@@ -501,9 +501,9 @@ test("two notice kinds stay separate chips", () => {
 
   const mcp = render(groupedMessage(groups, 0));
   const job = render(groupedMessage(groups, 1));
-  assert.match(mcp, /↯/);
-  assert.doesNotMatch(mcp, /⚙/);
-  assert.match(job, /⚙/);
+  assert.match(mcp, /data-icon="mcp"/);
+  assert.doesNotMatch(mcp, /data-icon="job"/);
+  assert.match(job, /data-icon="job"/);
   assert.match(job, /Background job/);
   assert.doesNotMatch(job, /MCP events/);
 });
@@ -534,7 +534,7 @@ test("a status notice queues as an MCP chip and keeps the model text", async () 
   assert.deepEqual(item.notice, {
     kind: MCP_NOTICE_ENTRY_KIND,
     label: "MCP status",
-    glyph: "↯",
+    glyph: "mcp",
   });
 
   const submission = submissions[0] as {
@@ -550,7 +550,7 @@ test("a status notice queues as an MCP chip and keeps the model text", async () 
 
   const markup = render(pendingQueuedMessage(item), () => undefined);
   assert.match(markup, /data-testid="queued-notice-chip"/);
-  assert.match(markup, /↯/);
+  assert.match(markup, /data-icon="mcp"/);
   assert.match(markup, /MCP status/);
   assert.doesNotMatch(markup, /subscription status follows/);
 });
@@ -586,11 +586,11 @@ test("a background-job notice uses the same chip", async () => {
   assert.deepEqual(item.notice, {
     kind: JOB_NOTICE_ENTRY_KIND,
     label: "Background job",
-    glyph: "⚙",
+    glyph: "job",
   });
 
   const job = render(pendingQueuedMessage(item), () => undefined);
-  assert.match(job, /⚙/);
+  assert.match(job, /data-icon="job"/);
   assert.match(job, /Background job/);
   assert.match(job, /1 queued/);
   assert.doesNotMatch(job, /\[background job j12 finished\]/);

@@ -7,18 +7,60 @@ export const QUEUE_ENTRY_KIND = "ui.queue";
 /** Pending queued messages sort after the running turn and its pending steers, oldest first. */
 export const PENDING_QUEUE_ORDER = Number.MAX_SAFE_INTEGER;
 
-/** The glyph a machine notice of this entry kind shows, in the queue and once placed. */
-export function queuedNoticeGlyph(kind: string): string {
-  const name = kind.toLowerCase().replace(/^ui[.-]/, "");
-  if (name.startsWith("mcp")) return "↯";
-  if (name.startsWith("job")) return "⚙";
-  if (name.startsWith("delegate")) return "◈";
-  if (name.startsWith("idle")) return "◷";
-  if (name.startsWith("task-decision")) return "✓";
-  if (name.startsWith("memory")) return "✎";
-  if (name.startsWith("operator")) return "◇";
-  return "⚠";
+const NOTICE_ICON_NAMES = [
+  "job",
+  "delegate",
+  "mcp",
+  "idle",
+  "decision-approved",
+  "decision-declined",
+  "memory",
+  "operator",
+  "warning",
+] as const satisfies readonly string[];
+
+/** The icon a notice kind renders, both as a queued chip and once placed. */
+export type NoticeIconName = (typeof NOTICE_ICON_NAMES)[number];
+
+const NOTICE_ICON_NAME_SET: ReadonlySet<string> = new Set(NOTICE_ICON_NAMES);
+
+/** True for a stored value this client knows how to render. */
+export function isNoticeIconName(value: unknown): value is NoticeIconName {
+  return typeof value === "string" && NOTICE_ICON_NAME_SET.has(value);
 }
+
+/**
+ * The stable icon name for a machine notice kind. The server stores this name and the
+ * client resolves it to a local component, so shared code never imports client icons.
+ */
+export function noticeIconName(kind: string, decision?: "approved" | "declined"): NoticeIconName {
+  const name = kind.toLowerCase().replace(/^ui[.-]/, "");
+  if (name.startsWith("mcp")) return "mcp";
+  if (name.startsWith("job")) return "job";
+  if (name.startsWith("delegate")) return "delegate";
+  if (name.startsWith("idle")) return "idle";
+  if (name.startsWith("task-decision") || name.startsWith("decision")) {
+    return decision === "declined" ? "decision-declined" : "decision-approved";
+  }
+  if (name.startsWith("memory")) return "memory";
+  if (name.startsWith("operator")) return "operator";
+  return "warning";
+}
+
+/** Use a validated stored icon name, falling back to the kind's current icon. */
+export function resolveNoticeIconName(
+  name: string | undefined,
+  kind: string,
+  decision?: "approved" | "declined",
+): NoticeIconName {
+  return isNoticeIconName(name) ? name : noticeIconName(kind, decision);
+}
+
+/** The queued-chip form of the same kind-to-icon mapping. */
+export const queuedNoticeIcon = noticeIconName;
+
+/** Older name for the same mapping, kept for callers that predate the icon names. */
+export const queuedNoticeGlyph = noticeIconName;
 
 /** The stable key of a queued message. Older snapshots may not carry one. */
 export function queuedKey(item: QueuedMessage): string {

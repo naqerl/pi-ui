@@ -17,6 +17,7 @@ import {
   MIN_ZOOM,
   zoomAt,
 } from "./diagram-viewer";
+import { CloseIcon, MinusIcon } from "./icons";
 
 const TOOLBAR_BUTTON =
   "theme-radius min-h-8 border border-foreground/15 bg-background px-2.5 py-1 font-mono text-[11px] leading-4 text-foreground hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40 disabled:opacity-40";
@@ -340,7 +341,7 @@ export function DiagramViewer({ id, revision, source, svg, onClose }: DiagramVie
               onClick={onClose}
               className="-mr-1 shrink-0 rounded-md px-2 py-1 font-mono text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
             >
-              ✕
+              <CloseIcon size={16} />
             </button>
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
@@ -368,7 +369,7 @@ export function DiagramViewer({ id, revision, source, svg, onClose }: DiagramVie
               disabled={view.zoom <= MIN_ZOOM}
               className={TOOLBAR_BUTTON}
             >
-              −
+              <MinusIcon size={14} />
             </button>
             <button
               type="button"

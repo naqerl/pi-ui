@@ -33,7 +33,7 @@ import {
   type TaskDecisionNoticeRecord,
   taskDecisionPrompt,
 } from "../shared/notices.js";
-import { QUEUE_ENTRY_KIND, queuedNoticeGlyph, queueKeyFromEntryData } from "../shared/queue.js";
+import { QUEUE_ENTRY_KIND, queuedNoticeIcon, queueKeyFromEntryData } from "../shared/queue.js";
 import {
   QUIET_AFTER_MS as DEFAULT_QUIET_AFTER_MS,
   type DurableRunFacts,
@@ -1189,7 +1189,7 @@ export class ChatService {
         : {
             kind: options.entry.kind,
             label: entryNoticeLabel(options.entry.kind, options.entry.label),
-            glyph: queuedNoticeGlyph(options.entry.kind),
+            glyph: queuedNoticeIcon(options.entry.kind),
           };
     if (startsRun) {
       const marker: RunMarker = {
@@ -1905,7 +1905,7 @@ export class ChatService {
             notice: {
               kind: MCP_NOTICE_ENTRY_KIND,
               label: "MCP events",
-              glyph: queuedNoticeGlyph(MCP_NOTICE_ENTRY_KIND),
+              glyph: queuedNoticeIcon(MCP_NOTICE_ENTRY_KIND),
             },
           },
           submission,

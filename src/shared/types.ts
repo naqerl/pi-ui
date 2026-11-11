@@ -30,7 +30,7 @@ export interface QueuedNotice {
   kind: string;
   /** Short chip text, such as `MCP events`; never the full notice body. */
   label: string;
-  /** The kind's glyph, so a pending chip matches the notice it becomes. */
+  /** The kind's icon name, so a pending chip matches the notice it becomes. */
   glyph: string;
 }
 
