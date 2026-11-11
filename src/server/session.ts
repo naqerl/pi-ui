@@ -35,6 +35,8 @@ import {
   operatorNoticeSummary,
   parseNotice,
   type TaskDecisionNoticeDetails,
+  type TaskDecisionNoticeRecord,
+  taskDecisionPrompt,
   taskDecisionSummary,
 } from "../shared/notices.js";
 import { QUEUE_ENTRY_KIND, queueKeyFromEntryData } from "../shared/queue.js";
@@ -175,6 +177,22 @@ const TaskDecisionEntry = defineEntry<{
 }>("ui.task-decision");
 
 export const TASK_DECISION_ENTRY_KIND = TaskDecisionEntry.kind;
+
+/**
+ * The model-facing half of a proposal decision. The visible notice is appended
+ * immediately as a display-only write; this entry carries the prompt, so a busy
+ * conversation reads the decision at its next boundary without showing it twice.
+ */
+const TaskDecisionPromptEntry = defineEntry<{
+  proposalId: string;
+  taskId: string;
+  taskTitle: string;
+  decision: "approved" | "declined";
+  text: string;
+  createdAt: string;
+}>("ui.task-decision-prompt");
+
+export const TASK_DECISION_PROMPT_ENTRY_KIND = TaskDecisionPromptEntry.kind;
 
 /** A notify_operator call. It carries no model message and shows as a chat chip. */
 const OperatorNoticeEntry = defineEntry<{
@@ -1174,6 +1192,43 @@ export function assistantMessageFromEntry(entry: EntryRecord): ChatMessage | nul
     isError: errorText.length > 0,
     ...(spend !== undefined && !hasThinking && !hasToolCall ? { usage: spend } : {}),
   };
+}
+
+/**
+ * Appends a proposal decision as a display-only notice. Durable places it even
+ * while another turn runs, so the operator sees the approval immediately; the
+ * model-facing prompt follows separately at the next boundary.
+ */
+export async function appendTaskDecisionNotice(
+  conversation: Conversation,
+  record: TaskDecisionNoticeRecord,
+): Promise<ChatMessage | undefined> {
+  const createdAt = new Date().toISOString();
+  await conversation.commit(
+    (tx) =>
+      tx.appendEntry(TaskDecisionEntry, conversation.id, {
+        data: {
+          proposalId: record.proposalId,
+          taskId: record.taskId,
+          taskTitle: record.taskTitle,
+          decision: record.decision,
+          text: taskDecisionPrompt(record),
+          createdAt,
+        },
+      }),
+    SESSION_CONTEXT,
+  );
+  const context = await conversation.context(SESSION_CONTEXT);
+  const entry = [...context.entries]
+    .reverse()
+    .find(
+      (candidate) =>
+        candidate.kind === TaskDecisionEntry.kind &&
+        isRecord(candidate.data) &&
+        candidate.data.proposalId === record.proposalId &&
+        candidate.data.createdAt === createdAt,
+    );
+  return entry === undefined ? undefined : buildTranscript([entry]).messages[0];
 }
 
 /**

@@ -92,6 +92,7 @@ import {
   appendMcpNotice,
   appendMemoryWriteNotice,
   appendOperatorNotice,
+  appendTaskDecisionNotice,
   assistantMessageFromEntry,
   buildTranscript,
   contextUsage,
@@ -105,6 +106,7 @@ import {
   SESSION_CONTEXT,
   summarizeUsage,
   TASK_DECISION_ENTRY_KIND,
+  TASK_DECISION_PROMPT_ENTRY_KIND,
   toolActivityFromEntry,
 } from "./session.js";
 import type { SseFrame } from "./sse.js";
@@ -216,6 +218,8 @@ interface SubmitOptions {
   entry?: InputEntry & { label?: string };
   /** Stable key from the client (or a restart) so a pending bubble keeps its id. */
   queueKey?: string;
+  /** Keep an internal entry out of the pending chip list when its notice is already recorded. */
+  queuedNotice?: false;
 }
 
 /** `PI_UI_QUIET_AFTER_MS` shortens the quiet threshold for tests. */
@@ -1280,7 +1284,7 @@ export class ChatService {
     const requestId =
       options.requestId ?? (pendingKey === undefined ? undefined : queueRequestId(pendingKey));
     const notice =
-      options.entry === undefined
+      options.entry === undefined || options.queuedNotice === false
         ? undefined
         : {
             kind: options.entry.kind,
@@ -1373,6 +1377,7 @@ export class ChatService {
           ...(pendingKey === undefined ? {} : { key: pendingKey }),
           ...(requestId === undefined ? {} : { requestId }),
           ...(notice === undefined ? {} : { notice }),
+          ...(options.queuedNotice === false ? { hidden: true } : {}),
           ...(attachments.length > 0 ? { attachments } : {}),
         },
         submission,
@@ -1425,6 +1430,7 @@ export class ChatService {
           ...(pendingKey === undefined ? {} : { key: pendingKey }),
           ...(requestId === undefined ? {} : { requestId }),
           ...(notice === undefined ? {} : { notice }),
+          ...(options.queuedNotice === false ? { hidden: true } : {}),
           ...(attachments.length > 0 ? { attachments } : {}),
         },
         submission,
@@ -2349,21 +2355,39 @@ export class ChatService {
     this.taskDecisions.add(key);
     try {
       const context = await this.conversation.context(SESSION_CONTEXT);
-      const recorded = context.entries.some(
+      const decisions = context.entries.filter(
         (entry) =>
           entry.kind === TASK_DECISION_ENTRY_KIND &&
           isRecord(entry.data) &&
           entry.data.proposalId === key,
       );
-      if (recorded) return;
+      if (decisions.length === 0) {
+        // The notice is a display-only write, so durable places it even while another
+        // turn runs. The user sees the decision now, not when that turn ends.
+        const message = await appendTaskDecisionNotice(this.conversation, record);
+        if (message !== undefined) {
+          this.hub.broadcast({ event: "notice", data: { message } satisfies StreamNotice });
+        }
+      }
+      const prompted =
+        context.entries.some(
+          (entry) =>
+            entry.kind === TASK_DECISION_PROMPT_ENTRY_KIND &&
+            isRecord(entry.data) &&
+            entry.data.proposalId === key,
+        ) ||
+        // Entries written before the notice and prompt were split carried the prompt themselves.
+        decisions.some((entry) => entry.model !== undefined && entry.model.length > 0);
+      if (prompted) return;
       const text = taskDecisionPrompt(record);
       const createdAt = new Date().toISOString();
       await this.submit(text, "queue", {
-        // The decision entry and its queue placement share one durable admission key.
+        // The prompt is separate from the visible notice, so it can wait for a busy
+        // turn without hiding the chip. The proposal id still makes it idempotent.
         requestId: decisionRequestId(key),
+        queuedNotice: false,
         entry: {
-          kind: TASK_DECISION_ENTRY_KIND,
-          label: record.decision === "approved" ? "Proposal approved" : "Proposal declined",
+          kind: TASK_DECISION_PROMPT_ENTRY_KIND,
           data: {
             proposalId: record.proposalId,
             taskId: record.taskId,

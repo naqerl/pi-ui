@@ -804,7 +804,9 @@ export function useChat(options: UseChatOptions = {}) {
     const heldIds = new Set(messages.map((message) => message.id));
     // Drop any queued copy already placed before grouping, so a burst whose first
     // notice just landed does not hide the notices still waiting behind it.
-    const pending = queue.filter((item) => !heldIds.has(queuedMessageId(item)));
+    const pending = queue.filter(
+      (item) => item.hidden !== true && !heldIds.has(queuedMessageId(item)),
+    );
     for (const group of groupQueuedMessages(pending)) {
       const message = pendingQueuedMessage(group.item, group);
       items.push({ kind: "message", order: message.order, message });

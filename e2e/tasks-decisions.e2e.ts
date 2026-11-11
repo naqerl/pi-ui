@@ -318,6 +318,65 @@ test("approving a proposal tells the model with its id and title, as a notice", 
   }
 });
 
+test("an approval chip appears during another held turn and opens its task", {
+  timeout: 120_000,
+}, async ({ app, browser, screen }) => {
+  const tag = Date.now();
+  const title = `Approval chip during a turn ${tag}`;
+  const rationale = "An approval must be visible while the turn that was already running is held.";
+  let releaseTurn: (() => void) | undefined;
+  let proposal: Proposal | undefined;
+  await app.open("/");
+  proposal = await createProposal(browser, title, rationale);
+  expect(proposal.id).not.toBe("");
+  releaseTurn = await startSlowTurn(browser);
+  try {
+    expect(await decide(browser, proposal.id, "approved")).toBe(200);
+    const summary = `proposal ${proposal.id} approved as ${proposal.id} · ${title}`;
+    await expect
+      .poll(
+        () =>
+          browser.evaluate(() =>
+            [
+              ...document.querySelectorAll<HTMLElement>(
+                '[data-testid="chat-notice"][data-notice-kind="decision"] [data-testid="chat-notice-summary"]',
+              ),
+            ].map((node) => node.textContent ?? ""),
+          ),
+        { timeout: 15_000 },
+      )
+      .toContain(summary);
+    // The unrelated bash turn is still running when the decision chip appears.
+    expect(await runState(browser)).toBe("running");
+    expect(await decisionBubbles(browser)).toBe(0);
+
+    await screen
+      .getByRole("button", { name: new RegExp(title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")) })
+      .tap();
+    await expect(screen.getByTestId("notice-dialog")).toBeVisible();
+    await expect
+      .poll(
+        () =>
+          browser.evaluate(
+            () => document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? "",
+          ),
+        { timeout: 5_000 },
+      )
+      .toBe("tasks");
+    await screen.getByTestId("notice-dialog-close").tap();
+    await expect(screen.getByTestId("task-detail")).toBeVisible();
+    await expect(screen.getByTestId("task-detail")).toHaveAttribute("aria-label", title);
+    await expect(screen.getByTestId("task-title")).toHaveText(title);
+  } finally {
+    releaseTurn?.();
+    await expect
+      .poll(() => runState(browser), { timeout: 30_000 })
+      .not.toBe("running")
+      .catch(() => undefined);
+    if (proposal !== undefined) await removeProposal(browser, title).catch(() => undefined);
+  }
+});
+
 test("declining a proposal tells the model once, as a notice and not a user bubble", async ({
   app,
   browser,
