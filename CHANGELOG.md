@@ -1,3 +1,16 @@
+## 1.6.146
+
+### Fixed
+
+- The task list keeps its scrollbar on the column edge, so a long title can no longer push it into
+  the list content.
+- A queued or approved message is delivered to the agent as soon as it can run, instead of waiting
+  for the next nudge to pick it up.
+- The working state, the activity list and run errors come from the server's own state rather than a
+  client-side timer that could sit on stale information.
+- A stream event older than the restore grace is dropped however it arrives, so a restored
+  subscription cannot deliver history from before its own start.
+
 ## 1.6.145
 
 ### Changed
