@@ -18,26 +18,26 @@ the state an operator is in when the composer is usable. A cold first
 backend warm-up and is not attributed to this change. The table below is the
 same-script warm before/after comparison.
 
-| Step | Before | After |
-| --- | ---: | ---: |
-| idle send: POST acknowledged | 33.4 | 27.8 |
-| idle send: run starts | 243.5 | 234.6 |
-| idle send: assistant reply visible | 668.3 | 657.9 |
-| approval: PATCH acknowledged | 5.4 | 12.9 |
-| approval: tasks ledger pushed | 6.3 | 28.0 |
-| approval: decision chip pushed | none before the 60 s run ended | 27.9 |
-| approval: run starts | 29.8 | 27.9 |
+| Step                               |                         Before | After |
+| ---------------------------------- | -----------------------------: | ----: |
+| idle send: POST acknowledged       |                           33.4 |  27.8 |
+| idle send: run starts              |                          243.5 | 234.6 |
+| idle send: assistant reply visible |                          668.3 | 657.9 |
+| approval: PATCH acknowledged       |                            5.4 |  12.9 |
+| approval: tasks ledger pushed      |                            6.3 |  28.0 |
+| approval: decision chip pushed     | none before the 60 s run ended |  27.9 |
+| approval: run starts               |                           29.8 |  27.9 |
 
 ## After, raw trace (ms since page start)
 
-| Step | Start | End | Delta |
-| --- | ---: | ---: | ---: |
-| idle send request leaves the client | 2822.8 | 2854.0 (202 acknowledged) | 31.2 |
-| acknowledgement → run starts | 2854.0 | 3060.8 | 206.8 |
-| run starts → fake model reply pushed | 3060.8 | 3478.2 | 417.4 |
-| approval request leaves the client | 7962.4 | 7977.3 (200 acknowledged) | 14.9 |
-| approval acknowledgement → decision chip pushed | 7977.3 | 7996.1 | 18.8 |
-| approval → decision chip / task ledger / run start | 7962.4 | 7996.1–7996.2 | 33.7–33.8 |
+| Step                                               |  Start |                       End |     Delta |
+| -------------------------------------------------- | -----: | ------------------------: | --------: |
+| idle send request leaves the client                | 2822.8 | 2854.0 (202 acknowledged) |      31.2 |
+| acknowledgement → run starts                       | 2854.0 |                    3060.8 |     206.8 |
+| run starts → fake model reply pushed               | 3060.8 |                    3478.2 |     417.4 |
+| approval request leaves the client                 | 7962.4 | 7977.3 (200 acknowledged) |      14.9 |
+| approval acknowledgement → decision chip pushed    | 7977.3 |                    7996.1 |      18.8 |
+| approval → decision chip / task ledger / run start | 7962.4 |             7996.1–7996.2 | 33.7–33.8 |
 
 The 417 ms row is the fake model's streamed reply, not pipeline work. Every
 queue, decision and push step after the acknowledgement is under 250 ms, and
