@@ -51,6 +51,7 @@ import {
 import { type DurableSessionOptions, openDurableSession, SESSION_CONTEXT } from "./session.js";
 import { StreamHub } from "./stream-hub.js";
 import { TaskActivityTracker } from "./task-activity.js";
+import { TaskAgentError, TaskAgentManager, type TaskAgentSession } from "./task-agent.js";
 import type { TaskBridge } from "./task-tools.js";
 import { TaskError, TaskStore, taskDurationStats, taskReopenStats } from "./tasks.js";
 import { liveDataDirInTestError } from "./test-mode.js";
@@ -169,6 +170,7 @@ For a self-contained investigation, review or implementation that should not use
 
 The dashboard page (the Stats tab, left of chat) is yours to arrange for the user: dashboard_get shows it, dashboard_upsert adds or changes a widget (built-in pi-ui stats, a poll script that fetches JSON, or data you push with dashboard_push), dashboard_remove deletes one and dashboard_layout places them. Widgets only display data. Poll scripts read secrets from env; never put a token in a widget.`;
 const instructions = composeInstructions(baseInstructions, memoryBlock);
+const taskAgentPrompt = buildPiSystemPrompt(cwd, catalog.runtime, ["read", "bash"]);
 const boot = await openDurableSession({
   cwd,
   models: catalog.runtime as unknown as DurableSessionOptions["models"],
@@ -305,6 +307,17 @@ boot.mcp.setObserver((notice) => {
   return undefined;
 });
 await chat.start();
+const taskAgents = new TaskAgentManager({
+  dataDir,
+  cwd,
+  models: catalog.runtime,
+  model: catalog.model,
+  store: taskStore,
+  publish: (ledger) => {
+    taskBridge.publish(ledger);
+  },
+  baseInstructions: await taskAgentPrompt,
+});
 function builtinJobs() {
   return jobs.list().map((job) => ({
     id: job.id,
@@ -706,6 +719,13 @@ function taskFailure(c: Context, error: unknown) {
   return c.text("Could not update tasks", 500);
 }
 
+function taskAgentFailure(c: Context, error: unknown) {
+  if (error instanceof TaskAgentError) return c.text(error.message, error.status as 400);
+  if (error instanceof TaskError) return c.text(error.message, error.status as 400);
+  console.error("[pi] task agent failed", error);
+  return c.text("Could not update the task agent", 500);
+}
+
 app.post("/api/tasks", async (c) => {
   let body: unknown;
   try {
@@ -863,7 +883,14 @@ app.patch("/api/tasks/:id", async (c) => {
     }
   }
   try {
-    return c.json(publishTasks(await taskStore.update(c.req.param("id"), patch)));
+    const id = c.req.param("id");
+    const ledger = await taskStore.update(id, patch);
+    if (ledger.tasks.find((task) => task.id === id)?.status === "done") {
+      await taskAgents.stopRun(id).catch((error: unknown) => {
+        console.error(`[pi] could not stop the task agent for ${id}`, error);
+      });
+    }
+    return c.json(publishTasks(ledger));
   } catch (error) {
     return taskFailure(c, error);
   }
@@ -871,10 +898,108 @@ app.patch("/api/tasks/:id", async (c) => {
 
 app.delete("/api/tasks/:id", async (c) => {
   try {
-    return c.json(publishTasks(await taskStore.remove(c.req.param("id"))));
+    const id = c.req.param("id");
+    const ledger = await taskStore.remove(id);
+    await taskAgents.remove(id).catch((error: unknown) => {
+      console.error(`[pi] could not remove the task agent for ${id}`, error);
+    });
+    return c.json(publishTasks(ledger));
   } catch (error) {
     return taskFailure(c, error);
   }
+});
+
+app.get("/api/tasks/:id/chat", async (c) => {
+  try {
+    return c.json(await taskAgents.snapshot(c.req.param("id")));
+  } catch (error) {
+    return taskAgentFailure(c, error);
+  }
+});
+
+app.post("/api/tasks/:id/chat", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.text("Expected a JSON body", 400);
+  }
+  const text =
+    typeof body === "object" && body !== null && "text" in body && typeof body.text === "string"
+      ? body.text
+      : "";
+  try {
+    return c.json(await taskAgents.submit(c.req.param("id"), text), 202);
+  } catch (error) {
+    return taskAgentFailure(c, error);
+  }
+});
+
+app.post("/api/tasks/:id/chat/stop", async (c) => {
+  try {
+    const id = c.req.param("id");
+    await taskAgents.ensure(id);
+    await taskAgents.stopRun(id);
+    return c.json(await taskAgents.snapshot(id));
+  } catch (error) {
+    return taskAgentFailure(c, error);
+  }
+});
+
+app.get("/api/tasks/:id/chat/stream", (c) => {
+  c.header("X-Accel-Buffering", "no");
+  const id = c.req.param("id");
+  return streamSSE(c, async (stream) => {
+    let tail = Promise.resolve();
+    const enqueue = (write: () => Promise<unknown>): Promise<void> => {
+      const run = tail.then(write).then(() => undefined);
+      tail = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      return run;
+    };
+    const client = {
+      send: (frame: { event: string; data: unknown }) =>
+        enqueue(() => stream.writeSSE({ event: frame.event, data: JSON.stringify(frame.data) })),
+    };
+    let session: TaskAgentSession;
+    try {
+      session = await taskAgents.ensure(id);
+    } catch (error) {
+      const message = error instanceof TaskAgentError ? error.message : "Unknown task";
+      await stream.writeSSE({ event: "error", data: JSON.stringify({ error: message }) });
+      return;
+    }
+    session.hub.add(client);
+    const heartbeat = setInterval(() => {
+      void enqueue(async () => {
+        await stream.write(": heartbeat\n\n");
+        await stream.writeSSE({
+          event: "liveness",
+          data: JSON.stringify({ at: new Date().toISOString() }),
+        });
+      });
+    }, 20_000);
+    const closed = new Promise<void>((resolveClosed) => {
+      stream.onAbort(resolveClosed);
+      if (c.req.raw.signal.aborted) {
+        resolveClosed();
+      } else {
+        c.req.raw.signal.addEventListener("abort", () => resolveClosed(), { once: true });
+      }
+    });
+    try {
+      await client.send({ event: "liveness", data: { at: new Date().toISOString() } });
+      for (const frame of session.replayFrames()) {
+        await client.send(frame);
+      }
+      await closed;
+    } finally {
+      clearInterval(heartbeat);
+      session.hub.remove(client);
+    }
+  });
 });
 
 app.post("/api/message", async (c) => {
@@ -1243,6 +1368,7 @@ async function shutdown(): Promise<void> {
   dashboard.dispose();
   try {
     await dashboard.flush();
+    await taskAgents.close();
     await taskStore.close();
     await chat.close();
     await boot.mcp.close();

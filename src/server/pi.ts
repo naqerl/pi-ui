@@ -22,6 +22,7 @@ const TOOLS = ["read", "bash", "edit", "write"];
 export async function buildPiSystemPrompt(
   cwd: string,
   modelRuntime: ModelRuntime,
+  tools: readonly string[] = TOOLS,
 ): Promise<string> {
   const agentDir = getAgentDir();
   const resourceLoader = new DefaultResourceLoader({
@@ -41,7 +42,7 @@ export async function buildPiSystemPrompt(
     sessionManager,
     resourceLoader,
     modelRuntime,
-    tools: TOOLS,
+    tools: [...tools],
   });
 
   try {
