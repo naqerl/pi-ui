@@ -128,6 +128,8 @@ export interface QueuedMessage {
   requestId?: string;
   /** A machine notice queued as a chip instead of a user bubble. */
   notice?: QueuedNotice;
+  /** Internal prompt that must not paint a pending bubble; its visible notice is already placed. */
+  hidden?: boolean;
 }
 
 export interface ToolActivity {

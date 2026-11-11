@@ -17,6 +17,7 @@ import { formatDateTime, formatTime } from "../shared/time";
 import type { ChatMessage } from "../shared/types";
 import { CloseIcon, NoticeIcon } from "./icons";
 import { cn } from "./lib/utils";
+import { useTaskLink } from "./task-link";
 
 /** The instant a notice is about: the newest MCP event, or when the notice was recorded. */
 function noticeTimestamp(message: ChatMessage, notice: ChatNotice): string {
@@ -109,6 +110,9 @@ export function NoticeLine({
   onSteer?: (text: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const link = useTaskLink();
+  const taskId =
+    notice.kind === "decision" && notice.decision === "approved" ? notice.taskId : undefined;
   const timestamp = noticeTimestamp(message, notice);
   const time = noticeClock(message, notice);
   const label = noticeLabel(notice);
@@ -123,7 +127,12 @@ export function NoticeLine({
         kind={notice.kind}
         title={label}
         dialog
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          // A decision is about one task: opening its chip also selects that task
+          // behind the dialog, so closing the dialog shows the work it approved.
+          if (taskId !== undefined) link?.openTask(taskId);
+          setOpen(true);
+        }}
         tone={
           notice.kind === "interrupted" ? "warning" : failed(notice) ? "destructive" : "default"
         }
