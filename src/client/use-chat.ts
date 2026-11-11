@@ -27,12 +27,14 @@ import type {
   ActivityItem,
   ChatMessage,
   ContextUsage,
+  DelegateRunView,
   DiagramRef,
   McpEventsState,
   McpStatus,
   MessageMode,
   ModelOption,
   QueuedMessage,
+  RunError,
   RunState,
   Snapshot,
   StreamActivity,
@@ -229,6 +231,11 @@ export function useChat(options: UseChatOptions = {}) {
   );
 
   const [runState, setRunState] = useState<RunState>("idle");
+  const [runError, setRunError] = useState<RunError | null>(null);
+  /** Transport loss is shown by the same header, but never used to guess idle. */
+  const [connectionError, setConnectionError] = useState<RunError | null>(null);
+  const [dismissedErrors, setDismissedErrors] = useState<ReadonlySet<string>>(() => new Set());
+  const [delegates, setDelegates] = useState<DelegateRunView[]>([]);
   const [queue, setQueue] = useState<QueuedMessage[]>([]);
   const [mcp, setMcp] = useState<McpStatus>({ servers: [], unavailable: [] });
   const [usage, setUsage] = useState<UsageSummary | null>(null);
@@ -354,6 +361,8 @@ export function useChat(options: UseChatOptions = {}) {
         setLiveTools((current) => current.filter((item) => !persistedActivityIds.has(item.id)));
       }
       setRunState(snapshot.run);
+      if (snapshot.runError !== undefined) setRunError(snapshot.runError);
+      if (snapshot.delegates !== undefined) setDelegates(snapshot.delegates);
       setQueue(snapshot.queue);
       setSteers((current) =>
         rebuildSteersFromSnapshot(
@@ -422,7 +431,7 @@ export function useChat(options: UseChatOptions = {}) {
   useEffect(() => {
     void refreshState();
     const source = new EventSource("/api/stream");
-    let offlineTimer: ReturnType<typeof setTimeout> | undefined;
+    let active = true;
     const refreshWhenVisible = () => {
       if (document.visibilityState === "visible") void refreshState();
     };
@@ -441,8 +450,7 @@ export function useChat(options: UseChatOptions = {}) {
       });
     };
     source.onopen = () => {
-      if (offlineTimer !== undefined) clearTimeout(offlineTimer);
-      offlineTimer = undefined;
+      setConnectionError(null);
       // A new process counts its stream revisions from 1 again.
       const revisions = resetStreamRevisions();
       draftRevision.current = revisions.draft;
@@ -450,16 +458,26 @@ export function useChat(options: UseChatOptions = {}) {
       void refreshState();
     };
     source.onerror = () => {
-      if (source.readyState === EventSource.CLOSED) {
-        reportOfflineSteers();
-        return;
-      }
-      if (offlineTimer !== undefined) return;
-      offlineTimer = setTimeout(() => {
-        offlineTimer = undefined;
-        reportOfflineSteers();
-      }, 3_000);
+      if (!active) return;
+      if (source.readyState === EventSource.CLOSED) reportOfflineSteers();
+      setConnectionError({
+        id: `connection-${Date.now().toString(36)}`,
+        class: "ConnectionError",
+        message: "Lost the connection to the server; reconnecting.",
+        at: new Date().toISOString(),
+      });
     };
+
+    // The server writes this on every heartbeat and on a new stream. Receiving
+    // one is proof it is alive, so an old transport error cannot claim offline.
+    source.addEventListener("liveness", () => {
+      setConnectionError(null);
+    });
+
+    source.addEventListener("delegates", (event) => {
+      const data = parseEvent<DelegateRunView[]>(event as MessageEvent<string>);
+      if (Array.isArray(data)) setDelegates(data);
+    });
 
     source.addEventListener("theme", (event) => {
       const data = parseEvent<StreamTheme>(event as MessageEvent<string>);
@@ -523,6 +541,7 @@ export function useChat(options: UseChatOptions = {}) {
       const data = parseEvent<StreamRunState>(event as MessageEvent<string>);
       if (!data) return;
       setRunState(data.state);
+      setRunError(data.runError ?? null);
       if (data.queue !== undefined) setQueue(data.queue);
       if (data.steers !== undefined) {
         setSteers((current) => mergeLiveSteers(current, data.steers ?? []));
@@ -638,7 +657,7 @@ export function useChat(options: UseChatOptions = {}) {
     });
 
     return () => {
-      if (offlineTimer !== undefined) clearTimeout(offlineTimer);
+      active = false;
       if (retryTimer.current !== undefined) {
         clearTimeout(retryTimer.current);
         retryTimer.current = undefined;
@@ -650,14 +669,6 @@ export function useChat(options: UseChatOptions = {}) {
       draftBatch.clear();
     };
   }, [applyDraft, applyEvents, applyTasks, draftBatch, refreshState]);
-
-  useEffect(() => {
-    if (runState !== "running") return;
-    const timer = setInterval(() => {
-      void refreshState();
-    }, 2000);
-    return () => clearInterval(timer);
-  }, [runState, refreshState]);
 
   // A snapshot, SSE message, queue update or older page can confirm a pending send at any
   // time. Retire the optimistic copy then, not only when its own fetch response arrives.
@@ -939,8 +950,29 @@ export function useChat(options: UseChatOptions = {}) {
     }
   }, [refreshState]);
 
+  const visibleError = useMemo(() => {
+    for (const candidate of [connectionError, runError]) {
+      if (candidate !== null && !dismissedErrors.has(candidate.id)) return candidate;
+    }
+    return null;
+  }, [connectionError, dismissedErrors, runError]);
+
+  const dismissRunError = useCallback((id: string) => {
+    setDismissedErrors((current) => new Set(current).add(id));
+    setConnectionError((current) => (current?.id === id ? null : current));
+    setRunError((current) => (current?.id === id ? null : current));
+    void fetch("/api/run/error/dismiss", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    }).catch(() => undefined);
+  }, []);
+
   return {
     timeline,
+    runError: visibleError,
+    dismissRunError,
+    delegates,
     running: runState === "running",
     thinking: runState === "running" && isThinking(draftThinking, draftText),
     interrupted: runState === "interrupted",

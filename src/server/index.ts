@@ -352,7 +352,10 @@ dashboard.setHost({
     hub.broadcast({ event: "dashboard", data: state });
   },
 });
-jobs.onChange(() => dashboard.broadcast());
+jobs.onChange(() => {
+  dashboard.broadcast();
+  hub.broadcast({ event: "jobs", data: builtinJobs() });
+});
 jobs.setNotifier((job, tail) => {
   void chat.submitJobNotice(jobNotice(job, tail)).catch((error: unknown) => {
     console.error(`[pi] background job ${job.id} message failed`, error);
@@ -364,6 +367,7 @@ jobs.setQuietNotifier((job, tail) => {
   });
 });
 delegates.setNotifier((text) => chat.submitDelegateNotice(text));
+delegates.onChange(() => hub.broadcast({ event: "delegates", data: delegates.list() }));
 const mcpOutbox = new McpOutbox(resolve(dataDir, "mcp-outbox.json"), (item) =>
   chat.submitMcpDelivery(item),
 );
@@ -542,6 +546,21 @@ app.post("/api/theme", async (c) => {
   const data = { slug: theme.slug, colors: theme.colors };
   hub.broadcast({ event: "theme", data });
   return c.json(data);
+});
+
+app.post("/api/run/error/dismiss", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    body = undefined;
+  }
+  const id =
+    typeof body === "object" && body !== null && "id" in body && typeof body.id === "string"
+      ? body.id
+      : undefined;
+  chat.dismissRunError(id);
+  return c.json({ ok: true, runError: chat.getRunStatus().runError ?? null });
 });
 
 app.get("/api/state", async (c) => {
@@ -1016,7 +1035,15 @@ app.get("/api/stream", (c) => {
     hub.add(client);
 
     const heartbeat = setInterval(() => {
-      void enqueue(() => stream.write(": heartbeat\n\n"));
+      // The event, not the comment alone, tells the browser the server's own
+      // liveness is still current and clears a stale connection header.
+      void enqueue(async () => {
+        await stream.write(": heartbeat\n\n");
+        await stream.writeSSE({
+          event: "liveness",
+          data: JSON.stringify({ at: new Date().toISOString() }),
+        });
+      });
     }, 20_000);
 
     const closed = new Promise<void>((resolveClosed) => {
@@ -1037,9 +1064,12 @@ app.get("/api/stream", (c) => {
       } catch (error) {
         console.error("[pi] theme snapshot failed", error);
       }
+      await client.send({ event: "liveness", data: { at: new Date().toISOString() } });
       await client.send({ event: "run.state", data: chat.getRunStatus() });
       await client.send({ event: "tasks", data: taskView() });
       await client.send({ event: "dashboard", data: dashboard.state() });
+      await client.send({ event: "delegates", data: delegates.list() });
+      await client.send({ event: "jobs", data: builtinJobs() });
       const currentModel = chat.currentModel();
       if (currentModel !== null) {
         await client.send({ event: "model", data: currentModel });

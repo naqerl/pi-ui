@@ -309,6 +309,7 @@ export class DelegateManager {
   private readonly writes = new Map<string, Promise<void>>();
   private indexWrite: Promise<void> = Promise.resolve();
   private notifier: ((text: string) => void | Promise<void>) | undefined;
+  private changeListener: (() => void) | undefined;
   private activeCount = 0;
   private shuttingDown = false;
 
@@ -350,6 +351,11 @@ export class DelegateManager {
 
   setNotifier(notifier: ((text: string) => void | Promise<void>) | undefined): void {
     this.notifier = notifier;
+  }
+
+  /** Called whenever a run is queued, starts or finishes; the activity page renders this list. */
+  onChange(listener: (() => void) | undefined): void {
+    this.changeListener = listener;
   }
 
   list(): DelegateRunView[] {
@@ -982,6 +988,11 @@ export class DelegateManager {
   }
 
   private save(): void {
+    try {
+      this.changeListener?.();
+    } catch (error) {
+      console.error("[delegate] change listener failed", error);
+    }
     const runs: SerializedDelegateRun[] = [...this.runs.values()].map((run) => ({
       id: run.id,
       agent: run.agent,

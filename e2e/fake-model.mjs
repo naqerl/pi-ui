@@ -191,6 +191,8 @@ function cloudServers(req, res) {
 
 export function startFakeModelServer() {
   let origin = "";
+  // A retried call repeats the same prompt, so the marker keeps its own attempt count.
+  const failOnceAttempts = new Map();
   const server = createServer(async (req, res) => {
     if (req.method === "GET" && req.url?.startsWith("/example-cloud/v1/servers")) {
       cloudServers(req, res);
@@ -217,6 +219,18 @@ export function startFakeModelServer() {
     }
 
     const prompt = lastUserText(body);
+    const failOnce = prompt.match(/\bFAIL_ONCE[ _-]([A-Za-z0-9-]+)/)?.[1];
+    if (failOnce !== undefined) {
+      const attempts = (failOnceAttempts.get(failOnce) ?? 0) + 1;
+      failOnceAttempts.set(failOnce, attempts);
+      if (attempts === 1) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({ error: { message: "transient provider glitch requested by the test" } }),
+        );
+        return;
+      }
+    }
     if (
       prompt
         .replace(/<acp[^>]*>[^<]*<\/acp>\n?/g, "")

@@ -496,6 +496,19 @@ export interface TaskActivity {
   memoryWriteAt?: string | null;
 }
 
+/** A run-level failure the server saw, shown as one dismissible line above the chat. */
+export interface RunError {
+  /** Stable id so acknowledging one failure does not hide the next. */
+  id: string;
+  /** A short, stable class such as ModelError, ProviderError or ConnectionError. */
+  class: string;
+  /** One line, already shortened by the server. */
+  message: string;
+  /** The full multi-line error, opened on demand. */
+  detail?: string;
+  at: string;
+}
+
 export interface Snapshot {
   conversationId: string;
   /** The newest page of the transcript, or everything from the `from` the request asked for. */
@@ -506,6 +519,8 @@ export interface Snapshot {
   /** True when the transcript has messages older than `from`. */
   hasEarlier?: boolean;
   run: RunState;
+  /** The last run failure, until acknowledged. */
+  runError?: RunError | null;
   queue: QueuedMessage[];
   /** Steers waiting for the run's next turn boundary, oldest first. */
   steers?: QueuedMessage[];
@@ -593,6 +608,8 @@ export interface StreamDraftSync {
 
 export interface StreamRunState {
   state: RunState;
+  /** The last run failure, until acknowledged. */
+  runError?: RunError | null;
   queue?: QueuedMessage[];
   steers?: QueuedMessage[];
 }
