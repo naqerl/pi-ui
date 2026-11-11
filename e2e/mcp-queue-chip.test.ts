@@ -24,7 +24,6 @@ import {
   mergeQueuedNotices,
   pendingQueuedMessage,
   queuedMessageIds,
-  queuedNoticeGlyph,
 } from "../src/shared/queue.js";
 import type { ChatMessage, QueuedMessage } from "../src/shared/types.js";
 
@@ -141,7 +140,7 @@ function notice(id: string, kind: string, label: string): QueuedMessage {
     id,
     text: "the full notice text the agent reads",
     createdAt: AT,
-    notice: { kind, label, glyph: queuedNoticeGlyph(kind) },
+    notice: { kind, label },
   };
 }
 
@@ -173,12 +172,11 @@ test("a queued MCP notice renders as a blurred chip", async () => {
   assert.deepEqual(item.notice, {
     kind: MCP_NOTICE_ENTRY_KIND,
     label: "MCP events",
-    glyph: "↯",
   });
 
   const markup = render(pendingQueuedMessage(item), () => undefined);
   assert.match(markup, /data-pending-queue="true"/);
-  assert.match(markup, /↯/);
+  assert.match(markup, /data-icon="zap"/);
   assert.match(markup, /MCP events/);
   assert.match(markup, /1 queued/);
   assert.doesNotMatch(markup, /MCP event data follows/);
@@ -201,7 +199,6 @@ test("an immediate MCP event queues as a chip while the agent reads the envelope
   assert.deepEqual(item.notice, {
     kind: MCP_NOTICE_ENTRY_KIND,
     label: "MCP events",
-    glyph: "↯",
   });
 
   const markup = render(pendingQueuedMessage(item), () => undefined);
@@ -375,7 +372,7 @@ test("a queued batch chip counts the events it carries", () => {
     id: "batch-delivery",
     text,
     createdAt: AT,
-    notice: { kind: MCP_NOTICE_ENTRY_KIND, label: "MCP events", glyph: "↯" },
+    notice: { kind: MCP_NOTICE_ENTRY_KIND, label: "MCP events" },
   };
   const message = pendingQueuedMessage(item);
   assert.equal(message.queueCount, 10);
@@ -442,7 +439,7 @@ test("a burst of one notice kind is one chip that cancels every id", async () =>
 
   const markup = render(message, () => undefined);
   assert.equal((markup.match(/data-testid="queued-notice-chip"/g) ?? []).length, 1);
-  assert.match(markup, /↯/);
+  assert.match(markup, /data-icon="zap"/);
   assert.match(markup, /MCP events/);
   assert.match(markup, /3 queued/);
   assert.match(markup, /aria-label="cancel"/);
@@ -501,9 +498,9 @@ test("two notice kinds stay separate chips", () => {
 
   const mcp = render(groupedMessage(groups, 0));
   const job = render(groupedMessage(groups, 1));
-  assert.match(mcp, /↯/);
-  assert.doesNotMatch(mcp, /⚙/);
-  assert.match(job, /⚙/);
+  assert.match(mcp, /data-icon="zap"/);
+  assert.doesNotMatch(mcp, /data-icon="settings"/);
+  assert.match(job, /data-icon="settings"/);
   assert.match(job, /Background job/);
   assert.doesNotMatch(job, /MCP events/);
 });
@@ -534,7 +531,6 @@ test("a status notice queues as an MCP chip and keeps the model text", async () 
   assert.deepEqual(item.notice, {
     kind: MCP_NOTICE_ENTRY_KIND,
     label: "MCP status",
-    glyph: "↯",
   });
 
   const submission = submissions[0] as {
@@ -550,7 +546,7 @@ test("a status notice queues as an MCP chip and keeps the model text", async () 
 
   const markup = render(pendingQueuedMessage(item), () => undefined);
   assert.match(markup, /data-testid="queued-notice-chip"/);
-  assert.match(markup, /↯/);
+  assert.match(markup, /data-icon="zap"/);
   assert.match(markup, /MCP status/);
   assert.doesNotMatch(markup, /subscription status follows/);
 });
@@ -586,11 +582,10 @@ test("a background-job notice uses the same chip", async () => {
   assert.deepEqual(item.notice, {
     kind: JOB_NOTICE_ENTRY_KIND,
     label: "Background job",
-    glyph: "⚙",
   });
 
   const job = render(pendingQueuedMessage(item), () => undefined);
-  assert.match(job, /⚙/);
+  assert.match(job, /data-icon="settings"/);
   assert.match(job, /Background job/);
   assert.match(job, /1 queued/);
   assert.doesNotMatch(job, /\[background job j12 finished\]/);

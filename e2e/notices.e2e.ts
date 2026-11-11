@@ -425,6 +425,7 @@ test("an interrupted run keeps its partial reply and shows a warning-toned chip"
     const computed = {
       classes: node.className,
       text: node.textContent ?? "",
+      icon: node.querySelector('svg[data-icon="alert"]') !== null,
       background: style.backgroundColor,
       warningBackground: warning.backgroundColor,
       color: style.color,
@@ -436,7 +437,8 @@ test("an interrupted run keeps its partial reply and shows a warning-toned chip"
     return computed;
   });
   expect(chip).not.toBeNull();
-  expect(chip?.text ?? "").toContain("⚠");
+  expect(chip?.icon).toBe(true);
+  expect(chip?.text ?? "").not.toContain("⚠");
   expect(chip?.background).toBe(chip?.warningBackground);
   expect(chip?.color).toBe(chip?.warningColor);
   expect(chip?.border).toBe(chip?.warningBorder);

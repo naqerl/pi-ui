@@ -7,19 +7,6 @@ export const QUEUE_ENTRY_KIND = "ui.queue";
 /** Pending queued messages sort after the running turn and its pending steers, oldest first. */
 export const PENDING_QUEUE_ORDER = Number.MAX_SAFE_INTEGER;
 
-/** The glyph a machine notice of this entry kind shows, in the queue and once placed. */
-export function queuedNoticeGlyph(kind: string): string {
-  const name = kind.toLowerCase().replace(/^ui[.-]/, "");
-  if (name.startsWith("mcp")) return "↯";
-  if (name.startsWith("job")) return "⚙";
-  if (name.startsWith("delegate")) return "◈";
-  if (name.startsWith("idle")) return "◷";
-  if (name.startsWith("task-decision")) return "✓";
-  if (name.startsWith("memory")) return "✎";
-  if (name.startsWith("operator")) return "◇";
-  return "⚠";
-}
-
 /** The stable key of a queued message. Older snapshots may not carry one. */
 export function queuedKey(item: QueuedMessage): string {
   return item.key ?? `q-${item.id}`;
