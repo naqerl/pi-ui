@@ -1,3 +1,11 @@
+## 1.6.148
+
+### Fixed
+
+- Task-card metadata stays inside the card: the times and the id chip truncate with a full-value
+  title instead of overflowing, and the project name keeps its 40 % cap.
+- The proposal approval row uses inline SVG icons for Dismiss and Approve instead of text glyphs, so
+  it follows the theme like the rest of the UI.
 ## 1.6.147
 
 ### Fixed
