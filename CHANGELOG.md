@@ -1,3 +1,11 @@
+## 1.6.145
+
+### Changed
+
+- The background-job queue and the notice chips use inline SVG icons instead of emoji glyphs, so
+  they follow the colour theme and cannot appear as an empty square on a platform without that
+  font.
+
 ## 1.6.144
 
 ### Fixed
