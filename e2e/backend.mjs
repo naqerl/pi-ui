@@ -83,6 +83,10 @@ if (!live) {
   process.env.PI_DASHBOARD_MIN_INTERVAL_MS = "500";
   // A short quiet threshold, so the stalled-run watchdog and its strip run within a test.
   process.env.PI_UI_QUIET_AFTER_MS ??= "3000";
+  // A forced model failure should reach its error header in seconds, not minutes.
+  process.env.PI_RETRY_BASE_MS ??= "50";
+  process.env.PI_RETRY_MAX_DELAY_MS ??= "100";
+  process.env.PI_RETRY_BUDGET_MS ??= "1000";
 }
 
 process.env.DATA_DIR = dataDir;

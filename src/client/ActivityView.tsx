@@ -13,6 +13,8 @@ interface ActivityViewProps {
   ready: boolean;
   /** Restrict the list to one timeline group; defaults to the page's ?run= value. */
   run?: string | null;
+  /** Delegate runs as the server pushed them; this page never polls for state. */
+  delegates?: DelegateRunView[];
   /** Render as the body of a modal instead of a standalone page. */
   dialog?: { onClose: () => void; titleId: string };
 }
@@ -21,6 +23,7 @@ interface ActivityDialogProps {
   timeline: TimelineItem[];
   ready: boolean;
   run: string | null;
+  delegates?: DelegateRunView[];
   onClose: () => void;
 }
 
@@ -277,37 +280,13 @@ function DelegateRunRow({ run }: { run: DelegateRunView }) {
   );
 }
 
-function DelegateRuns() {
-  const [runs, setRuns] = useState<DelegateRunView[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    let active = true;
-    const load = async () => {
-      try {
-        const response = await fetch("/api/delegates", { cache: "no-store" });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = (await response.json()) as unknown;
-        if (!active) return;
-        setRuns(Array.isArray(data) ? (data as DelegateRunView[]) : []);
-        setError(null);
-      } catch (cause) {
-        if (active) setError(String(cause));
-      }
-    };
-    void load();
-    const timer = setInterval(() => void load(), 2_000);
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
-  }, []);
-  if (runs.length === 0 && error === null) return null;
+function DelegateRuns({ runs }: { runs: DelegateRunView[] }) {
+  if (runs.length === 0) return null;
   return (
     <section data-testid="delegate-runs" className="mb-4">
       <h2 className="mb-1 font-mono text-[11px] uppercase tracking-wide text-muted-foreground">
         Delegates
       </h2>
-      {error !== null && <p className="font-mono text-xs text-destructive">{error}</p>}
       <div>
         {runs.map((run) => (
           <DelegateRunRow key={run.id} run={run} />
@@ -352,7 +331,13 @@ function ActivityRow({ activity }: { activity: ActivityItem }) {
 }
 
 /** The run's activity list, shared by the standalone page and the chat's modal. */
-export function ActivityView({ timeline, ready, run: runProp, dialog }: ActivityViewProps) {
+export function ActivityView({
+  timeline,
+  ready,
+  run: runProp,
+  delegates,
+  dialog,
+}: ActivityViewProps) {
   const locationRun = new URLSearchParams(window.location.search).get("run");
   const run = runProp === undefined ? locationRun : runProp;
   const activities = useMemo(() => {
@@ -410,7 +395,7 @@ export function ActivityView({ timeline, ready, run: runProp, dialog }: Activity
       </div>
       <div data-testid="activity-scroll" className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-4">
         {!ready && <p className="font-mono text-xs text-muted-foreground">Loading…</p>}
-        <DelegateRuns />
+        <DelegateRuns runs={delegates ?? []} />
         {ready && activities.length === 0 && (
           <p className="font-mono text-xs text-muted-foreground">
             {run === null ? "No activity yet." : "No activity in this run."}
@@ -434,7 +419,7 @@ export function ActivityView({ timeline, ready, run: runProp, dialog }: Activity
 }
 
 /** The activity view in a native modal over the chat. */
-export function ActivityDialog({ timeline, ready, run, onClose }: ActivityDialogProps) {
+export function ActivityDialog({ timeline, ready, run, delegates, onClose }: ActivityDialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
 
@@ -469,7 +454,13 @@ export function ActivityDialog({ timeline, ready, run, onClose }: ActivityDialog
       }}
       className="m-0 mt-auto flex max-h-[85vh] w-full max-w-full flex-col overflow-hidden rounded-t-xl border border-foreground/15 bg-surface p-0 text-foreground shadow-xl backdrop:bg-black/50 sm:m-auto sm:w-[min(48rem,calc(100vw-2rem))] sm:rounded-xl"
     >
-      <ActivityView timeline={timeline} ready={ready} run={run} dialog={{ onClose, titleId }} />
+      <ActivityView
+        timeline={timeline}
+        ready={ready}
+        run={run}
+        delegates={delegates}
+        dialog={{ onClose, titleId }}
+      />
     </dialog>
   );
 }

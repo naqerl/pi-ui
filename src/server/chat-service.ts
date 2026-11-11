@@ -48,6 +48,7 @@ import {
   type ModelList,
   type ModelOption,
   type QueuedMessage,
+  type RunError,
   type RunState,
   type Snapshot,
   STEER_ENTRY_KIND,
@@ -436,6 +437,13 @@ function positiveEnv(name: string): number | undefined {
   return Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
+/** One line for the thin error header; the full text stays in the detail dialog. */
+function errorSummary(text: string, limit = 160): string {
+  const line = text.replace(/\s+/g, " ").trim();
+  if (line.length === 0) return "The run failed.";
+  return line.length <= limit ? line : `${line.slice(0, limit - 1)}…`;
+}
+
 /** Debug-gated submit breakdown: cheap enough to leave on for every send. */
 function logSubmitTiming(timing: {
   mediaMs: number;
@@ -579,6 +587,14 @@ export class ChatService {
   private retryStartedAt: number | undefined;
   /** How many retries this episode has already asked for. */
   private retryAttempts = 0;
+  /** The provider's last retry message, kept for the failure detail. */
+  private retryLastError = "";
+  /** The last run failure, until the operator acknowledges it. */
+  private runError: RunError | null = null;
+  private runErrorSequence = 0;
+  /** Which turn recorded the current failure, so a retry clears only its own attempt. */
+  private runTurn = 0;
+  private runErrorTurn: number | null = null;
   /** Guards the abort path so a burst of retry events abandons a turn once. */
   private abandoning = false;
   /** Guards the pre-boundary merge so a nested commit cannot start it twice. */
@@ -796,6 +812,13 @@ export class ChatService {
         `[pi] conversation watch ended (${end.kind}); reattaching`,
         end.kind === "failed" || end.kind === "listener_error" ? end.error : "",
       );
+      if (end.kind === "failed" || end.kind === "listener_error") {
+        this.noteRunError(
+          "ConnectionError",
+          "Lost the connection to the agent; reconnecting.",
+          String(end.error),
+        );
+      }
       void this.reattachStream();
     });
   }
@@ -804,6 +827,11 @@ export class ChatService {
     stream.start(async (call) => {
       if (call.kind === "failed") {
         console.error("[pi] conversation view failed", call.error);
+        this.noteRunError(
+          "ConnectionError",
+          "The agent stream reported a failure.",
+          String(call.error),
+        );
         return;
       }
       try {
@@ -828,6 +856,7 @@ export class ChatService {
         return;
       } catch (error) {
         console.error("[pi] could not reattach the conversation view", error);
+        this.noteRunError("ConnectionError", "Could not reconnect to the agent.", String(error));
       }
     }
   }
@@ -912,6 +941,7 @@ export class ChatService {
   getRunStatus(): StreamRunState {
     return {
       state: this.runState,
+      runError: this.runError,
       queue: this.queueItems(),
       steers: this.steerItems(),
     };
@@ -991,6 +1021,7 @@ export class ChatService {
       from: transcript.from,
       hasEarlier: transcript.hasEarlier,
       run: this.runState,
+      runError: this.runError,
       queue: this.queueItems(),
       steers: this.steerItems(),
       usage: summarizeUsage(usage),
@@ -1227,7 +1258,14 @@ export class ChatService {
         SESSION_CONTEXT,
       );
     } catch (error) {
-      if (startsRun) this.setRunState(this.marker === undefined ? "idle" : "interrupted");
+      if (startsRun) {
+        this.setRunState(this.marker === undefined ? "idle" : "interrupted");
+        this.noteRunError(
+          "RunError",
+          "The message could not start a run.",
+          error instanceof Error ? (error.stack ?? error.message) : String(error),
+        );
+      }
       throw error;
     } finally {
       timing.conversationMs = Date.now() - conversationStart;
@@ -2571,6 +2609,8 @@ export class ChatService {
           inbox: event.inbox.length,
           submitting: this.submitting,
         });
+        // A fresh view is proof the agent connection is back. A model failure stays.
+        this.clearRunError("ConnectionError");
         const revision = this.bumpDraft();
         const frames: SseFrame[] = consumed.map((message) => ({
           event: "message.done",
@@ -2778,6 +2818,10 @@ export class ChatService {
         const now = Date.now();
         this.retryStartedAt ??= now;
         this.retryAttempts += 1;
+        this.retryLastError = event.errorMessage;
+        // A failure already reported for this turn is being retried, not the end
+        // of the run. Clear it now so a transient attempt never leaves a header.
+        this.clearCurrentTurnModelError();
         const budget = retryBudgetMs();
         console.warn(
           `[pi] retrying the model request (attempt ${event.attempt}): ${event.errorMessage}`,
@@ -2790,6 +2834,7 @@ export class ChatService {
 
       case "auto_retry_end":
         // The provider answered again, so the next failure starts a fresh budget.
+        this.clearCurrentTurnModelError();
         this.resetRetryBudget();
         return;
 
@@ -2948,8 +2993,10 @@ export class ChatService {
     }
     this.runState = state;
     this.idleNudge.noteActivity();
-    if (state === "running") this.taskActivity?.runStarted();
-    else this.taskActivity?.runEnded(state === "interrupted");
+    if (state === "running") {
+      this.runTurn += 1;
+      this.taskActivity?.runStarted();
+    } else this.taskActivity?.runEnded(state === "interrupted");
     if (state === "running") {
       this.lastEventAt = Date.now();
     } else {
@@ -2998,18 +3045,78 @@ export class ChatService {
       cost: number(message.usage?.cost?.total),
     });
     if (message.stopReason === "error") {
-      tracker.runFailed(
-        "error",
-        typeof message.errorMessage === "string" ? message.errorMessage : "model error",
-      );
+      const errorText =
+        typeof message.errorMessage === "string" && message.errorMessage.length > 0
+          ? message.errorMessage
+          : "model error";
+      tracker.runFailed("error", errorText);
+      // The failed attempt pi-durable commits before retrying is not a finished
+      // run; only a failure with no retry in flight is the turn's outcome.
+      if (this.retryStartedAt === undefined) {
+        this.noteRunError("ModelError", errorText, errorText);
+      }
     } else if (message.stopReason === "aborted") {
       tracker.runFailed("interrupted", "aborted");
     }
   }
 
+  /** Record a failure as the server saw it and push the thin header to every client. */
+  private noteRunError(errorClass: string, message: string, detail?: string): void {
+    const summary = errorSummary(message);
+    const fullDetail = detail?.trim();
+    const nextDetail = fullDetail === undefined || fullDetail.length === 0 ? undefined : fullDetail;
+    const current = this.runError;
+    if (current !== null && current.class === errorClass && current.message === summary) {
+      if (current.detail === nextDetail) return;
+      this.runError = {
+        ...current,
+        ...(nextDetail === undefined ? { detail: undefined } : { detail: nextDetail }),
+      };
+      this.broadcastRunError();
+      return;
+    }
+    this.runErrorSequence += 1;
+    this.runError = {
+      id: `run-error-${Date.now().toString(36)}-${this.runErrorSequence}`,
+      class: errorClass,
+      message: summary,
+      ...(nextDetail === undefined ? {} : { detail: nextDetail }),
+      at: new Date().toISOString(),
+    };
+    this.runErrorTurn = this.runTurn;
+    this.broadcastRunError();
+  }
+
+  /** Drop a ModelError recorded by an attempt this turn is still retrying. */
+  private clearCurrentTurnModelError(): void {
+    if (this.runError?.class !== "ModelError" || this.runErrorTurn !== this.runTurn) return;
+    this.clearRunError("ModelError");
+  }
+
+  private clearRunError(errorClass?: string): void {
+    if (this.runError === null) return;
+    if (errorClass !== undefined && this.runError.class !== errorClass) return;
+    this.runError = null;
+    this.runErrorTurn = null;
+    this.broadcastRunError();
+  }
+
+  dismissRunError(id?: string): void {
+    if (this.runError === null) return;
+    if (id !== undefined && this.runError.id !== id) return;
+    this.runError = null;
+    this.runErrorTurn = null;
+    this.broadcastRunError();
+  }
+
+  private broadcastRunError(): void {
+    this.hub.broadcast({ event: "run.state", data: this.getRunStatus() });
+  }
+
   private resetRetryBudget(): void {
     this.retryStartedAt = undefined;
     this.retryAttempts = 0;
+    this.retryLastError = "";
   }
 
   /**
@@ -3026,6 +3133,13 @@ export class ChatService {
         `[pi] giving up after ${attempts} retries in ${Math.round(spentMs / 1000)}s; stopping the turn`,
       );
       this.taskActivity?.runFailed("error", `the provider kept failing after ${attempts} retries`);
+      this.noteRunError(
+        "ProviderError",
+        retryGiveUpMessage(attempts, spentMs),
+        this.retryLastError === ""
+          ? `The provider kept failing after ${attempts} retries.`
+          : `The provider kept failing after ${attempts} retries.\nLast error: ${this.retryLastError}`,
+      );
       await this.conversation.abort(SESSION_CONTEXT);
       this.hub.broadcast({
         event: "notice",

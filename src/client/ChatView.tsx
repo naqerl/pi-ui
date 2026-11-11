@@ -21,9 +21,11 @@ import { formatDateTime, formatTime } from "../shared/time";
 import type {
   ActivityItem,
   ChatMessage,
+  DelegateRunView,
   MessageMode,
   QueuedMessage,
   QueuedNotice,
+  RunError,
   Task,
   TaskActivity,
   TaskLedger,
@@ -41,6 +43,7 @@ import { ATTACH_ACCEPT, mediaUrl, uploadMedia } from "./media-client";
 import { ChipButton, NoticeLine } from "./NoticeView";
 import { PiMenu } from "./PiMenu";
 import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
+import { RunErrorHeader } from "./RunErrorHeader";
 import type { ChatStats } from "./StatsView";
 import { createTask } from "./task-client";
 import { TaskLinkProvider } from "./task-link";
@@ -55,6 +58,11 @@ interface ChatViewProps {
   running: boolean;
   thinking: boolean;
   interrupted: boolean;
+  /** The server's last unacknowledged run failure, rendered as a thin header. */
+  runError?: RunError | null;
+  dismissRunError?: (id: string) => void;
+  /** Pushed by the server, so the activity page does not poll for it. */
+  delegates?: DelegateRunView[];
   ready: boolean;
   tasks: Task[];
   /** Measured run activity per task, from the ledger view. */
@@ -1413,6 +1421,9 @@ export function ChatView({
   running,
   thinking,
   interrupted,
+  runError,
+  dismissRunError,
+  delegates,
   ready,
   tasks,
   taskActivity,
@@ -1747,6 +1758,9 @@ export function ChatView({
       )}
 
       <div className="relative min-h-0 flex-1">
+        {runError !== undefined && runError !== null && dismissRunError !== undefined && (
+          <RunErrorHeader error={runError} onDismiss={dismissRunError} />
+        )}
         <div
           {...pager.pagerProps}
           data-testid="pager"
@@ -1893,7 +1907,9 @@ export function ChatView({
               {running ? (
                 <WorkingIndicator running={running} thinking={thinking} />
               ) : (
-                <span>idle</span>
+                // Idle is a server statement. Before the first snapshot the answer
+                // is not known yet, so do not paint a guess that can be wrong.
+                <span>{ready ? "idle" : "connecting"}</span>
               )}
             </div>
             <div
@@ -1957,6 +1973,7 @@ export function ChatView({
             timeline={timeline}
             ready={ready}
             run={activityRun}
+            delegates={delegates}
             onClose={closeActivity}
           />
         </Suspense>
