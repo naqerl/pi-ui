@@ -36,7 +36,7 @@ import { Button } from "./components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader } from "./components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
 import { haptic } from "./haptics";
-import { RefreshIcon } from "./icons";
+import { CheckIcon, CloseIcon, RefreshIcon } from "./icons";
 import { cn } from "./lib/utils";
 import { InlineMarkdown, Markdown, plainInline } from "./markdown";
 import { mediaUrl } from "./media-client";
@@ -928,7 +928,7 @@ function TaskIdChip({ id, className }: { id: string; className?: string }) {
       title={id}
       aria-label={`task ${id}`}
       className={cn(
-        "w-fit shrink-0 whitespace-nowrap font-mono text-[11px] leading-4 text-muted-foreground",
+        "w-fit max-w-full min-w-0 shrink-0 truncate whitespace-nowrap font-mono text-[11px] leading-4 text-muted-foreground",
         className,
       )}
     >
@@ -1297,24 +1297,26 @@ function ProposedTask({
           <Button
             variant="ghost"
             size="sm"
-            className="h-7 shrink-0 rounded-md px-2"
+            className="h-7 shrink-0 gap-1.5 rounded-md px-2"
             aria-label={`Dismiss ${plainInline(task.title)}`}
             onClick={(event) => {
               stop(event);
               onDismiss();
             }}
           >
+            <CloseIcon size={14} />
             Dismiss
           </Button>
           <Button
             size="sm"
-            className="h-7 shrink-0 rounded-md px-3"
+            className="h-7 shrink-0 gap-1.5 rounded-md px-3"
             aria-label={`Approve ${plainInline(task.title)}`}
             onClick={(event) => {
               stop(event);
               onApprove();
             }}
           >
+            <CheckIcon size={14} />
             Approve
           </Button>
         </span>
@@ -1362,19 +1364,24 @@ function TaskCardMeta({
 /** The compact created/closed clock on a task card; the detail keeps the long form. */
 export function TaskCardTimes({ task }: { task: Task }) {
   const created = formatTime(task.createdAt);
+  const createdFull = formatDateTime(task.createdAt);
   const closedAt =
     task.status === "done" && typeof task.completedAt === "string" ? task.completedAt : null;
   const closed = closedAt === null ? "" : formatTime(closedAt);
+  const closedFull = closedAt === null ? "" : formatDateTime(closedAt);
+  const title =
+    closedAt === null ? `Created ${createdFull}` : `Created ${createdFull} · Closed ${closedFull}`;
   return (
     <span
       data-testid="task-card-times"
-      className="inline-flex shrink-0 items-center gap-x-2 whitespace-nowrap text-xs leading-4 text-muted-foreground"
+      title={title}
+      className="inline-flex min-w-0 shrink items-center gap-x-2 whitespace-nowrap text-xs leading-4 text-muted-foreground"
     >
-      <time dateTime={task.createdAt} title={formatDateTime(task.createdAt)}>
+      <time dateTime={task.createdAt} title={createdFull} className="min-w-0 truncate">
         Created {created}
       </time>
       {closedAt !== null && (
-        <time dateTime={closedAt} title={formatDateTime(closedAt)}>
+        <time dateTime={closedAt} title={closedFull} className="min-w-0 truncate">
           Closed {closed}
         </time>
       )}

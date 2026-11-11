@@ -530,6 +530,7 @@ test("shows the single task list without filter tabs and groups done work by day
               id: "proposal",
               title: "A proposal",
               status: "proposed",
+              project: "pi-ui",
               parentId: null,
               blockedBy: [],
               createdAt: at(today),
@@ -554,6 +555,25 @@ test("shows the single task list without filter tabs and groups done work by day
   await expect(screen.getByTestId("proposal-proposal")).toBeVisible();
   await expect(screen.getByTestId("task-open-task")).toBeVisible();
   await expect(screen.getByTestId("task-blocked-task")).toBeVisible();
+  await expect(screen.getByTestId("task-project-label-proposal")).toHaveText("pi-ui");
+  await expect(screen.getByTestId("task-project-label-proposal")).toHaveAttribute("title", "pi-ui");
+
+  const approval = await browser.evaluate(() => {
+    const row = document.querySelector<HTMLElement>('[data-testid="proposal-decision"]');
+    const buttons = [...(row?.querySelectorAll("button") ?? [])];
+    return {
+      buttons: buttons.length,
+      icons: buttons.map((button) => button.querySelector("svg")?.getAttribute("data-icon") ?? ""),
+      row: row !== null && getComputedStyle(row).flexDirection === "row",
+      rightAligned: row !== null && getComputedStyle(row).justifyContent === "flex-end",
+    };
+  });
+  expect(approval).toEqual({
+    buttons: 2,
+    icons: ["close", "check"],
+    row: true,
+    rightAligned: true,
+  });
 
   const headers = await browser.evaluate(() => {
     const measure = (id: string) => {
