@@ -72,6 +72,25 @@ export async function chooseTaskAction(screen: TaskScreen, testId: string) {
   await screen.getByTestId(testId).tap();
 }
 
+/** Open the header project dropdown and return its text field. */
+export async function openTaskProject(screen: TaskScreen) {
+  const input = screen.getByTestId("task-project-input");
+  if ((await input.count()) === 0 || !(await input.isVisible())) {
+    const trigger = screen.getByTestId("task-header-project");
+    await expect(trigger).toBeVisible();
+    await trigger.tap();
+  }
+  await expect(input).toBeVisible();
+  return input;
+}
+
+/** Assert the header project trigger shows the current project (or No project). */
+export async function expectTaskProject(screen: TaskScreen, name: string) {
+  const trigger = screen.getByTestId("task-header-project");
+  await expect(trigger).toBeVisible();
+  await expect(trigger).toHaveText(name.length === 0 ? "No project" : `@${name}`);
+}
+
 /** Switch the mobile detail to the Chat tab. No-op when the tab is already selected or hidden. */
 export async function openTaskChatTab(screen: TaskScreen) {
   const tab = screen.getByTestId("task-tab-chat");

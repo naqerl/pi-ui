@@ -4,7 +4,9 @@ import {
   backToTaskList,
   chooseTaskAction,
   createOpenTask,
+  expectTaskProject,
   openNewTaskComposer,
+  openTaskProject,
 } from "./tasks-helpers";
 
 // The e2e server and its task store are shared by every test file: leave no projects behind.
@@ -114,7 +116,13 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
         browser.evaluate(() =>
           [...document.querySelectorAll("[data-testid^='task-project-']")]
             .map((item) => item.getAttribute("data-testid"))
-            .filter((id) => id !== "task-project-line"),
+            .filter(
+              (id) =>
+                id !== "task-project-line" &&
+                id !== "task-project-menu" &&
+                id !== "task-project-input" &&
+                id !== "task-project-clear",
+            ),
         ),
       { timeout: 15_000 },
     )
@@ -160,13 +168,13 @@ test("project suggestions come only from open tasks", { timeout: 300_000 }, asyn
   await expect(screen.getByTestId(`project-suggestion-${beta}`)).toBeVisible();
 
   await screen.getByRole("button", { name: `Open ${betaTitle}` }).click();
-  const betaProject = screen.getByRole("textbox", "Task project");
+  const betaProject = await openTaskProject(screen);
   await betaProject.fill("@");
   await expect(screen.getByTestId(`project-suggestion-${alpha}`)).toBeVisible();
   await expect(screen.getByTestId(`project-suggestion-${beta}`)).toBeVisible();
   await betaProject.fill(beta);
   await betaProject.press("Enter");
-  await expect(betaProject).toHaveValue(beta);
+  await expectTaskProject(screen, beta);
 
   // Closing the last alpha task removes its name from every suggestion list.
   await screen.getByRole("button", { name: `Open ${alphaTitle}` }).click();
@@ -177,11 +185,12 @@ test("project suggestions come only from open tasks", { timeout: 300_000 }, asyn
   await screen.getByRole("button", { name: `Open ${betaTitle}` }).click();
   await expect(screen.getByTestId("task-title")).toContainText(betaTitle);
   await expect(screen.getByTestId("task-agent-input")).toBeVisible();
-  await betaProject.fill("@");
+  const betaProjectAgain = await openTaskProject(screen);
+  await betaProjectAgain.fill("@");
   await expect(screen.getByTestId(`project-suggestion-${beta}`)).toBeVisible();
   await expect(screen.getByTestId(`project-suggestion-${alpha}`)).toHaveCount(0);
-  await betaProject.fill(beta);
-  await betaProject.press("Enter");
+  await betaProjectAgain.fill(beta);
+  await betaProjectAgain.press("Enter");
 
   await typeMention();
   await expect(screen.getByTestId(`project-suggestion-${beta}`)).toBeVisible();
@@ -193,12 +202,16 @@ test("project suggestions come only from open tasks", { timeout: 300_000 }, asyn
   await chooseTaskAction(screen, "task-detail-remove");
   await expect(screen.getByText(gammaTitle, { exact: true })).toHaveCount(0);
 
+  // Removing the open task clears the detail; reopen beta to keep the plan chat.
+  await screen.getByRole("button", { name: `Open ${betaTitle}` }).click();
+  await expect(screen.getByTestId("task-title")).toContainText(betaTitle);
   await typeMention();
   await expect(screen.getByTestId(`project-suggestion-${gamma}`)).toHaveCount(0);
   await expect(screen.getByTestId(`project-suggestion-${beta}`)).toBeVisible();
 
   await screen.getByRole("button", { name: `Open ${betaTitle}` }).click();
-  await screen.getByRole("textbox", "Task project").fill("@");
+  const betaProjectLater = await openTaskProject(screen);
+  await betaProjectLater.fill("@");
   await expect(screen.getByTestId(`project-suggestion-${gamma}`)).toHaveCount(0);
   await expect(screen.getByTestId(`project-suggestion-${beta}`)).toBeVisible();
 
@@ -264,7 +277,8 @@ test("a working task keeps its project in the vocabulary and spelling", async ({
   await expect(screen.getByTestId(`project-suggestion-${project}`)).toBeVisible();
 
   await screen.getByRole("button", { name: `Open ${title}` }).click();
-  await screen.getByRole("textbox", "Task project").fill("@");
+  const projectField = await openTaskProject(screen);
+  await projectField.fill("@");
   await expect(screen.getByTestId(`project-suggestion-${project}`)).toBeVisible();
 
   await removeTasks(browser, [title, second]);
@@ -300,7 +314,7 @@ test("subtasks take their parent's project and the detail edits it in place", as
 
   await screen.getByRole("button", { name: "Open Diff the tram routes" }).click();
   await expect(screen.getByTestId("task-project-line")).toBeVisible();
-  await expect(screen.getByRole("textbox", "Task project")).toHaveValue("citydiff");
+  await expectTaskProject(screen, "citydiff");
   await expect(screen.getByTestId("task-project")).toHaveCount(0);
 
   // The agent creates structure through the ledger; seed the child through the API.
@@ -323,15 +337,14 @@ test("subtasks take their parent's project and the detail edits it in place", as
     screen.getByTestId("task-project-citydiff").getByText("Map the stops", { exact: true }),
   ).toBeVisible();
   await screen.getByRole("button", { name: "Open Map the stops" }).click();
-  await expect(screen.getByRole("textbox", "Task project")).toHaveValue("citydiff");
+  await expectTaskProject(screen, "citydiff");
 
   await screen.getByRole("button", { name: "Open Water the plants" }).click();
   await expect(screen.getByTestId("task-project-line")).toBeVisible();
-  await expect(screen.getByRole("textbox", "Task project")).toHaveValue("");
-  await expect(screen.getByRole("textbox", "Task project")).toHaveAttribute(
-    "placeholder",
-    "No project",
-  );
+  await expectTaskProject(screen, "");
+  const emptyProject = await openTaskProject(screen);
+  await expect(emptyProject).toHaveValue("");
+  await expect(emptyProject).toHaveAttribute("placeholder", "No project");
 
   await removeTasks(browser, [
     "Map the stops",

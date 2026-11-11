@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { DEFAULT_NEW_TASK_TITLE } from "../shared/tasks";
 import type { ChatMessage, Task } from "../shared/types";
 import { Composer, MessageBubble } from "./ChatView";
@@ -7,15 +8,34 @@ import { FIXTURE_CHAT, FIXTURE_PLAN_ID } from "./task-detail-fixture";
 import { readTaskDetailFixture } from "./task-detail-query";
 import { useTaskChat } from "./use-task-chat";
 
+function useTaskComposerSlot(active: boolean): HTMLElement | null {
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    if (!active) {
+      setSlot(null);
+      return;
+    }
+    const read = () => document.getElementById("task-composer-slot");
+    setSlot(read());
+    const observer = new MutationObserver(() => setSlot(read()));
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [active]);
+  return slot;
+}
+
 export function TaskAgentChat({
   task,
   projects,
   variant = "pane",
+  composerTarget = "local",
 }: {
   task: Task;
   projects: string[];
   /** `pane` is the main-chat look: no card, bubbles, blurred composer. */
   variant?: "pane" | "flush";
+  /** `dock` portals the composer into the main-chat float footer. */
+  composerTarget?: "local" | "dock";
 }) {
   const done = task.status === "done";
   const chat = useTaskChat(task.id, done);
@@ -61,6 +81,35 @@ export function TaskAgentChat({
 
   const placeholderIdle =
     task.title === DEFAULT_NEW_TASK_TITLE ? "Describe the task to plan…" : "Message the task agent";
+  const dock = composerTarget === "dock";
+  const slot = useTaskComposerSlot(dock && !done);
+
+  const composer = done ? null : (
+    <Composer
+      tasksPage={false}
+      projectMentions
+      running={chat.run === "running"}
+      send={async (text, _mode, attachments) => {
+        const ok = await chat.send(text, attachments ?? []);
+        if (!ok && chat.error !== null) setComposerError(chat.error);
+        return ok;
+      }}
+      stop={chat.stop}
+      addTask={async () => false}
+      projects={projects}
+      error={composerError}
+      onDismissError={() => {
+        setComposerError(null);
+        chat.dismissError();
+      }}
+      textareaRef={inputRef}
+      inputTestId="task-agent-input"
+      sendTestId="task-agent-send"
+      attachTestId="task-agent-attach"
+      inputLabel="Task message"
+      placeholder={placeholderIdle}
+    />
+  );
 
   return (
     <div
@@ -85,34 +134,13 @@ export function TaskAgentChat({
           rows.map((message) => <MessageBubble key={message.id} message={message} />)
         )}
       </div>
-      {!done && (
-        <div className="glass-composer theme-radius shrink-0">
-          <Composer
-            tasksPage={false}
-            projectMentions
-            running={chat.run === "running"}
-            send={async (text, _mode, attachments) => {
-              const ok = await chat.send(text, attachments ?? []);
-              if (!ok && chat.error !== null) setComposerError(chat.error);
-              return ok;
-            }}
-            stop={chat.stop}
-            addTask={async () => false}
-            projects={projects}
-            error={composerError}
-            onDismissError={() => {
-              setComposerError(null);
-              chat.dismissError();
-            }}
-            textareaRef={inputRef}
-            inputTestId="task-agent-input"
-            sendTestId="task-agent-send"
-            attachTestId="task-agent-attach"
-            inputLabel="Task message"
-            placeholder={placeholderIdle}
-          />
-        </div>
-      )}
+      {dock
+        ? slot !== null && composer !== null
+          ? createPortal(composer, slot)
+          : null
+        : composer !== null && (
+            <div className="glass-composer theme-radius shrink-0">{composer}</div>
+          )}
     </div>
   );
 }

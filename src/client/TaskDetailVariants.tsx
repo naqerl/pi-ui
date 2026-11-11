@@ -1,4 +1,11 @@
-import { type KeyboardEvent, type ReactNode, type RefObject, useState } from "react";
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { TASK_BODY_MAX_LENGTH } from "../shared/tasks";
 import { formatDateTime } from "../shared/time";
 import type { Task, TaskLedger, TaskState, TaskTrace } from "../shared/types";
@@ -11,13 +18,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "./components/ui/dropdown-menu";
-import { MoreIcon, RefreshIcon } from "./icons";
+import { CloseIcon, MoreVerticalIcon, RefreshIcon } from "./icons";
 import { cn } from "./lib/utils";
 import { InlineMarkdown, Markdown } from "./markdown";
 import { mediaUrl } from "./media-client";
-import { type ProjectSuggestion, ProjectSuggestions } from "./ProjectSuggestions";
+import type { ProjectSuggestion } from "./ProjectSuggestions";
 import { TaskAgentChat } from "./TaskAgentChat";
-import { useTitleCardVariant } from "./task-detail-query";
 
 function shortId(id: string): string {
   return id.slice(0, 4);
@@ -108,6 +114,7 @@ export interface TaskDetailModel {
   onDismiss: () => void;
   onRemove: () => void;
   onLedger?: (ledger: TaskLedger) => void;
+  onMobileTabChange?: (tab: "plan" | "chat" | null) => void;
 }
 
 function ErrorLine({ children }: { children: ReactNode }) {
@@ -200,100 +207,121 @@ function TitleField({ model, className }: { model: TaskDetailModel; className?: 
   );
 }
 
-function ProjectField({ model }: { model: TaskDetailModel }) {
+function ProjectPicker({ model }: { model: TaskDetailModel }) {
   const {
     task,
-    wide,
     projectDraft,
     projectError,
-    projectMatches,
-    activeProject,
-    projectAnchor,
+    projects,
     setProjectDraft,
     setProjectError,
     setProjectActive,
     setProjectOpen,
     acceptProject,
-    saveProject,
   } = model;
+  const [open, setOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const current = (task.project ?? "").trim();
+  const query = projectDraft.trim().replace(/^@/, "");
+  const lowered = query.toLowerCase();
+  const matches =
+    lowered.length === 0
+      ? projects
+      : projects.filter((name) => name.toLowerCase().includes(lowered));
+  const exact = projects.some((name) => name.toLowerCase() === lowered);
+  const canCreate = query.length > 0 && !exact;
+  const label = current.length > 0 ? `@${current}` : "No project";
+
+  const openMenu = (next: boolean) => {
+    setOpen(next);
+    setProjectOpen(next);
+    if (next) {
+      setProjectDraft(current);
+      setProjectError(null);
+      setProjectActive(0);
+    }
+  };
+
   return (
-    <div className="flex min-w-0 flex-col gap-1" data-testid="task-project-line">
-      <div className="flex min-w-0 items-center gap-3">
-        <span className={cn("shrink-0 text-xs leading-4", QUIET)}>Project</span>
-        <div ref={projectAnchor} className="min-w-0 flex-1">
-          {projectMatches.length > 0 && (
-            <ProjectSuggestions
-              anchor={projectAnchor}
-              items={projectMatches}
-              active={activeProject}
-              onHover={setProjectActive}
-              onAccept={(item) => acceptProject(item.name)}
-            />
-          )}
-          <input
-            type="text"
+    <div className="min-w-0" data-testid="task-project-line">
+      <DropdownMenu open={open} onOpenChange={openMenu}>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            data-testid="task-header-project"
             aria-label="Task project"
-            data-testid="task-project-input"
-            value={projectDraft}
-            placeholder="No project"
-            aria-autocomplete="list"
-            aria-controls={projectMatches.length > 0 ? "project-suggestions" : undefined}
-            aria-activedescendant={
-              projectMatches.length > 0 ? `project-suggestion-${activeProject}` : undefined
-            }
-            onChange={(event) => {
-              setProjectDraft(event.target.value);
-              setProjectError(null);
-              setProjectActive(0);
-              setProjectOpen(true);
-            }}
-            onFocus={() => setProjectActive(0)}
-            onBlur={() => {
-              setProjectOpen(false);
-              void saveProject();
-            }}
-            onKeyDown={(event) => {
-              if (projectMatches.length > 0) {
-                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-                  event.preventDefault();
-                  const count = projectMatches.length;
-                  setProjectActive(
-                    (activeProject + (event.key === "ArrowDown" ? 1 : count - 1)) % count,
-                  );
-                  return;
-                }
-                if (event.key === "Enter" || event.key === "Tab") {
-                  event.preventDefault();
-                  const item = projectMatches[activeProject];
-                  if (item !== undefined) acceptProject(item.name);
-                  return;
-                }
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  setProjectOpen(false);
-                  return;
-                }
-              }
-              if (event.key === "Enter") {
-                event.preventDefault();
-                setProjectOpen(false);
-                void saveProject();
-              } else if (event.key === "Escape") {
-                event.preventDefault();
-                event.stopPropagation();
-                setProjectDraft(task.project ?? "");
+            className="max-w-[40vw] truncate rounded-md px-1 text-xs leading-4 outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-foreground"
+          >
+            {label}
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="start"
+          className="w-64 p-1"
+          data-testid="task-project-menu"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            inputRef.current?.focus();
+          }}
+        >
+          <div className="px-1 pb-1">
+            <input
+              ref={inputRef}
+              type="text"
+              aria-label="Task project"
+              data-testid="task-project-input"
+              value={projectDraft}
+              placeholder="No project"
+              onChange={(event) => {
+                setProjectDraft(event.target.value);
                 setProjectError(null);
-                setProjectOpen(false);
-              }
+                setProjectActive(0);
+              }}
+              onKeyDown={(event) => {
+                event.stopPropagation();
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  const next = query;
+                  if (next.length === 0) acceptProject("");
+                  else acceptProject(next);
+                  openMenu(false);
+                } else if (event.key === "Escape") {
+                  event.preventDefault();
+                  setProjectDraft(current);
+                  setProjectError(null);
+                  openMenu(false);
+                }
+              }}
+              className="h-11 w-full rounded-md border border-border bg-background px-2 text-sm leading-5 text-foreground outline-none placeholder:text-foreground/50 focus-visible:ring-1 focus-visible:ring-foreground"
+            />
+          </div>
+          <DropdownMenuItem
+            data-testid="task-project-clear"
+            onSelect={() => {
+              acceptProject("");
             }}
-            className={cn(
-              "w-full min-w-0 rounded-md border border-border bg-background px-2 text-sm leading-5 text-foreground outline-none placeholder:text-foreground/50 focus-visible:ring-1 focus-visible:ring-foreground",
-              wide ? "h-8" : "h-11",
-            )}
-          />
-        </div>
-      </div>
+          >
+            No project
+          </DropdownMenuItem>
+          {matches.map((name) => (
+            <DropdownMenuItem
+              key={name}
+              data-testid={`project-suggestion-${name}`}
+              onSelect={() => acceptProject(name)}
+            >
+              @{name}
+            </DropdownMenuItem>
+          ))}
+          {canCreate && (
+            <DropdownMenuItem
+              data-testid={`project-suggestion-${query}`}
+              onSelect={() => acceptProject(query)}
+            >
+              Create @{query}
+            </DropdownMenuItem>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
       {projectError !== null && <ErrorLine>{projectError}</ErrorLine>}
     </div>
   );
@@ -581,7 +609,7 @@ export function TaskActionsMenu({ model }: { model: TaskDetailModel }) {
           aria-label={`Actions for ${title}`}
           className={cn("shrink-0 rounded-md", !wide && "min-h-11 min-w-11")}
         >
-          <MoreIcon size={18} />
+          <MoreVerticalIcon size={18} />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" data-testid="task-detail-menu-content">
@@ -655,10 +683,7 @@ function MetaLine({
   return (
     <div
       data-testid="task-header-meta"
-      className={cn(
-        "flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs leading-4",
-        QUIET,
-      )}
+      className={cn("flex min-w-0 flex-nowrap items-center gap-x-2 text-xs leading-4", QUIET)}
     >
       <Badge
         data-testid="task-state"
@@ -681,9 +706,7 @@ function MetaLine({
       <span data-testid="task-detail-id" title={model.task.id} className="font-mono">
         {shortId(model.task.id)}
       </span>
-      {model.task.project !== undefined && model.task.project.length > 0 && (
-        <span data-testid="task-header-project">@{model.task.project}</span>
-      )}
+      <ProjectPicker model={model} />
       {includeCreated && (
         <time dateTime={model.task.createdAt} title={created}>
           {created}
@@ -693,130 +716,33 @@ function MetaLine({
   );
 }
 
-function TitleCard({
-  model,
-  variant,
-  tabs,
-}: {
-  model: TaskDetailModel;
-  variant: number;
-  tabs?: ReactNode;
-}) {
-  const back = !model.wide ? (
-    <Button
-      type="button"
-      variant="ghost"
-      size="sm"
-      data-testid="task-detail-back"
-      aria-label="Back to tasks"
-      onClick={model.onClose}
-      className="-ml-2 min-h-11 shrink-0 rounded-md px-3"
-    >
-      Back
-    </Button>
-  ) : null;
-  const menu = <TaskActionsMenu model={model} />;
-  const title = (className?: string) => (
-    <div className="min-w-0 flex-1">
-      <TitleField model={model} className={className} />
-    </div>
-  );
-
-  if (variant === 1) {
-    return (
-      <header data-titlecard="1" className="flex flex-col gap-1">
-        <div className="flex items-center gap-1">
-          {back}
-          {title("truncate")}
-          {menu}
-        </div>
-        <MetaLine model={model} />
-        {tabs}
-      </header>
-    );
-  }
-
-  if (variant === 3) {
-    return (
-      <header data-titlecard="3" className="flex flex-col gap-1">
-        <div className="flex items-center gap-1">
-          {back}
-          {title("truncate")}
-          {menu}
-        </div>
-        {tabs}
-      </header>
-    );
-  }
-
-  if (variant === 4) {
-    return (
-      <header data-titlecard="4" className="flex flex-col gap-1">
-        <div className="flex items-center gap-1">
-          {back}
-          {title("truncate")}
-          {tabs}
-          {menu}
-        </div>
-        <MetaLine model={model} />
-      </header>
-    );
-  }
-
-  if (variant === 5) {
-    return (
-      <header data-titlecard="5" className="flex flex-col gap-1">
-        <div className="flex items-start gap-1">
-          {back}
-          {title(
-            "[display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden",
-          )}
-          {menu}
-        </div>
-        <p
-          data-testid="task-header-meta"
-          className={cn("min-w-0 truncate text-xs leading-4", QUIET)}
-        >
-          <span data-testid="task-state">{model.badge}</span>
-          {" · "}
-          <span data-testid="task-detail-id">{shortId(model.task.id)}</span>
-          {model.task.project !== undefined && model.task.project.length > 0 && (
-            <>
-              {" · "}
-              <span data-testid="task-header-project">{model.task.project}</span>
-            </>
-          )}
-        </p>
-        {tabs}
-      </header>
-    );
-  }
-
+function TitleCard({ model, tabs }: { model: TaskDetailModel; tabs?: ReactNode }) {
   return (
-    <header data-titlecard="2" className="flex flex-col gap-1">
+    <header data-testid="task-header" className="bg-surface theme-radius flex flex-col gap-2 p-3">
       <div className="flex items-start gap-1">
-        {back}
         <div className="min-w-0 flex-1">
-          <TitleField
-            model={model}
-            className="[display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden"
-          />
-          <MetaLine model={model} />
+          <TitleField model={model} />
         </div>
-        {menu}
+        <TaskActionsMenu model={model} />
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          data-testid="task-detail-back"
+          aria-label="Close"
+          onClick={model.onClose}
+          className="min-h-11 min-w-11 shrink-0 rounded-md"
+        >
+          <CloseIcon size={18} />
+        </Button>
       </div>
+      <MetaLine model={model} />
       {tabs}
     </header>
   );
 }
 
-function PlanSections({
-  model,
-  includeAppBarMeta,
-}: {
-  model: TaskDetailModel;
-  includeAppBarMeta?: boolean;
-}) {
+function PlanSections({ model }: { model: TaskDetailModel }) {
   return (
     <div
       className={cn(
@@ -824,8 +750,6 @@ function PlanSections({
         model.wide ? "flex-1 overflow-hidden" : undefined,
       )}
     >
-      {includeAppBarMeta && <MetaLine model={model} includeCreated />}
-      <ProjectField model={model} />
       <section className={cn("flex min-h-0 flex-col gap-2", model.wide && "min-h-0 flex-1")}>
         <SectionLabel>Plan</SectionLabel>
         <BodyField model={model} fill={model.wide} />
@@ -846,25 +770,13 @@ function PlanSections({
   );
 }
 
-function TabBar({
-  tab,
-  onTab,
-  compact,
-}: {
-  tab: "plan" | "chat";
-  onTab: (tab: "plan" | "chat") => void;
-  compact?: boolean;
-}) {
+function TabBar({ tab, onTab }: { tab: "plan" | "chat"; onTab: (tab: "plan" | "chat") => void }) {
   const tabs = [
     { id: "plan" as const, label: "Plan" },
     { id: "chat" as const, label: "Chat" },
   ];
   return (
-    <div
-      role="tablist"
-      aria-label="Task sections"
-      className={cn("flex gap-1", compact ? "shrink-0" : "border-b border-border")}
-    >
+    <div role="tablist" aria-label="Task sections" className="flex gap-1">
       {tabs.map((item) => (
         <button
           key={item.id}
@@ -873,13 +785,8 @@ function TabBar({
           aria-selected={tab === item.id}
           data-testid={`task-tab-${item.id}`}
           className={cn(
-            "min-h-11 px-3 text-sm font-medium leading-5",
-            compact ? "rounded-md" : "flex-1",
-            tab === item.id
-              ? compact
-                ? "bg-foreground text-background"
-                : "border-b-2 border-foreground text-foreground"
-              : cn(compact ? "text-foreground/75" : "border-b-2 border-transparent", QUIET),
+            "min-h-11 flex-1 rounded-md px-3 text-sm font-medium leading-5",
+            tab === item.id ? "bg-background text-foreground" : QUIET,
           )}
           onClick={() => onTab(item.id)}
         >
@@ -892,8 +799,12 @@ function TabBar({
 
 function MobileDetail({ model }: { model: TaskDetailModel }) {
   const [tab, setTab] = useState<"plan" | "chat">("plan");
-  const titlecard = useTitleCardVariant();
-  const tabs = <TabBar tab={tab} onTab={setTab} compact={titlecard === 4} />;
+  const onMobileTabChange = model.onMobileTabChange;
+  useEffect(() => {
+    onMobileTabChange?.(tab);
+    return () => onMobileTabChange?.(null);
+  }, [onMobileTabChange, tab]);
+
   return (
     <article
       data-testid="task-detail"
@@ -901,14 +812,19 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
       aria-label={model.title}
       className="flex min-h-0 flex-1 flex-col gap-2"
     >
-      <TitleCard model={model} variant={titlecard} tabs={tabs} />
+      <TitleCard model={model} tabs={<TabBar tab={tab} onTab={setTab} />} />
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {tab === "plan" ? (
           <div className={cn("min-h-0 flex-1 overflow-y-auto", SCROLLBAR_GUTTER)}>
-            <PlanSections model={model} includeAppBarMeta={titlecard === 3} />
+            <PlanSections model={model} />
           </div>
         ) : (
-          <TaskAgentChat task={model.task} projects={model.projects} variant="pane" />
+          <TaskAgentChat
+            task={model.task}
+            projects={model.projects}
+            variant="pane"
+            composerTarget="dock"
+          />
         )}
       </div>
     </article>
@@ -923,7 +839,7 @@ function DesktopPlan({ model }: { model: TaskDetailModel }) {
       aria-label={model.title}
       className="flex h-full min-h-0 flex-col gap-3 overflow-hidden px-3 pt-3"
     >
-      <TitleCard model={model} variant={2} />
+      <TitleCard model={model} />
       <PlanSections model={model} />
     </article>
   );
@@ -931,7 +847,7 @@ function DesktopPlan({ model }: { model: TaskDetailModel }) {
 
 export function TaskDetailVariant({ model }: { model: TaskDetailModel }) {
   if (model.wide) return <DesktopPlan model={model} />;
-  return <MobileDetail model={model} />;
+  return <MobileDetail key={model.task.id} model={model} />;
 }
 
 export function TaskPlanChat({ model }: { model: TaskDetailModel }) {

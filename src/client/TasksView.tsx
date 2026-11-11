@@ -41,7 +41,7 @@ import { cn } from "./lib/utils";
 import { InlineMarkdown, plainInline } from "./markdown";
 import { projectSuggestions } from "./ProjectSuggestions";
 import { TaskAgentChat } from "./TaskAgentChat";
-import { type TaskDetailModel, TaskDetailVariant, TasksComposerDock } from "./TaskDetailVariants";
+import { type TaskDetailModel, TaskDetailVariant } from "./TaskDetailVariants";
 import { removeTask, type TaskOutcome, updateTask } from "./task-client";
 import { FIXTURE_PLAN_ID, mergeFixtureTasks } from "./task-detail-fixture";
 import { useTaskDetailFixture } from "./task-detail-query";
@@ -72,6 +72,8 @@ interface TasksViewProps {
   onMobileDetailChange?: (open: boolean) => void;
   /** True while a task is open in the desktop three-column layout. */
   onWideDetailChange?: (open: boolean) => void;
+  /** Which composer belongs in the shared float footer on the Tasks page. */
+  onComposerMode?: (mode: "create" | "task-chat" | "collapsed") => void;
 }
 
 /** Root tasks split into one group per project, A–Z, with "No project" (null) last. */
@@ -310,15 +312,17 @@ function TasksViewImpl({
   tasks: incomingTasks,
   activity,
   ready,
-  footerClearance,
   onLedger,
   selection = null,
   onMobileDetailChange,
   onWideDetailChange,
+  onComposerMode,
 }: TasksViewProps) {
   const wide = useWide();
   const fixtureOn = useTaskDetailFixture();
   const midColRef = useRef<HTMLDivElement>(null);
+  const chatColRef = useRef<HTMLDivElement>(null);
+  const [mobileTab, setMobileTab] = useState<"plan" | "chat" | null>(null);
   const serverTasks = fixtureOn ? mergeFixtureTasks(incomingTasks) : incomingTasks;
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [problem, setProblem] = useState<{ id: string; message: string } | null>(null);
@@ -545,10 +549,20 @@ function TasksViewImpl({
   useEffect(() => {
     if (openTaskId === null || menu !== null) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeDetail();
+      if (event.key !== "Escape") return;
+      // Capture while a portaled menu still exists so Escape closes the menu,
+      // not the task detail behind it.
+      if (
+        document.querySelector(
+          "[data-slot='dropdown-menu-content'], [data-testid='task-detail-menu-content'], [data-testid='task-project-menu']",
+        ) !== null
+      ) {
+        return;
+      }
+      closeDetail();
     };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
   }, [closeDetail, openTaskId, menu]);
 
   const openMenu = (id: string, x: number, y: number) => {
@@ -724,30 +738,57 @@ function TasksViewImpl({
           setProblem((current) => (current?.id === openTask.id ? null : current));
           onLedger(ledger);
         }}
+        onMobileTabChange={setMobileTab}
       />
     );
 
+  const composerMode: "create" | "task-chat" | "collapsed" =
+    openTask === undefined
+      ? "create"
+      : openTask.status === "done" || (!wide && mobileTab !== "chat")
+        ? "collapsed"
+        : "task-chat";
+
+  useEffect(() => {
+    onComposerMode?.(composerMode);
+    return () => onComposerMode?.("create");
+  }, [composerMode, onComposerMode]);
+
+  // Remeasure when a task opens so the dock can track the chat column.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: openTask mounts the chat column
   useLayoutEffect(() => {
     if (!wide) return;
     const mid = midColRef.current;
-    const root = mid?.closest(".chat-shell");
-    if (!(mid instanceof HTMLElement) || !(root instanceof HTMLElement)) return;
+    const chat = chatColRef.current;
+    const root = (chat ?? mid)?.closest(".chat-shell");
+    if (!(root instanceof HTMLElement)) return;
     const update = () => {
-      const midRect = mid.getBoundingClientRect();
       const rootRect = root.getBoundingClientRect();
-      root.style.setProperty("--tasks-mid-left", `${Math.round(midRect.left - rootRect.left)}px`);
-      root.style.setProperty("--tasks-mid-width", `${Math.round(midRect.width)}px`);
+      if (mid instanceof HTMLElement) {
+        const midRect = mid.getBoundingClientRect();
+        root.style.setProperty("--tasks-mid-left", `${Math.round(midRect.left - rootRect.left)}px`);
+        root.style.setProperty("--tasks-mid-width", `${Math.round(midRect.width)}px`);
+      }
+      if (chat instanceof HTMLElement) {
+        const chatRect = chat.getBoundingClientRect();
+        root.style.setProperty(
+          "--tasks-chat-left",
+          `${Math.round(chatRect.left - rootRect.left)}px`,
+        );
+        root.style.setProperty("--tasks-chat-width", `${Math.round(chatRect.width)}px`);
+      }
     };
     update();
     const observer = new ResizeObserver(update);
-    observer.observe(mid);
     observer.observe(root);
+    if (mid instanceof HTMLElement) observer.observe(mid);
+    if (chat instanceof HTMLElement) observer.observe(chat);
     window.addEventListener("resize", update);
     return () => {
       observer.disconnect();
       window.removeEventListener("resize", update);
     };
-  }, [wide]);
+  }, [wide, openTask]);
 
   const content = (
     <div
@@ -764,7 +805,7 @@ function TasksViewImpl({
             ? "tasks-split grid h-full min-h-0 w-full grid-cols-[minmax(260px,320px)_minmax(280px,1fr)_minmax(300px,400px)] gap-4 px-4"
             : "mx-auto flex w-full max-w-[72ch] flex-col gap-4 px-4"
         }
-        style={wide ? { paddingTop: 16 } : { paddingTop: 16, paddingBottom: footerClearance + 16 }}
+        style={{ paddingTop: 16 }}
         data-tasks-split={wide ? (openTask !== undefined ? "open" : "closed") : undefined}
       >
         {wide ? (
@@ -778,7 +819,6 @@ function TasksViewImpl({
               >
                 {list}
               </div>
-              <TasksComposerDock wide={wide} />
             </div>
             <div
               ref={midColRef}
@@ -796,7 +836,8 @@ function TasksViewImpl({
               )}
             </div>
             <div
-              data-col="side"
+              ref={chatColRef}
+              data-col="chat"
               data-testid="tasks-chat-col"
               className="flex h-full min-h-0 min-w-0 flex-col"
             >
@@ -805,6 +846,7 @@ function TasksViewImpl({
                   task={openTask}
                   projects={projectsOf(tasks.filter((item) => isActiveStatus(item.status)))}
                   variant="pane"
+                  composerTarget="dock"
                 />
               ) : null}
             </div>
@@ -1457,6 +1499,7 @@ export function TaskDetail({
   onDismiss,
   onRemove,
   onLedger,
+  onMobileTabChange,
 }: {
   task: Task;
   tasks: Task[];
@@ -1473,6 +1516,7 @@ export function TaskDetail({
   onRemove: () => void;
   /** Called after an inline edit saves, so the tasks page takes the new ledger. */
   onLedger?: (ledger: TaskLedger) => void;
+  onMobileTabChange?: (tab: "plan" | "chat" | null) => void;
 }) {
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(task.title);
@@ -1743,6 +1787,7 @@ export function TaskDetail({
       onDismiss,
       onRemove,
       onLedger,
+      onMobileTabChange,
     };
     return <TaskDetailVariant model={model} />;
   }

@@ -30,11 +30,15 @@ async function planAttachmentStatuses(browser: {
   evaluate: <T>(fn: () => T | Promise<T>) => Promise<T>;
 }) {
   return browser.evaluate(() => {
-    const chat = document.querySelector("[data-testid=task-agent-chat]");
-    if (chat === null) return [];
-    return [...chat.querySelectorAll("[data-testid=composer-attachments] li")].map(
-      (item) => item.getAttribute("data-status") ?? "",
-    );
+    const roots = [
+      document.querySelector("[data-testid=task-composer-slot]"),
+      document.querySelector("[data-testid=composer-dock]"),
+      document.querySelector("[data-testid=task-agent-chat]"),
+    ].filter((node): node is Element => node !== null);
+    const items = roots.flatMap((root) => [
+      ...root.querySelectorAll("[data-testid=composer-attachments] li"),
+    ]);
+    return [...new Set(items)].map((item) => item.getAttribute("data-status") ?? "");
   });
 }
 

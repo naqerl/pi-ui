@@ -1,7 +1,7 @@
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
-import { removeTasks } from "./tasks-helpers.js";
+import { expectTaskProject, openTaskProject, removeTasks } from "./tasks-helpers.js";
 
 test("sets an existing or new project and clears it to No project", async ({
   app,
@@ -25,16 +25,18 @@ test("sets an existing or new project and clears it to No project", async ({
   });
   await app.open("/?page=tasks");
   await screen.getByRole("button", { name: "Open Project target" }).click();
-  const project = screen.getByRole("textbox", "Task project");
+  const project = await openTaskProject(screen);
   await expect(project).toHaveValue("");
   await project.fill("alpha");
   await project.press("Enter");
+  await expectTaskProject(screen, "alpha");
   await expect(
     screen.getByTestId("task-project-alpha").getByText("Project target", { exact: true }),
   ).toBeVisible();
 
-  await project.fill("beta");
-  await project.press("Enter");
+  const renamed = await openTaskProject(screen);
+  await renamed.fill("beta");
+  await renamed.press("Enter");
   await expect(
     screen.getByTestId("task-project-beta").getByText("Project target", { exact: true }),
   ).toBeVisible();
@@ -51,8 +53,9 @@ test("sets an existing or new project and clears it to No project", async ({
 
   await app.open("/?page=tasks");
   await screen.getByRole("button", { name: "Open Project target" }).click();
-  await expect(screen.getByRole("textbox", "Task project")).toHaveValue("beta");
-  const cleared = screen.getByRole("textbox", "Task project");
+  await expectTaskProject(screen, "beta");
+  const cleared = await openTaskProject(screen);
+  await expect(cleared).toHaveValue("beta");
   await cleared.fill("");
   await cleared.press("Enter");
   await expect(

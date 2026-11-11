@@ -12,7 +12,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { createPortal } from "react-dom";
 import type { MemoryPathMatch, MemoryReadRange, MemoryToolDetails } from "../shared/memory";
 import { pageIdFromPath } from "../shared/pages";
 import { acceptMention, mentionAt, parseProjectToken, projectsOf } from "../shared/project";
@@ -821,22 +820,6 @@ function useAttachments() {
   return { items, add, remove, clear, restore };
 }
 
-function useComposerSlot(active: boolean): HTMLElement | null {
-  const [slot, setSlot] = useState<HTMLElement | null>(null);
-  useLayoutEffect(() => {
-    if (!active) {
-      setSlot(null);
-      return;
-    }
-    const read = () => document.getElementById("tasks-composer-slot");
-    setSlot(read());
-    const observer = new MutationObserver(() => setSlot(read()));
-    observer.observe(document.body, { childList: true, subtree: true });
-    return () => observer.disconnect();
-  }, [active]);
-  return slot;
-}
-
 function PlusIcon() {
   return (
     <svg
@@ -1503,8 +1486,6 @@ export function ChatView({
   const activityTriggerRef = useRef<HTMLButtonElement | null>(null);
   const tasksPage = pager.page === TASKS_PAGE;
   const wideLayout = useWide();
-  const portalComposer = tasksPage && wideLayout;
-  const composerSlot = useComposerSlot(portalComposer);
 
   // An error belongs to the page it was raised on.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on page change only
@@ -1517,11 +1498,13 @@ export function ChatView({
   );
   const [pageAnimating, setPageAnimating] = useState(false);
   const [taskSelection, setTaskSelection] = useState<{ id: string; request: number } | null>(null);
-  const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
   const [wideDetailOpen, setWideDetailOpen] = useState(false);
-  const tasksDock = tasksPage && wideLayout ? (wideDetailOpen ? "mid" : "full") : undefined;
-
-  const hideTasksComposer = (tasksPage && mobileDetailOpen) || portalComposer;
+  const [composerMode, setComposerMode] = useState<"create" | "task-chat" | "collapsed">("create");
+  const taskChatInDock = tasksPage && composerMode === "task-chat";
+  const hideTasksComposer = statsPage || (tasksPage && composerMode === "collapsed");
+  // On Tasks the dock leaves the flow so list and chat reach the screen edge.
+  // Closed: the main-chat 72ch cap, centered. Open on desktop: shrink to the chat column.
+  const tasksDock = tasksPage ? (wideLayout && wideDetailOpen ? "chat" : "closed") : undefined;
   const lastPagerState = useRef({ page: pager.page, dragging: pager.dragging });
   const shownTasks = useMemo(
     () =>
@@ -1969,8 +1952,8 @@ export function ChatView({
                   footerClearance={0}
                   onLedger={applyTasks}
                   selection={taskSelection}
-                  onMobileDetailChange={setMobileDetailOpen}
                   onWideDetailChange={setWideDetailOpen}
+                  onComposerMode={setComposerMode}
                 />
               </Suspense>
             </section>
@@ -2055,28 +2038,14 @@ export function ChatView({
           </div>
           <div
             data-testid="composer-body"
-            data-hidden={statsPage || hideTasksComposer ? "true" : "false"}
-            data-collapsed={statsPage || hideTasksComposer ? "true" : "false"}
-            aria-hidden={statsPage || hideTasksComposer ? true : undefined}
-            inert={statsPage || hideTasksComposer ? true : undefined}
+            data-hidden={hideTasksComposer ? "true" : "false"}
+            data-collapsed={hideTasksComposer ? "true" : "false"}
+            aria-hidden={hideTasksComposer ? true : undefined}
+            inert={hideTasksComposer ? true : undefined}
             className="composer-body"
           >
-            {composerSlot ? (
-              createPortal(
-                <Composer
-                  tasksPage={tasksPage}
-                  running={running}
-                  send={handleSend}
-                  stop={stop}
-                  unsendSteer={!tasksPage && pendingSteers > 0 ? unsendSteer : undefined}
-                  addTask={addTask}
-                  projects={projects}
-                  error={composerError}
-                  onDismissError={() => setComposerError(null)}
-                  textareaRef={composerRef}
-                />,
-                composerSlot,
-              )
+            {taskChatInDock ? (
+              <div id="task-composer-slot" data-testid="task-composer-slot" />
             ) : (
               <div>
                 <Composer

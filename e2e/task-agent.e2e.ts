@@ -16,7 +16,7 @@ test("the plus button creates a task and opens its planning chat", { timeout: 18
   await createOpenTask(screen, title, { project: "pi-ui" });
   await expect(screen.getByTestId("task-detail")).toBeVisible();
   await expect(screen.getByTestId("task-title")).toContainText(title);
-  await expect(screen.getByTestId("task-project-input")).toHaveValue("pi-ui");
+  await expect(screen.getByTestId("task-header-project")).toHaveText("@pi-ui");
   await openTaskChatTab(screen);
   await expect(screen.getByTestId("task-agent-chat")).toBeVisible();
   await expect(

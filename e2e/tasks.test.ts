@@ -1083,7 +1083,7 @@ test("the task detail edits its project and shows a body as markdown", () => {
     onRemove: () => {},
   };
   const markup = renderToStaticMarkup(createElement(TaskDetail, { ...props, task }));
-  assert.match(markup, /data-testid="task-project-line"[\s\S]*>Project<[\s\S]*value="citydiff"/);
+  assert.match(markup, /data-testid="task-header-project"[\s\S]*@citydiff/);
   assert.doesNotMatch(markup, /<select/);
   assert.match(markup, /data-testid="task-body"[\s\S]*<h1[^>]*>Route plan<\/h1>/);
   assert.match(markup, /<strong[^>]*>tram 4<\/strong>/);
@@ -1093,7 +1093,7 @@ test("the task detail edits its project and shows a body as markdown", () => {
   assert.doesNotMatch(markup, /data-testid="task-body-edit"/);
   const { project: _drop, ...loose } = task;
   const bare = renderToStaticMarkup(createElement(TaskDetail, { ...props, task: loose }));
-  assert.match(bare, /data-testid="task-project-input"[^>]*placeholder="No project"/);
+  assert.match(bare, /data-testid="task-header-project"[\s\S]*No project/);
 });
 
 test("the task store rejects an empty title and a body that is not a string or too long", async () => {

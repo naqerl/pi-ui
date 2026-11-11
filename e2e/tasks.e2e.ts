@@ -802,6 +802,9 @@ test("a press compresses buttons and role buttons until release, unless reduced 
   await browser.mouse.up();
 
   await browser.emulateMedia({ reducedMotion: "reduce" });
+  // A card press can open the desktop detail, which hides the create composer.
+  await browser.keyboard.press("Escape");
+  await expect(screen.getByRole("textbox", "New task")).toBeVisible();
   await screen.getByRole("textbox", "New task").fill(`${title} reduced`);
   const reducedPoint = await pointOf(buttonSelector);
   expect(reducedPoint).not.toBeNull();

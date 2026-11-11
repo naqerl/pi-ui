@@ -128,9 +128,11 @@ async function seedLedger(browser: Browser, titles: string[]): Promise<string[]>
 /** A touch long press on one card, leaving its menu open. */
 async function longPressCard(browser: Browser, title: string): Promise<boolean> {
   return browser.evaluate(async (name) => {
-    const card = [...document.querySelectorAll<HTMLElement>("[data-task-card]")].find(
-      (item) => item.getAttribute("aria-label") === `Open ${name}`,
-    );
+    const card = [...document.querySelectorAll<HTMLElement>("[data-task-card]")].find((item) => {
+      const label = item.getAttribute("aria-label") ?? "";
+      if (label === `Open ${name}`) return true;
+      return item.querySelector(`[aria-label="Open ${name}"]`) !== null;
+    });
     if (card === undefined) return false;
     const box = card.getBoundingClientRect();
     const fire = (type: string) => {
@@ -572,13 +574,18 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     await expect.poll(() => ship.status).toBe("backlog");
     await openTaskActions(screen);
     await expect(screen.getByTestId("task-detail-backlog")).toHaveText("Reopen");
+    await browser.keyboard.press("Escape");
+    await expect(screen.getByTestId("task-detail-menu-content")).toHaveCount(0);
     await expect(
       screen.getByTestId("task-project-Pi UI").getByRole("button", { name: "Open Ship the modal" }),
     ).toBeVisible();
 
-    await toggle.tap();
+    await openTaskActions(screen);
+    await screen.getByTestId("task-detail-backlog").tap();
     await expect.poll(() => ship.status).toBe("open");
-    await expect(toggle).toHaveText("Backlog");
+    await openTaskActions(screen);
+    await expect(screen.getByTestId("task-detail-backlog")).toHaveText("Backlog");
+    await browser.keyboard.press("Escape");
 
     await browser.evaluate(() => {
       const card = [...document.querySelectorAll<HTMLElement>("[data-task-card]")].find(
@@ -598,8 +605,10 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     });
     await screen.getByRole("menuitem", { name: "Backlog Ship the modal" }).tap();
     await expect.poll(() => ship.status).toBe("backlog");
-    await expect(toggle).toHaveText("Reopen");
-    await expect(screen.getByTestId("task-project-Pi UI")).toContainText("Ship the modal");
+    await browser.keyboard.press("Escape");
+    await expect(
+      screen.getByTestId("task-project-Pi UI").getByRole("button", { name: "Open Ship the modal" }),
+    ).toBeVisible();
   });
 });
 
@@ -662,6 +671,7 @@ test("on a phone a long-press menu does not poison the next card tap", async ({
   await app.open("/");
   await seedLedger(browser, [first, second]);
   await app.open("/?page=tasks");
+  await expect(screen.getByRole("button", { name: `Open ${first}` })).toBeVisible();
 
   expect(await longPressCard(browser, first)).toBe(true);
   await expect(screen.getByTestId("task-menu")).toBeVisible();
