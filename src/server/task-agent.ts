@@ -24,6 +24,7 @@ import { Type } from "typebox";
 import { parseProjectToken, projectsOf, sameProject } from "../shared/project.js";
 import { DEFAULT_NEW_TASK_TITLE, TASK_BODY_MAX_LENGTH } from "../shared/tasks.js";
 import type { ChatMessage, RunState, StreamRunState, Task, TaskLedger } from "../shared/types.js";
+import { withConversationIdentity } from "./billion-context.js";
 import { buildTranscript, SESSION_CONTEXT } from "./session.js";
 import type { SseFrame } from "./sse.js";
 import { StreamHub } from "./stream-hub.js";
@@ -76,6 +77,8 @@ export interface TaskAgentManagerOptions {
   readonly baseInstructions: string;
   /** Tests inject a fake session instead of opening a durable harness. */
   readonly openSession?: (taskId: string, manager: TaskAgentManager) => Promise<TaskAgentSession>;
+  /** Forward session frames onto the main /api/stream so the browser can reuse that EventSource. */
+  readonly relay?: (taskId: string, frame: SseFrame) => void;
 }
 
 /**
@@ -293,7 +296,13 @@ class DurableTaskAgentSession implements TaskAgentSession {
     readonly taskId: string,
     private readonly harness: Harness,
     private readonly conversation: Conversation,
+    private readonly relay?: (frame: SseFrame) => void,
   ) {}
+
+  private emit(frame: SseFrame): void {
+    this.hub.broadcast(frame);
+    this.relay?.(frame);
+  }
 
   running(): boolean {
     return this.runState === "running";
@@ -322,16 +331,16 @@ class DurableTaskAgentSession implements TaskAgentSession {
   private setRunState(state: RunState): void {
     if (this.runState === state) return;
     this.runState = state;
-    this.hub.broadcast({ event: "run.state", data: this.runStatus() });
+    this.emit({ event: "run.state", data: this.runStatus() });
   }
 
   private publishDraft(): void {
     const revision = this.bumpDraft();
-    this.hub.broadcast({
+    this.emit({
       event: "message.delta",
       data: { text: "", full: this.currentText, revision },
     });
-    this.hub.broadcast({
+    this.emit({
       event: "thinking.delta",
       data: { text: "", full: this.currentThinking, revision },
     });
@@ -357,6 +366,13 @@ class DurableTaskAgentSession implements TaskAgentSession {
     await this.conversation.configure({ instructions }, SESSION_CONTEXT);
   }
 
+  private identity<T>(run: () => T): T {
+    // The numeric conversation id is unique only inside this task's
+    // sqlite file. billion-context keys sessions process-wide, so stamp a
+    // name that cannot collide with the main chat or another task.
+    return withConversationIdentity(`task-agent:${this.taskId}`, run);
+  }
+
   async start(): Promise<void> {
     const stream = await this.conversation.watch(SESSION_CONTEXT, { min: 50, max: 200 });
     this.watch = stream;
@@ -369,7 +385,7 @@ class DurableTaskAgentSession implements TaskAgentSession {
         console.error(`[task-agent] view handling failed for ${this.taskId}`, error);
       }
     });
-    this.harness.resume();
+    this.identity(() => this.harness.resume());
   }
 
   private resetView(view: ConversationView): void {
@@ -412,11 +428,11 @@ class DurableTaskAgentSession implements TaskAgentSession {
     if (newEntries.length > 0) {
       const built = buildTranscript(newEntries);
       for (const message of visibleTaskAgentMessages(built.messages)) {
-        this.hub.broadcast({ event: "message.done", data: { message } });
+        this.emit({ event: "message.done", data: { message } });
       }
       this.currentText = "";
       this.currentThinking = "";
-      this.hub.broadcast({
+      this.emit({
         event: "draft.sync",
         data: { text: "", thinking: "", revision: this.bumpDraft() },
       });
@@ -431,21 +447,33 @@ class DurableTaskAgentSession implements TaskAgentSession {
 
   async submit(text: string): Promise<TaskAgentChatSnapshot> {
     if (this.closed) throw new TaskAgentError("Task agent has been closed", 409);
-    const submission = await this.conversation.submit(
-      { type: "input", content: text },
-      SESSION_CONTEXT,
+    // Model requests go through billion-context; they must carry this
+    // conversation's id, not the main chat's, or the turn can hang or
+    // attach itself to the parent session.
+    const submission = await this.identity(() =>
+      this.conversation.submit({ type: "input", content: text }, SESSION_CONTEXT),
     );
     this.setRunState("running");
-    void submission.wait(SESSION_CONTEXT).catch((error: unknown) => {
-      console.error(`[task-agent] submit failed for ${this.taskId}`, error);
-    });
+    void this.identity(() => submission.wait(SESSION_CONTEXT))
+      .then((settled) => {
+        if (settled.status !== "unanswered") return;
+        console.warn(
+          `[task-agent] run ended without an answer for ${this.taskId}: ${settled.reason}` +
+            (settled.detail === undefined ? "" : ` (${JSON.stringify(settled.detail)})`),
+        );
+        if (!this.closed && this.runState === "running") this.setRunState("idle");
+      })
+      .catch((error: unknown) => {
+        console.error(`[task-agent] submit failed for ${this.taskId}`, error);
+        if (!this.closed && this.runState === "running") this.setRunState("idle");
+      });
     return this.snapshot();
   }
 
   async stop(): Promise<void> {
     if (this.closed || this.runState !== "running") return;
     try {
-      await this.conversation.abort(SESSION_CONTEXT);
+      await this.identity(() => this.conversation.abort(SESSION_CONTEXT));
     } catch (error) {
       console.error(`[task-agent] abort failed for ${this.taskId}`, error);
     } finally {
@@ -460,15 +488,28 @@ class DurableTaskAgentSession implements TaskAgentSession {
     this.closed = true;
     void this.watch?.stop();
     this.watch = undefined;
-    try {
-      if (this.runState === "running") await this.conversation.abort(SESSION_CONTEXT);
-    } catch {
-      // Closing anyway.
-    }
-    try {
+    const shutdown = async () => {
+      try {
+        if (this.runState === "running") {
+          await this.identity(() => this.conversation.abort(SESSION_CONTEXT));
+        }
+      } catch {
+        // Closing anyway.
+      }
       await this.harness.close(SESSION_CONTEXT);
+    };
+    try {
+      await Promise.race([
+        shutdown(),
+        new Promise<void>((_, reject) => {
+          const timer = setTimeout(() => reject(new Error("close timed out")), 3_000);
+          timer.unref?.();
+        }),
+      ]);
     } catch (error) {
       console.error(`[task-agent] harness close failed for ${this.taskId}`, error);
+    } finally {
+      this.runState = "idle";
     }
   }
 }
@@ -537,9 +578,15 @@ export class TaskAgentManager {
     const pending = this.opening.get(taskId);
     if (pending !== undefined) {
       try {
-        await pending;
+        await Promise.race([
+          pending,
+          new Promise<void>((_, reject) => {
+            const timer = setTimeout(() => reject(new Error("open timed out")), 3_000);
+            timer.unref?.();
+          }),
+        ]);
       } catch {
-        // The opener failed; still remove any files.
+        // The opener failed or stalled; still remove any files.
       }
     }
     const session = this.sessions.get(taskId);
@@ -651,7 +698,12 @@ export class TaskAgentManager {
         SESSION_CONTEXT,
       );
     }
-    const session = new DurableTaskAgentSession(taskId, harness, conversation);
+    const session = new DurableTaskAgentSession(
+      taskId,
+      harness,
+      conversation,
+      this.options.relay === undefined ? undefined : (frame) => this.options.relay?.(taskId, frame),
+    );
     await session.start();
     return session;
   }

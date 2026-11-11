@@ -257,7 +257,7 @@ test("shows a failed task action beside the control and keeps a long title", asy
 
   const longTitle = "M".repeat(450);
   await createOpenTask(screen, longTitle);
-  await expect(screen.getByText(longTitle, { exact: true })).toBeVisible();
+  await expect(screen.getByTestId("task-title")).toContainText(longTitle);
   await expect(screen.getByTestId("composer-error")).toHaveCount(0);
 });
 

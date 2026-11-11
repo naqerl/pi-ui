@@ -316,6 +316,9 @@ const taskAgents = new TaskAgentManager({
   publish: (ledger) => {
     taskBridge.publish(ledger);
   },
+  relay: (taskId, frame) => {
+    hub.broadcast({ event: "task.chat", data: { taskId, event: frame.event, data: frame.data } });
+  },
   baseInstructions: await taskAgentPrompt,
 });
 function builtinJobs() {
@@ -900,7 +903,9 @@ app.delete("/api/tasks/:id", async (c) => {
   try {
     const id = c.req.param("id");
     const ledger = await taskStore.remove(id);
-    await taskAgents.remove(id).catch((error: unknown) => {
+    // Close the planning session in the background so deleting a task
+    // stays a ledger write, even if the harness is still shutting down.
+    void taskAgents.remove(id).catch((error: unknown) => {
       console.error(`[pi] could not remove the task agent for ${id}`, error);
     });
     return c.json(publishTasks(ledger));

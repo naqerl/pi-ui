@@ -9,20 +9,13 @@ import type {
   StreamTextDelta,
 } from "../shared/types";
 import { frameBatch, reduceDraft } from "./stream-batch";
+import { subscribeTaskChatEvents } from "./task-chat-events";
 
 export interface TaskAgentSnapshot {
   taskId: string;
   messages: ChatMessage[];
   run: RunState;
   draft: { text: string; thinking: string; revision: number };
-}
-
-function parseEvent<T>(event: MessageEvent<string>): T | null {
-  try {
-    return JSON.parse(event.data) as T;
-  } catch {
-    return null;
-  }
 }
 
 export function useTaskChat(taskId: string, closed: boolean) {
@@ -70,7 +63,6 @@ export function useTaskChat(taskId: string, closed: boolean) {
     draftRevision.current = 0;
     void refresh();
 
-    const source = new EventSource(`/api/tasks/${encodeURIComponent(taskId)}/chat/stream`);
     const draftBatch = frameBatch<{ kind: "text"; delta: StreamTextDelta }>(
       (items) => {
         setDraftText((current) =>
@@ -84,53 +76,61 @@ export function useTaskChat(taskId: string, closed: boolean) {
       (frame) => window.cancelAnimationFrame(frame),
     );
 
-    source.addEventListener("draft.sync", (event) => {
-      const data = parseEvent<StreamDraftSync>(event as MessageEvent<string>);
-      if (!data) return;
-      draftRevision.current = data.revision;
-      draftBatch.clear();
-      setDraftText(data.text);
-    });
-    source.addEventListener("message.delta", (event) => {
-      const data = parseEvent<StreamTextDelta>(event as MessageEvent<string>);
-      if (!data) return;
-      const revision = acceptDeltaRevision(draftRevision.current, data.revision);
-      if (revision === null) return;
-      draftRevision.current = revision;
-      draftBatch.push({ kind: "text", delta: data });
-    });
-    source.addEventListener("message.done", (event) => {
-      const data = parseEvent<StreamMessageDone>(event as MessageEvent<string>);
-      const message = data?.message;
-      if (message) {
-        setMessages((current) =>
-          current.some((item) => item.id === message.id) ? current : [...current, message],
-        );
+    void taskId;
+    const unsubscribe = subscribeTaskChatEvents((frame) => {
+      if (frame.taskId !== taskIdRef.current) return;
+      if (frame.event === "draft.sync") {
+        const data = frame.data as StreamDraftSync;
+        if (data == null || typeof data.revision !== "number") return;
+        draftRevision.current = data.revision;
+        draftBatch.clear();
+        setDraftText(typeof data.text === "string" ? data.text : "");
+        return;
       }
-      draftBatch.clear();
-      setDraftText("");
-      void refresh();
-    });
-    source.addEventListener("run.state", (event) => {
-      const data = parseEvent<StreamRunState>(event as MessageEvent<string>);
-      if (!data) return;
-      setRun(data.state);
-      if (data.state !== "running") {
+      if (frame.event === "message.delta") {
+        const data = frame.data as StreamTextDelta;
+        if (data == null || typeof data.revision !== "number") return;
+        const revision = acceptDeltaRevision(draftRevision.current, data.revision);
+        if (revision === null) return;
+        draftRevision.current = revision;
+        draftBatch.push({ kind: "text", delta: data });
+        return;
+      }
+      if (frame.event === "message.done") {
+        const message = (frame.data as StreamMessageDone | null)?.message;
+        if (message) {
+          setMessages((current) =>
+            current.some((item) => item.id === message.id) ? current : [...current, message],
+          );
+        }
         draftBatch.clear();
         setDraftText("");
         void refresh();
+        return;
       }
-    });
-    source.addEventListener("error", () => {
-      // EventSource retries on its own; a snapshot covers a missed frame.
-      void refresh();
+      if (frame.event === "run.state") {
+        const data = frame.data as StreamRunState;
+        if (data == null || typeof data.state !== "string") return;
+        setRun(data.state);
+        if (data.state !== "running") {
+          draftBatch.clear();
+          setDraftText("");
+          void refresh();
+        }
+      }
     });
 
     return () => {
       draftBatch.clear();
-      source.close();
+      unsubscribe();
     };
   }, [refresh, taskId]);
+
+  useEffect(() => {
+    if (run !== "running" || closed) return;
+    const timer = setInterval(() => void refresh(), 1_000);
+    return () => clearInterval(timer);
+  }, [closed, refresh, run]);
 
   const send = useCallback(
     async (text: string) => {

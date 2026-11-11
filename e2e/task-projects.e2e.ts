@@ -1,6 +1,6 @@
 import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
-import { backToTaskList, createOpenTask } from "./tasks-helpers";
+import { backToTaskList, createOpenTask, openNewTaskComposer } from "./tasks-helpers";
 
 // The e2e server and its task store are shared by every test file: leave no projects behind.
 async function removeTasks(browser: Browser, titles: readonly string[]) {
@@ -39,9 +39,7 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
   await expect(screen.getByTestId("task-project-filter")).toHaveCount(0);
 
   // An unknown name offers a new project; Enter accepts it, then Enter submits.
-  await screen.getByTestId("new-task-button").tap();
-  const composer = screen.getByTestId("task-agent-input");
-  await expect(composer).toBeVisible();
+  let composer = await openNewTaskComposer(screen);
   await composer.tap();
   await browser.keyboard.type("Diff the maps @citydiff");
   const suggestions = screen.getByTestId("project-suggestions");
@@ -61,8 +59,7 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
   await expectTaskTitle("Loose end");
 
   // @ lists the known projects, filtered as you type.
-  await screen.getByTestId("new-task-button").tap();
-  await expect(composer).toBeVisible();
+  composer = await openNewTaskComposer(screen);
   await composer.tap();
   await browser.keyboard.type("Fix the login @ci");
   await expect(suggestions).toBeVisible();
@@ -75,7 +72,7 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
   await expectTaskTitle("Fix the login");
 
   // A tap accepts a suggestion too.
-  await screen.getByTestId("new-task-button").tap();
+  composer = await openNewTaskComposer(screen);
   await composer.tap();
   await browser.keyboard.type("Write the docs @zero");
   await screen.getByTestId("project-suggestion-zero").tap();
@@ -86,7 +83,7 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
   await expectTaskTitle("Write the docs");
 
   // Escape closes the list and keeps the text.
-  await screen.getByTestId("new-task-button").tap();
+  composer = await openNewTaskComposer(screen);
   await composer.tap();
   await browser.keyboard.type("Draft @c");
   await expect(suggestions).toBeVisible();

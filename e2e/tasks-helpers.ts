@@ -18,15 +18,24 @@ export async function removeTasks(browser: Browser, titles: readonly string[]) {
 
 type TaskScreen = { getByTestId: (id: string) => Locator };
 
+/** Open a fresh untitled task and return its planning-chat input. */
+export async function openNewTaskComposer(screen: TaskScreen): Promise<Locator> {
+  await screen.getByTestId("new-task-button").tap();
+  // Wait until the new blank task is selected; otherwise a previous
+  // detail's composer can swallow the first message.
+  await expect(screen.getByTestId("task-title")).toHaveText("New task");
+  const input = screen.getByTestId("task-agent-input");
+  await expect(input).toBeVisible();
+  return input;
+}
+
 /** Create an open task from the plus button and first message in the embedded chat. */
 export async function createOpenTask(
   screen: TaskScreen,
   title: string,
   options?: { project?: string },
 ) {
-  await screen.getByTestId("new-task-button").tap();
-  const input = screen.getByTestId("task-agent-input");
-  await expect(input).toBeVisible();
+  const input = await openNewTaskComposer(screen);
   const text = options?.project === undefined ? title : `@${options.project} ${title}`;
   await input.fill(text);
   await screen.getByTestId("task-agent-send").tap();

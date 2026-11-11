@@ -78,12 +78,13 @@ test("open work stays grouped by project when some tasks are parked", { timeout:
 
   // A plus-created task can be parked from its detail.
   await createOpenTask(screen, liveTitle, { project: liveProject });
-  await expect(screen.getByText(liveTitle, { exact: true })).toBeVisible();
+  const taskList = screen.getByTestId("task-list");
+  await expect(taskList.getByText(liveTitle, { exact: true })).toBeVisible();
 
   await createOpenTask(screen, parkedTitle, { project: liveProject });
   await screen.getByTestId("task-detail-backlog").tap();
-  await expect(screen.getByText(liveTitle, { exact: true })).toBeVisible();
-  await expect(screen.getByText(parkedTitle, { exact: true })).toBeVisible();
+  await expect(taskList.getByText(liveTitle, { exact: true })).toBeVisible();
+  await expect(taskList.getByText(parkedTitle, { exact: true })).toBeVisible();
   await expect(screen.getByTestId("task-filters")).toHaveCount(0);
   await expect(screen.getByTestId("task-filter-active")).toHaveCount(0);
   await expect(screen.getByTestId("task-filter-blocked")).toHaveCount(0);

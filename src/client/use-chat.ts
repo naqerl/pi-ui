@@ -55,6 +55,7 @@ import type {
 } from "../shared/types";
 import { setDashboard } from "./dashboard-store";
 import { frameBatch, reduceDraft, refreshBatch } from "./stream-batch";
+import { publishTaskChatEvent } from "./task-chat-events";
 import { isThinking } from "./working-state";
 
 const EMPTY_EVENTS: McpEventsState = {
@@ -565,6 +566,15 @@ export function useChat(options: UseChatOptions = {}) {
     source.addEventListener("tasks", (event) => {
       const data = parseEvent<TaskLedger>(event as MessageEvent<string>);
       if (data) applyTasks(data);
+    });
+
+    source.addEventListener("task.chat", (event) => {
+      const data = parseEvent<{ taskId: string; event: string; data: unknown }>(
+        event as MessageEvent<string>,
+      );
+      if (data && typeof data.taskId === "string" && typeof data.event === "string") {
+        publishTaskChatEvent(data);
+      }
     });
 
     source.addEventListener("diagram", (event) => {
