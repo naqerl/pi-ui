@@ -51,6 +51,8 @@ const WIDE_QUERY = "(min-width: 1024px)";
 const DAY_PAGE = 7;
 /** One vertical rhythm for every header and card stack on the tasks page. */
 const TASK_STACK = "flex flex-col space-y-2";
+/** Reserve the scrollbar's gutter so content never reflows or slides under the thumb. */
+const SCROLLBAR_GUTTER = "[scrollbar-gutter:stable]";
 
 interface TasksViewProps {
   tasks: Task[];
@@ -715,7 +717,7 @@ function TasksViewImpl({
     <div
       className={cn(
         "h-full overflow-x-hidden overscroll-x-none",
-        wide ? "overflow-hidden" : "overflow-y-auto",
+        wide ? "overflow-hidden" : cn("overflow-y-auto", SCROLLBAR_GUTTER),
       )}
       data-testid="tasks-page"
       data-layout={wide ? "split" : "stack"}
@@ -730,7 +732,14 @@ function TasksViewImpl({
       >
         {wide ? (
           <>
-            <div className="min-h-0 overflow-y-auto overscroll-contain">{list}</div>
+            <div
+              className={cn(
+                "min-h-0 min-w-0 overflow-x-hidden overflow-y-auto overscroll-contain",
+                SCROLLBAR_GUTTER,
+              )}
+            >
+              {list}
+            </div>
             <div className="flex min-h-0 min-w-0 flex-col">
               {detail ?? (
                 <Card
@@ -1835,8 +1844,10 @@ export function TaskDetail({
                   }
                 }}
                 className={cn(
-                  "block w-full min-w-0 resize-none border-0 bg-transparent p-0 pr-1 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-foreground",
-                  wide ? "overflow-hidden" : "overflow-y-auto max-h-[min(60vh,40rem)]",
+                  "block w-full min-w-0 resize-none border-0 bg-transparent p-0 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-foreground",
+                  wide
+                    ? "overflow-hidden"
+                    : cn("max-h-[min(60vh,40rem)] overflow-y-auto", SCROLLBAR_GUTTER),
                 )}
               />
             </div>
@@ -1875,14 +1886,17 @@ export function TaskDetail({
                 "min-w-0 cursor-text text-sm leading-5",
                 task.body !== undefined && task.body.length > 0
                   ? cn(
-                      "overflow-y-auto pr-1",
+                      "overflow-y-auto",
+                      SCROLLBAR_GUTTER,
                       wide ? "min-h-0 max-h-full flex-1" : "max-h-[min(60vh,40rem)]",
                     )
                   : "text-muted-foreground",
               )}
             >
               {task.body !== undefined && task.body.length > 0 ? (
-                <Markdown text={task.body} />
+                <div className="pr-1">
+                  <Markdown text={task.body} />
+                </div>
               ) : (
                 <p className="whitespace-pre-wrap break-words">Write markdown…</p>
               )}
@@ -1893,7 +1907,7 @@ export function TaskDetail({
       <CardContent
         className={cn(
           "flex flex-col gap-4",
-          wide && "max-h-[40vh] min-h-0 shrink-0 overflow-y-auto",
+          wide && cn("max-h-[40vh] min-h-0 shrink-0 overflow-y-auto", SCROLLBAR_GUTTER),
         )}
       >
         {task.reopens !== undefined && task.reopens.length > 0 && (
@@ -1939,9 +1953,9 @@ export function TaskDetail({
         {task.rationale !== undefined && task.rationale.length > 0 && (
           <div
             data-testid="task-rationale"
-            className={cn("min-w-0", wide && "max-h-40 overflow-y-auto pr-1")}
+            className={cn("min-w-0", wide && cn("max-h-40 overflow-y-auto", SCROLLBAR_GUTTER))}
           >
-            <p className="whitespace-pre-wrap text-sm leading-5 [overflow-wrap:anywhere]">
+            <p className="whitespace-pre-wrap pr-1 text-sm leading-5 [overflow-wrap:anywhere]">
               {task.rationale}
             </p>
           </div>
