@@ -36,8 +36,17 @@ function startedAtOf(value: number | string | Date | undefined): number {
 
 const LIVE_STATUS = new Set(["opening", "active", "reconnecting"]);
 const EVENT_LIMIT = 100;
+/**
+ * A restart is allowed to replay what it missed while it was down, but only
+ * for a short window. A stream whose first missed event predates this process
+ * by more than the grace horizon is old history, not a restart: resuming it
+ * would replay days of backlog into the chat queue. The probe and the commit
+ * path must agree on this horizon: age belongs to the event, not to the
+ * channel that carried it.
+ */
+export const RESTORE_GRACE_MS = 15 * 60_000;
 /** A restored stream is capped for this long; a continuous replay cannot outrun the outbox. */
-const RESTORE_CAP_WINDOW_MS = 15 * 60_000;
+const RESTORE_CAP_WINDOW_MS = RESTORE_GRACE_MS;
 
 /**
  * A stream the user could still be depending on. `failed` is deliberately not
@@ -377,11 +386,11 @@ function filterUntrackedStatusItems(
  *
  * Replay detection is keyed by the durable stable id, not the adapter id: the
  * registry keeps the last `MAX_DELIVERED_EVENT_IDS` event ids for each stable
- * id. Novelty is judged from that id set alone, per conversation: an id already
- * delivered is a re-delivery and never becomes a chat notice, and an id the
- * conversation has not seen is news even when it was produced while this
- * process was down. Process boot time deliberately plays no part — a restart of
- * the server is not a restart of the conversation.
+ * id. Novelty is judged from that id set and the event's own timestamp: an id
+ * already delivered is a re-delivery and never becomes a chat notice, while an
+ * unseen id is news only if it is inside the restore horizon. Boot time sets
+ * that horizon, not a new conversation: a restart may still replay what it
+ * missed moments ago, but it may not turn days-old history into new chips.
  */
 export class McpEventFeed {
   private readonly subscriptions = new Map<string, McpSubscriptionView>();
@@ -758,10 +767,18 @@ export class McpEventFeed {
     });
   }
 
+  /** True when the event's own timestamp is older than the restore horizon. */
+  private isOlderThanRestoreHorizon(item: unknown): boolean {
+    if (!isRecord(item) || !isRecord(item.event)) return false;
+    const parsed = toIsoTimestamp(item.event.timestamp as string | number | Date);
+    return parsed !== null && Date.parse(parsed) < this.startedAt - RESTORE_GRACE_MS;
+  }
+
   /**
    * Exact novel subset, without advancing cursor/ids. Persist it before ingesting.
    * A replayed entry that never produced a chip is included again, with the
    * original item, so the next drain can still commit exactly one chip for it.
+   * Old events are never novel, even when their id is unseen.
    */
   novelEvents(items: readonly unknown[]): unknown[] {
     const batch = new Set<string>();
@@ -770,6 +787,7 @@ export class McpEventFeed {
       const identity = this.itemIdentity(item);
       if (identity === null) return;
       if (this.isDelivered(identity.stableId, identity.eventId)) return;
+      if (this.isOlderThanRestoreHorizon(item)) return;
       if (identity.eventId === undefined) {
         result.push(item);
         return;
@@ -1107,20 +1125,12 @@ export class McpEventFeed {
     if (!isRecord(details) || !Array.isArray(details.events)) return false;
     let stateChanged = false;
     let deliveredNew = false;
+    let agedDropped = 0;
     // One subscribe can hand us a whole retained history. Bound the batch
     // before it reaches the ledger: only the newest ids may become notices, and
     // the rest are one gap instead of a queue of deliveries.
     const batch = boundMcpEventBatch(details.events);
     const reportedDropped = typeof details.dropped_events === "number" ? details.dropped_events : 0;
-    const dropped = reportedDropped + batch.dropped;
-    if (dropped > 0) {
-      this.gap = { dropped, at: new Date().toISOString() };
-      this.notice =
-        reportedDropped > 0
-          ? `${dropped} events dropped while reconnecting`
-          : `${dropped} older events dropped from this batch`;
-      stateChanged = true;
-    }
     for (const item of batch.items) {
       if (!isRecord(item) || typeof item.server !== "string" || !isRecord(item.event)) continue;
       const event = item.event;
@@ -1142,9 +1152,6 @@ export class McpEventFeed {
         subscriptionId === undefined ? undefined : this.viewForAdapter(subscriptionId);
       const stableId =
         current?.stableId ?? deriveStableId(item.server, streamName, current?.arguments ?? {});
-      // Novelty belongs to the conversation, not to this process. An id whose
-      // chip was committed — in this process or before it started — is a
-      // re-delivery; anything else is news, however old its timestamp looks.
       const delivered = this.isDelivered(stableId, eventId);
       const duplicate = eventId !== undefined && (delivered || this.isSeen(stableId, eventId));
 
@@ -1154,6 +1161,12 @@ export class McpEventFeed {
         // drain instead of silently recording it as delivered.
         if (this.trackCursor(item, streamName, cursor)) stateChanged = true;
         if (eventId !== undefined) this.remember(stableId, eventId, false);
+        // An old id is a re-delivery too, but it must not be retained as an
+        // unchipped replay that a later drain could turn into a chip.
+        if (this.isOlderThanRestoreHorizon(item)) {
+          if (eventId !== undefined) this.forgetUnchipped(stableId, eventId);
+          continue;
+        }
         const existing = this.events.find((entry) => entry.id === id);
         if (existing === undefined) {
           this.events = [
@@ -1179,6 +1192,20 @@ export class McpEventFeed {
         const tracked =
           subscriptionId === undefined ? undefined : this.viewForAdapter(subscriptionId);
         if (tracked !== undefined) this.persist(tracked);
+        continue;
+      }
+
+      // Age is a property of the event, not of the channel that delivered it.
+      // An unseen id is still old history when its own timestamp predates the
+      // restore horizon: move the cursor past it and remember it as seen, but
+      // never let it become a chip or a turn.
+      if (this.isOlderThanRestoreHorizon(item)) {
+        if (this.trackCursor(item, streamName, cursor)) stateChanged = true;
+        if (eventId !== undefined) {
+          this.remember(stableId, eventId, false);
+          this.forgetUnchipped(stableId, eventId);
+        }
+        agedDropped += 1;
         continue;
       }
 
@@ -1214,6 +1241,19 @@ export class McpEventFeed {
       const tracked =
         subscriptionId === undefined ? undefined : this.viewForAdapter(subscriptionId);
       if (tracked !== undefined) this.persist(tracked);
+    }
+    const dropped = reportedDropped + batch.dropped + agedDropped;
+    if (dropped > 0) {
+      this.gap = { dropped, at: new Date().toISOString() };
+      // A batch that also delivered news keeps its "new event" notice; the
+      // gap still carries the count. A drop-only batch says so directly.
+      if (!deliveredNew) {
+        this.notice =
+          reportedDropped > 0
+            ? `${dropped} events dropped while reconnecting`
+            : `${dropped} older events dropped from this batch`;
+      }
+      stateChanged = true;
     }
     if (stateChanged) this.touch();
     return deliveredNew;

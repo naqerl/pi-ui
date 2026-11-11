@@ -84,15 +84,19 @@ async function startRestoreApp(
     subscription("restore", "burst-stream", "burst:0"),
     subscription("paged", "paged-stream", "paged:0"),
   ],
+  reuseDataDir?: string,
 ): Promise<RestoreApp> {
-  const dataDir = mkdtempSync(join(tmpdir(), "pi-ui-restore-data-"));
+  const dataDir = reuseDataDir ?? mkdtempSync(join(tmpdir(), "pi-ui-restore-data-"));
   const agentDir = mkdtempSync(join(tmpdir(), "pi-ui-restore-agent-"));
   const logPath = join(dataDir, "restore-calls.log");
   const pagedLogPath = join(dataDir, "paged-calls.log");
-  writeFileSync(
-    join(dataDir, "mcp-subscriptions.json"),
-    JSON.stringify({ version: 1, subscriptions }, null, 2),
-  );
+  // A restart reuses the durable registry: delivered ids and cursors survive.
+  if (reuseDataDir === undefined) {
+    writeFileSync(
+      join(dataDir, "mcp-subscriptions.json"),
+      JSON.stringify({ version: 1, subscriptions }, null, 2),
+    );
+  }
   writeFileSync(
     join(agentDir, "mcp.json"),
     JSON.stringify(
@@ -141,7 +145,7 @@ async function startRestoreApp(
     await waitForHealth(url, child, () => log);
   } catch (error) {
     child.kill("SIGKILL");
-    rmSync(dataDir, { recursive: true, force: true });
+    if (reuseDataDir === undefined) rmSync(dataDir, { recursive: true, force: true });
     rmSync(agentDir, { recursive: true, force: true });
     throw error;
   }
@@ -377,6 +381,99 @@ test("a restore a few seconds behind still replays", async ({ app }) => {
   } finally {
     await spawned.stop();
     rmSync(spawned.dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a pushed event dated two days ago leaves no chip while the fresh one still commits", async ({
+  app,
+}) => {
+  const spawned = await startRestoreApp([subscription("restore", "mixed-stream", "mixed:5")]);
+  try {
+    await app.open(`${spawned.url}/`);
+
+    await expect
+      .poll(
+        async () => {
+          const state = await readState(spawned.url);
+          return state.mcpEvents?.subscriptions.find((item) => item.name === "mixed-stream")
+            ?.cursor;
+        },
+        { timeout: 60_000 },
+      )
+      .toBe("mixed:7");
+
+    const state = await readState(spawned.url);
+    const ids = mcpNotices(state).flatMap((notice) => notice.ids);
+    // One chip for the fresh event; the two-day-old event is not a chip.
+    expect(ids.filter((id) => id === "mixed-fresh")).toHaveLength(1);
+    expect(ids).not.toContain("mixed-stale");
+    expect(state.mcpEvents?.events.map((event) => event.id)).toContain("mixed-fresh");
+    expect(state.mcpEvents?.events.map((event) => event.id)).not.toContain("mixed-stale");
+    expect(state.mcpEvents?.gap?.dropped).toBe(1);
+  } finally {
+    await spawned.stop();
+    rmSync(spawned.dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a duplicate of an already-delivered event survives a restart without a second chip", async ({
+  app,
+}) => {
+  const first = await startRestoreApp([subscription("restore", "duplicate-stream", "dup:5")]);
+  let second: RestoreApp | undefined;
+  try {
+    await app.open(`${first.url}/`);
+
+    // Wait for the first chip to be committed and its id persisted, so the
+    // second run's copy really is a duplicate of an already-delivered event.
+    await expect
+      .poll(
+        async () => {
+          const state = await readState(first.url);
+          const stored = JSON.parse(
+            readFileSync(join(first.dataDir, "mcp-subscriptions.json"), "utf8"),
+          ) as { subscriptions: Array<{ deliveredEventIds?: string[] }> };
+          return {
+            cursor: state.mcpEvents?.subscriptions.find((item) => item.name === "duplicate-stream")
+              ?.cursor,
+            chips: mcpNotices(state)
+              .flatMap((notice) => notice.ids)
+              .filter((id) => id === "duplicate-1").length,
+            delivered: stored.subscriptions.some((item) =>
+              item.deliveredEventIds?.includes("duplicate-1"),
+            ),
+          };
+        },
+        { timeout: 60_000 },
+      )
+      .toEqual({ cursor: "dup:6", chips: 1, delivered: true });
+
+    await first.stop();
+    const restarted = await startRestoreApp([], first.dataDir);
+    second = restarted;
+    await app.open(`${restarted.url}/`);
+
+    await expect
+      .poll(
+        async () => {
+          const state = await readState(restarted.url);
+          return state.mcpEvents?.subscriptions.find((item) => item.name === "duplicate-stream")
+            ?.cursor;
+        },
+        { timeout: 60_000 },
+      )
+      .toBe("dup:7");
+
+    const state = await readState(restarted.url);
+    expect(
+      mcpNotices(state)
+        .flatMap((notice) => notice.ids)
+        .filter((id) => id === "duplicate-1"),
+    ).toHaveLength(1);
+  } finally {
+    await second?.stop();
+    await first.stop();
+    rmSync(first.dataDir, { recursive: true, force: true });
   }
 });
 

@@ -175,7 +175,7 @@ test("the feed shows data.kind as the event name and keeps each subscription's c
   );
 });
 
-test("an event produced before this process started is news, not a replay", () => {
+test("an event from just before this process started is news, not a replay", () => {
   const feed = new McpEventFeed(undefined, { startedAt: "2026-11-07T12:00:00.000Z" });
   feed.ingest({
     customType: "mcp-events-tool",
@@ -194,7 +194,7 @@ test("an event produced before this process started is news, not a replay", () =
           event: {
             eventId: "hub:900",
             name: "hub",
-            timestamp: "2026-11-07T11:30:34.640Z",
+            timestamp: "2026-11-07T11:50:34.640Z",
             cursor: "hub:900",
             data: { kind: "hub.run", labels: { task: "abc1" } },
           },
@@ -205,6 +205,47 @@ test("an event produced before this process started is news, not a replay", () =
   assert.equal(changed, true);
   assert.equal(feed.state.notice, "new event from zeroshot");
   assert.equal(feed.state.events.at(-1)?.replayed, undefined, "not marked as a replay");
+});
+
+test("an event older than the restore horizon is dropped by age, counted, and stays dropped", () => {
+  const feed = new McpEventFeed(undefined, { startedAt: "2026-11-07T12:00:00.000Z" });
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe" },
+      result: { subscription: { id: "s1", server: "zeroshot", name: "hub", status: "active" } },
+    },
+  });
+  const item = (eventId: string, timestamp: string, cursor: string) => ({
+    subscription_id: "s1",
+    server: "zeroshot",
+    event: {
+      eventId,
+      name: "hub",
+      timestamp,
+      cursor,
+      data: { kind: "hub.run", labels: { task: "abc1" } },
+    },
+  });
+  const stale = item("hub:800", "2026-11-05T12:00:00.000Z", "hub:800");
+  const staleAgain = item("hub:800", "2026-11-05T12:00:00.000Z", "hub:801");
+  const fresh = item("hub:802", "2026-11-07T11:55:00.000Z", "hub:802");
+
+  assert.deepEqual(feed.novelEvents([stale, fresh]), [fresh], "only the fresh event is novel");
+  assert.equal(
+    feed.ingest({ customType: "mcp-events", details: { events: [stale, staleAgain] } }),
+    false,
+  );
+  assert.equal(feed.state.events.length, 0, "the stale event leaves no chip entry");
+  assert.equal(feed.state.gap?.dropped, 1, "the duplicate copy is not counted twice");
+  assert.equal(feed.state.notice, "1 older events dropped from this batch");
+  assert.equal(feed.state.subscriptions[0]?.cursor, "hub:801", "the cursor still advances");
+
+  // A later copy is still a re-delivery, not a new drop or a chip.
+  assert.equal(feed.ingest({ customType: "mcp-events", details: { events: [staleAgain] } }), false);
+  assert.equal(feed.state.events.length, 0);
+  assert.equal(feed.state.gap?.dropped, 1);
+  assert.deepEqual(feed.novelEvents([staleAgain]), []);
 });
 
 test("the same event id twice is one entry and one notice", () => {
@@ -226,7 +267,7 @@ test("the same event id twice is one entry and one notice", () => {
           event: {
             eventId: id,
             name: "hub",
-            timestamp: "2026-11-07T11:40:00.000Z",
+            timestamp: "2026-11-07T11:50:00.000Z",
             cursor: "hub:901",
             data: { kind: "hub.job", labels: { task: "abc1" } },
           },

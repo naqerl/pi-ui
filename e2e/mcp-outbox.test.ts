@@ -30,8 +30,8 @@ const event = (id: string) => ({
   },
 });
 
-test("preboot unseen IDs are news; A then [A,B,B] selects exactly B without advancing during selection", () => {
-  const feed = new McpEventFeed(undefined, { startedAt: Date.now() });
+test("preboot unseen IDs inside the restore horizon are news; A then [A,B,B] selects exactly B without advancing during selection", () => {
+  const feed = new McpEventFeed(undefined, { startedAt: Date.parse("2020-01-01T00:10:00.000Z") });
   const a = event("A");
   const b = event("B");
   assert.deepEqual(feed.novelEvents([a]), [a]);
