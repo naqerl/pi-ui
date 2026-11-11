@@ -1,3 +1,13 @@
+## 1.6.143
+
+### Changed
+
+- A task card now keeps its meta on one line at the bottom instead of stacking it down the right
+  column, so long values cannot overflow the card.
+- The `Needs you` header uses the same solid treatment as the other section headers (open, project),
+  and the approval area follows it, so a pending approval reads as one block rather than a panel
+  that looks like a different app.
+
 ## 1.6.142
 
 ### Fixed
