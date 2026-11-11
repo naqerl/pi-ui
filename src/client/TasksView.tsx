@@ -600,7 +600,12 @@ function TasksViewImpl({
   const list = (
     <div className={`${TASK_STACK} min-w-0`} data-testid="task-list">
       {(proposedTasks.length > 0 || failedTasks.length > 0) && (
-        <Section title="Needs you" count={proposedTasks.length + failedTasks.length} id="needs">
+        <Section
+          title="Needs you"
+          count={proposedTasks.length + failedTasks.length}
+          id="needs"
+          dark
+        >
           <ul id="proposed-tasks" className={TASK_STACK} data-testid="task-proposals">
             {proposedTasks.map(proposal)}
             {failedTasks.map((task) => (
@@ -1061,12 +1066,8 @@ export function TaskRow({
   const trace = activity?.traces[task.id];
   const badge = history || (done && depth > 0) ? null : stateBadge(current, trace);
   const stale = current === "working" && isStaleWorking(task, activity);
-  const note = [
-    showProject && depth === 0 ? (task.project ?? "") : "",
-    rowNote(task, tasks, current, trace, activity?.traces ?? {}, index),
-  ]
-    .filter((part) => part !== "")
-    .join(" · ");
+  const project = showProject && depth === 0 ? task.project : undefined;
+  const note = rowNote(task, tasks, current, trace, activity?.traces ?? {}, index);
   const describedBy = [
     `task-id-${task.id}`,
     notice !== null ? `task-error-${task.id}` : null,
@@ -1103,7 +1104,7 @@ export function TaskRow({
         aria-label={`Open ${plainInline(task.title)}`}
         aria-describedby={describedBy.length > 0 ? describedBy.join(" ") : undefined}
         className={cn(
-          "flex min-h-11 w-full cursor-pointer select-none items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 text-left hover:bg-muted",
+          "flex min-h-11 w-full cursor-pointer select-none flex-col justify-center gap-0.5 rounded-md border border-border bg-surface px-3 py-2 text-left hover:bg-muted",
           backlog &&
             "border-dashed bg-surface/60 text-muted-foreground backdrop-blur-sm saturate-0",
           selected && "ring-1 ring-foreground",
@@ -1171,23 +1172,22 @@ export function TaskRow({
           onOpen(task.id);
         }}
       >
-        <span className="flex min-w-0 flex-1 flex-col justify-start gap-0.5 self-stretch">
-          <span
-            className={cn(
-              "line-clamp-2 min-w-0 text-sm leading-5 [overflow-wrap:anywhere]",
-              done || backlog ? "text-muted-foreground" : "text-foreground",
-            )}
-          >
-            <InlineMarkdown text={task.title} />
-          </span>
-          {note !== "" && (
-            <span className="whitespace-normal text-xs leading-4 text-muted-foreground [overflow-wrap:anywhere]">
-              {note}
-            </span>
+        <span
+          className={cn(
+            "line-clamp-2 min-w-0 text-sm leading-5 [overflow-wrap:anywhere]",
+            done || backlog ? "text-muted-foreground" : "text-foreground",
           )}
+        >
+          <InlineMarkdown text={task.title} />
         </span>
-        <span className="flex min-h-9 shrink-0 flex-col items-end justify-between self-stretch">
-          <span className="flex items-center justify-end gap-1.5">
+        {note !== "" && (
+          <span className="whitespace-normal text-xs leading-4 text-muted-foreground [overflow-wrap:anywhere]">
+            {note}
+          </span>
+        )}
+        <span className="flex min-w-0 items-center gap-2 text-xs leading-4 text-muted-foreground">
+          <TaskCardMeta task={task} project={project} />
+          <span className="flex shrink-0 items-center justify-end gap-1.5">
             {badge !== null && (
               <Badge
                 data-testid={`task-badge-${task.id}`}
@@ -1202,9 +1202,7 @@ export function TaskRow({
             )}
             {stale && <StaleMarker id={task.id} />}
             <ReopenBadge task={task} />
-            <TaskIdChip id={task.id} />
           </span>
-          <TaskCardTimes task={task} />
         </span>
       </div>
       {notice !== null && (
@@ -1281,11 +1279,6 @@ function ProposedTask({
           <span className="line-clamp-2 text-sm leading-5 [overflow-wrap:anywhere]">
             <InlineMarkdown text={task.title} />
           </span>
-          {showProject && task.project !== undefined && (
-            <span className="text-xs leading-4 text-muted-foreground [overflow-wrap:anywhere]">
-              {task.project}
-            </span>
-          )}
         </span>
         <span className="ml-auto flex shrink-0 flex-col items-end justify-between gap-1 self-stretch">
           <span className="flex items-center justify-end gap-2">
@@ -1313,9 +1306,10 @@ function ProposedTask({
             >
               Approve
             </Button>
-            <TaskIdBadge id={task.id} />
           </span>
-          <TaskCardTimes task={task} />
+        </span>
+        <span className="flex w-full min-w-0 items-center text-xs leading-4 text-muted-foreground">
+          <TaskCardMeta task={task} project={showProject ? task.project : undefined} idBadge />
         </span>
       </div>
       {notice !== null && (
@@ -1324,6 +1318,51 @@ function ProposedTask({
         </div>
       )}
     </li>
+  );
+}
+
+/** The one bottom line of task metadata: project, id, times and image count. */
+function TaskCardMeta({
+  task,
+  project,
+  idBadge = false,
+}: {
+  task: Task;
+  project?: string;
+  idBadge?: boolean;
+}) {
+  const images = task.attachments?.length ?? 0;
+  return (
+    <span
+      data-testid="task-card-meta"
+      className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-xs leading-4 text-muted-foreground"
+    >
+      {project !== undefined && project !== "" && (
+        <>
+          <span data-testid="task-card-project" title={project} className="min-w-0 truncate">
+            {project}
+          </span>
+          <span aria-hidden="true" className="shrink-0 text-border">
+            ·
+          </span>
+        </>
+      )}
+      {idBadge ? <TaskIdBadge id={task.id} /> : <TaskIdChip id={task.id} />}
+      <span aria-hidden="true" className="shrink-0 text-border">
+        ·
+      </span>
+      <TaskCardTimes task={task} />
+      {images > 0 && (
+        <>
+          <span aria-hidden="true" className="shrink-0 text-border">
+            ·
+          </span>
+          <span data-testid="task-card-images" className="shrink-0 whitespace-nowrap">
+            {images} image{images === 1 ? "" : "s"}
+          </span>
+        </>
+      )}
+    </span>
   );
 }
 
@@ -1336,7 +1375,7 @@ export function TaskCardTimes({ task }: { task: Task }) {
   return (
     <span
       data-testid="task-card-times"
-      className="flex flex-wrap items-end justify-end gap-x-2 text-xs leading-4 text-muted-foreground"
+      className="inline-flex shrink-0 items-center gap-x-2 whitespace-nowrap text-xs leading-4 text-muted-foreground"
     >
       <time dateTime={task.createdAt} title={formatDateTime(task.createdAt)}>
         Created {created}
