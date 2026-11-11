@@ -560,6 +560,8 @@ export interface SubmittedMessage {
   placed: boolean;
   queue: QueuedMessage[];
   steers: QueuedMessage[];
+  /** The queue/steer revision these lists carry. */
+  queueRevision: number;
 }
 
 export class ChatService {
@@ -607,6 +609,8 @@ export class ChatService {
   private readonly queued = new Map<string, QueuedRun>();
   /** Steers durable holds in its inbox for the next turn boundary, by submission id. */
   private readonly steers = new Map<string, QueuedMessage>();
+  /** Bumped on every queue/steer mutation, so a stale snapshot cannot undo it. */
+  private queueRevision = 0;
   /** One event-driven wake for inputs a finished run left queued; see `drainQueuedInputs`. */
   private queueDrain: Promise<void> | undefined;
   private marker: RunMarker | undefined;
@@ -1020,6 +1024,7 @@ export class ChatService {
       runError: this.runError,
       queue: this.queueItems(),
       steers: this.steerItems(),
+      queueRevision: this.queueRevision,
     };
   }
 
@@ -1086,6 +1091,9 @@ export class ChatService {
   }
 
   async getSnapshot(request: WindowRequest = {}): Promise<Snapshot> {
+    // Capture before reading: a mutation that lands while the snapshot is built
+    // must get a higher revision than the data this response can claim.
+    const queueRevision = this.queueRevision;
     const context = await this.conversation.context(SESSION_CONTEXT);
     const usage = await this.harness.usage(SESSION_CONTEXT);
     const built = buildTranscript(context.entries, this.mediaRef, this.diagramRevision);
@@ -1100,6 +1108,7 @@ export class ChatService {
       runError: this.runError,
       queue: this.queueItems(),
       steers: this.steerItems(),
+      queueRevision,
       usage: summarizeUsage(usage),
       context: contextUsage(context.entries, this.modelWindow),
       mcp: this.mcpStatus(),
@@ -1221,6 +1230,7 @@ export class ChatService {
         placed: true,
         queue: this.queueItems(),
         steers: this.steerItems(),
+        queueRevision: this.queueRevision,
       };
     }
     const steer = mode === "steer";
@@ -1389,6 +1399,7 @@ export class ChatService {
       steer,
       attachments,
       steerKey,
+      pendingKey,
     );
     timing.statusMs = Date.now() - statusStart;
     // An idle steer is already in the transcript; the response carries it, so no pending bubble
@@ -1437,7 +1448,15 @@ export class ChatService {
       totalMs: Date.now() - timingStart,
       queueDepth: this.queued.size + this.steers.size,
     });
-    return { message, mode, queued, placed, queue: this.queueItems(), steers: this.steerItems() };
+    return {
+      message,
+      mode,
+      queued,
+      placed,
+      queue: this.queueItems(),
+      steers: this.steerItems(),
+      queueRevision: this.queueRevision,
+    };
   }
 
   async cancelQueued(id: string): Promise<boolean> {
@@ -1509,7 +1528,9 @@ export class ChatService {
     } catch (error) {
       console.error("[pi] abort failed", error);
     } finally {
+      const clearedQueue = this.queued.size > 0;
       this.queued.clear();
+      if (clearedQueue && wasRunning) this.queueRevision += 1;
       // Pending steers stay until their submissions settle, so each one can be reported as
       // dropped with the reason instead of vanishing when the run stops.
       if (wasRunning) {
@@ -1687,6 +1708,7 @@ export class ChatService {
     steer: boolean,
     attachments: string[] = [],
     steerKey?: string,
+    pendingKey?: string,
   ): Promise<{ message: ChatMessage; placed: boolean }> {
     const record = await submission.status(SESSION_CONTEXT);
     const entryId = "entry" in record ? record.entry : undefined;
@@ -1706,9 +1728,13 @@ export class ChatService {
     }
 
     const notice = parseNotice(text);
+    // A reused submission must keep the id its optimistic or queued copy already
+    // has; a submission-scoped id would replace the bubble and blink it out.
+    const pendingMessageId =
+      !steer && pendingKey !== undefined ? `m-${pendingKey}` : `m-pending-${submission.id}`;
     return {
       message: {
-        id: `m-pending-${submission.id}`,
+        id: pendingMessageId,
         role: "user",
         text,
         ...(notice === null ? {} : { notice }),
@@ -1832,6 +1858,7 @@ export class ChatService {
   /** A pending steer durable dropped is reported as failed, never silently removed. */
   private dropSteer(id: string, reason: string): boolean {
     if (!this.steers.delete(id)) return false;
+    this.queueRevision += 1;
     this.hub.broadcast([
       {
         event: "steer.dropped",
@@ -2662,6 +2689,7 @@ export class ChatService {
       this.queued.delete(id);
       removed = true;
     }
+    if (removed) this.queueRevision += 1;
     if (removed) await this.publishQueueRetirement();
   }
 
@@ -3067,6 +3095,7 @@ export class ChatService {
   }
 
   private broadcastQueue(): void {
+    this.queueRevision += 1;
     this.hub.broadcast({
       event: "run.state",
       data: this.getRunStatus(),

@@ -524,6 +524,8 @@ export interface Snapshot {
   queue: QueuedMessage[];
   /** Steers waiting for the run's next turn boundary, oldest first. */
   steers?: QueuedMessage[];
+  /** Server revision for `queue`/`steers`, so a late snapshot cannot undo a newer update. */
+  queueRevision?: number;
   usage: UsageSummary;
   context: ContextUsage;
   mcp: McpStatus;
@@ -554,6 +556,8 @@ export interface SubmitMessageResponse {
   queue: QueuedMessage[];
   /** Steers waiting for the run's next turn boundary. */
   steers?: QueuedMessage[];
+  /** Server revision for `queue`/`steers` at the moment this response was made. */
+  queueRevision?: number;
 }
 
 export interface HealthResponse {
@@ -612,6 +616,8 @@ export interface StreamRunState {
   runError?: RunError | null;
   queue?: QueuedMessage[];
   steers?: QueuedMessage[];
+  /** Server revision for `queue`/`steers`; older frames must not replace a newer list. */
+  queueRevision?: number;
 }
 
 /** A pending steer the server could not deliver; it leaves the queue with a reason. */

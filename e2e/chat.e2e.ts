@@ -1,5 +1,5 @@
 import { type Browser, beforeEach, describe, test } from "@e2e-dev/web";
-import { expect } from "e2e";
+import { expect, type JsonValue } from "e2e";
 
 const longThread = {
   conversationId: "chat-scroller-e2e",
@@ -747,4 +747,117 @@ test("keeps every frame inside the budget while the composer body animates", asy
   expect(result?.end ?? 0).toBeGreaterThan((result?.start ?? 0) + 20);
   expect((result?.frames.length ?? 0) > 6).toBe(true);
   expect(Math.max(...(result?.frames ?? [0]))).toBeLessThanOrEqual(24);
+});
+
+// A state snapshot is a read of the server at one moment. If it was read before a send
+// committed but lands after the optimistic copy retired, replacing the window with it
+// removes the sent row until the next push. Sample every frame to catch that gap.
+test("keeps a sent bubble on every frame through a stale state push", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await openChat(app, browser);
+  const composer = screen.getByRole("textbox", "Message");
+  await expect(composer).toBeVisible({ timeout: 30_000 });
+
+  // Read a snapshot from before the send, then serve it on demand after confirmation.
+  const stale = await browser.evaluate(async () => {
+    const response = await fetch("/api/state", { cache: "no-store" });
+    return (await response.json()) as JsonValue;
+  });
+  let serveStale = false;
+  let served = 0;
+  await browser.route("**/api/state**", async (route) => {
+    if (!serveStale) {
+      await route.continue();
+      return;
+    }
+    served += 1;
+    await route.fulfill({ json: stale });
+  });
+
+  const text = `frame continuous send ${Date.now()}`;
+  await browser.evaluate((needle: string) => {
+    const state = { armed: false, started: false, id: "", frames: 0, missing: 0 };
+    (window as unknown as { __sendFrames?: typeof state }).__sendFrames = state;
+    const send = document.querySelector<HTMLButtonElement>('button[aria-label="Send"]');
+    send?.addEventListener(
+      "click",
+      () => {
+        state.armed = true;
+      },
+      { capture: true },
+    );
+    const tick = () => {
+      state.frames += 1;
+      if (state.armed) {
+        const rows = [...document.querySelectorAll<HTMLElement>('[data-role="user"]')].filter(
+          (row) => (row.textContent ?? "").includes(needle),
+        );
+        if (!state.started) {
+          if (rows.length > 0) {
+            state.started = true;
+            state.id = rows[0]?.getAttribute("data-message-id") ?? "";
+          }
+        } else if (!rows.some((row) => row.getAttribute("data-message-id") === state.id)) {
+          state.missing += 1;
+        }
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    return true;
+  }, text);
+
+  await composer.fill(text);
+  await screen.getByRole("button", { name: "Send" }).tap();
+  await expect(composer).toHaveValue("");
+  await expect(screen.getByText(`Echo: ${text}`, { exact: false })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(browser.locator('[data-role="user"]').filter({ hasText: text })).toHaveCount(1);
+
+  const painted = await browser.evaluate(() => {
+    const state = (window as unknown as { __sendFrames?: { started: boolean; id: string } })
+      .__sendFrames;
+    return { started: state?.started ?? false, id: state?.id ?? "" };
+  });
+  expect(painted.started).toBe(true);
+  expect(painted.id).not.toBe("");
+
+  // The late snapshot has no row for this send. It must not take the row away.
+  serveStale = true;
+  await browser.evaluate(() => {
+    window.dispatchEvent(new Event("focus"));
+    return true;
+  });
+  await expect.poll(() => served).toBeGreaterThan(0);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  await expect(browser.locator(`[data-message-id="${painted.id}"]`)).toHaveCount(1);
+  await expect(browser.locator('[data-role="user"]').filter({ hasText: text })).toHaveCount(1);
+
+  serveStale = false;
+  await browser.evaluate(() => {
+    window.dispatchEvent(new Event("focus"));
+    return true;
+  });
+  await expect(browser.locator(`[data-message-id="${painted.id}"]`)).toHaveCount(1);
+
+  const result = await browser.evaluate(() => {
+    const state = (
+      window as unknown as {
+        __sendFrames?: { started: boolean; id: string; frames: number; missing: number };
+      }
+    ).__sendFrames;
+    return {
+      started: state?.started ?? false,
+      id: state?.id ?? "",
+      frames: state?.frames ?? 0,
+      missing: state?.missing ?? -1,
+    };
+  });
+  expect(result.id).toBe(painted.id);
+  expect(result.frames).toBeGreaterThan(0);
+  expect(result.missing, JSON.stringify(result)).toBe(0);
 });
