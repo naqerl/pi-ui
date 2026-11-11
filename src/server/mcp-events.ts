@@ -4,6 +4,7 @@ import type { McpEventsState, McpEventView, McpSubscriptionView } from "../share
 import {
   deriveStableId,
   deriveSubscriptionState,
+  hasPosition,
   MAX_DELIVERED_EVENT_IDS,
   type McpSubscriptionRecord,
   type McpSubscriptionRegistry,
@@ -204,62 +205,98 @@ function subscriptionFrom(value: unknown): McpSubscriptionView | null {
   };
 }
 
-/** Add an adapter id found in a status payload, ignoring blanks and non-strings. */
-function addStatusId(value: unknown, ids: Set<string>): void {
-  if (typeof value !== "string") return;
-  const id = value.trim();
-  if (id.length > 0) ids.add(id);
+interface StatusView {
+  id?: string;
+  stableId?: string;
+  status?: string;
 }
 
-/** Ids carried by one status item, whether it is an adapter subscription or a small summary. */
-function addStatusIds(value: unknown, ids: Set<string>, depth = 0): void {
+function collectStatusViews(value: unknown, views: StatusView[], depth = 0): void {
   if (depth > 3 || !isRecord(value)) return;
-  addStatusId(value.id, ids);
-  addStatusId(value.subscription_id, ids);
-  addStatusId(value.subscriptionId, ids);
-  if (Array.isArray(value.ids)) {
-    for (const id of value.ids) addStatusId(id, ids);
+  const id =
+    typeof value.id === "string"
+      ? value.id
+      : typeof value.subscription_id === "string"
+        ? value.subscription_id
+        : typeof value.subscriptionId === "string"
+          ? value.subscriptionId
+          : undefined;
+  const stableId =
+    typeof value.stableId === "string"
+      ? value.stableId
+      : typeof value.stable_id === "string"
+        ? value.stable_id
+        : undefined;
+  const status = typeof value.status === "string" ? value.status : undefined;
+  if (id !== undefined || stableId !== undefined || status !== undefined) {
+    views.push({
+      ...(id === undefined ? {} : { id }),
+      ...(stableId === undefined ? {} : { stableId }),
+      ...(status === undefined ? {} : { status }),
+    });
   }
-  if (isRecord(value.subscription)) addStatusIds(value.subscription, ids, depth + 1);
+  if (Array.isArray(value.ids)) {
+    for (const entry of value.ids) {
+      if (typeof entry === "string" && entry.length > 0) views.push({ id: entry });
+    }
+  }
+  if (isRecord(value.subscription)) collectStatusViews(value.subscription, views, depth + 1);
   if (Array.isArray(value.subscriptions)) {
-    for (const item of value.subscriptions) addStatusIds(item, ids, depth + 1);
+    for (const item of value.subscriptions) collectStatusViews(item, views, depth + 1);
   } else if (isRecord(value.subscriptions)) {
-    addStatusIds(value.subscriptions, ids, depth + 1);
+    collectStatusViews(value.subscriptions, views, depth + 1);
+  }
+  if (Array.isArray(value.items)) {
+    for (const item of value.items) collectStatusViews(item, views, depth + 1);
   }
 }
 
 /**
- * Every subscription id a status notice names, from its details or its prose
- * body. A JSON status carries them under `subscriptions`; a prose line can name
- * one as `subscription=<id>` or by an adapter id. No id means no attribution.
+ * The one parser for status identity and state. JSON items name an id and a
+ * state; prose can name either a bare adapter id, `subscription=<id>`, or an
+ * `id is <state>` line. Identity checks and outage tracking read this same set.
  */
-function statusNoticeIds(text: string, details: unknown): string[] {
-  const ids = new Set<string>();
-  addStatusIds(details, ids);
+function statusViews(text: string, details: unknown): StatusView[] {
+  const views: StatusView[] = [];
+  collectStatusViews(details, views);
   const payloadStart = text.indexOf("{");
   if (payloadStart >= 0) {
     try {
-      addStatusIds(JSON.parse(text.slice(payloadStart)), ids);
+      collectStatusViews(JSON.parse(text.slice(payloadStart)), views);
     } catch {
-      // A prose error can contain a brace; it is not a status payload.
+      // A prose line can contain a brace; it is not a status payload.
     }
   }
   const body = text.startsWith(MCP_STATUS_HEAD) ? text.slice(MCP_STATUS_HEAD.length) : text;
   for (const match of body.matchAll(/\bmcp-extension-[A-Za-z0-9][A-Za-z0-9._:-]*/gi)) {
-    addStatusId(match[0]?.replace(/[.:]+$/, ""), ids);
+    const id = match[0]?.replace(/[.:]+$/, "");
+    if (id !== undefined && id.length > 0) views.push({ id });
   }
   for (const match of body.matchAll(
-    /\b(?:subscription(?:_id|Id)?|sub)\s*(?:=|:)\s*["'`]?([A-Za-z0-9][A-Za-z0-9._:-]*)/gi,
+    /\b(?:subscription(?:_id|Id)?|sub|stableId|stable_id)\s*(?:=|:)\s*["'`]?([A-Za-z0-9][A-Za-z0-9._:/#-]*)/gi,
   )) {
-    addStatusId(match[1], ids);
+    if (match[1] !== undefined) views.push({ id: match[1] });
   }
-  // A rendered line such as `hub: a-dead is failed` names its subscription
-  // before the state word; an error sentence (`zeroshot: Reconnect attempts…`)
-  // does not, and stays unattributed.
+  const stateWords = "(opening|active|reconnecting|failed|ended|stopped|cancelled|stalled|dead)";
   for (const match of body.matchAll(
-    /^[^:\n]+:\s+([A-Za-z0-9][A-Za-z0-9._:-]*)\s+is\s+(?:opening|active|reconnecting|failed|ended|stopped|cancelled|stalled|dead)\b/gim,
+    new RegExp(`^[^:\\n]+:\\s+([A-Za-z0-9][A-Za-z0-9._:/#-]*)\\s+is\\s+${stateWords}\\b`, "gim"),
   )) {
-    addStatusId(match[1], ids);
+    views.push({ id: match[1] ?? "", status: match[2] ?? "" });
+  }
+  for (const match of body.matchAll(
+    new RegExp(`^\\s*([A-Za-z0-9][A-Za-z0-9._:/#-]*)\\s+is\\s+${stateWords}\\b`, "gim"),
+  )) {
+    views.push({ id: match[1] ?? "", status: match[2] ?? "" });
+  }
+  return views;
+}
+
+/** Every subscription id a status notice names, from its details or prose body. */
+function statusNoticeIds(text: string, details: unknown): string[] {
+  const ids = new Set<string>();
+  for (const view of statusViews(text, details)) {
+    if (view.id !== undefined && view.id.length > 0) ids.add(view.id);
+    if (view.stableId !== undefined && view.stableId.length > 0) ids.add(view.stableId);
   }
   return [...ids];
 }
@@ -339,7 +376,7 @@ function isAdapterFailureProse(text: string): boolean {
 /** Remove status items whose id this feed does not track from a JSON payload. */
 function filterUntrackedStatusItems(
   text: string,
-  tracked: ReadonlySet<string>,
+  tracked: (id: string) => boolean,
 ): { text: string; dropped: string[] } {
   const payloadStart = text.indexOf("{");
   if (payloadStart < 0) return { text, dropped: [] };
@@ -356,8 +393,18 @@ function filterUntrackedStatusItems(
   const dropped: string[] = [];
   for (const item of payload.subscriptions) {
     const id = isRecord(item) && typeof item.id === "string" ? item.id : undefined;
-    if (id !== undefined && id.length > 0 && !tracked.has(id)) {
-      dropped.push(id);
+    const stableId =
+      isRecord(item) && typeof item.stableId === "string"
+        ? item.stableId
+        : isRecord(item) && typeof item.stable_id === "string"
+          ? item.stable_id
+          : undefined;
+    const idTracked = id !== undefined && id.length > 0 && tracked(id);
+    const stableTracked = stableId !== undefined && stableId.length > 0 && tracked(stableId);
+    // An item can name only its durable identity. If neither name is tracked,
+    // it belongs to a zombie generation just like an unknown adapter id.
+    if ((id !== undefined || stableId !== undefined) && !idTracked && !stableTracked) {
+      dropped.push(id ?? stableId ?? "unknown");
       continue;
     }
     subscriptions.push(item);
@@ -400,6 +447,12 @@ export class McpEventFeed {
   private events: McpEventView[] = [];
   /** The last status text allowed to chat for an id, so an exact repeat is one chip. */
   private readonly reportedStatus = new Map<string, string>();
+  /** Stable ids whose last accepted status was an outage, not healthy traffic. */
+  private readonly outageReported = new Set<string>();
+  /** Stable ids whose traffic recovered; the next active status is its one recovery. */
+  private readonly recoveryPending = new Set<string>();
+  /** Stable ids that already spoke after their stream failed terminally. */
+  private readonly terminalReported = new Set<string>();
   private notice: string | null = null;
   private gap:
     | { dropped: number; at: string; from?: string | null; missedSince?: string }
@@ -521,6 +574,147 @@ export class McpEventFeed {
   }
 
   /**
+   * A status id is tracked when it is the current adapter id, the durable
+   * stable id, or an adapter id already known to represent that stable id in
+   * this process. An id from before a restart has no alias and stays untracked.
+   */
+  private tracksStatusId(id: string): boolean {
+    if (this.subscriptions.has(id)) return true;
+    for (const view of this.subscriptions.values()) {
+      if (view.stableId === id) return true;
+    }
+    const stableId = this.adapterAliases.get(id);
+    return stableId !== undefined && this.findByStableId(stableId) !== undefined;
+  }
+
+  private trackedStatusEntries(
+    text: string,
+    details: unknown,
+  ): Array<{ view: McpSubscriptionView; status: string }> {
+    const entries: Array<{ view: McpSubscriptionView; status: string }> = [];
+    const seen = new Set<string>();
+    for (const item of statusViews(text, details)) {
+      if (item.status === undefined) continue;
+      const tracked =
+        (item.id === undefined ? undefined : this.subscriptions.get(item.id)) ??
+        (item.stableId === undefined ? undefined : this.findByStableId(item.stableId)) ??
+        (item.id === undefined ? undefined : this.findByStableId(item.id));
+      // An untracked sibling is filtered from the payload separately; it must
+      // not force a healthy tracked row to speak before that happens.
+      if (tracked === undefined) continue;
+      const key = `${tracked.stableId}\u0000${item.status}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      entries.push({ view: tracked, status: item.status });
+    }
+    return entries;
+  }
+
+  private hasReportedOutage(view: McpSubscriptionView): boolean {
+    return this.outageReported.has(view.stableId) || this.recoveryPending.has(view.stableId);
+  }
+
+  private clearReportedOutage(view: McpSubscriptionView): void {
+    this.outageReported.delete(view.stableId);
+    this.recoveryPending.delete(view.stableId);
+    this.terminalReported.delete(view.stableId);
+  }
+
+  private isTerminalStatus(status: string): boolean {
+    return (
+      status === "failed" ||
+      status === "ended" ||
+      status === "stopped" ||
+      status === "cancelled" ||
+      status === "stalled" ||
+      status === "dead"
+    );
+  }
+
+  /**
+   * A healthy stream does not need a chat turn to say it is still healthy.
+   * Recovery notices are different: the explicit outage state makes the
+   * first active/opening status after it the one recovery.
+   */
+  private isHealthyStatusNotice(text: string, details: unknown): boolean {
+    let sawTracked = false;
+    let sawRecovery = false;
+    let sawSuppressedOutage = false;
+    for (const { view, status } of this.trackedStatusEntries(text, details)) {
+      if (status !== "active" && status !== "opening") return false;
+      if (this.hasReportedOutage(view)) {
+        if (status === "active") {
+          // The first active status after an outage is the one recovery.
+          this.clearReportedOutage(view);
+          sawRecovery = true;
+        } else {
+          // A recovering row's opening is not a second recovery notice. Keep
+          // the outage marker so its active status can still speak once.
+          sawSuppressedOutage = true;
+        }
+        continue;
+      }
+      if (
+        view.state !== "active" ||
+        view.recoveryPending === true ||
+        (view.status !== "active" && view.status !== "opening")
+      ) {
+        return false;
+      }
+      sawTracked = true;
+    }
+    if (sawRecovery) return false;
+    return sawTracked || sawSuppressedOutage;
+  }
+
+  /**
+   * Mark a fresh outage or terminal failure. A second outage of the same kind
+   * for the same stable id is suppressed; a terminal failure after a mere
+   * outage is still news, and an active status after either is the recovery.
+   * Returns true when there is nothing new to say.
+   */
+  private suppressReportedOutage(
+    text: string,
+    details: unknown,
+    suppressDuplicate = true,
+  ): boolean {
+    const unhealthy = this.trackedStatusEntries(text, details).filter(
+      ({ status }) => status !== "active" && status !== "opening",
+    );
+    if (unhealthy.length === 0) return false;
+    const fresh = unhealthy.filter(({ view, status }) => {
+      if (!this.outageReported.has(view.stableId) && !this.recoveryPending.has(view.stableId)) {
+        return true;
+      }
+      return this.isTerminalStatus(status) && !this.terminalReported.has(view.stableId);
+    });
+    if (fresh.length === 0) {
+      if (suppressDuplicate) {
+        console.debug(
+          `[mcp] dropped repeated outage status for ${unhealthy
+            .map(({ view }) => view.stableId)
+            .join(", ")}`,
+        );
+      }
+      return suppressDuplicate;
+    }
+    for (const { view, status } of fresh) {
+      this.outageReported.add(view.stableId);
+      this.recoveryPending.delete(view.stableId);
+      if (this.isTerminalStatus(status)) this.terminalReported.add(view.stableId);
+    }
+    return false;
+  }
+
+  /** Traffic after an outage becomes the pending recovery for the next active status. */
+  private noteTraffic(view: McpSubscriptionView): void {
+    if (!this.outageReported.has(view.stableId)) return;
+    this.outageReported.delete(view.stableId);
+    this.terminalReported.delete(view.stableId);
+    this.recoveryPending.add(view.stableId);
+  }
+
+  /**
    * True when every subscription id a status notice carries is absent from the
    * live feed. Identity — not the notice's age — decides: an id minted before a
    * restart is a different subscription even when its `(server, name)` matches
@@ -530,7 +724,35 @@ export class McpEventFeed {
     const { text, source } = statusInput(textOrDetails, details);
     const ids = statusNoticeIds(text, source);
     if (ids.length === 0) return false;
-    return ids.every((id) => !this.subscriptions.has(id));
+    return ids.every((id) => !this.tracksStatusId(id));
+  }
+
+  /**
+   * The identity-only part of the status gate. The intake runs the full gate
+   * once; a later delivery pass must not re-decide health or duplicate state,
+   * or it would drop the recovery that the intake just accepted.
+   */
+  private isUntrackedOrSuperseded(text: string, details: unknown): boolean {
+    const ids = statusNoticeIds(text, details);
+    if (ids.length > 0 && ids.every((id) => !this.tracksStatusId(id))) return true;
+    return this.isSupersededStatus(details);
+  }
+
+  /**
+   * Re-apply only the identity rules to an already accepted status notice.
+   * Mixed batches still lose every item whose adapter id and stable id are
+   * both untracked.
+   */
+  filterStatusIdentityNotice(textOrDetails: string | unknown, details?: unknown): string | null {
+    const input = statusInput(textOrDetails, details);
+    if (this.isUntrackedOrSuperseded(input.text, input.source)) return null;
+    const filtered = filterUntrackedStatusItems(input.text, (id) => this.tracksStatusId(id));
+    if (filtered.dropped.length > 0) {
+      console.debug(
+        `[mcp] dropped status items for untracked subscriptions ${filtered.dropped.join(", ")}`,
+      );
+    }
+    return filtered.text;
   }
 
   /**
@@ -544,12 +766,13 @@ export class McpEventFeed {
     textOrDetails: string | unknown,
     details?: unknown,
     customType?: string,
+    options: { readonly markReported?: boolean } = {},
   ): boolean {
     const input = statusInput(textOrDetails, details);
     const text = input.text;
     const source = input.source;
     const ids = statusNoticeIds(text, source);
-    if (ids.length > 0 && ids.every((id) => !this.subscriptions.has(id))) {
+    if (ids.length > 0 && ids.every((id) => !this.tracksStatusId(id))) {
       console.debug(`[mcp] dropped status notice for untracked subscription ${ids.join(", ")}`);
       return true;
     }
@@ -559,11 +782,21 @@ export class McpEventFeed {
       );
       return true;
     }
+    if (this.suppressReportedOutage(text, source, options.markReported !== false)) {
+      return true;
+    }
+    if (this.isHealthyStatusNotice(text, source)) {
+      console.debug(
+        `[mcp] dropped healthy status notice${ids.length === 0 ? "" : ` for ${ids.join(", ")}`}`,
+      );
+      return true;
+    }
     if (ids.length > 0) {
       // Suppress a repeat per tracked subscription, not per whole batch. An
       // untracked id must not keep a recovered tracked id's old failure
       // fingerprint alive, or the next identical batch would stay silent.
-      const tracked = ids.filter((id) => this.subscriptions.has(id));
+      const tracked = ids.filter((id) => this.tracksStatusId(id));
+      if (options.markReported === false) return false;
       const fingerprint = JSON.stringify([tracked, text.trim()]);
       if (
         tracked.length > 0 &&
@@ -589,7 +822,22 @@ export class McpEventFeed {
         view.server === attribution.server &&
         (attribution.name === undefined || view.name === attribution.name),
     );
-    if (known.length === 0 || !known.every(isLiveSubscription)) return false;
+    if (known.length === 0) {
+      console.debug(
+        `[mcp] dropped status notice for ${attribution.server}: no tracked subscription`,
+      );
+      return true;
+    }
+    const down = known.filter((view) => !isLiveSubscription(view));
+    if (down.length > 0) {
+      const fresh = down.filter((view) => !this.hasReportedOutage(view));
+      if (fresh.length === 0) {
+        console.debug(`[mcp] dropped repeated failure prose for ${attribution.server}`);
+        return true;
+      }
+      for (const view of fresh) this.outageReported.add(view.stableId);
+      return false;
+    }
     console.debug(
       `[mcp] dropped status notice for ${attribution.server}${
         attribution.name === undefined ? "" : `/${attribution.name}`
@@ -607,10 +855,11 @@ export class McpEventFeed {
     textOrDetails: string | unknown,
     details?: unknown,
     customType?: string,
+    options: { readonly markReported?: boolean } = {},
   ): string | null {
     const input = statusInput(textOrDetails, details);
-    if (this.shouldDropStatus(textOrDetails, details, customType)) return null;
-    const filtered = filterUntrackedStatusItems(input.text, new Set(this.subscriptions.keys()));
+    if (this.shouldDropStatus(textOrDetails, details, customType, options)) return null;
+    const filtered = filterUntrackedStatusItems(input.text, (id) => this.tracksStatusId(id));
     if (filtered.dropped.length > 0) {
       console.debug(
         `[mcp] dropped status items for untracked subscriptions ${filtered.dropped.join(", ")}`,
@@ -1247,6 +1496,7 @@ export class McpEventFeed {
       this.persist(subscription);
       return true;
     }
+    this.noteTraffic(current);
     const nextCursor = serverCursor(current.cursor, cursor);
     if (
       nextCursor === current.cursor &&
@@ -1278,6 +1528,7 @@ export class McpEventFeed {
       typeof details.timestamp === "string" && details.timestamp.length > 0
         ? details.timestamp
         : new Date().toISOString();
+    this.noteTraffic(current);
     const alive = current.state !== "active" || current.status === "failed";
     const next: McpSubscriptionView = {
       ...current,
@@ -1493,10 +1744,25 @@ export class McpEventFeed {
       }
       if (cancellationId !== undefined) this.cancelled.delete(incoming.stableId);
       const current = this.viewForAdapter(incoming.id) ?? this.findByStableId(incoming.stableId);
-      // The server's answer is the position. Only when it named none do we keep
-      // the cursor we asked from; a restored record then self-corrects here.
-      const sentCursor = typeof args.cursor === "string" ? args.cursor : null;
-      const answerCursor = incoming.cursor ?? sentCursor;
+      // The server's answer is the position. A zero cursor is not a position:
+      // never send it on, and never report it back from a fresh subscribe. An
+      // explicit zero is a start-now request; an omitted cursor on a
+      // re-subscribe falls back to the row that is already tracked.
+      const requestedCursor = typeof args.cursor === "string" ? args.cursor : undefined;
+      const explicitZero = requestedCursor !== undefined && !hasPosition(requestedCursor);
+      const sentCursor =
+        requestedCursor !== undefined && hasPosition(requestedCursor) ? requestedCursor : null;
+      const savedCursor = this.savedRecord(incoming.stableId)?.cursor;
+      const fallbackCursor = explicitZero
+        ? null
+        : hasPosition(current?.cursor)
+          ? current.cursor
+          : hasPosition(savedCursor)
+            ? savedCursor
+            : null;
+      const answerCursor = hasPosition(incoming.cursor)
+        ? incoming.cursor
+        : (sentCursor ?? fallbackCursor);
       const delivered = eventIdsFrom(raw);
       if (delivered.length > 0) {
         this.restored.add(incoming.stableId);
@@ -1552,6 +1818,7 @@ export class McpEventFeed {
             : (incoming.endReason ?? current?.endReason ?? saved?.endReason),
       };
       this.storeView(subscription);
+      if (isLiveSubscription(subscription)) this.clearReportedOutage(subscription);
       this.persist(subscription);
       this.touch();
       return true;

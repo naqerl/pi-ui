@@ -290,7 +290,7 @@ test("a restored subscription the server rejects is cancelled and never polled a
     const pagedCalls = readFileSync(spawned.pagedLogPath, "utf8").split("\n").filter(Boolean);
     expect(pagedCalls).toContain("list:first");
     expect(pagedCalls).toContain("list:page-2");
-    expect(pagedCalls).toContain("stream:paged-stream:paged:0");
+    expect(pagedCalls).toContain("stream:paged-stream:null");
 
     await spawned.stop();
     const persisted = JSON.parse(

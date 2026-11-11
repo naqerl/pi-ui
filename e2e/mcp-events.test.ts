@@ -388,6 +388,63 @@ test("a subscribe keeps the cursor the server answered with, not the one sent", 
   assert.equal(feed.state.subscriptions.length, 1);
 });
 
+test("a fresh subscribe never reports a zero cursor back to the caller", () => {
+  const feed = new McpEventFeed();
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe", server: "hub", name: "hub", cursor: "hub:0" },
+      result: {
+        subscription: {
+          id: "s1",
+          server: "hub",
+          name: "hub",
+          status: "active",
+          cursor: "hub:0",
+        },
+      },
+    },
+  });
+  assert.equal(feed.state.subscriptions[0]?.cursor, null, "zero is not a position");
+
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe", server: "hub", name: "hub" },
+      result: { subscription: { id: "s2", server: "hub", name: "hub", status: "active" } },
+    },
+  });
+  assert.equal(feed.state.subscriptions[0]?.cursor, null, "a fresh stream has no cursor yet");
+});
+
+test("a re-subscribe without a cursor keeps the tracked position, not zero", () => {
+  const feed = new McpEventFeed();
+  const subscribe = (id: string, cursor: string | null, args: Record<string, unknown> = {}) =>
+    feed.ingest({
+      customType: "mcp-events-tool",
+      details: {
+        args: { action: "subscribe", server: "hub", name: "hub", ...args },
+        result: {
+          subscription: { id, server: "hub", name: "hub", status: "active", cursor },
+        },
+      },
+    });
+
+  subscribe("s1", "hub:867");
+  assert.equal(feed.state.subscriptions[0]?.cursor, "hub:867");
+
+  // A reconnect may omit the cursor and the server may answer with zero.
+  subscribe("s2", "hub:0");
+  assert.equal(feed.state.subscriptions[0]?.cursor, "hub:867", "zero is not a resume point");
+
+  subscribe("s3", null);
+  assert.equal(feed.state.subscriptions[0]?.cursor, "hub:867", "an omitted answer keeps the row");
+
+  // An explicit zero is a start-now request, not a missing cursor.
+  subscribe("s4", "hub:0", { cursor: "hub:0" });
+  assert.equal(feed.state.subscriptions[0]?.cursor, null);
+});
+
 test("a subscribe burst above the cap keeps the newest ids and records one gap", () => {
   const feed = new McpEventFeed();
   feed.ingest({
