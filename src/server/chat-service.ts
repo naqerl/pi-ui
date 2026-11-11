@@ -1091,9 +1091,12 @@ export class ChatService {
   }
 
   async getSnapshot(request: WindowRequest = {}): Promise<Snapshot> {
-    // Capture before reading: a mutation that lands while the snapshot is built
-    // must get a higher revision than the data this response can claim.
+    // Capture the lists and their revision together before reading: a mutation that
+    // lands while the snapshot is built must get a higher revision than the data
+    // this response can claim, and the revision must describe the lists returned.
     const queueRevision = this.queueRevision;
+    const queue = this.queueItems();
+    const steers = this.steerItems();
     const context = await this.conversation.context(SESSION_CONTEXT);
     const usage = await this.harness.usage(SESSION_CONTEXT);
     const built = buildTranscript(context.entries, this.mediaRef, this.diagramRevision);
@@ -1106,8 +1109,8 @@ export class ChatService {
       hasEarlier: transcript.hasEarlier,
       run: this.runState,
       runError: this.runError,
-      queue: this.queueItems(),
-      steers: this.steerItems(),
+      queue,
+      steers,
       queueRevision,
       usage: summarizeUsage(usage),
       context: contextUsage(context.entries, this.modelWindow),
@@ -1841,6 +1844,10 @@ export class ChatService {
         removed = true;
       }
     }
+    // Consuming a steer is a queue mutation too: without a new revision, an older
+    // snapshot that still lists it could be accepted after the handoff and put the
+    // pending bubble back beside the delivered row.
+    if (removed) this.queueRevision += 1;
     return removed;
   }
 

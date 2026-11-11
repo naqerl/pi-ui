@@ -752,11 +752,33 @@ test("keeps every frame inside the budget while the composer body animates", asy
 // A state snapshot is a read of the server at one moment. If it was read before a send
 // committed but lands after the optimistic copy retired, replacing the window with it
 // removes the sent row until the next push. Sample every frame to catch that gap.
-test("keeps a sent bubble on every frame through a stale state push", async ({
+test("keeps a sent bubble on every frame through a delayed response and stale state push", async ({
   app,
   browser,
   screen,
 }) => {
+  // Hold the send response after the server has accepted it, so the bubble must
+  // survive the optimistic-to-confirmed handoff while the request is still open.
+  await browser.addInitScript(`
+    (() => {
+      const original = window.fetch.bind(window);
+      let release = null;
+      window.__releaseSendResponse = () => {
+        const resume = release;
+        release = null;
+        if (resume) resume();
+      };
+      window.fetch = async (...args) => {
+        const response = await original(...args);
+        if (String(args[0]).includes("/api/message") && window.__holdSendResponse === true) {
+          await new Promise((resolve) => {
+            release = resolve;
+          });
+        }
+        return response;
+      };
+    })();
+  `);
   await openChat(app, browser);
   const composer = screen.getByRole("textbox", "Message");
   await expect(composer).toBeVisible({ timeout: 30_000 });
@@ -810,11 +832,25 @@ test("keeps a sent bubble on every frame through a stale state push", async ({
     return true;
   }, text);
 
+  await browser.evaluate(() => {
+    (window as unknown as { __holdSendResponse?: boolean }).__holdSendResponse = true;
+    return true;
+  });
   await composer.fill(text);
   await screen.getByRole("button", { name: "Send" }).tap();
   await expect(composer).toHaveValue("");
+  // The server confirms through SSE while the HTTP response is still held.
   await expect(screen.getByText(`Echo: ${text}`, { exact: false })).toBeVisible({
     timeout: 15_000,
+  });
+  await browser.evaluate(() => {
+    const target = window as unknown as {
+      __holdSendResponse?: boolean;
+      __releaseSendResponse?: () => void;
+    };
+    target.__holdSendResponse = false;
+    target.__releaseSendResponse?.();
+    return true;
   });
   await expect(browser.locator('[data-role="user"]').filter({ hasText: text })).toHaveCount(1);
 
