@@ -4,21 +4,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
+import type { SseFrame } from "../src/server/sse.js";
 import { StreamHub } from "../src/server/stream-hub.js";
 import {
   createTaskEditTool,
+  DurableTaskAgentSession,
   isTaskAgentToolName,
   openingTaskPatch,
   selectTaskAgentTools,
   TASK_AGENT_TOOL_NAMES,
   TaskAgentManager,
   type TaskAgentSession,
+  taskAgentHarnessSettings,
   taskAgentInstructions,
   visibleTaskAgentMessages,
 } from "../src/server/task-agent.js";
 import { TaskStore } from "../src/server/tasks.js";
+import { runErrorFromUnanswered, runErrorMatchesDismissal } from "../src/shared/run-error.js";
 import { DEFAULT_NEW_TASK_TITLE } from "../src/shared/tasks.js";
-import type { ChatMessage, RunState, TaskLedger } from "../src/shared/types.js";
+import type { ChatMessage, RunState, StreamRunState, TaskLedger } from "../src/shared/types.js";
 
 let directory = "";
 let store: TaskStore;
@@ -54,6 +58,54 @@ test("task agents may only call bash, read and edit_task", () => {
   assert.equal(isTaskAgentToolName("bash"), true);
   assert.equal(isTaskAgentToolName("write"), false);
   assert.equal(isTaskAgentToolName("task_edit"), false);
+});
+
+test("a settled model failure becomes one dismissible run error", () => {
+  const detail =
+    '400: {"code":null,"message":"model \\"group/auto-deepseek-v4-1-flash\\" does not support image input; no model in the group DeepSeek V4.1 Flash is marked as taking images: turn on Accepts images for one that does"}';
+  const error = runErrorFromUnanswered("model_error", detail, "p36a:9");
+  assert.ok(error);
+  assert.equal(error.id, "p36a:9");
+  assert.equal(error.class, "ModelError");
+  assert.match(error.message, /does not support image input/);
+  assert.equal(error.detail, detail);
+  assert.ok(error.message.length <= 160);
+  assert.ok(Number.isFinite(Date.parse(error.at)));
+
+  const noModel = runErrorFromUnanswered("no_model", "No model is configured", "7tfa:9");
+  assert.equal(noModel?.class, "NoModelError");
+  assert.equal(noModel?.message, "No model is configured");
+  for (const reason of ["restart_limit", "turn_limit", "overflow", "threw", "missing_result"]) {
+    const fallback = runErrorFromUnanswered(reason, "the run was cut off", "t:1");
+    assert.equal(fallback?.class, "RunError");
+    assert.equal(fallback?.message, "the run was cut off");
+  }
+  assert.equal(runErrorFromUnanswered("aborted", "stopped"), null);
+  assert.equal(runErrorFromUnanswered("reset"), null);
+});
+
+test("only an explicit matching id dismisses the run error", () => {
+  const error = runErrorFromUnanswered("model_error", "boom", "task:1");
+  assert.ok(error);
+  assert.equal(runErrorMatchesDismissal(undefined, error), false);
+  assert.equal(runErrorMatchesDismissal("task:2", error), false);
+  assert.equal(runErrorMatchesDismissal("task:1", error), true);
+  assert.equal(runErrorMatchesDismissal("task:1", null), false);
+});
+
+test("the plan harness opens with the main chat retry policy", () => {
+  const settings = taskAgentHarnessSettings({
+    PI_RETRY_MAX: "4",
+    PI_RETRY_BASE_MS: "125",
+    PI_RETRY_MAX_DELAY_MS: "750",
+  } as NodeJS.ProcessEnv);
+  assert.deepEqual(settings.retry, {
+    enabled: true,
+    maxRetries: 4,
+    baseDelayMs: 125,
+    maxAgentDelayMs: 750,
+  });
+  assert.deepEqual(settings.compaction, { enabled: false });
 });
 
 test("the plan-mode prompt forbids edits and names the edit_task tool", () => {
@@ -224,6 +276,85 @@ class FakeSession implements TaskAgentSession {
     return [];
   }
 }
+
+type FakeSettlement = {
+  status: "done" | "unanswered";
+  reason?: string;
+  detail?: string;
+};
+
+class FakePlanConversation {
+  private calls = 0;
+
+  constructor(private readonly settlements: FakeSettlement[]) {}
+
+  async submit() {
+    const id = ++this.calls;
+    const settlement: FakeSettlement = this.settlements[id - 1] ?? { status: "done" };
+    return {
+      id,
+      wait: async () => ({ ...settlement, id }),
+    };
+  }
+
+  async context() {
+    return { entries: [], docs: {} };
+  }
+}
+
+async function nextRunState(
+  frames: readonly SseFrame[],
+  matches: (data: StreamRunState) => boolean,
+): Promise<StreamRunState> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const frame = frames.find(
+      (item) => item.event === "run.state" && matches(item.data as StreamRunState),
+    );
+    if (frame !== undefined) return frame.data as StreamRunState;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail("no matching run.state frame");
+}
+
+test("a settled failure frames an error, clears on submit, and dismisses without a submit", async () => {
+  const detail =
+    '400: {"code":null,"message":"model \\"group/auto-deepseek-v4-1-flash\\" does not support image input; no model in the group DeepSeek V4.1 Flash is marked as taking images: turn on Accepts images for one that does"}';
+  const conversation = new FakePlanConversation([
+    { status: "unanswered", reason: "model_error", detail },
+    { status: "done" },
+    { status: "unanswered", reason: "restart_limit", detail: "the host kept cutting off the run" },
+  ]);
+  const session = new DurableTaskAgentSession("taskframe", {} as never, conversation as never);
+  const frames: SseFrame[] = [];
+  session.hub.add({
+    send: async (frame) => {
+      frames.push(frame);
+    },
+  });
+
+  await session.submit("look at the screenshot");
+  const failed = await nextRunState(frames, (data) => data.runError?.class === "ModelError");
+  assert.equal(failed.state, "idle");
+  assert.equal(failed.runError?.id, "taskframe:1");
+  assert.match(failed.runError?.message ?? "", /does not support image input/);
+  assert.equal(failed.runError?.detail, detail);
+  assert.equal((await session.snapshot()).runError?.class, "ModelError");
+
+  // The next accepted submit starts clean before its own run settles.
+  const retried = await session.submit("try again");
+  assert.equal(retried.runError, null);
+  assert.equal((await session.snapshot()).runError, null);
+
+  await session.submit("let the host cut it off");
+  const fallback = await nextRunState(frames, (data) => data.runError?.class === "RunError");
+  assert.equal(fallback.runError?.message, "the host kept cutting off the run");
+  const current = await session.snapshot();
+  assert.ok(current.runError);
+  await session.dismissError(current.runError.id);
+  assert.equal((await session.snapshot()).runError, null);
+  const last = [...frames].reverse().find((frame) => frame.event === "run.state");
+  assert.equal((last?.data as StreamRunState | undefined)?.runError, null);
+});
 
 test("the agent session is created on first use, stopped when the task is done, and removed when the task is deleted", async () => {
   const fakes = new Map<string, FakeSession>();

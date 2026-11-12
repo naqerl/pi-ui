@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { acceptDeltaRevision } from "../shared/revisions";
+import { runErrorMatchesDismissal } from "../shared/run-error";
 import type {
   ChatMessage,
+  RunError,
   RunState,
   StreamDraftSync,
   StreamMessageDone,
@@ -15,6 +17,7 @@ export interface TaskAgentSnapshot {
   taskId: string;
   messages: ChatMessage[];
   run: RunState;
+  runError?: RunError | null;
   draft: { text: string; thinking: string; revision: number };
 }
 
@@ -22,21 +25,35 @@ export function useTaskChat(taskId: string, closed: boolean) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draftText, setDraftText] = useState("");
   const [run, setRun] = useState<RunState>("idle");
+  const [runError, setRunError] = useState<RunError | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const draftRevision = useRef(0);
+  const dismissedRunErrors = useRef<ReadonlySet<string>>(new Set());
   const taskIdRef = useRef(taskId);
   taskIdRef.current = taskId;
 
-  const applySnapshot = useCallback((snapshot: TaskAgentSnapshot) => {
-    const messages = Array.isArray(snapshot.messages) ? snapshot.messages : [];
-    const draft = snapshot.draft;
-    setMessages(messages);
-    setRun(snapshot.run === "running" ? "running" : "idle");
-    setDraftText(typeof draft?.text === "string" ? draft.text : "");
-    draftRevision.current = typeof draft?.revision === "number" ? draft.revision : 0;
-    setReady(true);
+  const acceptRunError = useCallback((next: RunError | null | undefined) => {
+    if (next === undefined || next === null) {
+      setRunError(null);
+      return;
+    }
+    setRunError(dismissedRunErrors.current.has(next.id) ? null : next);
   }, []);
+
+  const applySnapshot = useCallback(
+    (snapshot: TaskAgentSnapshot) => {
+      const messages = Array.isArray(snapshot.messages) ? snapshot.messages : [];
+      const draft = snapshot.draft;
+      setMessages(messages);
+      setRun(snapshot.run === "running" ? "running" : "idle");
+      acceptRunError(snapshot.runError);
+      setDraftText(typeof draft?.text === "string" ? draft.text : "");
+      draftRevision.current = typeof draft?.revision === "number" ? draft.revision : 0;
+      setReady(true);
+    },
+    [acceptRunError],
+  );
 
   const refresh = useCallback(async () => {
     const id = taskIdRef.current;
@@ -60,9 +77,11 @@ export function useTaskChat(taskId: string, closed: boolean) {
     setMessages([]);
     setDraftText("");
     setRun("idle");
+    setRunError(null);
     setReady(false);
     setError(null);
     draftRevision.current = 0;
+    dismissedRunErrors.current = new Set();
     if (taskId.startsWith("fixture-")) {
       setReady(true);
       return;
@@ -118,6 +137,7 @@ export function useTaskChat(taskId: string, closed: boolean) {
         const data = frame.data as StreamRunState;
         if (data == null || typeof data.state !== "string") return;
         setRun(data.state);
+        if (data.runError !== undefined) acceptRunError(data.runError);
         if (data.state !== "running") {
           draftBatch.clear();
           setDraftText("");
@@ -130,7 +150,7 @@ export function useTaskChat(taskId: string, closed: boolean) {
       draftBatch.clear();
       unsubscribe();
     };
-  }, [refresh, taskId]);
+  }, [acceptRunError, refresh, taskId]);
 
   useEffect(() => {
     if (run !== "running" || closed) return;
@@ -179,5 +199,46 @@ export function useTaskChat(taskId: string, closed: boolean) {
     }
   }, [applySnapshot, taskId]);
 
-  return { messages, draftText, run, error, ready, send, stop, dismissError: () => setError(null) };
+  const dismissError = useCallback(
+    (id?: string) => {
+      // No id is the composer's own dismissal; only an explicit matching id targets the run error.
+      if (id === undefined) {
+        setError(null);
+        return;
+      }
+      if (runError === null || !runErrorMatchesDismissal(id, runError)) return;
+      dismissedRunErrors.current = new Set(dismissedRunErrors.current).add(runError.id);
+      setRunError(null);
+      void fetch(`/api/tasks/${encodeURIComponent(taskId)}/chat/error/dismiss`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: runError.id }),
+      })
+        .then(async (response) => {
+          if (!response.ok) return;
+          const data = (await response.json()) as TaskAgentSnapshot & {
+            runError?: RunError | null;
+          };
+          if (typeof data.taskId === "string" && Array.isArray(data.messages)) {
+            applySnapshot(data);
+          } else if ("runError" in data) {
+            acceptRunError(data.runError);
+          }
+        })
+        .catch(() => undefined);
+    },
+    [acceptRunError, applySnapshot, runError, taskId],
+  );
+
+  return {
+    messages,
+    draftText,
+    run,
+    runError,
+    error,
+    ready,
+    send,
+    stop,
+    dismissError,
+  };
 }
