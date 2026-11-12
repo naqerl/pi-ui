@@ -341,6 +341,10 @@ function TasksViewImpl({
   const optimisticSequence = useRef<Record<string, number>>({});
   const cardClickGuard = useRef<CardClickGuard>({ pointer: null, ignore: null, timer: null });
   const lastSelectionRequest = useRef<number | null>(null);
+  const pageRef = useRef<HTMLDivElement | null>(null);
+  const returnTo = useRef<{ id: string | null; offset: number; top: number } | null>(null);
+  const openTaskIdRef = useRef(openTaskId);
+  openTaskIdRef.current = openTaskId;
   const now = new Date();
 
   const tasks = useMemo(
@@ -456,6 +460,30 @@ function TasksViewImpl({
   const openDetail = useCallback(
     (id: string) => {
       if (!wide) {
+        const page = pageRef.current;
+        // Only the list -> detail step owns a return position. Opening a child
+        // from a parent detail keeps pointing at the original list position.
+        if (openTaskIdRef.current === null && page !== null) {
+          const pageRect = page.getBoundingClientRect();
+          let anchor: { id: string; offset: number } | null = null;
+          for (const card of page.querySelectorAll<HTMLElement>("[data-task-card]")) {
+            const row = card.closest<HTMLElement>('li[data-testid^="task-"]');
+            const testId = row?.dataset.testid;
+            if (testId === undefined || !testId.startsWith("task-")) continue;
+            const rect = card.getBoundingClientRect();
+            if (rect.bottom <= pageRect.top + 1) continue;
+            anchor = {
+              id: testId.slice("task-".length),
+              offset: rect.top - pageRect.top,
+            };
+            break;
+          }
+          returnTo.current = {
+            id: anchor?.id ?? null,
+            offset: anchor?.offset ?? 0,
+            top: page.scrollTop,
+          };
+        }
         const current = taskDetailHistory();
         const next = { ...(current ?? {}), piTaskDetailId: id };
         if (current?.piTaskDetailId !== undefined) {
@@ -779,6 +807,48 @@ function TasksViewImpl({
   const composerMode: "create" | "task-chat" | "collapsed" =
     openTask === undefined ? "create" : openTask.status === "done" ? "collapsed" : "task-chat";
 
+  const detailOpen = openTaskId !== null;
+
+  // A narrow detail and the list share one scroller. Open the detail at its top,
+  // then put the list back under the same card when the detail closes.
+  useLayoutEffect(() => {
+    const page = pageRef.current;
+    if (page === null) return;
+    if (detailOpen) {
+      page.scrollTop = 0;
+      return;
+    }
+    const saved = returnTo.current;
+    if (saved === null) return;
+    returnTo.current = null;
+    const restore = () => {
+      const target =
+        saved.id === null
+          ? null
+          : page.querySelector<HTMLElement>(`[data-testid="task-${CSS.escape(saved.id)}"]`);
+      if (target === null) {
+        page.scrollTop = saved.top;
+        return;
+      }
+      const pageTop = page.getBoundingClientRect().top;
+      page.scrollTop += target.getBoundingClientRect().top - pageTop - saved.offset;
+    };
+    restore();
+    const frame = window.requestAnimationFrame(restore);
+    return () => window.cancelAnimationFrame(frame);
+  }, [detailOpen]);
+
+  // The browser keeps its own scroll for a history entry. A narrow detail owns
+  // the scroll while it is present, so stop the back navigation from fighting it.
+  useEffect(() => {
+    if (wide || !detailOpen) return;
+    const previous = window.history.scrollRestoration;
+    window.history.scrollRestoration = "manual";
+    return () => {
+      window.history.scrollRestoration = previous;
+    };
+  }, [detailOpen, wide]);
+
   useLayoutEffect(() => {
     onComposerMode?.(composerMode);
   }, [composerMode, onComposerMode]);
@@ -796,6 +866,7 @@ function TasksViewImpl({
       )}
       data-testid="tasks-page"
       data-layout={wide ? "split" : "stack"}
+      ref={pageRef}
     >
       <div
         className={
