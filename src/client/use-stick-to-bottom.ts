@@ -7,6 +7,12 @@ interface Anchor {
   offset: number;
 }
 
+interface HeldPosition {
+  attached: boolean;
+  scrollTop: number;
+  anchor: Anchor | null;
+}
+
 /**
  * Keep the transcript pinned to the end only while the reader is already there.
  * When detached, preserve the element at the top of the viewport while content
@@ -20,6 +26,7 @@ export function useStickToBottom(dependency: unknown) {
   const lastScrollHeightRef = useRef<number | null>(null);
   const lastClientHeightRef = useRef<number | null>(null);
   const lastScrollTopRef = useRef<number | null>(null);
+  const heldRef = useRef<HeldPosition | null>(null);
   const syncFrameRef = useRef<number | null>(null);
   const scrollFrameRef = useRef<number | null>(null);
   const [attached, setAttachedState] = useState(true);
@@ -82,7 +89,15 @@ export function useStickToBottom(dependency: unknown) {
         const containerTop = container.getBoundingClientRect().top;
         const top = anchor.element.getBoundingClientRect().top;
         const delta = top - containerTop - anchor.offset;
-        if (Math.abs(delta) > 0.5) container.scrollTop += delta;
+        if (Math.abs(delta) > 0.5) {
+          const target = container.scrollTop + delta;
+          container.scrollTop = target;
+          if (Math.abs(container.scrollTop - target) > 0.5) {
+            // The held position is still outside the current maximum while the dock
+            // resizes off-screen. Keep the target anchor and finish on the next sync.
+            return;
+          }
+        }
       }
     }
     recordAnchor();
@@ -95,6 +110,59 @@ export function useStickToBottom(dependency: unknown) {
       sync();
     });
   }, [sync]);
+
+  /**
+   * Remember where the reader is before a navigation takes the transcript off-screen.
+   * The observers stay attached, so a message that lands below cannot move the row
+   * being held detached.
+   */
+  const holdPosition = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    heldRef.current = {
+      attached: attachedRef.current,
+      scrollTop: container.scrollTop,
+      anchor: anchorRef.current,
+    };
+    // The programmatic move on the way back must not look like a reader scroll.
+    lastScrollTopRef.current = container.scrollTop;
+  }, []);
+
+  /**
+   * Put the held reading position back before paint. The page may be returning to a
+   * different viewport height, because the dock animated while it was away.
+   */
+  const restorePosition = useCallback(() => {
+    const container = containerRef.current;
+    const held = heldRef.current;
+    if (!container || !held) return;
+    if (held.attached) {
+      lastScrollTopRef.current = container.scrollHeight;
+      container.scrollTop = container.scrollHeight;
+      // The browser clamps to the real maximum, which is what the next scroll event sees.
+      lastScrollTopRef.current = container.scrollTop;
+      updateAttached(true);
+    } else {
+      const anchor = held.anchor;
+      // A dock resize may have clamped scrollTop while the page was off-screen, so
+      // anchor from the current offset, not only the recorded one.
+      let next = held.scrollTop;
+      if (anchor?.element.isConnected) {
+        const containerTop = container.getBoundingClientRect().top;
+        const top = anchor.element.getBoundingClientRect().top;
+        next = container.scrollTop + top - containerTop - anchor.offset;
+      }
+      lastScrollTopRef.current = next;
+      container.scrollTop = next;
+      lastScrollTopRef.current = container.scrollTop;
+      updateAttached(false);
+      // The browser may clamp this while the returning dock still has the old height.
+      // Keep the held anchor as the target, so the following syncs finish the move.
+      anchorRef.current = held.anchor;
+    }
+    // Follow the rest of the dock transition with the normal pin / anchor correction.
+    scheduleSync();
+  }, [scheduleSync, updateAttached]);
 
   const handleScroll = useCallback(() => {
     if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
@@ -186,5 +254,13 @@ export function useStickToBottom(dependency: unknown) {
     scheduleSync();
   }, [dependency, sync, scheduleSync]);
 
-  return { containerRef, contentRef, attached, scrollToBottom, revealTop };
+  return {
+    containerRef,
+    contentRef,
+    attached,
+    scrollToBottom,
+    revealTop,
+    holdPosition,
+    restorePosition,
+  };
 }
