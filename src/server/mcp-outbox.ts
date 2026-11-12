@@ -7,6 +7,7 @@ import {
   parseMcpEventPayload,
 } from "../shared/notices.js";
 import { mcpEventText, mcpMergedNoticeTexts } from "./chat-service.js";
+import { deriveStableId } from "./mcp-subscriptions.js";
 
 /** Events kept in one waiting delivery. Older events are dropped and counted. */
 export { MAX_PENDING_MCP_EVENTS };
@@ -82,14 +83,164 @@ function eventKey(item: unknown): string {
   if (isRecord(item) && isRecord(item.event)) {
     const event = item.event;
     if (typeof event.eventId === "string" || typeof event.eventId === "number") {
-      return JSON.stringify([
+      const generation =
+        typeof item.generation === "string" || typeof item.generation === "number"
+          ? item.generation
+          : typeof event.generation === "string" || typeof event.generation === "number"
+            ? event.generation
+            : undefined;
+      const head = [
         typeof item.server === "string" ? item.server : "",
         typeof event.name === "string" ? event.name : "event",
-        event.eventId,
-      ]);
+      ];
+      return JSON.stringify(
+        generation === undefined ? [...head, event.eventId] : [...head, generation, event.eventId],
+      );
     }
   }
   return `event:${JSON.stringify(item)}`;
+}
+
+/** Newest keys retained for one stable id in the durable dedupe set. */
+export const MAX_SEEN_PER_STABLE_ID = 500;
+
+/** The stable id is the first part of every JSON-array event key. */
+function keyStableId(key: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(key);
+    return Array.isArray(parsed) && typeof parsed[0] === "string" ? parsed[0] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Keep the newest keys per stable id, preserving their original global order. */
+function boundSeen(keys: readonly string[]): string[] {
+  const totals = new Map<string, number>();
+  for (const key of keys) {
+    const stableId = keyStableId(key);
+    if (stableId !== undefined) totals.set(stableId, (totals.get(stableId) ?? 0) + 1);
+  }
+  const seen = new Map<string, number>();
+  const bounded: string[] = [];
+  for (const key of keys) {
+    const stableId = keyStableId(key);
+    if (stableId === undefined) {
+      bounded.push(key);
+      continue;
+    }
+    const index = (seen.get(stableId) ?? 0) + 1;
+    seen.set(stableId, index);
+    if (index > (totals.get(stableId) ?? 0) - MAX_SEEN_PER_STABLE_ID) bounded.push(key);
+  }
+  return bounded;
+}
+
+/** Stable ids named by an older delivery that predates per-event keys. */
+function envelopeStableIds(item: McpDelivery): Set<string> {
+  const ids = new Set<string>();
+  for (const text of deliveryTexts(item)) {
+    const envelope = deliveryEnvelope(text);
+    if (envelope === null) continue;
+    for (const entry of envelope.items) {
+      if (!isRecord(entry) || typeof entry.server !== "string" || !isRecord(entry.event)) continue;
+      const name = typeof entry.event.name === "string" ? entry.event.name : "event";
+      ids.add(deriveStableId(entry.server, name, {}));
+    }
+  }
+  return ids;
+}
+
+function deliveryStableIds(item: McpDelivery): Set<string> {
+  const ids = new Set<string>();
+  for (const key of item.keys ?? []) {
+    const stableId = keyStableId(key);
+    if (stableId !== undefined) ids.add(stableId);
+  }
+  return ids.size === 0 ? envelopeStableIds(item) : ids;
+}
+
+/** The cursor/event id is the last part of an event key. */
+function keyCursor(key: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(key);
+    if (!Array.isArray(parsed) || parsed.length === 0) return undefined;
+    const cursor = parsed.at(-1);
+    return typeof cursor === "string" || typeof cursor === "number" ? String(cursor) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function itemCursor(item: unknown): string | undefined {
+  if (!isRecord(item) || !isRecord(item.event)) return undefined;
+  const cursor = item.event.eventId ?? item.event.cursor ?? item.event;
+  return typeof cursor === "string" || typeof cursor === "number" ? String(cursor) : undefined;
+}
+
+/** Remove only one stable id's events from a batch that may also carry siblings. */
+function withoutStable(item: McpDelivery, stableId: string): McpDelivery | null {
+  const keys = item.keys ?? [];
+  const forgottenKeys = keys.filter((key) => keyStableId(key) === stableId);
+  if (forgottenKeys.length === 0 && keys.length > 0) return item;
+  const keptKeys = keys.filter((key) => keyStableId(key) !== stableId);
+  // A split delivery stores every part in `texts`; never rebuild from `text` alone.
+  const envelopes = deliveryTexts(item).map(deliveryEnvelope);
+  if (envelopes.some((envelope) => envelope === null)) return null;
+  const parsed = envelopes as DeliveryEnvelope[];
+  const first = parsed[0];
+  if (first === undefined) return null;
+  const head = batchHead(first.head, 0);
+  const dropped = parsed.reduce((total, envelope) => total + envelope.dropped, 0);
+  const events = parsed.flatMap((envelope) => envelope.items);
+  let kept = events;
+  if (keys.length === 0) {
+    kept = events.filter((entry) => {
+      if (!isRecord(entry) || typeof entry.server !== "string" || !isRecord(entry.event)) {
+        return true;
+      }
+      const name = typeof entry.event.name === "string" ? entry.event.name : "event";
+      return deriveStableId(entry.server, name, {}) !== stableId;
+    });
+  } else if (keys.length === events.length) {
+    // The intake supplies one key per event, in envelope order. This also
+    // distinguishes two streams that reuse the same cursor in one generation.
+    kept = events.filter((_entry, index) => keyStableId(keys[index] ?? "") !== stableId);
+  } else {
+    // Key/event counts differ when mergeDeliveryTexts dedupes two sibling
+    // subscriptions that share a cursor. Cursor-only deletion would then take
+    // the surviving sibling with the forgotten one: keep any event that still
+    // has a remaining key for that cursor.
+    const keptCursors = new Set(
+      keptKeys.flatMap((key) => {
+        const cursor = keyCursor(key);
+        return cursor === undefined ? [] : [cursor];
+      }),
+    );
+    const forgottenCursors = new Set(
+      forgottenKeys.flatMap((key) => {
+        const cursor = keyCursor(key);
+        return cursor === undefined ? [] : [cursor];
+      }),
+    );
+    kept = events.filter((entry) => {
+      const cursor = itemCursor(entry);
+      if (cursor === undefined || keptCursors.has(cursor)) return true;
+      return !forgottenCursors.has(cursor);
+    });
+  }
+  if (kept.length === events.length) {
+    return keys.length === 0 ? item : { ...item, keys: keptKeys };
+  }
+  if (kept.length === 0) return null;
+  // Rebuild the split so each surviving part gets a correct remainder summary.
+  const texts = mcpMergedNoticeTexts({ head, items: kept, dropped }, kept);
+  return {
+    ...item,
+    text: texts[0] ?? "",
+    ...(texts.length <= 1 ? { texts: undefined } : { texts }),
+    ...(keptKeys.length === 0 ? { keys: undefined } : { keys: keptKeys }),
+  };
 }
 
 /** Join delivery texts into bounded envelopes (or one plain notice). */
@@ -216,25 +367,38 @@ export class McpOutbox {
       const waiting = mergeByKind(tail, true);
       this.pending = head === undefined ? [] : [head, ...waiting];
       this.restoredHead = head?.id;
-      this.seen = Array.isArray(data.seen) ? data.seen : [];
+      const seen = Array.isArray(data.seen) ? data.seen : [];
+      this.seen = boundSeen(seen);
+      // Persist a trim left by an older file instead of waiting for a delivery.
+      if (this.seen.length !== seen.length) {
+        await this.write(this.pending, this.seen);
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
 
+  private async write(items: McpDelivery[], seen: string[]): Promise<void> {
+    await mkdir(dirname(this.path), { recursive: true });
+    const temp = `${this.path}.tmp`;
+    await writeFile(temp, `${JSON.stringify({ version: 1, pending: items, seen })}\n`, {
+      mode: 0o600,
+    });
+    await rename(temp, this.path);
+  }
+
   private update(
     change: (items: McpDelivery[]) => McpDelivery[],
     keys: string[] = [],
+    forgetStableId?: string,
   ): Promise<void> {
     const run = this.writes.then(async () => {
       const next = change(this.pending);
-      const seen = [...new Set([...this.seen, ...keys])].slice(-10_000);
-      await mkdir(dirname(this.path), { recursive: true });
-      const temp = `${this.path}.tmp`;
-      await writeFile(temp, `${JSON.stringify({ version: 1, pending: next, seen })}\n`, {
-        mode: 0o600,
-      });
-      await rename(temp, this.path);
+      const merged = [...new Set([...this.seen, ...keys])].filter(
+        (key) => forgetStableId === undefined || keyStableId(key) !== forgetStableId,
+      );
+      const seen = boundSeen(merged);
+      await this.write(next, seen);
       this.pending = next;
       this.seen = seen;
     });
@@ -244,6 +408,23 @@ export class McpOutbox {
 
   has(key: string): boolean {
     return this.seen.includes(key);
+  }
+
+  /**
+   * Drop one stable id's old generation from both the durable seen set and any
+   * waiting delivery. Other streams keep their keys and pending batches.
+   */
+  forgetStable(stableId: string): Promise<void> {
+    return this.update(
+      (items) =>
+        items.flatMap((item) => {
+          if (!deliveryStableIds(item).has(stableId)) return [item];
+          const kept = withoutStable(item, stableId);
+          return kept === null ? [] : [kept];
+        }),
+      [],
+      stableId,
+    );
   }
 
   async enqueue(text: string, keys: string[] = []): Promise<void> {

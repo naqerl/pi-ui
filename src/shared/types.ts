@@ -280,6 +280,13 @@ export interface McpSubscriptionView {
   id: string;
   /** Durable identity derived from server, name and sorted arguments. */
   stableId: string;
+  /**
+   * Server event-numbering generation captured at subscribe time. It changes
+   * when the server restarts and starts its cursor count again, so events with
+   * the same id from two generations are different news. Absent on older rows
+   * and on servers that state no generation.
+   */
+  generation?: string | number;
   server: string;
   name: string;
   /** Optional human title; when absent clients fall back to `stableId`. */
@@ -321,6 +328,8 @@ export interface McpEventView {
   id: string;
   server: string;
   name: string;
+  /** Server epoch that produced this event; absent for legacy/no-generation rows. */
+  generation?: string | number;
   timestamp: string;
   summary: string;
   /** The stable subscription already delivered this event before a restart. */

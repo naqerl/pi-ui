@@ -682,3 +682,99 @@ test("a restore burst above the merge cap is one chip plus a gap, never N chips"
   assert.equal(gap?.items.length, 0);
   assert.equal(gap?.dropped, 10);
 });
+
+function subscribeGeneration(
+  feed: McpEventFeed,
+  id: string,
+  generation?: string,
+  name = "hub",
+): void {
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe", server: "hub", name },
+      result: {
+        subscription: {
+          id,
+          server: "hub",
+          name,
+          status: "active",
+          cursor: "hub:7",
+          ...(generation === undefined ? {} : { generation }),
+        },
+      },
+    },
+  });
+}
+
+function generationEvent(id: string, eventId: string, name = "hub") {
+  return {
+    subscription_id: id,
+    server: "hub",
+    event: {
+      eventId,
+      name,
+      timestamp: "2026-11-07T11:50:00.000Z",
+      cursor: eventId,
+      data: { kind: `${name}.job`, id: eventId },
+    },
+  };
+}
+
+test("the same cursor in two generations is delivered in both", () => {
+  const feed = new McpEventFeed();
+  subscribeGeneration(feed, "s1", "daemon-a");
+  const item = generationEvent("s1", "hub:7");
+  assert.deepEqual(feed.novelEvents([item]), [item]);
+  feed.ingest({ customType: "mcp-events", details: { events: [item] } });
+  feed.markDelivered([item]);
+  assert.deepEqual(feed.novelEvents([item]), []);
+
+  subscribeGeneration(feed, "s2", "daemon-b");
+  assert.deepEqual(feed.novelEvents([item]), [item], "the renumbered cursor is fresh news");
+  assert.notEqual(feed.eventKey(item), JSON.stringify(["hub/hub", "hub:7"]));
+
+  assert.equal(feed.ingest({ customType: "mcp-events", details: { events: [item] } }), true);
+  assert.equal(
+    feed.state.events.filter((entry) => entry.id === "hub:7").length,
+    1,
+    "the old epoch's log row is replaced, not duplicated",
+  );
+  assert.equal(feed.state.events.at(-1)?.generation, "daemon-b");
+});
+
+test("the same cursor in one generation is delivered once", () => {
+  const feed = new McpEventFeed();
+  subscribeGeneration(feed, "s1", "daemon-a");
+  const item = generationEvent("s1", "hub:7");
+  assert.equal(feed.ingest({ customType: "mcp-events", details: { events: [item] } }), true);
+  feed.markDelivered([item]);
+  assert.equal(feed.ingest({ customType: "mcp-events", details: { events: [item] } }), false);
+  assert.deepEqual(feed.novelEvents([item]), []);
+});
+
+test("a generation change clears only that stable id's seen keys", () => {
+  const feed = new McpEventFeed();
+  subscribeGeneration(feed, "a1", "daemon-a", "a");
+  subscribeGeneration(feed, "b1", "daemon-a", "b");
+  const a = generationEvent("a1", "hub:1", "a");
+  const b = generationEvent("b1", "hub:1", "b");
+  feed.ingest({ customType: "mcp-events", details: { events: [a, b] } });
+  feed.markDelivered([a, b]);
+  assert.deepEqual(feed.novelEvents([a, b]), []);
+
+  subscribeGeneration(feed, "a2", "daemon-b", "a");
+  assert.deepEqual(feed.takeGenerationClears(), ["hub/a"]);
+  assert.deepEqual(feed.novelEvents([a]), [a], "the changed stream is novel again");
+  assert.deepEqual(feed.novelEvents([b]), [], "its sibling keeps its history");
+});
+
+test("a subscription without a generation keeps the two-part key", () => {
+  const feed = new McpEventFeed();
+  subscribeGeneration(feed, "s1");
+  const item = generationEvent("s1", "hub:7");
+  assert.equal(JSON.parse(feed.eventKey(item)).length, 2);
+  feed.ingest({ customType: "mcp-events", details: { events: [item] } });
+  feed.markDelivered([item]);
+  assert.deepEqual(feed.novelEvents([item]), []);
+});

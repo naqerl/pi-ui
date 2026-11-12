@@ -60,6 +60,8 @@ interface HostManagedMcpServer {
   createTransport(context: { server: string; signal: AbortSignal }): Transport | Promise<Transport>;
   /** MCP tool names to expose. Omit to expose every tool the server lists. */
   readonly tools?: readonly string[];
+  /** Optional server-stated event-numbering generation, read over HTTP at subscribe time. */
+  readGeneration?(): Promise<string | undefined>;
 }
 
 interface HostManagedMcpToolCall {
@@ -211,6 +213,50 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * The generation a daemon states for its current event numbering. `startedAt`
+ * changes on every restart; `pid` distinguishes two starts in one clock tick.
+ * A server that states neither has no generation to offer.
+ */
+export function mcpDaemonGeneration(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined;
+  const explicit = value.generation ?? value.epoch;
+  if (typeof explicit === "string" && explicit.length > 0) return explicit;
+  if (typeof explicit === "number" && Number.isFinite(explicit)) return String(explicit);
+  const startedAt =
+    typeof value.startedAt === "string" && value.startedAt.length > 0
+      ? value.startedAt
+      : typeof value.startedAt === "number" && Number.isFinite(value.startedAt)
+        ? String(value.startedAt)
+        : undefined;
+  const pid =
+    typeof value.pid === "number" && Number.isFinite(value.pid) ? String(value.pid) : undefined;
+  if (startedAt === undefined && pid === undefined) return undefined;
+  return `${startedAt ?? "unknown"}#${pid ?? "unknown"}`;
+}
+
+async function readDaemonGeneration(
+  origin: URL,
+  headers: Record<string, string> | undefined,
+): Promise<string | undefined> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 2_000);
+  timer.unref?.();
+  try {
+    const response = await fetch(new URL("/v1/hub/daemon", origin.origin), {
+      ...(headers === undefined ? {} : { headers }),
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!response.ok) return undefined;
+    return mcpDaemonGeneration(await response.json());
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** A zero cursor is not a position: never return it to a caller as a resume point. */
 function positionCursor(answer: unknown, fallback: string | null): string | null {
   if (typeof answer === "string" && hasPosition(answer)) return answer;
@@ -339,6 +385,9 @@ function buildServerDefinition(name: string, raw: unknown): HostManagedMcpServer
         return new StreamableHTTPClientTransport(parsed, {
           ...(headers === undefined ? {} : { requestInit: { headers } }),
         });
+      },
+      readGeneration() {
+        return readDaemonGeneration(parsed, headers);
       },
     };
   }
@@ -1338,6 +1387,7 @@ export class McpRuntime {
       subscriptionStore,
       startedAt,
     );
+    shim.setNoticeEnricher((notice) => runtime.enrichNotice(notice));
     resolveProtocol = (name) => runtime.protocolConnection(name);
     // pi-mcp-events constructs EventConnection with only reconnect/onClose
     // (dist/index.js:68), so maxRetries/retryBaseMs/heartbeatTimeoutMs cannot
@@ -1365,6 +1415,79 @@ export class McpRuntime {
   /** The shared durable registry, or undefined when this runtime was started without a data dir. */
   get subscriptionRegistry(): McpSubscriptionRegistry | undefined {
     return this.subscriptionStore;
+  }
+
+  /**
+   * The server-stated generation, or the adapter session identity when the
+   * server does not expose one. Never throws: an unavailable daemon endpoint
+   * only means the old two-part event key stays in use.
+   */
+  async generationFor(server: string, sessionIdentity?: string): Promise<string | undefined> {
+    const definition = this.servers[server];
+    if (definition?.readGeneration !== undefined) {
+      try {
+        const generation = await definition.readGeneration();
+        if (generation !== undefined) return generation;
+      } catch {
+        // The endpoint is optional; subscribe must not fail just because of it.
+      }
+    }
+    return sessionIdentity;
+  }
+
+  /**
+   * Attach the current generation to a copy of a subscribe/list result before
+   * the feed sees it. The adapter keeps the original subscription object for
+   * later list/re-subscribe answers, so mutating it would freeze the first
+   * generation forever. Always refresh the copy, even when the adapter result
+   * already carries an older generation.
+   */
+  private async enrichNotice(notice: ExtensionNotice): Promise<ExtensionNotice> {
+    if (notice.customType !== "mcp-events-tool" || !isRecord(notice.details)) return notice;
+    const details = notice.details;
+    const args = isRecord(details.args) ? details.args : undefined;
+    const result = isRecord(details.result) ? details.result : undefined;
+    if (args === undefined || result === undefined) return notice;
+    const action = typeof args.action === "string" ? args.action : "";
+    const subscribe = action === "subscribe" && isRecord(result.subscription);
+    const list = action === "list" && Array.isArray(result.subscriptions);
+    if (!subscribe && !list) return notice;
+    const cached = new Map<string, Promise<string | undefined>>();
+    const copy = async (target: Record<string, unknown>): Promise<Record<string, unknown>> => {
+      if (typeof target.server !== "string") return { ...target };
+      const session = typeof target.id === "string" ? target.id : undefined;
+      const cacheKey = `${target.server}\u0000${session ?? ""}`;
+      let generation = cached.get(cacheKey);
+      if (generation === undefined) {
+        generation = this.generationFor(target.server, session);
+        cached.set(cacheKey, generation);
+      }
+      const resolved = await generation;
+      return resolved === undefined ? { ...target } : { ...target, generation: resolved };
+    };
+    if (subscribe && isRecord(result.subscription)) {
+      return {
+        ...notice,
+        details: {
+          ...details,
+          result: { ...result, subscription: await copy(result.subscription) },
+        },
+      };
+    }
+    const subscriptions = result.subscriptions;
+    if (!Array.isArray(subscriptions)) return notice;
+    return {
+      ...notice,
+      details: {
+        ...details,
+        result: {
+          ...result,
+          subscriptions: await Promise.all(
+            subscriptions.map((item) => (isRecord(item) ? copy(item) : item)),
+          ),
+        },
+      },
+    };
   }
 
   /**
@@ -1454,7 +1577,13 @@ export class McpRuntime {
   async reopenSubscription(
     record: McpSubscriptionRecord,
     cursor: string | null | undefined,
-  ): Promise<{ id?: string; cursor: string | null; status: string; endReason?: string }> {
+  ): Promise<{
+    id?: string;
+    generation?: string;
+    cursor: string | null;
+    status: string;
+    endReason?: string;
+  }> {
     // When the caller supplies a cursor it wins: a real position resumes there
     // and a zero position means "start in now", never the stored position.
     // "No cursor at all" falls back to the newest durable position, not the
@@ -1491,8 +1620,11 @@ export class McpRuntime {
       }
       const raw =
         details !== undefined && isRecord(details.subscription) ? details.subscription : {};
+      const id = typeof raw.id === "string" ? raw.id : (record.id ?? undefined);
+      const generation = await this.generationFor(record.server, id);
       return {
-        ...(typeof raw.id === "string" ? { id: raw.id } : {}),
+        ...(id === undefined ? {} : { id }),
+        ...(generation === undefined ? {} : { generation }),
         cursor: positionCursor(raw.cursor, sent),
         status: typeof raw.status === "string" ? raw.status : "active",
         ...(typeof raw.endReason === "string" ? { endReason: raw.endReason } : {}),
@@ -1504,7 +1636,13 @@ export class McpRuntime {
   private async reopenDirect(
     record: McpSubscriptionRecord,
     cursor: string | null,
-  ): Promise<{ id: string; cursor: string | null; status: string; endReason?: string }> {
+  ): Promise<{
+    id: string;
+    generation?: string;
+    cursor: string | null;
+    status: string;
+    endReason?: string;
+  }> {
     if (record.id !== null && record.id !== undefined) {
       const previous = this.directSubscriptions.get(record.id);
       if (previous !== undefined) {
@@ -1548,8 +1686,10 @@ export class McpRuntime {
     try {
       const subscription = await connection.subscribe(record.name, record.arguments, cursor);
       this.directSubscriptions.set(subscription.id, connection);
+      const generation = await this.generationFor(record.server, subscription.id);
       return {
         id: subscription.id,
+        ...(generation === undefined ? {} : { generation }),
         cursor: positionCursor(subscription.cursor, cursor),
         status: subscription.status,
       };
@@ -1884,9 +2024,11 @@ export class McpRuntime {
         arguments: isRecord(raw.arguments) ? raw.arguments : record.arguments,
         cursor: positionCursor(raw.cursor, cursor),
       };
+      const generation = await this.generationFor(subscription.server, subscription.id);
       const restored: McpSubscriptionRecord = {
         ...record,
         stableId,
+        ...(generation === undefined ? {} : { generation }),
         id: subscription.id,
         cursor: subscription.cursor,
         status: subscription.status,
@@ -1916,6 +2058,7 @@ export class McpRuntime {
             subscription: {
               ...subscription,
               stableId,
+              ...(generation === undefined ? {} : { generation }),
               deliveredEventIds: record.deliveredEventIds ?? [],
             },
           },

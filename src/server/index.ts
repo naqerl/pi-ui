@@ -295,12 +295,18 @@ const events = new McpEventFeed(boot.mcp.subscriptionRegistry, {
 await events.hydrate();
 chat.setEventFeed(events);
 chat.setTaskActivity(taskActivity);
+let forgetMcpGeneration: ((stableId: string) => void) | undefined;
+const drainGenerationClears = (): void => {
+  if (forgetMcpGeneration === undefined) return;
+  for (const stableId of events.takeGenerationClears()) forgetMcpGeneration(stableId);
+};
 boot.mcp.setObserver((notice) => {
   // Event batches cross the durable outbox boundary in the message sink below.
   // Never advance delivered IDs/cursors before their retryable text is on disk.
   if (notice.customType === "mcp-events") return;
   const previous = events.state;
   const changed = events.ingest(notice);
+  drainGenerationClears();
   // A protocol connection can clear a boot failure, so keep the live status
   // in every tab instead of leaving the snapshot from startup on screen.
   hub.broadcast({ event: "mcp.status", data: boot.mcp.status });
@@ -403,6 +409,12 @@ const mcpOutbox = new McpOutbox(resolve(dataDir, "mcp-outbox.json"), (item) =>
   chat.submitMcpDelivery(item),
 );
 await mcpOutbox.load();
+forgetMcpGeneration = (stableId) => {
+  void mcpOutbox.forgetStable(stableId).catch((error: unknown) => {
+    console.error(`[mcp] could not clear stale generation for ${stableId}`, error);
+  });
+};
+drainGenerationClears();
 const mcpIntake = new McpIntake();
 boot.mcp.setSubmit((text, options) => {
   const envelope = mcpEventEnvelope(text);
