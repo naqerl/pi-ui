@@ -1076,6 +1076,14 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
   available" banner with its Reset button. Widgets are the page: the grid shows the
   grid, and a reset happens because the agent was asked for it, not by tapping a bar
   that appears whenever the default board changes.
+## 1.6.159
+
+### Added
+
+- A diagram that fails to parse can be repaired in place: the parse error now comes back with
+  the diagram's id, and `edit_diagram` takes that id plus the corrected source, so a syntax slip
+  near the top no longer costs the agent a full re-emit of the body and a new id.
+
 ## 1.6.158
 
 ### Fixed
