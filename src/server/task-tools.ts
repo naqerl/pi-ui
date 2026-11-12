@@ -190,6 +190,30 @@ async function changed(
   }
 }
 
+/**
+ * The one propose_task definition, shared by the main chat and the planning agent.
+ * A proposal is never open work until a human approves it.
+ */
+export function createProposeTaskTool(bridge: TaskBridge): ToolRegistration {
+  return defineTool({
+    name: "propose_task",
+    description:
+      "Propose a task for human approval. A proposal is not a task: it does not appear in task_list and cannot be worked on until a human approves it.",
+    parameters: proposeSchema,
+    async execute(args) {
+      return changed(bridge, () =>
+        bridge.store.propose(
+          args.title,
+          args.rationale,
+          args.attachments ?? [],
+          args.project,
+          args.body,
+        ),
+      );
+    },
+  });
+}
+
 /** Tools for the same ledger the tasks page edits. Not deferred, so every turn offers them. */
 export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
   return [
@@ -410,23 +434,7 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
         return changed(bridge, () => bridge.store.update(args.id, patch));
       },
     }),
-    defineTool({
-      name: "propose_task",
-      description:
-        "Propose a task for human approval. A proposal is not a task: it does not appear in task_list and cannot be worked on until a human approves it.",
-      parameters: proposeSchema,
-      async execute(args) {
-        return changed(bridge, () =>
-          bridge.store.propose(
-            args.title,
-            args.rationale,
-            args.attachments ?? [],
-            args.project,
-            args.body,
-          ),
-        );
-      },
-    }),
+    createProposeTaskTool(bridge),
     defineTool({
       name: "task_block",
       description:
