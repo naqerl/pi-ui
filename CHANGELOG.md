@@ -1,3 +1,12 @@
+## 1.6.155
+
+### Added
+
+- Task cards show a `Planning` badge while a plan run is live, so work in progress
+  is visible from the list and not only inside the task.
+- The planning agent can ask structured questions (ask_questions /
+  append_questions) and the answers appear in a panel in the plan chat.
+
 ## 1.6.154
 
 ### Fixed
