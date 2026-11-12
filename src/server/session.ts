@@ -39,7 +39,7 @@ import {
   taskDecisionPrompt,
   taskDecisionSummary,
 } from "../shared/notices.js";
-import { QUEUE_ENTRY_KIND, queueKeyFromEntryData } from "../shared/queue.js";
+import { entryQueueKeyFromData, QUEUE_ENTRY_KIND, queueKeyFromEntryData } from "../shared/queue.js";
 import { steerKeyFromEntryData } from "../shared/steers.js";
 import { toIsoTimestamp } from "../shared/time.js";
 import {
@@ -754,6 +754,19 @@ export function buildTranscript(
     }
   }
 
+  // A placed queue copy shares its key with the notice entry that is its visible form.
+  // Only a decision notice owns a copy like that: an MCP status notice is *rendered* from
+  // its queue row, so dropping those copies would delete the notice itself.
+  const noticeQueueKeys = new Set<string>();
+  for (const entry of sorted) {
+    if (entry.kind !== TASK_DECISION_ENTRY_KIND) continue;
+    const queueKey = entryQueueKeyFromData(entry.data);
+    if (queueKey !== undefined) noticeQueueKeys.add(queueKey);
+    // Older notice entries only carried the logical key, not the queued input's key.
+    const key = queueKeyFromEntryData(entry.data);
+    if (key !== undefined) noticeQueueKeys.add(key);
+  }
+
   const mcpNotices = new Map<string, { first: EntryRecord; latest: EntryRecord }>();
   let latestMcpNoticeText: string | null = null;
   for (const entry of sorted) {
@@ -1071,6 +1084,7 @@ export function buildTranscript(
       const attachments = media === undefined ? [] : userImages(message.content, media);
       const steerKey = kind === STEER_ENTRY_KIND ? steerKeyFromEntryData(entry.data) : undefined;
       const queueKey = kind === QUEUE_ENTRY_KIND ? queueKeyFromEntryData(entry.data) : undefined;
+      if (queueKey !== undefined && noticeQueueKeys.has(queueKey)) continue;
       if (text.length > 0 || attachments.length > 0) {
         const notice = parseNotice(text);
         if (notice?.kind === "mcp") latestMcpNoticeText = text;
@@ -1248,6 +1262,7 @@ export function assistantMessageFromEntry(entry: EntryRecord): ChatMessage | nul
 export async function appendTaskDecisionNotice(
   conversation: Conversation,
   record: TaskDecisionNoticeRecord,
+  key?: string,
 ): Promise<ChatMessage | undefined> {
   const createdAt = new Date().toISOString();
   await conversation.commit(
@@ -1260,6 +1275,7 @@ export async function appendTaskDecisionNotice(
           decision: record.decision,
           text: taskDecisionPrompt(record),
           createdAt,
+          ...(key === undefined ? {} : { key }),
         },
       }),
     SESSION_CONTEXT,

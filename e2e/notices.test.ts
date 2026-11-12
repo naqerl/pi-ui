@@ -458,3 +458,45 @@ test("recording an interrupted run sends no push", async (t) => {
     resetPushServiceForTests();
   }
 });
+
+test("a placed queue copy of a notice key never renders as a user row", () => {
+  const text =
+    "Task proposal p1 was approved and is now task t1: Ship it.\nYou may start working on it now; it is no longer waiting for approval.";
+  const entries = [
+    {
+      id: 1,
+      kind: "ui.task-decision",
+      data: {
+        proposalId: "p1",
+        taskId: "t1",
+        taskTitle: "Ship it",
+        decision: "approved",
+        text,
+        createdAt: "2026-10-30T10:00:00.000Z",
+        key: "decision:p1",
+      },
+    },
+    {
+      id: 2,
+      kind: "ui.queue",
+      data: { key: "decision:p1", createdAt: "2026-10-30T10:00:01.000Z" },
+      model: [{ role: "user", content: text, timestamp: 1 }],
+    },
+    {
+      id: 3,
+      kind: "ui.queue",
+      data: { key: "human-message", createdAt: "2026-10-30T10:00:02.000Z" },
+      model: [{ role: "user", content: "a normal queued message", timestamp: 2 }],
+    },
+  ] as unknown as EntryRecord[];
+
+  const messages = buildTranscript(entries).messages;
+  assert.deepEqual(
+    messages.map((message) => [message.id, message.role, message.text]),
+    [
+      ["m-1", "system", text],
+      ["m-human-message", "user", "a normal queued message"],
+    ],
+  );
+  assert.equal(messages[0]?.notice?.kind, "decision");
+});

@@ -79,6 +79,15 @@ export function queueKeyFromEntryData(data: unknown): string | undefined {
   return typeof key === "string" && key.length > 0 ? key : undefined;
 }
 
+/** The shared key of a queued input or the notice entry it was placed as. */
+export function entryQueueKeyFromData(data: unknown): string | undefined {
+  if (typeof data === "object" && data !== null && "queueKey" in data) {
+    const queueKey = (data as { queueKey: unknown }).queueKey;
+    if (typeof queueKey === "string" && queueKey.length > 0) return queueKey;
+  }
+  return queueKeyFromEntryData(data);
+}
+
 /** True for a queued notice marker, which has a short label instead of a full notice. */
 export function isQueuedNotice(notice: ChatMessage["notice"]): notice is QueuedNotice {
   return (
