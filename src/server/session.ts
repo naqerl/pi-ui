@@ -1167,11 +1167,12 @@ export function buildTranscript(
         if (usage !== undefined) pendingToolSpend.delete(toolCallId);
         activity.push(usage === undefined ? tool : { ...tool, usage });
       }
-      // A drawing owns one message; a replace only raises that message's revision, so the
-      // transcript is not rewritten with another bubble for the same diagram.
+      // A drawing owns one message; a replace or edit only raises that message's revision, so
+      // the transcript is not rewritten with another bubble for the same diagram.
       const diagram = parseDiagramDetails(message.details);
       const part = diagramPartFromDetails(message.details, diagramRevision);
-      if (diagram !== undefined && part !== undefined && call?.name !== "replace_diagram") {
+      const revises = call?.name === "replace_diagram" || call?.name === "edit_diagram";
+      if (diagram !== undefined && part !== undefined && !revises) {
         messages.push({
           id: `m-${entry.id}`,
           role: "assistant",

@@ -6,7 +6,14 @@ import {
 import { Type } from "typebox";
 import { DIAGRAM_FORMAT } from "../shared/diagrams.js";
 import type { Diagram } from "./diagrams.js";
-import { DiagramError, type DiagramStore, MAX_DIAGRAM_BYTES } from "./diagrams.js";
+import {
+  DiagramError,
+  type DiagramParseProblem,
+  type DiagramStore,
+  diagramParseProblem,
+  MAX_DIAGRAM_BYTES,
+  validateDiagramSource,
+} from "./diagrams.js";
 
 /** The diagram store and the hook that tells open browsers a drawing changed. */
 export interface DiagramBridge {
@@ -33,6 +40,13 @@ function failure(error: unknown): ToolExecutionResult {
   return { output: [{ type: "text", text: message }], isError: true };
 }
 
+function detailsOf(diagram: Diagram, title?: string) {
+  return {
+    diagram: { id: diagram.id, revision: diagram.revision },
+    ...(title === undefined ? {} : { title }),
+  };
+}
+
 function saved(diagram: Diagram, title?: string): ToolExecutionResult {
   const url = `/api/diagrams/${diagram.id}`;
   return {
@@ -47,11 +61,28 @@ function saved(diagram: Diagram, title?: string): ToolExecutionResult {
         }),
       },
     ],
-    details: {
-      diagram: { id: diagram.id, revision: diagram.revision },
-      ...(title === undefined ? {} : { title }),
-    },
+    details: detailsOf(diagram, title),
   };
+}
+
+function parseFailure(id: string, problem: DiagramParseProblem): ToolExecutionResult {
+  return {
+    output: [
+      {
+        type: "text",
+        text: `Diagram ${id} has a parse error on line ${problem.line}.\n${problem.message}\nFix line ${problem.line} and call edit_diagram with id "${id}" and the corrected source.`,
+      },
+    ],
+    isError: true,
+  };
+}
+
+function drawParseFailure(
+  diagram: Diagram,
+  problem: DiagramParseProblem,
+  title?: string,
+): ToolExecutionResult {
+  return { ...parseFailure(diagram.id, problem), details: detailsOf(diagram, title) };
 }
 
 /**
@@ -63,16 +94,43 @@ export function createDiagramTools(bridge: DiagramBridge): ToolRegistration[] {
     defineTool({
       name: "draw_diagram",
       description:
-        "Draw a Mermaid diagram in the chat and return its id. Use it for flows, sequences, states, classes, ER and other diagrams. The chat shows the drawing as part of your reply. Save the id from the result so you can revise it later with replace_diagram.",
+        "Draw a Mermaid diagram in the chat and return its id. Use it for flows, sequences, states, classes, ER and other diagrams. The chat shows the drawing as part of your reply. Save the id from the result so you can revise it later with replace_diagram. If the source does not parse, the error names the id and the offending line so you can fix that line with edit_diagram.",
       parameters: Type.Object({
         source: sourceSchema,
         title: titleSchema,
       }),
       async execute(args) {
+        const title = typeof args.title === "string" ? args.title.trim() : undefined;
         try {
           const diagram = await bridge.store.create(args.source, DIAGRAM_FORMAT);
           bridge.publish(diagram);
-          return saved(diagram, typeof args.title === "string" ? args.title.trim() : undefined);
+          const problem = diagramParseProblem(diagram.source);
+          if (problem !== undefined) return drawParseFailure(diagram, problem, title);
+          return saved(diagram, title);
+        } catch (error) {
+          return failure(error);
+        }
+      },
+    }),
+    defineTool({
+      name: "edit_diagram",
+      description:
+        "Fix a diagram that failed to parse, using the id it already has. Send only the corrected Mermaid source: the same message updates and the revision increases. On a parse error the result names the id and the offending line, so correct that line and call edit_diagram again without resending the rest.",
+      parameters: Type.Object({
+        id: Type.String({ description: "Diagram id returned by draw_diagram or its parse error." }),
+        source: sourceSchema,
+      }),
+      async execute(args) {
+        try {
+          const source = validateDiagramSource(args.source);
+          if (bridge.store.get(args.id) === undefined) {
+            throw new DiagramError(`Unknown diagram: ${args.id}`, 404);
+          }
+          const problem = diagramParseProblem(source);
+          if (problem !== undefined) return parseFailure(args.id, problem);
+          const diagram = await bridge.store.replace(args.id, source);
+          bridge.publish(diagram);
+          return saved(diagram);
         } catch (error) {
           return failure(error);
         }

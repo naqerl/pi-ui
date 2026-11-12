@@ -207,6 +207,62 @@ test("diagram tools draw, replace, and fail readably", async () => {
   assert.deepEqual(published, [details.diagram.id, details.diagram.id]);
 });
 
+test("edit_diagram replaces a valid source and refuses a parse error in place", async () => {
+  const tools = new Map(
+    createDiagramTools({ store, publish: () => undefined }).map((tool) => [tool.name, tool]),
+  );
+  const call = (name: string, args: Record<string, unknown>) => {
+    const tool = tools.get(name);
+    assert.ok(tool);
+    return tool.execute(args as never, {} as never, {} as never);
+  };
+
+  const drawn = await call("draw_diagram", { source: "flowchart LR\n  A --> B" });
+  const id = (drawn.details as { diagram: { id: string } }).diagram.id;
+  const edited = await call("edit_diagram", {
+    id,
+    source: "flowchart LR\n  A --> C",
+  });
+  assert.equal(textOf(edited).isError, false);
+  assert.equal((edited.details as { diagram: { revision: number } }).diagram.revision, 2);
+  assert.equal(store.get(id)?.source, "flowchart LR\n  A --> C");
+
+  const before = store.get(id);
+  const broken = textOf(await call("edit_diagram", { id, source: "flowchart LR\n  A -->" }));
+  assert.equal(broken.isError, true);
+  assert.ok(broken.text.includes(id));
+  assert.match(broken.text, /Parse error on line 2/);
+  assert.match(broken.text, /line 2/);
+  assert.deepEqual(store.get(id), before);
+  assert.equal(store.get(id)?.revision, 2);
+});
+
+test("draw_diagram reports the id it stored when the source does not parse", async () => {
+  const tools = new Map(
+    createDiagramTools({ store, publish: () => undefined }).map((tool) => [tool.name, tool]),
+  );
+  const call = (name: string, args: Record<string, unknown>) => {
+    const tool = tools.get(name);
+    assert.ok(tool);
+    return tool.execute(args as never, {} as never, {} as never);
+  };
+
+  const broken = await call("draw_diagram", { source: "flowchart LR\n  A -->" });
+  const text = textOf(broken);
+  const id = (broken.details as { diagram: { id: string } }).diagram.id;
+  assert.equal(text.isError, true);
+  assert.ok(text.text.includes(id));
+  assert.match(text.text, /line 2/);
+  assert.equal(store.get(id)?.revision, 1);
+
+  const fixed = await call("edit_diagram", {
+    id,
+    source: "flowchart LR\n  A --> B",
+  });
+  assert.equal(textOf(fixed).isError, false);
+  assert.equal((fixed.details as { diagram: { revision: number } }).diagram.revision, 2);
+});
+
 function toolResult(id: number, toolName: string, details: unknown): EntryRecord {
   return {
     id,

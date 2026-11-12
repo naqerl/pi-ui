@@ -78,6 +78,44 @@ export function validateDiagramSource(source: unknown): string {
   return source;
 }
 
+/** A parser failure from Pele: the text it printed, and where it gave up. */
+export interface DiagramParseProblem {
+  message: string;
+  /** One-based line number; a source with no diagram type resolves to line 1. */
+  line: number;
+  column?: number;
+}
+
+function numericField(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Parses Mermaid once with the same bundled renderer the client and server use. A tool can
+ * therefore report a broken source before it claims the drawing was saved.
+ */
+export function diagramParseProblem(source: string): DiagramParseProblem | undefined {
+  try {
+    render(source);
+    return undefined;
+  } catch (error) {
+    const record =
+      typeof error === "object" && error !== null ? (error as Record<string, unknown>) : {};
+    const rawLine = numericField(record, "line");
+    const rawColumn = numericField(record, "column");
+    const message =
+      error instanceof Error && error.message.trim().length > 0
+        ? error.message
+        : "The diagram could not be parsed.";
+    return {
+      message,
+      line: rawLine === undefined ? 1 : Math.max(1, Math.trunc(rawLine)),
+      ...(rawColumn === undefined ? {} : { column: Math.max(0, Math.trunc(rawColumn)) }),
+    };
+  }
+}
+
 function validateFormat(format: unknown): string {
   if (typeof format !== "string" || format.trim().length === 0) {
     throw new DiagramError("Diagram format must be text", 400);
