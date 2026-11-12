@@ -24,6 +24,8 @@ export interface McpSubscriptionRecord {
   readonly name: string;
   /** Never changes for the same server, stream name and arguments document. */
   readonly stableId?: string;
+  /** Server event-numbering generation captured at the last subscribe. */
+  readonly generation?: string | number;
   /** Adapter id. It changes when the process subscribes again. */
   readonly id?: string | null;
   readonly arguments: Record<string, unknown>;
@@ -187,6 +189,11 @@ function normalizeRecord(value: unknown): McpSubscriptionRecord | null {
     server: value.server,
     name: value.name,
     stableId,
+    ...(typeof value.generation === "string" && value.generation.length > 0
+      ? { generation: value.generation }
+      : typeof value.generation === "number" && Number.isFinite(value.generation)
+        ? { generation: value.generation }
+        : {}),
     id: typeof value.id === "string" && value.id.length > 0 ? value.id : null,
     arguments: args,
     cursor: typeof value.cursor === "string" ? value.cursor : null,
@@ -397,6 +404,7 @@ function mergeRecord(
   return {
     ...latest,
     stableId: latest.stableId ?? existing.stableId ?? incoming.stableId,
+    generation: latest.generation ?? existing.generation ?? incoming.generation,
     // A rewrite of an old file has no id yet; do not lose one already known.
     id: latest.id ?? existing.id ?? incoming.id ?? null,
     status,

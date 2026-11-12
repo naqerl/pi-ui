@@ -1727,6 +1727,89 @@ test("reopenSubscription returns the server's cursor, not its argument", async (
   }
 });
 
+test("generation enrichment copies adapter results and refreshes a changed generation", async (t) => {
+  const dataDir = await tempDir(t);
+  await withAgentConfig(t, {
+    mcpServers: {
+      stub: { command: process.execPath, args: [resolve("e2e/stub-mcp.mjs")] },
+    },
+    web: { command: process.execPath, disabled: true },
+  });
+  const runtime = await startMcpRuntime({ dataDir });
+  type Notice = { customType?: string; details?: unknown };
+  const enrich = (
+    runtime as unknown as { enrichNotice(notice: Notice): Promise<Notice> }
+  ).enrichNotice.bind(runtime);
+  const subscriptionOf = (notice: Notice): Record<string, unknown> =>
+    (notice.details as { result: { subscription: Record<string, unknown> } }).result.subscription;
+  const subscriptionsOf = (notice: Notice): Record<string, unknown>[] =>
+    (notice.details as { result: { subscriptions: Record<string, unknown>[] } }).result
+      .subscriptions;
+  const subscribe = (subscription: Record<string, unknown>): Notice => ({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe", server: "stub", name: "stub-hub" },
+      result: { subscription },
+    },
+  });
+  let generation = "daemon-a";
+  runtime.generationFor = async () => generation;
+  const feed = new McpEventFeed(runtime.subscriptionRegistry);
+  await feed.hydrate();
+  const adapterSubscription: Record<string, unknown> = {
+    id: "s1",
+    server: "stub",
+    name: "stub-hub",
+    status: "active",
+    cursor: "hub:1",
+  };
+  const item = {
+    subscription_id: "s1",
+    server: "stub",
+    event: {
+      eventId: "hub:1",
+      name: "stub-hub",
+      timestamp: new Date().toISOString(),
+      cursor: "hub:1",
+      data: { kind: "stub-hub.job", id: "job-1" },
+    },
+  };
+  try {
+    const first = await enrich(subscribe(adapterSubscription));
+    assert.equal(subscriptionOf(first).generation, "daemon-a");
+    assert.equal(adapterSubscription.generation, undefined, "the adapter object is not mutated");
+    feed.ingest(first);
+    feed.ingest({ customType: "mcp-events", details: { events: [item] } });
+    feed.markDelivered([item]);
+
+    // pi-mcp-events keeps the first result as its live subscription object.
+    adapterSubscription.generation = "daemon-a";
+    generation = "daemon-b";
+    const listed = await enrich({
+      customType: "mcp-events-tool",
+      details: { args: { action: "list" }, result: { subscriptions: [adapterSubscription] } },
+    });
+    assert.equal(subscriptionsOf(listed)[0]?.generation, "daemon-b");
+    assert.equal(adapterSubscription.generation, "daemon-a", "list enrichment is a copy");
+    feed.ingest(listed);
+    assert.deepEqual(feed.takeGenerationClears(), ["stub/stub-hub"]);
+
+    const resubscribed = await enrich(subscribe(adapterSubscription));
+    assert.equal(subscriptionOf(resubscribed).generation, "daemon-b");
+    assert.equal(adapterSubscription.generation, "daemon-a", "subscribe enrichment is a copy");
+    feed.ingest(resubscribed);
+    assert.equal(
+      feed.ingest({ customType: "mcp-events", details: { events: [item] } }),
+      true,
+      "the same cursor in the new generation is a new event, not an old log duplicate",
+    );
+    assert.equal(feed.state.events.at(-1)?.generation, "daemon-b");
+  } finally {
+    runtime.setObserver(undefined);
+    await runtime.close();
+  }
+});
+
 test("reopenSubscription without a cursor uses the newest durable position", async (t) => {
   await withAgentConfig(t, {
     mcpServers: {
@@ -1767,6 +1850,75 @@ test("reopenSubscription without a cursor uses the newest durable position", asy
       "the durable row's last delivered cursor wins over the stale caller record",
     );
   } finally {
+    await runtime.close();
+  }
+});
+
+test("a live protocol reconnect refreshes generation before the renumbered event", async (t) => {
+  const dataDir = await tempDir(t);
+  await withAgentConfig(t, {
+    mcpServers: {
+      stub: { command: process.execPath, args: [resolve("e2e/stub-mcp.mjs")] },
+    },
+    web: { command: process.execPath, disabled: true },
+  });
+  const runtime = await startMcpRuntime({ dataDir });
+  const feed = new McpEventFeed(runtime.subscriptionRegistry);
+  await feed.hydrate();
+  runtime.setObserver((notice) => {
+    feed.ingest(notice);
+  });
+  let generation = "daemon-a";
+  runtime.generationFor = async () => generation;
+  const stableId = deriveStableId("stub", "stub-hub", {});
+  const item = {
+    subscription_id: "s1",
+    server: "stub",
+    event: {
+      eventId: "hub:7",
+      name: "stub-hub",
+      timestamp: new Date().toISOString(),
+      cursor: "hub:7",
+      data: { kind: "stub-hub.job", id: "job-7" },
+    },
+  };
+  try {
+    feed.ingest({
+      customType: "mcp-events-tool",
+      details: {
+        args: { action: "subscribe", server: "stub", name: "stub-hub" },
+        result: {
+          subscription: {
+            id: "s1",
+            server: "stub",
+            name: "stub-hub",
+            status: "active",
+            cursor: "hub:7",
+            generation: "daemon-a",
+          },
+        },
+      },
+    });
+    assert.equal(feed.ingest({ customType: "mcp-events", details: { events: [item] } }), true);
+    feed.markDelivered([item]);
+    assert.deepEqual(feed.novelEvents([item]), []);
+
+    // The adapter reconnects its live stream through protocolConnection; no
+    // mcp_events tool call or list follows before the first replayed event.
+    generation = "daemon-b";
+    await runtime.protocolConnection("stub");
+
+    assert.equal(feed.findByStableId(stableId)?.generation, "daemon-b");
+    assert.deepEqual(feed.takeGenerationClears(), [stableId]);
+    assert.deepEqual(feed.novelEvents([item]), [item], "the renumbered cursor is novel again");
+    assert.equal(
+      feed.ingest({ customType: "mcp-events", details: { events: [item] } }),
+      true,
+      "the reconnected event is not mistaken for the old generation's log row",
+    );
+    assert.equal(feed.state.events.at(-1)?.generation, "daemon-b");
+  } finally {
+    runtime.setObserver(undefined);
     await runtime.close();
   }
 });

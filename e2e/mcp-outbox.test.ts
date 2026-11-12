@@ -12,6 +12,7 @@ import {
 import { DurableExtensionShim } from "../src/server/durable-extensions.js";
 import { McpEventFeed } from "../src/server/mcp-events.js";
 import {
+  MAX_SEEN_PER_STABLE_ID,
   type McpDelivery,
   McpIntake,
   McpOutbox,
@@ -736,4 +737,220 @@ test("a failed notice submission leaves ids novel, and the retry commits the chi
   assert.equal(marked.length, 0, "a failed submission cannot remove an id from novelty");
   await ChatService.prototype.submitMcpDelivery.call(fake as unknown as ChatService, delivery);
   assert.deepEqual(marked, [item], "the successful retry commits the chip");
+});
+
+test("seen keeps the newest 500 keys for one stable id and persists the trim", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-outbox-seen-bound-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "outbox.json");
+  const outbox = new McpOutbox(path, async () => {});
+  await outbox.load();
+  const keys = Array.from({ length: 600 }, (_, index) =>
+    JSON.stringify(["hub/hub", "daemon-a", `hub:${index + 1}`]),
+  );
+  await outbox.enqueueMany([], keys);
+  assert.equal(outbox.has(keys[0] ?? ""), false, "the oldest key was trimmed");
+  assert.equal(outbox.has(keys.at(-1) ?? ""), true, "the newest key survives");
+  const saved = JSON.parse(await readFile(path, "utf8")) as { seen: string[] };
+  assert.equal(saved.seen.length, MAX_SEEN_PER_STABLE_ID);
+  assert.equal(saved.seen[0], keys[100], "the trim keeps the newest window");
+  await outbox.close();
+});
+
+test("a generation change clears that stable id's seen and pending entries only", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-outbox-generation-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "outbox.json");
+  const outbox = new McpOutbox(path, async () => {});
+  await outbox.load();
+  const oldKey = JSON.stringify(["hub/a", "daemon-a", "hub:1"]);
+  const siblingKey = JSON.stringify(["hub/b", "daemon-a", "hub:1"]);
+  const oldItem = event("generation-old");
+  const siblingItem = { ...event("generation-sibling"), event: { ...event("x").event, name: "b" } };
+  await outbox.enqueueMany(
+    [
+      mcpEventText({ head: MCP_EVENTS_HEAD, items: [oldItem], dropped: 0 }, [oldItem]),
+      mcpEventText({ head: MCP_EVENTS_HEAD, items: [siblingItem], dropped: 0 }, [siblingItem]),
+    ],
+    [oldKey, siblingKey],
+  );
+  assert.equal(outbox.has(oldKey), true);
+  assert.equal(outbox.has(siblingKey), true);
+
+  await outbox.forgetStable("hub/a");
+  assert.equal(outbox.has(oldKey), false);
+  assert.equal(outbox.has(siblingKey), true, "another stable id keeps its key");
+  const saved = JSON.parse(await readFile(path, "utf8")) as {
+    pending: McpDelivery[];
+    seen: string[];
+  };
+  assert.equal(saved.seen.includes(oldKey), false);
+  assert.equal(saved.seen.includes(siblingKey), true);
+  assert.equal(saved.pending.length, 1, "only the old generation's pending batch was dropped");
+  assert.deepEqual(mcpEventEnvelope(saved.pending[0]?.text ?? "")?.items[0], siblingItem);
+  await outbox.close();
+});
+
+test("a generation change removes a forgotten event from later split text parts", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-outbox-generation-split-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "outbox.json");
+  const a = event("a:1");
+  const b = event("b:1");
+  const firstText = mcpEventText({ head: MCP_EVENTS_HEAD, items: [a], dropped: 0 }, [a]);
+  const secondText = mcpEventText({ head: MCP_EVENTS_HEAD, items: [b], dropped: 0 }, [b]);
+  const aKey = JSON.stringify(["hub/a", "daemon-a", "a:1"]);
+  const bKey = JSON.stringify(["hub/b", "daemon-a", "b:1"]);
+  await writeFile(
+    path,
+    JSON.stringify({
+      version: 1,
+      pending: [
+        {
+          id: "delivery-split",
+          text: firstText,
+          texts: [firstText, secondText],
+          at: "2026-01-01T00:00:00.000Z",
+          keys: [aKey, bKey],
+        },
+      ],
+      seen: [aKey, bKey],
+    }),
+  );
+  const outbox = new McpOutbox(path, async () => {});
+  await outbox.load();
+  await outbox.forgetStable("hub/b");
+  const saved = JSON.parse(await readFile(path, "utf8")) as {
+    pending: McpDelivery[];
+    seen: string[];
+  };
+  assert.equal(saved.pending.length, 1);
+  const pending = saved.pending[0];
+  assert.ok(pending !== undefined);
+  assert.equal(pending.texts, undefined, "the two-part delivery collapsed to one text");
+  assert.deepEqual(
+    mcpEventEnvelope(pending.text)?.items.map(
+      (item) => (item as { event: { eventId: string } }).event.eventId,
+    ),
+    ["a:1"],
+    "the forgotten event was only in texts[1]",
+  );
+  assert.doesNotMatch(JSON.stringify(pending), /b:1/);
+  assert.deepEqual(pending.keys, [aKey]);
+  assert.deepEqual(saved.seen, [aKey]);
+  await outbox.close();
+});
+
+test("a generation change keeps a sibling whose event was merged by id", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-outbox-generation-merged-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "outbox.json");
+  const outbox = new McpOutbox(path, async () => {});
+  await outbox.load();
+  const shared = event("hub:1");
+  const aKey = JSON.stringify(["hub/a", "daemon-a", "hub:1"]);
+  const bKey = JSON.stringify(["hub/b", "daemon-a", "hub:1"]);
+  await outbox.enqueueMany(
+    [
+      mcpEventText({ head: MCP_EVENTS_HEAD, items: [shared], dropped: 0 }, [shared]),
+      mcpEventText({ head: MCP_EVENTS_HEAD, items: [shared], dropped: 0 }, [shared]),
+    ],
+    [aKey, bKey],
+  );
+  const before = JSON.parse(await readFile(path, "utf8")) as { pending: McpDelivery[] };
+  assert.equal(mcpEventEnvelope(before.pending[0]?.text ?? "")?.items.length, 1);
+  assert.equal(
+    before.pending[0]?.keys?.length,
+    2,
+    "the merge deduped the event but kept both keys",
+  );
+
+  await outbox.forgetStable("hub/b");
+  const saved = JSON.parse(await readFile(path, "utf8")) as {
+    pending: McpDelivery[];
+    seen: string[];
+  };
+  assert.equal(saved.pending.length, 1);
+  assert.deepEqual(
+    mcpEventEnvelope(saved.pending[0]?.text ?? "")?.items.map(
+      (item) => (item as { event: { eventId: string } }).event.eventId,
+    ),
+    ["hub:1"],
+    "the sibling's pending event survives its own key",
+  );
+  assert.deepEqual(saved.pending[0]?.keys, [aKey]);
+  assert.deepEqual(saved.seen, [aKey]);
+  await outbox.close();
+});
+
+test("merge keeps the same cursor from two generations when items carry one", () => {
+  const old = { ...event("hub:7"), generation: "daemon-a" };
+  const next = { ...event("hub:7"), generation: "daemon-b" };
+  const merged = mergeDeliveryTexts([
+    mcpEventText({ head: MCP_EVENTS_HEAD, items: [old], dropped: 0 }, [old]),
+    mcpEventText({ head: MCP_EVENTS_HEAD, items: [next], dropped: 0 }, [next]),
+  ]);
+  assert.equal(merged.length, 1);
+  const envelope = mcpEventEnvelope(merged[0] ?? "");
+  assert.deepEqual(
+    envelope?.items.map((item) => (item as { generation: string }).generation),
+    ["daemon-a", "daemon-b"],
+    "the outbox merge does not dedupe a renumbered cursor against the old epoch",
+  );
+});
+
+test("a generation clear never drops a pending status notice", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-outbox-generation-notice-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "outbox.json");
+  const status = `${MCP_STATUS_HEAD}\n${JSON.stringify({
+    subscriptions: [{ id: "b", server: "hub", name: "b", status: "reconnecting" }],
+    dropped_statuses: 0,
+  })}`;
+  const a = event("hub:9");
+  const aKey = JSON.stringify(["hub/a", "daemon-a", "hub:9"]);
+  const outbox = new McpOutbox(path, async () => {});
+  await outbox.load();
+  await outbox.enqueue(status);
+  await outbox.enqueueMany(
+    [mcpEventText({ head: MCP_EVENTS_HEAD, items: [a], dropped: 0 }, [a])],
+    [aKey],
+  );
+  const before = JSON.parse(await readFile(path, "utf8")) as { pending: McpDelivery[] };
+  const notice = before.pending.find((item) => item.text.startsWith(MCP_STATUS_HEAD));
+  assert.ok(notice !== undefined);
+  assert.equal(notice.keys, undefined, "an event key is not stamped onto a notice row");
+
+  await outbox.forgetStable("hub/a");
+  const after = JSON.parse(await readFile(path, "utf8")) as {
+    pending: McpDelivery[];
+    seen: string[];
+  };
+  assert.equal(after.pending.length, 1);
+  assert.match(after.pending[0]?.text ?? "", /reconnecting/);
+  assert.deepEqual(after.seen, []);
+  await outbox.close();
+
+  // A row written by the previous code can already carry the event key.
+  await writeFile(
+    path,
+    JSON.stringify({
+      version: 1,
+      pending: [
+        { id: "legacy-notice", text: status, at: "2026-01-01T00:00:00.000Z", keys: [aKey] },
+      ],
+      seen: [aKey],
+    }),
+  );
+  const restored = new McpOutbox(path, async () => {});
+  await restored.load();
+  await restored.forgetStable("hub/a");
+  const legacy = JSON.parse(await readFile(path, "utf8")) as {
+    pending: McpDelivery[];
+    seen: string[];
+  };
+  assert.equal(legacy.pending.length, 1, "the non-event delivery survives");
+  assert.equal(legacy.pending[0]?.keys, undefined, "only the forgotten key is stripped");
+  assert.deepEqual(legacy.seen, []);
+  await restored.close();
 });

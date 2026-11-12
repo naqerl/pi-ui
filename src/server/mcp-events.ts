@@ -250,6 +250,28 @@ function eventIdsFrom(value: unknown): string[] {
   );
 }
 
+/** A server-stated generation, or the adapter session identity beside it. */
+function subscriptionGeneration(value: Record<string, unknown>): string | number | undefined {
+  for (const candidate of [
+    value.generation,
+    value.sessionId,
+    value.session_id,
+    value.adapterSessionId,
+    value.adapter_session_id,
+  ]) {
+    if (typeof candidate === "string" && candidate.length > 0) return candidate;
+    if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+function sameGeneration(
+  first: string | number | undefined,
+  second: string | number | undefined,
+): boolean {
+  return first !== undefined && second !== undefined && String(first) === String(second);
+}
+
 function subscriptionFrom(value: unknown): McpSubscriptionView | null {
   if (!isRecord(value)) return null;
   if (typeof value.id !== "string" || typeof value.server !== "string") return null;
@@ -257,6 +279,7 @@ function subscriptionFrom(value: unknown): McpSubscriptionView | null {
   const status = typeof value.status === "string" ? value.status : "active";
   const args = isRecord(value.arguments) ? value.arguments : {};
   const cursor = typeof value.cursor === "string" ? value.cursor : null;
+  const generation = subscriptionGeneration(value);
   const stableId =
     typeof value.stableId === "string" && value.stableId.length > 0
       ? value.stableId
@@ -311,6 +334,7 @@ function subscriptionFrom(value: unknown): McpSubscriptionView | null {
   return {
     id: value.id,
     stableId,
+    ...(generation === undefined ? {} : { generation }),
     server: value.server,
     name,
     ...(title === undefined ? {} : { title }),
@@ -578,6 +602,8 @@ export class McpEventFeed {
   private readonly restored = new Set<string>();
   /** Stable ids explicitly cancelled; a late status notice must not revive them. */
   private readonly cancelled = new Set<string>();
+  /** Stable ids whose generation changed; the outbox must drop their old keys too. */
+  private readonly generationClears = new Set<string>();
   /** Every adapter id that ever represented a stable id, including replaced ones. */
   private readonly adapterAliases = new Map<string, string>();
   private events: McpEventView[] = [];
@@ -1116,6 +1142,7 @@ export class McpEventFeed {
         cursor: record.cursor,
       }),
       ...(typeof record.id === "string" && record.id.length > 0 ? { id: record.id } : {}),
+      ...(record.generation === undefined ? {} : { generation: record.generation }),
       cursor: positionOf(record.cursor, current?.cursor),
       status: record.status,
       state,
@@ -1134,6 +1161,7 @@ export class McpEventFeed {
     const changed =
       current === undefined ||
       current.id !== next.id ||
+      current.generation !== next.generation ||
       current.cursor !== next.cursor ||
       current.status !== next.status ||
       current.state !== next.state ||
@@ -1192,7 +1220,11 @@ export class McpEventFeed {
     return undefined;
   }
 
-  /** Stable across adapter replacement/restart, never based on timestamps. */
+  /**
+   * Stable across adapter replacement/restart, never based on timestamps. A
+   * stated generation separates two server epochs that reuse the same cursor;
+   * without one the key keeps the original two-part shape.
+   */
   eventKey(item: unknown): string {
     if (!isRecord(item) || !isRecord(item.event)) return JSON.stringify(item);
     const event = item.event;
@@ -1203,7 +1235,67 @@ export class McpEventFeed {
     const stable =
       current?.stableId ??
       deriveStableId(String(item.server), String(event.name ?? "event"), current?.arguments ?? {});
-    return JSON.stringify([stable, event.eventId ?? event]);
+    const generation = current?.generation ?? this.savedRecord(stable)?.generation;
+    const cursor = event.eventId ?? event.cursor ?? event;
+    return generation === undefined
+      ? JSON.stringify([stable, cursor])
+      : JSON.stringify([stable, generation, cursor]);
+  }
+
+  /** Generation changes detected since the caller last drained them. */
+  takeGenerationClears(): string[] {
+    const cleared = [...this.generationClears];
+    this.generationClears.clear();
+    return cleared;
+  }
+
+  /**
+   * The delivery copy of an event carries the generation its outbox key uses.
+   * Adapter event items have no generation of their own, so without this a
+   * merge could fold the new epoch into an old pending text with the same cursor.
+   */
+  withEventGeneration(item: unknown): unknown {
+    if (!isRecord(item) || !isRecord(item.event)) return item;
+    const current =
+      typeof item.subscription_id === "string"
+        ? this.viewForAdapter(item.subscription_id)
+        : undefined;
+    if (current === undefined) return item;
+    const generation = current.generation ?? this.savedRecord(current.stableId)?.generation;
+    return generation === undefined ? item : { ...item, generation };
+  }
+
+  /**
+   * A new generation must not inherit the previous one's seen/delivered ids:
+   * same-numbered cursors are fresh news, and old pending entries may never
+   * block them. Only this stable id is touched.
+   */
+  private clearGeneration(stableId: string): void {
+    this.seen.delete(stableId);
+    this.delivered.delete(stableId);
+    for (const [key, entry] of this.unchipped) {
+      if (entry.stableId === stableId) this.unchipped.delete(key);
+    }
+    this.generationClears.add(stableId);
+  }
+
+  private noteGeneration(
+    stableId: string,
+    previous: string | number | undefined,
+    incoming: string | number | undefined,
+  ): void {
+    if (incoming === undefined || sameGeneration(previous, incoming)) return;
+    // The first stated generation is not a change. It still replaces history
+    // left by a row that predates generations, but only when there is any.
+    if (
+      previous === undefined &&
+      !this.seen.has(stableId) &&
+      !this.delivered.has(stableId) &&
+      ![...this.unchipped.values()].some((entry) => entry.stableId === stableId)
+    ) {
+      return;
+    }
+    this.clearGeneration(stableId);
   }
 
   /** The durable identity and event id of one adapter item, when it has both. */
@@ -1332,7 +1424,32 @@ export class McpEventFeed {
     if (notice.customType === "mcp-events-tool") return this.ingestTool(notice.details);
     if (notice.customType === "mcp-events-traffic") return this.ingestTraffic(notice.details);
     if (notice.customType === "mcp-events-gap") return this.ingestGap(notice.details);
+    if (notice.customType === "mcp-events-generation") return this.ingestGeneration(notice.details);
     return false;
+  }
+
+  /**
+   * The transport reconnected before it can emit the replacement stream's
+   * events. Refresh every tracked row on that server now, so the first
+   * renumbered event uses the new key and clears only its own stale history.
+   */
+  private ingestGeneration(details: unknown): boolean {
+    if (!isRecord(details) || typeof details.server !== "string") return false;
+    const generation = subscriptionGeneration(details);
+    if (generation === undefined) return false;
+    let changed = false;
+    for (const view of [...this.subscriptions.values()]) {
+      if (view.server !== details.server) continue;
+      const previous = view.generation ?? this.savedRecord(view.stableId)?.generation;
+      this.noteGeneration(view.stableId, previous, generation);
+      if (sameGeneration(view.generation, generation)) continue;
+      const next: McpSubscriptionView = { ...view, generation };
+      this.storeView(next);
+      this.persist(next);
+      changed = true;
+    }
+    if (changed) this.touch();
+    return changed;
   }
 
   /** Record a window a restore deliberately skipped instead of replaying it. */
@@ -1555,6 +1672,7 @@ export class McpEventFeed {
       server: subscription.server,
       name: subscription.name,
       stableId: subscription.stableId,
+      ...(subscription.generation === undefined ? {} : { generation: subscription.generation }),
       id: subscription.id,
       arguments: subscription.arguments,
       cursor: subscription.cursor,
@@ -1615,6 +1733,7 @@ export class McpEventFeed {
     }
     for (const item of batch.items) {
       if (!isRecord(item) || typeof item.server !== "string" || !isRecord(item.event)) continue;
+      const server = item.server;
       const event = item.event;
       const streamName = typeof event.name === "string" ? event.name : "event";
       // A multiplexed stream names every event after itself and carries the
@@ -1626,14 +1745,25 @@ export class McpEventFeed {
       const timestamp =
         toIsoTimestamp(event.timestamp as string | number | Date) ?? new Date().toISOString();
       const eventId = typeof event.eventId === "string" ? event.eventId : undefined;
-      const id = eventId ?? `${item.server}:${name}:${timestamp}:${this.events.length}`;
+      const id = eventId ?? `${server}:${name}:${timestamp}:${this.events.length}`;
       const cursor = eventCursor(event);
       const subscriptionId =
         typeof item.subscription_id === "string" ? item.subscription_id : undefined;
       const current =
         subscriptionId === undefined ? undefined : this.viewForAdapter(subscriptionId);
       const stableId =
-        current?.stableId ?? deriveStableId(item.server, streamName, current?.arguments ?? {});
+        current?.stableId ?? deriveStableId(server, streamName, current?.arguments ?? {});
+      const generation = current?.generation ?? this.savedRecord(stableId)?.generation;
+      const sameLogGeneration = (entry: McpEventView): boolean =>
+        generation === undefined || sameGeneration(entry.generation, generation);
+      const eventView = (): McpEventView => ({
+        id,
+        server,
+        name,
+        ...(generation === undefined ? {} : { generation }),
+        timestamp,
+        summary: summarize(event.data),
+      });
       // Novelty belongs to the conversation, not to this process. An id whose
       // chip was committed — in this process or before it started — is a
       // re-delivery; anything else is news, however old its timestamp looks.
@@ -1646,24 +1776,22 @@ export class McpEventFeed {
         // drain instead of silently recording it as delivered.
         if (this.trackCursor(item, streamName, cursor)) stateChanged = true;
         if (eventId !== undefined) this.remember(stableId, eventId, false);
-        const existing = this.events.find((entry) => entry.id === id);
-        if (existing === undefined) {
-          this.events = [
-            ...this.events,
-            {
-              id,
-              server: item.server,
-              name,
-              timestamp,
-              summary: summarize(event.data),
-              replayed: true,
-            },
-          ].slice(-EVENT_LIMIT);
+        const index = this.events.findIndex((entry) => entry.id === id);
+        const existing = index === -1 ? undefined : this.events[index];
+        const matching =
+          existing !== undefined && sameLogGeneration(existing) ? existing : undefined;
+        if (matching === undefined) {
+          const entry = { ...eventView(), replayed: true };
+          this.events = (
+            index === -1
+              ? [...this.events, entry]
+              : this.events.map((item, at) => (at === index ? entry : item))
+          ).slice(-EVENT_LIMIT);
           if (eventId !== undefined && !delivered) {
             this.rememberUnchipped(stableId, eventId, item);
           }
           stateChanged = true;
-        } else if (eventId !== undefined && !delivered && existing.replayed === true) {
+        } else if (eventId !== undefined && !delivered && matching.replayed === true) {
           // Keep the original item: its timestamp and cursor are the ones the
           // eventual chip must carry.
           this.rememberUnchipped(stableId, eventId, item);
@@ -1678,27 +1806,24 @@ export class McpEventFeed {
       if (eventId !== undefined) this.remember(stableId, eventId, false);
       const index = this.events.findIndex((entry) => entry.id === id);
       const existing = index === -1 ? undefined : this.events[index];
-      if (existing !== undefined && existing.replayed !== true) {
+      const matching = existing !== undefined && sameLogGeneration(existing) ? existing : undefined;
+      if (matching !== undefined && matching.replayed !== true) {
         const tracked =
           subscriptionId === undefined ? undefined : this.viewForAdapter(subscriptionId);
         if (tracked !== undefined) this.persist(tracked);
         continue;
       }
-      if (existing === undefined) {
-        this.events = [
-          ...this.events,
-          {
-            id,
-            server: item.server,
-            name,
-            timestamp,
-            summary: summarize(event.data),
-          },
-        ].slice(-EVENT_LIMIT);
-      } else {
+      if (matching !== undefined) {
         this.events = this.events.map((entry, at) =>
           at === index ? { ...entry, replayed: undefined } : entry,
         );
+      } else if (index === -1) {
+        this.events = [...this.events, eventView()].slice(-EVENT_LIMIT);
+      } else {
+        // Same id, different generation: replace the old epoch's row instead
+        // of treating the renumbered event as its duplicate.
+        const entry = eventView();
+        this.events = this.events.map((item, at) => (at === index ? entry : item));
       }
       this.notice = `new event from ${item.server}`;
       deliveredNew = true;
@@ -1867,6 +1992,8 @@ export class McpEventFeed {
         continue;
       }
       const saved = this.savedRecord(incoming.stableId);
+      const stableId = current?.stableId ?? incoming.stableId;
+      this.noteGeneration(stableId, current?.generation ?? saved?.generation, incoming.generation);
       const reconnects =
         incoming.status === "active"
           ? 0
@@ -1876,7 +2003,11 @@ export class McpEventFeed {
         current === undefined
           ? {
               ...incoming,
-              cursor: positionOf(incoming.cursor, saved?.cursor),
+              generation: incoming.generation ?? saved?.generation,
+              cursor:
+                incoming.generation !== undefined && incoming.generation !== saved?.generation
+                  ? incoming.cursor
+                  : positionOf(incoming.cursor, saved?.cursor),
               state: incomingState,
               ...(incoming.lastEventAt === undefined && saved?.lastEventAt !== undefined
                 ? { lastEventAt: saved.lastEventAt }
@@ -1911,7 +2042,11 @@ export class McpEventFeed {
           : {
               ...incoming,
               stableId: current.stableId,
-              cursor: positionOf(current.cursor, incoming.cursor, saved?.cursor),
+              generation: incoming.generation ?? current.generation ?? saved?.generation,
+              cursor:
+                incoming.generation !== undefined && incoming.generation !== current.generation
+                  ? incoming.cursor
+                  : positionOf(current.cursor, incoming.cursor, saved?.cursor),
               state:
                 current.state === "dead" && incoming.status !== "active"
                   ? "dead"
@@ -1955,6 +2090,7 @@ export class McpEventFeed {
         current !== undefined &&
         current.name === subscription.name &&
         current.stableId === subscription.stableId &&
+        current.generation === subscription.generation &&
         current.status === subscription.status &&
         current.state === subscription.state &&
         current.cursor === subscription.cursor &&
@@ -2004,9 +2140,17 @@ export class McpEventFeed {
         const current =
           previousViews.find((view) => view.id === incoming.id) ??
           previousViews.find((view) => view.stableId === incoming.stableId);
+        const saved = this.savedRecord(incoming.stableId);
+        const stableId = current?.stableId ?? incoming.stableId;
+        this.noteGeneration(
+          stableId,
+          current?.generation ?? saved?.generation,
+          incoming.generation,
+        );
         const subscription: McpSubscriptionView = {
           ...incoming,
-          stableId: current?.stableId ?? incoming.stableId,
+          stableId,
+          generation: incoming.generation ?? current?.generation ?? saved?.generation,
           state: deriveSubscriptionState(incoming.status, incoming.state),
           cursor: positionOf(current?.cursor, incoming.cursor),
           recoveryFailures: current?.recoveryFailures ?? incoming.recoveryFailures,
@@ -2066,9 +2210,12 @@ export class McpEventFeed {
       }
       this.seedFromRegistry(incoming.stableId);
       const saved = this.savedRecord(incoming.stableId);
+      const stableId = current?.stableId ?? incoming.stableId;
+      this.noteGeneration(stableId, current?.generation ?? saved?.generation, incoming.generation);
       const subscription: McpSubscriptionView = {
         ...incoming,
-        stableId: current?.stableId ?? incoming.stableId,
+        stableId,
+        generation: incoming.generation ?? current?.generation ?? saved?.generation,
         state: deriveSubscriptionState(incoming.status, incoming.state),
         cursor: answerCursor,
         lastHeartbeatAt:
