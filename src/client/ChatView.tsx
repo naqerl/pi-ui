@@ -139,11 +139,36 @@ function newTaskKey(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
+interface CreateTaskRequest {
+  /** The parsed title sent to the server; it can be empty when the draft was only @project. */
+  title: string;
+  attachments: string[];
+  project?: string;
+  options?: { backlog?: boolean };
+  /** The composer draft that submitted this create, before @project and whitespace parsing. */
+  draft?: { key: string; text: string };
+}
+
 interface OptimisticTask {
   key: string;
   task: Task;
   /** Ids already in the ledger when this card was painted, so only a new row can replace it. */
   knownIds: Set<string>;
+  /** Everything a retry needs, including the text already painted in the row. */
+  request: CreateTaskRequest;
+  /** Why the create failed, or null while it is still in flight. */
+  error: string | null;
+  pending: boolean;
+}
+
+/** A ledger row is the server's replacement for this painted card. */
+function matchesCreatedTask(item: OptimisticTask, task: Task): boolean {
+  return (
+    !item.knownIds.has(task.id) &&
+    task.title === item.task.title &&
+    task.parentId === item.task.parentId &&
+    (task.project ?? null) === (item.task.project ?? null)
+  );
 }
 
 /** The deep link /activity?run=... opens the chat with that run's activity already showing. */
@@ -952,6 +977,7 @@ export function Composer({
   inputLabel,
   placeholder,
   draftKey,
+  clearDraft,
 }: {
   tasksPage: boolean;
   /** When set, @project suggestions work even if this is not the create-task composer. */
@@ -966,6 +992,7 @@ export function Composer({
     attachments: string[],
     project?: string,
     options?: { backlog?: boolean },
+    draft?: { key: string; text: string },
   ) => Promise<boolean>;
   /** Known project names, A–Z, for the `@` autocomplete. */
   projects: string[];
@@ -979,10 +1006,19 @@ export function Composer({
   placeholder?: string;
   /** Stable instance: text drafts are stored per target instead of remounting. */
   draftKey?: string;
+  /** A successful Retry consumes the exact draft that was restored for its failed row. */
+  clearDraft?: {
+    key: string;
+    text: string;
+    attachmentIds: string[];
+    request: number;
+  } | null;
 }) {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const key = draftKey ?? "default";
   const value = drafts[key] ?? "";
+  const draftsRef = useRef(drafts);
+  draftsRef.current = drafts;
   const setValue = (text: string) => {
     setDrafts((all) => ({ ...all, [key]: text }));
   };
@@ -1000,6 +1036,9 @@ export function Composer({
   const suggesting = mention !== null && dismissedAt !== mention.start && suggestions.length > 0;
   const active = suggesting ? Math.min(activeIndex, suggestions.length - 1) : -1;
   const attachments = useAttachments();
+  const attachmentsRef = useRef(attachments.items);
+  attachmentsRef.current = attachments.items;
+  const lastClearedDraft = useRef<number | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const uploading = attachments.items.some((item) => item.status === "uploading");
   const failed = attachments.items.some((item) => item.status === "error");
@@ -1013,6 +1052,23 @@ export function Composer({
   const hasText = value.trim().length > 0;
   // A task still needs a title; a chat message can be images alone.
   const canSend = !uploading && !failed && (hasText || (!tasksPage && readyIds.length > 0));
+
+  // Retrying from the failed row clears only the draft it restored; text typed since wins.
+  // Match the draft key and the raw submitted text, not a parsed title or another target.
+  useEffect(() => {
+    if (clearDraft === null || clearDraft === undefined) return;
+    if (lastClearedDraft.current === clearDraft.request) return;
+    lastClearedDraft.current = clearDraft.request;
+    if (draftsRef.current[clearDraft.key] !== clearDraft.text) return;
+    setDrafts((all) =>
+      all[clearDraft.key] === clearDraft.text ? { ...all, [clearDraft.key]: "" } : all,
+    );
+    const restored = new Set(clearDraft.attachmentIds);
+    const keys = attachmentsRef.current
+      .filter((item) => item.id !== undefined && restored.has(item.id))
+      .map((item) => item.key);
+    if (keys.length > 0) attachments.clear(keys);
+  }, [attachments.clear, clearDraft]);
 
   const addAttachments = (files: Iterable<File>) => {
     draftRevision.current += 1;
@@ -1172,6 +1228,7 @@ export function Composer({
         ids,
         parsed.project ?? undefined,
         backlog ? { backlog: true } : undefined,
+        { key, text },
       );
     } else {
       sent = await send(text, mode, ids);
@@ -1539,6 +1596,13 @@ export function ChatView({
   const lastVibratedPage = useRef(pager.page);
   const [composerError, setComposerError] = useState<string | null>(null);
   const [optimisticTasks, setOptimisticTasks] = useState<OptimisticTask[]>([]);
+  const [draftClear, setDraftClear] = useState<{
+    key: string;
+    text: string;
+    attachmentIds: string[];
+    request: number;
+  } | null>(null);
+  const draftClearSequence = useRef(0);
   const [activityRun, setActivityRun] = useState<string | null | undefined>(
     activityRunFromLocation,
   );
@@ -1561,29 +1625,22 @@ export function ChatView({
   const dockToTask = wantTaskDock && taskDock !== null;
   const hideTasksComposer = statsPage || (tasksPage && composerMode === "collapsed");
   const lastPagerState = useRef({ page: pager.page, dragging: pager.dragging });
-  const shownTasks = useMemo(
-    () =>
-      optimisticTasks.length === 0
-        ? tasks
-        : [...tasks, ...optimisticTasks.map((item) => item.task)],
-    [tasks, optimisticTasks],
-  );
+  // Paint the server's row instead of the card it replaces in the same render: a push and
+  // the create response can both land before the cleanup effect below runs.
+  const shownTasks = useMemo(() => {
+    if (optimisticTasks.length === 0) return tasks;
+    const painted = optimisticTasks.filter(
+      (item) => !tasks.some((task) => matchesCreatedTask(item, task)),
+    );
+    return painted.length === 0 ? tasks : [...tasks, ...painted.map((item) => item.task)];
+  }, [tasks, optimisticTasks]);
 
   // A task event can land before the create response. Retire the painted card as soon as
   // a row that was not already in the ledger at paint time carries the same title.
   useEffect(() => {
     if (optimisticTasks.length === 0) return;
     setOptimisticTasks((current) => {
-      const next = current.filter(
-        (item) =>
-          !tasks.some(
-            (task) =>
-              !item.knownIds.has(task.id) &&
-              task.title === item.task.title &&
-              task.parentId === item.task.parentId &&
-              (task.project ?? null) === (item.task.project ?? null),
-          ),
-      );
+      const next = current.filter((item) => !tasks.some((task) => matchesCreatedTask(item, task)));
       return next.length === current.length ? current : next;
     });
   }, [tasks, optimisticTasks]);
@@ -1788,20 +1845,119 @@ export function ChatView({
     void sendNoticeRef.current(text, "steer");
   }, []);
 
+  const openTaskFromChat = useCallback(
+    (id: string) => {
+      pager.setPage(TASKS_PAGE);
+      setTaskSelection((current) => ({ id, request: (current?.request ?? 0) + 1 }));
+    },
+    [pager.setPage],
+  );
+
+  const clearComposerDraft = useCallback(
+    (draft: { key: string; text: string }, attachmentIds: string[]) => {
+      draftClearSequence.current += 1;
+      setDraftClear({
+        ...draft,
+        attachmentIds,
+        request: draftClearSequence.current,
+      });
+    },
+    [],
+  );
+
+  /** Send one create, keeping its painted row until the ledger has the server's copy. */
+  const attemptCreate = useCallback(
+    async (created: OptimisticTask, retried = false): Promise<boolean> => {
+      const { title } = created.request;
+      const outcome = await createTask(
+        title,
+        null,
+        created.request.attachments,
+        created.request.project,
+        created.request.options,
+      );
+      if (!outcome.ok) {
+        // The row keeps the text and the server's reason so Retry has something to send.
+        if (created.task.title.length > 0) {
+          setOptimisticTasks((current) =>
+            current.map((item) =>
+              item.key === created.key ? { ...item, error: outcome.error, pending: false } : item,
+            ),
+          );
+        } else {
+          setOptimisticTasks((current) => current.filter((item) => item.key !== created.key));
+        }
+        setComposerError(outcome.error);
+        return false;
+      }
+      setComposerError(null);
+      // A retry consumed exactly the raw draft restored for the failed row.
+      if (retried && created.request.draft !== undefined) {
+        clearComposerDraft(created.request.draft, created.request.attachments);
+      }
+      // Do not drop the painted card here: applyTasks may ignore a stale ledger, and the
+      // card must stay until a matching server row is actually in `tasks`.
+      applyTasks(outcome.ledger);
+      setOptimisticTasks((current) =>
+        current.map((item) =>
+          item.key === created.key ? { ...item, error: null, pending: false } : item,
+        ),
+      );
+      if (created.request.options?.backlog !== true) {
+        const opened = outcome.ledger.tasks
+          .filter((task) => !created.knownIds.has(task.id))
+          .sort((left, right) => (left.createdAt < right.createdAt ? 1 : -1))[0];
+        if (opened !== undefined) {
+          openTaskFromChat(opened.id);
+          void fetch(`/api/tasks/${encodeURIComponent(opened.id)}/chat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: title }),
+          }).catch((error: unknown) => {
+            console.error("[pi] could not start the task agent", error);
+          });
+          requestAnimationFrame(() => {
+            window.dispatchEvent(new Event("pi-focus-task-chat"));
+          });
+        }
+      }
+      return true;
+    },
+    [applyTasks, clearComposerDraft, openTaskFromChat],
+  );
+
+  const retryCreate = useCallback(
+    (created: OptimisticTask) => {
+      setOptimisticTasks((current) =>
+        current.map((item) =>
+          item.key === created.key ? { ...item, error: null, pending: true } : item,
+        ),
+      );
+      void attemptCreate({ ...created, error: null, pending: true }, true);
+    },
+    [attemptCreate],
+  );
+
   const addTask = async (
     text: string,
     attachments: string[],
     project?: string,
     options?: { backlog?: boolean },
+    draft?: { key: string; text: string },
   ) => {
     const title = text.trim();
+    // A draft that is only @project still paints the raw text so its 400 has a row to land on.
+    const paintedTitle = title.length > 0 ? title : (draft?.text.trim() ?? "");
     const key = newTaskKey();
     const created: OptimisticTask = {
       key,
       knownIds: new Set(tasks.map((task) => task.id)),
+      request: { title, attachments: [...attachments], project, options, draft },
+      error: null,
+      pending: true,
       task: {
         id: `pending-${key}`,
-        title,
+        title: paintedTitle,
         status: options?.backlog === true ? "backlog" : "open",
         parentId: null,
         blockedBy: [],
@@ -1812,40 +1968,23 @@ export function ChatView({
         createdBy: "operator",
       },
     };
-    const retire = () =>
-      setOptimisticTasks((current) => current.filter((item) => item.key !== key));
     // Paint the card in this frame; the create request only confirms it.
-    if (title.length > 0) setOptimisticTasks((current) => [...current, created]);
-    const outcome = await createTask(title, null, attachments, project, options);
-    if (!outcome.ok) {
-      retire();
-      setComposerError(outcome.error);
-      return false;
-    }
-    // Drop the painted copy and take the server's ledger in one render, keyed by its id.
-    retire();
-    setComposerError(null);
-    applyTasks(outcome.ledger);
-    if (options?.backlog !== true) {
-      const opened = outcome.ledger.tasks
-        .filter((task) => !created.knownIds.has(task.id))
-        .sort((left, right) => (left.createdAt < right.createdAt ? 1 : -1))[0];
-      if (opened !== undefined) {
-        openTaskFromChat(opened.id);
-        void fetch(`/api/tasks/${encodeURIComponent(opened.id)}/chat`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: title }),
-        }).catch((error: unknown) => {
-          console.error("[pi] could not start the task agent", error);
-        });
-        requestAnimationFrame(() => {
-          window.dispatchEvent(new Event("pi-focus-task-chat"));
-        });
-      }
-    }
-    return true;
+    if (paintedTitle.length > 0) setOptimisticTasks((current) => [...current, created]);
+    return attemptCreate(created);
   };
+
+  const createFailures = useMemo(() => {
+    const failures: Record<string, { error: string; retrying: boolean; onRetry: () => void }> = {};
+    for (const item of optimisticTasks) {
+      if (item.error === null) continue;
+      failures[item.task.id] = {
+        error: item.error,
+        retrying: item.pending,
+        onRetry: () => retryCreate(item),
+      };
+    }
+    return failures;
+  }, [optimisticTasks, retryCreate]);
 
   const openActivity = (run: string, trigger: HTMLButtonElement) => {
     activityTriggerRef.current = trigger;
@@ -1875,14 +2014,6 @@ export function ChatView({
   const selectPage = (index: number) => {
     pager.setPage(index);
   };
-
-  const openTaskFromChat = useCallback(
-    (id: string) => {
-      pager.setPage(TASKS_PAGE);
-      setTaskSelection((current) => ({ id, request: (current?.request ?? 0) + 1 }));
-    },
-    [pager.setPage],
-  );
 
   const content = (
     <div className="chat-shell min-h-0" data-testid="chat-shell">
@@ -2003,6 +2134,7 @@ export function ChatView({
                   onLedger={applyTasks}
                   selection={taskSelection}
                   onComposerMode={setComposerMode}
+                  createFailures={createFailures}
                 />
               </Suspense>
             </section>
@@ -2115,6 +2247,7 @@ export function ChatView({
               projects={projects}
               error={dockToTask ? taskDock.error : composerError}
               onDismissError={dockToTask ? taskDock.dismissError : () => setComposerError(null)}
+              clearDraft={draftClear}
               textareaRef={composerRef}
               inputTestId={wantTaskDock ? "task-agent-input" : undefined}
               sendTestId={wantTaskDock ? "task-agent-send" : undefined}
