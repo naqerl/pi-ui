@@ -550,6 +550,14 @@ function TasksViewImpl({
     if (openTaskId === null || menu !== null) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      const target = event.target;
+      // Title, body, and other fields use Escape to cancel an edit.
+      if (
+        target instanceof HTMLElement &&
+        target.closest("input, textarea, select, [contenteditable='true']") !== null
+      ) {
+        return;
+      }
       // Capture while a portaled menu still exists so Escape closes the menu,
       // not the task detail behind it.
       if (

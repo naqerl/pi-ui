@@ -74,11 +74,14 @@ test("edits a task title in place, grows to two lines, and refuses an empty one"
 
   await browser.reload();
   await screen.getByRole("button", { name: /Open Long first line\s+Corrected title/ }).click();
-  expect(
-    await browser.evaluate(
-      () => document.querySelector('[data-testid="task-title"]')?.textContent ?? null,
-    ),
-  ).toBe("Long first line\nCorrected title");
+  await expect(screen.getByTestId("task-title")).toBeVisible();
+  await expect
+    .poll(() =>
+      browser.evaluate(
+        () => document.querySelector('[data-testid="task-title"]')?.textContent ?? null,
+      ),
+    )
+    .toBe("Long first line\nCorrected title");
 
   await screen.getByTestId("task-title").click();
   const escaped = screen.getByRole("textbox", "Task title");

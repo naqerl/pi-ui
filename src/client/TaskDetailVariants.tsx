@@ -54,6 +54,7 @@ function CreatedTimes({ task }: { task: Task }) {
 
 const SCROLLBAR_GUTTER = "[scrollbar-gutter:stable]";
 const QUIET = "text-foreground/75";
+const DETAIL_CARD = "bg-surface theme-radius p-3";
 export type TaskDetailVariantId = 1 | 2 | 3 | 4 | 5;
 
 export interface TaskDetailModel {
@@ -242,6 +243,11 @@ function ProjectPicker({ model }: { model: TaskDetailModel }) {
     }
   };
 
+  useEffect(() => {
+    if (!open) return;
+    inputRef.current?.focus();
+  }, [open]);
+
   return (
     <div className="min-w-0" data-testid="task-project-line">
       <DropdownMenu open={open} onOpenChange={openMenu}>
@@ -255,15 +261,7 @@ function ProjectPicker({ model }: { model: TaskDetailModel }) {
             {label}
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent
-          align="start"
-          className="w-64 p-1"
-          data-testid="task-project-menu"
-          onOpenAutoFocus={(event) => {
-            event.preventDefault();
-            inputRef.current?.focus();
-          }}
-        >
+        <DropdownMenuContent align="start" className="w-64 p-1" data-testid="task-project-menu">
           <div className="px-1 pb-1">
             <input
               ref={inputRef}
@@ -743,6 +741,8 @@ function TitleCard({ model, tabs }: { model: TaskDetailModel; tabs?: ReactNode }
 }
 
 function PlanSections({ model }: { model: TaskDetailModel }) {
+  const attachments = model.task.attachments;
+  const hasAttachments = attachments !== undefined && attachments.length > 0;
   return (
     <div
       className={cn(
@@ -750,7 +750,10 @@ function PlanSections({ model }: { model: TaskDetailModel }) {
         model.wide ? "flex-1 overflow-hidden" : undefined,
       )}
     >
-      <section className={cn("flex min-h-0 flex-col gap-2", model.wide && "min-h-0 flex-1")}>
+      <section
+        data-testid="task-plan-card"
+        className={cn(DETAIL_CARD, "flex min-h-0 flex-col gap-2", model.wide && "min-h-0 flex-1")}
+      >
         <SectionLabel>Plan</SectionLabel>
         <BodyField model={model} fill={model.wide} />
       </section>
@@ -760,10 +763,24 @@ function PlanSections({ model }: { model: TaskDetailModel }) {
           model.wide && "min-h-0 max-h-[40%] shrink-0 overflow-y-auto",
         )}
       >
-        <MetaBlock model={model} />
-        <Blockers model={model} />
-        <Subtasks model={model} />
-        <Attachments model={model} />
+        <div data-testid="task-meta-card" className={DETAIL_CARD}>
+          <MetaBlock model={model} />
+        </div>
+        {model.blockers.length > 0 && (
+          <div data-testid="task-blockers-card" className={DETAIL_CARD}>
+            <Blockers model={model} />
+          </div>
+        )}
+        {model.children.length > 0 && (
+          <div data-testid="task-subtasks-card" className={DETAIL_CARD}>
+            <Subtasks model={model} />
+          </div>
+        )}
+        {hasAttachments && (
+          <div data-testid="task-attachments-card" className={DETAIL_CARD}>
+            <Attachments model={model} />
+          </div>
+        )}
         {model.notice !== null && <ErrorLine>{model.notice}</ErrorLine>}
       </div>
     </div>
@@ -810,7 +827,7 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
       data-testid="task-detail"
       data-layout="mobile"
       aria-label={model.title}
-      className="flex min-h-0 flex-1 flex-col gap-2"
+      className="flex min-h-0 flex-1 flex-col gap-3"
     >
       <TitleCard model={model} tabs={<TabBar tab={tab} onTab={setTab} />} />
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
