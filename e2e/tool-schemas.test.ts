@@ -130,6 +130,7 @@ const REQUIRED_APP_TOOLS = [
   "dashboard_push",
   "dashboard_layout",
   "draw_diagram",
+  "edit_diagram",
   "replace_diagram",
   "notify_operator",
   "memory_write",
