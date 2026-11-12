@@ -19,3 +19,7 @@ honoured.
 Tool parameter schemas must serialise to the provider-safe subset: `Type.Tuple`, `Type.Intersect`
 and `Type.Record` with a pattern key are known offenders; `Type.Array(…, {minItems, maxItems})`
 and `Type.Object` are safe.
+
+## Scroll
+
+A page switch is a navigation, not a content change — restore the reader's position before paint.
