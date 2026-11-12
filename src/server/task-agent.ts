@@ -13,6 +13,7 @@ import {
   type EntryRecord,
   type Harness,
   Harness as HarnessImpl,
+  type HarnessSettings,
   type LiveState,
   type ModelRef,
   type ToolRegistration,
@@ -22,10 +23,19 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { Type } from "typebox";
 import { parseProjectToken, projectsOf, sameProject } from "../shared/project.js";
+import { runErrorFromUnanswered } from "../shared/run-error.js";
 import { DEFAULT_NEW_TASK_TITLE, TASK_BODY_MAX_LENGTH } from "../shared/tasks.js";
-import type { ChatMessage, RunState, StreamRunState, Task, TaskLedger } from "../shared/types.js";
+import type {
+  ChatMessage,
+  RunError,
+  RunState,
+  StreamRunState,
+  Task,
+  TaskLedger,
+} from "../shared/types.js";
 import { withConversationIdentity } from "./billion-context.js";
 import type { MediaStore } from "./media.js";
+import { retrySettings } from "./retry.js";
 import { buildTranscript, SESSION_CONTEXT } from "./session.js";
 import type { SseFrame } from "./sse.js";
 import { StreamHub } from "./stream-hub.js";
@@ -51,6 +61,8 @@ export interface TaskAgentChatSnapshot {
   taskId: string;
   messages: ChatMessage[];
   run: RunState;
+  /** The last plan-run failure, until dismissed or the next submit. */
+  runError?: RunError | null;
   draft: { text: string; thinking: string; revision: number };
 }
 
@@ -61,6 +73,7 @@ export interface TaskAgentSession {
   running(): boolean;
   snapshot(): Promise<TaskAgentChatSnapshot>;
   submit(text: string, attachments?: string[]): Promise<TaskAgentChatSnapshot>;
+  dismissError?(id?: string): Promise<TaskAgentChatSnapshot>;
   stop(): Promise<void>;
   close(): Promise<void>;
   replayFrames(): SseFrame[];
@@ -102,6 +115,15 @@ export function visibleTaskAgentMessages(messages: readonly ChatMessage[]): Chat
     if (message.notice !== undefined) return false;
     return message.role === "user" || message.role === "assistant" || message.role === "system";
   });
+}
+
+/** The harness policy the plan agent opens with, so retries behave like the main chat. */
+export function taskAgentHarnessSettings(env: NodeJS.ProcessEnv = process.env): HarnessSettings {
+  return {
+    compaction: { enabled: false },
+    retry: retrySettings(env),
+    steeringMode: "all",
+  };
 }
 
 export function taskAgentInstructions(
@@ -284,10 +306,12 @@ async function writeConversationId(path: string, conversationId: ConversationId)
   await rename(temporary, path);
 }
 
-class DurableTaskAgentSession implements TaskAgentSession {
+/** Exported so the session's submit/settle/dismiss path can be exercised with a fake conversation. */
+export class DurableTaskAgentSession implements TaskAgentSession {
   closed = false;
   readonly hub = new StreamHub();
   private runState: RunState = "idle";
+  private runError: RunError | null = null;
   private currentText = "";
   private currentThinking = "";
   private draftRevision = 0;
@@ -327,7 +351,7 @@ class DurableTaskAgentSession implements TaskAgentSession {
   }
 
   private runStatus(): StreamRunState {
-    return { state: this.runState };
+    return { state: this.runState, runError: this.runError };
   }
 
   private bumpDraft(): number {
@@ -335,9 +359,10 @@ class DurableTaskAgentSession implements TaskAgentSession {
     return this.draftRevision;
   }
 
-  private setRunState(state: RunState): void {
-    if (this.runState === state) return;
+  private setRunState(state: RunState, error: RunError | null = this.runError): void {
+    if (this.runState === state && this.runError === error) return;
     this.runState = state;
+    this.runError = error;
     this.emit({ event: "run.state", data: this.runStatus() });
   }
 
@@ -360,6 +385,7 @@ class DurableTaskAgentSession implements TaskAgentSession {
       taskId: this.taskId,
       messages: visibleTaskAgentMessages(built.messages),
       run: this.runState,
+      runError: this.runError,
       draft: {
         text: this.currentText,
         thinking: this.currentThinking,
@@ -471,7 +497,9 @@ class DurableTaskAgentSession implements TaskAgentSession {
     const submission = await this.identity(() =>
       this.conversation.submit({ type: "input", content }, SESSION_CONTEXT),
     );
-    this.setRunState("running");
+    // A new turn replaces the previous failure with a clean running state.
+    this.setRunState("running", null);
+    const errorId = `${this.taskId}:${submission.id}`;
     void this.identity(() => submission.wait(SESSION_CONTEXT))
       .then((settled) => {
         if (settled.status !== "unanswered") return;
@@ -479,12 +507,26 @@ class DurableTaskAgentSession implements TaskAgentSession {
           `[task-agent] run ended without an answer for ${this.taskId}: ${settled.reason}` +
             (settled.detail === undefined ? "" : ` (${JSON.stringify(settled.detail)})`),
         );
-        if (!this.closed && this.runState === "running") this.setRunState("idle");
+        if (this.closed) return;
+        const runError = runErrorFromUnanswered(settled.reason, settled.detail, errorId);
+        this.setRunState(this.runState === "running" ? "idle" : this.runState, runError);
       })
       .catch((error: unknown) => {
         console.error(`[task-agent] submit failed for ${this.taskId}`, error);
-        if (!this.closed && this.runState === "running") this.setRunState("idle");
+        if (this.closed) return;
+        const detail = error instanceof Error ? error.message : String(error);
+        this.setRunState(
+          this.runState === "running" ? "idle" : this.runState,
+          runErrorFromUnanswered("model_error", detail, errorId),
+        );
       });
+    return this.snapshot();
+  }
+
+  async dismissError(id?: string): Promise<TaskAgentChatSnapshot> {
+    if (this.runError !== null && (id === undefined || this.runError.id === id)) {
+      this.setRunState(this.runState, null);
+    }
     return this.snapshot();
   }
 
@@ -594,6 +636,12 @@ export class TaskAgentManager {
     return session.submit(patch.message, attachments);
   }
 
+  async dismissError(taskId: string, id?: string): Promise<TaskAgentChatSnapshot> {
+    const session = await this.ensure(taskId);
+    if (session.dismissError === undefined) return session.snapshot();
+    return session.dismissError(id);
+  }
+
   async stopRun(taskId: string): Promise<void> {
     const session = this.sessions.get(taskId);
     if (session === undefined || session.closed) return;
@@ -683,11 +731,7 @@ export class TaskAgentManager {
         models: this.options.models as unknown as Parameters<typeof HarnessImpl.open>[1]["models"],
         registry,
         env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? this.options.cwd }),
-        settings: {
-          compaction: { enabled: false },
-          retry: { enabled: false },
-          steeringMode: "all",
-        },
+        settings: taskAgentHarnessSettings(),
         onReport: (report) =>
           console.error(`[task-agent] harness report (${report.kind})`, report.error),
       },

@@ -4,6 +4,7 @@ import type { ChatMessage, MessageMode, Task } from "../shared/types";
 import { Composer, MessageBubble } from "./ChatView";
 import { EmptyCaption } from "./EmptyCaption";
 import { cn } from "./lib/utils";
+import { RunErrorHeader } from "./RunErrorHeader";
 import { FIXTURE_CHAT, FIXTURE_PLAN_ID } from "./task-detail-fixture";
 import { readTaskDetailFixture } from "./task-detail-query";
 import { type TaskDockSession, useRegisterTaskDock } from "./task-dock-composer";
@@ -162,6 +163,11 @@ export function TaskAgentChat({
           rows.map((message) => <MessageBubble key={message.id} message={message} />)
         )}
       </div>
+      {chat.runError !== null && (
+        <div className="relative h-9 shrink-0">
+          <RunErrorHeader error={chat.runError} onDismiss={chat.dismissError} />
+        </div>
+      )}
       {!dock && composer !== null && (
         <div className="glass-composer theme-radius shrink-0">{composer}</div>
       )}
