@@ -181,7 +181,8 @@ test("the task modal shows the full rationale, blockers and completion record", 
   assert.match(markup, /The card hides the rest of this rationale\./);
   assert.match(markup, /A long explanation\./);
   assert.match(markup, /Review the details/);
-  assert.match(markup, /Done/);
+  assert.match(markup, /size-3.5 shrink-0 rounded-sm border/);
+  assert.doesNotMatch(markup, />Done</);
   assert.match(markup, /Created/);
   assert.match(markup, /data-testid="task-detail-menu"/);
   assert.match(markup, /data-testid="task-state"[^>]*>Blocked</);

@@ -289,57 +289,11 @@
     }
   }
 
-  /* Tasks: the merged composer+status dock leaves the flow so the list and
-     chat can reach the bottom of the shell. Closed, it uses the same width
-     cap as the main chat. With a task open on desktop it shrinks linearly
-     to the middle (details) column. */
-  .chat-shell[data-tasks-dock] {
-    position: relative;
-  }
-
-  .chat-shell[data-tasks-dock] .float-footer {
-    position: absolute;
-    bottom: 0;
-    margin-inline: 0;
-    max-width: none;
-    left: max(0px, calc(50% - min(50%, calc(36ch + 1rem))));
-    width: min(100%, calc(72ch + 2rem));
-    transition:
-      left 240ms linear,
-      width 240ms linear;
-  }
-
-  .chat-shell[data-tasks-dock="mid"] .float-footer {
-    left: var(--tasks-mid-left, 0px);
-    width: var(--tasks-mid-width, 100%);
-  }
-
-  .chat-shell[data-tasks-dock] .tasks-split > [data-col] {
-    padding-bottom: var(--tasks-dock-height, 0px);
-    transition: padding-bottom 240ms linear;
-  }
-
-  .chat-shell[data-tasks-dock="mid"] .tasks-split > [data-col="side"],
-  .chat-shell[data-tasks-dock="mid"] .tasks-split > [data-col="chat"] {
-    padding-bottom: 0;
-  }
-
-  .chat-shell[data-tasks-dock] [data-layout="stack"] {
-    padding-bottom: calc(var(--tasks-dock-height, 0px) + 1rem);
-  }
-
   .glass-composer {
     background-color: color-mix(in srgb, var(--surface) 72%, transparent);
     -webkit-backdrop-filter: blur(18px);
     backdrop-filter: blur(18px);
     border-top: 1px solid color-mix(in srgb, var(--foreground) 28%, transparent);
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .chat-shell[data-tasks-dock] .float-footer,
-    .chat-shell[data-tasks-dock] .tasks-split > [data-col] {
-      transition: none;
-    }
   }
 
   .float-page {

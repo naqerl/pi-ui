@@ -535,11 +535,6 @@ function RelationRow({
     >
       <StatusMark done={done} />
       {children}
-      {done && (
-        <Badge variant="outline" className="shrink-0">
-          Done
-        </Badge>
-      )}
     </li>
   );
 }
@@ -737,26 +732,34 @@ function MetaLine({
 
 function TitleCard({ model, tabs }: { model: TaskDetailModel; tabs?: ReactNode }) {
   return (
-    <header data-testid="task-header" className="bg-surface theme-radius flex flex-col gap-2 p-3">
-      <div className="flex items-start gap-1">
-        <div className="min-w-0 flex-1">
-          <TitleField model={model} />
+    <header
+      data-testid="task-header"
+      className={cn(
+        "bg-surface theme-radius flex flex-col",
+        tabs ? "overflow-hidden" : "gap-2 p-3",
+      )}
+    >
+      <div className={cn("flex flex-col gap-2", tabs && "p-3")}>
+        <div className="flex min-w-0 items-center gap-1">
+          <div className="min-w-0 flex-1">
+            <MetaLine model={model} />
+          </div>
+          <TaskActionsMenu model={model} />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            data-testid="task-detail-back"
+            aria-label="Close"
+            onClick={model.onClose}
+            className={cn("shrink-0 rounded-md", !model.wide && "min-h-11 min-w-11")}
+          >
+            <CloseIcon size={18} />
+          </Button>
         </div>
-        <TaskActionsMenu model={model} />
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          data-testid="task-detail-back"
-          aria-label="Close"
-          onClick={model.onClose}
-          className="min-h-11 min-w-11 shrink-0 rounded-md"
-        >
-          <CloseIcon size={18} />
-        </Button>
+        <TitleField model={model} />
+        <CreatedTimes task={model.task} />
       </div>
-      <MetaLine model={model} />
-      <CreatedTimes task={model.task} />
       {tabs}
     </header>
   );
@@ -809,9 +812,8 @@ function PlanSections({ model }: { model: TaskDetailModel }) {
       </div>
       <section
         data-testid="task-plan-card"
-        className={cn(DETAIL_CARD, "flex min-h-0 flex-col gap-2", model.wide && "min-h-0 flex-1")}
+        className={cn(DETAIL_CARD, "flex min-h-0 flex-col", model.wide && "min-h-0 flex-1")}
       >
-        <SectionLabel>Plan</SectionLabel>
         <BodyField model={model} fill={model.wide} />
       </section>
     </div>
@@ -824,7 +826,7 @@ function TabBar({ tab, onTab }: { tab: "plan" | "chat"; onTab: (tab: "plan" | "c
     { id: "chat" as const, label: "Chat" },
   ];
   return (
-    <div role="tablist" aria-label="Task sections" className="flex gap-1">
+    <div role="tablist" aria-label="Task sections" className="flex">
       {tabs.map((item) => (
         <button
           key={item.id}
@@ -833,7 +835,7 @@ function TabBar({ tab, onTab }: { tab: "plan" | "chat"; onTab: (tab: "plan" | "c
           aria-selected={tab === item.id}
           data-testid={`task-tab-${item.id}`}
           className={cn(
-            "min-h-11 flex-1 rounded-md px-3 text-sm font-medium leading-5",
+            "min-h-11 flex-1 px-3 text-sm font-medium leading-5",
             tab === item.id ? "bg-background text-foreground" : QUIET,
           )}
           onClick={() => onTab(item.id)}
@@ -853,17 +855,11 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
       data-testid="task-detail"
       data-layout="mobile"
       aria-label={model.title}
-      className="flex min-h-0 flex-1 flex-col gap-3"
+      className="-mx-4 flex min-h-0 flex-1 flex-col gap-3 px-3"
     >
       <TitleCard model={model} tabs={<TabBar tab={tab} onTab={setTab} />} />
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div
-          className={cn(
-            "min-h-0 flex-1 overflow-y-auto",
-            SCROLLBAR_GUTTER,
-            tab !== "plan" && "hidden",
-          )}
-        >
+        <div className={cn("min-h-0 flex-1 overflow-y-auto", tab !== "plan" && "hidden")}>
           <PlanSections model={model} />
         </div>
         <div className={cn("flex min-h-0 flex-1 flex-col", tab !== "chat" && "hidden")}>

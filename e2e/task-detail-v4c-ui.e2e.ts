@@ -45,12 +45,6 @@ async function waitMs(browser: { evaluate: <T>(fn: () => T | Promise<T>) => Prom
   );
 }
 
-async function dockMode(browser: { evaluate: <T>(fn: () => T | Promise<T>) => Promise<T> }) {
-  return browser.evaluate(
-    () => document.querySelector(".chat-shell")?.getAttribute("data-tasks-dock") ?? "",
-  );
-}
-
 test("captures v4c header, project dropdown, and merged dock in vantablack", {
   timeout: 300_000,
 }, async ({ app, browser, screen }) => {
@@ -70,14 +64,12 @@ test("captures v4c header, project dropdown, and merged dock in vantablack", {
   await expect(screen.getByTestId("task-agent-input")).toBeVisible();
   await expect(screen.getByTestId("task-composer-slot")).toBeVisible();
   await expect(screen.getByTestId("tasks-composer-slot")).toHaveCount(0);
-  await expect.poll(() => dockMode(browser)).toBe("mid");
   await waitMs(browser);
   await app.screenshot("desktop-open");
 
   await browser.keyboard.press("Escape");
   await expect(screen.getByTestId("task-detail")).toHaveCount(0);
   await expect(screen.getByRole("textbox", "New task")).toBeVisible();
-  await expect.poll(() => dockMode(browser)).toBe("closed");
   await waitMs(browser);
   await app.screenshot("desktop-closed");
 

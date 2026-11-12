@@ -70,8 +70,6 @@ interface TasksViewProps {
   selection?: { id: string; request: number } | null;
   /** True while a task detail covers the mobile list, so the page composer can hide. */
   onMobileDetailChange?: (open: boolean) => void;
-  /** True while a task is open in the desktop three-column layout. */
-  onWideDetailChange?: (open: boolean) => void;
   /** Which composer belongs in the shared float footer on the Tasks page. */
   onComposerMode?: (mode: "create" | "task-chat" | "collapsed") => void;
 }
@@ -315,13 +313,10 @@ function TasksViewImpl({
   onLedger,
   selection = null,
   onMobileDetailChange,
-  onWideDetailChange,
   onComposerMode,
 }: TasksViewProps) {
   const wide = useWide();
   const fixtureOn = useTaskDetailFixture();
-  const midColRef = useRef<HTMLDivElement>(null);
-  const chatColRef = useRef<HTMLDivElement>(null);
   const serverTasks = fixtureOn ? mergeFixtureTasks(incomingTasks) : incomingTasks;
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [problem, setProblem] = useState<{ id: string; message: string } | null>(null);
@@ -457,11 +452,6 @@ function TasksViewImpl({
     onMobileDetailChange?.(!wide && openTaskId !== null);
     return () => onMobileDetailChange?.(false);
   }, [onMobileDetailChange, openTaskId, wide]);
-
-  useEffect(() => {
-    onWideDetailChange?.(wide && openTaskId !== null);
-    return () => onWideDetailChange?.(false);
-  }, [onWideDetailChange, openTaskId, wide]);
 
   const closeDetail = useCallback(() => {
     if (!wide && taskDetailHistory()?.piTaskDetailId !== undefined) {
@@ -756,42 +746,6 @@ function TasksViewImpl({
     return () => onComposerMode?.("create");
   }, [composerMode, onComposerMode]);
 
-  // Remeasure when a task opens so the dock can track the mid column.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: openTask mounts the chat column
-  useLayoutEffect(() => {
-    if (!wide) return;
-    const mid = midColRef.current;
-    const chat = chatColRef.current;
-    const root = (chat ?? mid)?.closest(".chat-shell");
-    if (!(root instanceof HTMLElement)) return;
-    const update = () => {
-      const rootRect = root.getBoundingClientRect();
-      if (mid instanceof HTMLElement) {
-        const midRect = mid.getBoundingClientRect();
-        root.style.setProperty("--tasks-mid-left", `${Math.round(midRect.left - rootRect.left)}px`);
-        root.style.setProperty("--tasks-mid-width", `${Math.round(midRect.width)}px`);
-      }
-      if (chat instanceof HTMLElement) {
-        const chatRect = chat.getBoundingClientRect();
-        root.style.setProperty(
-          "--tasks-chat-left",
-          `${Math.round(chatRect.left - rootRect.left)}px`,
-        );
-        root.style.setProperty("--tasks-chat-width", `${Math.round(chatRect.width)}px`);
-      }
-    };
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(root);
-    if (mid instanceof HTMLElement) observer.observe(mid);
-    if (chat instanceof HTMLElement) observer.observe(chat);
-    window.addEventListener("resize", update);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", update);
-    };
-  }, [wide, openTask]);
-
   const content = (
     <div
       className={cn(
@@ -807,7 +761,7 @@ function TasksViewImpl({
             ? "tasks-split grid h-full min-h-0 w-full grid-cols-[minmax(260px,320px)_minmax(280px,1fr)_minmax(300px,400px)] gap-4 px-4"
             : "mx-auto flex w-full max-w-[72ch] flex-col gap-4 px-4"
         }
-        style={{ paddingTop: 16 }}
+        style={{ paddingTop: 16, paddingBottom: 16 }}
         data-tasks-split={wide ? (openTask !== undefined ? "open" : "closed") : undefined}
       >
         {wide ? (
@@ -823,7 +777,6 @@ function TasksViewImpl({
               </div>
             </div>
             <div
-              ref={midColRef}
               data-col="mid"
               data-testid="tasks-mid-col"
               className="flex h-full min-h-0 min-w-0 flex-col"
@@ -838,7 +791,6 @@ function TasksViewImpl({
               )}
             </div>
             <div
-              ref={chatColRef}
               data-col="chat"
               data-testid="tasks-chat-col"
               className="flex h-full min-h-0 min-w-0 flex-col"

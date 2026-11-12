@@ -252,12 +252,14 @@ describe("task detail against a mocked state route", { serial: true }, () => {
 
     const contentTop = await browser.evaluate(() => {
       const pane = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
+      const meta = document.querySelector<HTMLElement>('[data-testid="task-header-meta"]');
       const title = document.querySelector<HTMLElement>('[data-testid="task-title"]');
       const times = document.querySelector<HTMLElement>('[data-testid="task-times"]');
       const blockers = document.querySelector<HTMLElement>('[data-testid="task-blockers-card"]');
       const description = document.querySelector<HTMLElement>('[data-testid="task-body-section"]');
       if (
         pane === null ||
+        meta === null ||
         title === null ||
         times === null ||
         blockers === null ||
@@ -267,7 +269,11 @@ describe("task detail against a mocked state route", { serial: true }, () => {
       }
       const paneTop = pane.getBoundingClientRect().top;
       return {
-        title: title.getBoundingClientRect().top - paneTop,
+        meta: meta.getBoundingClientRect().top - paneTop,
+        titleAfterMeta: !!(meta.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING),
+        timesAfterTitle: !!(
+          title.compareDocumentPosition(times) & Node.DOCUMENT_POSITION_FOLLOWING
+        ),
         times: times.getBoundingClientRect().top - paneTop,
         timesBeforeBlockers: !!(
           times.compareDocumentPosition(blockers) & Node.DOCUMENT_POSITION_FOLLOWING
@@ -278,7 +284,9 @@ describe("task detail against a mocked state route", { serial: true }, () => {
       };
     });
     expect(contentTop).not.toBeNull();
-    expect(contentTop?.title ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(24);
+    expect(contentTop?.meta ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(40);
+    expect(contentTop?.titleAfterMeta).toBe(true);
+    expect(contentTop?.timesAfterTitle).toBe(true);
     expect(contentTop?.times ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(160);
     expect(contentTop?.timesBeforeBlockers).toBe(true);
     expect(contentTop?.blockersBeforeBody).toBe(true);

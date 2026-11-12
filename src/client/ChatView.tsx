@@ -60,7 +60,6 @@ import { groupTimeline, type TimelineGroup } from "./timeline-groups";
 import type { SendOutcome, TimelineItem } from "./use-chat";
 import { usePager } from "./use-pager";
 import { useStickToBottom } from "./use-stick-to-bottom";
-import { useWide } from "./use-wide";
 import { WorkingIndicator } from "./WorkingIndicator";
 
 interface ChatViewProps {
@@ -1485,8 +1484,6 @@ export function ChatView({
   );
   const activityTriggerRef = useRef<HTMLButtonElement | null>(null);
   const tasksPage = pager.page === TASKS_PAGE;
-  const wideLayout = useWide();
-
   // An error belongs to the page it was raised on.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on page change only
   useEffect(() => setComposerError(null), [pager.page]);
@@ -1498,13 +1495,9 @@ export function ChatView({
   );
   const [pageAnimating, setPageAnimating] = useState(false);
   const [taskSelection, setTaskSelection] = useState<{ id: string; request: number } | null>(null);
-  const [wideDetailOpen, setWideDetailOpen] = useState(false);
   const [composerMode, setComposerMode] = useState<"create" | "task-chat" | "collapsed">("create");
   const taskChatInDock = tasksPage && composerMode === "task-chat";
   const hideTasksComposer = statsPage || (tasksPage && composerMode === "collapsed");
-  // On Tasks the dock leaves the flow so list and chat reach the screen edge.
-  // Closed: the main-chat 72ch cap, centered. Open on desktop: shrink to the chat column.
-  const tasksDock = tasksPage ? (wideLayout && wideDetailOpen ? "mid" : "closed") : undefined;
   const lastPagerState = useRef({ page: pager.page, dragging: pager.dragging });
   const shownTasks = useMemo(
     () =>
@@ -1641,24 +1634,6 @@ export function ChatView({
     const active = document.activeElement;
     if (footer !== null && active instanceof HTMLElement && footer.contains(active)) active.blur();
   }, [statsPage]);
-
-  useLayoutEffect(() => {
-    const footer = footerRef.current;
-    const shell = footer?.closest(".chat-shell");
-    if (!(shell instanceof HTMLElement)) return;
-    if (tasksDock === undefined) {
-      shell.style.removeProperty("--tasks-dock-height");
-      return;
-    }
-    const sync = () => {
-      shell.style.setProperty("--tasks-dock-height", `${footer?.offsetHeight ?? 0}px`);
-    };
-    sync();
-    if (footer === null) return;
-    const observer = new ResizeObserver(sync);
-    observer.observe(footer);
-    return () => observer.disconnect();
-  }, [tasksDock]);
 
   // Re-run the stick sync when the transcript changes. The scroller's own
   // ResizeObserver keeps the end pinned while the dock animates below it.
@@ -1836,7 +1811,7 @@ export function ChatView({
   );
 
   const content = (
-    <div className="chat-shell min-h-0" data-tasks-dock={tasksDock} data-testid="chat-shell">
+    <div className="chat-shell min-h-0" data-testid="chat-shell">
       {interrupted && (
         <div
           role="status"
@@ -1952,7 +1927,6 @@ export function ChatView({
                   footerClearance={0}
                   onLedger={applyTasks}
                   selection={taskSelection}
-                  onWideDetailChange={setWideDetailOpen}
                   onComposerMode={setComposerMode}
                 />
               </Suspense>
