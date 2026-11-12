@@ -755,16 +755,11 @@ export function buildTranscript(
   }
 
   // A placed queue copy shares its key with the notice entry that is its visible form.
-  // Keep the notice and drop the copy instead of showing the same event as a user turn.
+  // Only a decision notice owns a copy like that: an MCP status notice is *rendered* from
+  // its queue row, so dropping those copies would delete the notice itself.
   const noticeQueueKeys = new Set<string>();
   for (const entry of sorted) {
-    if (
-      entry.kind === UserEntry.kind ||
-      entry.kind === STEER_ENTRY_KIND ||
-      entry.kind === QUEUE_ENTRY_KIND
-    ) {
-      continue;
-    }
+    if (entry.kind !== TASK_DECISION_ENTRY_KIND) continue;
     const queueKey = entryQueueKeyFromData(entry.data);
     if (queueKey !== undefined) noticeQueueKeys.add(queueKey);
     // Older notice entries only carried the logical key, not the queued input's key.
