@@ -30,7 +30,7 @@ import {
   taskQuestionAnswerSummary,
 } from "../shared/questions.js";
 import { runErrorFromUnanswered } from "../shared/run-error.js";
-import { DEFAULT_NEW_TASK_TITLE, TASK_BODY_MAX_LENGTH } from "../shared/tasks.js";
+import { DEFAULT_NEW_TASK_TITLE, isActiveStatus, TASK_BODY_MAX_LENGTH } from "../shared/tasks.js";
 import type {
   ChatMessage,
   RunError,
@@ -117,6 +117,8 @@ export interface TaskAgentManagerOptions {
   readonly openSession?: (taskId: string, manager: TaskAgentManager) => Promise<TaskAgentSession>;
   /** Forward session frames onto the main /api/stream so the browser can reuse that EventSource. */
   readonly relay?: (taskId: string, frame: SseFrame) => void;
+  /** A plan run started or ended, so the tasks payload can be pushed again with `planning`. */
+  readonly onRunState?: (taskId: string) => void;
   /** Used to resolve image attachments sent in the plan chat. */
   readonly media?: MediaStore;
 }
@@ -131,6 +133,20 @@ export function selectTaskAgentTools<T extends { name: string }>(tools: readonly
 
 export function isTaskAgentToolName(name: string): name is TaskAgentToolName {
   return TASK_AGENT_TOOL_SET.has(name);
+}
+
+/**
+ * The task ids the tasks payload may report as Planning. `running` is the manager's
+ * existing session bookkeeping; terminal and parked tasks are never planning work.
+ */
+export function derivePlanningTaskIds(
+  tasks: readonly Pick<Task, "id" | "status">[],
+  running: Iterable<string>,
+): string[] {
+  const live = new Set(running);
+  return tasks
+    .filter((task) => live.has(task.id) && isActiveStatus(task.status))
+    .map((task) => task.id);
 }
 
 /** Visible chat rows: user and assistant text, plus system notes. Never tool-call lists. */
@@ -458,6 +474,7 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     private readonly harness: Harness,
     private readonly conversation: Conversation,
     private readonly questions?: TaskQuestionsStore,
+    private readonly onRunState?: (taskId: string) => void,
     private readonly relay?: (frame: SseFrame) => void,
     private readonly media?: MediaStore,
   ) {}
@@ -499,6 +516,7 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     this.runState = state;
     this.runError = error;
     this.emit({ event: "run.state", data: this.runStatus() });
+    this.onRunState?.(this.taskId);
   }
 
   private publishDraft(): void {
@@ -739,7 +757,9 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     } catch (error) {
       console.error(`[task-agent] harness close failed for ${this.taskId}`, error);
     } finally {
+      const wasRunning = this.runState === "running";
       this.runState = "idle";
+      if (wasRunning) this.onRunState?.(this.taskId);
     }
   }
 }
@@ -858,14 +878,25 @@ export class TaskAgentManager {
     await Promise.all(sessions.map((session) => session.close()));
   }
 
+  /** Task ids whose plan agent has a live run, filtered to work the UI may badge. */
+  planningTaskIds(): string[] {
+    const running: string[] = [];
+    for (const [taskId, session] of this.sessions) {
+      if (!session.closed && session.running()) running.push(taskId);
+    }
+    return derivePlanningTaskIds(this.options.store.ledger().tasks, running);
+  }
+
   private async open(taskId: string): Promise<TaskAgentSession> {
     if (this.options.openSession !== undefined) {
       const session = await this.options.openSession(taskId, this);
       this.sessions.set(taskId, session);
+      if (session.running()) this.options.onRunState?.(taskId);
       return session;
     }
     const session = await this.openDurable(taskId);
     this.sessions.set(taskId, session);
+    if (session.running()) this.options.onRunState?.(taskId);
     return session;
   }
 
@@ -963,6 +994,7 @@ export class TaskAgentManager {
       harness,
       conversation,
       questions,
+      this.options.onRunState,
       this.options.relay === undefined ? undefined : (frame) => this.options.relay?.(taskId, frame),
       this.options.media,
     );

@@ -471,6 +471,8 @@ export interface Task {
   releasedAt?: string;
   /** Why the task was released, shown in the task details; cleared by the next transition. */
   releaseReason?: string;
+  /** True on a client view while this task's plan agent has a live run. Derived, never stored. */
+  planning?: boolean;
   /** When the task was closed, or null while it is open. */
   completedAt: string | null;
   /** The report recorded when the task was closed, or null while it is open. */
@@ -484,6 +486,8 @@ export interface Task {
 export interface TaskLedger {
   tasks: Task[];
   revision: number;
+  /** Task ids whose plan agent currently has a live run. */
+  planning?: string[];
   /** What the agent's runs did for each task. Absent from older servers and plain store reads. */
   activity?: TaskActivity;
   /** Reopen counts per project, computed from this ledger. Absent on plain store reads. */

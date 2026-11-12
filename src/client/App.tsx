@@ -30,6 +30,7 @@ export function App() {
       delegates={chat.delegates}
       ready={chat.ready}
       tasks={chat.tasks}
+      planning={chat.planning}
       taskActivity={chat.taskActivity}
       send={chat.send}
       stop={chat.stop}

@@ -43,6 +43,7 @@ import { InlineMarkdown, plainInline } from "./markdown";
 import { projectSuggestions } from "./ProjectSuggestions";
 import { TaskAgentChat } from "./TaskAgentChat";
 import { type TaskDetailModel, TaskDetailVariant } from "./TaskDetailVariants";
+import { TaskPlanningBadge } from "./TaskPlanningBadge";
 import { removeTask, type TaskOutcome, updateTask } from "./task-client";
 import { FIXTURE_PLAN_ID, mergeFixtureTasks } from "./task-detail-fixture";
 import { useTaskDetailFixture } from "./task-detail-query";
@@ -56,6 +57,8 @@ const LONG_PRESS_MS = 500;
 const CARD_CLICK_IGNORE_MS = 700;
 /** Past days of the done list shown at first; "Show older days" adds this many more. */
 const DAY_PAGE = 7;
+/** TaskRow also renders on its own in tests, where no plan run is live. */
+const EMPTY_PLANNING: ReadonlySet<string> = new Set();
 /** One vertical rhythm for every header and card stack on the tasks page. */
 const TASK_STACK = "flex flex-col space-y-2";
 /** Same type as a stats widget section title. */
@@ -66,6 +69,8 @@ const SCROLLBAR_GUTTER = "[scrollbar-gutter:stable]";
 
 interface TasksViewProps {
   tasks: Task[];
+  /** Task ids whose plan agent currently has a live run. */
+  planning?: readonly string[];
   activity?: TaskActivity;
   ready: boolean;
   footerClearance: number;
@@ -302,6 +307,7 @@ export const TasksView = memo(TasksViewImpl);
 
 function TasksViewImpl({
   tasks: incomingTasks,
+  planning: planningIds = [],
   activity,
   ready,
   onLedger,
@@ -336,6 +342,13 @@ function TasksViewImpl({
       }),
     [serverTasks, optimisticTasks],
   );
+  const planning = useMemo(() => {
+    const live = new Set(planningIds);
+    for (const task of tasks) {
+      if (task.planning === true) live.add(task.id);
+    }
+    return live;
+  }, [planningIds, tasks]);
   const facts = useMemo(() => indexTasks(tasks), [tasks]);
   const stateOf = useMemo(
     () => new Map(tasks.map((task) => [task.id, taskState(tasks, task, activity, facts)])),
@@ -587,6 +600,7 @@ function TasksViewImpl({
   const rowProps = {
     tasks: activeTasks,
     index: rowIndex,
+    planning,
     activity,
     state,
     selectedId: openTaskId,
@@ -720,6 +734,7 @@ function TasksViewImpl({
         state={state(openTask)}
         trace={activity?.traces[openTask.id]}
         wide={wide}
+        planning={planning.has(openTask.id) && isActiveStatus(openTask.status)}
         statusPending={statusPending[openTask.id] === true}
         notice={problem?.id === openTask.id && menu === null ? problem.message : null}
         onClose={closeDetail}
@@ -1067,6 +1082,7 @@ export function TaskRow({
   task,
   tasks,
   index,
+  planning = EMPTY_PLANNING,
   activity,
   state,
   depth,
@@ -1084,6 +1100,8 @@ export function TaskRow({
   task: Task;
   tasks: Task[];
   index?: TaskIndex;
+  /** Task ids whose plan agent currently has a live run. */
+  planning?: ReadonlySet<string>;
   activity: TaskActivity | undefined;
   state: (task: Task) => TaskState;
   depth: number;
@@ -1114,6 +1132,7 @@ export function TaskRow({
   const selected = selectedId === task.id;
   const trace = activity?.traces[task.id];
   const badge = history || (done && depth > 0) ? null : stateBadge(current, trace);
+  const planningLive = planning.has(task.id) && isActiveStatus(task.status);
   const stale = current === "working" && isStaleWorking(task, activity);
   const note = rowNote(task, tasks, current, trace, activity?.traces ?? {}, index);
   const project = showProject && depth === 0 ? task.project : undefined;
@@ -1233,7 +1252,7 @@ export function TaskRow({
             {note}
           </span>
         )}
-        <TaskCardMeta task={task} project={project}>
+        <TaskCardMeta task={task} project={project} planning={planningLive}>
           {badge !== null && (
             <Badge
               data-testid={`task-badge-${task.id}`}
@@ -1245,6 +1264,9 @@ export function TaskRow({
             >
               {badge}
             </Badge>
+          )}
+          {planningLive && (
+            <TaskPlanningBadge testId={`task-planning-${task.id}`} className="h-4" />
           )}
           {stale && <StaleMarker id={task.id} />}
           <ReopenBadge task={task} />
@@ -1263,6 +1285,7 @@ export function TaskRow({
               task={child}
               tasks={tasks}
               index={index}
+              planning={planning}
               activity={activity}
               state={state}
               depth={depth + 1}
@@ -1370,16 +1393,22 @@ function ProposedTask({
 function TaskCardMeta({
   task,
   project,
+  planning = false,
   children,
 }: {
   task: Task;
   project?: string;
+  /** Keep the extra chip on the existing meta line even at phone width. */
+  planning?: boolean;
   children?: ReactNode;
 }) {
   return (
     <span
       data-testid="task-card-meta"
-      className="flex min-w-0 max-w-full flex-nowrap items-center gap-x-2 overflow-hidden whitespace-nowrap text-xs leading-4 text-muted-foreground max-[480px]:flex-wrap max-[480px]:whitespace-normal"
+      className={cn(
+        "flex min-w-0 max-w-full flex-nowrap items-center gap-x-2 overflow-hidden whitespace-nowrap text-xs leading-4 text-muted-foreground",
+        !planning && "max-[480px]:flex-wrap max-[480px]:whitespace-normal",
+      )}
     >
       {children}
       {project !== undefined && project !== "" && (
@@ -1455,6 +1484,7 @@ export function TaskDetail({
   state,
   trace,
   wide,
+  planning = false,
   statusPending = false,
   notice,
   onClose,
@@ -1470,6 +1500,8 @@ export function TaskDetail({
   state: TaskState;
   trace: TaskTrace | undefined;
   wide: boolean;
+  /** This task's plan agent currently has a live run. */
+  planning?: boolean;
   statusPending?: boolean;
   notice: string | null;
   onClose: () => void;
@@ -1698,6 +1730,7 @@ export function TaskDetail({
       state,
       trace,
       wide,
+      planning,
       statusPending,
       notice,
       editingTitle,

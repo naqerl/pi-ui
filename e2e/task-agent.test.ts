@@ -8,6 +8,7 @@ import type { SseFrame } from "../src/server/sse.js";
 import { StreamHub } from "../src/server/stream-hub.js";
 import {
   createTaskEditTool,
+  derivePlanningTaskIds,
   DurableTaskAgentSession,
   isTaskAgentToolName,
   openingTaskPatch,
@@ -409,6 +410,69 @@ test("the agent session is created on first use, stopped when the task is done, 
   await assert.rejects(access(manager.taskDir(created.id)));
 
   await store.remove(created.id);
+  await manager.close();
+});
+
+test("planning reports only live plan runs on active tasks", async () => {
+  const fakes = new Map<string, FakeSession>();
+  const manager = new TaskAgentManager({
+    dataDir: directory,
+    cwd: directory,
+    models: {} as never,
+    model: undefined,
+    store,
+    publish: () => undefined,
+    baseInstructions: "base",
+    openSession: async (taskId) => {
+      const session = new FakeSession(taskId);
+      fakes.set(taskId, session);
+      return session;
+    },
+  });
+
+  const open = (await store.create("Plan the live task", null)).tasks.find(
+    (item) => item.title === "Plan the live task",
+  );
+  const parked = (
+    await store.create("Plan the parked task", null, [], undefined, undefined, "backlog")
+  ).tasks.find((item) => item.title === "Plan the parked task");
+  const done = (await store.create("Plan the done task", null)).tasks.find(
+    (item) => item.title === "Plan the done task",
+  );
+  assert.ok(open);
+  assert.ok(parked);
+  assert.ok(done);
+  await store.update(done.id, { status: "done" });
+
+  for (const task of [open, parked, done]) {
+    await manager.ensure(task.id);
+    const fake = fakes.get(task.id);
+    assert.ok(fake);
+    fake.run = "running";
+  }
+
+  // Backlog and done sessions may exist, but they are never planning work.
+  assert.deepEqual(manager.planningTaskIds(), [open.id]);
+  assert.deepEqual(
+    derivePlanningTaskIds(
+      [
+        { id: "open", status: "open" },
+        { id: "working", status: "working" },
+        { id: "backlog", status: "backlog" },
+        { id: "proposed", status: "proposed" },
+        { id: "done", status: "done" },
+      ],
+      ["open", "working", "backlog", "proposed", "done"],
+    ),
+    ["open", "working"],
+  );
+
+  // The same task stops planning as soon as its run is no longer live.
+  const live = fakes.get(open.id);
+  assert.ok(live);
+  live.run = "idle";
+  assert.deepEqual(manager.planningTaskIds(), []);
+
   await manager.close();
 });
 

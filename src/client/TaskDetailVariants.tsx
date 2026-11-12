@@ -25,6 +25,7 @@ import { mediaUrl } from "./media-client";
 import type { ProjectSuggestion } from "./ProjectSuggestions";
 import { SECTION_BAR_ICON_BUTTON, SECTION_BAR_LABEL, SectionBar } from "./SectionBar";
 import { TaskAgentChat } from "./TaskAgentChat";
+import { TaskPlanningBadge } from "./TaskPlanningBadge";
 
 function shortId(id: string): string {
   return id.slice(0, 4);
@@ -40,6 +41,8 @@ export interface TaskDetailModel {
   state: TaskState;
   trace: TaskTrace | undefined;
   wide: boolean;
+  /** This task's plan agent currently has a live run. */
+  planning: boolean;
   statusPending: boolean;
   notice: string | null;
   editingTitle: boolean;
@@ -724,6 +727,9 @@ function MetaLine({ model }: { model: TaskDetailModel }) {
       >
         {model.badge}
       </Badge>
+      {model.planning && (
+        <TaskPlanningBadge testId={`task-detail-planning-${model.task.id}`} className="h-5" />
+      )}
       {(model.task.reopens?.length ?? 0) > 0 && (
         <Badge
           variant="outline"
@@ -807,6 +813,12 @@ function TitleCard({
           }
         >
           <h2 className={SECTION_BAR_LABEL}>Task details</h2>
+          {model.planning && (
+            <TaskPlanningBadge
+              testId={`task-detail-planning-${model.task.id}`}
+              className="h-5 shrink-0"
+            />
+          )}
         </SectionBar>
         {(model.editingTitle || model.titleError !== null) && (
           <div className="bg-surface theme-radius p-3">
