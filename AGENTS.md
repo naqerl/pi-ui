@@ -23,3 +23,13 @@ and `Type.Object` are safe.
 ## Scroll
 
 A page switch is a navigation, not a content change — restore the reader's position before paint.
+
+## One chat core
+
+A conversation is one core, not one component per surface. Transcript rows, scroll restore, the
+optimistic/queued/steer reconciliation and the run-status line (including `WorkingIndicator`, the
+braille spinner) come from `src/client/use-chat.ts` and `ChatView`. A second state machine for the
+same domain — a new `use-something-chat` hook, a fresh scroller with its own scroll rule, a status
+line built again — is a review blocker, not a shortcut: the plan chat grew that way in `f620ca6`
+and lost scroll restore, the steer/queue revision guard and the working indicator one release at a
+time. Plan or product surfaces differ by tool set and system prompt, never by renderer.
