@@ -811,8 +811,10 @@ function TabBar({ tab, onTab }: { tab: "plan" | "chat"; onTab: (tab: "plan" | "c
           aria-selected={tab === item.id}
           data-testid={`task-tab-${item.id}`}
           className={cn(
-            "min-h-11 flex-1 px-3 text-sm font-medium leading-5",
-            tab === item.id ? "bg-background text-foreground" : QUIET,
+            "min-h-11 flex-1 border-b-2 px-3 text-sm font-medium leading-5",
+            tab === item.id
+              ? "border-foreground bg-background text-foreground"
+              : cn("border-transparent", QUIET),
           )}
           onClick={() => onTab(item.id)}
         >

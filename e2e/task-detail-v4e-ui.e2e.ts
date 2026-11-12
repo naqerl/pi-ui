@@ -52,13 +52,70 @@ async function dockBox(browser: { evaluate: <T>(fn: () => T | Promise<T>) => Pro
     const box = dock.getBoundingClientRect();
     const style = getComputedStyle(dock);
     return {
-      left: Math.round(box.left),
-      width: Math.round(box.width),
+      left: box.left,
+      width: box.width,
+      bottom: box.bottom,
       position: style.position,
       transition: style.transition,
       dockAttr: shell?.getAttribute("data-tasks-dock") ?? null,
+      bandAttr: shell?.hasAttribute("data-tasks-band") ?? false,
     };
   });
+}
+
+function expectSameFooter(
+  actual: { left: number; width: number; bottom: number } | null,
+  expected: { left: number; width: number; bottom: number } | null,
+  label: string,
+) {
+  expect(actual, label).not.toBeNull();
+  expect(expected, "chat-page footer").not.toBeNull();
+  if (actual === null || expected === null) return;
+  expect(Math.abs(actual.left - expected.left), `${label} left`).toBeLessThanOrEqual(1);
+  expect(Math.abs(actual.width - expected.width), `${label} width`).toBeLessThanOrEqual(1);
+  expect(Math.abs(actual.bottom - expected.bottom), `${label} bottom`).toBeLessThanOrEqual(1);
+}
+
+async function tabBorders(browser: { evaluate: <T>(fn: () => T | Promise<T>) => Promise<T> }) {
+  return browser.evaluate(() => {
+    const plan = document.querySelector<HTMLElement>('[data-testid="task-tab-plan"]');
+    const chat = document.querySelector<HTMLElement>('[data-testid="task-tab-chat"]');
+    if (!(plan instanceof HTMLElement) || !(chat instanceof HTMLElement)) return null;
+    const probe = document.createElement("span");
+    probe.style.color = "var(--foreground)";
+    document.body.append(probe);
+    const foreground = getComputedStyle(probe).color;
+    probe.remove();
+    const read = (node: HTMLElement) => {
+      const style = getComputedStyle(node);
+      return {
+        selected: node.getAttribute("aria-selected") === "true",
+        width: Number.parseFloat(style.borderBottomWidth),
+        color: style.borderBottomColor,
+      };
+    };
+    return { foreground, plan: read(plan), chat: read(chat) };
+  });
+}
+
+function expectSelectedTabBorder(
+  tabs: Awaited<ReturnType<typeof tabBorders>>,
+  selected: "plan" | "chat",
+) {
+  expect(tabs).not.toBeNull();
+  if (tabs === null) return;
+  const active = tabs[selected];
+  const idle = tabs[selected === "plan" ? "chat" : "plan"];
+  expect(active.selected).toBe(true);
+  expect(idle.selected).toBe(false);
+  expect(active.width).toBeGreaterThanOrEqual(2);
+  expect(active.color).toBe(tabs.foreground);
+  const idleTransparent =
+    idle.width === 0 ||
+    idle.color === "transparent" ||
+    idle.color === "rgba(0, 0, 0, 0)" ||
+    /rgba?\(\s*0,\s*0,\s*0,\s*0\s*\)/.test(idle.color);
+  expect(idleTransparent, `unselected ${idle.color} width ${idle.width}`).toBe(true);
 }
 
 async function mobileCardEdges(browser: { evaluate: <T>(fn: () => T | Promise<T>) => Promise<T> }) {
@@ -100,39 +157,18 @@ async function desktopAlignment(browser: {
     const list = document.querySelector("[data-testid=task-section-active]");
     const header = document.querySelector("[data-testid=task-header]");
     const chat = document.querySelector("[data-testid=task-agent-chat]");
-    const dock = document.querySelector("[data-testid=composer-dock]");
-    const mid =
-      document.querySelector("[data-testid=tasks-mid-col]") ??
-      document.querySelector("[data-testid=task-detail-empty]");
-    const chatCol = document.querySelector("[data-testid=tasks-chat-col]");
-    const shell = document.querySelector(".chat-shell");
-    if (
-      !(dock instanceof HTMLElement) ||
-      !(shell instanceof HTMLElement) ||
-      !(mid instanceof HTMLElement)
-    ) {
-      return null;
-    }
     const listTop = list instanceof HTMLElement ? list.getBoundingClientRect().top : null;
     const headerTop = header instanceof HTMLElement ? header.getBoundingClientRect().top : null;
     const chatTop = chat instanceof HTMLElement ? chat.getBoundingClientRect().top : null;
-    const dockBox = dock.getBoundingClientRect();
-    const midBox = mid.getBoundingClientRect();
-    const chatBox = chatCol instanceof HTMLElement ? chatCol.getBoundingClientRect() : midBox;
-    const bandLeft = midBox?.left ?? 0;
-    const bandRight = chatBox?.right ?? 0;
     return {
       listTop,
       headerTop,
       chatTop,
-      dockCenter: (dockBox.left + dockBox.right) / 2,
-      bandCenter: (bandLeft + bandRight) / 2,
-      bandAttr: shell.getAttribute("data-tasks-band") !== null,
     };
   });
 }
 
-test("captures v4e unsunk dock, header row, and full-width mobile cards in vantablack", {
+test("captures v4g chat-identical dock, header row, and tab border in vantablack", {
   timeout: 300_000,
 }, async ({ app, browser, screen }) => {
   const theme = resolve(".e2e/home/.config/omarchy/themes/audit-vantablack");
@@ -140,7 +176,17 @@ test("captures v4e unsunk dock, header row, and full-width mobile cards in vanta
   await copyFile(resolve("themes/omarchy/vantablack/colors.toml"), resolve(theme, "colors.toml"));
 
   await browser.setViewport({ width: 1280, height: 800 });
-  await themeVantablack(app, browser, "/?page=tasks&fixture=1");
+  await themeVantablack(app, browser, "/?page=chat");
+  await expect(screen.getByTestId("composer-dock")).toBeVisible();
+  await waitMs(browser);
+  const chatFooter = await dockBox(browser);
+  expect(chatFooter).not.toBeNull();
+  await app.screenshot("chat-page");
+
+  await app.open("/?page=tasks&fixture=1");
+  await expect
+    .poll(() => browser.evaluate(() => document.documentElement.dataset.mode ?? ""))
+    .toBe("dark");
   await expect(screen.getByTestId("tasks-page")).toHaveAttribute("data-layout", "split");
   await openFixtureTask(screen);
   await expect(screen.getByTestId("task-detail")).toBeVisible();
@@ -180,8 +226,10 @@ test("captures v4e unsunk dock, header row, and full-width mobile cards in vanta
   await expect(screen.getByRole("textbox", "New task")).toHaveCount(0);
   const openDock = await dockBox(browser);
   expect(openDock?.dockAttr).toBeNull();
+  expect(openDock?.bandAttr).toBe(false);
   expect(openDock?.position).not.toBe("absolute");
   expect(openDock?.transition ?? "").not.toMatch(/left|width/);
+  expectSameFooter(openDock, chatFooter, "tasks open footer");
   const openAlign = await desktopAlignment(browser);
   expect(openAlign).not.toBeNull();
   if (openAlign !== null) {
@@ -191,8 +239,6 @@ test("captures v4e unsunk dock, header row, and full-width mobile cards in vanta
     if (openAlign.listTop !== null && openAlign.chatTop !== null) {
       expect(Math.abs(openAlign.chatTop - openAlign.listTop)).toBeLessThanOrEqual(2);
     }
-    expect(openAlign.bandAttr).toBe(true);
-    expect(Math.abs(openAlign.dockCenter - openAlign.bandCenter)).toBeLessThanOrEqual(2);
   }
   await waitMs(browser);
   await app.screenshot("desktop-open");
@@ -202,12 +248,8 @@ test("captures v4e unsunk dock, header row, and full-width mobile cards in vanta
   await expect(screen.getByRole("textbox", "New task")).toBeVisible();
   await expect(screen.getByTestId("task-detail-empty")).toBeVisible();
   const closedDock = await dockBox(browser);
-  expect(closedDock?.width).toBe(openDock?.width);
-  const closedAlign = await desktopAlignment(browser);
-  if (closedAlign !== null) {
-    expect(closedAlign.bandAttr).toBe(true);
-    expect(Math.abs(closedAlign.dockCenter - closedAlign.bandCenter)).toBeLessThanOrEqual(2);
-  }
+  expect(closedDock?.bandAttr).toBe(false);
+  expectSameFooter(closedDock, chatFooter, "tasks closed footer");
   await waitMs(browser);
   await app.screenshot("desktop-closed");
 
@@ -260,12 +302,14 @@ test("captures v4e unsunk dock, header row, and full-width mobile cards in vanta
   }
 
   await browser.setViewport({ width: 390, height: 844 });
+  expectSelectedTabBorder(await tabBorders(browser), "plan");
   await waitMs(browser);
   await app.screenshot("mobile-plan");
 
   await screen.getByTestId("task-tab-chat").tap();
   await expect(screen.getByTestId("task-tab-chat")).toHaveAttribute("aria-selected", "true");
   await expect(screen.getByTestId("task-agent-chat")).toBeVisible();
+  expectSelectedTabBorder(await tabBorders(browser), "chat");
   await waitMs(browser);
   await app.screenshot("mobile-chat");
 });

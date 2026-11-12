@@ -309,8 +309,6 @@ function TasksViewImpl({
   onComposerMode,
 }: TasksViewProps) {
   const wide = useWide();
-  const midColRef = useRef<HTMLDivElement>(null);
-  const chatColRef = useRef<HTMLDivElement>(null);
   const fixtureOn = useTaskDetailFixture();
   const serverTasks = fixtureOn ? mergeFixtureTasks(incomingTasks) : incomingTasks;
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
@@ -741,43 +739,6 @@ function TasksViewImpl({
     return () => onComposerMode?.("create");
   }, [composerMode, onComposerMode]);
 
-  // Center the shared dock over the mid+chat columns, not the viewport.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: openTask mounts the mid/chat columns
-  useLayoutEffect(() => {
-    const mid = midColRef.current;
-    const shell = mid?.closest(".chat-shell");
-    if (!wide || !(shell instanceof HTMLElement) || !(mid instanceof HTMLElement)) {
-      if (shell instanceof HTMLElement) {
-        shell.removeAttribute("data-tasks-band");
-        shell.style.removeProperty("--tasks-band-left");
-        shell.style.removeProperty("--tasks-band-width");
-      }
-      return;
-    }
-    const update = () => {
-      const shellBox = shell.getBoundingClientRect();
-      const midBox = mid.getBoundingClientRect();
-      const chat = chatColRef.current;
-      const right = chat instanceof HTMLElement ? chat.getBoundingClientRect().right : midBox.right;
-      shell.style.setProperty("--tasks-band-left", `${Math.round(midBox.left - shellBox.left)}px`);
-      shell.style.setProperty("--tasks-band-width", `${Math.round(right - midBox.left)}px`);
-      shell.setAttribute("data-tasks-band", "");
-    };
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(shell);
-    observer.observe(mid);
-    if (chatColRef.current instanceof HTMLElement) observer.observe(chatColRef.current);
-    window.addEventListener("resize", update);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", update);
-      shell.removeAttribute("data-tasks-band");
-      shell.style.removeProperty("--tasks-band-left");
-      shell.style.removeProperty("--tasks-band-width");
-    };
-  }, [wide, openTask]);
-
   const content = (
     <div
       className={cn(
@@ -813,7 +774,6 @@ function TasksViewImpl({
             {openTask !== undefined ? (
               <>
                 <div
-                  ref={midColRef}
                   data-col="mid"
                   data-testid="tasks-mid-col"
                   className="flex h-full min-h-0 min-w-0 flex-col"
@@ -821,7 +781,6 @@ function TasksViewImpl({
                   {detail}
                 </div>
                 <div
-                  ref={chatColRef}
                   data-col="chat"
                   data-testid="tasks-chat-col"
                   className="flex h-full min-h-0 min-w-0 flex-col"
@@ -836,7 +795,6 @@ function TasksViewImpl({
               </>
             ) : (
               <div
-                ref={midColRef}
                 data-col="main"
                 data-testid="task-detail-empty"
                 className="col-span-2 flex h-full min-h-0 min-w-0 flex-1 items-center justify-center px-4 py-10 text-sm text-foreground/75"
