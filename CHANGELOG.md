@@ -1,3 +1,11 @@
+## 1.6.154
+
+### Fixed
+
+- The chat keeps its reading position through a round trip to Tasks or Stats:
+  coming back no longer shifts the transcript, so the message you were reading is
+  still where you left it.
+
 ## 1.6.153
 
 ### Fixed
