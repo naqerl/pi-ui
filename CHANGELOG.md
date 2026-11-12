@@ -1082,4 +1082,3 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
 
 - A task created from the composer is no longer lost: a create that fails leaves the row in place,
   says what went wrong, and can be retried, instead of silently disappearing.
-
