@@ -51,13 +51,18 @@ import {
   TaskQuestionAnswerEntry,
   TaskQuestionsStore,
 } from "./task-questions.js";
+import { createProposeTaskTool } from "./task-tools.js";
 import { TaskError, type TaskStore } from "./tasks.js";
 
-/** The only tools a task planning agent may call: inspect the repo, edit its task, and ask. */
+/**
+ * The only tools a task planning agent may call: inspect the repo, edit its task,
+ * ask the operator, and propose distinct follow-up work for approval.
+ */
 export const TASK_AGENT_TOOL_NAMES = [
   "bash",
   "read",
   "edit_task",
+  "propose_task",
   "ask_questions",
   "append_questions",
 ] as const;
@@ -180,7 +185,8 @@ Your job is to help the operator formulate the task and propose a solution — a
 Plan mode only:
 - You may use the read and bash tools to inspect the repository.
 - You must not edit, write, create or delete any files, and you must not run commands that change the workspace.
-- You have additional tools, edit_task, ask_questions and append_questions. edit_task updates this task's title, markdown body and/or project. Use it to capture the formulated task: a clear title, a markdown body with the problem and the proposed design (mermaid fences are allowed), and a project when one fits.
+- You have additional tools, edit_task, propose_task, ask_questions and append_questions. edit_task updates this task's title, markdown body and/or project. Use it to capture the formulated task: a clear title, a markdown body with the problem and the proposed design (mermaid fences are allowed), and a project when one fits.
+- Use propose_task to hand a follow-up task to the operator for approval. A proposal is not a task: only a human approving it creates work, so do not treat it as started or done. Do not propose a duplicate of the task you are planning; propose only distinct follow-up work.
 - When a decision would be guessed in prose, call ask_questions with a structured set (single, multi or text) and wait for the operator's answers. Use append_questions to add to the same unanswered set while you are still composing it.
 - Do not change the task's status. The operator owns that.
 - Do not list or narrate your tool calls in the task body.
@@ -926,6 +932,18 @@ export class TaskAgentManager {
               this.options.publish(ledger);
               void this.refreshInstructions(taskId);
             },
+          }),
+        ],
+      }),
+    );
+    registry.install(
+      defineExtension({
+        name: "task-agent-propose-tool",
+        tools: [
+          createProposeTaskTool({
+            store: this.options.store,
+            media: this.options.media,
+            publish: this.options.publish,
           }),
         ],
       }),

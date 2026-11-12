@@ -20,6 +20,7 @@ import {
   taskAgentInstructions,
   visibleTaskAgentMessages,
 } from "../src/server/task-agent.js";
+import { createProposeTaskTool, createTaskTools } from "../src/server/task-tools.js";
 import { TaskStore } from "../src/server/tasks.js";
 import { runErrorFromUnanswered, runErrorMatchesDismissal } from "../src/shared/run-error.js";
 import { DEFAULT_NEW_TASK_TITLE } from "../src/shared/tasks.js";
@@ -39,17 +40,21 @@ after(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
-test("task agents may only call bash, read, edit_task and the question tools", () => {
+test("task agents may only call bash, read, edit_task, propose_task and the question tools", () => {
   const coding = (createCodingTools().tools ?? []).map((tool) => ({ name: tool.name }));
   const extras = [
     ...coding,
     { name: "edit_task" },
+    { name: "propose_task" },
     { name: "ask_questions" },
     { name: "append_questions" },
     { name: "write" },
     { name: "edit" },
-    { name: "task_edit" },
+    { name: "task_done" },
     { name: "task_working" },
+    { name: "task_release" },
+    { name: "task_block" },
+    { name: "task_edit" },
     { name: "draw_diagram" },
   ];
   assert.deepEqual(
@@ -58,8 +63,20 @@ test("task agents may only call bash, read, edit_task and the question tools", (
       .sort(),
     [...TASK_AGENT_TOOL_NAMES].sort(),
   );
+  assert.ok(TASK_AGENT_TOOL_NAMES.includes("propose_task"));
+  for (const forbidden of [
+    "task_done",
+    "task_working",
+    "task_release",
+    "task_block",
+    "task_edit",
+  ]) {
+    assert.equal(TASK_AGENT_TOOL_NAMES.includes(forbidden as never), false);
+    assert.equal(isTaskAgentToolName(forbidden), false);
+  }
   assert.equal(isTaskAgentToolName("bash"), true);
   assert.equal(isTaskAgentToolName("write"), false);
+  assert.equal(isTaskAgentToolName("propose_task"), true);
   assert.equal(isTaskAgentToolName("task_edit"), false);
 });
 
@@ -121,6 +138,10 @@ test("the plan-mode prompt forbids edits and names the edit_task tool", () => {
   assert.match(prompt, /plan mode/i);
   assert.match(prompt, /must not edit/i);
   assert.match(prompt, /edit_task/);
+  assert.match(prompt, /propose_task/);
+  assert.match(prompt, /proposal is not a task/i);
+  assert.match(prompt, /human approving it creates work/i);
+  assert.match(prompt, /duplicate of the task/i);
   assert.match(prompt, /abcd/);
   assert.match(prompt, /Ship the release/);
   assert.doesNotMatch(prompt, /task_working/);
@@ -188,6 +209,90 @@ test("edit_task cannot target another task and rejects an empty patch", async ()
   const unknown = await missing.execute({ title: "Nope" } as never, {} as never, {} as never);
   assert.equal(unknown.isError, true);
   assert.equal(store.ledger().tasks.find((item) => item.id === task.id)?.title, "Stay put");
+});
+
+test("the planning agent's propose_task adds one proposal and no work", async () => {
+  published = [];
+  const proposalsBefore = store.ledger().tasks.filter((task) => task.status === "proposed").length;
+  const tasksBefore = store.ledger().tasks.length;
+  const bridge = {
+    store,
+    publish: (ledger: TaskLedger) => {
+      published.push(ledger);
+    },
+  };
+  const planTools = selectTaskAgentTools([
+    ...createTaskTools(bridge),
+    createTaskEditTool({ taskId: "unused", store, publish: () => undefined }),
+  ]);
+  assert.deepEqual(planTools.map((tool) => tool.name).sort(), ["edit_task", "propose_task"]);
+  const propose = planTools.find((tool) => tool.name === "propose_task");
+  assert.ok(propose);
+
+  const title = `Follow up the ledger ${Date.now()}`;
+  const rationale = "A separate follow-up keeps the current plan focused and reviewable.";
+  const result = await propose.execute(
+    { title, rationale, project: "pi-ui" } as never,
+    {} as never,
+    {} as never,
+  );
+  assert.equal(result.isError === true, false);
+  const proposals = store.ledger().tasks.filter((task) => task.status === "proposed");
+  assert.equal(proposals.length, proposalsBefore + 1);
+  assert.equal(store.ledger().tasks.length, tasksBefore + 1);
+  const proposal = proposals.find((task) => task.title === title);
+  assert.ok(proposal);
+  assert.equal(proposal.rationale, rationale);
+  assert.equal(proposal.project, "pi-ui");
+  assert.equal(published.length, 1);
+
+  const main = new Map(createTaskTools(bridge).map((tool) => [tool.name, tool]));
+  const listed = main.get("task_proposals");
+  const ledgerTool = main.get("task_list");
+  assert.ok(listed && ledgerTool);
+  const proposalText = await listed.execute({} as never, {} as never, {} as never);
+  const listedText = proposalText.output?.find((part) => part.type === "text");
+  assert.ok(listedText && listedText.type === "text");
+  assert.match(listedText.text, new RegExp(title));
+  assert.match(listedText.text, new RegExp(rationale));
+  const work = await ledgerTool.execute({} as never, {} as never, {} as never);
+  const workText = work.output?.find((part) => part.type === "text");
+  assert.ok(workText && workText.type === "text");
+  assert.doesNotMatch(workText.text, new RegExp(title));
+
+  await store.remove(proposal.id);
+});
+
+test("the planning agent's propose_task rejects malformed calls without creating anything", async () => {
+  const bridge = {
+    store,
+    publish: () => undefined,
+  };
+  const tools = new Map(
+    selectTaskAgentTools([createProposeTaskTool(bridge)]).map((tool) => [tool.name, tool]),
+  );
+  const propose = tools.get("propose_task");
+  assert.ok(propose);
+  const tasksBefore = store.ledger().tasks.length;
+  const proposalsBefore = store.ledger().tasks.filter((task) => task.status === "proposed").length;
+
+  const emptyTitle = await propose.execute(
+    { title: "   ", rationale: "This rationale is long enough to pass the minimum." } as never,
+    {} as never,
+    {} as never,
+  );
+  assert.equal(emptyTitle.isError, true);
+  const shortRationale = await propose.execute(
+    { title: `Too vague ${Date.now()}`, rationale: "It would be nice." } as never,
+    {} as never,
+    {} as never,
+  );
+  assert.equal(shortRationale.isError, true);
+  assert.equal(store.ledger().tasks.length, tasksBefore);
+  assert.equal(
+    store.ledger().tasks.filter((task) => task.status === "proposed").length,
+    proposalsBefore,
+  );
 });
 
 test("the first message on a placeholder task sets the title and strips @project", () => {
