@@ -8,6 +8,7 @@ import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
 import { McpEventFeed } from "../src/server/mcp-events.ts";
 import { acceptMcpStatusNotice } from "../src/server/mcp-status-intake.ts";
+import { deriveStableId } from "../src/server/mcp-subscriptions.ts";
 import { MCP_STATUS_HEAD } from "../src/shared/notices.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -71,7 +72,7 @@ async function waitForHealth(
     .toBe("ok");
 }
 
-async function startEventDropApp() {
+async function startEventDropApp(mode: "event-drop" | "event-cut" = "event-drop") {
   const dir = mkdtempSync(join(tmpdir(), "pi-ui-status-e2e-"));
   const statePath = join(dir, "fixture.log");
   const agentDir = join(dir, "agent");
@@ -83,7 +84,7 @@ async function startEventDropApp() {
     cwd: root,
     env: {
       ...process.env,
-      SESSION_DROP_MODE: "event-drop",
+      SESSION_DROP_MODE: mode,
       SESSION_DROP_STATE: statePath,
       SESSION_DROP_PORT: String(fixturePort),
     },
@@ -219,7 +220,28 @@ test("the production intake drops untracked and healthy status without a chat it
     "mcp-events-status",
   );
 
+  // A durable-id-only status describes the same live row. While that row is
+  // still delivering it is not news, but the real intake (not just the feed
+  // predicate) must be the thing that keeps it out of chat.
+  feed.ingest({
+    customType: "mcp-events-traffic",
+    details: {
+      subscription_id: "b-live",
+      server: "hub",
+      cursor: "hub:900",
+      timestamp: new Date().toISOString(),
+    },
+  });
+  const stableId = deriveStableId("hub", "hub", {});
+  const durable = [{ stable_id: stableId, server: "hub", name: "hub", status: "reconnecting" }];
+  intake(
+    `${MCP_STATUS_HEAD}\n${JSON.stringify({ subscriptions: durable })}`,
+    { subscriptions: durable },
+    "mcp-events-status",
+  );
+
   expect(accepted).toEqual([]);
+  expect(feed.state.subscriptions[0]?.status).toBe("active");
 });
 
 test("a killed tracked stream reconnects at its cursor with one outage notice", {
@@ -286,6 +308,62 @@ test("a killed tracked stream reconnects at its cursor with one outage notice", 
       )
       .toEqual({ cursor: "drop:1", outages: 1, recoveries: 1 });
     expect(lines(spawned.statePath)).toContain("drop-stream");
+    expect(lines(spawned.statePath)).not.toContain("stream:drop-stream:drop:0");
+  } finally {
+    await spawned.stop();
+  }
+});
+
+test("a cut stream resumes at its last cursor without a status notice", {
+  timeout: 240_000,
+}, async ({ app, browser }) => {
+  const spawned = await startEventDropApp("event-cut");
+  try {
+    await app.open(`${spawned.url}/`);
+    await send(
+      spawned.url,
+      `TOOLCALLS ${JSON.stringify([{ name: "tool_search", arguments: { query: "mcp_events" } }])}`,
+    );
+    await expect
+      .poll(() => toolIdle(browser), { timeout: 60_000 })
+      .toEqual({ idle: true, loaded: true });
+
+    await send(
+      spawned.url,
+      `TOOLCALLS ${JSON.stringify([
+        {
+          name: "mcp_events",
+          arguments: { action: "subscribe", server: "tracer", name: "drop-stream" },
+        },
+      ])}`,
+    );
+
+    // The first request stream ends after one delivered event. The replacement
+    // stream must continue from that event's cursor, not the original position.
+    await expect
+      .poll(
+        () => lines(spawned.statePath).filter((line) => line.startsWith("stream:drop-stream:")),
+        { timeout: 60_000 },
+      )
+      .toEqual(["stream:drop-stream:null", "stream:drop-stream:drop:2"]);
+
+    // The next event proves the replacement stream is delivering, so the row is
+    // healthy again and no generation death belonged in the chat.
+    await expect
+      .poll(
+        async () =>
+          (await readState(spawned.url)).mcpEvents?.subscriptions.find(
+            (item) => item.name === "drop-stream",
+          ),
+        { timeout: 60_000 },
+      )
+      .toEqual(expect.objectContaining({ status: "active", cursor: "drop:3" }));
+
+    const state = await readState(spawned.url);
+    const statuses = (state.messages ?? [])
+      .map((message) => message.text ?? "")
+      .filter((text) => text.startsWith(MCP_STATUS_HEAD));
+    expect(statuses).toEqual([]);
     expect(lines(spawned.statePath)).not.toContain("stream:drop-stream:drop:0");
   } finally {
     await spawned.stop();

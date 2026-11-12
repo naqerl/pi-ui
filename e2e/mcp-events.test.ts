@@ -89,6 +89,89 @@ test("the event check logs each rejection once and passes every frame on unchang
   ]);
 });
 
+test("a payload cursor pins reconnects and a rejected event never becomes one", async () => {
+  const { transport, raw } = fakeTransport();
+  const checked = checkEventNotifications(transport, "zeroshot", () => {});
+  const received: Array<Record<string, unknown>> = [];
+  checked.onmessage = (message) => received.push(message as Record<string, unknown>);
+  const meta = (id: string) => ({ _meta: { [SUBSCRIPTION_META]: id } });
+  const stream = (id: string) => ({
+    jsonrpc: "2.0" as const,
+    id,
+    method: "events/stream",
+    params: { name: "hub" },
+  });
+
+  await checked.send(stream("sub-1"));
+  const event = {
+    jsonrpc: "2.0" as const,
+    method: "notifications/events/event",
+    params: {
+      ...meta("sub-1"),
+      eventId: "hub:2",
+      name: "hub",
+      timestamp: "2026-11-12T10:00:00.000Z",
+      // The production hub leaves the envelope null and carries the position
+      // in the payload. pi-mcp-events only reads the envelope, so this check
+      // propagates the payload position onto the frame.
+      cursor: null,
+      data: { kind: "hub.job", cursor: "hub:2" },
+    },
+  };
+  const heartbeat = {
+    jsonrpc: "2.0" as const,
+    method: "notifications/events/heartbeat",
+    params: { ...meta("sub-1"), cursor: "hub:9" },
+  };
+  raw.onmessage?.(event);
+  raw.onmessage?.(heartbeat);
+
+  const eventParams = received[0]?.params as { cursor?: string | null } | undefined;
+  assert.equal(eventParams?.cursor, "hub:2", "the payload cursor reaches the adapter");
+  const heartbeatParams = received[1]?.params as { cursor?: string } | undefined;
+  assert.equal(heartbeatParams?.cursor, "hub:2", "a heartbeat cannot skip past that event");
+
+  // Before its first event a brand-new stream keeps the announced position.
+  raw.onmessage?.({
+    jsonrpc: "2.0",
+    method: "notifications/events/heartbeat",
+    params: { ...meta("sub-2"), cursor: "hub:99" },
+  });
+  const freshParams = received[2]?.params as { cursor?: string } | undefined;
+  assert.equal(freshParams?.cursor, "hub:99");
+
+  // A frame pi-mcp-events rejects must not move the reconnect position.
+  await checked.send(stream("sub-3"));
+  raw.onmessage?.({
+    jsonrpc: "2.0",
+    method: "notifications/events/event",
+    params: {
+      ...meta("sub-3"),
+      eventId: "hub:5",
+      name: "not-hub",
+      timestamp: "2026-11-12T10:00:00.000Z",
+      cursor: null,
+      data: { kind: "hub.job", cursor: "hub:5" },
+    },
+  });
+  raw.onmessage?.({
+    jsonrpc: "2.0",
+    method: "notifications/events/heartbeat",
+    params: { ...meta("sub-3"), cursor: "hub:9" },
+  });
+  const afterRejected = received[4]?.params as { cursor?: string } | undefined;
+  assert.equal(afterRejected?.cursor, "hub:9", "a rejected event is not a delivered position");
+
+  // A re-activation cannot jump ahead of the event either.
+  raw.onmessage?.({
+    jsonrpc: "2.0",
+    method: "notifications/events/active",
+    params: { ...meta("sub-1"), cursor: "hub:12" },
+  });
+  const activeParams = received[5]?.params as { cursor?: string } | undefined;
+  assert.equal(activeParams?.cursor, "hub:2", "an active ack keeps the last delivered event");
+});
+
 test("the shim's sendMessage is bound and survives a throwing observer", () => {
   const shim = new DurableExtensionShim();
   const seen: ExtensionNotice[] = [];
@@ -385,6 +468,44 @@ test("a duplicate delivery never marks an unchipped id as delivered", () => {
   feed.markDelivered([item]);
   assert.deepEqual(feed.novelEvents([item]), [], "the committed chip removes the id");
   assert.equal(feed.ingest({ customType: "mcp-events", details: { events: [item] } }), false);
+});
+
+test("a zero event cursor never replaces the last real position", () => {
+  const feed = new McpEventFeed();
+  feed.ingest({
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "subscribe" },
+      result: {
+        subscription: { id: "s1", server: "hub", name: "hub", status: "active", cursor: "hub:867" },
+      },
+    },
+  });
+
+  const deliver = (eventId: string, cursor: string) =>
+    feed.ingest({
+      customType: "mcp-events",
+      details: {
+        events: [
+          {
+            subscription_id: "s1",
+            server: "hub",
+            event: {
+              eventId,
+              name: "hub",
+              timestamp: new Date().toISOString(),
+              cursor,
+              data: { kind: "hub.job", id: eventId },
+            },
+          },
+        ],
+      },
+    });
+
+  assert.equal(deliver("hub:868", "hub:868"), true);
+  assert.equal(feed.state.subscriptions[0]?.cursor, "hub:868");
+  deliver("hub:869", "hub:0");
+  assert.equal(feed.state.subscriptions[0]?.cursor, "hub:868", "zero is not a position");
 });
 
 test("a subscribe keeps the cursor the server answered with, not the one sent", () => {

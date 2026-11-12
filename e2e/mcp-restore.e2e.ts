@@ -289,6 +289,11 @@ test("a restored subscription the server rejects is cancelled and never polled a
     // A burst that fills the probe page is a backlog even when it is recent.
     expect(calls).toContain("stream:flood-stream:null");
     expect(calls).not.toContain("stream:flood-stream:flood:9");
+    // A zero position is not sent to events/poll either.
+    expect(calls).toContain("poll:live-stream:null");
+    expect(calls).toContain("poll:burst-stream:null");
+    expect(calls).not.toContain("poll:live-stream:live:0");
+    expect(calls).not.toContain("poll:burst-stream:burst:0");
 
     // No events/poll on this server, so the catalog fallback must follow nextCursor.
     const pagedCalls = readFileSync(spawned.pagedLogPath, "utf8").split("\n").filter(Boolean);
