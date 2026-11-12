@@ -32,7 +32,6 @@ function shortId(id: string): string {
 const SCROLLBAR_GUTTER = "[scrollbar-gutter:stable]";
 const QUIET = "text-foreground/75";
 const DETAIL_CARD = "bg-surface theme-radius p-3";
-export type TaskDetailVariantId = 1 | 2 | 3 | 4 | 5;
 
 export interface TaskDetailModel {
   task: Task;
@@ -875,21 +874,4 @@ function DesktopPlan({ model }: { model: TaskDetailModel }) {
 export function TaskDetailVariant({ model }: { model: TaskDetailModel }) {
   if (model.wide) return <DesktopPlan model={model} />;
   return <MobileDetail key={model.task.id} model={model} />;
-}
-
-export function TaskPlanChat({ model }: { model: TaskDetailModel }) {
-  return <TaskAgentChat task={model.task} projects={model.projects} variant="pane" />;
-}
-
-export function TasksComposerDock({ wide }: { wide: boolean }) {
-  if (!wide) return null;
-  return (
-    <div className="glass-composer theme-radius shrink-0" data-testid="tasks-composer-chrome">
-      <div
-        id="tasks-composer-slot"
-        data-testid="tasks-composer-slot"
-        className="min-h-0 min-w-0 px-2 py-1"
-      />
-    </div>
-  );
 }
