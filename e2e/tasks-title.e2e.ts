@@ -78,7 +78,9 @@ test("edits a task title in place, grows to two lines, and refuses an empty one"
   await expect
     .poll(() =>
       browser.evaluate(() => {
-        const field = document.querySelector<HTMLTextAreaElement>('[data-testid="task-title-input"]');
+        const field = document.querySelector<HTMLTextAreaElement>(
+          '[data-testid="task-title-input"]',
+        );
         return field?.value ?? null;
       }),
     )
