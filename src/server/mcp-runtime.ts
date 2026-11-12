@@ -2118,6 +2118,17 @@ export class McpRuntime {
     // protocol connection is a live probe of the same definition, so clear
     // every failure for this server instead of writing a stale array once.
     this.markConnected(name);
+    // The adapter reconnects a live stream through this same bridge without
+    // calling the mcp_events tool. Read the daemon identity before the
+    // replacement stream can emit an event, so a renumbered first event gets
+    // the new generation key and clears only its own stale history.
+    const generation = await this.generationFor(name);
+    if (generation !== undefined) {
+      this.deliverNotice({
+        customType: "mcp-events-generation",
+        details: { server: name, generation },
+      });
+    }
     // A server that was unavailable during the boot probe can now restore its
     // deferred subscriptions. The delay keeps the current subscribe first.
     setTimeout(() => {

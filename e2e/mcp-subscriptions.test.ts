@@ -1853,3 +1853,72 @@ test("reopenSubscription without a cursor uses the newest durable position", asy
     await runtime.close();
   }
 });
+
+test("a live protocol reconnect refreshes generation before the renumbered event", async (t) => {
+  const dataDir = await tempDir(t);
+  await withAgentConfig(t, {
+    mcpServers: {
+      stub: { command: process.execPath, args: [resolve("e2e/stub-mcp.mjs")] },
+    },
+    web: { command: process.execPath, disabled: true },
+  });
+  const runtime = await startMcpRuntime({ dataDir });
+  const feed = new McpEventFeed(runtime.subscriptionRegistry);
+  await feed.hydrate();
+  runtime.setObserver((notice) => {
+    feed.ingest(notice);
+  });
+  let generation = "daemon-a";
+  runtime.generationFor = async () => generation;
+  const stableId = deriveStableId("stub", "stub-hub", {});
+  const item = {
+    subscription_id: "s1",
+    server: "stub",
+    event: {
+      eventId: "hub:7",
+      name: "stub-hub",
+      timestamp: new Date().toISOString(),
+      cursor: "hub:7",
+      data: { kind: "stub-hub.job", id: "job-7" },
+    },
+  };
+  try {
+    feed.ingest({
+      customType: "mcp-events-tool",
+      details: {
+        args: { action: "subscribe", server: "stub", name: "stub-hub" },
+        result: {
+          subscription: {
+            id: "s1",
+            server: "stub",
+            name: "stub-hub",
+            status: "active",
+            cursor: "hub:7",
+            generation: "daemon-a",
+          },
+        },
+      },
+    });
+    assert.equal(feed.ingest({ customType: "mcp-events", details: { events: [item] } }), true);
+    feed.markDelivered([item]);
+    assert.deepEqual(feed.novelEvents([item]), []);
+
+    // The adapter reconnects its live stream through protocolConnection; no
+    // mcp_events tool call or list follows before the first replayed event.
+    generation = "daemon-b";
+    await runtime.protocolConnection("stub");
+
+    assert.equal(feed.findByStableId(stableId)?.generation, "daemon-b");
+    assert.deepEqual(feed.takeGenerationClears(), [stableId]);
+    assert.deepEqual(feed.novelEvents([item]), [item], "the renumbered cursor is novel again");
+    assert.equal(
+      feed.ingest({ customType: "mcp-events", details: { events: [item] } }),
+      true,
+      "the reconnected event is not mistaken for the old generation's log row",
+    );
+    assert.equal(feed.state.events.at(-1)?.generation, "daemon-b");
+  } finally {
+    runtime.setObserver(undefined);
+    await runtime.close();
+  }
+});

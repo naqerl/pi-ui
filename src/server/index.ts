@@ -295,10 +295,54 @@ const events = new McpEventFeed(boot.mcp.subscriptionRegistry, {
 await events.hydrate();
 chat.setEventFeed(events);
 chat.setTaskActivity(taskActivity);
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
 let forgetMcpGeneration: ((stableId: string) => void) | undefined;
 const drainGenerationClears = (): void => {
   if (forgetMcpGeneration === undefined) return;
   for (const stableId of events.takeGenerationClears()) forgetMcpGeneration(stableId);
+};
+const generationRefreshes = new Map<string, Promise<void>>();
+/** An adapter reconnect can reuse its protocol session; refresh before its events. */
+const refreshGeneration = (server: string): Promise<void> => {
+  const existing = generationRefreshes.get(server);
+  if (existing !== undefined) return existing;
+  const run = (async () => {
+    const generation = await boot.mcp.generationFor(server);
+    if (generation === undefined) return;
+    const previous = events.state;
+    events.ingest({
+      customType: "mcp-events-generation",
+      details: { server, generation },
+    });
+    drainGenerationClears();
+    if (events.state.revision !== previous.revision) {
+      hub.broadcast({ event: "mcp.events", data: events.state });
+    }
+  })().catch((error: unknown) => {
+    console.warn(`[mcp] could not refresh generation for ${server}`, error);
+  });
+  generationRefreshes.set(server, run);
+  void run.finally(() => {
+    if (generationRefreshes.get(server) === run) generationRefreshes.delete(server);
+  });
+  return run;
+};
+const refreshGenerationForStatus = (notice: { customType?: string; details?: unknown }): void => {
+  if (
+    notice.customType !== "mcp-events-status" ||
+    !isRecord(notice.details) ||
+    !Array.isArray(notice.details.subscriptions)
+  ) {
+    return;
+  }
+  const servers = new Set<string>();
+  for (const item of notice.details.subscriptions) {
+    if (!isRecord(item) || typeof item.server !== "string") continue;
+    if (item.status !== "reconnecting" && item.status !== "active") continue;
+    servers.add(item.server);
+  }
+  for (const server of servers) void refreshGeneration(server);
 };
 boot.mcp.setObserver((notice) => {
   // Event batches cross the durable outbox boundary in the message sink below.
@@ -307,6 +351,7 @@ boot.mcp.setObserver((notice) => {
   const previous = events.state;
   const changed = events.ingest(notice);
   drainGenerationClears();
+  refreshGenerationForStatus(notice);
   // A protocol connection can clear a boot failure, so keep the live status
   // in every tab instead of leaving the snapshot from startup on screen.
   hub.broadcast({ event: "mcp.status", data: boot.mcp.status });
@@ -420,6 +465,17 @@ boot.mcp.setSubmit((text, options) => {
   const envelope = mcpEventEnvelope(text);
   if (envelope !== null) {
     mcpIntake.enqueue(async () => {
+      // A reconnect status may have started a generation read. Let it finish
+      // before judging novelty, so the renumbered first event uses the new key.
+      const eventServers = new Set<string>();
+      for (const item of envelope.items) {
+        if (isRecord(item) && typeof item.server === "string") eventServers.add(item.server);
+      }
+      const refreshes = [...eventServers].flatMap((server) => {
+        const pending = generationRefreshes.get(server);
+        return pending === undefined ? [] : [pending];
+      });
+      if (refreshes.length > 0) await Promise.all(refreshes);
       // A stream can hand over its adapter's retained history, and a subscribe
       // can hand us a retained history. Age first, then bound: an old sibling
       // must not occupy a slot or evict a fresh event. The feed applies the same
@@ -439,18 +495,22 @@ boot.mcp.setSubmit((text, options) => {
       // Persist a gap-only batch when something other than age was dropped:
       // missing data must stay visible in chat too.
       if (!staleOnly && (boundedNovel.items.length > 0 || deliveryDropped > 0)) {
+        // Adapter items have no generation of their own. Carry the current one
+        // into the delivery copy so outbox merges cannot fold a new epoch into
+        // an old pending text just because the cursor text is the same.
+        const deliveryItems = boundedNovel.items.map((item) => events.withEventGeneration(item));
         // A restore may be replaying a continuous backlog. Give it one bounded
         // chip plus a gap instead of one busy delivery per replayed event; the
         // outbox merger cannot be relied on when batches arrive continuously.
-        const restored = events.isRestoreBatch(boundedNovel.items);
+        const restored = events.isRestoreBatch(deliveryItems);
         const texts = restored
           ? mcpRestoreDeliveryTexts({
               ...envelope,
-              items: boundedNovel.items,
+              items: deliveryItems,
               dropped: deliveryDropped,
             })
           : mcpDeliveryTexts(
-              { ...envelope, items: boundedNovel.items, dropped: deliveryDropped },
+              { ...envelope, items: deliveryItems, dropped: deliveryDropped },
               chat.getState() === "running",
             );
         await mcpOutbox.enqueueMany(

@@ -1250,6 +1250,22 @@ export class McpEventFeed {
   }
 
   /**
+   * The delivery copy of an event carries the generation its outbox key uses.
+   * Adapter event items have no generation of their own, so without this a
+   * merge could fold the new epoch into an old pending text with the same cursor.
+   */
+  withEventGeneration(item: unknown): unknown {
+    if (!isRecord(item) || !isRecord(item.event)) return item;
+    const current =
+      typeof item.subscription_id === "string"
+        ? this.viewForAdapter(item.subscription_id)
+        : undefined;
+    if (current === undefined) return item;
+    const generation = current.generation ?? this.savedRecord(current.stableId)?.generation;
+    return generation === undefined ? item : { ...item, generation };
+  }
+
+  /**
    * A new generation must not inherit the previous one's seen/delivered ids:
    * same-numbered cursors are fresh news, and old pending entries may never
    * block them. Only this stable id is touched.
@@ -1408,7 +1424,32 @@ export class McpEventFeed {
     if (notice.customType === "mcp-events-tool") return this.ingestTool(notice.details);
     if (notice.customType === "mcp-events-traffic") return this.ingestTraffic(notice.details);
     if (notice.customType === "mcp-events-gap") return this.ingestGap(notice.details);
+    if (notice.customType === "mcp-events-generation") return this.ingestGeneration(notice.details);
     return false;
+  }
+
+  /**
+   * The transport reconnected before it can emit the replacement stream's
+   * events. Refresh every tracked row on that server now, so the first
+   * renumbered event uses the new key and clears only its own stale history.
+   */
+  private ingestGeneration(details: unknown): boolean {
+    if (!isRecord(details) || typeof details.server !== "string") return false;
+    const generation = subscriptionGeneration(details);
+    if (generation === undefined) return false;
+    let changed = false;
+    for (const view of [...this.subscriptions.values()]) {
+      if (view.server !== details.server) continue;
+      const previous = view.generation ?? this.savedRecord(view.stableId)?.generation;
+      this.noteGeneration(view.stableId, previous, generation);
+      if (sameGeneration(view.generation, generation)) continue;
+      const next: McpSubscriptionView = { ...view, generation };
+      this.storeView(next);
+      this.persist(next);
+      changed = true;
+    }
+    if (changed) this.touch();
+    return changed;
   }
 
   /** Record a window a restore deliberately skipped instead of replaying it. */

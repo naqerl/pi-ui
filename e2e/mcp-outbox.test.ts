@@ -882,3 +882,19 @@ test("a generation change keeps a sibling whose event was merged by id", async (
   assert.deepEqual(saved.seen, [aKey]);
   await outbox.close();
 });
+
+test("merge keeps the same cursor from two generations when items carry one", () => {
+  const old = { ...event("hub:7"), generation: "daemon-a" };
+  const next = { ...event("hub:7"), generation: "daemon-b" };
+  const merged = mergeDeliveryTexts([
+    mcpEventText({ head: MCP_EVENTS_HEAD, items: [old], dropped: 0 }, [old]),
+    mcpEventText({ head: MCP_EVENTS_HEAD, items: [next], dropped: 0 }, [next]),
+  ]);
+  assert.equal(merged.length, 1);
+  const envelope = mcpEventEnvelope(merged[0] ?? "");
+  assert.deepEqual(
+    envelope?.items.map((item) => (item as { generation: string }).generation),
+    ["daemon-a", "daemon-b"],
+    "the outbox merge does not dedupe a renumbered cursor against the old epoch",
+  );
+});

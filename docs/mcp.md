@@ -23,10 +23,14 @@ again. A subscribe therefore captures a `generation`: the hub's
 `GET /v1/hub/daemon` `startedAt` and `pid` when it states one, otherwise the
 adapter's session identity. Event keys and outbox dedupe keys include that
 generation, so `hub:1000` from the new daemon is not the `hub:1000` already
-delivered by the old one. A changed generation drops that `stableId`'s seen
-ids and waiting outbox entries before the new stream is accepted; other
-subscriptions keep theirs. Servers that state no generation, and rows written
-before this field existed, keep the original two-part key.
+delivered by the old one. The runtime refreshes the generation whenever the
+adapter opens a replacement protocol connection, before that connection can
+emit a renumbered event, as well as on subscribe/list/restore. A changed
+generation drops that `stableId`'s seen ids and waiting outbox entries before
+the new stream is accepted; other subscriptions keep theirs. Delivery items
+carry the generation too, so an outbox merge cannot fold a new epoch into an
+old pending text with the same cursor. Servers that state no generation, and
+rows written before this field existed, keep the original two-part key.
 
 A 1.6.7 registry has none of the new fields. Loading it derives the stable id,
 sets the adapter id to null, derives `enabled` from the status, and writes the
