@@ -511,6 +511,11 @@ function decisionRequestId(proposalId: string): string {
   return `decision:${proposalId}`;
 }
 
+/** The key its model-facing queue copy shares with the visible decision notice. */
+function decisionQueueKey(proposalId: string): string {
+  return `decision:${proposalId}`;
+}
+
 /** The client key an entry carries, for matching a retried send to its placed message. */
 function clientKeyFromEntry(entry: EntryRecord): string | undefined {
   if (!isRecord(entry.data)) return undefined;
@@ -2361,10 +2366,11 @@ export class ChatService {
           isRecord(entry.data) &&
           entry.data.proposalId === key,
       );
+      const queueKey = decisionQueueKey(key);
       if (decisions.length === 0) {
         // The notice is a display-only write, so durable places it even while another
         // turn runs. The user sees the decision now, not when that turn ends.
-        const message = await appendTaskDecisionNotice(this.conversation, record);
+        const message = await appendTaskDecisionNotice(this.conversation, record, queueKey);
         if (message !== undefined) {
           this.hub.broadcast({ event: "notice", data: { message } satisfies StreamNotice });
         }
@@ -2383,8 +2389,10 @@ export class ChatService {
       const createdAt = new Date().toISOString();
       await this.submit(text, "queue", {
         // The prompt is separate from the visible notice, so it can wait for a busy
-        // turn without hiding the chip. The proposal id still makes it idempotent.
+        // turn without hiding the chip. The shared key identifies the copy to suppress;
+        // the proposal id still makes a retried delivery idempotent.
         requestId: decisionRequestId(key),
+        queueKey,
         queuedNotice: false,
         entry: {
           kind: TASK_DECISION_PROMPT_ENTRY_KIND,
