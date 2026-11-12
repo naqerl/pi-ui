@@ -492,7 +492,8 @@ test("previews a task id on hover and opens that task on click", async ({
   await expect(browser.locator('[data-testid="pager"]')).toHaveAttribute("data-page", "tasks");
   const detail = screen.getByTestId("task-detail");
   await expect(detail).toHaveAttribute("aria-label", "Ship the chip");
-  await expect(detail.getByTestId("task-detail-id")).toHaveText("abc1");
+  await expect(screen.getByTestId("task-details-bar")).toContainText("Task details");
+  await expect(screen.getByTestId("task-id-abc1")).toHaveText("abc1");
 });
 
 test("leaves ordinary codespans and fenced code alone", async ({ app, browser, screen }) => {

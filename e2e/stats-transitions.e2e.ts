@@ -75,11 +75,7 @@ const busy = snapshot({
   ],
 });
 
-test("flattens the dock blur only while the page transition runs", async ({
-  app,
-  browser,
-  screen,
-}) => {
+test("keeps the dock glass while the page transition runs", async ({ app, browser, screen }) => {
   // The suite runs with reduced motion by default; this case asserts the moving
   // transition, so opt back into motion like the shader test does.
   await browser.emulateMedia({ reducedMotion: "no-preference" });
@@ -143,7 +139,7 @@ test("flattens the dock blur only while the page transition runs", async ({
   expect(read?.appeared).toBe(true);
   expect(read?.removed).toBe(true);
   expect(read?.current).toBeNull();
-  expect(read?.during.blur).toBe("none");
+  expect(read?.during.blur ?? "").toContain("blur");
   expect(read?.after.blur ?? "").toContain("blur");
   expect(read?.during.background).not.toBe("");
   expect(read?.background).not.toBe("");

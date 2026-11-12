@@ -749,7 +749,12 @@ function TasksViewImpl({
 
   const content = (
     <div
-      className="h-full overflow-hidden overflow-x-hidden overscroll-x-none"
+      className={cn(
+        "h-full overflow-x-hidden overscroll-x-none",
+        wide || openTask !== undefined
+          ? "overflow-hidden"
+          : cn("overflow-y-auto", SCROLLBAR_GUTTER),
+      )}
       data-testid="tasks-page"
       data-layout={wide ? "split" : "stack"}
     >
@@ -759,9 +764,7 @@ function TasksViewImpl({
             ? "tasks-split grid h-full min-h-0 w-full grid-cols-[minmax(260px,320px)_minmax(280px,1fr)_minmax(300px,400px)] gap-4 px-4"
             : cn(
                 "mx-auto flex h-full min-h-0 w-full max-w-[72ch] flex-col",
-                openTask === undefined
-                  ? cn("gap-4 overflow-y-auto px-4", SCROLLBAR_GUTTER)
-                  : "overflow-hidden",
+                openTask === undefined ? "gap-4 px-4" : "overflow-hidden",
               )
         }
         style={{

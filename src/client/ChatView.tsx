@@ -2030,13 +2030,11 @@ export function ChatView({
           >
             <Composer
               draftKey={
-                !tasksPage
-                  ? "chat"
-                  : wantTaskDock
-                    ? taskDock !== null
-                      ? `task:${taskDock.taskId}`
-                      : "task:pending"
-                    : "create"
+                wantTaskDock
+                  ? taskDock !== null
+                    ? `task:${taskDock.taskId}`
+                    : "task:pending"
+                  : "main"
               }
               tasksPage={tasksPage && !wantTaskDock}
               projectMentions={wantTaskDock ? true : undefined}

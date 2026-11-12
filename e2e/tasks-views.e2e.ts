@@ -1,6 +1,11 @@
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
-import { chooseTaskAction, createOpenTask, openTaskActions } from "./tasks-helpers";
+import {
+  chooseTaskAction,
+  createOpenTask,
+  expectDetailTitle,
+  openTaskActions,
+} from "./tasks-helpers";
 
 test("switches to tasks with a horizontal swipe and back again", async ({
   app,
@@ -253,12 +258,19 @@ test("shows a failed task action beside the control and keeps a long title", asy
   expect(cardError).toBe(true);
 
   await chooseTaskAction(screen, "task-detail-status");
-  await expect(screen.getByTestId("task-state")).toHaveText("Done");
+  await expect
+    .poll(() =>
+      browser.evaluate(() => {
+        const button = document.querySelector('[aria-label="Open Write the notice"]');
+        return button?.closest("li[data-state]")?.getAttribute("data-state") ?? null;
+      }),
+    )
+    .toBe("done");
   await expect(screen.getByTestId("task-error")).toHaveCount(0);
 
   const longTitle = "M".repeat(450);
   await createOpenTask(screen, longTitle);
-  await expect(screen.getByTestId("task-title")).toContainText(longTitle);
+  await expectDetailTitle(screen, longTitle);
   await expect(screen.getByTestId("composer-error")).toHaveCount(0);
 });
 

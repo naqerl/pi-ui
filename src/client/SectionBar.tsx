@@ -3,7 +3,7 @@ import { cn } from "./lib/utils";
 
 /** Shared chrome for a stats-page section heading and the desktop task-details bar. */
 export const SECTION_BAR =
-  "theme-radius flex items-center border border-border/70 bg-surface px-2 py-1";
+  "relative theme-radius flex items-center border border-border/70 bg-surface px-2 py-1";
 
 export const SECTION_BAR_LABEL =
   "min-w-0 flex-1 bg-transparent font-mono text-xs font-semibold text-foreground outline-none [overflow-wrap:anywhere]";
@@ -29,14 +29,13 @@ export function SectionBar({
   heading?: boolean;
 }) {
   return (
-    <div className="relative" data-testid={testId}>
-      <Tag
-        className={cn(SECTION_BAR, actions !== undefined ? "pr-20" : undefined, className)}
-        data-section-heading={heading ? "" : undefined}
-      >
-        {children}
-      </Tag>
+    <Tag
+      className={cn(SECTION_BAR, actions !== undefined ? "pr-20" : undefined, className)}
+      data-testid={testId}
+      data-section-heading={heading ? "" : undefined}
+    >
+      {children}
       {actions !== undefined && <div className={SECTION_BAR_ACTIONS}>{actions}</div>}
-    </div>
+    </Tag>
   );
 }

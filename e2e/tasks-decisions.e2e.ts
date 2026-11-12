@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
-import { isTaskChatUrl } from "./tasks-helpers";
+import { expectDetailTitle, isTaskChatUrl } from "./tasks-helpers";
 
 type Proposal = { id: string; title: string };
 
@@ -367,7 +367,7 @@ test("an approval chip appears during another held turn and opens its task", {
     await screen.getByTestId("notice-dialog-close").tap();
     await expect(screen.getByTestId("task-detail")).toBeVisible();
     await expect(screen.getByTestId("task-detail")).toHaveAttribute("aria-label", title);
-    await expect(screen.getByTestId("task-title")).toHaveText(title);
+    await expectDetailTitle(screen, title);
   } finally {
     releaseTurn?.();
     await expect
