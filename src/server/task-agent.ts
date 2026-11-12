@@ -129,8 +129,8 @@ export interface TaskAgentManagerOptions {
 }
 
 /**
- * Keep only bash, read and edit_task. Used both when building a registry and in tests
- * that assert the restriction without starting a harness.
+ * Keep only the TASK_AGENT_TOOL_NAMES allow-list. Used both when building a registry
+ * and in tests that assert the restriction without starting a harness.
  */
 export function selectTaskAgentTools<T extends { name: string }>(tools: readonly T[]): T[] {
   return tools.filter((tool) => TASK_AGENT_TOOL_SET.has(tool.name));
