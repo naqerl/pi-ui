@@ -1,7 +1,22 @@
-import { type Browser, test } from "@e2e-dev/web";
+import { type Browser, beforeEach, test } from "@e2e-dev/web";
 import { expect } from "e2e";
 import { IdleNudge } from "../src/server/idle-nudge.js";
-import { chooseTaskAction, createOpenTask, openTaskActions } from "./tasks-helpers";
+import { backToTaskList, chooseTaskAction, createOpenTask, openTaskActions } from "./tasks-helpers";
+
+/** The built app registers /sw.js, and a worker's requests bypass Playwright routes. */
+async function disableServiceWorker(browser: Browser) {
+  await browser.addInitScript(() => {
+    if (!("serviceWorker" in navigator)) return;
+    Object.defineProperty(navigator.serviceWorker, "register", {
+      configurable: true,
+      value: async () => undefined,
+    });
+  });
+}
+
+beforeEach(async ({ browser }) => {
+  await disableServiceWorker(browser);
+});
 
 test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300_000 }, async ({
   app,
@@ -353,7 +368,103 @@ test("paints a task card before the create response and reconciles it to the led
   await expect(browser.locator('[data-pending-task="true"]')).toHaveCount(0);
 });
 
-test("retires an optimistic task card when the create fails and keeps the draft", async ({
+test("keeps a failed create as a visible row with Retry and keeps the draft", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await app.open("/?page=tasks");
+  await expect(screen.getByRole("textbox", "New task")).toBeVisible();
+  let attempts = 0;
+  await browser.route("**/api/tasks", async (route) => {
+    if (route.request.method !== "POST") {
+      await route.continue();
+      return;
+    }
+    attempts += 1;
+    if (attempts === 1) {
+      await route.fulfill({ status: 500, body: "Task list is full" });
+      return;
+    }
+    await route.continue();
+  });
+  const composer = screen.getByRole("textbox", "New task");
+  const title = `Rejected task ${Date.now()}`;
+  await composer.fill(title);
+  await screen.getByRole("button", "Add task").tap();
+
+  await expect(screen.getByTestId("composer-error")).toHaveText("Task list is full");
+  await expect(composer).toHaveValue(title);
+  const failed = browser.locator('[data-create-failed="true"]').filter({ hasText: title });
+  await expect(failed).toBeVisible();
+  await expect(failed.getByTestId("task-error")).toHaveText("Task list is full");
+  const retry = failed.getByRole("button", { name: `Retry ${title}` });
+  await expect(retry).toBeVisible();
+  // A pending id has no detail endpoint; tapping the failed card must not open one.
+  await failed.getByRole("button", { name: `Open ${title}` }).tap();
+  await expect(screen.getByTestId("task-detail")).toHaveCount(0);
+  await expect(composer).toBeVisible();
+
+  await retry.tap();
+  await expect(browser.locator('[data-create-failed="true"]')).toHaveCount(0);
+  await expect(browser.locator('[data-pending-task="true"]')).toHaveCount(0);
+  await expect(screen.getByTestId("composer-error")).toHaveCount(0);
+  // The successful retry consumes the draft it restored, so Add cannot duplicate it.
+  await backToTaskList(screen);
+  await expect(screen.getByRole("textbox", "New task")).toHaveValue("");
+  expect(attempts).toBe(2);
+  expect(
+    await browser.evaluate(async (needle) => {
+      const ledger = (await (await fetch("/api/tasks")).json()) as {
+        tasks: Array<{ title: string }>;
+      };
+      return ledger.tasks.some((task) => task.title === needle);
+    }, title),
+  ).toBe(true);
+});
+
+test("a bare project token leaves the raw draft in a failed row", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await app.open("/?page=tasks");
+  await expect(screen.getByRole("textbox", "New task")).toBeVisible();
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let requests = 0;
+  await browser.route("**/api/tasks", async (route) => {
+    if (route.request.method !== "POST") {
+      await route.continue();
+      return;
+    }
+    requests += 1;
+    await gate;
+    await route.continue();
+  });
+
+  const composer = screen.getByRole("textbox", "New task");
+  const raw = `@bareproj${Date.now()}`;
+  await composer.fill(raw);
+  try {
+    await screen.getByRole("button", "Add task").tap();
+    await expect.poll(() => requests, { timeout: 2_000 }).toBe(1);
+    // A new draft typed while the POST is pending must survive the rejected empty title.
+    await composer.fill("new draft while pending");
+  } finally {
+    release();
+  }
+
+  await expect(screen.getByTestId("composer-error")).toHaveText("Task title is required");
+  await expect(composer).toHaveValue("new draft while pending");
+  const failed = browser.locator('[data-create-failed="true"]').filter({ hasText: raw });
+  await expect(failed).toBeVisible();
+  await expect(failed.getByTestId("task-error")).toHaveText("Task title is required");
+});
+
+test("keeps a failed backlog create visible under Needs you with Retry", async ({
   app,
   browser,
   screen,
@@ -368,14 +479,176 @@ test("retires an optimistic task card when the create fails and keeps the draft"
     await route.fulfill({ status: 500, body: "Task list is full" });
   });
   const composer = screen.getByRole("textbox", "New task");
-  const list = screen.getByTestId("task-list");
-  const title = `Rejected task ${Date.now()}`;
+  const title = `Rejected backlog task ${Date.now()}`;
   await composer.fill(title);
-  await screen.getByRole("button", "Add task").tap();
 
+  // Long-pressing Add switches the composer to backlog mode without submitting.
+  const parked = await browser.evaluate(async () => {
+    const button = document.querySelector<HTMLElement>('[data-testid="add-task"]');
+    if (button === null) return false;
+    const box = button.getBoundingClientRect();
+    const fire = (type: string) => {
+      button.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 12,
+          pointerType: "touch",
+          isPrimary: true,
+          clientX: box.left + box.width / 2,
+          clientY: box.top + box.height / 2,
+          button: 0,
+          buttons: type === "pointerup" ? 0 : 1,
+        }),
+      );
+    };
+    fire("pointerdown");
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 560);
+    });
+    fire("pointerup");
+    return button.getAttribute("data-backlog") === "true";
+  });
+  expect(parked).toBe(true);
+  await expect(screen.getByTestId("backlog-chip")).toBeVisible();
+
+  await screen.getByTestId("add-task").tap();
   await expect(screen.getByTestId("composer-error")).toHaveText("Task list is full");
-  await expect(composer).toHaveValue(title);
-  await expect(list.getByText(title, { exact: true })).toHaveCount(0);
+  await expect(
+    screen.getByTestId("task-section-needs").getByText(title, { exact: true }),
+  ).toBeVisible();
+  const failed = browser.locator('[data-create-failed="true"]').filter({ hasText: title });
+  await expect(failed).toBeVisible();
+  await expect(failed.getByTestId("task-error")).toHaveText("Task list is full");
+  await expect(failed.getByRole("button", { name: `Retry ${title}` })).toBeVisible();
+});
+
+test("Retry clears only the raw draft that failed, never another target's draft", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await app.open("/?page=tasks");
+  await expect(screen.getByRole("textbox", "New task")).toBeVisible();
+
+  const tag = Date.now();
+  const existingTitle = `Existing draft ${tag}`;
+  const existingId = await browser.evaluate(async (title) => {
+    const response = await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    const ledger = (await response.json()) as { tasks: Array<{ id: string; title: string }> };
+    return ledger.tasks.find((task) => task.title === title)?.id ?? null;
+  }, existingTitle);
+  expect(existingId).not.toBeNull();
+  await expect(screen.getByTestId(`task-${existingId}`)).toBeVisible();
+
+  // Park the same raw text in another target's draft: the task-chat composer.
+  await screen.getByRole("button", { name: `Open ${existingTitle}` }).tap();
+  const taskChat = screen.getByTestId("task-agent-input");
+  await expect(taskChat).toBeVisible();
+  const raw = `@draftproj${tag} Retry  draft ${tag} `;
+  await taskChat.fill(raw);
+  await backToTaskList(screen);
+
+  let attempts = 0;
+  await browser.route("**/api/tasks", async (route) => {
+    if (route.request.method !== "POST") {
+      await route.continue();
+      return;
+    }
+    attempts += 1;
+    if (attempts === 1) {
+      await route.fulfill({ status: 500, body: "Task list is full" });
+      return;
+    }
+    await route.continue();
+  });
+  const composer = screen.getByRole("textbox", "New task");
+  await composer.fill(raw);
+  await screen.getByTestId("add-task").tap();
+  await expect(screen.getByTestId("composer-error")).toHaveText("Task list is full");
+  // Failure restores the raw text, which differs from the parsed title and a bare trim.
+  await expect(composer).toHaveValue(raw);
+  const failed = browser.locator('[data-create-failed="true"]').filter({ hasText: "Retry draft" });
+  await failed.getByRole("button", { name: /^Retry / }).tap();
+  await expect(browser.locator('[data-create-failed="true"]')).toHaveCount(0);
+  await backToTaskList(screen);
+  await expect(screen.getByRole("textbox", "New task")).toHaveValue("");
+
+  // The retry created one task, not a second copy when Add is pressed again.
+  const parsedTitle = `Retry draft ${tag}`;
+  const copies = await browser.evaluate(async (title) => {
+    const ledger = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
+      tasks: Array<{ title: string }>;
+    };
+    return ledger.tasks.filter((task) => task.title === title).length;
+  }, parsedTitle);
+  expect(copies).toBe(1);
+  expect(attempts).toBe(2);
+
+  // The unrelated draft survived the retry's cleanup.
+  await screen.getByRole("button", { name: `Open ${existingTitle}` }).tap();
+  await expect(screen.getByTestId("task-agent-input")).toHaveValue(raw);
+});
+
+test("keeps the optimistic row through a state push that does not have it yet", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await app.open("/?page=tasks");
+  const list = screen.getByTestId("task-list");
+  await expect(list).toBeVisible();
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await browser.route("**/api/tasks", async (route) => {
+    if (route.request.method !== "POST") {
+      await route.continue();
+      return;
+    }
+    await gate;
+    await route.continue();
+  });
+  let stateRequests = 0;
+  await browser.route("**/api/state**", async (route) => {
+    stateRequests += 1;
+    // Let the create response race with a full-state read that was taken before it.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await route.continue();
+  });
+
+  const composer = screen.getByRole("textbox", "New task");
+  const title = `Slow task ${Date.now()}`;
+  await composer.fill(title);
+  try {
+    await screen.getByRole("button", "Add task").tap();
+    const pending = browser.locator('[data-pending-task="true"]').filter({ hasText: title });
+    await expect(pending).toBeVisible();
+
+    await browser.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect.poll(() => stateRequests, { timeout: 2_000 }).toBeGreaterThan(0);
+    // The push still lists the old ledger; it must not take the painted card away.
+    await expect(pending).toBeVisible();
+    await expect(list.getByText(title, { exact: true })).toHaveCount(1);
+  } finally {
+    release();
+  }
+
+  await expect(browser.locator('[data-pending-task="true"]')).toHaveCount(0);
+  await expect(list.getByText(title, { exact: true })).toHaveCount(1);
+  const created = await browser.evaluate(async (needle) => {
+    const ledger = (await (await fetch("/api/tasks")).json()) as {
+      tasks: Array<{ id: string; title: string }>;
+    };
+    return ledger.tasks.find((task) => task.title === needle)?.id ?? null;
+  }, title);
+  expect(created).not.toBeNull();
+  await expect(screen.getByTestId(`task-${created}`)).toBeVisible();
 });
 
 test("create and propose share the insert and differ only in their proposal fields", async ({
