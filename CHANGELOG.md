@@ -1,3 +1,16 @@
+## 1.6.156
+
+### Fixed
+
+- MCP events are deduplicated by stream generation and event id rather than by a
+  cursor the daemon renumbers on restart, so a reconnect neither replays the old
+  log nor swallows genuinely new events.
+
+### Changed
+
+- The e2e wall-clock guard allows 780 s: the browser suite grew from 233 to 279
+  tests since the last bump and was failing green runs on the clock alone.
+
 ## 1.6.155
 
 ### Added
