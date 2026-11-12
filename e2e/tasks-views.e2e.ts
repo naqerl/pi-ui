@@ -647,7 +647,7 @@ test("shows the single task list without filter tabs and groups done work by day
     const chevronBox = chevron.getBoundingClientRect();
     const countBox = count.getBoundingClientRect();
     return {
-      dark: getComputedStyle(trigger).backgroundColor === getComputedStyle(document.body).color,
+      inverted: getComputedStyle(trigger).backgroundColor === getComputedStyle(document.body).color,
       labelLeft: labelBox.right <= chevronBox.left + 1,
       chevronLeftOfCount: chevronBox.right <= countBox.left + 1,
       chevronBeforeCount:
@@ -655,7 +655,7 @@ test("shows the single task list without filter tabs and groups done work by day
     };
   });
   expect(header).toEqual({
-    dark: true,
+    inverted: false,
     labelLeft: true,
     chevronLeftOfCount: true,
     chevronBeforeCount: true,

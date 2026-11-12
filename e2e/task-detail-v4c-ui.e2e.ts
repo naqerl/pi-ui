@@ -70,7 +70,7 @@ test("captures v4c header, project dropdown, and merged dock in vantablack", {
   await expect(screen.getByTestId("task-agent-input")).toBeVisible();
   await expect(screen.getByTestId("task-composer-slot")).toBeVisible();
   await expect(screen.getByTestId("tasks-composer-slot")).toHaveCount(0);
-  await expect.poll(() => dockMode(browser)).toBe("chat");
+  await expect.poll(() => dockMode(browser)).toBe("mid");
   await waitMs(browser);
   await app.screenshot("desktop-open");
 

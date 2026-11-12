@@ -253,17 +253,35 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     const contentTop = await browser.evaluate(() => {
       const pane = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
       const title = document.querySelector<HTMLElement>('[data-testid="task-title"]');
+      const times = document.querySelector<HTMLElement>('[data-testid="task-times"]');
+      const blockers = document.querySelector<HTMLElement>('[data-testid="task-blockers-card"]');
       const description = document.querySelector<HTMLElement>('[data-testid="task-body-section"]');
-      if (pane === null || title === null || description === null) return null;
+      if (
+        pane === null ||
+        title === null ||
+        times === null ||
+        blockers === null ||
+        description === null
+      ) {
+        return null;
+      }
       const paneTop = pane.getBoundingClientRect().top;
       return {
         title: title.getBoundingClientRect().top - paneTop,
-        description: description.getBoundingClientRect().top - paneTop,
+        times: times.getBoundingClientRect().top - paneTop,
+        timesBeforeBlockers: !!(
+          times.compareDocumentPosition(blockers) & Node.DOCUMENT_POSITION_FOLLOWING
+        ),
+        blockersBeforeBody: !!(
+          blockers.compareDocumentPosition(description) & Node.DOCUMENT_POSITION_FOLLOWING
+        ),
       };
     });
     expect(contentTop).not.toBeNull();
     expect(contentTop?.title ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(24);
-    expect(contentTop?.description ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(160);
+    expect(contentTop?.times ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(160);
+    expect(contentTop?.timesBeforeBlockers).toBe(true);
+    expect(contentTop?.blockersBeforeBody).toBe(true);
 
     const sides = await browser.evaluate(() => {
       const list = document.querySelector<HTMLElement>('[data-testid="task-list"]');

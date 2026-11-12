@@ -115,7 +115,6 @@ export interface TaskDetailModel {
   onDismiss: () => void;
   onRemove: () => void;
   onLedger?: (ledger: TaskLedger) => void;
-  onMobileTabChange?: (tab: "plan" | "chat" | null) => void;
 }
 
 function ErrorLine({ children }: { children: ReactNode }) {
@@ -464,18 +463,12 @@ function MetaBlock({ model }: { model: TaskDetailModel }) {
           </time>
         </section>
       )}
-      <CreatedTimes task={task} />
       {task.releaseReason !== undefined && (
         <p
           data-testid={`task-released-${task.id}`}
           className={cn("text-xs leading-4 [overflow-wrap:anywhere]", QUIET)}
         >
           {`released${task.releasedAt === undefined ? "" : ` ${task.releasedAt}`} · ${task.releaseReason}`}
-        </p>
-      )}
-      {task.createdBy !== undefined && (
-        <p data-testid="task-created-by" className={cn("font-mono text-xs leading-4", QUIET)}>
-          {task.createdBy === "agent" ? "Created by the agent" : "Created by the operator"}
         </p>
       )}
       {reason !== null && (
@@ -512,23 +505,55 @@ function MetaBlock({ model }: { model: TaskDetailModel }) {
   );
 }
 
+function StatusMark({ done }: { done: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        "size-3.5 shrink-0 rounded-sm border border-foreground/40",
+        done && "border-foreground bg-foreground",
+      )}
+    />
+  );
+}
+
+function RelationRow({
+  wide,
+  done,
+  children,
+}: {
+  wide: boolean;
+  done: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <li
+      className={cn(
+        "flex items-center gap-2 border-t border-border px-1 py-2 text-sm leading-5 first:border-t-0",
+        wide ? "min-h-8" : "min-h-11",
+      )}
+    >
+      <StatusMark done={done} />
+      {children}
+      {done && (
+        <Badge variant="outline" className="shrink-0">
+          Done
+        </Badge>
+      )}
+    </li>
+  );
+}
+
 function Blockers({ model, heading = true }: { model: TaskDetailModel; heading?: boolean }) {
   if (model.blockers.length === 0) return null;
   return (
     <section className="flex flex-col gap-1">
       {heading ? <SectionLabel>Blocked by</SectionLabel> : null}
-      <ul className="flex flex-col gap-1">
+      <ul>
         {model.blockers.map((blocker) => (
-          <li
-            key={blocker.id}
-            className={cn(
-              "flex items-center gap-2 text-sm leading-5 [overflow-wrap:anywhere]",
-              model.wide ? "min-h-8" : "min-h-11",
-            )}
-          >
-            <span className="min-w-0 flex-1">{blocker.title}</span>
-            {blocker.done && <Badge variant="outline">Done</Badge>}
-          </li>
+          <RelationRow key={blocker.id} wide={model.wide} done={blocker.done}>
+            <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{blocker.title}</span>
+          </RelationRow>
         ))}
       </ul>
     </section>
@@ -540,21 +565,17 @@ function Subtasks({ model, heading = true }: { model: TaskDetailModel; heading?:
   return (
     <section className="flex flex-col gap-1">
       {heading ? <SectionLabel>Subtasks</SectionLabel> : null}
-      <ul className="flex flex-col gap-1">
+      <ul>
         {model.children.map((child) => (
-          <li
-            key={child.id}
-            className={cn("flex items-center gap-2", model.wide ? "min-h-8" : "min-h-11")}
-          >
+          <RelationRow key={child.id} wide={model.wide} done={child.status === "done"}>
             <button
               type="button"
               onClick={() => model.onOpen(child.id)}
-              className="min-w-0 flex-1 text-left text-sm leading-5 underline-offset-4 hover:underline"
+              className="min-w-0 flex-1 text-left text-sm leading-5 [overflow-wrap:anywhere] underline-offset-4 hover:underline"
             >
               <InlineMarkdown text={child.title} />
             </button>
-            {child.status === "done" && <Badge variant="outline">Done</Badge>}
-          </li>
+          </RelationRow>
         ))}
       </ul>
     </section>
@@ -735,37 +756,35 @@ function TitleCard({ model, tabs }: { model: TaskDetailModel; tabs?: ReactNode }
         </Button>
       </div>
       <MetaLine model={model} />
+      <CreatedTimes task={model.task} />
       {tabs}
     </header>
+  );
+}
+
+function hasLeftoverMeta(model: TaskDetailModel): boolean {
+  const { task, reason, done } = model;
+  return (
+    (task.reopens !== undefined && task.reopens.length > 0) ||
+    task.releaseReason !== undefined ||
+    reason !== null ||
+    (task.rationale !== undefined && task.rationale.length > 0) ||
+    done
   );
 }
 
 function PlanSections({ model }: { model: TaskDetailModel }) {
   const attachments = model.task.attachments;
   const hasAttachments = attachments !== undefined && attachments.length > 0;
+  const leftoverMeta = hasLeftoverMeta(model);
   return (
     <div
       className={cn(
         "flex min-h-0 flex-col gap-3",
-        model.wide ? "flex-1 overflow-hidden" : undefined,
+        model.wide ? "min-h-0 flex-1 overflow-hidden" : undefined,
       )}
     >
-      <section
-        data-testid="task-plan-card"
-        className={cn(DETAIL_CARD, "flex min-h-0 flex-col gap-2", model.wide && "min-h-0 flex-1")}
-      >
-        <SectionLabel>Plan</SectionLabel>
-        <BodyField model={model} fill={model.wide} />
-      </section>
-      <div
-        className={cn(
-          "flex flex-col gap-3",
-          model.wide && "min-h-0 max-h-[40%] shrink-0 overflow-y-auto",
-        )}
-      >
-        <div data-testid="task-meta-card" className={DETAIL_CARD}>
-          <MetaBlock model={model} />
-        </div>
+      <div className="flex shrink-0 flex-col gap-3">
         {model.blockers.length > 0 && (
           <div data-testid="task-blockers-card" className={DETAIL_CARD}>
             <Blockers model={model} />
@@ -781,8 +800,20 @@ function PlanSections({ model }: { model: TaskDetailModel }) {
             <Attachments model={model} />
           </div>
         )}
+        {leftoverMeta && (
+          <div data-testid="task-meta-card" className={DETAIL_CARD}>
+            <MetaBlock model={model} />
+          </div>
+        )}
         {model.notice !== null && <ErrorLine>{model.notice}</ErrorLine>}
       </div>
+      <section
+        data-testid="task-plan-card"
+        className={cn(DETAIL_CARD, "flex min-h-0 flex-col gap-2", model.wide && "min-h-0 flex-1")}
+      >
+        <SectionLabel>Plan</SectionLabel>
+        <BodyField model={model} fill={model.wide} />
+      </section>
     </div>
   );
 }
@@ -816,11 +847,6 @@ function TabBar({ tab, onTab }: { tab: "plan" | "chat"; onTab: (tab: "plan" | "c
 
 function MobileDetail({ model }: { model: TaskDetailModel }) {
   const [tab, setTab] = useState<"plan" | "chat">("plan");
-  const onMobileTabChange = model.onMobileTabChange;
-  useEffect(() => {
-    onMobileTabChange?.(tab);
-    return () => onMobileTabChange?.(null);
-  }, [onMobileTabChange, tab]);
 
   return (
     <article
@@ -831,18 +857,23 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
     >
       <TitleCard model={model} tabs={<TabBar tab={tab} onTab={setTab} />} />
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {tab === "plan" ? (
-          <div className={cn("min-h-0 flex-1 overflow-y-auto", SCROLLBAR_GUTTER)}>
-            <PlanSections model={model} />
-          </div>
-        ) : (
+        <div
+          className={cn(
+            "min-h-0 flex-1 overflow-y-auto",
+            SCROLLBAR_GUTTER,
+            tab !== "plan" && "hidden",
+          )}
+        >
+          <PlanSections model={model} />
+        </div>
+        <div className={cn("flex min-h-0 flex-1 flex-col", tab !== "chat" && "hidden")}>
           <TaskAgentChat
             task={model.task}
             projects={model.projects}
             variant="pane"
             composerTarget="dock"
           />
-        )}
+        </div>
       </div>
     </article>
   );

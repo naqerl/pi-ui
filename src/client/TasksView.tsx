@@ -188,7 +188,7 @@ function Heading({
     <h2
       className={cn(
         "flex h-9 items-center gap-2 rounded-md text-sm font-medium leading-5",
-        dark ? "bg-foreground px-3 text-background" : "px-1 text-foreground",
+        dark ? "bg-surface px-3 text-foreground" : "px-1 text-foreground",
       )}
     >
       <span className="min-w-0 flex-1 truncate">{children}</span>
@@ -197,7 +197,7 @@ function Heading({
         <span
           className={cn(
             "shrink-0 text-sm font-normal leading-5 tabular-nums",
-            dark ? "text-background/80" : "text-muted-foreground",
+            "text-muted-foreground",
           )}
         >
           {count}
@@ -234,16 +234,16 @@ function Section({
         <CollapsibleTrigger
           className={cn(
             "flex min-h-9 w-full items-center gap-2 rounded-md py-1 text-left text-sm font-medium leading-5",
-            dark ? "bg-foreground px-3 text-background" : "px-1 text-foreground hover:bg-muted",
+            dark ? "bg-surface px-3 text-foreground" : "px-1 text-foreground hover:bg-muted",
           )}
         >
           <span className="min-w-0 flex-1 truncate">{title}</span>
-          <Chevron open={open} className={dark ? "text-background/80" : undefined} />
+          <Chevron open={open} className="text-muted-foreground" />
           {count !== undefined && (
             <span
               className={cn(
                 "shrink-0 text-sm font-normal leading-5 tabular-nums",
-                dark ? "text-background/80" : "text-muted-foreground",
+                "text-muted-foreground",
               )}
             >
               {count}
@@ -322,7 +322,6 @@ function TasksViewImpl({
   const fixtureOn = useTaskDetailFixture();
   const midColRef = useRef<HTMLDivElement>(null);
   const chatColRef = useRef<HTMLDivElement>(null);
-  const [mobileTab, setMobileTab] = useState<"plan" | "chat" | null>(null);
   const serverTasks = fixtureOn ? mergeFixtureTasks(incomingTasks) : incomingTasks;
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [problem, setProblem] = useState<{ id: string; message: string } | null>(null);
@@ -746,23 +745,18 @@ function TasksViewImpl({
           setProblem((current) => (current?.id === openTask.id ? null : current));
           onLedger(ledger);
         }}
-        onMobileTabChange={setMobileTab}
       />
     );
 
   const composerMode: "create" | "task-chat" | "collapsed" =
-    openTask === undefined
-      ? "create"
-      : openTask.status === "done" || (!wide && mobileTab !== "chat")
-        ? "collapsed"
-        : "task-chat";
+    openTask === undefined ? "create" : openTask.status === "done" ? "collapsed" : "task-chat";
 
   useEffect(() => {
     onComposerMode?.(composerMode);
     return () => onComposerMode?.("create");
   }, [composerMode, onComposerMode]);
 
-  // Remeasure when a task opens so the dock can track the chat column.
+  // Remeasure when a task opens so the dock can track the mid column.
   // biome-ignore lint/correctness/useExhaustiveDependencies: openTask mounts the chat column
   useLayoutEffect(() => {
     if (!wide) return;
@@ -932,14 +926,14 @@ function Group({
       <CollapsibleTrigger
         className={cn(
           "flex min-h-9 w-full items-center gap-2 rounded-md py-1 text-left text-sm font-medium leading-5",
-          dark ? "bg-foreground px-3 text-background" : "px-1 hover:bg-muted",
+          dark ? "bg-surface px-3 text-foreground" : "px-1 hover:bg-muted",
         )}
       >
         <span className="min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere]">{label}</span>
         {dark ? (
           <>
-            <Chevron open={open} className="text-background/80" />
-            <span className="shrink-0 text-sm font-normal leading-5 tabular-nums text-background/80">
+            <Chevron open={open} className="text-muted-foreground" />
+            <span className="shrink-0 text-sm font-normal leading-5 tabular-nums text-muted-foreground">
               {count}
             </span>
           </>
@@ -1195,10 +1189,9 @@ export function TaskRow({
         aria-label={`Open ${plainInline(task.title)}`}
         aria-describedby={describedBy.length > 0 ? describedBy.join(" ") : undefined}
         className={cn(
-          "flex min-h-11 w-full cursor-pointer select-none flex-col justify-center gap-1 overflow-hidden rounded-md border border-border bg-surface px-3 py-2 text-left hover:bg-muted",
-          backlog &&
-            "border-dashed bg-surface/60 text-muted-foreground backdrop-blur-sm saturate-0",
-          selected && "ring-1 ring-foreground",
+          "flex min-h-11 w-full cursor-pointer select-none flex-col justify-center gap-1 overflow-hidden rounded-md bg-surface px-3 py-2 text-left hover:bg-muted",
+          backlog && "bg-surface/60 text-muted-foreground saturate-0",
+          selected && "bg-muted hover:bg-muted",
         )}
         style={{
           WebkitTouchCallout: "none",
@@ -1352,8 +1345,8 @@ function ProposedTask({
         aria-current={selected ? "true" : undefined}
         aria-label={`Open proposal ${plainInline(task.title)}`}
         className={cn(
-          "flex min-h-11 w-full cursor-pointer select-none flex-col gap-2 overflow-hidden rounded-md border border-border bg-surface px-3 py-2 text-left hover:bg-muted",
-          selected && "ring-1 ring-foreground",
+          "flex min-h-11 w-full cursor-pointer select-none flex-col gap-2 overflow-hidden rounded-md bg-surface px-3 py-2 text-left hover:bg-muted",
+          selected && "bg-muted hover:bg-muted",
         )}
         onClick={onOpen}
         onKeyDown={(event) => {
@@ -1507,7 +1500,6 @@ export function TaskDetail({
   onDismiss,
   onRemove,
   onLedger,
-  onMobileTabChange,
 }: {
   task: Task;
   tasks: Task[];
@@ -1524,7 +1516,6 @@ export function TaskDetail({
   onRemove: () => void;
   /** Called after an inline edit saves, so the tasks page takes the new ledger. */
   onLedger?: (ledger: TaskLedger) => void;
-  onMobileTabChange?: (tab: "plan" | "chat" | null) => void;
 }) {
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(task.title);
@@ -1795,7 +1786,6 @@ export function TaskDetail({
       onDismiss,
       onRemove,
       onLedger,
-      onMobileTabChange,
     };
     return <TaskDetailVariant model={model} />;
   }

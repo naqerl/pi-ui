@@ -1504,7 +1504,7 @@ export function ChatView({
   const hideTasksComposer = statsPage || (tasksPage && composerMode === "collapsed");
   // On Tasks the dock leaves the flow so list and chat reach the screen edge.
   // Closed: the main-chat 72ch cap, centered. Open on desktop: shrink to the chat column.
-  const tasksDock = tasksPage ? (wideLayout && wideDetailOpen ? "chat" : "closed") : undefined;
+  const tasksDock = tasksPage ? (wideLayout && wideDetailOpen ? "mid" : "closed") : undefined;
   const lastPagerState = useRef({ page: pager.page, dragging: pager.dragging });
   const shownTasks = useMemo(
     () =>

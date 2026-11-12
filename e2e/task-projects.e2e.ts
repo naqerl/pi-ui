@@ -423,11 +423,11 @@ test("project headers share the Open header's solid fill in both themes", async 
     }, `task-project-${project}`);
 
     expect(styles).not.toBeNull();
-    // The project bar is the same solid, inverted header as Open, not a muted row.
+    // The project bar is the same solid surface header as Open, not a white inverted box.
     expect(styles?.grouped.background).not.toBe("rgba(0, 0, 0, 0)");
     expect(styles?.grouped.background).toBe(styles?.open.background);
     expect(styles?.grouped.background).not.toBe(styles?.page);
-    expect(styles?.grouped.titleColor).not.toBe(styles?.foreground);
+    expect(styles?.grouped.titleColor).toBe(styles?.foreground);
     expect(styles?.grouped.titleColor).toBe(styles?.open.titleColor);
     expect(styles?.grouped.countColor).toBe(styles?.open.countColor);
     expect(styles?.grouped.chevronColor).toBe(styles?.open.chevronColor);

@@ -292,7 +292,7 @@
   /* Tasks: the merged composer+status dock leaves the flow so the list and
      chat can reach the bottom of the shell. Closed, it uses the same width
      cap as the main chat. With a task open on desktop it shrinks linearly
-     to the chat column. */
+     to the middle (details) column. */
   .chat-shell[data-tasks-dock] {
     position: relative;
   }
@@ -309,9 +309,9 @@
       width 240ms linear;
   }
 
-  .chat-shell[data-tasks-dock="chat"] .float-footer {
-    left: var(--tasks-chat-left, 0px);
-    width: var(--tasks-chat-width, min(100%, calc(72ch + 2rem)));
+  .chat-shell[data-tasks-dock="mid"] .float-footer {
+    left: var(--tasks-mid-left, 0px);
+    width: var(--tasks-mid-width, 100%);
   }
 
   .chat-shell[data-tasks-dock] .tasks-split > [data-col] {
@@ -319,8 +319,8 @@
     transition: padding-bottom 240ms linear;
   }
 
-  .chat-shell[data-tasks-dock="chat"] .tasks-split > [data-col="side"],
-  .chat-shell[data-tasks-dock="chat"] .tasks-split > [data-col="mid"] {
+  .chat-shell[data-tasks-dock="mid"] .tasks-split > [data-col="side"],
+  .chat-shell[data-tasks-dock="mid"] .tasks-split > [data-col="chat"] {
     padding-bottom: 0;
   }
 
