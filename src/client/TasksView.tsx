@@ -67,6 +67,13 @@ const STATS_SECTION_TITLE =
 /** Reserve the scrollbar's gutter so content never reflows or slides under the thumb. */
 const SCROLLBAR_GUTTER = "[scrollbar-gutter:stable]";
 
+/** A painted create whose request failed: the row stays until Retry succeeds. */
+export interface TaskCreateFailure {
+  error: string;
+  retrying: boolean;
+  onRetry: () => void;
+}
+
 interface TasksViewProps {
   tasks: Task[];
   /** Task ids whose plan agent currently has a live run. */
@@ -81,6 +88,8 @@ interface TasksViewProps {
   onMobileDetailChange?: (open: boolean) => void;
   /** Which composer belongs in the shared float footer on the Tasks page. */
   onComposerMode?: (mode: "create" | "task-chat" | "collapsed") => void;
+  /** Failed optimistic creates keyed by their client task id. */
+  createFailures?: Record<string, TaskCreateFailure>;
 }
 
 /** Root tasks split into one group per project, A–Z, with "No project" (null) last. */
@@ -314,6 +323,7 @@ function TasksViewImpl({
   selection = null,
   onMobileDetailChange,
   onComposerMode,
+  createFailures,
 }: TasksViewProps) {
   const wide = useWide();
   const fixtureOn = useTaskDetailFixture();
@@ -351,15 +361,20 @@ function TasksViewImpl({
   }, [planningIds, tasks]);
   const facts = useMemo(() => indexTasks(tasks), [tasks]);
   const stateOf = useMemo(
-    () => new Map(tasks.map((task) => [task.id, taskState(tasks, task, activity, facts)])),
-    [tasks, activity, facts],
+    () =>
+      new Map(
+        tasks.map((task) => [
+          task.id,
+          createFailures?.[task.id] === undefined
+            ? taskState(tasks, task, activity, facts)
+            : ("failed" as TaskState),
+        ]),
+      ),
+    [tasks, activity, facts, createFailures],
   );
   const state = (task: Task): TaskState => stateOf.get(task.id) ?? "ready";
   const activeTasks = useMemo(() => tasks.filter((task) => task.status !== "proposed"), [tasks]);
   const rowIndex = useMemo(() => indexTasks(activeTasks), [activeTasks]);
-  const openTasks = activeTasks.filter(
-    (task) => task.status !== "done" && task.status !== "backlog",
-  );
   const proposedTasks = tasks
     .filter((task) => task.status === "proposed")
     .sort((a, b) => {
@@ -367,7 +382,10 @@ function TasksViewImpl({
       const right = b.proposedAt ?? b.createdAt;
       return left === right ? (a.id < b.id ? -1 : 1) : left < right ? -1 : 1;
     });
-  const failedTasks = openTasks.filter((task) => state(task) === "failed");
+  // A failed create is still the operator's problem even when its row is a backlog task.
+  const failedTasks = activeTasks.filter(
+    (task) => task.status !== "done" && state(task) === "failed",
+  );
   const ids = new Set(activeTasks.map((task) => task.id));
   const roots = activeTasks
     .filter((task) => task.parentId === null || !ids.has(task.parentId))
@@ -425,7 +443,11 @@ function TasksViewImpl({
   const dismiss = (task: Task) => void apply(task.id, removeTask(task.id), () => null);
 
   const menuTask = menu === null ? undefined : activeTasks.find((task) => task.id === menu.id);
-  const openTask = openTaskId === null ? undefined : tasks.find((task) => task.id === openTaskId);
+  // A failed create only exists on the client until Retry succeeds; its pending id has no detail.
+  const openTask =
+    openTaskId === null || createFailures?.[openTaskId] !== undefined
+      ? undefined
+      : tasks.find((task) => task.id === openTaskId);
   const reopenTask =
     reopenTaskId === null ? undefined : tasks.find((task) => task.id === reopenTaskId);
 
@@ -570,6 +592,7 @@ function TasksViewImpl({
   }, [closeDetail, openTaskId, menu]);
 
   const openMenu = (id: string, x: number, y: number) => {
+    if (createFailures?.[id] !== undefined) return;
     setMenu({ id, x, y });
   };
   const requestReopen = async (task: Task, reason: string): Promise<string | null> => {
@@ -611,6 +634,7 @@ function TasksViewImpl({
     onOpenMenu: openMenu,
     onOpen: openDetail,
     showProject: true,
+    createFailures,
   };
 
   const proposal = (task: Task) => (
@@ -1096,6 +1120,7 @@ export function TaskRow({
   menuTaskId,
   onOpenMenu,
   onOpen,
+  createFailures,
 }: {
   task: Task;
   tasks: Task[];
@@ -1117,13 +1142,16 @@ export function TaskRow({
   menuTaskId: string | null;
   onOpenMenu: (id: string, x: number, y: number) => void;
   onOpen: (id: string) => void;
+  createFailures?: Record<string, TaskCreateFailure>;
 }) {
   const children = flat
     ? []
     : index === undefined
       ? tasks.filter((item) => item.parentId === task.id).sort((a, b) => compareTasks(tasks, a, b))
       : (index.children.get(task.id) ?? []);
-  const current = state(task);
+  const createFailure = createFailures?.[task.id] ?? null;
+  const failedCreate = createFailure !== null;
+  const current = failedCreate ? "failed" : state(task);
   const done = task.status === "done";
   const backlog = task.status === "backlog";
   const notice = problem?.id === task.id && menuTaskId !== task.id ? problem.message : null;
@@ -1138,7 +1166,7 @@ export function TaskRow({
   const project = showProject && depth === 0 ? task.project : undefined;
   const describedBy = [
     `task-id-${task.id}`,
-    notice !== null ? `task-error-${task.id}` : null,
+    notice !== null || createFailure !== null ? `task-error-${task.id}` : null,
   ].filter((id) => id !== null);
 
   const clearPress = () => {
@@ -1162,6 +1190,7 @@ export function TaskRow({
       data-testid={`task-${task.id}`}
       data-state={current}
       data-pending-task={task.id.startsWith("pending-") ? "true" : undefined}
+      data-create-failed={createFailure !== null ? "true" : undefined}
     >
       {/* biome-ignore lint/a11y/useSemanticElements: the card is a row of block content. */}
       <div
@@ -1173,6 +1202,7 @@ export function TaskRow({
         aria-describedby={describedBy.length > 0 ? describedBy.join(" ") : undefined}
         className={cn(
           "flex min-h-11 w-full cursor-pointer select-none flex-col justify-center gap-1 overflow-hidden rounded-md bg-surface px-3 py-2 text-left hover:bg-muted",
+          failedCreate && "cursor-default hover:bg-surface",
           backlog && "bg-surface/60 text-muted-foreground saturate-0",
           selected && "bg-muted hover:bg-muted",
         )}
@@ -1182,6 +1212,7 @@ export function TaskRow({
           width: `calc(100% - ${depth * 24}px)`,
         }}
         onPointerDown={(event) => {
+          if (failedCreate) return;
           const token = cardPointerToken(event.nativeEvent);
           cardClickGuard.current.pointer = token;
           origin.current = { x: event.clientX, y: event.clientY };
@@ -1213,6 +1244,7 @@ export function TaskRow({
         onPointerCancel={clearPress}
         onContextMenu={(event) => {
           event.preventDefault();
+          if (failedCreate) return;
           clearPress();
           const token = cardPointerToken(event.nativeEvent);
           cardClickGuard.current.pointer = token;
@@ -1220,6 +1252,7 @@ export function TaskRow({
           openMenu(event.clientX, event.clientY);
         }}
         onClick={() => {
+          if (failedCreate) return;
           const guard = cardClickGuard.current;
           const ignored = guard.ignore !== null && guard.ignore === guard.pointer;
           if (guard.ignore !== null) guard.ignore = null;
@@ -1227,7 +1260,7 @@ export function TaskRow({
           onOpen(task.id);
         }}
         onKeyDown={(event) => {
-          if (event.target !== event.currentTarget) return;
+          if (failedCreate || event.target !== event.currentTarget) return;
           if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
             event.preventDefault();
             const box = event.currentTarget.getBoundingClientRect();
@@ -1276,6 +1309,28 @@ export function TaskRow({
         <ErrorText id={`task-error-${task.id}`} className="mt-1">
           {notice}
         </ErrorText>
+      )}
+      {createFailure !== null && (
+        <div className="mt-1 flex items-start justify-between gap-2 rounded-md bg-surface px-3 py-2">
+          <ErrorText id={`task-error-${task.id}`} className="min-w-0 flex-1 px-0">
+            {createFailure.error}
+          </ErrorText>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 shrink-0 gap-1.5 rounded-md px-2"
+            data-testid={`task-create-retry-${task.id}`}
+            aria-label={`Retry ${plainInline(task.title)}`}
+            disabled={createFailure.retrying}
+            onClick={(event) => {
+              event.stopPropagation();
+              createFailure.onRetry();
+            }}
+          >
+            <RefreshIcon size={14} />
+            Retry
+          </Button>
+        </div>
       )}
       {children.length > 0 && (
         <ul className="mt-2 flex flex-col gap-2">

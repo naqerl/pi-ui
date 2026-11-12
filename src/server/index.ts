@@ -824,10 +824,13 @@ app.post("/api/tasks", async (c) => {
   } catch {
     return c.text("Expected a JSON body", 400);
   }
-  const title =
-    typeof body === "object" && body !== null && "title" in body && typeof body.title === "string"
-      ? body.title
-      : "";
+  const rawTitle =
+    typeof body === "object" && body !== null && "title" in body ? body.title : undefined;
+  if (rawTitle !== undefined && typeof rawTitle !== "string") {
+    return c.text("title must be a string", 400);
+  }
+  const title = rawTitle ?? "";
+  if (title.trim().length === 0) return c.text("Task title is required", 400);
   const parentId =
     typeof body === "object" && body !== null && "parentId" in body ? body.parentId : null;
   if (parentId !== null && typeof parentId !== "string")
