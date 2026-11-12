@@ -1,3 +1,11 @@
+## 1.6.157
+
+### Changed
+
+- The planning agent can propose a task for approval: a plan may end with a
+  proposal the same way the main agent can, and it appears on the tasks page as a
+  proposal until you approve or dismiss it.
+
 ## 1.6.156
 
 ### Fixed
