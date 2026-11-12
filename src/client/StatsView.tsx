@@ -1,6 +1,7 @@
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
   type PointerEvent as ReactPointerEvent,
   type Ref,
   type RefObject,
@@ -65,6 +66,7 @@ import { getDashboard, setDashboard, subscribeDashboard } from "./dashboard-stor
 import { haptic } from "./haptics";
 import { CloseIcon, DotIcon, GripIcon, MoreIcon, TrendDownIcon, TrendUpIcon } from "./icons";
 import { Markdown } from "./markdown";
+import { SECTION_BAR_ICON_BUTTON, SECTION_BAR_LABEL, SectionBar } from "./SectionBar";
 
 export interface ChatStats {
   usage: UsageSummary | null;
@@ -1256,9 +1258,11 @@ function sectionKey(index: number): string {
 function SectionTitle({
   title,
   onRename,
+  actions,
 }: {
   title: string | undefined;
   onRename: (text: string) => void;
+  actions?: ReactNode;
 }) {
   const [draft, setDraft] = useState(title ?? "");
   const cancel = useRef(false);
@@ -1268,7 +1272,7 @@ function SectionTitle({
   const field = (
     <input
       type="text"
-      className="min-w-0 flex-1 bg-transparent font-mono text-xs font-semibold text-foreground outline-none [overflow-wrap:anywhere]"
+      className={SECTION_BAR_LABEL}
       aria-label="Section title"
       data-testid="section-title"
       placeholder="Untitled section"
@@ -1294,20 +1298,18 @@ function SectionTitle({
       }}
     />
   );
-  const className =
-    "theme-radius flex items-center border border-border/70 bg-surface px-2 py-1 pr-20";
   if (title === undefined) {
     return (
-      <div className={`${className} text-muted-foreground`} data-section-heading="">
+      <SectionBar as="div" heading className="text-muted-foreground" actions={actions}>
         {field}
-      </div>
+      </SectionBar>
     );
   }
   return (
-    <h2 className={className} data-section-heading="">
+    <SectionBar as="h2" heading actions={actions}>
       <span className="sr-only">{title}</span>
       {field}
-    </h2>
+    </SectionBar>
   );
 }
 
@@ -2263,19 +2265,22 @@ export function StatsView({
             data-testid="dashboard-section"
             data-section-index={index}
           >
-            <SectionTitle title={section.title} onRename={(text) => renameSection(index, text)} />
-            <div className="absolute top-1 right-1 z-10 flex items-center gap-1">
-              <button
-                type="button"
-                className="theme-radius border border-border/70 bg-surface px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground hover:bg-foreground/10 hover:text-foreground disabled:opacity-40"
-                aria-label={`Delete section ${index + 1}`}
-                data-testid={`section-delete-${index}`}
-                disabled={viewLayout.sections.length <= 1}
-                onClick={() => deleteSection(index)}
-              >
-                <CloseIcon size={12} />
-              </button>
-            </div>
+            <SectionTitle
+              title={section.title}
+              onRename={(text) => renameSection(index, text)}
+              actions={
+                <button
+                  type="button"
+                  className={SECTION_BAR_ICON_BUTTON}
+                  aria-label={`Delete section ${index + 1}`}
+                  data-testid={`section-delete-${index}`}
+                  disabled={viewLayout.sections.length <= 1}
+                  onClick={() => deleteSection(index)}
+                >
+                  <CloseIcon size={12} />
+                </button>
+              }
+            />
             <SectionGrid
               index={index}
               section={section}

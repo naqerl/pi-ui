@@ -18,11 +18,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "./components/ui/dropdown-menu";
-import { CloseIcon, MoreVerticalIcon, RefreshIcon } from "./icons";
+import { CloseIcon, MoreIcon, MoreVerticalIcon, RefreshIcon } from "./icons";
 import { cn } from "./lib/utils";
 import { InlineMarkdown, Markdown } from "./markdown";
 import { mediaUrl } from "./media-client";
 import type { ProjectSuggestion } from "./ProjectSuggestions";
+import { SECTION_BAR_ICON_BUTTON, SECTION_BAR_LABEL, SectionBar } from "./SectionBar";
 import { TaskAgentChat } from "./TaskAgentChat";
 
 function shortId(id: string): string {
@@ -183,7 +184,15 @@ function TitleField({ model, className }: { model: TaskDetailModel; className?: 
   );
 }
 
-function ProjectPicker({ model }: { model: TaskDetailModel }) {
+function ProjectPicker({
+  model,
+  startOpen = false,
+  onClose,
+}: {
+  model: TaskDetailModel;
+  startOpen?: boolean;
+  onClose?: () => void;
+}) {
   const {
     task,
     projectDraft,
@@ -195,7 +204,7 @@ function ProjectPicker({ model }: { model: TaskDetailModel }) {
     setProjectOpen,
     acceptProject,
   } = model;
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(startOpen);
   const inputRef = useRef<HTMLInputElement>(null);
   const current = (task.project ?? "").trim();
   const query = projectDraft.trim().replace(/^@/, "");
@@ -215,8 +224,18 @@ function ProjectPicker({ model }: { model: TaskDetailModel }) {
       setProjectDraft(current);
       setProjectError(null);
       setProjectActive(0);
+    } else {
+      onClose?.();
     }
   };
+
+  useEffect(() => {
+    if (!startOpen) return;
+    setProjectOpen(true);
+    setProjectDraft(current);
+    setProjectError(null);
+    setProjectActive(0);
+  }, [startOpen, current, setProjectOpen, setProjectDraft, setProjectError, setProjectActive]);
 
   useEffect(() => {
     if (!open) return;
@@ -426,6 +445,15 @@ function MetaBlock({ model }: { model: TaskDetailModel }) {
           data-testid="task-reopen"
           className="flex flex-col gap-1 rounded-md border border-border bg-background px-3 py-2"
         >
+          <Badge
+            variant="outline"
+            data-testid={`task-detail-reopens-${task.id}`}
+            title={`Reopened ${task.reopens.length} time${task.reopens.length === 1 ? "" : "s"}`}
+            className="h-5 w-fit gap-1 px-1.5 text-[10px] font-normal leading-4 text-foreground/75"
+          >
+            <RefreshIcon size={11} />
+            {task.reopens.length}
+          </Badge>
           <SectionLabel>Last reopen</SectionLabel>
           <p className="whitespace-pre-wrap text-sm leading-5 [overflow-wrap:anywhere]">
             {task.reopens[task.reopens.length - 1]?.reason}
@@ -556,7 +584,17 @@ function Attachments({ model }: { model: TaskDetailModel }) {
   );
 }
 
-export function TaskActionsMenu({ model }: { model: TaskDetailModel }) {
+export function TaskActionsMenu({
+  model,
+  bar = false,
+  onRename,
+  onChangeProject,
+}: {
+  model: TaskDetailModel;
+  bar?: boolean;
+  onRename?: () => void;
+  onChangeProject?: () => void;
+}) {
   const {
     task,
     title,
@@ -575,18 +613,40 @@ export function TaskActionsMenu({ model }: { model: TaskDetailModel }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          data-testid="task-detail-menu"
-          aria-label={`Actions for ${title}`}
-          className={cn("shrink-0 rounded-md", !wide && "min-h-11 min-w-11")}
-        >
-          <MoreVerticalIcon size={18} />
-        </Button>
+        {bar ? (
+          <button
+            type="button"
+            className={SECTION_BAR_ICON_BUTTON}
+            data-testid="task-detail-menu"
+            aria-label={`Actions for ${title}`}
+          >
+            <MoreIcon size={12} />
+          </button>
+        ) : (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            data-testid="task-detail-menu"
+            aria-label={`Actions for ${title}`}
+            className={cn("shrink-0 rounded-md", !wide && "min-h-11 min-w-11")}
+          >
+            <MoreVerticalIcon size={18} />
+          </Button>
+        )}
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" data-testid="task-detail-menu-content">
+        {onRename !== undefined && (
+          <DropdownMenuItem data-testid="task-detail-rename" onSelect={onRename}>
+            Rename…
+          </DropdownMenuItem>
+        )}
+        {onChangeProject !== undefined && (
+          <DropdownMenuItem data-testid="task-change-project" onSelect={onChangeProject}>
+            Change project…
+          </DropdownMenuItem>
+        )}
+        {(onRename !== undefined || onChangeProject !== undefined) && <DropdownMenuSeparator />}
         {proposed ? (
           <>
             <DropdownMenuItem onSelect={onApprove} aria-label={`Approve ${title} proposal`}>
@@ -711,6 +771,57 @@ function TitleCard({
   tabs?: ReactNode;
   flush?: boolean;
 }) {
+  const [projectPanel, setProjectPanel] = useState(false);
+
+  if (model.wide) {
+    return (
+      <header data-testid="task-header" className="flex flex-col gap-2">
+        <SectionBar
+          testId="task-details-bar"
+          actions={
+            <>
+              <TaskActionsMenu
+                model={model}
+                bar
+                onRename={() => {
+                  model.setTitleDraft(model.task.title);
+                  model.setTitleError(null);
+                  model.setEditingTitle(true);
+                }}
+                onChangeProject={() => {
+                  model.setProjectDraft(model.task.project ?? "");
+                  model.setProjectError(null);
+                  setProjectPanel(true);
+                }}
+              />
+              <button
+                type="button"
+                className={SECTION_BAR_ICON_BUTTON}
+                data-testid="task-detail-back"
+                aria-label="Close"
+                onClick={model.onClose}
+              >
+                <CloseIcon size={12} />
+              </button>
+            </>
+          }
+        >
+          <h2 className={SECTION_BAR_LABEL}>Task details</h2>
+        </SectionBar>
+        {(model.editingTitle || model.titleError !== null) && (
+          <div className="bg-surface theme-radius p-3">
+            <TitleField model={model} />
+          </div>
+        )}
+        {projectPanel && (
+          <div className="bg-surface theme-radius p-3" data-testid="task-project-panel">
+            <ProjectPicker model={model} startOpen onClose={() => setProjectPanel(false)} />
+          </div>
+        )}
+      </header>
+    );
+  }
+
   return (
     <header
       data-testid="task-header"
@@ -832,15 +943,15 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
       data-testid="task-detail"
       data-layout="mobile"
       aria-label={model.title}
-      className="-mx-4 -mt-4 flex min-h-0 flex-1 flex-col"
+      className="flex min-h-0 flex-1 flex-col overflow-hidden"
     >
+      <TitleCard model={model} tabs={<TabBar tab={tab} onTab={setTab} />} flush />
       <div
         className={cn(
           "flex min-h-0 flex-1 flex-col",
           tab === "plan" ? "overflow-y-auto" : "overflow-hidden",
         )}
       >
-        <TitleCard model={model} tabs={<TabBar tab={tab} onTab={setTab} />} flush />
         <div className={cn("flex flex-col gap-3 px-3 pt-3", tab !== "plan" && "hidden")}>
           <PlanSections model={model} />
         </div>
@@ -865,7 +976,7 @@ function DesktopPlan({ model }: { model: TaskDetailModel }) {
       aria-label={model.title}
       className="flex h-full min-h-0 flex-col gap-3 overflow-hidden"
     >
-      <TitleCard model={model} />
+      <TitleCard key={model.task.id} model={model} />
       <PlanSections model={model} />
     </article>
   );
