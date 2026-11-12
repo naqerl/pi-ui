@@ -5,7 +5,9 @@ import { expect, type Screen } from "e2e";
 
 const FIXTURE_TITLE =
   "Design a card-based task details view that stays readable on a 390px phone and does not waste the desktop composer column";
-const ASSET_DIR = "/workspace/pi-ui-assets/v152";
+// Written under the run's own workspace: CI checks out into a path that is not
+// `/workspace`, and an absolute path there fails with EACCES in 18 ms.
+const ASSET_DIR = process.env.PI_UI_ASSET_DIR ?? resolve(".e2e/assets/v152");
 
 async function themeVantablack(
   app: { open: (url: string) => Promise<void> },
