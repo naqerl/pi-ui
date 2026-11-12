@@ -1,3 +1,15 @@
+## 1.6.151
+
+### Changed
+
+- Task details use a compact card layout. The header carries status, the short
+  id, the project, and a compact created stamp; the title sits below it, and
+  subtasks and the plan live on surface cards. On a phone the header is flush
+  to the top of the screen, Plan and Chat are tabs with a foreground underline
+  on the selected one, and the shared composer talks to the planning agent. On
+  a wide screen the list, the plan, and the planning chat sit in three columns,
+  and the composer stays in the same place as on the main chat page.
+
 ## 1.6.150
 
 ### Added
