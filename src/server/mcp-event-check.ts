@@ -1,4 +1,5 @@
 import type { Transport } from "@modelcontextprotocol/client";
+import { hasPosition } from "./mcp-subscriptions.js";
 
 /**
  * pi-mcp-events drops an `events/event` notification without a word unless
@@ -7,12 +8,15 @@ import type { Transport } from "@modelcontextprotocol/client";
  * Heartbeats still move the cursor, so such a server looks subscribed and
  * healthy while every event vanishes (naqerl/pi-ui#3). This check watches the
  * protocol connection and logs, once per server and reason, each frame
- * pi-mcp-events is about to reject. It never changes or drops a frame: the
- * server is the one to fix.
+ * pi-mcp-events is about to reject. Event frames are never changed or
+ * dropped: the server is the one to fix. The one edit is on the adapter's own
+ * cursor bookkeeping — heartbeat/active frames cannot advance an established
+ * subscription past the last event this process actually received.
  */
 
 const EVENT_METHOD = "notifications/events/event";
 const HEARTBEAT_METHOD = "notifications/events/heartbeat";
+const ACTIVE_METHOD = "notifications/events/active";
 const STREAM_METHOD = "events/stream";
 const SUBSCRIPTION_META = "io.modelcontextprotocol/subscriptionId";
 
@@ -64,6 +68,8 @@ export function checkEventNotifications(
   let onMessage = transport.onmessage;
   /** Open `events/stream` request id → requested stream name. */
   const streams = new Map<string, string>();
+  /** Last event cursor actually delivered for a subscription, never a heartbeat. */
+  const deliveredCursor = new Map<string, string>();
   const reported = new Set<string>();
 
   transport.onmessage = (message, extra) => {
@@ -74,6 +80,46 @@ export function checkEventNotifications(
         const meta = frame.params._meta;
         const id = isRecord(meta) ? meta[SUBSCRIPTION_META] : undefined;
         const subscriptionId = typeof id === "string" ? id : undefined;
+        if (frame.method === EVENT_METHOD) {
+          const reason = eventRejection(
+            frame.params,
+            subscriptionId === undefined ? undefined : streams.get(subscriptionId),
+          );
+          if (reason !== null) {
+            if (!reported.has(reason)) {
+              reported.add(reason);
+              log(`[mcp] ${server}: events/event ${reason}; pi-mcp-events drops it`);
+            }
+          } else if (subscriptionId !== undefined) {
+            // The hub puts the position in `data.cursor` and leaves the
+            // envelope cursor null. pi-mcp-events only reads the envelope, so
+            // propagate the real position before handing it the frame.
+            const data = isRecord(frame.params.data) ? frame.params.data : undefined;
+            const cursor =
+              typeof data?.cursor === "string" && hasPosition(data.cursor)
+                ? data.cursor
+                : typeof frame.params.cursor === "string" && hasPosition(frame.params.cursor)
+                  ? frame.params.cursor
+                  : undefined;
+            if (cursor !== undefined) {
+              deliveredCursor.set(subscriptionId, cursor);
+              frame.params.cursor = cursor;
+            }
+          }
+        }
+        if (
+          subscriptionId !== undefined &&
+          (frame.method === HEARTBEAT_METHOD || frame.method === ACTIVE_METHOD)
+        ) {
+          // pi-mcp-events keeps one `sub.cursor` and uses it for the next
+          // re-subscribe. A heartbeat or a re-activation may be ahead of the
+          // last event pi-ui was handed, so resuming from it silently skips
+          // that event. Pin an established subscription to its last delivered
+          // event, while a brand-new stream (no event yet) keeps the cursor the
+          // server announced.
+          const last = deliveredCursor.get(subscriptionId);
+          if (last !== undefined) frame.params.cursor = last;
+        }
         if (observe !== undefined && frame.method === HEARTBEAT_METHOD) {
           try {
             observe({
@@ -84,16 +130,6 @@ export function checkEventNotifications(
             });
           } catch {
             // Observing traffic must never affect frame delivery.
-          }
-        }
-        if (frame.method === EVENT_METHOD) {
-          const reason = eventRejection(
-            frame.params,
-            subscriptionId === undefined ? undefined : streams.get(subscriptionId),
-          );
-          if (reason !== null && !reported.has(reason)) {
-            reported.add(reason);
-            log(`[mcp] ${server}: events/event ${reason}; pi-mcp-events drops it`);
           }
         }
       }
