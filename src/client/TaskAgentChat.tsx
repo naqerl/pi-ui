@@ -4,6 +4,7 @@ import type { ChatMessage, MessageMode, Task } from "../shared/types";
 import { Composer, MessageBubble } from "./ChatView";
 import { EmptyCaption } from "./EmptyCaption";
 import { cn } from "./lib/utils";
+import { TaskQuestionPanel } from "./TaskQuestionPanel";
 import { FIXTURE_CHAT, FIXTURE_PLAN_ID } from "./task-detail-fixture";
 import { readTaskDetailFixture } from "./task-detail-query";
 import { type TaskDockSession, useRegisterTaskDock } from "./task-dock-composer";
@@ -47,12 +48,15 @@ export function TaskAgentChat({
     return list;
   }, [chat.messages, draftMessage, fixtureChat]);
 
+  const pendingQuestions = chat.questions;
+  const pendingKey =
+    pendingQuestions === null ? "" : `${pendingQuestions.id}:${pendingQuestions.questions.length}`;
   useEffect(() => {
     const node = scrollerRef.current;
     if (node === null) return;
-    // Keep the latest turn in view as the transcript grows.
-    if (rows.length >= 0) node.scrollTop = node.scrollHeight;
-  }, [rows.length]);
+    // Keep the latest turn and any pending questions in view as they arrive.
+    if (pendingKey.length > 0 || rows.length >= 0) node.scrollTop = node.scrollHeight;
+  }, [rows.length, pendingKey]);
 
   useEffect(() => {
     const focus = () => {
@@ -150,7 +154,7 @@ export function TaskAgentChat({
           "[scrollbar-gutter:stable]",
         )}
       >
-        {rows.length === 0 ? (
+        {rows.length === 0 && chat.questions === null ? (
           <div className="flex min-h-0 flex-1 items-center justify-center">
             <EmptyCaption>
               {done
@@ -160,6 +164,13 @@ export function TaskAgentChat({
           </div>
         ) : (
           rows.map((message) => <MessageBubble key={message.id} message={message} />)
+        )}
+        {chat.questions !== null && (
+          <TaskQuestionPanel
+            key={chat.questions.id}
+            set={chat.questions}
+            onAnswer={chat.answerQuestions}
+          />
         )}
       </div>
       {!dock && composer !== null && (

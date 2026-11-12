@@ -7,6 +7,8 @@ import type {
   StreamMessageDone,
   StreamRunState,
   StreamTextDelta,
+  TaskQuestionAnswer,
+  TaskQuestionSet,
 } from "../shared/types";
 import { frameBatch, reduceDraft } from "./stream-batch";
 import { subscribeTaskChatEvents } from "./task-chat-events";
@@ -16,15 +18,18 @@ export interface TaskAgentSnapshot {
   messages: ChatMessage[];
   run: RunState;
   draft: { text: string; thinking: string; revision: number };
+  questions?: TaskQuestionSet | null;
 }
 
 export function useTaskChat(taskId: string, closed: boolean) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draftText, setDraftText] = useState("");
   const [run, setRun] = useState<RunState>("idle");
+  const [questions, setQuestions] = useState<TaskQuestionSet | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const draftRevision = useRef(0);
+  const answeredSets = useRef(new Set<string>());
   const taskIdRef = useRef(taskId);
   taskIdRef.current = taskId;
 
@@ -35,6 +40,8 @@ export function useTaskChat(taskId: string, closed: boolean) {
     setRun(snapshot.run === "running" ? "running" : "idle");
     setDraftText(typeof draft?.text === "string" ? draft.text : "");
     draftRevision.current = typeof draft?.revision === "number" ? draft.revision : 0;
+    const pending = snapshot.questions ?? null;
+    setQuestions(pending !== null && answeredSets.current.has(pending.id) ? null : pending);
     setReady(true);
   }, []);
 
@@ -60,9 +67,11 @@ export function useTaskChat(taskId: string, closed: boolean) {
     setMessages([]);
     setDraftText("");
     setRun("idle");
+    setQuestions(null);
     setReady(false);
     setError(null);
     draftRevision.current = 0;
+    answeredSets.current.clear();
     if (taskId.startsWith("fixture-")) {
       setReady(true);
       return;
@@ -179,5 +188,41 @@ export function useTaskChat(taskId: string, closed: boolean) {
     }
   }, [applySnapshot, taskId]);
 
-  return { messages, draftText, run, error, ready, send, stop, dismissError: () => setError(null) };
+  const answerQuestions = useCallback(
+    async (setId: string, answers: TaskQuestionAnswer[]) => {
+      setError(null);
+      try {
+        const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/questions/answer`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ setId, answers }),
+        });
+        if (!response.ok) {
+          const message = (await response.text()).trim();
+          setError(message.length > 0 ? message : "Could not send the answers");
+          return false;
+        }
+        answeredSets.current.add(setId);
+        applySnapshot((await response.json()) as TaskAgentSnapshot);
+        return true;
+      } catch {
+        setError("Could not send the answers");
+        return false;
+      }
+    },
+    [applySnapshot, taskId],
+  );
+
+  return {
+    messages,
+    draftText,
+    run,
+    questions,
+    error,
+    ready,
+    send,
+    stop,
+    answerQuestions,
+    dismissError: () => setError(null),
+  };
 }

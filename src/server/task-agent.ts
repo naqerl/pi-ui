@@ -22,17 +22,41 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { Type } from "typebox";
 import { parseProjectToken, projectsOf, sameProject } from "../shared/project.js";
+import {
+  parseTaskQuestions,
+  questionAnswerItems,
+  taskQuestionAnswerPayload,
+  taskQuestionAnswerSummary,
+} from "../shared/questions.js";
 import { DEFAULT_NEW_TASK_TITLE, TASK_BODY_MAX_LENGTH } from "../shared/tasks.js";
-import type { ChatMessage, RunState, StreamRunState, Task, TaskLedger } from "../shared/types.js";
+import type {
+  ChatMessage,
+  RunState,
+  StreamRunState,
+  Task,
+  TaskLedger,
+  TaskQuestionSet,
+} from "../shared/types.js";
 import { withConversationIdentity } from "./billion-context.js";
 import type { MediaStore } from "./media.js";
 import { buildTranscript, SESSION_CONTEXT } from "./session.js";
 import type { SseFrame } from "./sse.js";
 import { StreamHub } from "./stream-hub.js";
+import {
+  type QuestionAnswerResult,
+  TaskQuestionAnswerEntry,
+  TaskQuestionsStore,
+} from "./task-questions.js";
 import { TaskError, type TaskStore } from "./tasks.js";
 
-/** The only tools a task planning agent may call: inspect the repo, and edit its own task. */
-export const TASK_AGENT_TOOL_NAMES = ["bash", "read", "edit_task"] as const;
+/** The only tools a task planning agent may call: inspect the repo, edit its task, and ask. */
+export const TASK_AGENT_TOOL_NAMES = [
+  "bash",
+  "read",
+  "edit_task",
+  "ask_questions",
+  "append_questions",
+] as const;
 export type TaskAgentToolName = (typeof TASK_AGENT_TOOL_NAMES)[number];
 
 const TASK_AGENT_TOOL_SET = new Set<string>(TASK_AGENT_TOOL_NAMES);
@@ -52,6 +76,8 @@ export interface TaskAgentChatSnapshot {
   messages: ChatMessage[];
   run: RunState;
   draft: { text: string; thinking: string; revision: number };
+  /** The unanswered set, or null. Persisted beside the task agent's conversation. */
+  questions: TaskQuestionSet | null;
 }
 
 export interface TaskAgentSession {
@@ -65,6 +91,10 @@ export interface TaskAgentSession {
   close(): Promise<void>;
   replayFrames(): SseFrame[];
   applyInstructions?(instructions: string): Promise<void>;
+  /** The pending set for the answer panel, or null when nothing waits. */
+  pendingQuestions?(): Promise<TaskQuestionSet | null>;
+  /** Record the operator's answers, add a readable transcript row, and wake the tool. */
+  answerQuestions?(setId: string, answers: unknown): Promise<TaskAgentChatSnapshot>;
 }
 
 export interface TaskAgentManagerOptions {
@@ -118,7 +148,8 @@ Your job is to help the operator formulate the task and propose a solution — a
 Plan mode only:
 - You may use the read and bash tools to inspect the repository.
 - You must not edit, write, create or delete any files, and you must not run commands that change the workspace.
-- You have exactly one additional tool, edit_task, which updates this task's title, markdown body and/or project. Use it to capture the formulated task: a clear title, a markdown body with the problem and the proposed design (mermaid fences are allowed), and a project when one fits.
+- You have additional tools, edit_task, ask_questions and append_questions. edit_task updates this task's title, markdown body and/or project. Use it to capture the formulated task: a clear title, a markdown body with the problem and the proposed design (mermaid fences are allowed), and a project when one fits.
+- When a decision would be guessed in prose, call ask_questions with a structured set (single, multi or text) and wait for the operator's answers. Use append_questions to add to the same unanswered set while you are still composing it.
 - Do not change the task's status. The operator owns that.
 - Do not list or narrate your tool calls in the task body.
 
@@ -194,6 +225,115 @@ export function createTaskEditTool(options: {
       }
     },
   });
+}
+
+const questionOptionSchema = Type.Object({
+  value: Type.String({ description: "Value stored in the answer." }),
+  label: Type.String({ description: "Human label shown in the answer panel." }),
+  detail: Type.Optional(Type.String({ description: "One line of context under the label." })),
+});
+
+const questionSchema = Type.Object({
+  id: Type.String({ description: "Stable id, unique within the set." }),
+  prompt: Type.String({ description: "The question the operator answers." }),
+  kind: Type.Union([Type.Literal("single"), Type.Literal("multi"), Type.Literal("text")], {
+    description: "single picks one option, multi picks several, text is free text.",
+  }),
+  options: Type.Optional(
+    Type.Array(questionOptionSchema, {
+      description: "Required for single and multi; one choice per value.",
+      minItems: 1,
+    }),
+  ),
+  allowOther: Type.Optional(
+    Type.Boolean({ description: "Offer a free-text field next to the options." }),
+  ),
+});
+
+const questionsSchema = Type.Object({
+  questions: Type.Array(questionSchema, {
+    description: "Questions to put in front of the operator.",
+    minItems: 1,
+  }),
+});
+
+function questionFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : "Could not update the questions";
+  return { output: [{ type: "text" as const, text: message }], isError: true };
+}
+
+function answerToolResult(result: QuestionAnswerResult) {
+  return {
+    output: [
+      {
+        type: "text" as const,
+        text: `${result.summary}\n${taskQuestionAnswerPayload(result.items, result.record.answers)}`,
+      },
+    ],
+    details: { setId: result.set.id, answers: result.items } as never,
+  };
+}
+
+/**
+ * The two plan-chat question tools. They are bound to one task and share the persisted pending
+ * set, so append_questions can grow a set that ask_questions is already waiting on.
+ */
+export function createTaskQuestionTools(options: {
+  taskId: string;
+  questions: TaskQuestionsStore;
+}): ToolRegistration[] {
+  return [
+    defineTool({
+      name: "ask_questions",
+      description:
+        "Ask the operator a structured set of questions and wait for the answers. Use single for one choice, multi for several, and text for free text. Every single or multi question needs options. Returns the answers as JSON plus a one-line summary.",
+      parameters: questionsSchema,
+      replay: "safe",
+      async execute(args, api, context) {
+        try {
+          const parsed = parseTaskQuestions(args.questions);
+          if (!parsed.ok) return questionFailure(new Error(parsed.error));
+          const askedBy = typeof api.taskId === "string" ? api.taskId : undefined;
+          const replayed =
+            askedBy === undefined ? null : await options.questions.answeredBy(askedBy);
+          if (replayed !== null) return answerToolResult(replayed);
+          const { set } = await options.questions.add(options.taskId, parsed.questions, askedBy);
+          const answered = await options.questions.waitForAnswers(set.id, context.abortSignal);
+          return answerToolResult(answered);
+        } catch (error) {
+          return questionFailure(error);
+        }
+      },
+    }),
+    defineTool({
+      name: "append_questions",
+      description:
+        "Add questions to the same unanswered set ask_questions is composing. Duplicate ids are refused. Use this when you learn something while writing the questions, before the operator answers.",
+      parameters: questionsSchema,
+      replay: "safe",
+      async execute(args, api) {
+        try {
+          const parsed = parseTaskQuestions(args.questions);
+          if (!parsed.ok) return questionFailure(new Error(parsed.error));
+          const askedBy = typeof api.taskId === "string" ? api.taskId : undefined;
+          const added = await options.questions.add(options.taskId, parsed.questions, askedBy);
+          const pending = await options.questions.pending();
+          const count = pending?.questions.length ?? added.set.questions.length;
+          return {
+            output: [
+              {
+                type: "text" as const,
+                text: `Added ${added.added} question${added.added === 1 ? "" : "s"}; ${count} waiting for the operator.\n${JSON.stringify({ setId: added.set.id, questions: added.set.questions })}`,
+              },
+            ],
+            details: { setId: added.set.id, questions: added.set.questions } as never,
+          };
+        } catch (error) {
+          return questionFailure(error);
+        }
+      },
+    }),
+  ];
 }
 
 /**
@@ -299,6 +439,7 @@ class DurableTaskAgentSession implements TaskAgentSession {
     readonly taskId: string,
     private readonly harness: Harness,
     private readonly conversation: Conversation,
+    private readonly questions: TaskQuestionsStore,
     private readonly relay?: (frame: SseFrame) => void,
     private readonly media?: MediaStore,
   ) {}
@@ -365,7 +506,39 @@ class DurableTaskAgentSession implements TaskAgentSession {
         thinking: this.currentThinking,
         revision: this.draftRevision,
       },
+      questions: await this.questions.pending(),
     };
+  }
+
+  async pendingQuestions(): Promise<TaskQuestionSet | null> {
+    return this.questions.pending();
+  }
+
+  async answerQuestions(setId: string, answers: unknown): Promise<TaskAgentChatSnapshot> {
+    if (this.closed) throw new TaskAgentError("Task agent has been closed", 409);
+    const result = await this.questions.answer(setId, answers);
+    const answersBlock = questionAnswerItems(result.record.questions, result.record.answers);
+    try {
+      await this.conversation.commit(
+        (tx) =>
+          tx.appendEntry(TaskQuestionAnswerEntry, this.conversation.id, {
+            data: {
+              setId: result.set.id,
+              taskId: this.taskId,
+              text: taskQuestionAnswerSummary(answersBlock),
+              answers: answersBlock,
+              createdAt: result.record.answeredAt,
+            },
+          }),
+        SESSION_CONTEXT,
+      );
+    } catch (error) {
+      console.error(`[task-agent] could not record answers for ${this.taskId}`, error);
+    } finally {
+      // The tool result must not stay blocked just because the display row failed.
+      this.questions.resolve(setId, result);
+    }
+    return this.snapshot();
   }
 
   async applyInstructions(instructions: string): Promise<void> {
@@ -600,6 +773,18 @@ export class TaskAgentManager {
     await session.stop();
   }
 
+  async answerQuestions(
+    taskId: string,
+    setId: string,
+    answers: unknown,
+  ): Promise<TaskAgentChatSnapshot> {
+    const session = await this.ensure(taskId);
+    if (session.answerQuestions === undefined) {
+      throw new TaskAgentError("Questions are not available for this task", 409);
+    }
+    return session.answerQuestions(setId, answers);
+  }
+
   async remove(taskId: string): Promise<void> {
     const pending = this.opening.get(taskId);
     if (pending !== undefined) {
@@ -646,6 +831,8 @@ export class TaskAgentManager {
     await mkdir(dir, { recursive: true });
     const databasePath = join(dir, "pi.sqlite3");
     const currentPath = join(dir, "current.json");
+    const questions = new TaskQuestionsStore(join(dir, "questions.json"));
+    await questions.load();
     const storage = await openNodeSqliteStorage(databasePath);
     const registry = createRegistry<ToolRegistration>();
     const coding = (createCodingTools().tools ?? []).filter(
@@ -665,6 +852,12 @@ export class TaskAgentManager {
             },
           }),
         ],
+      }),
+    );
+    registry.install(
+      defineExtension({
+        name: "task-agent-question-tools",
+        tools: createTaskQuestionTools({ taskId, questions }),
       }),
     );
     const tools = selectTaskAgentTools(
@@ -728,6 +921,7 @@ export class TaskAgentManager {
       taskId,
       harness,
       conversation,
+      questions,
       this.options.relay === undefined ? undefined : (frame) => this.options.relay?.(taskId, frame),
       this.options.media,
     );

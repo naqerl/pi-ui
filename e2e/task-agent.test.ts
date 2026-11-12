@@ -34,11 +34,13 @@ after(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
-test("task agents may only call bash, read and edit_task", () => {
+test("task agents may only call bash, read, edit_task and the question tools", () => {
   const coding = (createCodingTools().tools ?? []).map((tool) => ({ name: tool.name }));
   const extras = [
     ...coding,
     { name: "edit_task" },
+    { name: "ask_questions" },
+    { name: "append_questions" },
     { name: "write" },
     { name: "edit" },
     { name: "task_edit" },
@@ -200,6 +202,7 @@ class FakeSession implements TaskAgentSession {
       })),
       run: this.run,
       draft: { text: "", thinking: "", revision: 0 },
+      questions: null,
     };
   }
 

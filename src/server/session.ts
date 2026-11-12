@@ -67,6 +67,7 @@ import type { OperatorBridge } from "./operator-tools.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
 import { retrySettings } from "./retry.js";
 import { type RunMarker, RunMarkerStore } from "./run-marker.js";
+import { TaskQuestionAnswerEntry } from "./task-questions.js";
 import type { TaskBridge } from "./task-tools.js";
 import { pendingVersionNotice, writeLastSeenVersion } from "./version-notice.js";
 
@@ -844,6 +845,50 @@ export function buildTranscript(
         timestamp: entryTimestamp(entry.data),
         order: entry.id * 10_000,
         notice,
+      });
+      continue;
+    }
+    if (kind === TaskQuestionAnswerEntry.kind) {
+      if (
+        !isRecord(entry.data) ||
+        typeof entry.data.setId !== "string" ||
+        typeof entry.data.text !== "string" ||
+        !Array.isArray(entry.data.answers)
+      ) {
+        continue;
+      }
+      const answers: NonNullable<ChatMessage["questionAnswers"]>["answers"] = [];
+      for (const item of entry.data.answers) {
+        if (!isRecord(item)) continue;
+        const kind = item.kind;
+        if (
+          typeof item.id !== "string" ||
+          typeof item.prompt !== "string" ||
+          (kind !== "single" && kind !== "multi" && kind !== "text") ||
+          !Array.isArray(item.values) ||
+          !item.values.every((value) => typeof value === "string") ||
+          !Array.isArray(item.labels) ||
+          !item.labels.every((label) => typeof label === "string") ||
+          typeof item.text !== "string"
+        ) {
+          continue;
+        }
+        answers.push({
+          id: item.id,
+          prompt: item.prompt,
+          kind,
+          values: item.values as string[],
+          labels: item.labels as string[],
+          text: item.text,
+        });
+      }
+      messages.push({
+        id: `m-${entry.id}`,
+        role: "system",
+        text: entry.data.text,
+        timestamp: entryTimestamp(entry.data),
+        order: entry.id * 10_000,
+        questionAnswers: { setId: entry.data.setId, answers },
       });
       continue;
     }

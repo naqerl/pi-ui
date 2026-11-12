@@ -75,8 +75,75 @@ export interface ChatMessage {
   repair?: { baseRevision: number };
   /** True when a server restart cut off this assistant response. */
   partial?: boolean;
+  /** Operator choices recorded for a task-agent question set, shown as a readable block. */
+  questionAnswers?: TaskQuestionAnswerBlock;
   /** Input and output tokens for this assistant call. Omitted when the call also produced activity. */
   usage?: TokenSpend;
+}
+
+export type TaskQuestionKind = "single" | "multi" | "text";
+
+export interface TaskQuestionOption {
+  /** Value stored in the answer. */
+  value: string;
+  /** Human label shown in the panel and in the answer summary. */
+  label: string;
+  /** One line of context shown under the label. */
+  detail?: string;
+}
+
+/** One structured question the planning agent asks the operator. */
+export interface TaskQuestion {
+  /** Stable within the set; answers use it. */
+  id: string;
+  prompt: string;
+  kind: TaskQuestionKind;
+  /** Required for single and multi, ignored for text. */
+  options?: TaskQuestionOption[];
+  /** Offer a free-text field next to the choices. */
+  allowOther?: boolean;
+}
+
+/** A pending question set, persisted beside the task agent's conversation. */
+export interface TaskQuestionSet {
+  id: string;
+  taskId: string;
+  createdAt: string;
+  questions: TaskQuestion[];
+  /** Durable tool task that asked this set, so a replay reattaches instead of asking twice. */
+  askedBy?: string;
+}
+
+/** One answer as the operator submitted it. */
+export interface TaskQuestionAnswer {
+  id: string;
+  values: string[];
+  text: string;
+}
+
+/** One readable row in the transcript's answer block. */
+export interface AnsweredQuestionItem {
+  id: string;
+  prompt: string;
+  kind: TaskQuestionKind;
+  values: string[];
+  labels: string[];
+  text: string;
+}
+
+export interface TaskQuestionAnswerBlock {
+  setId: string;
+  answers: AnsweredQuestionItem[];
+}
+
+/** The durable record of an answered set. */
+export interface TaskQuestionAnswerRecord {
+  setId: string;
+  taskId: string;
+  answeredAt: string;
+  questions: TaskQuestion[];
+  answers: TaskQuestionAnswer[];
+  askedBy?: string;
 }
 
 /** Provider-reported input and output for one model call. Cache tokens are not included. */
