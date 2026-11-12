@@ -1698,6 +1698,18 @@ export function ChatView({
   // ResizeObserver keeps the end pinned while the dock animates below it.
   const stick = useStickToBottom(timeline.length);
 
+  // A page switch is a navigation, not a content change. Hold the reader's position on
+  // the way out and put it back before paint, so an off-screen dock resize cannot shift
+  // the transcript. The first mount and a drag that snaps back stay untouched.
+  const chatPage = pager.page === CHAT_PAGE;
+  const wasChatPage = useRef(chatPage);
+  useLayoutEffect(() => {
+    if (wasChatPage.current === chatPage) return;
+    wasChatPage.current = chatPage;
+    if (chatPage) stick.restorePosition();
+    else stick.holdPosition();
+  }, [chatPage, stick.holdPosition, stick.restorePosition]);
+
   // When a reply finishes, show it from its start (with the run info row above it) instead of
   // leaving the reader at its last line. Only when the reader is still following the end:
   // someone who scrolled away during the run stays where they are.

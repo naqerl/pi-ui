@@ -33,6 +33,8 @@ let firstSessionId;
 let dropArmed = false;
 let dropped = false;
 let droppedStream = false;
+let cutStream = false;
+let cutResponse = false;
 
 function tools() {
   const listed = [
@@ -120,9 +122,49 @@ function createMcpServer(holder) {
         await closed;
         return {};
       }
+      if (mode === "event-cut" && params.name === "drop-stream" && !cutStream) {
+        cutStream = true;
+        log("cut-stream");
+        setTimeout(() => {
+          void notify("notifications/events/active", { cursor: "drop:1" });
+        }, 10);
+        setTimeout(() => {
+          void notify("notifications/events/heartbeat", { cursor: "drop:1" });
+        }, 40);
+        setTimeout(() => {
+          // The production hub leaves the envelope cursor null and puts the
+          // position in the payload. The stream is cut before the next
+          // heartbeat, so only that payload cursor can carry the resume point.
+          void notify("notifications/events/event", {
+            eventId: "drop:2",
+            name: "drop-stream",
+            timestamp: new Date().toISOString(),
+            cursor: null,
+            data: { kind: "drop.record", id: "drop-2", cursor: "drop:2" },
+          });
+        }, 50);
+        // The hub itself never closes a live stream; a proxy or network reset
+        // ends just this request while the session and the subscription live
+        // on. The HTTP layer destroys the response with no final reply, so the
+        // client sees a disconnected request stream. The extension reconnects
+        // from the cursor it last delivered.
+        await closed;
+        return {};
+      }
       setTimeout(() => {
         void notify("notifications/events/active", { cursor: resumed });
       }, 10);
+      if (mode === "event-cut" && params.name === "drop-stream") {
+        setTimeout(() => {
+          void notify("notifications/events/event", {
+            eventId: "drop:3",
+            name: "drop-stream",
+            timestamp: new Date().toISOString(),
+            cursor: "drop:3",
+            data: { kind: "drop.record", id: "drop-3" },
+          });
+        }, 150);
+      }
       setTimeout(() => {
         void notify("notifications/events/heartbeat", { cursor: resumed });
       }, 100);
@@ -159,7 +201,9 @@ async function createSession(id) {
   const server = createMcpServer(holder);
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: () => id,
-    enableJsonResponse: true,
+    // The cut-stream fixture needs a real per-request SSE response so ending
+    // the handler ends the subscription stream itself, not a JSON reply.
+    enableJsonResponse: mode !== "event-cut",
     onsessionclosed: () => {
       sessions.delete(id);
     },
@@ -368,6 +412,11 @@ const http = createServer(async (request, res) => {
     const response = await session.transport.handleRequest(webRequest(request, body), {
       parsedBody: parsed,
     });
+    if (mode === "event-cut" && method === "events/stream" && !cutResponse) {
+      cutResponse = true;
+      log("cut-response");
+      setTimeout(() => res.destroy(), 250);
+    }
     await pipe(response, res);
 
     if (method === "tools/call") {

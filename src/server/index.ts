@@ -1002,6 +1002,24 @@ app.post("/api/tasks/:id/chat/stop", async (c) => {
   }
 });
 
+app.post("/api/tasks/:id/chat/error/dismiss", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    body = undefined;
+  }
+  const errorId =
+    typeof body === "object" && body !== null && "id" in body && typeof body.id === "string"
+      ? body.id
+      : undefined;
+  try {
+    return c.json(await taskAgents.dismissError(c.req.param("id"), errorId));
+  } catch (error) {
+    return taskAgentFailure(c, error);
+  }
+});
+
 app.get("/api/tasks/:id/chat/stream", (c) => {
   c.header("X-Accel-Buffering", "no");
   const id = c.req.param("id");

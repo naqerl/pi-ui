@@ -60,6 +60,34 @@ function isLiveSubscription(view: McpSubscriptionView): boolean {
   return view.status === "active" || view.status === "reconnecting" || view.status === "opening";
 }
 
+/**
+ * The extension's own heartbeat deadline. A stream that ends has not stopped
+ * delivering until this long passes without an event or heartbeat: the adapter
+ * reconnects inside that window and a quick generation swap is not an outage.
+ */
+export const MCP_STREAM_HEARTBEAT_TIMEOUT_MS = 65_000;
+
+function parsedTime(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/** The newest proof that this subscription delivered something. */
+function lastDeliveryAt(view: McpSubscriptionView): number | undefined {
+  const eventAt = parsedTime(view.lastEventAt);
+  const heartbeatAt = parsedTime(view.lastHeartbeatAt);
+  if (eventAt === undefined) return heartbeatAt;
+  if (heartbeatAt === undefined) return eventAt;
+  return Math.max(eventAt, heartbeatAt);
+}
+
+/** True while the silence still fits inside the extension's heartbeat window. */
+function deliveryIsFresh(view: McpSubscriptionView, now = Date.now()): boolean {
+  const at = lastDeliveryAt(view);
+  return at !== undefined && now - at <= MCP_STREAM_HEARTBEAT_TIMEOUT_MS;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -177,9 +205,23 @@ export function polledEventCursor(result: unknown): string | null {
   return found;
 }
 
-/** Cursors are opaque: a string from the server replaces whatever we had. */
+/**
+ * Cursors are opaque, but a zero position is not a position. Keep the last real
+ * cursor instead of letting a `:0` from an event or heartbeat become the value
+ * a later transport subscribes from.
+ */
 function serverCursor(current: string | null, incoming: string | null): string | null {
-  return incoming ?? current;
+  if (hasPosition(incoming)) return incoming;
+  if (hasPosition(current)) return current;
+  return null;
+}
+
+/** The first real position in priority order; never returns a zero cursor. */
+function positionOf(...values: Array<string | null | undefined>): string | null {
+  for (const value of values) {
+    if (hasPosition(value)) return value;
+  }
+  return null;
 }
 
 function sameArguments(first: Record<string, unknown>, second: Record<string, unknown>): boolean {
@@ -294,6 +336,9 @@ interface StatusView {
   id?: string;
   stableId?: string;
   status?: string;
+  server?: string;
+  name?: string;
+  arguments?: Record<string, unknown>;
 }
 
 function collectStatusViews(value: unknown, views: StatusView[], depth = 0): void {
@@ -313,11 +358,17 @@ function collectStatusViews(value: unknown, views: StatusView[], depth = 0): voi
         ? value.stable_id
         : undefined;
   const status = typeof value.status === "string" ? value.status : undefined;
+  const server = typeof value.server === "string" ? value.server : undefined;
+  const name = typeof value.name === "string" ? value.name : undefined;
+  const args = isRecord(value.arguments) ? value.arguments : undefined;
   if (id !== undefined || stableId !== undefined || status !== undefined) {
     views.push({
       ...(id === undefined ? {} : { id }),
       ...(stableId === undefined ? {} : { stableId }),
       ...(status === undefined ? {} : { status }),
+      ...(server === undefined ? {} : { server }),
+      ...(name === undefined ? {} : { name }),
+      ...(args === undefined ? {} : { arguments: args }),
     });
   }
   if (Array.isArray(value.ids)) {
@@ -628,33 +679,71 @@ export class McpEventFeed {
 
   /**
    * True only for a status notice about a generation superseded by another
-   * subscription for the same `(server, name)`. Ingest such a notice, but do
+   * subscription for the same durable identity. Ingest such a notice, but do
    * not submit it to chat: the user depends on that other generation.
    *
-   * The predicate runs after `ingestStatuses`, so the incoming id is already
+   * The predicate runs after `ingestStatuses`, so the incoming ids are already
    * known. It compares against *other* ids, never absence. A sibling is
    * superseding when it is live, or when it owns the same durable identity:
    * the current row stays authoritative even after its own failure, and its
-   * failure notice is the one the user needs. A notice that names the live id
-   * itself, or one with no sibling at all, is authentic and must reach chat.
+   * failure notice is the one the user needs. An item with no adapter id names
+   * the durable subscription itself, so only a live row that is still
+   * delivering makes it stale; silence must reach chat. A notice that names
+   * the live id itself, or one with no sibling at all, is authentic.
    */
   isSupersededStatus(details: unknown): boolean {
-    if (!isRecord(details) || !Array.isArray(details.subscriptions)) return false;
-    const incoming: McpSubscriptionView[] = [];
-    for (const item of details.subscriptions) {
-      const subscription = subscriptionFrom(item);
-      if (subscription !== null) incoming.push(subscription);
+    return this.isSupersededStatusInput("", details);
+  }
+
+  /** The durable identity a status item names, resolving adapter aliases. */
+  private statusStableId(item: StatusView): string | undefined {
+    if (item.stableId !== undefined && item.stableId.length > 0) return item.stableId;
+    if (item.id !== undefined && item.id.length > 0) {
+      const known = this.findByStableId(item.id);
+      if (known !== undefined) return known.stableId;
+      const alias = this.adapterAliases.get(item.id);
+      if (alias !== undefined) return alias;
+    }
+    if (item.server !== undefined) {
+      return deriveStableId(item.server, item.name ?? "event", item.arguments);
+    }
+    return undefined;
+  }
+
+  /**
+   * True when every status item describes a generation some other live row
+   * already supersedes. The durable id, not the adapter id, carries identity:
+   * a payload can name `stableId` without naming a generation at all, and that
+   * is still noise while the row is live or reconnecting.
+   */
+  private isSupersededStatusInput(text: string, details: unknown): boolean {
+    const incoming: Array<StatusView & { stableId?: string }> = [];
+    for (const item of statusViews(text, details)) {
+      if (item.id === undefined && item.stableId === undefined && item.server === undefined) {
+        continue;
+      }
+      const stableId = this.statusStableId(item);
+      incoming.push({ ...item, ...(stableId === undefined ? {} : { stableId }) });
     }
     if (incoming.length === 0) return false;
     const known = [...this.subscriptions.values()];
     return incoming.every((item) =>
-      known.some(
-        (view) =>
-          view.id !== item.id &&
-          view.server === item.server &&
-          view.name === item.name &&
-          (view.stableId === item.stableId || isLiveSubscription(view)),
-      ),
+      known.some((view) => {
+        // A notice that names the current adapter id itself is authoritative.
+        if (item.id !== undefined && view.id === item.id) return false;
+        if (item.stableId !== undefined) {
+          if (view.stableId !== item.stableId) return false;
+          // Supersession needs a generation identity. An item without an
+          // adapter id names only the durable subscription; freshness decides
+          // that case in `suppressDurableStatusWhileDelivering` instead.
+          if (item.id === undefined) return false;
+          // The current row stays authoritative even after its own failure.
+          return isLiveSubscription(view) || view.stableId === item.stableId;
+        }
+        if (item.server === undefined || view.server !== item.server) return false;
+        if (item.name !== undefined && view.name !== item.name) return false;
+        return isLiveSubscription(view);
+      }),
     );
   }
 
@@ -753,6 +842,48 @@ export class McpEventFeed {
   }
 
   /**
+   * A non-terminal stream end only says the adapter object stopped, not that
+   * delivery did: the replacement can announce itself within the heartbeat
+   * window. Keep the visible row healthy and stay silent until the silence is
+   * longer than the extension's own heartbeat timeout.
+   */
+  private isGenerationDeathWhileDelivering(view: McpSubscriptionView, status: string): boolean {
+    if (status === "active" || status === "opening" || this.isTerminalStatus(status)) return false;
+    return deliveryIsFresh(view);
+  }
+
+  private suppressGenerationDeathWhileDelivering(text: string, details: unknown): boolean {
+    const entries = this.trackedStatusEntries(text, details);
+    if (entries.length === 0) return false;
+    let sawDeath = false;
+    for (const { view, status } of entries) {
+      if (!this.isGenerationDeathWhileDelivering(view, status)) return false;
+      sawDeath = true;
+    }
+    return sawDeath;
+  }
+
+  /**
+   * An id-less status names the durable row, not one generation. While that row
+   * is live and still delivering, even a terminal-looking state is stale; once
+   * the heartbeat window has really passed it must reach chat.
+   */
+  private suppressDurableStatusWhileDelivering(text: string, details: unknown): boolean {
+    let sawDeath = false;
+    for (const item of statusViews(text, details)) {
+      if (item.status === undefined || item.status === "active" || item.status === "opening") {
+        continue;
+      }
+      if (item.id !== undefined || item.stableId === undefined) return false;
+      const stableId = this.statusStableId(item);
+      const view = stableId === undefined ? undefined : this.findByStableId(stableId);
+      if (view === undefined || !isLiveSubscription(view) || !deliveryIsFresh(view)) return false;
+      sawDeath = true;
+    }
+    return sawDeath;
+  }
+
+  /**
    * Mark a fresh outage or terminal failure. A second outage of the same kind
    * for the same stable id is suppressed; a terminal failure after a mere
    * outage is still news, and an active status after either is the recovery.
@@ -820,7 +951,7 @@ export class McpEventFeed {
   private isUntrackedOrSuperseded(text: string, details: unknown): boolean {
     const ids = statusNoticeIds(text, details);
     if (ids.length > 0 && ids.every((id) => !this.tracksStatusId(id))) return true;
-    return this.isSupersededStatus(details);
+    return this.isSupersededStatusInput(text, details);
   }
 
   /**
@@ -861,9 +992,20 @@ export class McpEventFeed {
       console.debug(`[mcp] dropped status notice for untracked subscription ${ids.join(", ")}`);
       return true;
     }
-    if (this.isSupersededStatus(source)) {
+    if (this.isSupersededStatusInput(text, source)) {
       console.debug(
         `[mcp] dropped superseded status notice${ids.length === 0 ? "" : ` for ${ids.join(", ")}`}`,
+      );
+      return true;
+    }
+    if (
+      this.suppressDurableStatusWhileDelivering(text, source) ||
+      this.suppressGenerationDeathWhileDelivering(text, source)
+    ) {
+      console.debug(
+        `[mcp] dropped a stream-end status while delivery is still fresh${
+          ids.length === 0 ? "" : ` for ${ids.join(", ")}`
+        }`,
       );
       return true;
     }
@@ -899,7 +1041,7 @@ export class McpEventFeed {
     if (kind !== undefined && kind !== "mcp-ui-status" && kind !== "mcp-events-status") {
       return false;
     }
-    if (isTruncationWarning(text) || !isAdapterFailureProse(text)) return false;
+    if (isTruncationWarning(text)) return false;
     const attribution = statusAttribution(text, source);
     if (attribution.server === undefined) return false;
     const known = [...this.subscriptions.values()].filter(
@@ -913,6 +1055,12 @@ export class McpEventFeed {
       );
       return true;
     }
+    // A prose line that names no generation can still be the adapter reporting
+    // the death of one. The same freshness rule the JSON payload uses applies:
+    // if every tracked row on this server is live and recently delivering, the
+    // line belongs to a generation whose replacement is already connected.
+    const freshLive = known.every((view) => isLiveSubscription(view) && deliveryIsFresh(view));
+    if (!isAdapterFailureProse(text) && !freshLive) return false;
     const down = known.filter((view) => !isLiveSubscription(view));
     if (down.length > 0) {
       const fresh = down.filter((view) => !this.hasReportedOutage(view));
@@ -968,7 +1116,7 @@ export class McpEventFeed {
         cursor: record.cursor,
       }),
       ...(typeof record.id === "string" && record.id.length > 0 ? { id: record.id } : {}),
-      cursor: record.cursor,
+      cursor: positionOf(record.cursor, current?.cursor),
       status: record.status,
       state,
       lastEventAt: record.lastEventAt ?? current?.lastEventAt,
@@ -1653,8 +1801,33 @@ export class McpEventFeed {
     if (!isRecord(details) || !Array.isArray(details.subscriptions)) return false;
     let changed = false;
     for (const item of details.subscriptions) {
-      const incoming = subscriptionFrom(item);
-      if (incoming === null) continue;
+      let incoming = subscriptionFrom(item);
+      let durableOnly = false;
+      if (incoming === null) {
+        // Some status payloads name only the durable id. Resolve it to the
+        // current generation so a real outage can still update the row.
+        const views: StatusView[] = [];
+        collectStatusViews(item, views);
+        const named = views.find(
+          (view) =>
+            view.status !== undefined &&
+            (view.stableId !== undefined || view.id !== undefined || view.server !== undefined),
+        );
+        const stableId = named === undefined ? undefined : this.statusStableId(named);
+        const current = stableId === undefined ? undefined : this.findByStableId(stableId);
+        if (current === undefined || named?.status === undefined) continue;
+        const cursor =
+          isRecord(item) && typeof item.cursor === "string" && hasPosition(item.cursor)
+            ? item.cursor
+            : current.cursor;
+        incoming = {
+          ...current,
+          status: named.status,
+          state: deriveSubscriptionState(named.status),
+          cursor,
+        };
+        durableOnly = true;
+      }
       // A status can only describe a subscription this feed already tracks.
       // An id from before a restart is a different stream; attaching its row
       // would turn a dead generation into visible state and chat news.
@@ -1674,6 +1847,25 @@ export class McpEventFeed {
       // status happens to look live. The owning row stays authoritative until
       // a subscribe result names a real successor.
       if (current !== undefined && current.id !== incoming.id) continue;
+      // A stream object ending is not a delivery outage while the last event or
+      // heartbeat is still inside the extension's heartbeat window. The next
+      // generation reports its own active status; the row never flashes down.
+      const freshDurableDeath =
+        durableOnly &&
+        current !== undefined &&
+        incoming.status !== "active" &&
+        incoming.status !== "opening" &&
+        isLiveSubscription(current) &&
+        deliveryIsFresh(current);
+      if (
+        current !== undefined &&
+        (freshDurableDeath || this.isGenerationDeathWhileDelivering(current, incoming.status))
+      ) {
+        console.debug(
+          `[mcp] kept ${current.stableId} healthy: its stream ended but delivery is still fresh`,
+        );
+        continue;
+      }
       const saved = this.savedRecord(incoming.stableId);
       const reconnects =
         incoming.status === "active"
@@ -1684,7 +1876,7 @@ export class McpEventFeed {
         current === undefined
           ? {
               ...incoming,
-              cursor: saved === undefined ? incoming.cursor : saved.cursor,
+              cursor: positionOf(incoming.cursor, saved?.cursor),
               state: incomingState,
               ...(incoming.lastEventAt === undefined && saved?.lastEventAt !== undefined
                 ? { lastEventAt: saved.lastEventAt }
@@ -1719,7 +1911,7 @@ export class McpEventFeed {
           : {
               ...incoming,
               stableId: current.stableId,
-              cursor: current.cursor,
+              cursor: positionOf(current.cursor, incoming.cursor, saved?.cursor),
               state:
                 current.state === "dead" && incoming.status !== "active"
                   ? "dead"
@@ -1816,7 +2008,7 @@ export class McpEventFeed {
           ...incoming,
           stableId: current?.stableId ?? incoming.stableId,
           state: deriveSubscriptionState(incoming.status, incoming.state),
-          cursor: current === undefined ? incoming.cursor : current.cursor,
+          cursor: positionOf(current?.cursor, incoming.cursor),
           recoveryFailures: current?.recoveryFailures ?? incoming.recoveryFailures,
           recoveryPending: current?.recoveryPending ?? incoming.recoveryPending,
           recoveryStartedAt: current?.recoveryStartedAt ?? incoming.recoveryStartedAt,

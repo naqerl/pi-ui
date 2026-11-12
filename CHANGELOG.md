@@ -1,3 +1,20 @@
+## 1.6.154
+
+### Fixed
+
+- The chat keeps its reading position through a round trip to Tasks or Stats:
+  coming back no longer shifts the transcript, so the message you were reading is
+  still where you left it.
+
+## 1.6.153
+
+### Fixed
+
+- A plan run that dies no longer goes quiet: the plan chat shows the run error
+  and offers a retry, so a stalled plan is visible instead of looking idle.
+- A cut event stream resumes at the last delivered cursor and reports one notice
+  per durable id, instead of replaying the history it already showed.
+
 ## 1.6.152
 
 ### Changed

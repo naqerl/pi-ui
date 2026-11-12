@@ -648,12 +648,15 @@ test("the immediate chat path drops an attributed failure while the stream is li
   assert.deepEqual(chat.submitted, [], "the short prose form belongs to a live generation");
 });
 
-test("a status may name the tracked durable stable id instead of the adapter id", () => {
+test("a durable id with a live sibling stays silent but its own id still speaks", () => {
   const feed = new McpEventFeed();
   liveHubSubscription(feed, "b-live");
   const { shim, submitted } = statusSink(feed);
   const stableId = deriveStableId("hub", "hub", {});
+  heartbeat(feed, "b-live", new Date().toISOString());
 
+  // No adapter id: this describes the durable subscription, and the live row
+  // is already the generation serving it.
   shim.sendMessage({
     customType: "mcp-events-status",
     content: `${MCP_STATUS_HEAD}\n${JSON.stringify({
@@ -662,8 +665,112 @@ test("a status may name the tracked durable stable id instead of the adapter id"
     details: { subscriptions: [{ stableId, server: "hub", name: "hub", status: "failed" }] },
   });
 
-  assert.equal(submitted.length, 1, "the durable identity is a tracked subscription");
+  assert.deepEqual(submitted, [], "a live sibling makes the durable-id status noise");
+
+  // Naming the live generation itself is authoritative and still reaches chat.
+  shim.sendMessage({
+    customType: "mcp-events-status",
+    content: `${MCP_STATUS_HEAD}\n${JSON.stringify({
+      subscriptions: [{ id: "b-live", stableId, server: "hub", name: "hub", status: "failed" }],
+    })}`,
+    details: {
+      subscriptions: [{ id: "b-live", stableId, server: "hub", name: "hub", status: "failed" }],
+    },
+  });
+
+  assert.equal(submitted.length, 1, "the live id's failure is news once");
+  assert.match(submitted[0] ?? "", /b-live/);
   assert.match(submitted[0] ?? "", new RegExp(stableId));
+});
+
+function heartbeat(feed: McpEventFeed, id: string, at: string): void {
+  feed.ingest({
+    customType: "mcp-events-traffic",
+    details: { subscription_id: id, server: "hub", cursor: "hub:900", timestamp: at },
+  });
+}
+
+test("a generation death is silent while the last heartbeat is inside the window", () => {
+  const feed = new McpEventFeed();
+  liveHubSubscription(feed, "b-live");
+  const { shim, submitted } = statusSink(feed);
+  heartbeat(feed, "b-live", new Date().toISOString());
+
+  shim.sendMessage(statusNotice("b-live", "reconnecting"));
+  shim.sendMessage(statusNotice("b-live", "active"));
+
+  assert.equal(feed.state.subscriptions[0]?.status, "active", "the row never flashes down");
+  assert.deepEqual(submitted, [], "a quick generation swap is not an outage");
+});
+
+test("an id-less durable status reaches chat after real silence", () => {
+  const feed = new McpEventFeed();
+  liveHubSubscription(feed, "b-live");
+  const { shim, submitted } = statusSink(feed);
+  const stableId = deriveStableId("hub", "hub", {});
+  heartbeat(feed, "b-live", new Date(Date.now() - 70_000).toISOString());
+
+  shim.sendMessage({
+    customType: "mcp-events-status",
+    content: `${MCP_STATUS_HEAD}\n${JSON.stringify({
+      subscriptions: [{ stable_id: stableId, server: "hub", name: "hub", status: "reconnecting" }],
+    })}`,
+    details: {
+      subscriptions: [{ stable_id: stableId, server: "hub", name: "hub", status: "reconnecting" }],
+    },
+  });
+
+  assert.equal(feed.state.subscriptions[0]?.status, "reconnecting");
+  assert.equal(submitted.length, 1, "real silence is an outage even without an adapter id");
+  assert.match(submitted[0] ?? "", new RegExp(stableId));
+});
+
+test("a generation death speaks once the heartbeat window has passed", () => {
+  const feed = new McpEventFeed();
+  liveHubSubscription(feed, "b-live");
+  const { shim, submitted } = statusSink(feed);
+  heartbeat(feed, "b-live", new Date(Date.now() - 70_000).toISOString());
+
+  shim.sendMessage(statusNotice("b-live", "reconnecting"));
+
+  assert.equal(feed.state.subscriptions[0]?.status, "reconnecting");
+  assert.equal(submitted.length, 1, "real silence is the fault the user needs");
+  assert.match(submitted[0] ?? "", /reconnecting/);
+});
+
+test("a prose generation death is silent while the live stream is heartbeat-fresh", () => {
+  const feed = new McpEventFeed();
+  liveHubSubscription(feed, "b-live");
+  const { shim, submitted } = statusSink(feed);
+  heartbeat(feed, "b-live", new Date().toISOString());
+
+  shim.sendMessage({
+    customType: "mcp-events-status",
+    content: `${MCP_STATUS_HEAD}\ntracer: fetch failed`,
+  });
+
+  assert.deepEqual(submitted, [], "the prose channel obeys the same freshness rule");
+});
+
+test("a status naming a durable id with a live sibling stays out of chat", () => {
+  const feed = new McpEventFeed();
+  liveHubSubscription(feed, "b-live");
+  const { shim, submitted } = statusSink(feed);
+  const stableId = deriveStableId("hub", "hub", {});
+  heartbeat(feed, "b-live", new Date().toISOString());
+
+  shim.sendMessage({
+    customType: "mcp-events-status",
+    content: `${MCP_STATUS_HEAD}\n${JSON.stringify({
+      subscriptions: [{ stable_id: stableId, server: "hub", name: "hub", status: "ended" }],
+    })}`,
+    details: {
+      subscriptions: [{ stable_id: stableId, server: "hub", name: "hub", status: "ended" }],
+    },
+  });
+
+  assert.equal(feed.state.subscriptions[0]?.status, "active");
+  assert.deepEqual(submitted, [], "the live durable sibling already serves this stream");
 });
 
 test("a terminal status for a superseded generation leaves the live row and is not submitted", () => {
@@ -1614,6 +1721,50 @@ test("reopenSubscription returns the server's cursor, not its argument", async (
       calls.at(-1)?.cursor,
       null,
       "the cursor it was given wins over a different stored position",
+    );
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("reopenSubscription without a cursor uses the newest durable position", async (t) => {
+  await withAgentConfig(t, {
+    mcpServers: {
+      stub: { command: process.execPath, args: [resolve("e2e/stub-mcp.mjs")] },
+    },
+    web: { command: process.execPath, disabled: true },
+  });
+  const dataDir = await tempDir(t);
+  const runtime = await startMcpRuntime({ dataDir });
+  try {
+    const calls: Record<string, unknown>[] = [];
+    const original = runtime.shim.callTool.bind(runtime.shim);
+    runtime.shim.callTool = async (name, params, signal) => {
+      const request =
+        typeof params === "object" && params !== null ? (params as Record<string, unknown>) : {};
+      if (name === "mcp_events" && request.action === "subscribe") calls.push(request);
+      return original(name, params, signal);
+    };
+
+    // The caller still holds a record from before the last delivered event.
+    const stale = subscription({
+      id: "old-adapter",
+      server: "stub",
+      name: "stub-hub",
+      cursor: "hub:100",
+      updatedAt: "2026-11-10T10:00:00.000Z",
+    });
+    await runtime.subscriptionRegistry?.record({
+      ...stale,
+      cursor: "hub:361",
+      updatedAt: "2026-11-10T11:00:00.000Z",
+    });
+
+    await runtime.reopenSubscription(stale, undefined);
+    assert.equal(
+      calls.at(-1)?.cursor,
+      "hub:361",
+      "the durable row's last delivered cursor wins over the stale caller record",
     );
   } finally {
     await runtime.close();

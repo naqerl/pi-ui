@@ -1378,8 +1378,11 @@ export class McpRuntime {
     maxEvents = 1,
   ): Promise<unknown> {
     const session = await this.pollSession(server);
+    // A zero position is not a position. Nothing below this point may send
+    // `hub:0` (or any `:0`) to the transport and replay the hub's whole history.
+    const from = hasPosition(cursor) ? cursor : null;
     try {
-      return await session.request("events/poll", { name, cursor, maxEvents });
+      return await session.request("events/poll", { name, cursor: from, maxEvents });
     } catch (error) {
       if (session.signal.aborted) {
         session.close();
@@ -1454,15 +1457,16 @@ export class McpRuntime {
   ): Promise<{ id?: string; cursor: string | null; status: string; endReason?: string }> {
     // When the caller supplies a cursor it wins: a real position resumes there
     // and a zero position means "start in now", never the stored position.
-    // Only "no cursor at all" falls back to the record's usable position.
+    // "No cursor at all" falls back to the newest durable position, not the
+    // caller's possibly stale record object.
+    const saved = this.subscriptionStore?.findByStableId(recordStableId(record));
+    const fallback = hasPosition(saved?.cursor)
+      ? saved.cursor
+      : hasPosition(record.cursor)
+        ? record.cursor
+        : null;
     const sent =
-      cursor === null || cursor === undefined
-        ? hasPosition(record.cursor)
-          ? record.cursor
-          : null
-        : hasPosition(cursor)
-          ? cursor
-          : null;
+      cursor === null || cursor === undefined ? fallback : hasPosition(cursor) ? cursor : null;
     logStartFromNow(record, sent);
     if (this.toolNames.includes("mcp_events")) {
       if (record.id !== null && record.id !== undefined && record.id.length > 0) {
@@ -1739,7 +1743,7 @@ export class McpRuntime {
       // report a gap for events that do not exist.
       return {
         missing: false,
-        cursor: polledEventCursor(response) ?? record.cursor,
+        cursor: positionCursor(polledEventCursor(response), record.cursor),
         stale: backlog.stale,
         backlog,
       };

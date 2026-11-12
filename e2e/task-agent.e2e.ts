@@ -36,3 +36,62 @@ test("the plus button creates a task and opens its planning chat", { timeout: 18
   }, title);
   expect(stored).toEqual({ project: "pi-ui", title });
 });
+
+test("a plan run that dies without an answer shows a dismissible error", {
+  timeout: 180_000,
+}, async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/?page=tasks");
+  const title = `Plan run failure ${Date.now()}`;
+  await createOpenTask(screen, title);
+  await openTaskChatTab(screen);
+  await expect(screen.getByTestId("task-agent-chat")).toBeVisible();
+
+  const input = screen.getByTestId("task-agent-input");
+  await input.fill("DELEGATE_FAIL");
+  await screen.getByTestId("task-agent-send").tap();
+
+  const header = screen.getByTestId("run-error-header");
+  await expect(header).toBeVisible({ timeout: 60_000 });
+  await expect(screen.getByTestId("run-error-class")).toHaveText("ModelError");
+  await expect(screen.getByTestId("run-error-message")).toContainText(/delegate failure/i);
+
+  // The chat is idle with the error, never bare idle and nothing else.
+  await expect
+    .poll(async () =>
+      browser.evaluate(async (taskTitle) => {
+        const ledger = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
+          tasks: Array<{ id: string; title: string }>;
+        };
+        const task = ledger.tasks.find((item) => item.title === taskTitle);
+        if (task === undefined) return null;
+        const chat = (await (
+          await fetch(`/api/tasks/${encodeURIComponent(task.id)}/chat`, { cache: "no-store" })
+        ).json()) as { run?: string; runError?: { class?: string } | null; id?: string };
+        return {
+          id: task.id,
+          run: chat.run ?? null,
+          errorClass: chat.runError?.class ?? null,
+        };
+      }, title),
+    )
+    .toEqual({ id: expect.any(String), run: "idle", errorClass: "ModelError" });
+
+  await screen.getByTestId("run-error-dismiss").tap();
+  await expect(header).toHaveCount(0);
+  await expect
+    .poll(async () =>
+      browser.evaluate(async (taskTitle) => {
+        const ledger = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
+          tasks: Array<{ id: string; title: string }>;
+        };
+        const task = ledger.tasks.find((item) => item.title === taskTitle);
+        if (task === undefined) return null;
+        const chat = (await (
+          await fetch(`/api/tasks/${encodeURIComponent(task.id)}/chat`, { cache: "no-store" })
+        ).json()) as { runError?: string | null };
+        return chat.runError ?? null;
+      }, title),
+    )
+    .toBeNull();
+});
