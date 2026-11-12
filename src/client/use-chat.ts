@@ -300,6 +300,7 @@ export function useChat(options: UseChatOptions = {}) {
     const previous = taskLedgerRef.current;
     const next: TaskLedger = {
       ...ledger,
+      planning: ledger.planning ?? previous.planning ?? [],
       activity: carryWorkingTraces(previous.activity, ledger.activity, ledger.tasks),
     };
     taskLedgerRef.current = next;
@@ -1065,6 +1066,7 @@ export function useChat(options: UseChatOptions = {}) {
     refresh: refreshState,
     mcpEvents,
     tasks: taskLedger.tasks,
+    planning: taskLedger.planning ?? [],
     taskActivity: taskLedger.activity,
     ready,
     hasEarlier,

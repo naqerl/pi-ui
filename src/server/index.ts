@@ -11,6 +11,7 @@ import type { OperatorNoticeRecord, TaskDecisionNoticeRecord } from "../shared/n
 import { boundMcpEventBatch, isMcpNotice } from "../shared/notices.js";
 import { PAGE_IDS, PAGE_PATHS } from "../shared/pages.js";
 import {
+  isActiveStatus,
   parseCompletion,
   parseReleaseReason,
   parseReopenReason,
@@ -98,10 +99,19 @@ const taskActivity = new TaskActivityTracker(
 );
 await taskActivity.load();
 taskActivity.observeLedger(taskStore.ledger().tasks);
-/** The ledger as clients see it: tasks plus what the runs measured for them. */
+/** Filled once the task-agent manager exists; before that no plan run can be live. */
+let planningTaskIds = (): string[] => [];
+/** The ledger as clients see it: tasks plus what the runs measured and planned for them. */
 function taskView(ledger: TaskLedger = taskStore.ledger()): TaskLedger {
+  const planning = planningTaskIds();
+  const live = new Set(planning);
   return {
     ...ledger,
+    planning,
+    tasks: ledger.tasks.map((task) => ({
+      ...task,
+      planning: live.has(task.id) && isActiveStatus(task.status),
+    })),
     activity: taskActivity.view(),
     reopenStats: taskReopenStats(ledger.tasks),
   };
@@ -320,8 +330,12 @@ const taskAgents = new TaskAgentManager({
   relay: (taskId, frame) => {
     hub.broadcast({ event: "task.chat", data: { taskId, event: frame.event, data: frame.data } });
   },
+  onRunState: () => {
+    hub.broadcast({ event: "tasks", data: taskView() });
+  },
   baseInstructions: await taskAgentPrompt,
 });
+planningTaskIds = () => taskAgents.planningTaskIds();
 function builtinJobs() {
   return jobs.list().map((job) => ({
     id: job.id,

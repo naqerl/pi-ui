@@ -76,6 +76,8 @@ interface ChatViewProps {
   delegates?: DelegateRunView[];
   ready: boolean;
   tasks: Task[];
+  /** Task ids whose plan agent currently has a live run. */
+  planning?: readonly string[];
   /** Measured run activity per task, from the ledger view. */
   taskActivity?: TaskActivity;
   send: (text: string, mode?: MessageMode, attachments?: string[]) => Promise<SendOutcome>;
@@ -1519,6 +1521,7 @@ export function ChatView({
   delegates,
   ready,
   tasks,
+  planning = [],
   taskActivity,
   send,
   stop,
@@ -1993,6 +1996,7 @@ export function ChatView({
               <Suspense fallback={null}>
                 <TasksView
                   tasks={shownTasks}
+                  planning={planning}
                   activity={taskActivity}
                   ready={ready}
                   footerClearance={0}
