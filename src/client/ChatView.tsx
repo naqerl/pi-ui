@@ -36,6 +36,7 @@ import { groupSummaryParts } from "./activity-format";
 import { Button } from "./components/ui/button";
 import { Textarea } from "./components/ui/textarea";
 import { DiagramPart } from "./DiagramPart";
+import { EmptyCaption } from "./EmptyCaption";
 import { haptic } from "./haptics";
 import {
   ArrowDownIcon,
@@ -55,6 +56,7 @@ import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
 import { RunErrorHeader } from "./RunErrorHeader";
 import type { ChatStats } from "./StatsView";
 import { createTask } from "./task-client";
+import { TaskDockComposerProvider, type TaskDockSession } from "./task-dock-composer";
 import { TaskLinkProvider } from "./task-link";
 import { groupTimeline, type TimelineGroup } from "./timeline-groups";
 import type { SendOutcome, TimelineItem } from "./use-chat";
@@ -901,6 +903,7 @@ export function Composer({
   attachTestId,
   inputLabel,
   placeholder,
+  draftKey,
 }: {
   tasksPage: boolean;
   /** When set, @project suggestions work even if this is not the create-task composer. */
@@ -926,8 +929,15 @@ export function Composer({
   attachTestId?: string;
   inputLabel?: string;
   placeholder?: string;
+  /** Stable instance: text drafts are stored per target instead of remounting. */
+  draftKey?: string;
 }) {
-  const [value, setValue] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const key = draftKey ?? "default";
+  const value = drafts[key] ?? "";
+  const setValue = (text: string) => {
+    setDrafts((all) => ({ ...all, [key]: text }));
+  };
   const [caret, setCaret] = useState<number | null>(null);
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -1153,6 +1163,7 @@ export function Composer({
   return (
     <form
       ref={formRef}
+      data-testid="composer-form"
       onSubmit={(event) => {
         event.preventDefault();
         void submit(running ? "steer" : "queue");
@@ -1496,7 +1507,9 @@ export function ChatView({
   const [pageAnimating, setPageAnimating] = useState(false);
   const [taskSelection, setTaskSelection] = useState<{ id: string; request: number } | null>(null);
   const [composerMode, setComposerMode] = useState<"create" | "task-chat" | "collapsed">("create");
-  const taskChatInDock = tasksPage && composerMode === "task-chat";
+  const [taskDock, setTaskDock] = useState<TaskDockSession | null>(null);
+  const wantTaskDock = tasksPage && composerMode === "task-chat";
+  const dockToTask = wantTaskDock && taskDock !== null;
   const hideTasksComposer = statsPage || (tasksPage && composerMode === "collapsed");
   const lastPagerState = useRef({ page: pager.page, dragging: pager.dragging });
   const shownTasks = useMemo(
@@ -1934,12 +1947,9 @@ export function ChatView({
           </div>
         </div>
         {ready && groups.length === 0 && pager.page === CHAT_PAGE && (
-          <p
-            className="pointer-events-none absolute inset-x-0 z-10 -translate-y-1/2 px-4 text-center font-mono text-xs text-muted-foreground"
-            style={{ top: "50%" }}
-          >
-            Send a message to start.
-          </p>
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center px-4">
+            <EmptyCaption mono>Send a message to start.</EmptyCaption>
+          </div>
         )}
         {!stick.attached && pager.page === CHAT_PAGE && (
           <div
@@ -2018,24 +2028,44 @@ export function ChatView({
             inert={hideTasksComposer ? true : undefined}
             className="composer-body"
           >
-            {taskChatInDock ? (
-              <div id="task-composer-slot" data-testid="task-composer-slot" />
-            ) : (
-              <div>
-                <Composer
-                  tasksPage={tasksPage}
-                  running={running}
-                  send={handleSend}
-                  stop={stop}
-                  unsendSteer={!tasksPage && pendingSteers > 0 ? unsendSteer : undefined}
-                  addTask={addTask}
-                  projects={projects}
-                  error={composerError}
-                  onDismissError={() => setComposerError(null)}
-                  textareaRef={composerRef}
-                />
-              </div>
-            )}
+            <Composer
+              draftKey={
+                !tasksPage
+                  ? "chat"
+                  : wantTaskDock
+                    ? taskDock !== null
+                      ? `task:${taskDock.taskId}`
+                      : "task:pending"
+                    : "create"
+              }
+              tasksPage={tasksPage && !wantTaskDock}
+              projectMentions={wantTaskDock ? true : undefined}
+              running={dockToTask ? taskDock.running : running}
+              send={
+                dockToTask
+                  ? async (text, mode, attachments) =>
+                      await Promise.resolve(taskDock.send(text, mode, attachments ?? []))
+                  : wantTaskDock
+                    ? async () => false
+                    : handleSend
+              }
+              stop={dockToTask ? () => Promise.resolve(taskDock.stop()) : stop}
+              unsendSteer={!tasksPage && pendingSteers > 0 ? unsendSteer : undefined}
+              addTask={addTask}
+              projects={projects}
+              error={dockToTask ? taskDock.error : composerError}
+              onDismissError={dockToTask ? taskDock.dismissError : () => setComposerError(null)}
+              textareaRef={composerRef}
+              inputTestId={wantTaskDock ? "task-agent-input" : undefined}
+              sendTestId={wantTaskDock ? "task-agent-send" : undefined}
+              attachTestId={wantTaskDock ? "task-agent-attach" : undefined}
+              inputLabel={wantTaskDock ? "Task message" : undefined}
+              placeholder={
+                wantTaskDock
+                  ? (taskDock?.placeholder ?? "Ask the planning agent to help formulate this task.")
+                  : undefined
+              }
+            />
           </div>
         </div>
       </div>
@@ -2055,7 +2085,7 @@ export function ChatView({
 
   return (
     <TaskLinkProvider tasks={shownTasks} openTask={openTaskFromChat}>
-      {content}
+      <TaskDockComposerProvider onSession={setTaskDock}>{content}</TaskDockComposerProvider>
     </TaskLinkProvider>
   );
 }

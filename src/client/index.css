@@ -241,11 +241,16 @@
   /* A page slide moves the layout under the dock; a full-area blur recomputed
      every frame is the expensive half of the transition. Flatten it while the
      pager is in flight, then restore the glass once the pages settle. */
+  /* Keep data-transitioning for stats-transitions e2e; do not flatten the glass. */
   .float-footer[data-transitioning="true"] {
-    background-color: var(--surface);
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
     transition: none;
+  }
+
+  .glass-caption {
+    background-color: color-mix(in srgb, var(--surface) 72%, transparent);
+    -webkit-backdrop-filter: blur(18px);
+    backdrop-filter: blur(18px);
+    border-radius: var(--radius);
   }
 
   .float-footer:focus-within {

@@ -1,28 +1,13 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_NEW_TASK_TITLE } from "../shared/tasks";
-import type { ChatMessage, Task } from "../shared/types";
+import type { ChatMessage, MessageMode, Task } from "../shared/types";
 import { Composer, MessageBubble } from "./ChatView";
+import { EmptyCaption } from "./EmptyCaption";
 import { cn } from "./lib/utils";
 import { FIXTURE_CHAT, FIXTURE_PLAN_ID } from "./task-detail-fixture";
 import { readTaskDetailFixture } from "./task-detail-query";
+import { type TaskDockSession, useRegisterTaskDock } from "./task-dock-composer";
 import { useTaskChat } from "./use-task-chat";
-
-function useTaskComposerSlot(active: boolean): HTMLElement | null {
-  const [slot, setSlot] = useState<HTMLElement | null>(null);
-  useLayoutEffect(() => {
-    if (!active) {
-      setSlot(null);
-      return;
-    }
-    const read = () => document.getElementById("task-composer-slot");
-    setSlot(read());
-    const observer = new MutationObserver(() => setSlot(read()));
-    observer.observe(document.body, { childList: true, subtree: true });
-    return () => observer.disconnect();
-  }, [active]);
-  return slot;
-}
 
 export function TaskAgentChat({
   task,
@@ -34,7 +19,7 @@ export function TaskAgentChat({
   projects: string[];
   /** `pane` is the main-chat look: no card, bubbles, blurred composer. */
   variant?: "pane" | "flush";
-  /** `dock` portals the composer into the main-chat float footer. */
+  /** `dock` registers send/stop on the persistent main-chat float footer. */
   composerTarget?: "local" | "dock";
 }) {
   const done = task.status === "done";
@@ -70,7 +55,12 @@ export function TaskAgentChat({
   }, [rows.length]);
 
   useEffect(() => {
-    const focus = () => inputRef.current?.focus({ preventScroll: true });
+    const focus = () => {
+      const node =
+        inputRef.current ??
+        document.querySelector<HTMLTextAreaElement>('[data-testid="task-agent-input"]');
+      node?.focus({ preventScroll: true });
+    };
     window.addEventListener("pi-focus-task-chat", focus);
     return () => window.removeEventListener("pi-focus-task-chat", focus);
   }, []);
@@ -82,7 +72,43 @@ export function TaskAgentChat({
   const placeholderIdle =
     task.title === DEFAULT_NEW_TASK_TITLE ? "Describe the task to plan…" : "Message the task agent";
   const dock = composerTarget === "dock";
-  const slot = useTaskComposerSlot(dock && !done);
+
+  const sendDock = useCallback(
+    async (text: string, _mode?: MessageMode, attachments?: string[]) => {
+      const ok = await chat.send(text, attachments ?? []);
+      if (!ok && chat.error !== null) setComposerError(chat.error);
+      return ok;
+    },
+    [chat],
+  );
+
+  const session = useMemo((): TaskDockSession | null => {
+    if (!dock || done) return null;
+    return {
+      taskId: task.id,
+      placeholder: placeholderIdle,
+      running: chat.run === "running",
+      error: composerError,
+      send: sendDock,
+      stop: chat.stop,
+      dismissError: () => {
+        setComposerError(null);
+        chat.dismissError();
+      },
+    };
+  }, [
+    dock,
+    done,
+    task.id,
+    placeholderIdle,
+    chat.run,
+    chat.stop,
+    chat.dismissError,
+    composerError,
+    sendDock,
+  ]);
+
+  useRegisterTaskDock(session);
 
   const composer = done ? null : (
     <Composer
@@ -125,22 +151,20 @@ export function TaskAgentChat({
         )}
       >
         {rows.length === 0 ? (
-          <p className="px-1 py-6 text-center text-sm text-foreground/75">
-            {done
-              ? "This task is done, so the planning chat is closed."
-              : "Ask the planning agent to help formulate this task."}
-          </p>
+          <div className="flex min-h-0 flex-1 items-center justify-center">
+            <EmptyCaption>
+              {done
+                ? "This task is done, so the planning chat is closed."
+                : "Ask the planning agent to help formulate this task."}
+            </EmptyCaption>
+          </div>
         ) : (
           rows.map((message) => <MessageBubble key={message.id} message={message} />)
         )}
       </div>
-      {dock
-        ? slot !== null && composer !== null
-          ? createPortal(composer, slot)
-          : null
-        : composer !== null && (
-            <div className="glass-composer theme-radius shrink-0">{composer}</div>
-          )}
+      {!dock && composer !== null && (
+        <div className="glass-composer theme-radius shrink-0">{composer}</div>
+      )}
     </div>
   );
 }

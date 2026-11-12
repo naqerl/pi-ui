@@ -35,6 +35,7 @@ import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader } from "./components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
+import { EmptyCaption } from "./EmptyCaption";
 import { haptic } from "./haptics";
 import { CheckIcon, CloseIcon, RefreshIcon } from "./icons";
 import { cn } from "./lib/utils";
@@ -612,7 +613,10 @@ function TasksViewImpl({
   );
 
   const list = (
-    <div className={`${TASK_STACK} min-w-0`} data-testid="task-list">
+    <div
+      className={cn(TASK_STACK, "min-w-0", ready && tasks.length === 0 && "flex h-full min-h-0")}
+      data-testid="task-list"
+    >
       {(proposedTasks.length > 0 || failedTasks.length > 0) && (
         <Section
           title="Needs you"
@@ -701,7 +705,9 @@ function TasksViewImpl({
       )}
       {!ready && <p className="px-1 text-sm text-muted-foreground">Loading…</p>}
       {ready && tasks.length === 0 && (
-        <p className="py-8 text-center text-sm text-muted-foreground">No tasks yet.</p>
+        <div className="flex min-h-0 flex-1 items-center justify-center px-2">
+          <EmptyCaption>No tasks yet.</EmptyCaption>
+        </div>
       )}
     </div>
   );
@@ -734,19 +740,16 @@ function TasksViewImpl({
   const composerMode: "create" | "task-chat" | "collapsed" =
     openTask === undefined ? "create" : openTask.status === "done" ? "collapsed" : "task-chat";
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     onComposerMode?.(composerMode);
-    return () => onComposerMode?.("create");
   }, [composerMode, onComposerMode]);
+  useLayoutEffect(() => {
+    return () => onComposerMode?.("create");
+  }, [onComposerMode]);
 
   const content = (
     <div
-      className={cn(
-        "h-full overflow-x-hidden overscroll-x-none",
-        wide || openTask !== undefined
-          ? "overflow-hidden"
-          : cn("overflow-y-auto", SCROLLBAR_GUTTER),
-      )}
+      className="h-full overflow-hidden overflow-x-hidden overscroll-x-none"
       data-testid="tasks-page"
       data-layout={wide ? "split" : "stack"}
     >
@@ -754,9 +757,17 @@ function TasksViewImpl({
         className={
           wide
             ? "tasks-split grid h-full min-h-0 w-full grid-cols-[minmax(260px,320px)_minmax(280px,1fr)_minmax(300px,400px)] gap-4 px-4"
-            : "mx-auto flex w-full max-w-[72ch] flex-col gap-4 px-4"
+            : cn(
+                "mx-auto flex h-full min-h-0 w-full max-w-[72ch] flex-col",
+                openTask === undefined
+                  ? cn("gap-4 overflow-y-auto px-4", SCROLLBAR_GUTTER)
+                  : "overflow-hidden",
+              )
         }
-        style={{ paddingTop: 16, paddingBottom: 16 }}
+        style={{
+          paddingTop: !wide && openTask !== undefined ? 0 : 16,
+          paddingBottom: !wide && openTask !== undefined ? 12 : 16,
+        }}
         data-tasks-split={wide ? (openTask !== undefined ? "open" : "closed") : undefined}
       >
         {wide ? (
@@ -797,9 +808,9 @@ function TasksViewImpl({
               <div
                 data-col="main"
                 data-testid="task-detail-empty"
-                className="col-span-2 flex h-full min-h-0 min-w-0 flex-1 items-center justify-center px-4 py-10 text-sm text-foreground/75"
+                className="col-span-2 flex h-full min-h-0 min-w-0 flex-1 items-center justify-center px-4"
               >
-                Select a task to see its details.
+                <EmptyCaption>Select a task to see its details.</EmptyCaption>
               </div>
             )}
           </>
