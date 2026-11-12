@@ -1076,6 +1076,13 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
   available" banner with its Reset button. Widgets are the page: the grid shows the
   grid, and a reset happens because the agent was asked for it, not by tapping a bar
   that appears whenever the default board changes.
+## 1.6.161
+
+### Fixed
+
+- On a narrow screen the task detail opens at the top of the pane instead of wherever the list was
+  scrolled, and going back restores the list to the position you left it.
+
 ## 1.6.160
 
 ### Fixed
