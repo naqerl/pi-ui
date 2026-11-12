@@ -4,6 +4,7 @@ import {
   backToTaskList,
   chooseTaskAction,
   createOpenTask,
+  expectDetailTitle,
   expectTaskProject,
   openNewTaskComposer,
   openTaskProject,
@@ -175,15 +176,16 @@ test("project suggestions come only from open tasks", { timeout: 300_000 }, asyn
   await betaProject.fill(beta);
   await betaProject.press("Enter");
   await expectTaskProject(screen, beta);
+  await browser.keyboard.press("Escape");
 
   // Closing the last alpha task removes its name from every suggestion list.
   await screen.getByRole("button", { name: `Open ${alphaTitle}` }).click();
   await chooseTaskAction(screen, "task-detail-status");
-  await expect(screen.getByTestId("task-state")).toHaveText("Done");
+  await expect(screen.getByTestId("task-section-done")).toContainText(alphaTitle);
   await expect(screen.getByTestId(`task-project-${alpha}`)).toHaveCount(0);
 
   await screen.getByRole("button", { name: `Open ${betaTitle}` }).click();
-  await expect(screen.getByTestId("task-title")).toContainText(betaTitle);
+  await expectDetailTitle(screen, betaTitle);
   await expect(screen.getByTestId("task-agent-input")).toBeVisible();
   const betaProjectAgain = await openTaskProject(screen);
   await betaProjectAgain.fill("@");
@@ -204,7 +206,7 @@ test("project suggestions come only from open tasks", { timeout: 300_000 }, asyn
 
   // Removing the open task clears the detail; reopen beta to keep the plan chat.
   await screen.getByRole("button", { name: `Open ${betaTitle}` }).click();
-  await expect(screen.getByTestId("task-title")).toContainText(betaTitle);
+  await expectDetailTitle(screen, betaTitle);
   await typeMention();
   await expect(screen.getByTestId(`project-suggestion-${gamma}`)).toHaveCount(0);
   await expect(screen.getByTestId(`project-suggestion-${beta}`)).toBeVisible();
@@ -313,8 +315,8 @@ test("subtasks take their parent's project and the detail edits it in place", as
   await expect(screen.getByText("Water the plants", { exact: true })).toBeVisible();
 
   await screen.getByRole("button", { name: "Open Diff the tram routes" }).click();
-  await expect(screen.getByTestId("task-project-line")).toBeVisible();
   await expectTaskProject(screen, "citydiff");
+  await browser.keyboard.press("Escape");
   await expect(screen.getByTestId("task-project")).toHaveCount(0);
 
   // The agent creates structure through the ledger; seed the child through the API.
@@ -338,9 +340,9 @@ test("subtasks take their parent's project and the detail edits it in place", as
   ).toBeVisible();
   await screen.getByRole("button", { name: "Open Map the stops" }).click();
   await expectTaskProject(screen, "citydiff");
+  await browser.keyboard.press("Escape");
 
   await screen.getByRole("button", { name: "Open Water the plants" }).click();
-  await expect(screen.getByTestId("task-project-line")).toBeVisible();
   await expectTaskProject(screen, "");
   const emptyProject = await openTaskProject(screen);
   await expect(emptyProject).toHaveValue("");

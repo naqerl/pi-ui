@@ -1,6 +1,6 @@
 import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
-import { isTaskChatUrl } from "./tasks-helpers";
+import { beginRenameTask, isTaskChatUrl } from "./tasks-helpers";
 import { removeTasks } from "./tasks-helpers.js";
 
 async function blur(browser: Browser) {
@@ -43,7 +43,7 @@ test("edits a task title in place, grows to two lines, and refuses an empty one"
   await expect(screen.getByTestId("task-body-edit")).toHaveCount(0);
   await expect(detail.getByRole("button", { name: /Edit title/ })).toHaveCount(0);
 
-  await detail.getByText("Draft title", { exact: true }).click();
+  await beginRenameTask(screen);
   const title = screen.getByRole("textbox", "Task title");
   const single = await title.boundingBox();
   await title.fill("Long first line\nCorrected title");
@@ -74,29 +74,30 @@ test("edits a task title in place, grows to two lines, and refuses an empty one"
 
   await browser.reload();
   await screen.getByRole("button", { name: /Open Long first line\s+Corrected title/ }).click();
-  await expect(screen.getByTestId("task-title")).toBeVisible();
+  await beginRenameTask(screen);
   await expect
     .poll(() =>
-      browser.evaluate(
-        () => document.querySelector('[data-testid="task-title"]')?.textContent ?? null,
-      ),
+      browser.evaluate(() => {
+        const field = document.querySelector<HTMLTextAreaElement>('[data-testid="task-title-input"]');
+        return field?.value ?? null;
+      }),
     )
     .toBe("Long first line\nCorrected title");
 
-  await screen.getByTestId("task-title").click();
   const escaped = screen.getByRole("textbox", "Task title");
   await escaped.fill("Should not save");
   const beforeEscape = patches;
   await escaped.press("Escape");
   await new Promise((resolve) => setTimeout(resolve, 150));
   expect(patches).toBe(beforeEscape);
-  expect(
-    await browser.evaluate(
-      () => document.querySelector('[data-testid="task-title"]')?.textContent ?? null,
-    ),
-  ).toBe("Long first line\nCorrected title");
 
-  await screen.getByTestId("task-title").click();
+  await beginRenameTask(screen);
+  const kept = await browser.evaluate(() => {
+    const field = document.querySelector<HTMLTextAreaElement>('[data-testid="task-title-input"]');
+    return field?.value ?? null;
+  });
+  expect(kept).toBe("Long first line\nCorrected title");
+
   const again = screen.getByRole("textbox", "Task title");
   await again.fill("   ");
   await blur(browser);

@@ -95,6 +95,9 @@ async function openSnapshot(
 
 async function expectProjectAboveBody(browser: Browser) {
   const projectAboveBody = await browser.evaluate(() => {
+    const detail = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
+    // Desktop moves project into the kebab; only mobile keeps it in the header.
+    if (detail?.getAttribute("data-layout") === "desktop") return true;
     const project = document.querySelector<HTMLElement>('[data-testid="task-project-line"]');
     const body = document.querySelector<HTMLElement>('[data-testid="task-body-section"]');
     if (project === null || body === null) return null;
@@ -252,38 +255,29 @@ describe("task detail against a mocked state route", { serial: true }, () => {
 
     const contentTop = await browser.evaluate(() => {
       const pane = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
-      const meta = document.querySelector<HTMLElement>('[data-testid="task-header-meta"]');
-      const title = document.querySelector<HTMLElement>('[data-testid="task-title"]');
-      const times = document.querySelector<HTMLElement>('[data-testid="task-times"]');
+      const bar = document.querySelector<HTMLElement>('[data-testid="task-details-bar"]');
       const description = document.querySelector<HTMLElement>('[data-testid="task-body-section"]');
-      if (
-        pane === null ||
-        meta === null ||
-        title === null ||
-        times === null ||
-        description === null
-      ) {
+      if (pane === null || bar === null || description === null) {
         return null;
       }
       const paneTop = pane.getBoundingClientRect().top;
       return {
-        meta: meta.getBoundingClientRect().top - paneTop,
-        titleAfterMeta: !!(meta.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING),
-        timesWithMeta:
-          Math.abs(times.getBoundingClientRect().top - meta.getBoundingClientRect().top) <= 4,
-        times: times.getBoundingClientRect().top - paneTop,
-        titleBeforeBody: !!(
-          title.compareDocumentPosition(description) & Node.DOCUMENT_POSITION_FOLLOWING
-        ),
+        bar: bar.getBoundingClientRect().top - paneTop,
+        label: (bar.textContent ?? "").includes("Task details"),
+        hasTitle: document.querySelector('[data-testid="task-title"]') !== null,
+        hasMeta: document.querySelector('[data-testid="task-header-meta"]') !== null,
         hasBlockers: document.querySelector('[data-testid="task-blockers-card"]') !== null,
+        barBeforeBody: !!(
+          bar.compareDocumentPosition(description) & Node.DOCUMENT_POSITION_FOLLOWING
+        ),
       };
     });
     expect(contentTop).not.toBeNull();
-    expect(contentTop?.meta ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(40);
-    expect(contentTop?.titleAfterMeta).toBe(true);
-    expect(contentTop?.timesWithMeta).toBe(true);
-    expect(contentTop?.times ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(80);
-    expect(contentTop?.titleBeforeBody).toBe(true);
+    expect(contentTop?.bar ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(2);
+    expect(contentTop?.label).toBe(true);
+    expect(contentTop?.hasTitle).toBe(false);
+    expect(contentTop?.hasMeta).toBe(false);
+    expect(contentTop?.barBeforeBody).toBe(true);
     expect(contentTop?.hasBlockers).toBe(false);
 
     const sides = await browser.evaluate(() => {

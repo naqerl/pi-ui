@@ -60,9 +60,12 @@ test("captures v4c header, project dropdown, and merged dock in vantablack", {
   await expect(screen.getByTestId("task-detail")).toBeVisible();
   await expect(screen.getByTestId("task-header")).toBeVisible();
   await expect(screen.getByTestId("task-detail-back")).toHaveAttribute("aria-label", "Close");
-  await expect(screen.getByTestId("task-header-project")).toBeVisible();
+  await expect(screen.getByTestId("task-details-bar")).toContainText("Task details");
+  await expect(screen.getByTestId("task-detail-menu")).toBeVisible();
+  await expect(screen.getByTestId("task-header-project")).toHaveCount(0);
   await expect(screen.getByTestId("task-agent-input")).toBeVisible();
-  await expect(screen.getByTestId("task-composer-slot")).toBeVisible();
+  await expect(screen.getByTestId("task-composer-slot")).toHaveCount(0);
+  await expect(screen.getByTestId("composer-dock")).toBeVisible();
   await expect(screen.getByTestId("tasks-composer-slot")).toHaveCount(0);
   await waitMs(browser);
   await app.screenshot("desktop-open");

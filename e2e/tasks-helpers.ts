@@ -37,7 +37,7 @@ export async function createOpenTask(
   await input.fill(text);
   await screen.getByRole("button", "Add task").tap();
   const expected = title.split("\n")[0] ?? title;
-  await expect(screen.getByTestId("task-title")).toContainText(expected);
+  await expectDetailTitle(screen, expected);
 }
 
 /** Close a mobile task detail so the list is visible again. No-op on the desktop split. */
@@ -72,23 +72,62 @@ export async function chooseTaskAction(screen: TaskScreen, testId: string) {
   await screen.getByTestId(testId).tap();
 }
 
+/** Whether the open task detail is the desktop split (thin Task details bar). */
+export async function isDesktopDetail(screen: TaskScreen): Promise<boolean> {
+  const detail = screen.getByTestId("task-detail");
+  if ((await detail.count()) === 0) return false;
+  return (await detail.getAttribute("data-layout")) === "desktop";
+}
+
+/** Assert the open task's title, using the list on desktop and the header on mobile. */
+export async function expectDetailTitle(screen: TaskScreen, expected: string) {
+  await expect(screen.getByTestId("task-detail")).toBeVisible();
+  if (await isDesktopDetail(screen)) {
+    await expect(screen.getByTestId("task-details-bar")).toContainText("Task details");
+    await expect(screen.getByRole("button", { name: `Open ${expected}` })).toBeVisible();
+  } else {
+    await expect(screen.getByTestId("task-title")).toContainText(expected);
+  }
+}
+
+/** Open the title editor: click the header title on mobile, or Rename… on desktop. */
+export async function beginRenameTask(screen: TaskScreen) {
+  const title = screen.getByTestId("task-title");
+  if ((await title.count()) > 0 && (await title.isVisible())) {
+    await title.click();
+  } else {
+    await openTaskActions(screen);
+    await screen.getByTestId("task-detail-rename").tap();
+  }
+  await expect(screen.getByTestId("task-title-input")).toBeVisible();
+}
+
 /** Open the header project dropdown and return its text field. */
 export async function openTaskProject(screen: TaskScreen) {
   const input = screen.getByTestId("task-project-input");
   if ((await input.count()) === 0 || !(await input.isVisible())) {
     const trigger = screen.getByTestId("task-header-project");
-    await expect(trigger).toBeVisible();
-    await trigger.tap();
+    if ((await trigger.count()) > 0 && (await trigger.isVisible())) {
+      await trigger.tap();
+    } else {
+      await openTaskActions(screen);
+      await screen.getByTestId("task-change-project").tap();
+    }
   }
   await expect(input).toBeVisible();
   return input;
 }
 
-/** Assert the header project trigger shows the current project (or No project). */
+/** Assert the current project (header trigger on mobile, picker or list on desktop). */
 export async function expectTaskProject(screen: TaskScreen, name: string) {
+  const label = name.length === 0 ? "No project" : `@${name}`;
   const trigger = screen.getByTestId("task-header-project");
-  await expect(trigger).toBeVisible();
-  await expect(trigger).toHaveText(name.length === 0 ? "No project" : `@${name}`);
+  if ((await trigger.count()) > 0 && (await trigger.isVisible())) {
+    await expect(trigger).toHaveText(label);
+    return;
+  }
+  const input = await openTaskProject(screen);
+  await expect(input).toHaveValue(name);
 }
 
 /** Switch the mobile detail to the Chat tab. No-op when the tab is already selected or hidden. */

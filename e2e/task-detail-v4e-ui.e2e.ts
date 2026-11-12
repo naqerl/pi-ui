@@ -190,12 +190,14 @@ test("captures v4g chat-identical dock, header row, and tab border in vantablack
   await expect(screen.getByTestId("tasks-page")).toHaveAttribute("data-layout", "split");
   await openFixtureTask(screen);
   await expect(screen.getByTestId("task-detail")).toBeVisible();
-  await expect(screen.getByTestId("task-times")).toContainText(
-    /created \d{2}\.\d{2}\.\d{4} \d{2}:\d{2}/,
-  );
+  await expect(screen.getByTestId("task-details-bar")).toContainText("Task details");
+  await expect(screen.getByTestId("task-detail-menu")).toBeVisible();
+  await expect(screen.getByTestId("task-detail-back")).toBeVisible();
+  await expect(screen.getByTestId("task-title")).toHaveCount(0);
+  await expect(screen.getByTestId("task-header-meta")).toHaveCount(0);
+  await expect(screen.getByTestId("task-times")).toHaveCount(0);
   await expect(screen.getByTestId("task-created-by")).toHaveCount(0);
   await expect(screen.getByTestId("task-blockers-card")).toHaveCount(0);
-  await expect(screen.getByTestId("task-subtasks-card")).toBeVisible();
   await expect(screen.getByTestId("task-plan-card")).toBeVisible();
   await expect(screen.getByTestId("task-plan-card").getByText("Plan", { exact: true })).toHaveCount(
     0,
@@ -203,25 +205,6 @@ test("captures v4g chat-identical dock, header row, and tab border in vantablack
   await expect(
     screen.getByTestId("task-subtasks-card").getByText("Done", { exact: true }),
   ).toHaveCount(0);
-  const headerOrder = await browser.evaluate(() => {
-    const meta = document.querySelector("[data-testid=task-header-meta]");
-    const title = document.querySelector("[data-testid=task-title]");
-    const times = document.querySelector("[data-testid=task-times]");
-    if (
-      !(meta instanceof HTMLElement) ||
-      !(title instanceof HTMLElement) ||
-      !(times instanceof HTMLElement)
-    ) {
-      return null;
-    }
-    return {
-      titleAfterMeta: !!(meta.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING),
-      timesInMeta: meta.contains(times),
-      timesWithMeta:
-        Math.abs(times.getBoundingClientRect().top - meta.getBoundingClientRect().top) <= 4,
-    };
-  });
-  expect(headerOrder).toEqual({ titleAfterMeta: true, timesInMeta: true, timesWithMeta: true });
   await expect(screen.getByTestId("task-agent-input")).toBeVisible();
   await expect(screen.getByRole("textbox", "New task")).toHaveCount(0);
   const openDock = await dockBox(browser);

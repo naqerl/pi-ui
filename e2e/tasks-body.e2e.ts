@@ -96,7 +96,7 @@ test("sets, edits and clears a task body in place that renders as markdown", asy
   await screen.getByTestId("task-body").click();
   const cleared = screen.getByRole("textbox", "Task body");
   await cleared.fill("");
-  await screen.getByTestId("task-header-project").click();
+  await screen.getByTestId("task-details-bar").click();
   await expect(screen.getByTestId("task-body")).toHaveCount(0);
   await expect
     .poll(() =>

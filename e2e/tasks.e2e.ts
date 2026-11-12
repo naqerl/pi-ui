@@ -233,11 +233,25 @@ test("keeps a todo with subtasks and blockers on the tasks page", { timeout: 300
   await expect(list.getByText("Blocked by Review the diff", { exact: true })).not.toBeVisible();
   await screen.getByRole("button", { name: "Open Store tasks.json" }).tap();
   await chooseTaskAction(screen, "task-detail-status");
-  await expect(screen.getByTestId("task-state")).toHaveText("Done");
+  await expect
+    .poll(() =>
+      browser.evaluate(() => {
+        const button = document.querySelector('[aria-label="Open Store tasks.json"]');
+        return button?.closest("li[data-state]")?.getAttribute("data-state") ?? null;
+      }),
+    )
+    .toBe("done");
   await expect(list.getByText("1 of 1 subtasks done", { exact: true })).toBeVisible();
   await screen.getByRole("button", { name: "Open Write the ledger" }).tap();
   await chooseTaskAction(screen, "task-detail-status");
-  await expect(screen.getByTestId("task-state")).toHaveText("Done");
+  await expect
+    .poll(() =>
+      browser.evaluate(() => {
+        const button = document.querySelector('[aria-label="Open Write the ledger"]');
+        return button?.closest("li[data-state]")?.getAttribute("data-state") ?? null;
+      }),
+    )
+    .toBe("done");
 
   expect(await browser.evaluate(() => new URLSearchParams(location.search).get("page"))).toBe(
     "tasks",

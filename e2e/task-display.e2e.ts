@@ -29,7 +29,7 @@ function snapshotWith(tasks: SeedTask[]) {
   };
 }
 
-test("shows the empty task list as plain muted text", async ({ app, browser, screen }) => {
+test("shows the empty task list as a muted glass caption", async ({ app, browser, screen }) => {
   await browser.route("**/api/state**", async (route) => {
     await route.fulfill({ json: snapshotWith([]) });
   });

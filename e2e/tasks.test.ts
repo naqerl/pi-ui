@@ -183,9 +183,11 @@ test("the task modal shows the full rationale, blockers and completion record", 
   assert.doesNotMatch(markup, /Review the details/);
   assert.doesNotMatch(markup, /Blocked by/);
   assert.doesNotMatch(markup, />Done</);
-  assert.match(markup, /created /);
+  assert.match(markup, /Task details/);
+  assert.match(markup, /data-testid="task-details-bar"/);
   assert.match(markup, /data-testid="task-detail-menu"/);
-  assert.match(markup, /data-testid="task-state"[^>]*>Blocked</);
+  assert.doesNotMatch(markup, /data-testid="task-state"/);
+  assert.doesNotMatch(markup, /data-testid="task-header-meta"/);
   assert.doesNotMatch(markup, /data-testid="task-stats"/);
   assert.doesNotMatch(markup, /Active time/);
   assert.doesNotMatch(markup, /data-testid="task-history"/);
@@ -1084,17 +1086,22 @@ test("the task detail edits its project and shows a body as markdown", () => {
     onRemove: () => {},
   };
   const markup = renderToStaticMarkup(createElement(TaskDetail, { ...props, task }));
-  assert.match(markup, /data-testid="task-header-project"[\s\S]*@citydiff/);
+  assert.match(markup, /data-testid="task-details-bar"/);
+  assert.match(markup, /Task details/);
+  assert.match(markup, /data-testid="task-detail-menu"/);
+  assert.doesNotMatch(markup, /data-testid="task-header-project"/);
+  assert.doesNotMatch(markup, /data-testid="task-title"/);
   assert.doesNotMatch(markup, /<select/);
-  assert.match(markup, /data-testid="task-body"[\s\S]*<h1[^>]*>Route plan<\/h1>/);
+  assert.match(markup, /data-testid="task-body"/);
+  assert.match(markup, /<h1[^>]*>Route plan<\/h1>/);
   assert.match(markup, /<strong[^>]*>tram 4<\/strong>/);
   assert.match(markup, /The proposer&#x27;s reason stays separate\./);
-  assert.match(markup, /data-testid="task-title"[\s\S]*<h2[^>]*>Diff the tram routes<\/h2>/);
   assert.doesNotMatch(markup, /data-testid="task-title-edit"/);
   assert.doesNotMatch(markup, /data-testid="task-body-edit"/);
   const { project: _drop, ...loose } = task;
   const bare = renderToStaticMarkup(createElement(TaskDetail, { ...props, task: loose }));
-  assert.match(bare, /data-testid="task-header-project"[\s\S]*No project/);
+  assert.match(bare, /data-testid="task-details-bar"/);
+  assert.doesNotMatch(bare, /data-testid="task-header-project"/);
 });
 
 test("the task store rejects an empty title and a body that is not a string or too long", async () => {
