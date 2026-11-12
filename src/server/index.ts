@@ -954,6 +954,43 @@ app.post("/api/tasks/:id/chat", async (c) => {
   }
 });
 
+app.get("/api/tasks/:id/questions", async (c) => {
+  try {
+    const session = await taskAgents.ensure(c.req.param("id"));
+    return c.json({ questions: (await session.pendingQuestions?.()) ?? null });
+  } catch (error) {
+    return taskAgentFailure(c, error);
+  }
+});
+
+async function answerTaskQuestions(c: Context) {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.text("Expected a JSON body", 400);
+  }
+  if (typeof body !== "object" || body === null) return c.text("Expected a JSON body", 400);
+  const setId =
+    "setId" in body && typeof body.setId === "string"
+      ? body.setId
+      : "id" in body && typeof body.id === "string"
+        ? body.id
+        : "";
+  if (setId.length === 0) return c.text("setId is required", 400);
+  if (!("answers" in body) || !Array.isArray(body.answers)) {
+    return c.text("answers must be a list", 400);
+  }
+  try {
+    return c.json(await taskAgents.answerQuestions(c.req.param("id") ?? "", setId, body.answers));
+  } catch (error) {
+    return taskAgentFailure(c, error);
+  }
+}
+
+app.post("/api/tasks/:id/questions/answer", (c) => answerTaskQuestions(c));
+app.post("/api/tasks/:id/questions", (c) => answerTaskQuestions(c));
+
 app.post("/api/tasks/:id/chat/stop", async (c) => {
   try {
     const id = c.req.param("id");

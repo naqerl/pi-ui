@@ -9,6 +9,8 @@ import type {
   StreamMessageDone,
   StreamRunState,
   StreamTextDelta,
+  TaskQuestionAnswer,
+  TaskQuestionSet,
 } from "../shared/types";
 import { frameBatch, reduceDraft } from "./stream-batch";
 import { subscribeTaskChatEvents } from "./task-chat-events";
@@ -19,16 +21,19 @@ export interface TaskAgentSnapshot {
   run: RunState;
   runError?: RunError | null;
   draft: { text: string; thinking: string; revision: number };
+  questions?: TaskQuestionSet | null;
 }
 
 export function useTaskChat(taskId: string, closed: boolean) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draftText, setDraftText] = useState("");
   const [run, setRun] = useState<RunState>("idle");
+  const [questions, setQuestions] = useState<TaskQuestionSet | null>(null);
   const [runError, setRunError] = useState<RunError | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const draftRevision = useRef(0);
+  const answeredSets = useRef(new Set<string>());
   const dismissedRunErrors = useRef<ReadonlySet<string>>(new Set());
   const taskIdRef = useRef(taskId);
   taskIdRef.current = taskId;
@@ -50,6 +55,8 @@ export function useTaskChat(taskId: string, closed: boolean) {
       acceptRunError(snapshot.runError);
       setDraftText(typeof draft?.text === "string" ? draft.text : "");
       draftRevision.current = typeof draft?.revision === "number" ? draft.revision : 0;
+      const pending = snapshot.questions ?? null;
+      setQuestions(pending !== null && answeredSets.current.has(pending.id) ? null : pending);
       setReady(true);
     },
     [acceptRunError],
@@ -77,10 +84,12 @@ export function useTaskChat(taskId: string, closed: boolean) {
     setMessages([]);
     setDraftText("");
     setRun("idle");
+    setQuestions(null);
     setRunError(null);
     setReady(false);
     setError(null);
     draftRevision.current = 0;
+    answeredSets.current.clear();
     dismissedRunErrors.current = new Set();
     if (taskId.startsWith("fixture-")) {
       setReady(true);
@@ -199,6 +208,31 @@ export function useTaskChat(taskId: string, closed: boolean) {
     }
   }, [applySnapshot, taskId]);
 
+  const answerQuestions = useCallback(
+    async (setId: string, answers: TaskQuestionAnswer[]) => {
+      setError(null);
+      try {
+        const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/questions/answer`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ setId, answers }),
+        });
+        if (!response.ok) {
+          const message = (await response.text()).trim();
+          setError(message.length > 0 ? message : "Could not send the answers");
+          return false;
+        }
+        answeredSets.current.add(setId);
+        applySnapshot((await response.json()) as TaskAgentSnapshot);
+        return true;
+      } catch {
+        setError("Could not send the answers");
+        return false;
+      }
+    },
+    [applySnapshot, taskId],
+  );
+
   const dismissError = useCallback(
     (id?: string) => {
       // No id is the composer's own dismissal; only an explicit matching id targets the run error.
@@ -234,11 +268,13 @@ export function useTaskChat(taskId: string, closed: boolean) {
     messages,
     draftText,
     run,
+    questions,
     runError,
     error,
     ready,
     send,
     stop,
+    answerQuestions,
     dismissError,
   };
 }
