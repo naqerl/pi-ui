@@ -1076,6 +1076,14 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
   available" banner with its Reset button. Widgets are the page: the grid shows the
   grid, and a reset happens because the agent was asked for it, not by tapping a bar
   that appears whenever the default board changes.
+## 1.6.160
+
+### Fixed
+
+- A queued decision notice about a proposed task renders as its chip instead of a second user
+  row carrying the same sentence, and only that kind of notice suppresses its queued copy — an
+  MCP status notice is drawn from its queue row, so it keeps it.
+
 ## 1.6.159
 
 ### Added
