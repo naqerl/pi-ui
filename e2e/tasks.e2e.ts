@@ -283,6 +283,8 @@ test("paints a task card before the create response and reconciles it to the led
 }) => {
   await app.open("/?page=tasks");
   const list = screen.getByTestId("task-list");
+  await expect(list).toBeVisible();
+  await expect(screen.getByRole("textbox", "New task")).toBeVisible();
   let release: () => void = () => undefined;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
@@ -343,6 +345,7 @@ test("retires an optimistic task card when the create fails and keeps the draft"
   screen,
 }) => {
   await app.open("/?page=tasks");
+  await expect(screen.getByRole("textbox", "New task")).toBeVisible();
   await browser.route("**/api/tasks", async (route) => {
     if (route.request.method !== "POST") {
       await route.continue();
