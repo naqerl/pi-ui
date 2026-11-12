@@ -898,3 +898,59 @@ test("merge keeps the same cursor from two generations when items carry one", ()
     "the outbox merge does not dedupe a renumbered cursor against the old epoch",
   );
 });
+
+test("a generation clear never drops a pending status notice", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-outbox-generation-notice-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "outbox.json");
+  const status = `${MCP_STATUS_HEAD}\n${JSON.stringify({
+    subscriptions: [{ id: "b", server: "hub", name: "b", status: "reconnecting" }],
+    dropped_statuses: 0,
+  })}`;
+  const a = event("hub:9");
+  const aKey = JSON.stringify(["hub/a", "daemon-a", "hub:9"]);
+  const outbox = new McpOutbox(path, async () => {});
+  await outbox.load();
+  await outbox.enqueue(status);
+  await outbox.enqueueMany(
+    [mcpEventText({ head: MCP_EVENTS_HEAD, items: [a], dropped: 0 }, [a])],
+    [aKey],
+  );
+  const before = JSON.parse(await readFile(path, "utf8")) as { pending: McpDelivery[] };
+  const notice = before.pending.find((item) => item.text.startsWith(MCP_STATUS_HEAD));
+  assert.ok(notice !== undefined);
+  assert.equal(notice.keys, undefined, "an event key is not stamped onto a notice row");
+
+  await outbox.forgetStable("hub/a");
+  const after = JSON.parse(await readFile(path, "utf8")) as {
+    pending: McpDelivery[];
+    seen: string[];
+  };
+  assert.equal(after.pending.length, 1);
+  assert.match(after.pending[0]?.text ?? "", /reconnecting/);
+  assert.deepEqual(after.seen, []);
+  await outbox.close();
+
+  // A row written by the previous code can already carry the event key.
+  await writeFile(
+    path,
+    JSON.stringify({
+      version: 1,
+      pending: [
+        { id: "legacy-notice", text: status, at: "2026-01-01T00:00:00.000Z", keys: [aKey] },
+      ],
+      seen: [aKey],
+    }),
+  );
+  const restored = new McpOutbox(path, async () => {});
+  await restored.load();
+  await restored.forgetStable("hub/a");
+  const legacy = JSON.parse(await readFile(path, "utf8")) as {
+    pending: McpDelivery[];
+    seen: string[];
+  };
+  assert.equal(legacy.pending.length, 1, "the non-event delivery survives");
+  assert.equal(legacy.pending[0]?.keys, undefined, "only the forgotten key is stripped");
+  assert.deepEqual(legacy.seen, []);
+  await restored.close();
+});

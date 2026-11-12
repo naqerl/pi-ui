@@ -186,7 +186,16 @@ function withoutStable(item: McpDelivery, stableId: string): McpDelivery | null 
   const keptKeys = keys.filter((key) => keyStableId(key) !== stableId);
   // A split delivery stores every part in `texts`; never rebuild from `text` alone.
   const envelopes = deliveryTexts(item).map(deliveryEnvelope);
-  if (envelopes.some((envelope) => envelope === null)) return null;
+  if (envelopes.some((envelope) => envelope === null)) {
+    // Status, recovery and gap notices have no event list. An older row may
+    // carry an event key stamped onto the whole merged group; strip the
+    // forgotten key but never discard the notice itself.
+    if (keys.length === 0) return item;
+    return {
+      ...item,
+      ...(keptKeys.length === 0 ? { keys: undefined } : { keys: keptKeys }),
+    };
+  }
   const parsed = envelopes as DeliveryEnvelope[];
   const first = parsed[0];
   if (first === undefined) return null;
@@ -450,10 +459,17 @@ export class McpOutbox {
       const inFlight =
         protectedId === undefined ? undefined : items.find((item) => item.id === protectedId);
       const waiting = items.filter((item) => item.id !== protectedId);
-      const merged = mergeByKind([...waiting, ...added]).map((item) => ({
-        ...item,
-        keys: [...new Set([...(item.keys ?? []), ...keys])],
-      }));
+      const merged = mergeByKind([...waiting, ...added]).map((item) => {
+        // Event keys identify events, not the status/recovery/gap notice that
+        // happened to share this enqueue. Stamping them here made a later
+        // generation clear delete an unrelated notice row.
+        if (deliveryKind(item) !== "events") return item;
+        const itemKeys = [...new Set([...(item.keys ?? []), ...keys])];
+        return {
+          ...item,
+          ...(itemKeys.length === 0 ? { keys: undefined } : { keys: itemKeys }),
+        };
+      });
       return inFlight === undefined ? merged : [inFlight, ...merged];
     }, keys);
   }
