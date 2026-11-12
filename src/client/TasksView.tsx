@@ -57,6 +57,9 @@ const CARD_CLICK_IGNORE_MS = 700;
 const DAY_PAGE = 7;
 /** One vertical rhythm for every header and card stack on the tasks page. */
 const TASK_STACK = "flex flex-col space-y-2";
+/** Same type as a stats widget section title. */
+const STATS_SECTION_TITLE =
+  "text-[11px] tracking-wide text-muted-foreground [overflow-wrap:anywhere]";
 /** Reserve the scrollbar's gutter so content never reflows or slides under the thumb. */
 const SCROLLBAR_GUTTER = "[scrollbar-gutter:stable]";
 
@@ -185,19 +188,14 @@ function Heading({
   return (
     <h2
       className={cn(
-        "flex h-9 items-center gap-2 rounded-md text-sm font-medium leading-5",
-        dark ? "bg-surface px-3 text-foreground" : "px-1 text-foreground",
+        "flex min-h-7 items-center gap-2 rounded-md py-1",
+        dark ? "bg-surface px-3" : "px-1",
       )}
     >
-      <span className="min-w-0 flex-1 truncate">{children}</span>
+      <span className={cn("min-w-0 flex-1 truncate", STATS_SECTION_TITLE)}>{children}</span>
       {chevron}
       {count !== undefined && (
-        <span
-          className={cn(
-            "shrink-0 text-sm font-normal leading-5 tabular-nums",
-            "text-muted-foreground",
-          )}
-        >
+        <span className="shrink-0 text-[11px] font-normal tabular-nums text-muted-foreground">
           {count}
         </span>
       )}
@@ -231,19 +229,14 @@ function Section({
       >
         <CollapsibleTrigger
           className={cn(
-            "flex min-h-9 w-full items-center gap-2 rounded-md py-1 text-left text-sm font-medium leading-5",
-            dark ? "bg-surface px-3 text-foreground" : "px-1 text-foreground hover:bg-muted",
+            "flex min-h-7 w-full items-center gap-2 rounded-md py-1 text-left",
+            dark ? "bg-surface px-3" : "px-1 hover:bg-muted",
           )}
         >
-          <span className="min-w-0 flex-1 truncate">{title}</span>
+          <span className={cn("min-w-0 flex-1 truncate", STATS_SECTION_TITLE)}>{title}</span>
           <Chevron open={open} className="text-muted-foreground" />
           {count !== undefined && (
-            <span
-              className={cn(
-                "shrink-0 text-sm font-normal leading-5 tabular-nums",
-                "text-muted-foreground",
-              )}
-            >
+            <span className="shrink-0 text-[11px] font-normal tabular-nums text-muted-foreground">
               {count}
             </span>
           )}
@@ -316,6 +309,8 @@ function TasksViewImpl({
   onComposerMode,
 }: TasksViewProps) {
   const wide = useWide();
+  const midColRef = useRef<HTMLDivElement>(null);
+  const chatColRef = useRef<HTMLDivElement>(null);
   const fixtureOn = useTaskDetailFixture();
   const serverTasks = fixtureOn ? mergeFixtureTasks(incomingTasks) : incomingTasks;
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
@@ -746,11 +741,50 @@ function TasksViewImpl({
     return () => onComposerMode?.("create");
   }, [composerMode, onComposerMode]);
 
+  // Center the shared dock over the mid+chat columns, not the viewport.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: openTask mounts the mid/chat columns
+  useLayoutEffect(() => {
+    const mid = midColRef.current;
+    const shell = mid?.closest(".chat-shell");
+    if (!wide || !(shell instanceof HTMLElement) || !(mid instanceof HTMLElement)) {
+      if (shell instanceof HTMLElement) {
+        shell.removeAttribute("data-tasks-band");
+        shell.style.removeProperty("--tasks-band-left");
+        shell.style.removeProperty("--tasks-band-width");
+      }
+      return;
+    }
+    const update = () => {
+      const shellBox = shell.getBoundingClientRect();
+      const midBox = mid.getBoundingClientRect();
+      const chat = chatColRef.current;
+      const right = chat instanceof HTMLElement ? chat.getBoundingClientRect().right : midBox.right;
+      shell.style.setProperty("--tasks-band-left", `${Math.round(midBox.left - shellBox.left)}px`);
+      shell.style.setProperty("--tasks-band-width", `${Math.round(right - midBox.left)}px`);
+      shell.setAttribute("data-tasks-band", "");
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(shell);
+    observer.observe(mid);
+    if (chatColRef.current instanceof HTMLElement) observer.observe(chatColRef.current);
+    window.addEventListener("resize", update);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", update);
+      shell.removeAttribute("data-tasks-band");
+      shell.style.removeProperty("--tasks-band-left");
+      shell.style.removeProperty("--tasks-band-width");
+    };
+  }, [wide, openTask]);
+
   const content = (
     <div
       className={cn(
         "h-full overflow-x-hidden overscroll-x-none",
-        wide ? "overflow-hidden" : cn("overflow-y-auto", SCROLLBAR_GUTTER),
+        wide || openTask !== undefined
+          ? "overflow-hidden"
+          : cn("overflow-y-auto", SCROLLBAR_GUTTER),
       )}
       data-testid="tasks-page"
       data-layout={wide ? "split" : "stack"}
@@ -776,34 +810,40 @@ function TasksViewImpl({
                 {list}
               </div>
             </div>
-            <div
-              data-col="mid"
-              data-testid="tasks-mid-col"
-              className="flex h-full min-h-0 min-w-0 flex-col"
-            >
-              {detail ?? (
+            {openTask !== undefined ? (
+              <>
                 <div
-                  data-testid="task-detail-empty"
-                  className="flex flex-1 items-center justify-center px-4 py-10 text-sm text-foreground/75"
+                  ref={midColRef}
+                  data-col="mid"
+                  data-testid="tasks-mid-col"
+                  className="flex h-full min-h-0 min-w-0 flex-col"
                 >
-                  Select a task to see its details.
+                  {detail}
                 </div>
-              )}
-            </div>
-            <div
-              data-col="chat"
-              data-testid="tasks-chat-col"
-              className="flex h-full min-h-0 min-w-0 flex-col"
-            >
-              {openTask !== undefined ? (
-                <TaskAgentChat
-                  task={openTask}
-                  projects={projectsOf(tasks.filter((item) => isActiveStatus(item.status)))}
-                  variant="pane"
-                  composerTarget="dock"
-                />
-              ) : null}
-            </div>
+                <div
+                  ref={chatColRef}
+                  data-col="chat"
+                  data-testid="tasks-chat-col"
+                  className="flex h-full min-h-0 min-w-0 flex-col"
+                >
+                  <TaskAgentChat
+                    task={openTask}
+                    projects={projectsOf(tasks.filter((item) => isActiveStatus(item.status)))}
+                    variant="pane"
+                    composerTarget="dock"
+                  />
+                </div>
+              </>
+            ) : (
+              <div
+                ref={midColRef}
+                data-col="main"
+                data-testid="task-detail-empty"
+                className="col-span-2 flex h-full min-h-0 min-w-0 flex-1 items-center justify-center px-4 py-10 text-sm text-foreground/75"
+              >
+                Select a task to see its details.
+              </div>
+            )}
           </>
         ) : (
           (detail ?? list)
@@ -877,15 +917,15 @@ function Group({
     >
       <CollapsibleTrigger
         className={cn(
-          "flex min-h-9 w-full items-center gap-2 rounded-md py-1 text-left text-sm font-medium leading-5",
-          dark ? "bg-surface px-3 text-foreground" : "px-1 hover:bg-muted",
+          "flex min-h-7 w-full items-center gap-2 rounded-md py-1 text-left",
+          dark ? "bg-surface px-3" : "px-1 hover:bg-muted",
         )}
       >
-        <span className="min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere]">{label}</span>
+        <span className={cn("min-w-0 flex-1 whitespace-normal", STATS_SECTION_TITLE)}>{label}</span>
         {dark ? (
           <>
             <Chevron open={open} className="text-muted-foreground" />
-            <span className="shrink-0 text-sm font-normal leading-5 tabular-nums text-muted-foreground">
+            <span className="shrink-0 text-[11px] font-normal tabular-nums text-muted-foreground">
               {count}
             </span>
           </>

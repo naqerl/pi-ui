@@ -180,10 +180,10 @@ test("the task modal shows the full rationale, blockers and completion record", 
   assert.match(markup, /Ship the modal/);
   assert.match(markup, /The card hides the rest of this rationale\./);
   assert.match(markup, /A long explanation\./);
-  assert.match(markup, /Review the details/);
-  assert.match(markup, /size-3.5 shrink-0 rounded-sm border/);
+  assert.doesNotMatch(markup, /Review the details/);
+  assert.doesNotMatch(markup, /Blocked by/);
   assert.doesNotMatch(markup, />Done</);
-  assert.match(markup, /Created/);
+  assert.match(markup, /created /);
   assert.match(markup, /data-testid="task-detail-menu"/);
   assert.match(markup, /data-testid="task-state"[^>]*>Blocked</);
   assert.doesNotMatch(markup, /data-testid="task-stats"/);
@@ -231,7 +231,7 @@ test("the completed task modal carries the evidence and the closed time", () => 
   );
   assert.match(markup, /data-testid="task-modal-completion"/);
   assert.match(markup, /commit 9c58abc/);
-  assert.match(markup, /Closed/);
+  assert.match(markup, /closed /);
   assert.doesNotMatch(markup, /data-testid="task-stats"/);
   assert.doesNotMatch(markup, /Active time/);
   assert.doesNotMatch(markup, /data-testid="task-history"/);

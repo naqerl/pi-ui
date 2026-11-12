@@ -120,7 +120,7 @@ export function TaskAgentChat({
         ref={scrollerRef}
         data-testid="task-agent-transcript"
         className={cn(
-          "flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3 py-3",
+          "flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3 pb-3",
           "[scrollbar-gutter:stable]",
         )}
       >

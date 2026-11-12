@@ -178,7 +178,7 @@ describe("task detail against a mocked state route", { serial: true }, () => {
         exact: false,
       }),
     ).toBeVisible();
-    await expect(detail.getByText("Review the details", { exact: true })).toBeVisible();
+    await expect(detail.getByTestId("task-blockers-card")).toHaveCount(0);
     await expect(detail.getByTestId("task-detail-id")).toHaveText("t1");
     await expect(detail.getByRole("heading", { name: "Ship plan" })).toBeVisible();
     await expectProjectAboveBody(browser);
@@ -255,14 +255,12 @@ describe("task detail against a mocked state route", { serial: true }, () => {
       const meta = document.querySelector<HTMLElement>('[data-testid="task-header-meta"]');
       const title = document.querySelector<HTMLElement>('[data-testid="task-title"]');
       const times = document.querySelector<HTMLElement>('[data-testid="task-times"]');
-      const blockers = document.querySelector<HTMLElement>('[data-testid="task-blockers-card"]');
       const description = document.querySelector<HTMLElement>('[data-testid="task-body-section"]');
       if (
         pane === null ||
         meta === null ||
         title === null ||
         times === null ||
-        blockers === null ||
         description === null
       ) {
         return null;
@@ -271,25 +269,22 @@ describe("task detail against a mocked state route", { serial: true }, () => {
       return {
         meta: meta.getBoundingClientRect().top - paneTop,
         titleAfterMeta: !!(meta.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING),
-        timesAfterTitle: !!(
-          title.compareDocumentPosition(times) & Node.DOCUMENT_POSITION_FOLLOWING
-        ),
+        timesWithMeta:
+          Math.abs(times.getBoundingClientRect().top - meta.getBoundingClientRect().top) <= 4,
         times: times.getBoundingClientRect().top - paneTop,
-        timesBeforeBlockers: !!(
-          times.compareDocumentPosition(blockers) & Node.DOCUMENT_POSITION_FOLLOWING
+        titleBeforeBody: !!(
+          title.compareDocumentPosition(description) & Node.DOCUMENT_POSITION_FOLLOWING
         ),
-        blockersBeforeBody: !!(
-          blockers.compareDocumentPosition(description) & Node.DOCUMENT_POSITION_FOLLOWING
-        ),
+        hasBlockers: document.querySelector('[data-testid="task-blockers-card"]') !== null,
       };
     });
     expect(contentTop).not.toBeNull();
     expect(contentTop?.meta ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(40);
     expect(contentTop?.titleAfterMeta).toBe(true);
-    expect(contentTop?.timesAfterTitle).toBe(true);
-    expect(contentTop?.times ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(160);
-    expect(contentTop?.timesBeforeBlockers).toBe(true);
-    expect(contentTop?.blockersBeforeBody).toBe(true);
+    expect(contentTop?.timesWithMeta).toBe(true);
+    expect(contentTop?.times ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(80);
+    expect(contentTop?.titleBeforeBody).toBe(true);
+    expect(contentTop?.hasBlockers).toBe(false);
 
     const sides = await browser.evaluate(() => {
       const list = document.querySelector<HTMLElement>('[data-testid="task-list"]');
@@ -454,8 +449,8 @@ describe("task detail against a mocked state route", { serial: true }, () => {
 
     await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
     const detail = screen.getByTestId("task-detail");
-    await expect(detail.getByText("Blocked by", { exact: true })).toBeVisible();
-    await expect(detail.getByText("Review the details", { exact: true })).toBeVisible();
+    await expect(detail.getByText("Blocked by", { exact: true })).toHaveCount(0);
+    await expect(detail.getByTestId("task-blockers-card")).toHaveCount(0);
     await expect(detail.getByRole("button", { name: "Subtask" })).toHaveCount(0);
     await expect(detail.getByRole("button", { name: "Adding subtask" })).toHaveCount(0);
     await expect(detail.getByRole("button", { name: "Block" })).toHaveCount(0);

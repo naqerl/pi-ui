@@ -427,8 +427,8 @@ test("project headers share the Open header's solid fill in both themes", async 
     expect(styles?.grouped.background).not.toBe("rgba(0, 0, 0, 0)");
     expect(styles?.grouped.background).toBe(styles?.open.background);
     expect(styles?.grouped.background).not.toBe(styles?.page);
-    expect(styles?.grouped.titleColor).toBe(styles?.foreground);
     expect(styles?.grouped.titleColor).toBe(styles?.open.titleColor);
+    expect(styles?.grouped.titleColor).not.toBe(styles?.foreground);
     expect(styles?.grouped.countColor).toBe(styles?.open.countColor);
     expect(styles?.grouped.chevronColor).toBe(styles?.open.chevronColor);
     // On a phone the same row keeps Open's height, padding and radius without wrapping.

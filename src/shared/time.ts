@@ -42,6 +42,14 @@ export function formatDateTime(value: TimestampValue): string {
   return formatter({ dateStyle: "medium", timeStyle: "medium" }).format(date);
 }
 
+/** Local `dd.MM.yyyy HH:mm` for compact detail stamps. */
+export function formatCompactDateTime(value: TimestampValue): string {
+  const date = asDate(value);
+  if (date === null) return "";
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 /** A compact whole-minute duration such as "3h 12m" or "48m". */
 export function formatDurationMinutes(minutes: number): string {
   const total = Math.max(0, Math.round(minutes));

@@ -7,7 +7,7 @@ import {
   useState,
 } from "react";
 import { TASK_BODY_MAX_LENGTH } from "../shared/tasks";
-import { formatDateTime } from "../shared/time";
+import { formatCompactDateTime } from "../shared/time";
 import type { Task, TaskLedger, TaskState, TaskTrace } from "../shared/types";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
@@ -27,29 +27,6 @@ import { TaskAgentChat } from "./TaskAgentChat";
 
 function shortId(id: string): string {
   return id.slice(0, 4);
-}
-
-function CreatedTimes({ task }: { task: Task }) {
-  const created = formatDateTime(task.createdAt);
-  const closed =
-    task.status === "done" && typeof task.completedAt === "string"
-      ? formatDateTime(task.completedAt)
-      : "";
-  return (
-    <span
-      data-testid="task-times"
-      className="flex flex-wrap items-center gap-x-3 text-xs leading-4 text-foreground/75"
-    >
-      <time dateTime={task.createdAt} title={created}>
-        Created {created}
-      </time>
-      {closed !== "" && (
-        <time dateTime={task.completedAt ?? undefined} title={closed}>
-          Closed {closed}
-        </time>
-      )}
-    </span>
-  );
 }
 
 const SCROLLBAR_GUTTER = "[scrollbar-gutter:stable]";
@@ -539,22 +516,6 @@ function RelationRow({
   );
 }
 
-function Blockers({ model, heading = true }: { model: TaskDetailModel; heading?: boolean }) {
-  if (model.blockers.length === 0) return null;
-  return (
-    <section className="flex flex-col gap-1">
-      {heading ? <SectionLabel>Blocked by</SectionLabel> : null}
-      <ul>
-        {model.blockers.map((blocker) => (
-          <RelationRow key={blocker.id} wide={model.wide} done={blocker.done}>
-            <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{blocker.title}</span>
-          </RelationRow>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
 function Subtasks({ model, heading = true }: { model: TaskDetailModel; heading?: boolean }) {
   if (model.children.length === 0) return null;
   return (
@@ -686,18 +647,16 @@ export function TaskActionsMenu({ model }: { model: TaskDetailModel }) {
   );
 }
 
-function MetaLine({
-  model,
-  includeCreated = false,
-}: {
-  model: TaskDetailModel;
-  includeCreated?: boolean;
-}) {
-  const created = formatDateTime(model.task.createdAt);
+function MetaLine({ model }: { model: TaskDetailModel }) {
+  const created = formatCompactDateTime(model.task.createdAt);
+  const closed =
+    model.task.status === "done" && typeof model.task.completedAt === "string"
+      ? formatCompactDateTime(model.task.completedAt)
+      : "";
   return (
     <div
       data-testid="task-header-meta"
-      className={cn("flex min-w-0 flex-nowrap items-center gap-x-2 text-xs leading-4", QUIET)}
+      className={cn("flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs leading-4", QUIET)}
     >
       <Badge
         data-testid="task-state"
@@ -721,25 +680,48 @@ function MetaLine({
         {shortId(model.task.id)}
       </span>
       <ProjectPicker model={model} />
-      {includeCreated && (
-        <time dateTime={model.task.createdAt} title={created}>
-          {created}
+      {created !== "" && (
+        <time
+          dateTime={model.task.createdAt}
+          data-testid="task-times"
+          title={created}
+          className="shrink-0 text-foreground/75"
+        >
+          created {created}
+        </time>
+      )}
+      {closed !== "" && (
+        <time
+          dateTime={model.task.completedAt ?? undefined}
+          title={closed}
+          className="shrink-0 text-foreground/75"
+        >
+          closed {closed}
         </time>
       )}
     </div>
   );
 }
 
-function TitleCard({ model, tabs }: { model: TaskDetailModel; tabs?: ReactNode }) {
+function TitleCard({
+  model,
+  tabs,
+  flush = false,
+}: {
+  model: TaskDetailModel;
+  tabs?: ReactNode;
+  flush?: boolean;
+}) {
   return (
     <header
       data-testid="task-header"
       className={cn(
-        "bg-surface theme-radius flex flex-col",
-        tabs ? "overflow-hidden" : "gap-2 p-3",
+        "flex flex-col bg-surface",
+        flush ? "rounded-t-none rounded-b-[var(--radius)] overflow-hidden" : "theme-radius",
+        tabs || flush ? "overflow-hidden" : "gap-2 p-3",
       )}
     >
-      <div className={cn("flex flex-col gap-2", tabs && "p-3")}>
+      <div className={cn("flex flex-col gap-2", (tabs || flush) && "p-3")}>
         <div className="flex min-w-0 items-center gap-1">
           <div className="min-w-0 flex-1">
             <MetaLine model={model} />
@@ -758,7 +740,6 @@ function TitleCard({ model, tabs }: { model: TaskDetailModel; tabs?: ReactNode }
           </Button>
         </div>
         <TitleField model={model} />
-        <CreatedTimes task={model.task} />
       </div>
       {tabs}
     </header>
@@ -788,11 +769,6 @@ function PlanSections({ model }: { model: TaskDetailModel }) {
       )}
     >
       <div className="flex shrink-0 flex-col gap-3">
-        {model.blockers.length > 0 && (
-          <div data-testid="task-blockers-card" className={DETAIL_CARD}>
-            <Blockers model={model} />
-          </div>
-        )}
         {model.children.length > 0 && (
           <div data-testid="task-subtasks-card" className={DETAIL_CARD}>
             <Subtasks model={model} />
@@ -855,14 +831,19 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
       data-testid="task-detail"
       data-layout="mobile"
       aria-label={model.title}
-      className="-mx-4 flex min-h-0 flex-1 flex-col gap-3 px-3"
+      className="-mx-4 -mt-4 flex min-h-0 flex-1 flex-col"
     >
-      <TitleCard model={model} tabs={<TabBar tab={tab} onTab={setTab} />} />
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div className={cn("min-h-0 flex-1 overflow-y-auto", tab !== "plan" && "hidden")}>
+      <div
+        className={cn(
+          "flex min-h-0 flex-1 flex-col",
+          tab === "plan" ? "overflow-y-auto" : "overflow-hidden",
+        )}
+      >
+        <TitleCard model={model} tabs={<TabBar tab={tab} onTab={setTab} />} flush />
+        <div className={cn("flex flex-col gap-3 px-3 pt-3", tab !== "plan" && "hidden")}>
           <PlanSections model={model} />
         </div>
-        <div className={cn("flex min-h-0 flex-1 flex-col", tab !== "chat" && "hidden")}>
+        <div className={cn("flex min-h-0 flex-1 flex-col px-3 pt-3", tab !== "chat" && "hidden")}>
           <TaskAgentChat
             task={model.task}
             projects={model.projects}
@@ -881,7 +862,7 @@ function DesktopPlan({ model }: { model: TaskDetailModel }) {
       data-testid="task-detail"
       data-layout="desktop"
       aria-label={model.title}
-      className="flex h-full min-h-0 flex-col gap-3 overflow-hidden px-3 pt-3"
+      className="flex h-full min-h-0 flex-col gap-3 overflow-hidden"
     >
       <TitleCard model={model} />
       <PlanSections model={model} />

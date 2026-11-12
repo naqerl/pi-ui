@@ -289,6 +289,18 @@
     }
   }
 
+  /* Tasks (desktop): keep the main-chat footer look and width, but center it
+     over the mid+chat columns instead of the viewport. */
+  .chat-shell[data-tasks-band] .float-footer {
+    margin-inline: 0;
+    width: min(var(--tasks-band-width, 100%), calc(72ch + 2rem));
+    margin-left: calc(
+      var(--tasks-band-left, 0px) +
+      (var(--tasks-band-width, 100%) - min(var(--tasks-band-width, 100%), calc(72ch + 2rem))) /
+      2
+    );
+  }
+
   .glass-composer {
     background-color: color-mix(in srgb, var(--surface) 72%, transparent);
     -webkit-backdrop-filter: blur(18px);

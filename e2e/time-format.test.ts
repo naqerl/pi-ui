@@ -11,7 +11,12 @@ import { renderWidget } from "../src/shared/dashboard.js";
 import { DEFAULT_DASHBOARD } from "../src/shared/dashboard-default.js";
 import { type BuiltinInputs, readSource } from "../src/shared/dashboard-sources.js";
 import { parseNotice } from "../src/shared/notices.js";
-import { formatDateTime, formatTime, toIsoTimestamp } from "../src/shared/time.js";
+import {
+  formatCompactDateTime,
+  formatDateTime,
+  formatTime,
+  toIsoTimestamp,
+} from "../src/shared/time.js";
 import type { ChatMessage } from "../src/shared/types.js";
 
 const ISO = "2026-01-15T12:34:56.000Z";
@@ -82,7 +87,23 @@ test("formatTime always renders hh:mm, even when the instant has seconds", () =>
 test("formatTime and formatDateTime leave invalid input blank", () => {
   assert.equal(formatTime("not a timestamp"), "");
   assert.equal(formatDateTime("not a timestamp"), "");
+  assert.equal(formatCompactDateTime("not a timestamp"), "");
   assert.equal(formatTime(Number.NaN), "");
+});
+
+test("formatCompactDateTime is local dd.MM.yyyy HH:mm", () => {
+  assert.equal(
+    inZone("UTC", () => formatCompactDateTime(ISO)),
+    "15.01.2026 12:34",
+  );
+  assert.equal(
+    inZone("America/New_York", () => formatCompactDateTime(ISO)),
+    "15.01.2026 07:34",
+  );
+  assert.equal(
+    inZone("Asia/Kolkata", () => formatCompactDateTime(ISO)),
+    "15.01.2026 18:04",
+  );
 });
 
 test("toIsoTimestamp rewrites offsets to the UTC wire form", () => {
