@@ -113,11 +113,21 @@ export class DurableExtensionShim implements DurableExtensionApi {
   private readonly handlers = new Map<string, DurableExtensionHandler[]>();
   private sink: DurableExtensionSink | undefined;
   private observer: ((notice: ExtensionNotice) => unknown) | undefined;
+  private noticeEnricher:
+    | ((notice: ExtensionNotice) => ExtensionNotice | Promise<ExtensionNotice>)
+    | undefined;
   private closed = false;
   private readonly earlyMessages: Array<[DurableExtensionMessage, DurableSendOptions]> = [];
 
   setObserver(observer: ((notice: ExtensionNotice) => unknown) | undefined): void {
     this.observer = observer;
+  }
+
+  /** Add runtime-only metadata to a tool notice before it reaches the feed. */
+  setNoticeEnricher(
+    enricher: ((notice: ExtensionNotice) => ExtensionNotice | Promise<ExtensionNotice>) | undefined,
+  ): void {
+    this.noticeEnricher = enricher;
   }
 
   get tools(): readonly ToolRegistration[] {
@@ -148,10 +158,18 @@ export class DurableExtensionShim implements DurableExtensionApi {
       execute: async (args: Static<TSchema>, api, context) => {
         const result = await tool.execute(api.callId, args, context.abortSignal);
         if (tool.name === "mcp_events") {
-          this.observer?.({
+          let notice: ExtensionNotice = {
             customType: "mcp-events-tool",
             details: { args, result: result.details ?? null },
-          });
+          };
+          if (this.noticeEnricher !== undefined) {
+            try {
+              notice = await this.noticeEnricher(notice);
+            } catch (error) {
+              console.error("[mcp] notice enrichment failed", error);
+            }
+          }
+          this.observer?.(notice);
         }
         return {
           output: result.content,

@@ -10,12 +10,27 @@ and the MCP widgets on the stats page. The feed reads the real cursor from
 
 `DATA_DIR/mcp-subscriptions.json` is the durable registry. It is one JSON
 document with `version: 1` and one entry per `(server, name, sortKey(arguments))`.
-An entry holds the adapter `id`, the durable `stableId`, `cursor`, `status`,
-`enabled`, the last 1,000 `deliveredEventIds`, and `updatedAt`. The `stableId`
-is derived from the server, stream name and sorted arguments, so it survives a
-restart and does not depend on argument order: the common no-arguments form is
-`zeroshot/hub`, and arguments add a short canonical digest. The adapter `id`
-still changes when the process subscribes again.
+An entry holds the adapter `id`, the durable `stableId`, the server
+`generation`, `cursor`, `status`, `enabled`, the last 1,000
+`deliveredEventIds`, and `updatedAt`. The `stableId` is derived from the
+server, stream name and sorted arguments, so it survives a restart and does
+not depend on argument order: the common no-arguments form is `zeroshot/hub`,
+and arguments add a short canonical digest. The adapter `id` still changes
+when the process subscribes again.
+
+The hub cursor is a per-daemon counter, so a hub restart starts at `hub:1`
+again. A subscribe therefore captures a `generation`: the hub's
+`GET /v1/hub/daemon` `startedAt` and `pid` when it states one, otherwise the
+adapter's session identity. Event keys and outbox dedupe keys include that
+generation, so `hub:1000` from the new daemon is not the `hub:1000` already
+delivered by the old one. The runtime refreshes the generation whenever the
+adapter opens a replacement protocol connection, before that connection can
+emit a renumbered event, as well as on subscribe/list/restore. A changed
+generation drops that `stableId`'s seen ids and waiting outbox entries before
+the new stream is accepted; other subscriptions keep theirs. Delivery items
+carry the generation too, so an outbox merge cannot fold a new epoch into an
+old pending text with the same cursor. Servers that state no generation, and
+rows written before this field existed, keep the original two-part key.
 
 A 1.6.7 registry has none of the new fields. Loading it derives the stable id,
 sets the adapter id to null, derives `enabled` from the status, and writes the
@@ -127,10 +142,11 @@ atomically saved in `DATA_DIR/mcp-outbox.json`. Pending batches retry FIFO and
 survive restart. Each delivery uses the same durable `requestId` on every
 attempt, including a crash after submission but before removing the pending
 record. A failed submission therefore leaves the id novel and the chip pending;
-the successful retry commits it exactly once. The outbox keeps the latest 10,000
-accepted event identities across completed deliveries; the subscription registry
-also retains its per-stream delivered-ID window. Providers must supply stable
-event IDs. Retention is bounded, not an infinite replay ledger.
+the successful retry commits it exactly once. The outbox keeps the newest 500
+accepted event identities per `stableId` (trimmed and persisted on every
+write); the subscription registry also retains its per-stream delivered-ID
+window. Providers must supply stable event IDs. Retention is bounded, not an
+infinite replay ledger.
 
 Startup recovery resumes from the stored push cursor when that backlog is
 recent; an old backlog starts from now and reports one gap instead. Poll
