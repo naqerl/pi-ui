@@ -1,3 +1,17 @@
+## 1.6.152
+
+### Changed
+
+- The composer in the float footer stays put when you move between Chat and
+  Tasks: the same field, the same size, no flash of a New-task placeholder or a
+  solid dock. Empty and helper text over the background sits in a centered glass
+  card like the composer itself.
+- On a wide screen the open task's header is a thin Task details bar that uses
+  the same chrome as a stats-page section, including the small close cross, with
+  the kebab beside it. Title, status, project and created stay in the list;
+  Rename and Change project are in the kebab. On a phone the last plan card keeps
+  a one-gap gutter above the composer, and the header is unchanged.
+
 ## 1.6.151
 
 ### Changed
