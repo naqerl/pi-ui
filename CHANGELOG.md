@@ -1076,6 +1076,13 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
   available" banner with its Reset button. Widgets are the page: the grid shows the
   grid, and a reset happens because the agent was asked for it, not by tapping a bar
   that appears whenever the default board changes.
+## 1.6.163
+
+### Fixed
+
+- The activity entry for a run appears as soon as the agent reports "working", instead of waiting for
+  the first tool call, so the message no longer arrives late or looks missing.
+
 ## 1.6.162
 
 ### Fixed
