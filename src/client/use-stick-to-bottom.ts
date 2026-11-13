@@ -18,7 +18,8 @@ interface HeldPosition {
  * When detached, preserve the element at the top of the viewport while content
  * below it grows, shrinks, or re-renders.
  */
-export function useStickToBottom(dependency: unknown) {
+export function useStickToBottom(dependency: unknown, options: { active?: boolean } = {}) {
+  const active = options.active !== false;
   const containerRef = useRef<HTMLElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const attachedRef = useRef(true);
@@ -30,6 +31,7 @@ export function useStickToBottom(dependency: unknown) {
   const syncFrameRef = useRef<number | null>(null);
   const scrollFrameRef = useRef<number | null>(null);
   const [attached, setAttachedState] = useState(true);
+  const wasActiveRef = useRef(active);
 
   const updateAttached = useCallback((next: boolean) => {
     if (attachedRef.current === next) return;
@@ -67,7 +69,8 @@ export function useStickToBottom(dependency: unknown) {
 
   const sync = useCallback(() => {
     const container = containerRef.current;
-    if (!container) return;
+    // A hidden pane has no layout; the held position from before the switch is authoritative.
+    if (!container || container.clientHeight === 0) return;
     const scrollHeight = container.scrollHeight;
     const clientHeight = container.clientHeight;
     const previousScrollHeight = lastScrollHeightRef.current;
@@ -164,12 +167,28 @@ export function useStickToBottom(dependency: unknown) {
     scheduleSync();
   }, [scheduleSync, updateAttached]);
 
+  // A tab switch hides the pane without unmounting it. Remember the position from before
+  // the hide (refs still hold it; sync skips a zero-height container) and restore before paint.
+  useLayoutEffect(() => {
+    if (wasActiveRef.current === active) return;
+    wasActiveRef.current = active;
+    if (active) {
+      restorePosition();
+    } else {
+      heldRef.current = {
+        attached: attachedRef.current,
+        scrollTop: lastScrollTopRef.current ?? 0,
+        anchor: anchorRef.current,
+      };
+    }
+  }, [active, restorePosition]);
+
   const handleScroll = useCallback(() => {
     if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
     scrollFrameRef.current = requestAnimationFrame(() => {
       scrollFrameRef.current = null;
       const container = containerRef.current;
-      if (!container) return;
+      if (!container || container.clientHeight === 0) return;
       const scrollTop = container.scrollTop;
       const previousScrollTop = lastScrollTopRef.current;
       lastScrollTopRef.current = scrollTop;

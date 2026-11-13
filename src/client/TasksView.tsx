@@ -922,6 +922,7 @@ function TasksViewImpl({
                   className="flex h-full min-h-0 min-w-0 flex-col"
                 >
                   <TaskAgentChat
+                    key={openTask.id}
                     task={openTask}
                     projects={projectsOf(tasks.filter((item) => isActiveStatus(item.status)))}
                     variant="pane"

@@ -1020,24 +1020,66 @@ app.post("/api/tasks/:id/chat", async (c) => {
   } catch {
     return c.text("Expected a JSON body", 400);
   }
-  const text =
-    typeof body === "object" && body !== null && "text" in body && typeof body.text === "string"
-      ? body.text
-      : "";
+  const record = typeof body === "object" && body !== null ? body : {};
+  const text = "text" in record && typeof record.text === "string" ? record.text : "";
+  const mode = "mode" in record && record.mode === "steer" ? "steer" : "queue";
+  const queueKey =
+    "queueKey" in record && typeof record.queueKey === "string" && record.queueKey.length > 0
+      ? record.queueKey
+      : undefined;
   let attachments: string[] = [];
   try {
     attachments = parseAttachmentIds(
       media,
-      typeof body === "object" && body !== null && "attachments" in body
-        ? body.attachments
-        : undefined,
+      "attachments" in record ? record.attachments : undefined,
     );
     for (const id of attachments) await media.read(id);
   } catch (error) {
     return taskAgentFailure(c, error);
   }
   try {
-    return c.json(await taskAgents.submit(c.req.param("id"), text, attachments), 202);
+    return c.json(await taskAgents.send(c.req.param("id"), text, attachments, mode, queueKey), 202);
+  } catch (error) {
+    return taskAgentFailure(c, error);
+  }
+});
+
+app.post("/api/tasks/:id/chat/queue/:queueId", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    body = undefined;
+  }
+  const action =
+    typeof body === "object" && body !== null && "action" in body ? body.action : undefined;
+  const queueId = c.req.param("queueId");
+  try {
+    if (action === "steer") {
+      const response = await taskAgents.steerQueued(c.req.param("id"), queueId);
+      if (response === null) return c.text("Unknown queued message", 404);
+      return c.json(response);
+    }
+    const snapshot = await taskAgents.cancelQueued(c.req.param("id"), queueId);
+    return c.json({
+      queue: snapshot.queue ?? [],
+      steers: snapshot.steers ?? [],
+      queueRevision: snapshot.queueRevision ?? 0,
+    });
+  } catch (error) {
+    return taskAgentFailure(c, error);
+  }
+});
+
+app.post("/api/tasks/:id/chat/steer/:steerId", async (c) => {
+  try {
+    const result = await taskAgents.unsendSteer(c.req.param("id"), c.req.param("steerId"));
+    if (result === null) return c.text("Unknown steer", 404);
+    return c.json({
+      steer: result.steer,
+      steers: result.snapshot.steers ?? [],
+      queueRevision: result.snapshot.queueRevision ?? 0,
+    });
   } catch (error) {
     return taskAgentFailure(c, error);
   }

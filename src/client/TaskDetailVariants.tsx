@@ -969,10 +969,12 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
         </div>
         <div className={cn("flex min-h-0 flex-1 flex-col px-3 pt-3", tab !== "chat" && "hidden")}>
           <TaskAgentChat
+            key={model.task.id}
             task={model.task}
             projects={model.projects}
             variant="pane"
             composerTarget="dock"
+            active={tab === "chat"}
           />
         </div>
       </div>

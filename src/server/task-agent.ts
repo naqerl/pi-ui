@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
@@ -16,6 +17,7 @@ import {
   type HarnessSettings,
   type LiveState,
   type ModelRef,
+  type Submission,
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -29,16 +31,22 @@ import {
   taskQuestionAnswerPayload,
   taskQuestionAnswerSummary,
 } from "../shared/questions.js";
+import { PENDING_QUEUE_ORDER, QUEUE_ENTRY_KIND } from "../shared/queue.js";
 import { runErrorFromUnanswered } from "../shared/run-error.js";
+import { steerDropReason } from "../shared/steers.js";
 import { DEFAULT_NEW_TASK_TITLE, isActiveStatus, TASK_BODY_MAX_LENGTH } from "../shared/tasks.js";
-import type {
-  ChatMessage,
-  RunError,
-  RunState,
-  StreamRunState,
-  Task,
-  TaskLedger,
-  TaskQuestionSet,
+import {
+  type ChatMessage,
+  type MessageMode,
+  type QueuedMessage,
+  type RunError,
+  type RunState,
+  STEER_ENTRY_KIND,
+  type StreamRunState,
+  type SubmitMessageResponse,
+  type Task,
+  type TaskLedger,
+  type TaskQuestionSet,
 } from "../shared/types.js";
 import { withConversationIdentity } from "./billion-context.js";
 import type { MediaStore } from "./media.js";
@@ -89,6 +97,12 @@ export interface TaskAgentChatSnapshot {
   draft: { text: string; thinking: string; revision: number };
   /** The unanswered set, or null. Persisted beside the task agent's conversation. */
   questions: TaskQuestionSet | null;
+  /** Follow-ups waiting for the current plan run to end. */
+  queue?: QueuedMessage[];
+  /** Steers waiting for the run's next turn boundary. */
+  steers?: QueuedMessage[];
+  /** Revision of the two lists above, so a late snapshot cannot undo a newer update. */
+  queueRevision?: number;
 }
 
 export interface TaskAgentSession {
@@ -98,6 +112,16 @@ export interface TaskAgentSession {
   running(): boolean;
   snapshot(): Promise<TaskAgentChatSnapshot>;
   submit(text: string, attachments?: string[]): Promise<TaskAgentChatSnapshot>;
+  /** The main-chat-shaped send answer, used by the shared client core. */
+  send?(
+    text: string,
+    attachments: string[],
+    mode: MessageMode,
+    queueKey?: string,
+  ): Promise<SubmitMessageResponse>;
+  cancelQueued?(id: string): Promise<boolean>;
+  steerQueued?(id: string): Promise<SubmitMessageResponse | null>;
+  unsendSteer?(id: string): Promise<QueuedMessage | null>;
   dismissError?(id?: string): Promise<TaskAgentChatSnapshot>;
   stop(): Promise<void>;
   close(): Promise<void>;
@@ -474,6 +498,12 @@ export class DurableTaskAgentSession implements TaskAgentSession {
   private lastViewEntryId: EntryRecord["id"] | undefined;
   private viewLive: LiveState | undefined;
   private watch: ConversationWatch | undefined;
+  /** Follow-ups durable has not placed yet, grouped by submission id. */
+  private readonly queued = new Map<string, QueuedMessage>();
+  /** Steers still waiting for the current run, by submission id. */
+  private readonly steers = new Map<string, QueuedMessage>();
+  /** Bumped on every queue/steer mutation; the client's monotonic guard reads this. */
+  private queueRevision = 0;
 
   constructor(
     readonly taskId: string,
@@ -509,7 +539,13 @@ export class DurableTaskAgentSession implements TaskAgentSession {
   }
 
   private runStatus(): StreamRunState {
-    return { state: this.runState, runError: this.runError };
+    return {
+      state: this.runState,
+      runError: this.runError,
+      queue: this.queueItems(),
+      steers: this.steerItems(),
+      queueRevision: this.queueRevision,
+    };
   }
 
   private bumpDraft(): number {
@@ -551,6 +587,9 @@ export class DurableTaskAgentSession implements TaskAgentSession {
         revision: this.draftRevision,
       },
       questions: this.questions === undefined ? null : await this.questions.pending(),
+      queue: this.queueItems(),
+      steers: this.steerItems(),
+      queueRevision: this.queueRevision,
     };
   }
 
@@ -652,8 +691,23 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     this.currentThinking = nextThinking;
     if (draftChanged) this.publishDraft();
 
+    // The run state goes out before the transcript rows. A client refresh triggered by
+    // `message.done` then cannot read a snapshot from before the run started and paint idle.
+    const running = liveRunning(live);
+    const wasRunning = liveRunning(previousLive);
+    if (running !== wasRunning || (running && this.runState !== "running")) {
+      this.setRunState(running ? "running" : "idle");
+    }
+
     if (newEntries.length > 0) {
       const built = buildTranscript(newEntries, this.mediaRef);
+      // A placed steer leaves the pending list in the same update as its transcript row.
+      // Otherwise a snapshot read before this entry still lists it, and the client would
+      // rebuild the pending bubble beside the delivered row.
+      let consumedSteer = false;
+      for (const message of built.messages) {
+        if (this.takeTrackedSteer(message)) consumedSteer = true;
+      }
       for (const message of visibleTaskAgentMessages(built.messages)) {
         this.emit({ event: "message.done", data: { message } });
       }
@@ -663,16 +717,189 @@ export class DurableTaskAgentSession implements TaskAgentSession {
         event: "draft.sync",
         data: { text: "", thinking: "", revision: this.bumpDraft() },
       });
-    }
-
-    const running = liveRunning(live);
-    const wasRunning = liveRunning(previousLive);
-    if (running !== wasRunning || (running && this.runState !== "running")) {
-      this.setRunState(running ? "running" : "idle");
+      if (consumedSteer) this.broadcastQueue();
     }
   }
 
-  async submit(text: string, attachments: string[] = []): Promise<TaskAgentChatSnapshot> {
+  /** Takes a tracked steer off the queue when its transcript entry carries the same key. */
+  private takeTrackedSteer(message: ChatMessage, submissionId?: string): boolean {
+    if (message.steerKey === undefined) return false;
+    let removed = false;
+    if (submissionId !== undefined && this.steers.delete(submissionId)) removed = true;
+    for (const [id, steer] of this.steers) {
+      if (steer.key !== message.steerKey) continue;
+      this.steers.delete(id);
+      removed = true;
+    }
+    // Consuming a steer is a queue mutation too: the revision must move before any
+    // snapshot taken after this entry is accepted.
+    if (removed) this.markQueueChanged();
+    return removed;
+  }
+
+  private queueItems(): QueuedMessage[] {
+    return [...this.queued.values()];
+  }
+
+  private steerItems(): QueuedMessage[] {
+    return [...this.steers.values()];
+  }
+
+  /** Bump before an await can interleave a snapshot read with a queue mutation. */
+  private markQueueChanged(): void {
+    this.queueRevision += 1;
+  }
+
+  private broadcastQueue(): void {
+    this.emit({ event: "run.state", data: this.runStatus() });
+  }
+
+  /** The placed transcript row for a submission, or the pending row while it waits. */
+  private async submittedMessage(
+    submission: Submission,
+    text: string,
+    steer: boolean,
+    attachments: string[],
+    steerKey: string | undefined,
+    pendingKey: string | undefined,
+  ): Promise<{ message: ChatMessage; placed: boolean }> {
+    const status = (
+      submission as { status?: (context: typeof SESSION_CONTEXT) => Promise<unknown> }
+    ).status;
+    const record =
+      typeof status === "function"
+        ? ((await status.call(submission, SESSION_CONTEXT)) as
+            | { status?: string; entry?: number }
+            | undefined)
+        : undefined;
+    const placed = record === undefined || record.status === "placed" || record.status === "done";
+    const entryId = record?.entry;
+    if (entryId !== undefined) {
+      const context = await this.conversation.context(SESSION_CONTEXT);
+      const entry = context.entries.find((candidate) => candidate.id === entryId);
+      if (entry !== undefined) {
+        const message = buildTranscript([entry], this.mediaRef).messages[0];
+        if (message !== undefined) {
+          return {
+            message: {
+              ...message,
+              ...(steer ? { steer: true } : {}),
+              ...(steerKey === undefined ? {} : { steerKey }),
+            },
+            placed,
+          };
+        }
+      }
+    }
+    const pendingId = steer
+      ? `steer-pending-${pendingKey ?? String(submission.id)}`
+      : `m-${pendingKey ?? String(submission.id)}`;
+    return {
+      message: {
+        id: pendingId,
+        role: "user",
+        text,
+        ...(attachments.length > 0
+          ? { attachments: attachments.map((id) => ({ id, mimeType: "image/*" })) }
+          : {}),
+        timestamp: new Date().toISOString(),
+        order: PENDING_QUEUE_ORDER,
+        ...(steer ? { steer: true } : {}),
+        ...(steerKey === undefined ? {} : { steerKey }),
+      },
+      placed,
+    };
+  }
+
+  /**
+   * Waits for a submission to be placed or settled, retires its pending queue/steer
+   * row, and keeps the plan chat's run-error behaviour identical to the main chat.
+   */
+  private async monitorSubmission(
+    submission: Submission,
+    startsRun: boolean,
+    queuedId: string | undefined,
+    steerId: string | undefined,
+  ): Promise<void> {
+    let final: Awaited<ReturnType<Submission["wait"]>> | undefined;
+    try {
+      const settled = await this.identity(() => submission.wait(SESSION_CONTEXT));
+      final = settled;
+      if (settled.status === "unanswered") {
+        console.warn(
+          `[task-agent] run ended without an answer for ${this.taskId}: ${settled.reason}` +
+            (settled.detail === undefined ? "" : ` (${JSON.stringify(settled.detail)})`),
+        );
+      }
+    } catch (error) {
+      console.error(`[task-agent] submission wait failed for ${this.taskId}`, error);
+    }
+
+    if (steerId !== undefined && this.steers.has(steerId)) {
+      if (final !== undefined && final.status === "unanswered") {
+        this.dropTrackedSteer(steerId, steerDropReason(final.reason, final.detail));
+      } else if (final !== undefined && final.type === "input" && final.status === "done") {
+        // The row may have been placed but the watch has not consumed it yet. Read the
+        // entry directly, then leave a failed bubble if the run ended without delivering it.
+        if (await this.consumeSteerEntry(final.entry, steerId)) this.broadcastQueue();
+        if (this.steers.has(steerId)) {
+          this.dropTrackedSteer(steerId, "The run ended before the steer was delivered.");
+        }
+      } else {
+        this.dropTrackedSteer(
+          steerId,
+          "The server lost track of the steer before it was delivered.",
+        );
+      }
+    }
+    if (queuedId !== undefined && this.queued.delete(queuedId)) {
+      this.markQueueChanged();
+      this.broadcastQueue();
+    }
+
+    // A cancelled queued follow-up settles `unanswered`/`aborted` while the earlier run is
+    // still live. It must not turn that run idle or hand it a run error. The submission that
+    // started the run still ends it normally (including a deliberate stop).
+    if (final !== undefined && final.status === "unanswered") {
+      if (this.closed) return;
+      const errorId = `${this.taskId}:${submission.id}`;
+      const runError = runErrorFromUnanswered(final.reason, final.detail, errorId);
+      const cancelledFollowUp = !startsRun && runError === null;
+      if (!cancelledFollowUp) {
+        if (runError !== null) {
+          this.setRunState(this.runState === "running" ? "idle" : this.runState, runError);
+        } else if (this.queued.size === 0) {
+          this.setRunState(this.runState === "running" ? "idle" : this.runState, this.runError);
+        }
+      }
+    }
+  }
+
+  /** Drops a pending steer and reveals why it never reached the transcript. */
+  private dropTrackedSteer(id: string, reason: string): boolean {
+    if (!this.steers.delete(id)) return false;
+    this.markQueueChanged();
+    this.emit({ event: "steer.dropped", data: { id, reason } });
+    this.broadcastQueue();
+    return true;
+  }
+
+  /** Reads a done submission's entry and consumes the pending steer it placed. */
+  private async consumeSteerEntry(entryId: number, submissionId: string): Promise<boolean> {
+    const context = await this.conversation.context(SESSION_CONTEXT);
+    const entry = context.entries.find((candidate) => candidate.id === entryId);
+    if (entry === undefined) return false;
+    const message = buildTranscript([entry], this.mediaRef).messages[0];
+    return message === undefined ? false : this.takeTrackedSteer(message, submissionId);
+  }
+
+  /** The shared chat core's send: a queued follow-up or a steer, with main-chat semantics. */
+  async send(
+    text: string,
+    attachments: string[] = [],
+    mode: MessageMode = "queue",
+    queueKey?: string,
+  ): Promise<SubmitMessageResponse> {
     if (this.closed) throw new TaskAgentError("Task agent has been closed", 409);
     if (attachments.length > 0 && this.media === undefined) {
       throw new TaskAgentError("Images cannot be sent in this session", 400);
@@ -685,35 +912,143 @@ export class DurableTaskAgentSession implements TaskAgentSession {
       images.length === 0
         ? text
         : [...(text.length > 0 ? [{ type: "text" as const, text }] : []), ...images];
+
+    const steer = mode === "steer";
+    const startsRun = this.runState !== "running" && this.queued.size === 0;
+    const key = queueKey ?? randomUUID();
+    const createdAt = new Date().toISOString();
     // Model requests go through billion-context; they must carry this
     // conversation's id, not the main chat's, or the turn can hang or
     // attach itself to the parent session.
     const submission = await this.identity(() =>
-      this.conversation.submit({ type: "input", content }, SESSION_CONTEXT),
+      this.conversation.submit(
+        {
+          type: "input",
+          content,
+          whenBusy: steer ? "steer" : "followUp",
+          requestId: `queue:${key}`,
+          entry: {
+            kind: steer ? STEER_ENTRY_KIND : QUEUE_ENTRY_KIND,
+            data: { key, createdAt },
+          },
+        },
+        SESSION_CONTEXT,
+      ),
     );
-    // A new turn replaces the previous failure with a clean running state.
-    this.setRunState("running", null);
-    const errorId = `${this.taskId}:${submission.id}`;
-    void this.identity(() => submission.wait(SESSION_CONTEXT))
-      .then((settled) => {
-        if (settled.status !== "unanswered") return;
-        console.warn(
-          `[task-agent] run ended without an answer for ${this.taskId}: ${settled.reason}` +
-            (settled.detail === undefined ? "" : ` (${JSON.stringify(settled.detail)})`),
-        );
-        if (this.closed) return;
-        const runError = runErrorFromUnanswered(settled.reason, settled.detail, errorId);
-        this.setRunState(this.runState === "running" ? "idle" : this.runState, runError);
-      })
-      .catch((error: unknown) => {
-        console.error(`[task-agent] submit failed for ${this.taskId}`, error);
-        if (this.closed) return;
-        const detail = error instanceof Error ? error.message : String(error);
-        this.setRunState(
-          this.runState === "running" ? "idle" : this.runState,
-          runErrorFromUnanswered("model_error", detail, errorId),
-        );
+    if (startsRun) this.setRunState("running", null);
+    const id = String(submission.id);
+    const { message, placed } = await this.submittedMessage(
+      submission,
+      text,
+      steer,
+      attachments,
+      steer ? key : undefined,
+      key,
+    );
+
+    if (steer) {
+      if (!placed) {
+        this.steers.set(id, {
+          id,
+          text,
+          createdAt,
+          key,
+          ...(attachments.length > 0 ? { attachments } : {}),
+        });
+      }
+    } else if (!placed) {
+      this.queued.set(id, {
+        id,
+        text,
+        createdAt,
+        key,
+        ...(attachments.length > 0 ? { attachments } : {}),
       });
+    }
+    this.markQueueChanged();
+    this.broadcastQueue();
+    void this.monitorSubmission(
+      submission,
+      startsRun,
+      steer ? undefined : id,
+      steer ? id : undefined,
+    );
+
+    return {
+      message,
+      mode,
+      queued: !steer && !placed,
+      placed,
+      queue: this.queueItems(),
+      steers: this.steerItems(),
+      queueRevision: this.queueRevision,
+    };
+  }
+
+  async cancelQueued(id: string): Promise<boolean> {
+    if (!this.queued.has(id)) return false;
+    this.queued.delete(id);
+    this.markQueueChanged();
+    this.broadcastQueue();
+    try {
+      await this.harness.abortSubmission(
+        Number(id) as never,
+        SESSION_CONTEXT,
+        this.conversation.id,
+      );
+    } catch (error) {
+      console.error(`[task-agent] could not cancel a queued message for ${this.taskId}`, error);
+    }
+    return true;
+  }
+
+  async steerQueued(id: string): Promise<SubmitMessageResponse | null> {
+    const item = this.queued.get(id);
+    if (item === undefined) return null;
+    this.queued.delete(id);
+    this.markQueueChanged();
+    this.broadcastQueue();
+    let aborted = false;
+    try {
+      aborted =
+        (await this.harness.abortSubmission(
+          Number(id) as never,
+          SESSION_CONTEXT,
+          this.conversation.id,
+        )) === "aborted";
+    } catch (error) {
+      console.error(`[task-agent] could not move a queued message for ${this.taskId}`, error);
+    }
+    // A message durable already placed is in the transcript; sending it again would
+    // duplicate it. Return null so the client refreshes from the authoritative state.
+    if (!aborted) return null;
+    // Do not reuse the queue key: it is also the submission request id, so durable
+    // would deduplicate the new steer against the queued submission just aborted.
+    return this.send(item.text, item.attachments ?? [], "steer");
+  }
+
+  async unsendSteer(id: string): Promise<QueuedMessage | null> {
+    const item = this.steers.get(id);
+    if (item === undefined) return null;
+    let aborted = false;
+    try {
+      aborted =
+        (await this.harness.abortSubmission(
+          Number(id) as never,
+          SESSION_CONTEXT,
+          this.conversation.id,
+        )) === "aborted";
+    } catch (error) {
+      console.error(`[task-agent] could not take back a steer for ${this.taskId}`, error);
+    }
+    this.steers.delete(id);
+    this.markQueueChanged();
+    this.broadcastQueue();
+    return aborted ? item : null;
+  }
+
+  async submit(text: string, attachments: string[] = []): Promise<TaskAgentChatSnapshot> {
+    await this.send(text, attachments);
     return this.snapshot();
   }
 
@@ -830,6 +1165,76 @@ export class TaskAgentManager {
     }
     const session = await this.ensure(taskId);
     return session.submit(patch.message, attachments);
+  }
+
+  /** Send through the shared client core's main-chat-shaped endpoint. */
+  async send(
+    taskId: string,
+    text: string,
+    attachments: string[] = [],
+    mode: MessageMode = "queue",
+    queueKey?: string,
+  ): Promise<SubmitMessageResponse> {
+    const task = this.options.store.ledger().tasks.find((item) => item.id === taskId);
+    if (task === undefined) throw new TaskAgentError("Unknown task", 404);
+    if (task.status === "done") {
+      throw new TaskAgentError("Task is done", 409);
+    }
+    const trimmed = text.trim();
+    if (trimmed.length === 0 && attachments.length === 0) {
+      throw new TaskAgentError("Message text is required", 400);
+    }
+    const known = projectsOf(this.options.store.ledger().tasks);
+    const patch = trimmed.length === 0 ? { message: "" } : openingTaskPatch(task, trimmed, known);
+    if (patch.message.length === 0 && attachments.length === 0) {
+      throw new TaskAgentError("Message text is required", 400);
+    }
+    if (patch.title !== undefined || patch.project !== undefined) {
+      const ledger = await this.options.store.update(taskId, {
+        ...(patch.title === undefined ? {} : { title: patch.title }),
+        ...(patch.project === undefined ? {} : { project: patch.project }),
+      });
+      this.options.publish(ledger);
+    }
+    const session = await this.ensure(taskId);
+    if (session.send !== undefined) {
+      return session.send(patch.message, attachments, mode, queueKey);
+    }
+    const snapshot = await session.submit(patch.message, attachments);
+    const message = snapshot.messages.at(-1);
+    if (message === undefined) {
+      throw new TaskAgentError("The message could not be placed", 500);
+    }
+    return {
+      message,
+      mode,
+      queued: false,
+      placed: true,
+      queue: snapshot.queue ?? [],
+      steers: snapshot.steers ?? [],
+      queueRevision: snapshot.queueRevision ?? 0,
+    };
+  }
+
+  async cancelQueued(taskId: string, id: string): Promise<TaskAgentChatSnapshot> {
+    const session = await this.ensure(taskId);
+    await session.cancelQueued?.(id);
+    return session.snapshot();
+  }
+
+  async steerQueued(taskId: string, id: string): Promise<SubmitMessageResponse | null> {
+    const session = await this.ensure(taskId);
+    return session.steerQueued === undefined ? null : session.steerQueued(id);
+  }
+
+  async unsendSteer(
+    taskId: string,
+    id: string,
+  ): Promise<{ steer: QueuedMessage; snapshot: TaskAgentChatSnapshot } | null> {
+    const session = await this.ensure(taskId);
+    if (session.unsendSteer === undefined) return null;
+    const steer = await session.unsendSteer(id);
+    return steer === null ? null : { steer, snapshot: await session.snapshot() };
   }
 
   async dismissError(taskId: string, id?: string): Promise<TaskAgentChatSnapshot> {
