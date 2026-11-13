@@ -35,10 +35,8 @@ import type {
 } from "../shared/types";
 import { groupSummaryParts } from "./activity-format";
 import {
-  activeJobs,
-  activeSubagents,
+  BackgroundJobsCounts,
   type BackgroundJobsKind,
-  BackgroundJobsLine,
   BackgroundJobsSheet,
 } from "./BackgroundJobs";
 import { Button } from "./components/ui/button";
@@ -2292,16 +2290,20 @@ export function ChatView({
             <div
               data-testid="working-status"
               data-open={statusRunning ? "true" : "false"}
-              aria-live="polite"
-              className="min-w-0 flex-1 truncate font-mono text-[11px] leading-4 text-muted-foreground"
+              className="flex min-w-0 flex-1 items-baseline gap-2 font-mono text-[11px] leading-4 text-muted-foreground"
             >
-              {statusWord === null ? null : statusRunning ? (
-                <WorkingIndicator running word={statusWord} />
-              ) : (
-                // Idle is a server statement. Before the first snapshot the answer
-                // is not known yet, so do not paint a guess that can be wrong.
-                <span>{statusWord}</span>
+              {statusWord !== null && (
+                <div aria-live="polite" className="min-w-0 truncate">
+                  {statusRunning ? (
+                    <WorkingIndicator running word={statusWord} />
+                  ) : (
+                    // Idle is a server statement. Before the first snapshot the answer
+                    // is not known yet, so do not paint a guess that can be wrong.
+                    <span>{statusWord}</span>
+                  )}
+                </div>
               )}
+              <BackgroundJobsCounts jobs={jobs} delegates={delegates ?? []} onOpen={setJobsSheet} />
             </div>
             <div
               role="tablist"
@@ -2332,22 +2334,6 @@ export function ChatView({
               ))}
             </div>
             <PiMenu />
-          </div>
-          {/* The baseline dock already paints the status/nav row above the composer
-              body. Inserting the jobs row between them is the only order that keeps
-              the status line's original y while still extending the composer; the
-              requested diagram's composer-first stack would move that row. */}
-          <div
-            className="bg-jobs-slot"
-            data-open={
-              activeJobs(jobs).length > 0 || activeSubagents(delegates ?? []).length > 0
-                ? "true"
-                : "false"
-            }
-          >
-            <div className="min-h-0 overflow-clip">
-              <BackgroundJobsLine jobs={jobs} delegates={delegates ?? []} onOpen={setJobsSheet} />
-            </div>
           </div>
           <div
             data-testid="composer-body"

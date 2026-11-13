@@ -35,11 +35,21 @@ function elapsed(startedAt: string | null, now: number): string {
   return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`;
 }
 
+/** How long the counts stay mounted for their opacity/transform exit. */
+const EXIT_MS = 160;
+
+interface JobCounts {
+  jobs: number;
+  subagents: number;
+}
+
 /**
- * The live jobs/sub-agent row. It is deliberately absent when both lists are empty:
- * the status line must not gain an empty card or a gap.
+ * The live jobs/sub-agent counts, painted inline at the end of the composer's
+ * status row. They are deliberately absent when both lists are empty, and only
+ * their own opacity/transform animates: the row keeps its height, so the
+ * composer and the transcript never move when work starts or finishes.
  */
-export function BackgroundJobsLine({
+export function BackgroundJobsCounts({
   jobs,
   delegates,
   onOpen,
@@ -50,7 +60,30 @@ export function BackgroundJobsLine({
 }) {
   const jobCount = activeJobs(jobs).length;
   const subagentCount = activeSubagents(delegates).length;
-  if (jobCount === 0 && subagentCount === 0) return null;
+  const live = jobCount > 0 || subagentCount > 0;
+  // The counts stay mounted through the exit so the fade has content; an empty
+  // status row never keeps a node around.
+  const [shown, setShown] = useState<JobCounts | null>(
+    live ? { jobs: jobCount, subagents: subagentCount } : null,
+  );
+
+  useEffect(() => {
+    if (live) {
+      setShown((current) =>
+        current !== null && current.jobs === jobCount && current.subagents === subagentCount
+          ? current
+          : { jobs: jobCount, subagents: subagentCount },
+      );
+      return;
+    }
+    if (shown === null) return;
+    const timer = window.setTimeout(() => setShown(null), EXIT_MS);
+    return () => window.clearTimeout(timer);
+  }, [live, jobCount, subagentCount, shown]);
+
+  // Live counts paint straight from props; the kept snapshot only carries the exit.
+  const rendered = live ? { jobs: jobCount, subagents: subagentCount } : shown;
+  if (rendered === null) return null;
 
   const chip = (kind: BackgroundJobsKind, count: number, noun: string) => (
     <button
@@ -61,27 +94,26 @@ export function BackgroundJobsLine({
         haptic();
         onOpen(kind);
       }}
-      className="theme-radius inline-flex shrink-0 items-center gap-1 border border-border/70 bg-background/80 px-2 py-0.5 font-mono text-[11px] leading-4 text-foreground transition-colors hover:bg-muted"
+      className="shrink-0 whitespace-nowrap font-mono text-[11px] leading-4 text-muted-foreground transition-colors hover:text-foreground"
     >
-      <span aria-hidden="true" className="size-1.5 rounded-full bg-accent" />
       {plural(count, noun)}
     </button>
   );
 
   return (
-    <section
+    <span
       data-testid="bg-jobs-line"
-      aria-label="Background work"
-      className="mx-2 flex min-w-0 items-center gap-1.5 overflow-x-auto border border-border/70 bg-surface/80 px-2 py-1 theme-radius backdrop-blur-md"
+      data-open={live ? "true" : "false"}
+      className="bg-jobs-counts inline-flex min-w-0 shrink-0 items-baseline gap-1.5"
     >
-      {jobCount > 0 && chip("jobs", jobCount, "job")}
-      {jobCount > 0 && subagentCount > 0 && (
-        <span aria-hidden="true" className="shrink-0 text-[11px] text-muted-foreground">
+      {rendered.jobs > 0 && chip("jobs", rendered.jobs, "job")}
+      {rendered.jobs > 0 && rendered.subagents > 0 && (
+        <span aria-hidden="true" className="shrink-0 leading-4">
           ·
         </span>
       )}
-      {subagentCount > 0 && chip("subagents", subagentCount, "subagent")}
-    </section>
+      {rendered.subagents > 0 && chip("subagents", rendered.subagents, "subagent")}
+    </span>
   );
 }
 
