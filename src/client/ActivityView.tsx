@@ -106,10 +106,9 @@ function JobActivityRow({ activity }: { activity: Extract<ActivityItem, { kind: 
           failed ? "text-destructive" : "text-muted-foreground",
         )}
       >
-        <ChevronIcon
-          size={14}
-          className="shrink-0 transition-transform group-data-[state=open]:rotate-90"
-        />
+        <span className="flex size-4 shrink-0 items-center justify-center transition-transform group-data-[state=open]:rotate-90 motion-reduce:transition-none">
+          <ChevronIcon size={14} />
+        </span>
         <NoticeIcon name={noticeIconName("job")} size={18} />
         <span
           data-testid="activity-job-summary"
@@ -206,10 +205,9 @@ function DelegateRunRow({ run }: { run: DelegateRunView }) {
           failed ? "text-destructive" : "text-muted-foreground",
         )}
       >
-        <ChevronIcon
-          size={14}
-          className="shrink-0 transition-transform group-data-[state=open]:rotate-90"
-        />
+        <span className="flex size-4 shrink-0 items-center justify-center transition-transform group-data-[state=open]:rotate-90 motion-reduce:transition-none">
+          <ChevronIcon size={14} />
+        </span>
         <NoticeIcon name={noticeIconName("delegate")} size={18} />
         <span
           data-testid="activity-delegate-summary"
@@ -309,10 +307,9 @@ function ActivityRow({ activity }: { activity: ActivityItem }) {
           failed ? "text-destructive" : "text-muted-foreground",
         )}
       >
-        <ChevronIcon
-          size={14}
-          className="shrink-0 transition-transform group-data-[state=open]:rotate-90"
-        />
+        <span className="flex size-4 shrink-0 items-center justify-center transition-transform group-data-[state=open]:rotate-90 motion-reduce:transition-none">
+          <ChevronIcon size={14} />
+        </span>
         <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{activitySummary(activity)}</span>
       </CollapsibleTrigger>
       <CollapsibleContent>
