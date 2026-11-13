@@ -1556,6 +1556,99 @@ function EarlierMessages({
   );
 }
 
+/**
+ * The one transcript row renderer. The main chat and the plan chat both pass their
+ * grouped timeline here; neither owns a second copy of message/activity rendering.
+ */
+export function TranscriptRows({
+  groups,
+  onSteer,
+  onCancelQueued,
+  onOpen,
+  liveActivityGroupKey,
+}: {
+  groups: TimelineGroup[];
+  onSteer?: (text: string) => void;
+  onCancelQueued?: (id: string) => unknown;
+  onOpen?: (run: string, trigger: HTMLButtonElement) => void;
+  liveActivityGroupKey?: string;
+}) {
+  return (
+    <>
+      {groups.map((group, index) => {
+        if (group.kind === "message") {
+          return (
+            <MemoMessageBubble
+              key={group.key}
+              message={group.message}
+              {...(onSteer === undefined ? {} : { onSteer })}
+              {...(onCancelQueued === undefined ? {} : { onCancelQueued })}
+            />
+          );
+        }
+        const next = groups[index + 1];
+        const usage =
+          next?.kind === "message" && next.message.role === "assistant"
+            ? next.message.usage
+            : undefined;
+        return (
+          <ActivityGroup
+            key={group.key}
+            groupKey={group.key}
+            items={group.items}
+            live={group.key === liveActivityGroupKey}
+            usage={usage}
+            onOpen={onOpen ?? (() => undefined)}
+          />
+        );
+      })}
+    </>
+  );
+}
+
+/**
+ * The one run-status line, above whichever composer the conversation owns. The plan
+ * chat passes its "Planning" label; otherwise this is byte-identical to the main chat.
+ */
+export function RunStatusLine({
+  running,
+  thinking,
+  ready,
+  label,
+  testId = "working-status",
+}: {
+  running: boolean;
+  thinking: boolean;
+  ready: boolean;
+  label?: string;
+  /** One status implementation; the plan pane names its own node so both can be queried. */
+  testId?: string;
+}) {
+  return (
+    <div
+      data-testid={testId}
+      data-open={running ? "true" : "false"}
+      aria-live="polite"
+      className="min-w-0 flex-1 truncate font-mono text-[11px] leading-4 text-muted-foreground"
+    >
+      {running ? (
+        <WorkingIndicator
+          running={running}
+          thinking={thinking}
+          {...(label === undefined ? {} : { word: label })}
+          {...(testId === "working-status"
+            ? {}
+            : { testId: `${testId}-indicator`, activityTestId: `${testId}-activity` })}
+        />
+      ) : (
+        // Idle is a server statement. Before the first snapshot the answer
+        // is not known yet, so do not paint a guess that can be wrong.
+        <span>{ready ? "idle" : "connecting"}</span>
+      )}
+    </div>
+  );
+}
+
 function lastUserMessageOrder(timeline: TimelineItem[]): number {
   let order = Number.NEGATIVE_INFINITY;
   for (const item of timeline) {
@@ -2099,33 +2192,13 @@ export function ChatView({
                       attached={stick.attached}
                     />
                   )}
-                  {groups.map((group, index) => {
-                    if (group.kind === "message") {
-                      return (
-                        <MemoMessageBubble
-                          key={group.key}
-                          message={group.message}
-                          onSteer={steerNotice}
-                          onCancelQueued={cancelQueued}
-                        />
-                      );
-                    }
-                    const next = groups[index + 1];
-                    const usage =
-                      next?.kind === "message" && next.message.role === "assistant"
-                        ? next.message.usage
-                        : undefined;
-                    return (
-                      <ActivityGroup
-                        key={group.key}
-                        groupKey={group.key}
-                        items={group.items}
-                        live={group.key === liveActivityGroupKey}
-                        usage={usage}
-                        onOpen={openActivity}
-                      />
-                    );
-                  })}
+                  <TranscriptRows
+                    groups={groups}
+                    onSteer={steerNotice}
+                    onCancelQueued={cancelQueued}
+                    onOpen={openActivity}
+                    liveActivityGroupKey={liveActivityGroupKey}
+                  />
                 </div>
               </main>
             </section>

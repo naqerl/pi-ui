@@ -104,7 +104,14 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 
-  if (url.pathname === "/api/stream") return;
+  // Event streams must reach the browser byte by byte. `networkFirst` below waits for the
+  // whole body so it can cache it, which would hold every SSE connection open forever.
+  if (
+    url.pathname === "/api/stream" ||
+    (request.headers.get("accept") ?? "").includes("text/event-stream")
+  ) {
+    return;
+  }
 
   if (url.pathname.startsWith("/api/") || url.pathname === "/manifest.webmanifest") {
     event.respondWith(networkFirst(request));

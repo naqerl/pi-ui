@@ -425,6 +425,112 @@ async function nextRunState(
   assert.fail("no matching run.state frame");
 }
 
+class FakeCancelConversation {
+  private calls = 0;
+  private readonly waiters = new Map<number, (value: unknown) => void>();
+
+  async submit() {
+    const id = ++this.calls;
+    const wait = new Promise((resolve) => this.waiters.set(id, resolve));
+    return {
+      id,
+      status: async () =>
+        id === 1
+          ? { type: "input", status: "placed", entry: 1 }
+          : { type: "input", status: "queued" },
+      wait: async () => wait,
+      abort: async () => "aborted",
+    };
+  }
+
+  async context() {
+    return { entries: [], docs: {} };
+  }
+
+  settle(id: number, value: unknown) {
+    this.waiters.get(id)?.(value);
+  }
+
+  get submissionCount() {
+    return this.calls;
+  }
+}
+
+test("cancelling a queued follow-up does not end the live plan run", async () => {
+  const conversation = new FakeCancelConversation();
+  const session = new DurableTaskAgentSession(
+    "taskcancel",
+    { abortSubmission: async () => "aborted" } as never,
+    conversation as never,
+  );
+
+  await session.send("start the run");
+  assert.equal(session.running(), true);
+
+  const queued = await session.send("follow up");
+  assert.equal(queued.queued, true);
+  const queueId = (await session.snapshot()).queue?.[0]?.id;
+  assert.ok(queueId);
+  assert.equal(await session.cancelQueued(queueId), true);
+
+  // The cancelled submission settles `unanswered`/`aborted` after the abort.
+  conversation.settle(2, { type: "input", status: "unanswered", reason: "aborted" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  // The earlier submission still owns the live run, so its status must stay running.
+  assert.equal(session.running(), true);
+});
+
+test("moving a queued follow-up to a steer does not resend one already placed", async () => {
+  const conversation = new FakeCancelConversation();
+  const session = new DurableTaskAgentSession(
+    "tasksteerqueue",
+    { abortSubmission: async () => "already_placed" } as never,
+    conversation as never,
+  );
+
+  await session.send("start the run");
+  const queued = await session.send("queued to steer");
+  assert.equal(queued.queued, true);
+  const queueId = (await session.snapshot()).queue?.[0]?.id;
+  assert.ok(queueId);
+  assert.equal(conversation.submissionCount, 2);
+
+  // Durable already placed it: resending would duplicate the transcript row.
+  assert.equal(await session.steerQueued(queueId), null);
+  assert.equal(conversation.submissionCount, 2);
+  assert.equal((await session.snapshot()).queue?.length, 0);
+});
+
+test("an undelivered plan steer leaves a dropped bubble instead of vanishing", async () => {
+  const conversation = new FakeCancelConversation();
+  const session = new DurableTaskAgentSession(
+    "tasksteer",
+    { abortSubmission: async () => "aborted" } as never,
+    conversation as never,
+  );
+  const frames: SseFrame[] = [];
+  session.hub.add({
+    send: async (frame) => {
+      frames.push(frame);
+    },
+  });
+
+  await session.send("start the run");
+  const steer = await session.send("steer while busy", [], "steer");
+  assert.equal(steer.queued, false);
+  assert.equal((await session.snapshot()).steers?.length, 1);
+
+  // A done submission whose entry never carried the steer must not delete it silently.
+  conversation.settle(2, { type: "input", status: "done", entry: 2 });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const dropped = frames.find((frame) => frame.event === "steer.dropped");
+  assert.ok(dropped);
+  assert.match((dropped.data as { reason: string }).reason, /run ended before/i);
+  assert.equal((await session.snapshot()).steers?.length, 0);
+});
+
 test("a settled failure frames an error, clears on submit, and dismisses without a submit", async () => {
   const detail =
     '400: {"code":null,"message":"model \\"group/auto-deepseek-v4-1-flash\\" does not support image input; no model in the group DeepSeek V4.1 Flash is marked as taking images: turn on Accepts images for one that does"}';

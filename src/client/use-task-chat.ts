@@ -1,212 +1,235 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { acceptDeltaRevision } from "../shared/revisions";
-import { runErrorMatchesDismissal } from "../shared/run-error";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
-  ChatMessage,
-  RunError,
-  RunState,
-  StreamDraftSync,
-  StreamMessageDone,
-  StreamRunState,
-  StreamTextDelta,
+  ContextUsage,
+  McpStatus,
+  MessageMode,
+  QueuedMessage,
+  Snapshot,
+  SubmitMessageResponse,
   TaskQuestionAnswer,
   TaskQuestionSet,
+  UsageSummary,
 } from "../shared/types";
-import { frameBatch, reduceDraft } from "./stream-batch";
-import { subscribeTaskChatEvents } from "./task-chat-events";
+import type { ChatTransport, QueueMutation, TransportSendResult } from "./use-chat";
+import { useChat } from "./use-chat";
 
-export interface TaskAgentSnapshot {
+/** The plan chat does not track main-chat usage; these keep the shared snapshot shape. */
+const EMPTY_USAGE: UsageSummary = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: 0,
+};
+const EMPTY_CONTEXT: ContextUsage = { tokens: 0, window: null, percent: null };
+const EMPTY_MCP: McpStatus = { servers: [], unavailable: [] };
+
+interface TaskAgentSnapshot {
   taskId: string;
-  messages: ChatMessage[];
-  run: RunState;
-  runError?: RunError | null;
+  messages: Snapshot["messages"];
+  run: Snapshot["run"];
+  runError?: Snapshot["runError"];
   draft: { text: string; thinking: string; revision: number };
   questions?: TaskQuestionSet | null;
+  queue?: QueuedMessage[];
+  steers?: QueuedMessage[];
+  queueRevision?: number;
 }
 
-export function useTaskChat(taskId: string, closed: boolean) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [draftText, setDraftText] = useState("");
-  const [run, setRun] = useState<RunState>("idle");
-  const [questions, setQuestions] = useState<TaskQuestionSet | null>(null);
-  const [runError, setRunError] = useState<RunError | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [ready, setReady] = useState(false);
-  const draftRevision = useRef(0);
-  const answeredSets = useRef(new Set<string>());
-  const dismissedRunErrors = useRef<ReadonlySet<string>>(new Set());
-  const taskIdRef = useRef(taskId);
-  taskIdRef.current = taskId;
+function asSnapshot(taskId: string, snapshot: TaskAgentSnapshot): Snapshot {
+  return {
+    conversationId: `task:${taskId}`,
+    messages: snapshot.messages,
+    activity: [],
+    from: 0,
+    hasEarlier: false,
+    run: snapshot.run,
+    runError: snapshot.runError ?? null,
+    queue: snapshot.queue ?? [],
+    steers: snapshot.steers ?? [],
+    queueRevision: snapshot.queueRevision ?? 0,
+    usage: EMPTY_USAGE,
+    context: EMPTY_CONTEXT,
+    mcp: EMPTY_MCP,
+    draft: snapshot.draft,
+  };
+}
 
-  const acceptRunError = useCallback((next: RunError | null | undefined) => {
-    if (next === undefined || next === null) {
-      setRunError(null);
-      return;
-    }
-    setRunError(dismissedRunErrors.current.has(next.id) ? null : next);
-  }, []);
+/**
+ * The plan chat's routes behind the main chat's transport seam. Everything above this
+ * — transcript rows, scroll, queue/steer reconciliation, status and the stream reducer —
+ * is the one shared chat core in `use-chat.ts`.
+ */
+function inertStream(): EventSource {
+  return {
+    readyState: 0,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    close: () => undefined,
+  } as unknown as EventSource;
+}
 
-  const applySnapshot = useCallback(
-    (snapshot: TaskAgentSnapshot) => {
-      const messages = Array.isArray(snapshot.messages) ? snapshot.messages : [];
-      const draft = snapshot.draft;
-      setMessages(messages);
-      setRun(snapshot.run === "running" ? "running" : "idle");
-      acceptRunError(snapshot.runError);
-      setDraftText(typeof draft?.text === "string" ? draft.text : "");
-      draftRevision.current = typeof draft?.revision === "number" ? draft.revision : 0;
-      const pending = snapshot.questions ?? null;
-      setQuestions(pending !== null && answeredSets.current.has(pending.id) ? null : pending);
-      setReady(true);
+function createTaskTransport(
+  taskId: string,
+  onQuestions: (questions: TaskQuestionSet | null) => void,
+): ChatTransport {
+  // The design fixture has no server conversation; keep its transcript local and silent.
+  const fixture = taskId.startsWith("fixture-");
+  const base = `/api/tasks/${encodeURIComponent(taskId)}/chat`;
+  return {
+    async readSnapshot() {
+      if (fixture) {
+        onQuestions(null);
+        return {
+          snapshot: asSnapshot(taskId, {
+            taskId,
+            messages: [],
+            run: "idle",
+            draft: { text: "", thinking: "", revision: 0 },
+            questions: null,
+          }),
+          stale: false,
+        };
+      }
+      const response = await fetch(base, { cache: "no-store" });
+      if (!response.ok) return null;
+      const snapshot = (await response.json()) as TaskAgentSnapshot;
+      onQuestions(snapshot.questions ?? null);
+      return { snapshot: asSnapshot(taskId, snapshot), stale: false };
     },
-    [acceptRunError],
-  );
-
-  const refresh = useCallback(async () => {
-    const id = taskIdRef.current;
-    try {
-      const response = await fetch(`/api/tasks/${encodeURIComponent(id)}/chat`, {
-        cache: "no-store",
-      });
-      if (!response.ok) {
-        const text = (await response.text()).trim();
-        setError(text.length > 0 ? text : "Could not load the task chat");
-        return;
-      }
-      applySnapshot((await response.json()) as TaskAgentSnapshot);
-      setError(null);
-    } catch {
-      setError("Could not load the task chat");
-    }
-  }, [applySnapshot]);
-
-  useEffect(() => {
-    setMessages([]);
-    setDraftText("");
-    setRun("idle");
-    setQuestions(null);
-    setRunError(null);
-    setReady(false);
-    setError(null);
-    draftRevision.current = 0;
-    answeredSets.current.clear();
-    dismissedRunErrors.current = new Set();
-    if (taskId.startsWith("fixture-")) {
-      setReady(true);
-      return;
-    }
-    void refresh();
-
-    const draftBatch = frameBatch<{ kind: "text"; delta: StreamTextDelta }>(
-      (items) => {
-        setDraftText((current) =>
-          reduceDraft(
-            current,
-            items.map((item) => item.delta),
-          ),
-        );
-      },
-      (runFrame) => window.requestAnimationFrame(runFrame),
-      (frame) => window.cancelAnimationFrame(frame),
-    );
-
-    void taskId;
-    const unsubscribe = subscribeTaskChatEvents((frame) => {
-      if (frame.taskId !== taskIdRef.current) return;
-      if (frame.event === "draft.sync") {
-        const data = frame.data as StreamDraftSync;
-        if (data == null || typeof data.revision !== "number") return;
-        draftRevision.current = data.revision;
-        draftBatch.clear();
-        setDraftText(typeof data.text === "string" ? data.text : "");
-        return;
-      }
-      if (frame.event === "message.delta") {
-        const data = frame.data as StreamTextDelta;
-        if (data == null || typeof data.revision !== "number") return;
-        const revision = acceptDeltaRevision(draftRevision.current, data.revision);
-        if (revision === null) return;
-        draftRevision.current = revision;
-        draftBatch.push({ kind: "text", delta: data });
-        return;
-      }
-      if (frame.event === "message.done") {
-        const message = (frame.data as StreamMessageDone | null)?.message;
-        if (message) {
-          setMessages((current) =>
-            current.some((item) => item.id === message.id) ? current : [...current, message],
-          );
-        }
-        draftBatch.clear();
-        setDraftText("");
-        void refresh();
-        return;
-      }
-      if (frame.event === "run.state") {
-        const data = frame.data as StreamRunState;
-        if (data == null || typeof data.state !== "string") return;
-        setRun(data.state);
-        if (data.runError !== undefined) acceptRunError(data.runError);
-        if (data.state !== "running") {
-          draftBatch.clear();
-          setDraftText("");
-          void refresh();
-        }
-      }
-    });
-
-    return () => {
-      draftBatch.clear();
-      unsubscribe();
-    };
-  }, [acceptRunError, refresh, taskId]);
-
-  useEffect(() => {
-    if (run !== "running" || closed) return;
-    const timer = setInterval(() => void refresh(), 1_000);
-    return () => clearInterval(timer);
-  }, [closed, refresh, run]);
-
-  const send = useCallback(
-    async (text: string, attachments: string[] = []) => {
-      if (closed) return false;
-      const trimmed = text.trim();
-      if (trimmed.length === 0 && attachments.length === 0) return false;
-      setError(null);
+    async readHistory() {
+      // The plan conversation is small and always read whole; there is no earlier page.
+      return null;
+    },
+    async send(text, mode, attachments, queueKey): Promise<TransportSendResult> {
       try {
-        const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/chat`, {
+        const response = await fetch(base, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            text: trimmed,
+            text,
+            mode,
+            queueKey,
             ...(attachments.length > 0 ? { attachments } : {}),
           }),
         });
+        if (response.status === 409) return { ok: false, conflict: true, error: null };
         if (!response.ok) {
-          const message = (await response.text()).trim();
-          setError(message.length > 0 ? message : "Could not send the message");
-          return false;
+          const reason = (await response.text()).trim();
+          return {
+            ok: false,
+            error: reason.length > 0 ? reason : "Message was not sent",
+          };
         }
-        applySnapshot((await response.json()) as TaskAgentSnapshot);
-        return true;
+        return { ok: true, data: (await response.json()) as SubmitMessageResponse };
       } catch {
-        setError("Could not send the message");
-        return false;
+        return { ok: false, error: "Message was not sent" };
       }
     },
-    [applySnapshot, closed, taskId],
+    async cancelQueued(id) {
+      try {
+        const response = await fetch(`${base}/queue/${encodeURIComponent(id)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "cancel" }),
+        });
+        if (!response.ok) return null;
+        return (await response.json()) as QueueMutation;
+      } catch {
+        return null;
+      }
+    },
+    async steerQueued(id) {
+      try {
+        const response = await fetch(`${base}/queue/${encodeURIComponent(id)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "steer" }),
+        });
+        if (response.status === 404) return { ok: false, conflict: true, error: null };
+        if (!response.ok) return { ok: false, error: null };
+        return { ok: true, data: (await response.json()) as SubmitMessageResponse };
+      } catch {
+        return { ok: false, error: null };
+      }
+    },
+    async unsendSteer(id) {
+      try {
+        const response = await fetch(`${base}/steer/${encodeURIComponent(id)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "unsend" }),
+        });
+        if (!response.ok) return null;
+        return (await response.json()) as {
+          steer: QueuedMessage;
+          steers: QueuedMessage[];
+          queueRevision?: number;
+        };
+      } catch {
+        return null;
+      }
+    },
+    async stop() {
+      try {
+        await fetch(`${base}/stop`, { method: "POST" });
+      } catch {
+        // The run state event is authoritative.
+      }
+    },
+    async dismissRunError(id) {
+      await fetch(`${base}/error/dismiss`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      }).catch(() => undefined);
+    },
+    openStream() {
+      return fixture ? inertStream() : new EventSource(`${base}/stream`);
+    },
+  };
+}
+
+export function useTaskChat(taskId: string, closed: boolean) {
+  const [questions, setQuestions] = useState<TaskQuestionSet | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const answeredSets = useRef(new Set<string>());
+  const transport = useMemo(
+    () =>
+      createTaskTransport(taskId, (next) => {
+        setQuestions(next !== null && answeredSets.current.has(next.id) ? null : next);
+      }),
+    [taskId],
+  );
+  const chat = useChat({ transport });
+  const { refresh, running, dismissRunError } = chat;
+
+  // The plan agent can ask a question mid-run without a transcript row, so poll while it works.
+  useEffect(() => {
+    if (!running || closed) return;
+    const timer = setInterval(() => void refresh(), 1_000);
+    return () => clearInterval(timer);
+  }, [closed, refresh, running]);
+
+  const send = useCallback(
+    async (text: string, attachments: string[] = [], mode: MessageMode = "queue") => {
+      if (closed) return false;
+      setError(null);
+      const outcome = await chat.send(text, mode, attachments);
+      if (!outcome.ok) {
+        if (outcome.error !== null) setError(outcome.error);
+        return false;
+      }
+      return true;
+    },
+    [chat, closed],
   );
 
   const stop = useCallback(async () => {
-    try {
-      const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/chat/stop`, {
-        method: "POST",
-      });
-      if (response.ok) applySnapshot((await response.json()) as TaskAgentSnapshot);
-    } catch {
-      setError("Could not stop the task agent");
-    }
-  }, [applySnapshot, taskId]);
+    if (closed) return;
+    await chat.stop();
+  }, [chat, closed]);
 
   const answerQuestions = useCallback(
     async (setId: string, answers: TaskQuestionAnswer[]) => {
@@ -223,57 +246,41 @@ export function useTaskChat(taskId: string, closed: boolean) {
           return false;
         }
         answeredSets.current.add(setId);
-        applySnapshot((await response.json()) as TaskAgentSnapshot);
+        setQuestions(null);
+        await refresh();
         return true;
       } catch {
         setError("Could not send the answers");
         return false;
       }
     },
-    [applySnapshot, taskId],
+    [refresh, taskId],
   );
 
   const dismissError = useCallback(
     (id?: string) => {
-      // No id is the composer's own dismissal; only an explicit matching id targets the run error.
       if (id === undefined) {
         setError(null);
         return;
       }
-      if (runError === null || !runErrorMatchesDismissal(id, runError)) return;
-      dismissedRunErrors.current = new Set(dismissedRunErrors.current).add(runError.id);
-      setRunError(null);
-      void fetch(`/api/tasks/${encodeURIComponent(taskId)}/chat/error/dismiss`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: runError.id }),
-      })
-        .then(async (response) => {
-          if (!response.ok) return;
-          const data = (await response.json()) as TaskAgentSnapshot & {
-            runError?: RunError | null;
-          };
-          if (typeof data.taskId === "string" && Array.isArray(data.messages)) {
-            applySnapshot(data);
-          } else if ("runError" in data) {
-            acceptRunError(data.runError);
-          }
-        })
-        .catch(() => undefined);
+      dismissRunError(id);
     },
-    [acceptRunError, applySnapshot, runError, taskId],
+    [dismissRunError],
   );
 
   return {
-    messages,
-    draftText,
-    run,
+    timeline: chat.timeline,
+    running: chat.running,
+    thinking: chat.thinking,
+    interrupted: chat.interrupted,
+    ready: chat.ready,
+    runError: chat.runError,
     questions,
-    runError,
     error,
-    ready,
     send,
     stop,
+    cancelQueued: chat.cancelQueued,
+    unsendSteer: chat.unsendSteer,
     answerQuestions,
     dismissError,
   };

@@ -1,13 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyTaskToolResult, sameActivity } from "../shared/activity-optimistic";
 import type { DashboardState } from "../shared/dashboard";
-import {
-  groupQueuedMessages,
-  isQueuedNotice,
-  PENDING_QUEUE_ORDER,
-  pendingQueuedMessage,
-  queuedMessageId,
-} from "../shared/queue";
+import { isQueuedNotice, queuedMessageId } from "../shared/queue";
 import {
   acceptDeltaRevision,
   adoptSnapshotRevision,
@@ -16,11 +10,9 @@ import {
 import {
   consumeSteer,
   consumeSteersInMessages,
-  droppedSteerMessage,
   dropSteer,
   mergeLiveSteers,
   type PendingSteer,
-  pendingSteerMessage,
   rebuildSteersFromSnapshot,
 } from "../shared/steers";
 import { carryWorkingTraces } from "../shared/task-status";
@@ -55,10 +47,18 @@ import type {
   UsageSummary,
 } from "../shared/types";
 import { mergeWindow } from "../shared/window";
+import {
+  buildChatTimeline,
+  confirmedOptimistic,
+  type OptimisticSend,
+  optimisticId,
+} from "./chat-timeline";
 import { setDashboard } from "./dashboard-store";
 import { frameBatch, reduceDraft, refreshBatch } from "./stream-batch";
 import { publishTaskChatEvent } from "./task-chat-events";
 import { isThinking } from "./working-state";
+
+export type { TimelineItem } from "./chat-timeline";
 
 const EMPTY_EVENTS: McpEventsState = {
   subscriptions: [],
@@ -69,19 +69,6 @@ const EMPTY_EVENTS: McpEventsState = {
 
 /** A send that failed for a reason worth showing carries it in `error`. */
 export type SendOutcome = { ok: true } | { ok: false; error: string | null };
-
-/** The optimistic copy of a send that is still waiting for the server to confirm it. */
-interface OptimisticSend {
-  key: string;
-  text: string;
-  mode: MessageMode;
-  createdAt: string;
-  attachments: string[];
-}
-
-export type TimelineItem =
-  | { kind: "message"; order: number; message: ChatMessage }
-  | { kind: "activity"; order: number; activity: ActivityItem };
 
 function parseEvent<T>(event: MessageEvent<string>): T | null {
   try {
@@ -153,39 +140,6 @@ function measureSendTiming(name: string, start: string, end: string): void {
 }
 
 /** The id a pending send already has, matching the queued item the server will confirm. */
-function optimisticId(item: OptimisticSend): string {
-  return item.mode === "steer" ? `steer-pending-${item.key}` : `m-${item.key}`;
-}
-
-function optimisticMessage(item: OptimisticSend): ChatMessage {
-  if (item.mode === "steer") {
-    return pendingSteerMessage({
-      id: item.key,
-      key: item.key,
-      text: item.text,
-      createdAt: item.createdAt,
-      ...(item.attachments.length === 0 ? {} : { attachments: item.attachments }),
-    });
-  }
-  return {
-    id: optimisticId(item),
-    role: "user",
-    text: item.text,
-    timestamp: item.createdAt,
-    order: PENDING_QUEUE_ORDER,
-    pendingSend: true,
-    ...(item.attachments.length === 0
-      ? {}
-      : { attachments: item.attachments.map((id) => ({ id, mimeType: "image/*" })) }),
-  };
-}
-
-/** A confirmed message retires the optimistic copy it replaces by the id/key it shares. */
-function confirmedOptimistic(item: OptimisticSend, message: ChatMessage): boolean {
-  if (message.role !== "user") return false;
-  if (message.id === optimisticId(item)) return true;
-  return message.steerKey !== undefined && message.steerKey === item.key;
-}
 
 /** Messages fetched per scroll-up page. */
 const HISTORY_PAGE = 30;
@@ -204,13 +158,166 @@ function prependPage<T extends { id: string }>(current: T[], page: T[]): T[] {
   return [...page.filter((item) => !held.has(item.id)), ...current];
 }
 
+/** A snapshot read, with the service worker's stale-cache marker kept out of the data. */
+export interface SnapshotRead {
+  snapshot: Snapshot;
+  stale: boolean;
+}
+
+export type TransportSendResult =
+  | { ok: true; data: SubmitMessageResponse }
+  | { ok: false; conflict?: boolean; error: string | null };
+
+export interface QueueMutation {
+  queue?: QueuedMessage[];
+  steers?: QueuedMessage[];
+  queueRevision?: number;
+}
+
+/**
+ * Where a conversation lives. The main chat and the plan chat speak different HTTP routes
+ * but share every piece of client behaviour above this seam: transcript, scroll, queue,
+ * steer revisions, optimistic rows, run status and the stream reducer.
+ */
+export interface ChatTransport {
+  readSnapshot(from: number | null): Promise<SnapshotRead | null>;
+  readHistory(before: number, limit: number): Promise<TranscriptHistory | null>;
+  send(
+    text: string,
+    mode: MessageMode,
+    attachments: string[],
+    queueKey: string,
+  ): Promise<TransportSendResult>;
+  cancelQueued(id: string): Promise<QueueMutation | null>;
+  steerQueued(id: string): Promise<TransportSendResult>;
+  unsendSteer(
+    id: string,
+  ): Promise<{ steer: QueuedMessage; steers: QueuedMessage[]; queueRevision?: number } | null>;
+  stop(): Promise<void>;
+  dismissRunError(id: string): Promise<void>;
+  openStream(): EventSource;
+}
+
+const MAIN_CHAT_TRANSPORT: ChatTransport = {
+  async readSnapshot(from) {
+    const response = await fetch(from === null ? "/api/state" : `/api/state?from=${from}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) return null;
+    return {
+      snapshot: (await response.json()) as Snapshot,
+      stale: response.headers.get("x-pi-stale") === "1",
+    };
+  },
+  async readHistory(before, limit) {
+    const response = await fetch(`/api/history?before=${before}&limit=${limit}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) return null;
+    return (await response.json()) as TranscriptHistory;
+  },
+  async send(text, mode, attachments, queueKey) {
+    try {
+      const response = await fetch("/api/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text,
+          mode,
+          queueKey,
+          ...(attachments.length > 0 ? { attachments } : {}),
+        }),
+      });
+      if (response.status === 409) return { ok: false, conflict: true, error: null };
+      if (!response.ok) {
+        const reason = (await response.text()).trim();
+        return {
+          ok: false,
+          error: reason.length > 0 ? reason : "Message was not sent",
+        };
+      }
+      return { ok: true, data: (await response.json()) as SubmitMessageResponse };
+    } catch {
+      return { ok: false, error: "Message was not sent" };
+    }
+  },
+  async cancelQueued(id) {
+    try {
+      const response = await fetch(`/api/queue/${encodeURIComponent(id)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "cancel" }),
+      });
+      if (!response.ok) return null;
+      return (await response.json()) as QueueMutation;
+    } catch {
+      return null;
+    }
+  },
+  async steerQueued(id) {
+    try {
+      const response = await fetch(`/api/queue/${encodeURIComponent(id)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "steer" }),
+      });
+      if (response.status === 404) return { ok: false, conflict: true, error: null };
+      if (!response.ok) return { ok: false, error: null };
+      return { ok: true, data: (await response.json()) as SubmitMessageResponse };
+    } catch {
+      return { ok: false, error: null };
+    }
+  },
+  async unsendSteer(id) {
+    try {
+      const response = await fetch(`/api/steer/${encodeURIComponent(id)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "unsend" }),
+      });
+      if (!response.ok) return null;
+      return (await response.json()) as {
+        steer: QueuedMessage;
+        steers: QueuedMessage[];
+        queueRevision?: number;
+      };
+    } catch {
+      return null;
+    }
+  },
+  async stop() {
+    try {
+      await fetch("/api/stop", { method: "POST" });
+    } catch {
+      // Ignore; the run state event is authoritative.
+    }
+  },
+  async dismissRunError(id) {
+    await fetch("/api/run/error/dismiss", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    }).catch(() => undefined);
+  },
+  openStream() {
+    return new EventSource("/api/stream");
+  },
+};
+
 export interface UseChatOptions {
   /** Load the whole transcript at once (activity and events pages). */
   fullHistory?: boolean;
+  /** Required for any conversation other than the main chat. */
+  transport?: ChatTransport;
+  /** Observe each snapshot; the plan chat reads its pending question set from here. */
+  onSnapshot?: (snapshot: Snapshot) => void;
 }
 
 export function useChat(options: UseChatOptions = {}) {
   const fullHistory = options.fullHistory === true;
+  const transport = options.transport ?? MAIN_CHAT_TRANSPORT;
+  const onSnapshotRef = useRef(options.onSnapshot);
+  onSnapshotRef.current = options.onSnapshot;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [liveTools, setLiveTools] = useState<ToolActivity[]>([]);
@@ -334,14 +441,14 @@ export function useChat(options: UseChatOptions = {}) {
     const sequence = ++refreshSequence.current;
     try {
       const from = windowFrom.current ?? (fullHistory ? 0 : null);
-      const url = from === null ? "/api/state" : `/api/state?from=${from}`;
-      const response = await fetch(url, { cache: "no-store" });
-      if (!response.ok) {
+      const read = await transport.readSnapshot(from);
+      if (read === null) {
         scheduleRetry();
         return;
       }
-      const snapshot = (await response.json()) as Snapshot;
+      const { snapshot } = read;
       if (sequence !== refreshSequence.current) return;
+      onSnapshotRef.current?.(snapshot);
       const snapshotFrom = snapshot.from ?? 0;
       // The first snapshot may have been read before a send committed. Keep what
       // the response or SSE already painted instead of taking it off screen.
@@ -387,7 +494,9 @@ export function useChat(options: UseChatOptions = {}) {
         setSteers((current) =>
           rebuildSteersFromSnapshot(
             consumeSteersInMessages(current, snapshot.messages),
-            snapshot.steers ?? [],
+            // A snapshot read before the placement can still list a steer whose row is
+            // already in `messages`; never paint the pending copy beside its delivered row.
+            consumeSteersInMessages(snapshot.steers ?? [], snapshot.messages),
           ),
         );
       }
@@ -400,7 +509,7 @@ export function useChat(options: UseChatOptions = {}) {
       setReady(true);
       // A service worker may answer a failed request from its cache; keep what it showed,
       // but ask the network again instead of treating the cached render as hydrated.
-      if (response.headers.get("x-pi-stale") === "1") scheduleRetry();
+      if (read.stale) scheduleRetry();
       else clearRetry();
     } catch {
       // Keep the state already on screen and try again rather than showing an empty chat.
@@ -414,6 +523,7 @@ export function useChat(options: UseChatOptions = {}) {
     clearRetry,
     fullHistory,
     scheduleRetry,
+    transport,
   ]);
 
   const refreshes = useMemo(() => refreshBatch(readState), [readState]);
@@ -432,11 +542,8 @@ export function useChat(options: UseChatOptions = {}) {
     historyLoading.current = true;
     setLoadingEarlier(true);
     try {
-      const response = await fetch(`/api/history?before=${before}&limit=${HISTORY_PAGE}`, {
-        cache: "no-store",
-      });
-      if (!response.ok) return;
-      const page = (await response.json()) as TranscriptHistory;
+      const page = await transport.readHistory(before, HISTORY_PAGE);
+      if (page === null) return;
       if (windowFrom.current !== before) return;
       windowFrom.current = page.from;
       hasEarlierRef.current = page.hasEarlier;
@@ -455,11 +562,11 @@ export function useChat(options: UseChatOptions = {}) {
       historyLoading.current = false;
       setLoadingEarlier(false);
     }
-  }, []);
+  }, [transport]);
 
   useEffect(() => {
     void refreshState();
-    const source = new EventSource("/api/stream");
+    const source = transport.openStream();
     let active = true;
     const refreshWhenVisible = () => {
       if (document.visibilityState === "visible") void refreshState();
@@ -721,7 +828,15 @@ export function useChat(options: UseChatOptions = {}) {
       source.close();
       draftBatch.clear();
     };
-  }, [acceptQueueRevision, applyDraft, applyEvents, applyTasks, draftBatch, refreshState]);
+  }, [
+    acceptQueueRevision,
+    applyDraft,
+    applyEvents,
+    applyTasks,
+    draftBatch,
+    refreshState,
+    transport,
+  ]);
 
   // A snapshot, SSE message, queue update or older page can confirm a pending send at any
   // time. Retire the optimistic copy then, not only when its own fetch response arrives.
@@ -741,97 +856,21 @@ export function useChat(options: UseChatOptions = {}) {
   if (draftThinking.length === 0) draftThinkingAt.current = null;
   else if (draftThinkingAt.current === null) draftThinkingAt.current = new Date().toISOString();
 
-  const timeline = useMemo(() => {
-    const persistedActivityIds = new Set(activity.map((item) => item.id));
-    const items: TimelineItem[] = [
-      ...messages.map((message) => ({
-        kind: "message" as const,
-        order: message.order,
-        message,
-      })),
-      ...activity.map((item) => ({ kind: "activity" as const, order: item.order, activity: item })),
-      ...liveTools
-        .filter((item) => !persistedActivityIds.has(item.id))
-        .map((item) => ({
-          kind: "activity" as const,
-          order: item.order,
-          activity: item,
-        })),
-    ];
-
-    if (draftThinking.length > 0) {
-      items.push({
-        kind: "activity",
-        order: Number.MAX_SAFE_INTEGER - 3,
-        activity: {
-          kind: "thinking",
-          id: "draft-thinking",
-          name: "thinking",
-          text: draftThinking,
-          timestamp: draftThinkingAt.current ?? new Date().toISOString(),
-          order: Number.MAX_SAFE_INTEGER - 3,
-          pending: true,
-        },
-      });
-    }
-
-    if (draftText.length > 0) {
-      items.push({
-        kind: "message",
-        order: Number.MAX_SAFE_INTEGER - 2,
-        message: {
-          id: "draft-assistant",
-          role: "assistant",
-          text: draftText,
-          timestamp: new Date().toISOString(),
-          order: Number.MAX_SAFE_INTEGER - 2,
-        },
-      });
-    }
-
-    // Steers the run has not reached go below everything it is still doing; once delivered, the
-    // snapshot has them where they entered the conversation.
-    for (const steer of steers) {
-      const message =
-        steer.dropped === undefined
-          ? pendingSteerMessage(steer)
-          : droppedSteerMessage(steer, steer.dropped);
-      items.push({ kind: "message", order: message.order, message });
-    }
-
-    // Follow-ups wait for the whole turn, so they sit below the live draft and pending steers.
-    // A placed message already in `messages` owns the id; only its pending copy is dropped.
-    const heldIds = new Set(messages.map((message) => message.id));
-    // Drop any queued copy already placed before grouping, so a burst whose first
-    // notice just landed does not hide the notices still waiting behind it.
-    const pending = queue.filter(
-      (item) => item.hidden !== true && !heldIds.has(queuedMessageId(item)),
-    );
-    for (const group of groupQueuedMessages(pending)) {
-      const message = pendingQueuedMessage(group.item, group);
-      items.push({ kind: "message", order: message.order, message });
-    }
-
-    // A send paints here before the request leaves. Once the server's queue or a placed
-    // message carries the same id/key, the optimistic copy is skipped instead of doubled.
-    const queuedIds = new Set(queue.map(queuedMessageId));
-    const pendingSteerKeys = new Set(
-      steers.flatMap((steer) => (steer.key === undefined ? [] : [steer.key])),
-    );
-    for (const item of optimistic) {
-      if (
-        messages.some((message) => confirmedOptimistic(item, message)) ||
-        queuedIds.has(optimisticId(item)) ||
-        (item.mode === "steer" && pendingSteerKeys.has(item.key))
-      ) {
-        continue;
-      }
-      const message = optimisticMessage(item);
-      items.push({ kind: "message", order: message.order, message });
-    }
-
-    return items.sort((a, b) => a.order - b.order);
-  }, [messages, activity, liveTools, draftText, draftThinking, steers, queue, optimistic]);
+  const timeline = useMemo(
+    () =>
+      buildChatTimeline({
+        messages,
+        activity,
+        liveTools,
+        draftText,
+        draftThinking,
+        draftThinkingAt: draftThinkingAt.current,
+        steers,
+        queue,
+        optimistic,
+      }),
+    [messages, activity, liveTools, draftText, draftThinking, steers, queue, optimistic],
+  );
 
   const send = useCallback(
     async (
@@ -865,30 +904,16 @@ export function useChat(options: UseChatOptions = {}) {
       const retire = () => setOptimistic((current) => current.filter((item) => item.key !== key));
 
       try {
-        const response = await fetch("/api/message", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            text: trimmed,
-            mode,
-            queueKey: key,
-            ...(attachments.length > 0 ? { attachments } : {}),
-          }),
-        });
+        const result = await transport.send(trimmed, mode, attachments, key);
         const responseMark = `pi.chat.send.response.${key}`;
         markSendTiming(responseMark, mode);
         measureSendTiming("pi.chat.send.response", startMark, responseMark);
-        if (response.status === 409) {
+        if (!result.ok) {
           retire();
-          await refreshState();
-          return { ok: false, error: null };
+          if (result.conflict) await refreshState();
+          return { ok: false, error: result.error };
         }
-        if (!response.ok) {
-          retire();
-          const reason = (await response.text()).trim();
-          return { ok: false, error: reason.length > 0 ? reason : "Message was not sent" };
-        }
-        const data = (await response.json()) as SubmitMessageResponse;
+        const data = result.data;
         // The queue and the place message use the same client key, so dropping the
         // optimistic copy in this same batch never blanks the bubble.
         retire();
@@ -925,31 +950,19 @@ export function useChat(options: UseChatOptions = {}) {
         return { ok: false, error: "Message was not sent" };
       }
     },
-    [runState, refreshState, draftBatch, acceptQueueRevision],
+    [runState, refreshState, draftBatch, acceptQueueRevision, transport],
   );
 
   const cancelQueued = useCallback(
     async (id: string): Promise<boolean> => {
-      try {
-        const response = await fetch(`/api/queue/${encodeURIComponent(id)}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "cancel" }),
-        });
-        if (!response.ok) return false;
-        const data = (await response.json()) as {
-          queue?: QueuedMessage[];
-          queueRevision?: number;
-        };
-        if (acceptQueueRevision(data.queueRevision) && data.queue !== undefined) {
-          setQueue(data.queue);
-        }
-        return true;
-      } catch {
-        return false;
+      const data = await transport.cancelQueued(id);
+      if (data === null) return false;
+      if (acceptQueueRevision(data.queueRevision) && data.queue !== undefined) {
+        setQueue(data.queue);
       }
+      return true;
     },
-    [acceptQueueRevision],
+    [acceptQueueRevision, transport],
   );
 
   /** Takes back the newest steer the run has not reached; null when there is none left to take. */
@@ -963,64 +976,37 @@ export function useChat(options: UseChatOptions = {}) {
       }
     }
     if (latest === undefined) return null;
-    try {
-      const response = await fetch(`/api/steer/${encodeURIComponent(latest.id)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "unsend" }),
-      });
-      if (!response.ok) {
-        await refreshState();
-        return null;
-      }
-      const data = (await response.json()) as {
-        steer: QueuedMessage;
-        steers: QueuedMessage[];
-        queueRevision?: number;
-      };
-      if (acceptQueueRevision(data.queueRevision)) {
-        setSteers((current) => rebuildSteersFromSnapshot(current, data.steers));
-      }
-      return data.steer;
-    } catch {
+    const data = await transport.unsendSteer(latest.id);
+    if (data === null) {
+      await refreshState();
       return null;
     }
-  }, [steers, refreshState, acceptQueueRevision]);
+    if (acceptQueueRevision(data.queueRevision)) {
+      setSteers((current) => rebuildSteersFromSnapshot(current, data.steers));
+    }
+    return data.steer;
+  }, [steers, refreshState, acceptQueueRevision, transport]);
 
   const steerQueued = useCallback(
     async (id: string): Promise<boolean> => {
-      try {
-        const response = await fetch(`/api/queue/${encodeURIComponent(id)}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "steer" }),
-        });
-        if (response.status === 404) {
-          await refreshState();
-          return false;
-        }
-        if (!response.ok) return false;
-        const data = (await response.json()) as SubmitMessageResponse;
-        if (acceptQueueRevision(data.queueRevision)) {
-          setQueue(data.queue);
-        }
-        setRunState("running");
-        return true;
-      } catch {
+      const result = await transport.steerQueued(id);
+      if (!result.ok) {
+        if (result.conflict) await refreshState();
         return false;
       }
+      if (acceptQueueRevision(result.data.queueRevision)) {
+        setQueue(result.data.queue);
+      }
+      setRunState("running");
+      return true;
     },
-    [refreshState, acceptQueueRevision],
+    [refreshState, acceptQueueRevision, transport],
   );
 
   const stop = useCallback(async () => {
-    try {
-      await fetch("/api/stop", { method: "POST" });
-      await refreshState();
-    } catch {
-      // Ignore; the run state event is authoritative.
-    }
-  }, [refreshState]);
+    await transport.stop();
+    await refreshState();
+  }, [refreshState, transport]);
 
   const visibleError = useMemo(() => {
     for (const candidate of [connectionError, runError]) {
@@ -1029,16 +1015,15 @@ export function useChat(options: UseChatOptions = {}) {
     return null;
   }, [connectionError, dismissedErrors, runError]);
 
-  const dismissRunError = useCallback((id: string) => {
-    setDismissedErrors((current) => new Set(current).add(id));
-    setConnectionError((current) => (current?.id === id ? null : current));
-    setRunError((current) => (current?.id === id ? null : current));
-    void fetch("/api/run/error/dismiss", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id }),
-    }).catch(() => undefined);
-  }, []);
+  const dismissRunError = useCallback(
+    (id: string) => {
+      setDismissedErrors((current) => new Set(current).add(id));
+      setConnectionError((current) => (current?.id === id ? null : current));
+      setRunError((current) => (current?.id === id ? null : current));
+      void transport.dismissRunError(id);
+    },
+    [transport],
+  );
 
   return {
     timeline,
