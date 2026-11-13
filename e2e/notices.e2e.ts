@@ -7,6 +7,7 @@ import { NoticeLine } from "../src/client/NoticeView";
 import { parseNotice } from "../src/shared/notices";
 import { pendingQueuedMessage } from "../src/shared/queue";
 import type { ChatMessage } from "../src/shared/types";
+import { chevronCentreGap } from "./activity-helpers";
 
 type Page = { evaluate: <T, A = undefined>(fn: (arg: A) => T | Promise<T>, arg?: A) => Promise<T> };
 
@@ -306,6 +307,7 @@ test("job chips and the activity row use aligned svg icons", async ({ app, brows
       : { width: icon.getAttribute("width"), height: icon.getAttribute("height") };
   });
   expect(activityIcon).toEqual({ width: "18", height: "18" });
+  expect(await chevronCentreGap(browser, "activity-job")).toBeLessThanOrEqual(1);
   await app.screenshot("activity-job-row");
 });
 

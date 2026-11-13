@@ -1,5 +1,6 @@
 import { type Browser, describe, test } from "@e2e-dev/web";
 import { expect } from "e2e";
+import { chevronCentreGap } from "./activity-helpers";
 
 type DelegateRun = {
   id: string;
@@ -124,6 +125,7 @@ describe("delegate sub-agents share one app instance", { serial: true }, () => {
         }, "oracle"),
       )
       .toBe(true);
+    expect(await chevronCentreGap(browser, "activity-delegate")).toBeLessThanOrEqual(1);
     const rowText = await browser.evaluate(() =>
       [...document.querySelectorAll<HTMLElement>('[data-testid="activity-delegate-summary"]')]
         .map((node) => node.textContent ?? "")
