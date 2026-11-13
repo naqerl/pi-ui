@@ -52,18 +52,17 @@ test("the tasks composer status belongs to the open task, not the app", {
 
     // The open task's own live plan run says planning, with the same braille frames as chat,
     // and it says it on the plan pane's own status line rather than the chat composer's.
-    await screen.getByTestId("task-tab-plan").tap();
-    await expect(screen.getByTestId("task-agent-status-indicator")).toBeVisible({
-      timeout: 30_000,
-    });
-    await expect(screen.getByTestId("task-agent-status-activity")).toHaveText("planning");
-    const indicator = await browser.evaluate(
-      () =>
-        document.querySelector('[data-testid="task-agent-status-indicator"]')?.textContent ?? "",
-    );
-    expect(indicator).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⠿]/);
-    // The chat's own line stays out of the plan pane.
+    // Decision (a): while the plan run is live, the tasks **list** shows no status at all.
+    // The plan pane has its own line, but that belongs to the pane; the list is what the
+    // operator sees when choosing a task, and it must stay quiet.
     expect(await screen.getByTestId("working-indicator").count()).toBe(0);
+    expect(await screen.getByTestId("task-agent-status").count()).toBe(0);
+    expect(await screen.getByTestId("task-agent-status-indicator").count()).toBe(0);
+    // And it stays quiet on the next tick, not only on the first render after the run began.
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    expect(await screen.getByTestId("working-indicator").count()).toBe(0);
+    expect(await screen.getByTestId("task-agent-status-indicator").count()).toBe(0);
+    expect(await planIsLive(browser, taskId)).toBe(true);
   } finally {
     await browser.evaluate(async (id) => {
       const response = await fetch(`/api/tasks/${encodeURIComponent(id)}/chat/stop`, {
