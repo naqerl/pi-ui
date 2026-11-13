@@ -1,5 +1,6 @@
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
+import { chevronMeasurement } from "./activity-helpers";
 
 const at = (second: number) => new Date(Date.UTC(2026, 0, 1, 12, 0, second)).toISOString();
 
@@ -22,6 +23,19 @@ const thinking = Array.from({ length: 7 }, (_, index) => ({
   text: "Considering the next step.",
   timestamp: at(3 + index * 2),
   order: 21 + index * 2,
+}));
+
+const reporterTools = [0, 20, 60, 83].map((second, index) => ({
+  kind: "tool",
+  id: `reporter-tool-${index}`,
+  name: "bash",
+  arguments: JSON.stringify({ command: `echo ${index}` }),
+  output: String(index),
+  isError: false,
+  durationMs: 1200,
+  timestamp: at(second),
+  order: 20 + index * 2,
+  ...(index === 0 ? { usage: { input: 128_000, output: 1_200 } } : {}),
 }));
 
 const snapshot = {
@@ -59,6 +73,46 @@ test("puts the run info on a card that is not the page background", async ({ app
   expect(paint?.background).not.toBe("transparent");
   expect(paint?.background).not.toBe(paint?.page);
   expect(paint?.border).toBe("1px");
+});
+
+test("the reporter's run info chevron sits on its cap-height centre", async ({ app, browser }) => {
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({
+      json: JSON.parse(
+        JSON.stringify({
+          ...snapshot,
+          conversationId: "run-info-chevron-e2e",
+          activity: reporterTools,
+        }),
+      ),
+    });
+  });
+  for (const width of [800, 390]) {
+    await browser.setViewport({ width, height: 844 });
+    await app.open("/");
+    const info = browser.locator('[data-testid="run-info"]');
+    await expect(info).toBeVisible();
+    await expect(info).toHaveAttribute(
+      "aria-label",
+      "Run activity: 4 tool calls, 128k in, 1.2k out, 1m 23s",
+    );
+    const measured = await chevronMeasurement(browser, "run-info", 0, {
+      wrappedTarget: "first-line",
+    });
+    expect(Math.abs(measured.gap)).toBeLessThanOrEqual(0.5);
+  }
+
+  await browser.setViewport({ width: 800, height: 844 });
+  await app.open("/");
+  await expect(browser.locator('[data-testid="run-info"]')).toBeVisible();
+  await browser.evaluate(() => {
+    document.documentElement.style.zoom = "1.25";
+    return null;
+  });
+  const zoomed = await chevronMeasurement(browser, "run-info", 0, {
+    wrappedTarget: "first-line",
+  });
+  expect(Math.abs(zoomed.gap)).toBeLessThanOrEqual(1);
 });
 
 test("fits the run info on a phone without naming thinking", async ({ app, browser }) => {
