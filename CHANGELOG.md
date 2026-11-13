@@ -1076,6 +1076,13 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
   available" banner with its Reset button. Widgets are the page: the grid shows the
   grid, and a reset happens because the agent was asked for it, not by tapping a bar
   that appears whenever the default board changes.
+## 1.6.164
+
+### Fixed
+
+- Activity rows line their disclosure chevron up with the row text: the glyph is centred on the row
+  rather than on the box, so an expanded and a collapsed row look aligned.
+
 ## 1.6.163
 
 ### Fixed
