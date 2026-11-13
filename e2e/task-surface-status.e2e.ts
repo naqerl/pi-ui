@@ -15,6 +15,16 @@ async function planIsLive(browser: Browser, taskId: string): Promise<boolean> {
   }, taskId);
 }
 
+async function visibleStatusIds(browser: Browser): Promise<string[]> {
+  return browser.evaluate(() =>
+    ["working-indicator", "task-agent-status", "task-agent-status-indicator"].filter((id) =>
+      Array.from(document.querySelectorAll(`[data-testid="${id}"]`)).some(
+        (element) => element.getClientRects().length > 0,
+      ),
+    ),
+  );
+}
+
 test("the tasks composer status belongs to the open task, not the app", {
   timeout: 180_000,
 }, async ({ app, browser, screen }) => {
@@ -22,7 +32,7 @@ test("the tasks composer status belongs to the open task, not the app", {
   await app.open("/?page=tasks");
 
   // With one chat core a status line belongs to a run, and no run is live in this view yet.
-  await expect(screen.getByTestId("working-indicator")).toHaveCount(0);
+  expect(await visibleStatusIds(browser)).toEqual([]);
   await expect(screen.getByTestId("task-agent-status")).toHaveCount(0);
 
   const title = `Surface status ${Date.now()}`;
@@ -50,18 +60,13 @@ test("the tasks composer status belongs to the open task, not the app", {
     expect(started).toBe(202);
     await expect.poll(() => planIsLive(browser, taskId), { timeout: 30_000 }).toBe(true);
 
-    // The open task's own live plan run says planning, with the same braille frames as chat,
-    // and it says it on the plan pane's own status line rather than the chat composer's.
     // Decision (a): while the plan run is live, the tasks **list** shows no status at all.
-    // The plan pane has its own line, but that belongs to the pane; the list is what the
-    // operator sees when choosing a task, and it must stay quiet.
-    expect(await screen.getByTestId("working-indicator").count()).toBe(0);
-    expect(await screen.getByTestId("task-agent-status").count()).toBe(0);
-    expect(await screen.getByTestId("task-agent-status-indicator").count()).toBe(0);
+    // "Shown" means painted: the plan pane keeps its own line in the DOM behind the detail
+    // sheet, so a count of nodes proves nothing — only a node with layout boxes does.
+    expect(await visibleStatusIds(browser)).toEqual([]);
     // And it stays quiet on the next tick, not only on the first render after the run began.
     await new Promise((resolve) => setTimeout(resolve, 2_000));
-    expect(await screen.getByTestId("working-indicator").count()).toBe(0);
-    expect(await screen.getByTestId("task-agent-status-indicator").count()).toBe(0);
+    expect(await visibleStatusIds(browser)).toEqual([]);
     expect(await planIsLive(browser, taskId)).toBe(true);
   } finally {
     await browser.evaluate(async (id) => {
