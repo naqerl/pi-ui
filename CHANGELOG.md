@@ -1076,6 +1076,15 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
   available" banner with its Reset button. Widgets are the page: the grid shows the
   grid, and a reset happens because the agent was asked for it, not by tapping a bar
   that appears whenever the default board changes.
+## 1.6.167
+
+### Added
+
+- A background-jobs line sits between the composer and the status line while work is running:
+  the number of jobs and subagents, each tappable, opening a sheet that lists what is running,
+  when it started and how long it has been going. It is absent when nothing runs, and slides in
+  with the composer when the first job starts.
+
 ## 1.6.166
 
 ### Fixed
