@@ -7,3 +7,18 @@ export function isThinking(draftThinking: string, draftText: string): boolean {
 export function workingWord(thinking: boolean): "thinking" | "working" {
   return thinking ? "thinking" : "working";
 }
+
+/** The tasks page's own word; it never borrows the chat's working/thinking. */
+export type TaskStatusWord = "planning" | "idle";
+
+/**
+ * The tasks page's own status word. Nothing is shown when no task is open:
+ * the status belongs to the surface, not to the app.
+ */
+export function taskStatusWord(
+  openTaskId: string | null,
+  livePlanRun: boolean,
+): TaskStatusWord | null {
+  if (openTaskId === null) return null;
+  return livePlanRun ? "planning" : "idle";
+}

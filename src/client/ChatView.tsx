@@ -56,13 +56,18 @@ import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
 import { RunErrorHeader } from "./RunErrorHeader";
 import type { ChatStats } from "./StatsView";
 import { createTask } from "./task-client";
-import { TaskDockComposerProvider, type TaskDockSession } from "./task-dock-composer";
+import {
+  TaskDockComposerProvider,
+  type TaskDockSession,
+  type TaskSurfaceStatus,
+} from "./task-dock-composer";
 import { TaskLinkProvider } from "./task-link";
 import { groupTimeline, type TimelineGroup } from "./timeline-groups";
 import type { SendOutcome, TimelineItem } from "./use-chat";
 import { usePager } from "./use-pager";
 import { useStickToBottom } from "./use-stick-to-bottom";
 import { WorkingIndicator } from "./WorkingIndicator";
+import { workingWord } from "./working-state";
 
 interface ChatViewProps {
   timeline: TimelineItem[];
@@ -1621,9 +1626,15 @@ export function ChatView({
   const [taskSelection, setTaskSelection] = useState<{ id: string; request: number } | null>(null);
   const [composerMode, setComposerMode] = useState<"create" | "task-chat" | "collapsed">("create");
   const [taskDock, setTaskDock] = useState<TaskDockSession | null>(null);
+  const [taskSurfaceStatus, setTaskSurfaceStatus] = useState<TaskSurfaceStatus | null>(null);
   const wantTaskDock = tasksPage && composerMode === "task-chat";
   const dockToTask = wantTaskDock && taskDock !== null;
   const hideTasksComposer = statsPage || (tasksPage && composerMode === "collapsed");
+  // Each surface speaks for itself: the open task's plan run on the tasks page,
+  // the main conversation's run everywhere else. No task open means an empty slot.
+  const chatStatusWord = running ? workingWord(thinking) : ready ? "idle" : "connecting";
+  const statusWord = tasksPage ? (taskSurfaceStatus?.word ?? null) : chatStatusWord;
+  const statusRunning = tasksPage ? statusWord === "planning" : running;
   const lastPagerState = useRef({ page: pager.page, dragging: pager.dragging });
   // Paint the server's row instead of the card it replaces in the same render: a push and
   // the create response can both land before the cleanup effect below runs.
@@ -2172,16 +2183,16 @@ export function ChatView({
           <div className="ink-line flex items-center gap-3 border-b py-1.5 pr-1.5 pl-[18px]">
             <div
               data-testid="working-status"
-              data-open={running ? "true" : "false"}
+              data-open={statusRunning ? "true" : "false"}
               aria-live="polite"
               className="min-w-0 flex-1 truncate font-mono text-[11px] leading-4 text-muted-foreground"
             >
-              {running ? (
-                <WorkingIndicator running={running} thinking={thinking} />
+              {statusWord === null ? null : statusRunning ? (
+                <WorkingIndicator running word={statusWord} />
               ) : (
                 // Idle is a server statement. Before the first snapshot the answer
                 // is not known yet, so do not paint a guess that can be wrong.
-                <span>{ready ? "idle" : "connecting"}</span>
+                <span>{statusWord}</span>
               )}
             </div>
             <div
@@ -2278,7 +2289,9 @@ export function ChatView({
 
   return (
     <TaskLinkProvider tasks={shownTasks} openTask={openTaskFromChat}>
-      <TaskDockComposerProvider onSession={setTaskDock}>{content}</TaskDockComposerProvider>
+      <TaskDockComposerProvider onSession={setTaskDock} onStatus={setTaskSurfaceStatus}>
+        {content}
+      </TaskDockComposerProvider>
     </TaskLinkProvider>
   );
 }
