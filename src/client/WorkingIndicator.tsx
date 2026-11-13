@@ -46,12 +46,21 @@ function BrailleSpinner({ running }: { running: boolean }) {
  * The strip deliberately carries no elapsed time or quiet counter: neither is actionable, and
  * a per-second clock made the composer dock re-render forever for no benefit.
  */
-export function WorkingIndicator({ running, thinking }: { running: boolean; thinking: boolean }) {
+export function WorkingIndicator({
+  running,
+  thinking = false,
+  word,
+}: {
+  running: boolean;
+  thinking?: boolean;
+  /** The surface's own word: the chat's run word or the tasks page's plan word. */
+  word?: string;
+}) {
   return (
-    <div className="flex min-w-0 items-center gap-2">
+    <div data-testid="working-indicator" className="flex min-w-0 items-center gap-2">
       <BrailleSpinner running={running} />
       <span data-testid="header-activity" className="truncate">
-        {workingWord(thinking)}
+        {word ?? workingWord(thinking)}
       </span>
     </div>
   );

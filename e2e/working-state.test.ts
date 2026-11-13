@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isThinking, workingWord } from "../src/client/working-state.js";
+import { isThinking, taskStatusWord, workingWord } from "../src/client/working-state.js";
 
 test("a thinking stream says thinking until text, a tool or an idle run takes over", () => {
   assert.equal(isThinking("", ""), false);
@@ -18,4 +18,12 @@ test("a thinking stream says thinking until text, a tool or an idle run takes ov
   // A tool call clears the draft thinking, and an idle run clears both.
   assert.equal(isThinking("", ""), false);
   assert.equal(workingWord(isThinking("", "")), "working");
+});
+
+test("the status belongs to the surface, not to the app", () => {
+  // No task is open, so the tasks page has no word at all—not the chat's state.
+  assert.equal(taskStatusWord(null, false), null);
+  assert.equal(taskStatusWord("task-a", true), "planning");
+  assert.equal(taskStatusWord("task-a", false), "idle");
+  assert.equal(taskStatusWord("task-b", false), "idle");
 });
