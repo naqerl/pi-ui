@@ -65,7 +65,8 @@ test("the tasks composer status belongs to the open task, not the app", {
     await expect(screen.getByTestId("task-agent-status-indicator")).toBeVisible();
     await expect(screen.getByTestId("task-agent-status-activity")).toHaveText("planning");
     const indicator = await browser.evaluate(
-      () => document.querySelector('[data-testid="task-agent-status-indicator"]')?.textContent ?? "",
+      () =>
+        document.querySelector('[data-testid="task-agent-status-indicator"]')?.textContent ?? "",
     );
     expect(indicator).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⠿]/);
     expect(await statusText(browser)).not.toContain("working");
