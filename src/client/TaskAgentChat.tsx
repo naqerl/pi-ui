@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_NEW_TASK_TITLE } from "../shared/tasks";
 import type { ChatMessage, MessageMode, Task } from "../shared/types";
 import { Composer, RunStatusLine, TranscriptRows } from "./ChatView";
@@ -48,23 +48,6 @@ export function TaskAgentChat({
   const questionsRevision =
     chat.questions === null ? "none" : `${chat.questions.id}:${chat.questions.questions.length}`;
   const stick = useStickToBottom(`${timeline.length}:${questionsRevision}`, { active });
-
-  // Size the questions card against the visible transcript, not the viewport: it may use
-  // at most 40% of the scroller and owns its own scrollbar for the rest of the set.
-  const [questionsMaxHeight, setQuestionsMaxHeight] = useState<number | null>(null);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a tab becoming visible or a set arriving is the trigger to measure the now-visible scroller
-  useLayoutEffect(() => {
-    const container = stick.containerRef.current;
-    if (container === null) return;
-    const measure = () => {
-      const next = Math.max(0, Math.floor(container.clientHeight * 0.4));
-      setQuestionsMaxHeight((current) => (current === next ? current : next));
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(container);
-    return () => observer.disconnect();
-  }, [active, questionsRevision, stick.containerRef]);
 
   useEffect(() => {
     const focus = () => {
@@ -186,7 +169,6 @@ export function TaskAgentChat({
             <TaskQuestionPanel
               key={chat.questions.id}
               set={chat.questions}
-              maxHeight={questionsMaxHeight ?? undefined}
               onAnswer={chat.answerQuestions}
             />
           )}

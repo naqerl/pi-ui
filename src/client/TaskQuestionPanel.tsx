@@ -59,14 +59,16 @@ function OptionRow({
   );
 }
 
-/** The pending plan-chat questions: one card, one Send answers action above the composer. */
+/**
+ * The pending plan-chat questions: one card, one Send answers action above the composer.
+ * The card takes its natural height so every question is visible; the transcript pane owns
+ * scrolling and keeps a detached reader in place while the card grows below them.
+ */
 export function TaskQuestionPanel({
   set,
-  maxHeight,
   onAnswer,
 }: {
   set: TaskQuestionSet;
-  maxHeight?: number;
   onAnswer: (setId: string, answers: TaskQuestionAnswer[]) => Promise<boolean>;
 }) {
   const [state, setState] = useState(() => ({
@@ -128,14 +130,13 @@ export function TaskQuestionPanel({
     <form
       data-testid="task-questions-panel"
       data-set-id={set.id}
-      style={maxHeight === undefined ? undefined : { maxHeight }}
-      className="theme-radius flex max-h-[40dvh] w-full shrink-0 flex-col overflow-y-auto overscroll-contain border border-border/70 bg-surface text-sm text-foreground"
+      className="theme-radius flex w-full shrink-0 flex-col border border-border/70 bg-surface text-sm text-foreground"
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
       }}
     >
-      <div className="sticky top-0 z-10 flex flex-col gap-0.5 border-b border-border/70 bg-surface px-3 py-2.5">
+      <div className="flex flex-col gap-0.5 border-b border-border/70 bg-surface px-3 py-2.5">
         <h3 className="text-sm font-medium leading-5">Questions</h3>
         <p className="text-xs leading-4 text-muted-foreground">
           Answer every question, then send the set back to the planning agent.
@@ -205,7 +206,7 @@ export function TaskQuestionPanel({
         )}
       </div>
 
-      <div className="sticky bottom-0 z-10 mt-1 border-t border-border/70 bg-surface px-3 py-2">
+      <div className="mt-1 border-t border-border/70 bg-surface px-3 py-2">
         <Button
           type="submit"
           data-testid="task-questions-send"
