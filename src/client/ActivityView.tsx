@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { BuiltinJob } from "../shared/dashboard";
 import { noticeIconName } from "../shared/queue";
 import { formatTime } from "../shared/time";
@@ -42,6 +42,37 @@ interface ActivityDialogProps {
 /** Output longer than this shows its start until the reader asks for the rest. */
 const PREVIEW_LINES = 40;
 const PREVIEW_CHARS = 4000;
+/** A single line's 12px text has its cap-height centre 1.5px above the line box. */
+const DISCLOSURE_BOX =
+  "flex size-4 shrink-0 items-center justify-center transition-transform group-data-[state=open]:rotate-90 motion-reduce:transition-none";
+const SINGLE_LINE_SHIFT = "-translate-y-[1.5px]";
+
+/** Keep the optical shift for one-line summaries, but leave a wrapped block centred. */
+function useDisclosureAlignment() {
+  const summaryRef = useRef<HTMLSpanElement>(null);
+  const [wrapped, setWrapped] = useState(false);
+  useLayoutEffect(() => {
+    const element = summaryRef.current;
+    if (element === null) return;
+    const measure = () => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      const lineTops = new Set<number>();
+      for (const rect of range.getClientRects()) {
+        if (rect.width > 0 && rect.height > 0) lineTops.add(Math.round(rect.top * 2) / 2);
+      }
+      setWrapped(lineTops.size > 1);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  return {
+    summaryRef,
+    disclosureClassName: cn(DISCLOSURE_BOX, !wrapped && SINGLE_LINE_SHIFT),
+  };
+}
 
 function preview(text: string): string | null {
   const lines = text.split("\n");
@@ -112,6 +143,7 @@ function JobActivityRow({
   const { notice } = activity;
   const failed = notice.status === "failed" || notice.status === "lost";
   const clock = formatTime(activity.timestamp);
+  const { summaryRef, disclosureClassName } = useDisclosureAlignment();
   return (
     <Collapsible defaultOpen={defaultOpen}>
       <CollapsibleTrigger
@@ -122,11 +154,12 @@ function JobActivityRow({
           failed ? "text-destructive" : "text-muted-foreground",
         )}
       >
-        <span className="flex size-4 shrink-0 items-center justify-center transition-transform group-data-[state=open]:rotate-90 motion-reduce:transition-none">
+        <span className={disclosureClassName}>
           <ChevronIcon size={14} />
         </span>
         <NoticeIcon name={noticeIconName("job")} size={18} />
         <span
+          ref={summaryRef}
           data-testid="activity-job-summary"
           className="min-w-0 flex-1 [overflow-wrap:anywhere]"
         >
@@ -213,6 +246,8 @@ function DelegateRunRow({
     run.usage === undefined
       ? ""
       : ` · ${run.usage.input.toLocaleString()} in / ${run.usage.output.toLocaleString()} out`;
+  const summary = `${run.agent} · ${run.taskFirstLine} · ${delegateStatus(run.status)} · ${run.duration}${tokens}`;
+  const { summaryRef, disclosureClassName } = useDisclosureAlignment();
   useEffect(() => {
     if (!open || content !== null) return;
     let active = true;
@@ -249,16 +284,16 @@ function DelegateRunRow({
           failed ? "text-destructive" : "text-muted-foreground",
         )}
       >
-        <span className="flex size-4 shrink-0 items-center justify-center transition-transform group-data-[state=open]:rotate-90 motion-reduce:transition-none">
+        <span className={disclosureClassName}>
           <ChevronIcon size={14} />
         </span>
         <NoticeIcon name={noticeIconName("delegate")} size={18} />
         <span
+          ref={summaryRef}
           data-testid="activity-delegate-summary"
           className="min-w-0 flex-1 [overflow-wrap:anywhere]"
         >
-          {run.agent} · {run.taskFirstLine} · {delegateStatus(run.status)} · {run.duration}
-          {tokens}
+          {summary}
         </span>
         {clock !== "" && (
           <time
@@ -349,7 +384,13 @@ function ActivityRow({
 }) {
   if (activity.kind === "job")
     return <JobActivityRow activity={activity} defaultOpen={defaultOpen} />;
+  return <TextActivityRow activity={activity} />;
+}
+
+function TextActivityRow({ activity }: { activity: Exclude<ActivityItem, { kind: "job" }> }) {
+  const summary = activitySummary(activity);
   const failed = activity.kind === "tool" && activity.isError;
+  const { summaryRef, disclosureClassName } = useDisclosureAlignment();
   return (
     <Collapsible>
       <CollapsibleTrigger
@@ -360,10 +401,12 @@ function ActivityRow({
           failed ? "text-destructive" : "text-muted-foreground",
         )}
       >
-        <span className="flex size-4 shrink-0 items-center justify-center transition-transform group-data-[state=open]:rotate-90 motion-reduce:transition-none">
+        <span className={disclosureClassName}>
           <ChevronIcon size={14} />
         </span>
-        <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{activitySummary(activity)}</span>
+        <span ref={summaryRef} className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+          {summary}
+        </span>
       </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="theme-radius space-y-3 border-b border-border bg-muted/40 px-3 py-3 pl-8 text-xs">

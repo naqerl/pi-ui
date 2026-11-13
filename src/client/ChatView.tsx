@@ -716,9 +716,10 @@ function ActivityGroup({
         aria-label={`Run activity: ${parts.join(", ")}`}
         className="theme-radius flex min-h-9 w-fit min-w-0 max-w-full items-start gap-2 border border-border/70 bg-surface px-2.5 py-2 text-left font-mono text-xs leading-5 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40 sm:min-h-0 sm:py-1.5"
       >
-        <ChevronIcon size={14} className="shrink-0" />
+        {/* The 12px text's cap-height centre sits 1.5px below the SVG box centre. */}
+        <ChevronIcon size={14} className="shrink-0 translate-y-[1.5px]" />
         {/* Each piece stays whole and the line wraps between pieces on a narrow screen. */}
-        <span className="flex min-w-0 flex-wrap gap-x-1.5">
+        <span data-testid="run-info-summary" className="flex min-w-0 flex-wrap gap-x-1.5">
           {parts.map((part, index) => (
             <span key={part} className="whitespace-nowrap">
               {index > 0 && (
