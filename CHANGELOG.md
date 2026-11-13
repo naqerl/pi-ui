@@ -1,3 +1,15 @@
+## 1.6.168
+
+### Fixed
+
+- An activity row lines its disclosure chevron up with its text: the glyph is
+  shifted onto the optical centre of the text instead of the centre of the line
+  box, so a collapsed and an expanded row look the same and a wrapped summary keeps
+  the chevron on its first line.
+- The planning chat's questions card no longer steals the transcript: it takes a
+  bounded share of the pane and scrolls itself, so answering a question does not
+  jump a reader away from the message they were reading.
+
 ## 1.6.157
 
 ### Changed
