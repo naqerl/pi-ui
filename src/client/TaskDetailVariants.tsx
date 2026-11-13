@@ -967,7 +967,7 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
         <div className={cn("flex flex-col gap-3 px-3 pt-3", tab !== "plan" && "hidden")}>
           <PlanSections model={model} />
         </div>
-        <div className={cn("flex min-h-0 flex-1 flex-col px-3 pt-3", tab !== "chat" && "hidden")}>
+        <div className={cn("flex min-h-0 flex-1 flex-col px-3", tab !== "chat" && "hidden")}>
           <TaskAgentChat
             key={model.task.id}
             task={model.task}
