@@ -6,9 +6,10 @@
   shifted onto the optical centre of the text instead of the centre of the line
   box, so a collapsed and an expanded row look the same and a wrapped summary keeps
   the chevron on its first line.
-- The planning chat's questions card no longer steals the transcript: it takes a
-  bounded share of the pane and scrolls itself, so answering a question does not
-  jump a reader away from the message they were reading.
+- The planning chat's questions card takes its natural height instead of a
+  bounded share of the pane: every question is visible without an inner
+  scrollbar, long prompts and options wrap, and the transcript pane scrolls
+  under it while keeping a detached reader's position and the composer in place.
 
 ## 1.6.157
 
