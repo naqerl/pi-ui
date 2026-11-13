@@ -62,9 +62,11 @@ function OptionRow({
 /** The pending plan-chat questions: one card, one Send answers action above the composer. */
 export function TaskQuestionPanel({
   set,
+  maxHeight,
   onAnswer,
 }: {
   set: TaskQuestionSet;
+  maxHeight?: number;
   onAnswer: (setId: string, answers: TaskQuestionAnswer[]) => Promise<boolean>;
 }) {
   const [state, setState] = useState(() => ({
@@ -126,87 +128,93 @@ export function TaskQuestionPanel({
     <form
       data-testid="task-questions-panel"
       data-set-id={set.id}
-      className="theme-radius flex w-full flex-col gap-3 border border-border/70 bg-surface p-3 text-sm text-foreground"
+      style={maxHeight === undefined ? undefined : { maxHeight }}
+      className="theme-radius flex max-h-[40dvh] w-full shrink-0 flex-col overflow-y-auto overscroll-contain border border-border/70 bg-surface text-sm text-foreground"
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
       }}
     >
-      <div className="flex flex-col gap-0.5">
+      <div className="sticky top-0 z-10 flex flex-col gap-0.5 border-b border-border/70 bg-surface px-3 py-2.5">
         <h3 className="text-sm font-medium leading-5">Questions</h3>
         <p className="text-xs leading-4 text-muted-foreground">
           Answer every question, then send the set back to the planning agent.
         </p>
       </div>
 
-      {set.questions.map((question) => {
-        const draft = drafts[question.id] ?? { values: [], text: "" };
-        const multi = question.kind === "multi";
-        return (
-          <fieldset
-            key={question.id}
-            data-testid={`task-question-${question.id}`}
-            className="flex min-w-0 flex-col gap-2 border-t border-border/70 pt-3"
-          >
-            <legend className="min-w-0 float-left w-full text-sm font-medium leading-5 [overflow-wrap:anywhere]">
-              {question.prompt}
-            </legend>
-            {question.kind === "text" ? (
-              <textarea
-                aria-label={question.prompt}
-                data-testid={`question-${question.id}-text`}
-                rows={2}
-                value={draft.text}
-                onChange={(event) =>
-                  update(question.id, (current) => ({ ...current, text: event.target.value }))
-                }
-                placeholder="Type your answer"
-                className="theme-radius w-full resize-y border border-border/70 bg-background px-2 py-1.5 text-sm leading-5 text-foreground outline-none focus-visible:ring-1 focus-visible:ring-foreground"
-              />
-            ) : (
-              <div className="flex flex-col gap-0.5">
-                {(question.options ?? []).map((option) => (
-                  <OptionRow
-                    key={option.value}
-                    question={question}
-                    option={option}
-                    checked={draft.values.includes(option.value)}
-                    multi={multi}
-                    onToggle={() => toggle(question, option.value)}
-                  />
-                ))}
-              </div>
-            )}
-            {question.kind !== "text" && question.allowOther === true && (
-              <input
-                type="text"
-                aria-label={`${question.prompt} free text`}
-                data-testid={`question-${question.id}-other`}
-                value={draft.text}
-                onChange={(event) =>
-                  update(question.id, (current) => ({ ...current, text: event.target.value }))
-                }
-                placeholder="Other (optional)"
-                className="theme-radius w-full border border-border/70 bg-background px-2 py-1.5 text-sm leading-5 text-foreground outline-none focus-visible:ring-1 focus-visible:ring-foreground"
-              />
-            )}
-          </fieldset>
-        );
-      })}
+      <div className="flex flex-col gap-3 px-3 pt-3">
+        {set.questions.map((question) => {
+          const draft = drafts[question.id] ?? { values: [], text: "" };
+          const multi = question.kind === "multi";
+          return (
+            <fieldset
+              key={question.id}
+              data-testid={`task-question-${question.id}`}
+              className="flex min-w-0 flex-col gap-2 border-t border-border/70 pt-3 first:border-t-0 first:pt-0"
+            >
+              <legend className="min-w-0 float-left w-full text-sm font-medium leading-5 [overflow-wrap:anywhere]">
+                {question.prompt}
+              </legend>
+              {question.kind === "text" ? (
+                <textarea
+                  aria-label={question.prompt}
+                  data-testid={`question-${question.id}-text`}
+                  rows={2}
+                  value={draft.text}
+                  onChange={(event) =>
+                    update(question.id, (current) => ({ ...current, text: event.target.value }))
+                  }
+                  placeholder="Type your answer"
+                  className="theme-radius w-full resize-y border border-border/70 bg-background px-2 py-1.5 text-sm leading-5 text-foreground outline-none focus-visible:ring-1 focus-visible:ring-foreground"
+                />
+              ) : (
+                <div className="flex flex-col gap-0.5">
+                  {(question.options ?? []).map((option) => (
+                    <OptionRow
+                      key={option.value}
+                      question={question}
+                      option={option}
+                      checked={draft.values.includes(option.value)}
+                      multi={multi}
+                      onToggle={() => toggle(question, option.value)}
+                    />
+                  ))}
+                </div>
+              )}
+              {question.kind !== "text" && question.allowOther === true && (
+                <input
+                  type="text"
+                  aria-label={`${question.prompt} free text`}
+                  data-testid={`question-${question.id}-other`}
+                  value={draft.text}
+                  onChange={(event) =>
+                    update(question.id, (current) => ({ ...current, text: event.target.value }))
+                  }
+                  placeholder="Other (optional)"
+                  className="theme-radius w-full border border-border/70 bg-background px-2 py-1.5 text-sm leading-5 text-foreground outline-none focus-visible:ring-1 focus-visible:ring-foreground"
+                />
+              )}
+            </fieldset>
+          );
+        })}
 
-      {error !== null && (
-        <p role="alert" className="text-xs leading-4 text-destructive">
-          {error}
-        </p>
-      )}
-      <Button
-        type="submit"
-        data-testid="task-questions-send"
-        disabled={busy || !ready}
-        className="w-full sm:w-auto sm:self-end"
-      >
-        {busy ? "Sending…" : "Send answers"}
-      </Button>
+        {error !== null && (
+          <p role="alert" className="text-xs leading-4 text-destructive">
+            {error}
+          </p>
+        )}
+      </div>
+
+      <div className="sticky bottom-0 z-10 mt-1 border-t border-border/70 bg-surface px-3 py-2">
+        <Button
+          type="submit"
+          data-testid="task-questions-send"
+          disabled={busy || !ready}
+          className="w-full sm:w-auto sm:self-end"
+        >
+          {busy ? "Sending…" : "Send answers"}
+        </Button>
+      </div>
     </form>
   );
 }
