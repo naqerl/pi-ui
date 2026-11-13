@@ -1076,6 +1076,14 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
   available" banner with its Reset button. Widgets are the page: the grid shows the
   grid, and a reset happens because the agent was asked for it, not by tapping a bar
   that appears whenever the default board changes.
+## 1.6.162
+
+### Fixed
+
+- The working/idle indicator follows the surface you are looking at: the chat keeps the run state of
+  its own conversation, and tasks shows planning only for the task that has a live plan run, instead
+  of carrying one global status across pages.
+
 ## 1.6.161
 
 ### Fixed
