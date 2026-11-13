@@ -52,7 +52,9 @@ test("the tasks composer status belongs to the open task, not the app", {
 
     // The open task's own live plan run says planning, with the same braille frames as chat,
     // and it says it on the plan pane's own status line rather than the chat composer's.
-    await expect(screen.getByTestId("task-agent-status-indicator")).toBeVisible({ timeout: 30_000 });
+    await expect(screen.getByTestId("task-agent-status-indicator")).toBeVisible({
+      timeout: 30_000,
+    });
     await expect(screen.getByTestId("task-agent-status-activity")).toHaveText("planning");
     const indicator = await browser.evaluate(
       () =>
