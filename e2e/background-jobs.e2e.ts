@@ -15,7 +15,7 @@ type DelegateRun = {
   status: string;
 };
 
-const hasLine = (browser: Browser) =>
+const hasCounts = (browser: Browser) =>
   browser.evaluate(() => document.querySelector('[data-testid="bg-jobs-line"]') !== null);
 
 const statusY = (browser: Browser) =>
@@ -49,6 +49,68 @@ const delegates = (browser: Browser) =>
     return (await (await fetch("/api/delegates", { cache: "no-store" })).json()) as DelegateRun[];
   });
 
+/** The status row is the `working-status` element's parent; the counts must not grow it. */
+const rowMetrics = (browser: Browser) =>
+  browser.evaluate(() => {
+    const status = document.querySelector<HTMLElement>('[data-testid="working-status"]');
+    const row = status?.parentElement;
+    const counts = document.querySelector<HTMLElement>('[data-testid="bg-jobs-line"]');
+    const box = (element: HTMLElement | null | undefined) =>
+      element?.getBoundingClientRect() ?? null;
+    const rowBox = box(row);
+    const countBox = box(counts);
+    return {
+      statusY: box(status)?.y ?? -1,
+      rowHeight: rowBox?.height ?? -1,
+      rowTop: rowBox?.top ?? -1,
+      rowBottom: rowBox?.bottom ?? -1,
+      countTop: countBox?.top ?? -1,
+      countBottom: countBox?.bottom ?? -1,
+      countsInsideStatus: status !== null && counts !== null ? status.contains(counts) : false,
+      hasSlot: document.querySelector(".bg-jobs-slot") !== null,
+      hasCounts: counts !== null,
+    };
+  });
+
+/**
+ * The two texts share the row's baseline. Both use the same 11px/16px mono
+ * metrics, so equal box bottoms mean equal baselines.
+ */
+const baselineGap = (browser: Browser) =>
+  browser.evaluate(() => {
+    // While a run is live the word is the indicator's `header-activity` span; when
+    // the run is idle the same row paints the status word itself.
+    const word =
+      document.querySelector<HTMLElement>('[data-testid="header-activity"]') ??
+      document.querySelector<HTMLElement>(
+        '[data-testid="working-status"] > div > span:not([aria-hidden])',
+      );
+    const count =
+      document.querySelector<HTMLElement>('[data-testid="bg-jobs-line-jobs"]') ??
+      document.querySelector<HTMLElement>('[data-testid="bg-jobs-line-subagents"]');
+    if (word === null || count === null) return null;
+    // Range rects cover the glyphs, not the padded line box, so equal bottoms
+    // mean equal text baselines regardless of the button's inline-block metrics.
+    const textBottom = (element: HTMLElement) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      return range.getBoundingClientRect().bottom;
+    };
+    return Math.abs(textBottom(word) - textBottom(count));
+  });
+
+const scrollPositions = (browser: Browser) =>
+  browser.evaluate(() => {
+    const body = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
+    const scroller = document.querySelector<HTMLElement>('[data-testid="chat-scroller"]');
+    return { body: body?.scrollTop ?? -1, transcript: scroller?.scrollTop ?? -1 };
+  });
+
+const pagerPage = (browser: Browser) =>
+  browser.evaluate(
+    () => document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
+  );
+
 async function sendText(browser: Browser, text: string): Promise<void> {
   const status = await browser.evaluate(async (body) => {
     const response = await fetch("/api/message", {
@@ -61,7 +123,7 @@ async function sendText(browser: Browser, text: string): Promise<void> {
   expect(status).toBe(202);
 }
 
-/** Let the 220 ms layout transition settle before measuring the dock. */
+/** Let the 220 ms dock transition and the counts' 180 ms entry settle. */
 async function settleDock(browser: Browser): Promise<void> {
   await browser.evaluate(async () => {
     await new Promise<void>((resolve) => window.setTimeout(resolve, 360));
@@ -87,7 +149,14 @@ async function focusedComposer(browser: Browser): Promise<boolean> {
   });
 }
 
-test("nothing running leaves no jobs line and keeps the status line where it was", async ({
+async function cancelJob(browser: Browser, id: string): Promise<void> {
+  await sendText(
+    browser,
+    `TOOLCALLS ${JSON.stringify([{ name: "job_cancel", arguments: { id } }])}`,
+  );
+}
+
+test("nothing running leaves no counts and keeps the status row at its resting height", async ({
   app,
   browser,
   screen,
@@ -97,41 +166,38 @@ test("nothing running leaves no jobs line and keeps the status line where it was
   await expect(screen.getByTestId("working-status")).toBeVisible();
   await settleDock(browser);
 
-  const empty = await browser.evaluate(() => {
-    const slot = document.querySelector<HTMLElement>(".bg-jobs-slot");
-    const status = document.querySelector<HTMLElement>('[data-testid="working-status"]');
-    const withSlot = status?.getBoundingClientRect().y ?? -1;
-    const display = slot?.style.display ?? "";
-    if (slot !== null) slot.style.display = "none";
-    const withoutSlot = status?.getBoundingClientRect().y ?? -1;
-    if (slot !== null) slot.style.display = display;
-    return {
-      slotHeight: slot?.getBoundingClientRect().height ?? -1,
-      withSlot,
-      withoutSlot,
-      statusY: status?.getBoundingClientRect().y ?? -1,
-    };
-  });
-  // The empty slot contributes exactly zero height: hiding it cannot move the status line.
-  expect(empty.slotHeight).toBe(0);
-  expect(empty.withSlot).toBeCloseTo(empty.withoutSlot, 2);
-  const baseline = empty.withSlot;
-  expect(await hasLine(browser)).toBe(false);
+  const empty = await rowMetrics(browser);
+  // The old strip is gone, and with no live work there is no count node at all.
+  expect(empty.hasSlot).toBe(false);
+  expect(empty.hasCounts).toBe(false);
+  expect(await statusY(browser)).toBeCloseTo(empty.statusY, 2);
+  const restingHeight = empty.rowHeight;
+  expect(restingHeight).toBeGreaterThan(0);
 
-  // A job that ends on its own leaves the line absent again.
+  // A job that ends on its own leaves the row untouched as well.
   await sendText(browser, "JOBSTART sleep 3; echo bg-jobs-finished");
-  await expect.poll(() => hasLine(browser), { timeout: 15_000 }).toBe(true);
+  await expect.poll(() => hasCounts(browser), { timeout: 15_000 }).toBe(true);
+  await settleDock(browser);
+  const running = await rowMetrics(browser);
+  expect(running.hasSlot).toBe(false);
+  expect(running.countsInsideStatus).toBe(true);
+  expect(Math.abs(running.rowHeight - restingHeight)).toBeLessThan(0.5);
+
   await expect
     .poll(async () => (await jobs(browser)).some((job) => job.status === "running"), {
       timeout: 20_000,
     })
     .toBe(false);
-  await expect.poll(() => hasLine(browser), { timeout: 10_000 }).toBe(false);
+  await expect.poll(() => hasCounts(browser), { timeout: 10_000 }).toBe(false);
   await settleDock(browser);
-  expect(await statusY(browser)).toBeCloseTo(baseline, 0);
+  const after = await rowMetrics(browser);
+  expect(after.hasSlot).toBe(false);
+  expect(after.hasCounts).toBe(false);
+  expect(Math.abs(after.rowHeight - restingHeight)).toBeLessThan(0.5);
+  expect(after.statusY).toBeCloseTo(empty.statusY, 0);
 });
 
-test("a background job chip opens a live sheet and returns focus to the composer", async ({
+test("a background job count opens a live sheet and returns focus to the composer", async ({
   app,
   browser,
   screen,
@@ -140,38 +206,52 @@ test("a background job chip opens a live sheet and returns focus to the composer
   await app.open("/");
   await expect(screen.getByTestId("working-status")).toBeVisible();
   await settleDock(browser);
-  const baseline = await statusY(browser);
+  const empty = await rowMetrics(browser);
+  expect(empty.hasSlot).toBe(false);
+  const baseline = empty.statusY;
 
   const marker = `BG_JOBS_${Date.now()}`;
   await sendText(browser, `JOBSTART sleep 60; echo ${marker}`);
-  await expect.poll(() => hasLine(browser), { timeout: 20_000 }).toBe(true);
+  await expect.poll(() => hasCounts(browser), { timeout: 20_000 }).toBe(true);
   await expect(screen.getByTestId("bg-jobs-line-jobs")).toHaveText("1 job");
   expect(await boxOf(browser, "bg-jobs-line-subagents")).toBeNull();
 
   await settleDock(browser);
-  const line = await boxOf(browser, "bg-jobs-line");
-  expect(line).not.toBeNull();
-  if (line !== null) {
-    expect(Math.abs((await statusY(browser)) - baseline)).toBeCloseTo(line.height, 0);
-  }
+  const withCounts = await rowMetrics(browser);
+  // Same row, same width budget: the count rides after the working indicator.
+  expect(withCounts.hasSlot).toBe(false);
+  expect(withCounts.countsInsideStatus).toBe(true);
+  expect(withCounts.countBottom).toBeGreaterThan(withCounts.rowTop);
+  expect(withCounts.countTop).toBeLessThan(withCounts.rowBottom);
+  // The row does not grow when the counts arrive, so the composer cannot move.
+  expect(Math.abs(withCounts.rowHeight - empty.rowHeight)).toBeLessThan(0.5);
+  expect(await statusY(browser)).toBeCloseTo(baseline, 0);
+  const gap = await baselineGap(browser);
+  expect(gap).not.toBeNull();
+  expect(gap ?? 99).toBeLessThan(2);
 
-  // The baseline paints the status/nav row at the top of the dock. The jobs row
-  // extends the composer directly beneath it, so the documented order is
-  // status -> jobs -> composer body.
+  // The same baseline holds when the live working indicator paints the row.
+  await sendText(browser, "SLOW keep working");
+  await expect(screen.getByTestId("header-activity")).toBeVisible();
+  await settleDock(browser);
+  const workingGap = await baselineGap(browser);
+  expect(workingGap).not.toBeNull();
+  expect(workingGap ?? 99).toBeLessThan(2);
+  await screen.getByRole("button", "Stop").tap();
+  await expect(screen.getByTestId("working-status")).toHaveAttribute("data-open", "false");
+  await settleDock(browser);
+
+  // The status row still sits directly above the composer body, with no strip between.
   const order = await browser.evaluate(() => {
     const top = (id: string) =>
       document.querySelector<HTMLElement>(`[data-testid="${id}"]`)?.getBoundingClientRect().y ?? -1;
-    return {
-      status: top("working-status"),
-      line: top("bg-jobs-line"),
-      body: top("composer-body"),
-    };
+    return { status: top("working-status"), body: top("composer-body") };
   });
-  expect(order.status).toBeLessThan(order.line);
-  expect(order.line).toBeLessThan(order.body);
+  expect(order.status).toBeLessThan(order.body);
 
   await screen.getByTestId("bg-jobs-line-jobs").tap();
   await expect(screen.getByTestId("bg-jobs-sheet")).toBeVisible();
+  await expect(screen.getByTestId("bg-jobs-sheet-list")).toBeVisible();
   const row = screen.getByTestId("bg-jobs-sheet-job");
   await expect(row).toBeVisible();
   await expect.poll(() => textOf(browser, "bg-jobs-sheet-job")).toContain("sleep 60");
@@ -203,18 +283,15 @@ test("a background job chip opens a live sheet and returns focus to the composer
 
   const running = (await jobs(browser)).find((job) => job.status === "running");
   expect(running).toBeDefined();
-  if (running !== undefined) {
-    await sendText(
-      browser,
-      `TOOLCALLS ${JSON.stringify([{ name: "job_cancel", arguments: { id: running.id } }])}`,
-    );
-  }
-  await expect.poll(() => hasLine(browser), { timeout: 20_000 }).toBe(false);
+  if (running !== undefined) await cancelJob(browser, running.id);
+  await expect.poll(() => hasCounts(browser), { timeout: 20_000 }).toBe(false);
   await settleDock(browser);
+  const after = await rowMetrics(browser);
+  expect(Math.abs(after.rowHeight - empty.rowHeight)).toBeLessThan(0.5);
   expect(await statusY(browser)).toBeCloseTo(baseline, 0);
 });
 
-test("a subagent chip opens the same sheet with its task and state", async ({
+test("a subagent count opens the same sheet with its task and state", async ({
   app,
   browser,
   screen,
@@ -223,9 +300,12 @@ test("a subagent chip opens the same sheet with its task and state", async ({
   await app.open("/");
   await expect(screen.getByTestId("working-status")).toBeVisible();
   await settleDock(browser);
-  const baseline = await statusY(browser);
+  const empty = await rowMetrics(browser);
+  const baseline = empty.statusY;
 
   const marker = `BG_JOBS_SUBAGENT_${Date.now()}`;
+  await sendText(browser, `JOBSTART sleep 60; echo BG_JOBS_BOTH_${Date.now()}`);
+  await expect(screen.getByTestId("bg-jobs-line-jobs")).toHaveText("1 job");
   await sendText(
     browser,
     `TOOLCALLS ${JSON.stringify([
@@ -238,19 +318,24 @@ test("a subagent chip opens the same sheet with its task and state", async ({
     })
     .toBe(true);
 
-  await expect.poll(() => hasLine(browser), { timeout: 20_000 }).toBe(true);
+  await expect.poll(() => hasCounts(browser), { timeout: 20_000 }).toBe(true);
+  await expect(screen.getByTestId("bg-jobs-line-jobs")).toHaveText("1 job");
   await expect(screen.getByTestId("bg-jobs-line-subagents")).toHaveText("1 subagent");
-  expect(await boxOf(browser, "bg-jobs-line-jobs")).toBeNull();
+  expect(await boxOf(browser, "bg-jobs-line-jobs")).not.toBeNull();
 
   await settleDock(browser);
-  const line = await boxOf(browser, "bg-jobs-line");
-  expect(line).not.toBeNull();
-  if (line !== null) {
-    expect(Math.abs((await statusY(browser)) - baseline)).toBeCloseTo(line.height, 0);
-  }
+  const withCounts = await rowMetrics(browser);
+  expect(withCounts.hasSlot).toBe(false);
+  expect(withCounts.countsInsideStatus).toBe(true);
+  expect(Math.abs(withCounts.rowHeight - empty.rowHeight)).toBeLessThan(0.5);
+  expect(await statusY(browser)).toBeCloseTo(baseline, 0);
+  const gap = await baselineGap(browser);
+  expect(gap).not.toBeNull();
+  expect(gap ?? 99).toBeLessThan(2);
 
   await screen.getByTestId("bg-jobs-line-subagents").tap();
   await expect(screen.getByTestId("bg-jobs-sheet")).toBeVisible();
+  await expect(screen.getByTestId("bg-jobs-sheet-list")).toBeVisible();
   const row = screen.getByTestId("bg-jobs-sheet-subagent");
   await expect(row).toBeVisible();
   await expect.poll(() => textOf(browser, "bg-jobs-sheet-subagent")).toContain(marker);
@@ -291,5 +376,51 @@ test("a subagent chip opens the same sheet with its task and state", async ({
       ])}`,
     );
   }
-  await expect.poll(() => hasLine(browser), { timeout: 30_000 }).toBe(false);
+  const runningJob = (await jobs(browser)).find((job) => job.status === "running");
+  if (runningJob !== undefined) await cancelJob(browser, runningJob.id);
+  await expect.poll(() => hasCounts(browser), { timeout: 30_000 }).toBe(false);
+});
+
+test("chat to stats and back leaves the composer body and transcript where they were", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/");
+  await expect(screen.getByTestId("working-status")).toBeVisible();
+  await settleDock(browser);
+
+  const marker = `BG_JOBS_SCROLL_${Date.now()}`;
+  await sendText(browser, `JOBSTART sleep 60; echo ${marker}`);
+  await expect.poll(() => hasCounts(browser), { timeout: 20_000 }).toBe(true);
+  await settleDock(browser);
+
+  // Park the transcript at its settled offset; the round trip must not change it.
+  await browser.evaluate(() => {
+    const scroller = document.querySelector<HTMLElement>('[data-testid="chat-scroller"]');
+    if (scroller !== null) {
+      scroller.scrollTop = scroller.scrollHeight;
+      scroller.dispatchEvent(new Event("scroll"));
+    }
+    return true;
+  });
+  const before = await scrollPositions(browser);
+  expect(before.body).toBeGreaterThanOrEqual(0);
+  expect(before.transcript).toBeGreaterThanOrEqual(0);
+
+  await screen.getByTestId("page-dot-stats").tap();
+  await expect.poll(() => pagerPage(browser)).toBe("stats");
+  await settleDock(browser);
+  await screen.getByTestId("page-dot-chat").tap();
+  await expect.poll(() => pagerPage(browser)).toBe("chat");
+  await settleDock(browser);
+
+  const after = await scrollPositions(browser);
+  expect(after.body).toBe(before.body);
+  expect(after.transcript).toBe(before.transcript);
+
+  const running = (await jobs(browser)).find((job) => job.status === "running");
+  if (running !== undefined) await cancelJob(browser, running.id);
+  await expect.poll(() => hasCounts(browser), { timeout: 20_000 }).toBe(false);
 });

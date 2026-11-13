@@ -276,16 +276,27 @@
       visibility 220ms ease;
   }
 
-  /* The jobs row extends the composer in the layout domain: the 0fr -> 1fr grid
-     row is interpolated by the browser, never by a requestAnimationFrame loop. */
-  .bg-jobs-slot {
-    display: grid;
-    grid-template-rows: 0fr;
-    transition: grid-template-rows 220ms ease;
+  /* The job/sub-agent counts ride inside the status row. Only their own opacity
+     and transform animates: the row keeps its height, so the composer and the
+     transcript never move when work starts or finishes. */
+  .bg-jobs-counts {
+    animation: bg-jobs-counts-in 180ms ease-out;
+    transition:
+      opacity 160ms ease,
+      transform 160ms ease;
   }
 
-  .bg-jobs-slot[data-open="true"] {
-    grid-template-rows: 1fr;
+  .bg-jobs-counts[data-open="false"] {
+    opacity: 0;
+    transform: translateY(-2px);
+    pointer-events: none;
+  }
+
+  @keyframes bg-jobs-counts-in {
+    from {
+      opacity: 0;
+      transform: translateY(2px);
+    }
   }
 
   .composer-body[data-hidden="true"] {
@@ -301,8 +312,12 @@
     .float-footer,
     .composer-body,
     .composer-body[data-hidden="true"],
-    .composer-body[data-collapsed="true"],
-    .bg-jobs-slot {
+    .composer-body[data-collapsed="true"] {
+      transition: none;
+    }
+
+    .bg-jobs-counts {
+      animation: none;
       transition: none;
     }
   }
