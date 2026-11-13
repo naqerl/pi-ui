@@ -302,6 +302,8 @@ function ActivityRow({ activity }: { activity: ActivityItem }) {
   return (
     <Collapsible>
       <CollapsibleTrigger
+        data-testid="activity-row"
+        data-activity-name={activity.kind === "tool" ? activity.name : activity.kind}
         className={cn(
           "group flex w-full items-center gap-2 border-b border-border py-3 text-left font-mono text-xs hover:text-foreground",
           failed ? "text-destructive" : "text-muted-foreground",

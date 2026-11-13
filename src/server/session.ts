@@ -1211,6 +1211,7 @@ export function toolActivityFromEntry(entry: EntryRecord, args: unknown): ToolAc
   return {
     kind: "tool",
     id: `a-${entry.id}`,
+    ...(typeof message.toolCallId === "string" ? { toolCallId: message.toolCallId } : {}),
     name: typeof message.toolName === "string" ? message.toolName : "tool",
     arguments: formatToolArguments(args),
     output: formatToolResult(message),

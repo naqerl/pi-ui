@@ -3075,6 +3075,7 @@ export class ChatService {
     return {
       kind: "tool",
       id: `local-${event.toolCallId}`,
+      toolCallId: event.toolCallId,
       name: event.toolName,
       arguments: formatToolArguments(active?.args ?? event.args),
       output: result?.output === undefined ? "The tool did not finish." : formatToolResult(result),
