@@ -1,3 +1,12 @@
+## 1.6.170
+
+### Changed
+
+- The background job and subagent counts sit on the composer's status row,
+  immediately after the working indicator, instead of in a strip of their own:
+  they share its 11px mono type and baseline, still open the jobs sheet on a
+  click, and the access row no longer grows when work starts.
+
 ## 1.6.169
 
 ### Fixed
