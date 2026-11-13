@@ -50,16 +50,21 @@ export function WorkingIndicator({
   running,
   thinking = false,
   word,
+  testId = "working-indicator",
+  activityTestId = "header-activity",
 }: {
   running: boolean;
   thinking?: boolean;
   /** The surface's own word: the chat's run word or the tasks page's plan word. */
   word?: string;
+  /** Two composers can be on screen at once, so each surface names its own node. */
+  testId?: string;
+  activityTestId?: string;
 }) {
   return (
-    <div data-testid="working-indicator" className="flex min-w-0 items-center gap-2">
+    <div data-testid={testId} className="flex min-w-0 items-center gap-2">
       <BrailleSpinner running={running} />
-      <span data-testid="header-activity" className="truncate">
+      <span data-testid={activityTestId} className="truncate">
         {word ?? workingWord(thinking)}
       </span>
     </div>

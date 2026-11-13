@@ -1636,6 +1636,9 @@ export function RunStatusLine({
           running={running}
           thinking={thinking}
           {...(label === undefined ? {} : { word: label })}
+          {...(testId === "working-status"
+            ? {}
+            : { testId: `${testId}-indicator`, activityTestId: `${testId}-activity` })}
         />
       ) : (
         // Idle is a server statement. Before the first snapshot the answer

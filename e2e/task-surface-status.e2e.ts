@@ -60,10 +60,12 @@ test("the tasks composer status belongs to the open task, not the app", {
     await expect.poll(() => planIsLive(browser, taskId), { timeout: 30_000 }).toBe(true);
 
     // The open task's own live plan run says planning, with the same braille frames as chat.
-    await expect(screen.getByTestId("working-indicator")).toBeVisible();
-    await expect(screen.getByTestId("header-activity")).toHaveText("planning");
+    // The plan pane is its own status line (one chat core, two surfaces), so it carries its own
+    // test ids instead of reusing the chat composer's.
+    await expect(screen.getByTestId("task-agent-status-indicator")).toBeVisible();
+    await expect(screen.getByTestId("task-agent-status-activity")).toHaveText("planning");
     const indicator = await browser.evaluate(
-      () => document.querySelector('[data-testid="working-indicator"]')?.textContent ?? "",
+      () => document.querySelector('[data-testid="task-agent-status-indicator"]')?.textContent ?? "",
     );
     expect(indicator).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⠿]/);
     expect(await statusText(browser)).not.toContain("working");
@@ -103,7 +105,7 @@ test("a live chat run never becomes the tasks page status", {
     // The tasks page keeps its open task's word while the main run is live.
     await screen.getByTestId("page-dot-tasks").tap();
     await expect.poll(() => statusText(browser)).toBe("idle");
-    await expect(screen.getByTestId("working-indicator")).toHaveCount(0);
+    expect(await screen.getByTestId("working-indicator").first().isVisible()).toBe(false);
 
     // The chat page shows the main run's own word.
     await screen.getByTestId("page-dot-chat").tap();
