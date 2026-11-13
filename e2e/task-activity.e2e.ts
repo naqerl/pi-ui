@@ -99,3 +99,112 @@ test("tool calls made while one task is working are charged to it", async ({
   await chooseTaskAction(screen, "task-detail-status");
   await expect(screen.getByTestId("task-state")).toHaveText("Done");
 });
+
+// A task tool result paints its row now; stale snapshots and the run ending must not take
+// it away, and the closing row arrives with the status change rather than one snapshot later.
+test("a task transition shows its activity row as soon as the card changes", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.addInitScript(() => {
+    if (!("serviceWorker" in navigator)) return;
+    Object.defineProperty(navigator.serviceWorker, "register", {
+      configurable: true,
+      value: async () => undefined,
+    });
+  });
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/?page=tasks");
+  const tag = Date.now();
+  const title = `Transition activity ${tag}`;
+  const id = await browser.evaluate(async (name) => {
+    const response = await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: name }),
+    });
+    const ledger = (await response.json()) as { tasks: Array<{ id: string; title: string }> };
+    return ledger.tasks.find((task) => task.title === name)?.id ?? "";
+  }, title);
+  expect(id).not.toBe("");
+  const card = screen.getByTestId(`task-${id}`);
+  await expect(card).toBeVisible();
+
+  // Keep the pre-transition snapshot alive. A refresh that lands after the tool result must
+  // not erase the row, and the row may not wait for a newer snapshot to appear.
+  const stale = await browser.evaluate(() =>
+    fetch("/api/state", { cache: "no-store" }).then((response) => response.json()),
+  );
+  await browser.route("**/api/state**", async (route) => {
+    await route.fulfill({ json: stale });
+  });
+
+  try {
+    await browser.evaluate(
+      async (args) => {
+        await fetch("/api/message", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            text: `TOOLCALLS ${JSON.stringify([
+              { name: "task_working", arguments: { id: args.id, note: "e2e transition" } },
+            ])}`,
+          }),
+        });
+        return null;
+      },
+      { id },
+    );
+
+    await expect(card).toHaveAttribute("data-state", "working");
+    await screen.getByRole("tab", "Chat").tap();
+    const info = screen.getByTestId("run-info");
+    await expect(info).toBeVisible();
+    await info.tap();
+    await expect(screen.getByTestId("activity-dialog")).toBeVisible();
+    // Both facts hold in this window, with no reload and a snapshot that predates the change.
+    await expect(
+      screen.getByTestId("activity-row").filter({ hasText: "task_working" }),
+    ).toBeVisible();
+    await expect(card).toHaveAttribute("data-state", "working");
+
+    await browser.evaluate(
+      async (args) => {
+        await fetch("/api/message", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            text: `TOOLCALLS ${JSON.stringify([
+              {
+                name: "task_done",
+                arguments: { id: args.id, evidence: "e2e/task-activity.e2e.ts" },
+              },
+            ])}`,
+          }),
+        });
+        return null;
+      },
+      { id },
+    );
+
+    await expect(card).toHaveAttribute("data-state", "done");
+    // The closing row is already in the next run's summary, before any newer snapshot.
+    const latestInfo = browser.locator('[data-testid="run-info"]').last();
+    await expect(latestInfo).toHaveAttribute("aria-label", /^Run activity: 2 tool calls/);
+    await expect(card).toHaveAttribute("data-state", "done");
+
+    await screen.getByTestId("activity-dialog-close").tap();
+    await expect(screen.getByTestId("activity-dialog")).toHaveCount(0);
+    await latestInfo.tap();
+    await expect(screen.getByTestId("activity-dialog")).toBeVisible();
+    await expect(screen.getByTestId("activity-row").filter({ hasText: "task_done" })).toBeVisible();
+    await expect(card).toHaveAttribute("data-state", "done");
+  } finally {
+    await browser.unrouteAll();
+    await browser.evaluate(async (taskId) => {
+      await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, { method: "DELETE" });
+      return null;
+    }, id);
+  }
+});

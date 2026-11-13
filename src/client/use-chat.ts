@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { applyTaskToolResult, sameActivity } from "../shared/activity-optimistic";
 import type { DashboardState } from "../shared/dashboard";
 import {
   groupQueuedMessages,
@@ -53,6 +54,7 @@ import type {
   TranscriptHistory,
   UsageSummary,
 } from "../shared/types";
+import { mergeWindow } from "../shared/window";
 import { setDashboard } from "./dashboard-store";
 import { frameBatch, reduceDraft, refreshBatch } from "./stream-batch";
 import { publishTaskChatEvent } from "./task-chat-events";
@@ -190,30 +192,6 @@ const HISTORY_PAGE = 30;
 /** A failed state fetch retries from here, doubling up to the cap. */
 const RETRY_MIN_MS = 1_000;
 const RETRY_MAX_MS = 30_000;
-
-/**
- * Keeps every held item below `from`, then the snapshot's items from `from` up.
- * A held row above the snapshot's newest row arrived after the server read it
- * (an SSE message or a send response), so it stays: replacing the window would
- * make a just-committed send blink out until the next state push. Rows the
- * snapshot already has by id or steer key are not copied twice.
- */
-function mergeWindow<T extends { order: number; id: string }>(
-  current: T[],
-  from: number,
-  fresh: T[],
-  same?: (left: T, right: T) => boolean,
-): T[] {
-  let newest = Number.NEGATIVE_INFINITY;
-  for (const item of fresh) if (item.order > newest) newest = item.order;
-  const freshIds = new Set(fresh.map((item) => item.id));
-  const added = current.filter((item) => {
-    if (item.order < from || item.order <= newest) return false;
-    if (freshIds.has(item.id)) return false;
-    return same === undefined || !fresh.some((candidate) => same(item, candidate));
-  });
-  return [...current.filter((item) => item.order < from), ...fresh, ...added];
-}
 
 /** The same transcript row can arrive as a provisional copy before its entry is placed. */
 function sameMessage(left: ChatMessage, right: ChatMessage): boolean {
@@ -381,7 +359,7 @@ export function useChat(options: UseChatOptions = {}) {
       );
       if (sameConversation || firstSnapshot) {
         setMessages((current) => mergeWindow(current, snapshotFrom, fresh.messages, sameMessage));
-        setActivity((current) => mergeWindow(current, snapshotFrom, freshActivity));
+        setActivity((current) => mergeWindow(current, snapshotFrom, freshActivity, sameActivity));
       } else {
         setMessages(fresh.messages);
         setActivity(freshActivity);
@@ -713,6 +691,17 @@ export function useChat(options: UseChatOptions = {}) {
       const liveId = `live-${data.toolCallId}`;
       setLiveTools((current) =>
         current.map((item) => (item.id === liveId ? { ...data.activity, pending: false } : item)),
+      );
+      // A task transition is visible as soon as its result confirms it; the snapshot
+      // later reconciles this row by id (or task, tool and start) instead of adding it twice.
+      setActivity((current) =>
+        applyTaskToolResult(current, {
+          toolCallId: data.toolCallId,
+          name: data.name,
+          isError: data.isError,
+          activity: data.activity,
+          timestamp: data.activity.timestamp,
+        }),
       );
       if (typeof data.toolsRevision === "number") {
         toolsRevision.current = Math.max(toolsRevision.current, data.toolsRevision);

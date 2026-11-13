@@ -204,6 +204,12 @@ export interface ToolActivity {
   id: string;
   name: string;
   arguments: string;
+  /** The durable tool call that produced this row, so an optimistic copy can reconcile. */
+  toolCallId?: string;
+  /** The task a task tool changed; used to reconcile the server's copy. */
+  taskId?: string;
+  /** True while the client shows this row before its transcript entry arrives. */
+  optimistic?: boolean;
   output?: string;
   /** Tool-specific UI data. Never sent to the model. */
   details?: string;
