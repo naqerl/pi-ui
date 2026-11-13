@@ -1076,6 +1076,13 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
   available" banner with its Reset button. Widgets are the page: the grid shows the
   grid, and a reset happens because the agent was asked for it, not by tapping a bar
   that appears whenever the default board changes.
+## 1.6.166
+
+### Fixed
+
+- The plan chat keeps no static band above its transcript: the first message carries its own
+  top gap and scrolls away with it, so the pane no longer shows a fixed empty strip.
+
 ## 1.6.165
 
 ### Changed
