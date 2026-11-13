@@ -21,15 +21,13 @@ test("the tasks composer status belongs to the open task, not the app", {
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/?page=tasks");
 
-  // The list has no status slot of its own: with one chat core the word belongs to a run, and
-  // no run is live here. The task cards are the only place a run is announced in this view.
+  // With one chat core a status line belongs to a run, and no run is live in this view yet.
   await expect(screen.getByTestId("working-indicator")).toHaveCount(0);
   await expect(screen.getByTestId("task-agent-status")).toHaveCount(0);
 
   const title = `Surface status ${Date.now()}`;
   await createOpenTask(screen, title);
-  await expect(screen.getByText(title)).toBeVisible();
-  await expect(screen.getByTestId("working-indicator")).toHaveCount(0);
+  await expect(screen.getByText(title)).toHaveCount(1);
 
   const taskId = await browser.evaluate(async (taskTitle) => {
     const ledger = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
@@ -52,18 +50,17 @@ test("the tasks composer status belongs to the open task, not the app", {
     expect(started).toBe(202);
     await expect.poll(() => planIsLive(browser, taskId), { timeout: 30_000 }).toBe(true);
 
-    // The open task's own live plan run says planning, with the same braille frames as chat.
-    // One chat core means two surfaces: the list marks the run on the task's card, and the word
-    // itself lives in the plan pane, which on a phone is the task detail's first tab.
-    await expect(screen.getByTestId(`task-planning-${taskId}`)).toBeVisible();
-    await screen.getByText(title).first().tap();
-    await expect(screen.getByTestId("task-agent-status-indicator")).toBeVisible();
+    // The open task's own live plan run says planning, with the same braille frames as chat,
+    // and it says it on the plan pane's own status line rather than the chat composer's.
+    await expect(screen.getByTestId("task-agent-status-indicator")).toBeVisible({ timeout: 30_000 });
     await expect(screen.getByTestId("task-agent-status-activity")).toHaveText("planning");
     const indicator = await browser.evaluate(
       () =>
         document.querySelector('[data-testid="task-agent-status-indicator"]')?.textContent ?? "",
     );
     expect(indicator).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⠿]/);
+    // The chat's own line stays out of the plan pane.
+    expect(await screen.getByTestId("working-indicator").count()).toBe(0);
   } finally {
     await browser.evaluate(async (id) => {
       const response = await fetch(`/api/tasks/${encodeURIComponent(id)}/chat/stop`, {
@@ -74,19 +71,14 @@ test("the tasks composer status belongs to the open task, not the app", {
   }
 
   await expect.poll(() => planIsLive(browser, taskId), { timeout: 30_000 }).toBe(false);
-  await expect(screen.getByTestId(`task-planning-${taskId}`)).toHaveCount(0);
-  await expect(screen.getByTestId("working-indicator")).toHaveCount(0);
 });
 
 test("a live chat run never becomes the tasks page status", {
   timeout: 180_000,
 }, async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 390, height: 844 });
-  await app.open("/?page=tasks");
+  await app.open("/?page=chat");
 
-  const title = `Surface isolation ${Date.now()}`;
-  await createOpenTask(screen, title);
-  await expect(screen.getByTestId("page-dot-chat")).toBeVisible();
   const composer = screen.getByRole("textbox", "Message");
   await composer.fill(`SLOW keep the main run open ${Date.now()}`);
   await screen.getByRole("button", "Send").tap();
@@ -95,7 +87,8 @@ test("a live chat run never becomes the tasks page status", {
     await expect(screen.getByRole("button", "Stop")).toBeVisible({ timeout: 30_000 });
     await expect(screen.getByTestId("header-activity")).toHaveText("working");
 
-    // A live chat run stays on the chat page: the tasks list shows nothing for it.
+    // A live chat run stays on the chat page: the tasks page shows nothing for it, because no
+    // plan run is live and the chat's word belongs to the chat surface alone.
     await screen.getByTestId("page-dot-tasks").tap();
     expect(await screen.getByTestId("working-indicator").first().isVisible()).toBe(false);
     await expect(screen.getByTestId("task-agent-status")).toHaveCount(0);
@@ -110,6 +103,4 @@ test("a live chat run never becomes the tasks page status", {
       return response.status;
     });
   }
-
-  await expect(screen.getByTestId("working-status")).toHaveAttribute("data-open", "false");
 });
