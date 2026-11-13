@@ -1076,6 +1076,15 @@ Notable changes to pi-ui. Each `## <version>` section lists what changed in that
   available" banner with its Reset button. Widgets are the page: the grid shows the
   grid, and a reset happens because the agent was asked for it, not by tapping a bar
   that appears whenever the default board changes.
+## 1.6.165
+
+### Changed
+
+- The plan chat and the chat share one core: transcript, scroll, steer/queue and planning
+  status come from the same state machine, and only the tool set and the system prompt differ.
+- The tasks list carries no status word while a plan run is live; the open task shows its
+  planning status on its own pane, not on the card.
+
 ## 1.6.164
 
 ### Fixed
