@@ -15,13 +15,14 @@ async function planIsLive(browser: Browser, taskId: string): Promise<boolean> {
   }, taskId);
 }
 
-async function visibleStatusIds(browser: Browser): Promise<string[]> {
+// Decision (a): the tasks **card** carries no status word while a plan run is live. The
+// plan pane has its own line (and the chat composer has its own); neither belongs to the
+// card, so this measures painted elements whose testid starts with the card badge prefix.
+async function paintedCardStatuses(browser: Browser): Promise<string[]> {
   return browser.evaluate(() =>
-    ["working-indicator", "task-agent-status", "task-agent-status-indicator"].filter((id) =>
-      Array.from(document.querySelectorAll(`[data-testid="${id}"]`)).some(
-        (element) => element.getClientRects().length > 0,
-      ),
-    ),
+    Array.from(document.querySelectorAll('[data-testid^="task-planning-"]'))
+      .filter((element) => element.getClientRects().length > 0)
+      .map((element) => element.getAttribute("data-testid") ?? ""),
   );
 }
 
@@ -32,7 +33,7 @@ test("the tasks composer status belongs to the open task, not the app", {
   await app.open("/?page=tasks");
 
   // With one chat core a status line belongs to a run, and no run is live in this view yet.
-  expect(await visibleStatusIds(browser)).toEqual([]);
+  expect(await paintedCardStatuses(browser)).toEqual([]);
   await expect(screen.getByTestId("task-agent-status")).toHaveCount(0);
 
   const title = `Surface status ${Date.now()}`;
@@ -60,13 +61,11 @@ test("the tasks composer status belongs to the open task, not the app", {
     expect(started).toBe(202);
     await expect.poll(() => planIsLive(browser, taskId), { timeout: 30_000 }).toBe(true);
 
-    // Decision (a): while the plan run is live, the tasks **list** shows no status at all.
-    // "Shown" means painted: the plan pane keeps its own line in the DOM behind the detail
-    // sheet, so a count of nodes proves nothing — only a node with layout boxes does.
-    expect(await visibleStatusIds(browser)).toEqual([]);
+    // Decision (a): while the plan run is live, no task card shows a status word.
+    expect(await paintedCardStatuses(browser)).toEqual([]);
     // And it stays quiet on the next tick, not only on the first render after the run began.
     await new Promise((resolve) => setTimeout(resolve, 2_000));
-    expect(await visibleStatusIds(browser)).toEqual([]);
+    expect(await paintedCardStatuses(browser)).toEqual([]);
     expect(await planIsLive(browser, taskId)).toBe(true);
   } finally {
     await browser.evaluate(async (id) => {
