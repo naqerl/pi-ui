@@ -1,4 +1,5 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
+import type { BuiltinJob } from "../shared/dashboard";
 import { noticeIconName } from "../shared/queue";
 import { formatTime } from "../shared/time";
 import type { ActivityItem, DelegateRunStatus, DelegateRunView } from "../shared/types";
@@ -6,6 +7,7 @@ import { activitySummary } from "./activity-format";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
 import { ChevronIcon, CloseIcon, NoticeIcon } from "./icons";
 import { cn } from "./lib/utils";
+import { PageSheet } from "./PageSheet";
 import { PiMenu } from "./PiMenu";
 import { groupTimeline } from "./timeline-groups";
 import type { TimelineItem } from "./use-chat";
@@ -17,6 +19,11 @@ interface ActivityViewProps {
   run?: string | null;
   /** Delegate runs as the server pushed them; this page never polls for state. */
   delegates?: DelegateRunView[];
+  /** Running shell jobs, shown through the same job row as finished ones. */
+  jobs?: readonly BuiltinJob[];
+  /** Focus one live job, or one delegate, when arriving from the background-work sheet. */
+  focusJobId?: string | null;
+  focusDelegateId?: string | null;
   /** Render as the body of a modal instead of a standalone page. */
   dialog?: { onClose: () => void; titleId: string };
 }
@@ -26,6 +33,9 @@ interface ActivityDialogProps {
   ready: boolean;
   run: string | null;
   delegates?: DelegateRunView[];
+  jobs?: readonly BuiltinJob[];
+  focusJobId?: string | null;
+  focusDelegateId?: string | null;
   onClose: () => void;
 }
 
@@ -92,12 +102,18 @@ function JobField({ label, value }: { label: string; value: string }) {
   );
 }
 
-function JobActivityRow({ activity }: { activity: Extract<ActivityItem, { kind: "job" }> }) {
+function JobActivityRow({
+  activity,
+  defaultOpen = false,
+}: {
+  activity: Extract<ActivityItem, { kind: "job" }>;
+  defaultOpen?: boolean;
+}) {
   const { notice } = activity;
   const failed = notice.status === "failed" || notice.status === "lost";
   const clock = formatTime(activity.timestamp);
   return (
-    <Collapsible>
+    <Collapsible defaultOpen={defaultOpen}>
       <CollapsibleTrigger
         data-testid="activity-job"
         data-notice-kind="job"
@@ -144,6 +160,28 @@ function JobActivityRow({ activity }: { activity: Extract<ActivityItem, { kind: 
   );
 }
 
+/** A running job in the same shape the activity page already renders. */
+function liveJobActivity(job: BuiltinJob, output: string): ActivityItem {
+  return {
+    kind: "job",
+    id: `live-job-${job.id}`,
+    notice: {
+      kind: "job",
+      id: job.id,
+      name: job.name,
+      command: job.command ?? job.name,
+      status: "running",
+      exitCode: null,
+      signal: null,
+      duration: null,
+      output,
+      summary: `${job.id} running: ${job.name}`,
+    },
+    timestamp: job.startedAt,
+    order: -1,
+  };
+}
+
 function delegateStatus(status: DelegateRunStatus): string {
   switch (status) {
     case "completed":
@@ -159,8 +197,14 @@ function delegateStatus(status: DelegateRunStatus): string {
   }
 }
 
-function DelegateRunRow({ run }: { run: DelegateRunView }) {
-  const [open, setOpen] = useState(false);
+function DelegateRunRow({
+  run,
+  defaultOpen = false,
+}: {
+  run: DelegateRunView;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
   const [content, setContent] = useState<{ result: string; activity: string } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const failed = run.status === "failed";
@@ -195,7 +239,7 @@ function DelegateRunRow({ run }: { run: DelegateRunView }) {
     };
   }, [content, open, run.activityUrl, run.resultUrl]);
   return (
-    <Collapsible onOpenChange={setOpen}>
+    <Collapsible defaultOpen={defaultOpen} onOpenChange={setOpen}>
       <CollapsibleTrigger
         data-testid="activity-delegate"
         data-status={run.status}
@@ -278,24 +322,33 @@ function DelegateRunRow({ run }: { run: DelegateRunView }) {
   );
 }
 
-function DelegateRuns({ runs }: { runs: DelegateRunView[] }) {
-  if (runs.length === 0) return null;
+function DelegateRuns({ runs, focusId }: { runs: DelegateRunView[]; focusId?: string | null }) {
+  const shown =
+    focusId === undefined || focusId === null ? runs : runs.filter((run) => run.id === focusId);
+  if (shown.length === 0) return null;
   return (
     <section data-testid="delegate-runs" className="mb-4">
       <h2 className="mb-1 font-mono text-[11px] uppercase tracking-wide text-muted-foreground">
         Delegates
       </h2>
       <div>
-        {runs.map((run) => (
-          <DelegateRunRow key={run.id} run={run} />
+        {shown.map((run) => (
+          <DelegateRunRow key={run.id} run={run} defaultOpen={run.id === focusId} />
         ))}
       </div>
     </section>
   );
 }
 
-function ActivityRow({ activity }: { activity: ActivityItem }) {
-  if (activity.kind === "job") return <JobActivityRow activity={activity} />;
+function ActivityRow({
+  activity,
+  defaultOpen = false,
+}: {
+  activity: ActivityItem;
+  defaultOpen?: boolean;
+}) {
+  if (activity.kind === "job")
+    return <JobActivityRow activity={activity} defaultOpen={defaultOpen} />;
   const failed = activity.kind === "tool" && activity.isError;
   return (
     <Collapsible>
@@ -336,6 +389,9 @@ export function ActivityView({
   ready,
   run: runProp,
   delegates,
+  jobs,
+  focusJobId,
+  focusDelegateId,
   dialog,
 }: ActivityViewProps) {
   const locationRun = new URLSearchParams(window.location.search).get("run");
@@ -348,6 +404,43 @@ export function ActivityView({
         : groups.filter((group) => group.kind === "activity" && group.key === run);
     return selected.flatMap((group) => (group.kind === "activity" ? group.items : []));
   }, [run, timeline]);
+  const liveJobs = useMemo(() => {
+    const all = jobs ?? [];
+    return focusJobId === undefined || focusJobId === null
+      ? all.filter((job) => job.status === "running")
+      : all.filter((job) => job.id === focusJobId);
+  }, [focusJobId, jobs]);
+  const [liveOutputs, setLiveOutputs] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (liveJobs.length === 0) return;
+    let active = true;
+    const read = async (job: BuiltinJob): Promise<readonly [string, string]> => {
+      try {
+        const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}/output?tail=40`, {
+          cache: "no-store",
+        });
+        if (!response.ok) return [job.id, ""] as const;
+        const data = (await response.json()) as { text?: string };
+        return [job.id, data.text ?? ""] as const;
+      } catch {
+        return [job.id, ""] as const;
+      }
+    };
+    void Promise.all(liveJobs.map(read)).then((entries) => {
+      if (active) setLiveOutputs(Object.fromEntries(entries));
+    });
+    return () => {
+      active = false;
+    };
+  }, [liveJobs]);
+  const liveActivities = useMemo(
+    () => liveJobs.map((job) => liveJobActivity(job, liveOutputs[job.id] ?? "")),
+    [liveJobs, liveOutputs],
+  );
+  const shownActivities =
+    focusJobId === undefined || focusJobId === null
+      ? [...liveActivities, ...activities]
+      : liveActivities;
 
   const card = (
     <div
@@ -395,15 +488,21 @@ export function ActivityView({
       </div>
       <div data-testid="activity-scroll" className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-4">
         {!ready && <p className="font-mono text-xs text-muted-foreground">Loading…</p>}
-        <DelegateRuns runs={delegates ?? []} />
-        {ready && activities.length === 0 && (
+        <DelegateRuns runs={delegates ?? []} focusId={focusDelegateId} />
+        {ready && shownActivities.length === 0 && (
           <p className="font-mono text-xs text-muted-foreground">
             {run === null ? "No activity yet." : "No activity in this run."}
           </p>
         )}
         <div>
-          {activities.map((activity) => (
-            <ActivityRow key={activity.id} activity={activity} />
+          {shownActivities.map((activity) => (
+            <ActivityRow
+              key={activity.id}
+              activity={activity}
+              {...(activity.kind === "job" && focusJobId === activity.notice.id
+                ? { defaultOpen: true }
+                : {})}
+            />
           ))}
         </div>
       </div>
@@ -419,48 +518,34 @@ export function ActivityView({
 }
 
 /** The activity view in a native modal over the chat. */
-export function ActivityDialog({ timeline, ready, run, delegates, onClose }: ActivityDialogProps) {
-  const ref = useRef<HTMLDialogElement>(null);
+export function ActivityDialog({
+  timeline,
+  ready,
+  run,
+  delegates,
+  jobs,
+  focusJobId,
+  focusDelegateId,
+  onClose,
+}: ActivityDialogProps) {
   const titleId = useId();
-
-  useEffect(() => {
-    const dialog = ref.current;
-    const bodyOverflow = document.body.style.overflow;
-    const htmlOverflow = document.documentElement.style.overflow;
-    // The transcript behind the sheet must not move while it is open.
-    document.body.style.overflow = "hidden";
-    document.documentElement.style.overflow = "hidden";
-    if (dialog !== null && !dialog.open) dialog.showModal();
-    return () => {
-      dialog?.close();
-      document.body.style.overflow = bodyOverflow;
-      document.documentElement.style.overflow = htmlOverflow;
-    };
-  }, []);
-
   return (
-    // biome-ignore lint/a11y/useKeyWithClickEvents: Esc is handled by the dialog's cancel event.
-    <dialog
-      ref={ref}
-      data-testid="activity-dialog"
-      aria-labelledby={titleId}
-      onCancel={(event) => {
-        event.preventDefault();
-        onClose();
-      }}
-      onClick={(event) => {
-        // Clicks on the backdrop land on the dialog itself; the panel fills the rest.
-        if (event.target === event.currentTarget) onClose();
-      }}
-      className="m-0 mt-auto flex max-h-[85vh] w-full max-w-full flex-col overflow-hidden rounded-t-xl border border-foreground/15 bg-surface p-0 text-foreground shadow-xl backdrop:bg-black/50 sm:m-auto sm:w-[min(48rem,calc(100vw-2rem))] sm:rounded-xl"
+    <PageSheet
+      testId="activity-dialog"
+      titleId={titleId}
+      onClose={onClose}
+      className="max-h-[85vh]"
     >
       <ActivityView
         timeline={timeline}
         ready={ready}
         run={run}
         delegates={delegates}
+        {...(jobs === undefined ? {} : { jobs })}
+        {...(focusJobId === undefined ? {} : { focusJobId })}
+        {...(focusDelegateId === undefined ? {} : { focusDelegateId })}
         dialog={{ onClose, titleId }}
       />
-    </dialog>
+    </PageSheet>
   );
 }

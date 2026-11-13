@@ -12,6 +12,7 @@ import {
   useRef,
   useState,
 } from "react";
+import type { BuiltinJob } from "../shared/dashboard";
 import type { MemoryPathMatch, MemoryReadRange, MemoryToolDetails } from "../shared/memory";
 import { pageIdFromPath } from "../shared/pages";
 import { acceptMention, mentionAt, parseProjectToken, projectsOf } from "../shared/project";
@@ -33,6 +34,13 @@ import type {
   ToolActivity,
 } from "../shared/types";
 import { groupSummaryParts } from "./activity-format";
+import {
+  activeJobs,
+  activeSubagents,
+  type BackgroundJobsKind,
+  BackgroundJobsLine,
+  BackgroundJobsSheet,
+} from "./BackgroundJobs";
 import { Button } from "./components/ui/button";
 import { Textarea } from "./components/ui/textarea";
 import { DiagramPart } from "./DiagramPart";
@@ -79,6 +87,8 @@ interface ChatViewProps {
   dismissRunError?: (id: string) => void;
   /** Pushed by the server, so the activity page does not poll for it. */
   delegates?: DelegateRunView[];
+  /** Background shell jobs, pushed by the server on every change. */
+  jobs?: BuiltinJob[];
   ready: boolean;
   tasks: Task[];
   /** Task ids whose plan agent currently has a live run. */
@@ -1674,6 +1684,7 @@ export function ChatView({
   runError,
   dismissRunError,
   delegates,
+  jobs = [],
   ready,
   tasks,
   planning = [],
@@ -1691,6 +1702,14 @@ export function ChatView({
   useViewportHeight();
   const pager = usePager(PAGES.length, pageFromLocation());
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const [jobsSheet, setJobsSheet] = useState<BackgroundJobsKind | null>(null);
+  const closeJobsSheet = useCallback(() => {
+    setJobsSheet(null);
+    // A sheet is a detour; closing it returns the operator to the composer.
+    window.requestAnimationFrame(() => {
+      if (pager.page === CHAT_PAGE) composerRef.current?.focus({ preventScroll: true });
+    });
+  }, [pager.page]);
   const lastVibratedPage = useRef(pager.page);
   const [composerError, setComposerError] = useState<string | null>(null);
   const [optimisticTasks, setOptimisticTasks] = useState<OptimisticTask[]>([]);
@@ -1704,6 +1723,10 @@ export function ChatView({
   const [activityRun, setActivityRun] = useState<string | null | undefined>(
     activityRunFromLocation,
   );
+  const [activityFocus, setActivityFocus] = useState<{
+    kind: "job" | "delegate";
+    id: string;
+  } | null>(null);
   const activityTriggerRef = useRef<HTMLButtonElement | null>(null);
   const tasksPage = pager.page === TASKS_PAGE;
   // An error belongs to the page it was raised on.
@@ -2092,12 +2115,22 @@ export function ChatView({
 
   const openActivity = (run: string, trigger: HTMLButtonElement) => {
     activityTriggerRef.current = trigger;
+    setActivityFocus(null);
     setActivityRun(run);
+  };
+
+  const openBackgroundItem = (kind: BackgroundJobsKind, id: string) => {
+    activityTriggerRef.current = null;
+    setJobsSheet(null);
+    setActivityFocus({ kind: kind === "jobs" ? "job" : "delegate", id });
+    setActivityRun(null);
   };
 
   const closeActivity = useCallback(() => {
     const trigger = activityTriggerRef.current;
+    activityTriggerRef.current = null;
     setActivityRun(undefined);
+    setActivityFocus(null);
     const path = window.location.pathname.replace(/\/+$/, "");
     if (path === "/activity") {
       // A direct deep link closes back to the chat rather than reloading the modal.
@@ -2112,8 +2145,9 @@ export function ChatView({
     }
     requestAnimationFrame(() => {
       if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+      else if (pager.page === CHAT_PAGE) composerRef.current?.focus({ preventScroll: true });
     });
-  }, []);
+  }, [pager.page]);
 
   const selectPage = (index: number) => {
     pager.setPage(index);
@@ -2298,6 +2332,22 @@ export function ChatView({
             </div>
             <PiMenu />
           </div>
+          {/* The baseline dock already paints the status/nav row above the composer
+              body. Inserting the jobs row between them is the only order that keeps
+              the status line's original y while still extending the composer; the
+              requested diagram's composer-first stack would move that row. */}
+          <div
+            className="bg-jobs-slot"
+            data-open={
+              activeJobs(jobs).length > 0 || activeSubagents(delegates ?? []).length > 0
+                ? "true"
+                : "false"
+            }
+          >
+            <div className="min-h-0 overflow-clip">
+              <BackgroundJobsLine jobs={jobs} delegates={delegates ?? []} onOpen={setJobsSheet} />
+            </div>
+          </div>
           <div
             data-testid="composer-body"
             data-hidden={hideTasksComposer ? "true" : "false"}
@@ -2346,6 +2396,15 @@ export function ChatView({
           </div>
         </div>
       </div>
+      {jobsSheet !== null && (
+        <BackgroundJobsSheet
+          kind={jobsSheet}
+          jobs={jobs}
+          delegates={delegates ?? []}
+          onOpenItem={openBackgroundItem}
+          onClose={closeJobsSheet}
+        />
+      )}
       {activityRun !== undefined && (
         <Suspense fallback={null}>
           <ActivityDialog
@@ -2353,6 +2412,9 @@ export function ChatView({
             ready={ready}
             run={activityRun}
             delegates={delegates}
+            jobs={jobs}
+            focusJobId={activityFocus?.kind === "job" ? activityFocus.id : null}
+            focusDelegateId={activityFocus?.kind === "delegate" ? activityFocus.id : null}
             onClose={closeActivity}
           />
         </Suspense>

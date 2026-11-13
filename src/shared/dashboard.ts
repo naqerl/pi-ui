@@ -231,6 +231,9 @@ export interface BuiltinJob {
   exitCode: number | null;
   startedAt: string;
   endedAt: string | null;
+  /** The command line, for the jobs sheet; absent when a dashboard source supplies only the summary. */
+  command?: string;
+  cwd?: string;
 }
 
 export interface BuiltinSession {

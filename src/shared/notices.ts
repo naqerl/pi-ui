@@ -12,7 +12,7 @@ export interface JobNoticeDetails {
   id: string;
   name: string;
   command: string;
-  status: "exited" | "failed" | "cancelled" | "lost";
+  status: "running" | "exited" | "failed" | "cancelled" | "lost";
   exitCode: number | null;
   signal: string | null;
   duration: string | null;

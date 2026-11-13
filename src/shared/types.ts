@@ -1,3 +1,4 @@
+import type { BuiltinJob } from "./dashboard.js";
 import type { MemoryToolDetails } from "./memory.js";
 import type { ChatNotice, JobNoticeDetails } from "./notices.js";
 export type RunState = "idle" | "running" | "interrupted";
@@ -622,6 +623,8 @@ export interface Snapshot {
   tasks?: TaskLedger;
   /** Sub-agent runs, with their own token usage rather than the main turn's. */
   delegates?: DelegateRunView[];
+  /** Background shell jobs, newest last, so the jobs line can paint from a snapshot. */
+  jobs?: BuiltinJob[];
   /** Tools still running. A refresh uses this when `toolsRevision` is current. */
   activeTools?: ToolActivity[];
   toolsRevision?: number;
