@@ -1,3 +1,12 @@
+## 1.6.169
+
+### Fixed
+
+- The planning chat's questions card takes its natural height again: every
+  question is visible without an inner scrollbar, long prompts and options wrap,
+  and the transcript pane scrolls under it while keeping a detached reader's
+  position and the composer in place.
+
 ## 1.6.168
 
 ### Fixed
@@ -6,10 +15,9 @@
   shifted onto the optical centre of the text instead of the centre of the line
   box, so a collapsed and an expanded row look the same and a wrapped summary keeps
   the chevron on its first line.
-- The planning chat's questions card takes its natural height instead of a
-  bounded share of the pane: every question is visible without an inner
-  scrollbar, long prompts and options wrap, and the transcript pane scrolls
-  under it while keeping a detached reader's position and the composer in place.
+- The planning chat's questions card is bounded to a share of the pane so a long
+  list cannot push the transcript away, with its own scrollbar and a detached
+  reader's position kept.
 
 ## 1.6.157
 
