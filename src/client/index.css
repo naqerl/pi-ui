@@ -276,6 +276,18 @@
       visibility 220ms ease;
   }
 
+  /* The jobs row extends the composer in the layout domain: the 0fr -> 1fr grid
+     row is interpolated by the browser, never by a requestAnimationFrame loop. */
+  .bg-jobs-slot {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 220ms ease;
+  }
+
+  .bg-jobs-slot[data-open="true"] {
+    grid-template-rows: 1fr;
+  }
+
   .composer-body[data-hidden="true"] {
     opacity: 0;
   }
@@ -289,7 +301,8 @@
     .float-footer,
     .composer-body,
     .composer-body[data-hidden="true"],
-    .composer-body[data-collapsed="true"] {
+    .composer-body[data-collapsed="true"],
+    .bg-jobs-slot {
       transition: none;
     }
   }

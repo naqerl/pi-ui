@@ -29,7 +29,7 @@ import { DashboardError, DashboardManager } from "./dashboard.js";
 import { DelegateManager } from "./delegates.js";
 import type { DiagramBridge } from "./diagram-tools.js";
 import { DiagramStore } from "./diagrams.js";
-import { JobManager, jobNotice } from "./jobs.js";
+import { JobError, JobManager, jobNotice } from "./jobs.js";
 import { McpEventFeed } from "./mcp-events.js";
 import { McpIntake, McpOutbox } from "./mcp-outbox.js";
 import { acceptMcpStatusNotice } from "./mcp-status-intake.js";
@@ -395,6 +395,8 @@ function builtinJobs() {
     exitCode: job.exitCode,
     startedAt: job.startedAt,
     endedAt: job.endedAt,
+    command: job.command,
+    cwd: job.cwd,
   }));
 }
 function builtinSession() {
@@ -673,11 +675,34 @@ app.get("/api/state", async (c) => {
     ...snapshot,
     tasks: taskView(),
     delegates: delegates.list(),
+    jobs: builtinJobs(),
     ...(live?.instructions === undefined ? {} : { instructions: live.instructions }),
   });
 });
 
 app.get("/api/delegates", (c) => c.json(delegates.list()));
+
+app.get("/api/jobs", (c) => c.json(builtinJobs()));
+
+app.get("/api/jobs/:id", (c) => {
+  const id = c.req.param("id");
+  const job = jobs.list().find((item) => item.id === id);
+  return job === undefined ? c.notFound() : c.json(job);
+});
+
+app.get("/api/jobs/:id/output", async (c) => {
+  const tail = Number(c.req.query("tail"));
+  try {
+    return c.json(
+      await jobs.output(c.req.param("id"), {
+        tail: Number.isFinite(tail) && tail > 0 ? tail : 100,
+      }),
+    );
+  } catch (error) {
+    if (error instanceof JobError) return c.json({ error: error.message }, 404);
+    throw error;
+  }
+});
 
 app.get("/api/delegates/:id/result", async (c) => {
   const text = await delegates.read(c.req.param("id"), "result");

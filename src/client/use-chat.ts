@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyTaskToolResult, sameActivity } from "../shared/activity-optimistic";
-import type { DashboardState } from "../shared/dashboard";
+import type { BuiltinJob, DashboardState } from "../shared/dashboard";
 import { isQueuedNotice, queuedMessageId } from "../shared/queue";
 import {
   acceptDeltaRevision,
@@ -346,6 +346,7 @@ export function useChat(options: UseChatOptions = {}) {
   const [connectionError, setConnectionError] = useState<RunError | null>(null);
   const [dismissedErrors, setDismissedErrors] = useState<ReadonlySet<string>>(() => new Set());
   const [delegates, setDelegates] = useState<DelegateRunView[]>([]);
+  const [jobs, setJobs] = useState<BuiltinJob[]>([]);
   const [queue, setQueue] = useState<QueuedMessage[]>([]);
   /** Newest queue/steer revision applied; a snapshot below it is stale for those lists. */
   const queueRevision = useRef(0);
@@ -487,6 +488,7 @@ export function useChat(options: UseChatOptions = {}) {
       setRunState(snapshot.run);
       if (snapshot.runError !== undefined) setRunError(snapshot.runError);
       if (snapshot.delegates !== undefined) setDelegates(snapshot.delegates);
+      if (snapshot.jobs !== undefined) setJobs(snapshot.jobs);
       // A send response or live queue update can land after this snapshot was
       // read. Its revision wins; otherwise the pending bubble would blink out.
       if (acceptQueueRevision(snapshot.queueRevision)) {
@@ -615,6 +617,11 @@ export function useChat(options: UseChatOptions = {}) {
     source.addEventListener("delegates", (event) => {
       const data = parseEvent<DelegateRunView[]>(event as MessageEvent<string>);
       if (Array.isArray(data)) setDelegates(data);
+    });
+
+    source.addEventListener("jobs", (event) => {
+      const data = parseEvent<BuiltinJob[]>(event as MessageEvent<string>);
+      if (Array.isArray(data)) setJobs(data);
     });
 
     source.addEventListener("theme", (event) => {
@@ -1030,6 +1037,7 @@ export function useChat(options: UseChatOptions = {}) {
     runError: visibleError,
     dismissRunError,
     delegates,
+    jobs,
     running: runState === "running",
     thinking: runState === "running" && isThinking(draftThinking, draftText),
     interrupted: runState === "interrupted",

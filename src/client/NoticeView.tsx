@@ -425,6 +425,7 @@ function Block({ label, children }: { label: string; children: string }) {
 }
 
 const JOB_STATUS: Record<JobNoticeDetails["status"], string> = {
+  running: "running",
   exited: "finished",
   failed: "failed",
   cancelled: "cancelled",

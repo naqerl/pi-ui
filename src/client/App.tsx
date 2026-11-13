@@ -28,6 +28,7 @@ export function App() {
       runError={chat.runError}
       dismissRunError={chat.dismissRunError}
       delegates={chat.delegates}
+      jobs={chat.jobs}
       ready={chat.ready}
       tasks={chat.tasks}
       planning={chat.planning}
