@@ -1,3 +1,9 @@
+## 1.6.181
+
+### Changed
+
+- A task that needs your decision carries a tag on its card instead of two buttons: approve and dismiss moved to the end of the details pane, so the list stays scannable and the decision sits next to the plan it is about. Within a project, tasks awaiting a decision are listed before that project's open work.
+
 ## 1.6.180
 
 ### Added
