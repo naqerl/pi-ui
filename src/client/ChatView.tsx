@@ -57,7 +57,8 @@ import {
 } from "./icons";
 import { DeferredMarkdown, loadMarkdown } from "./lazy-markdown";
 import { cn } from "./lib/utils";
-import { ATTACH_ACCEPT, mediaUrl, uploadMedia } from "./media-client";
+import { mediaUrl, uploadMedia } from "./media-client";
+import { useMediaPicker } from "./media-picker";
 import { ChipButton, NoticeLine } from "./NoticeView";
 import { PiMenu } from "./PiMenu";
 import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
@@ -1061,7 +1062,6 @@ export function Composer({
   const attachmentsRef = useRef(attachments.items);
   attachmentsRef.current = attachments.items;
   const lastClearedDraft = useRef<number | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
   const uploading = attachments.items.some((item) => item.status === "uploading");
   const failed = attachments.items.some((item) => item.status === "error");
   const readyIds = attachments.items.flatMap((item) =>
@@ -1100,6 +1100,7 @@ export function Composer({
     draftRevision.current += 1;
     attachments.remove(key);
   };
+  const picker = useMediaPicker(addAttachments, { testId: attachTestId ?? "attach-input" });
 
   const clearBacklogPress = useCallback(() => {
     const press = backlogPress.current;
@@ -1329,19 +1330,7 @@ export function Composer({
       )}
       <AttachmentStrip items={attachments.items} onRemove={removeAttachment} />
       <div ref={rowRef} className="flex w-full items-end gap-1 p-1.5">
-        <input
-          ref={fileRef}
-          type="file"
-          accept={ATTACH_ACCEPT}
-          multiple
-          hidden
-          data-testid={attachTestId ?? "attach-input"}
-          onChange={(event) => {
-            const files = event.target.files;
-            if (files !== null) addAttachments([...files]);
-            event.target.value = "";
-          }}
-        />
+        {picker.input}
         <div className="flex h-9 w-9 shrink-0 items-stretch">
           <Button
             type="button"
@@ -1350,7 +1339,7 @@ export function Composer({
             aria-label={tasksPage ? "Attach image to task" : "Attach image"}
             data-testid="composer-plus"
             className={ACTION_BUTTON_CLASS}
-            onClick={() => fileRef.current?.click()}
+            onClick={picker.open}
           >
             <PlusIcon />
           </Button>

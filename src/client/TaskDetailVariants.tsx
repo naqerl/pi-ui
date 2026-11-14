@@ -19,14 +19,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "./components/ui/dropdown-menu";
-import { CloseIcon, MoreIcon, MoreVerticalIcon, RefreshIcon } from "./icons";
+import { CloseIcon, MoreIcon, MoreVerticalIcon, PlusIcon, RefreshIcon } from "./icons";
 import { cn } from "./lib/utils";
+import { MediaViewer } from "./MediaViewer";
 import { InlineMarkdown, Markdown } from "./markdown";
 import { mediaUrl } from "./media-client";
 import type { ProjectSuggestion } from "./ProjectSuggestions";
 import { SECTION_BAR_ICON_BUTTON, SECTION_BAR_LABEL, SectionBar } from "./SectionBar";
 import { TaskAgentChat } from "./TaskAgentChat";
 import { TaskPlanningBadge } from "./TaskPlanningBadge";
+import type { TaskMedia } from "./use-task-media";
 
 function shortId(id: string): string {
   return id.slice(0, 4);
@@ -39,6 +41,7 @@ const DETAIL_CARD = "bg-surface theme-radius p-3";
 export interface TaskDetailModel {
   task: Task;
   tasks: Task[];
+  media: TaskMedia;
   state: TaskState;
   trace: TaskTrace | undefined;
   wide: boolean;
@@ -571,20 +574,65 @@ function Subtasks({ model, heading = true }: { model: TaskDetailModel; heading?:
 }
 
 function Attachments({ model }: { model: TaskDetailModel }) {
-  const attachments = model.task.attachments;
-  if (attachments === undefined || attachments.length === 0) return null;
+  const { media } = model;
+  const count = media.attachments.length + media.pending.length;
+  if (count === 0) return null;
   return (
     <section className="flex flex-wrap gap-2" data-testid="task-attachments">
-      {attachments.map((id, index) => (
-        <img
-          key={id}
-          src={mediaUrl(id)}
-          alt={`Task attachment ${index + 1}`}
-          loading="lazy"
-          draggable={false}
-          className="block size-16 rounded-md border border-border object-cover"
-        />
+      {media.attachments.map((id, index) => (
+        <div key={id} className="relative shrink-0">
+          <button
+            type="button"
+            aria-label={`Open image ${index + 1}`}
+            aria-haspopup="dialog"
+            data-testid={`task-attachment-open-${index + 1}`}
+            onClick={() => media.setViewer({ id, alt: `Task image ${index + 1}` })}
+            className="block size-16 overflow-hidden rounded-md border border-border bg-background focus-visible:ring-1 focus-visible:ring-foreground"
+          >
+            <img
+              src={mediaUrl(id)}
+              alt={`Task attachment ${index + 1}`}
+              loading="lazy"
+              draggable={false}
+              className="block size-16 object-cover"
+            />
+          </button>
+          <button
+            type="button"
+            aria-label={`Remove image ${index + 1}`}
+            data-testid={`task-attachment-remove-${index + 1}`}
+            disabled={media.busy}
+            onClick={() => void media.remove(id)}
+            className="absolute -top-1.5 -right-1.5 grid size-5 place-items-center rounded-full bg-foreground font-mono text-[11px] leading-none text-background disabled:opacity-50"
+          >
+            <CloseIcon size={12} />
+          </button>
+        </div>
       ))}
+      {media.pending.map((item, index) => (
+        <div
+          key={item.key}
+          data-status="uploading"
+          className="relative size-16 shrink-0 overflow-hidden rounded-md border border-border opacity-60"
+        >
+          <img
+            src={item.preview}
+            alt={`Uploading attachment ${media.attachments.length + index + 1}`}
+            draggable={false}
+            className="block size-16 animate-pulse object-cover"
+          />
+        </div>
+      ))}
+      <button
+        type="button"
+        aria-label="Add image"
+        data-testid="task-media-add"
+        disabled={media.busy || media.atLimit}
+        onClick={media.open}
+        className="grid size-16 place-items-center rounded-md border border-dashed border-border text-muted-foreground disabled:opacity-50"
+      >
+        <PlusIcon size={18} />
+      </button>
     </section>
   );
 }
@@ -652,7 +700,14 @@ export function TaskActionsMenu({
             Change project…
           </DropdownMenuItem>
         )}
-        {(onRename !== undefined || onChangeProject !== undefined) && <DropdownMenuSeparator />}
+        <DropdownMenuItem
+          data-testid="task-detail-add-image"
+          disabled={model.media.busy || model.media.atLimit}
+          onSelect={() => model.media.open()}
+        >
+          Add image…
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
         {draft ? (
           <>
             <DropdownMenuItem
@@ -902,8 +957,7 @@ function hasLeftoverMeta(model: TaskDetailModel): boolean {
 }
 
 function PlanSections({ model }: { model: TaskDetailModel }) {
-  const attachments = model.task.attachments;
-  const hasAttachments = attachments !== undefined && attachments.length > 0;
+  const hasAttachments = model.media.attachments.length + model.media.pending.length > 0;
   const leftoverMeta = hasLeftoverMeta(model);
   return (
     <div
@@ -928,6 +982,7 @@ function PlanSections({ model }: { model: TaskDetailModel }) {
             <MetaBlock model={model} />
           </div>
         )}
+        {model.media.error !== null && <ErrorLine>{model.media.error}</ErrorLine>}
         {model.notice !== null && <ErrorLine>{model.notice}</ErrorLine>}
       </div>
       <section
@@ -1031,6 +1086,21 @@ function DesktopPlan({ model }: { model: TaskDetailModel }) {
 }
 
 export function TaskDetailVariant({ model }: { model: TaskDetailModel }) {
-  if (model.wide) return <DesktopPlan model={model} />;
-  return <MobileDetail key={model.task.id} model={model} />;
+  return (
+    <>
+      {model.wide ? (
+        <DesktopPlan model={model} />
+      ) : (
+        <MobileDetail key={model.task.id} model={model} />
+      )}
+      {model.media.input}
+      {model.media.viewer !== null && (
+        <MediaViewer
+          id={model.media.viewer.id}
+          alt={model.media.viewer.alt}
+          onClose={() => model.media.setViewer(null)}
+        />
+      )}
+    </>
+  );
 }

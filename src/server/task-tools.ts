@@ -10,11 +10,12 @@ import {
   parseCompletion,
   parseReleaseReason,
   parseReopenReason,
+  TASK_ATTACHMENTS_MAX,
   TASK_BODY_MAX_LENGTH,
 } from "../shared/tasks.js";
 import { formatDateTime } from "../shared/time.js";
 import type { Task, TaskLedger } from "../shared/types.js";
-import type { MediaStore } from "./media.js";
+import { MediaError, type MediaStore, validateAttachmentIds } from "./media.js";
 import { TaskError, type TaskStore } from "./tasks.js";
 
 /** The process-wide ledger and the hook that tells open browsers it changed. */
@@ -74,6 +75,13 @@ const editSchema = Type.Object({
   project: Type.Optional(
     Type.Union([Type.String(), Type.Null()], {
       description: "New project name, or null to clear it.",
+    }),
+  ),
+  attachments: Type.Optional(
+    Type.Array(Type.String({ description: "Media id to keep on the task." }), {
+      maxItems: TASK_ATTACHMENTS_MAX,
+      description:
+        "Replaces the task's images with this list, in order. Pass an empty list to remove them all.",
     }),
   ),
 });
@@ -261,7 +269,7 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
     defineTool({
       name: "task_view",
       description:
-        "Show one task in full: its title, status, blockers, project, and the images attached to it when it was created.",
+        "Show one task in full: its title, status, blockers, project, and the images currently attached to it.",
       parameters: idSchema,
       async execute(args) {
         const task = bridge.store.ledger().tasks.find((item) => item.id === args.id);
@@ -453,17 +461,36 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
     defineTool({
       name: "task_edit",
       description:
-        "Edit an existing task's title, body or project. The body is free markdown shown under the title in the tasks page; pass an empty string to clear it. A title cannot be empty.",
+        "Edit an existing task's title, body, project or images. The body is free markdown shown under the title in the tasks page; pass an empty string to clear it. A title cannot be empty. An attachments list replaces the task's images; pass an empty list to remove them all.",
       parameters: editSchema,
       async execute(args) {
         const current = bridge.store.ledger().tasks.find((task) => task.id === args.id);
         if (current === undefined || current.status === "backlog") {
           return failure(new TaskError("Unknown task", 404));
         }
-        const patch: { title?: string; body?: string; project?: string | null } = {};
+        const patch: {
+          title?: string;
+          body?: string;
+          project?: string | null;
+          attachments?: string[];
+        } = {};
         if (args.title !== undefined) patch.title = args.title;
         if (args.body !== undefined) patch.body = args.body;
         if (args.project !== undefined) patch.project = args.project;
+        if (args.attachments !== undefined) {
+          if (bridge.media === undefined) {
+            return failure(new TaskError("Task images are unavailable", 500));
+          }
+          try {
+            patch.attachments = await validateAttachmentIds(
+              bridge.media,
+              args.attachments,
+              TASK_ATTACHMENTS_MAX,
+            );
+          } catch (error) {
+            return failure(error instanceof MediaError ? new TaskError(error.message, 400) : error);
+          }
+        }
         return changed(bridge, () => bridge.store.update(args.id, patch));
       },
     }),
