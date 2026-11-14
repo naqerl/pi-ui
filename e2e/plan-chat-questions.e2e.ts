@@ -121,6 +121,7 @@ interface TranscriptGeometry {
   scrollerTop: number;
   scrollerBottom: number;
   composerTop: number | null;
+  composerHeight: number | null;
   anchorId: string | null;
   anchorOffset: number | null;
   visibleMessageIds: string[];
@@ -153,6 +154,7 @@ function readTranscript(browser: Browser): Promise<TranscriptGeometry | null> {
       scrollerTop: scrollerRect.top,
       scrollerBottom: scrollerRect.bottom,
       composerTop: composer?.getBoundingClientRect().top ?? null,
+      composerHeight: composer?.getBoundingClientRect().height ?? null,
       anchorId: anchor?.dataset.messageId ?? null,
       anchorOffset:
         anchor === undefined ? null : anchor.getBoundingClientRect().top - scrollerRect.top,
@@ -240,66 +242,6 @@ async function stopPlanRun(browser: Browser, taskId: string): Promise<number> {
   );
 }
 
-/** Any card chrome on the status line's ancestors between it and the plan chat. */
-function readStatusChrome(
-  browser: Browser,
-): Promise<Array<{ testId: string | null; chrome: string }>> {
-  return browser.evaluate(() => {
-    const status = document.querySelector<HTMLElement>('[data-testid="task-agent-status"]');
-    if (status === null) return [];
-    const chat = document.querySelector<HTMLElement>('[data-testid="task-agent-chat"]');
-    const found: Array<{ testId: string | null; chrome: string }> = [];
-    let node = status.parentElement;
-    while (node !== null && node !== chat && node !== document.body) {
-      const style = getComputedStyle(node);
-      const chrome: string[] = [];
-      if (
-        style.position === "absolute" ||
-        style.position === "fixed" ||
-        style.position === "sticky"
-      ) {
-        chrome.push(`position:${style.position}`);
-      }
-      if (style.backgroundColor !== "rgba(0, 0, 0, 0)" && style.backgroundColor !== "transparent") {
-        chrome.push(`background:${style.backgroundColor}`);
-      }
-      if (
-        Number.parseFloat(style.borderTopWidth) > 0 ||
-        Number.parseFloat(style.borderRightWidth) > 0 ||
-        Number.parseFloat(style.borderBottomWidth) > 0 ||
-        Number.parseFloat(style.borderLeftWidth) > 0
-      ) {
-        chrome.push("border");
-      }
-      if (Number.parseFloat(style.borderTopLeftRadius) > 0) chrome.push("radius");
-      if (style.backdropFilter !== "none" && style.backdropFilter !== "") {
-        chrome.push(`backdrop:${style.backdropFilter}`);
-      }
-      if (chrome.length > 0) {
-        found.push({ testId: node.getAttribute("data-testid"), chrome: chrome.join(",") });
-      }
-      node = node.parentElement;
-    }
-    return found;
-  });
-}
-
-/** The plan status line and the chat's own status row must share the same 11px mono type. */
-function readStatusTypography(browser: Browser): Promise<Record<string, string>> {
-  return browser.evaluate(() => {
-    const type = (selector: string) => {
-      const node = document.querySelector<HTMLElement>(selector);
-      if (node === null) return "missing";
-      const style = getComputedStyle(node);
-      return `${style.fontSize}/${style.lineHeight}/${style.fontFamily}`;
-    };
-    return {
-      plan: type('[data-testid="task-agent-status"]'),
-      chat: type('[data-testid="working-status"]'),
-    };
-  });
-}
-
 async function scrollTranscript(browser: Browser, fraction: number): Promise<void> {
   await browser.evaluate((part) => {
     const scroller = document.querySelector<HTMLElement>('[data-testid="task-agent-transcript"]');
@@ -356,11 +298,10 @@ test("the planning questions card never steals the transcript", {
       { timeout: 60_000 },
     )
     .toBeGreaterThanOrEqual(14);
-  await expect(screen.getByTestId("task-agent-status")).toHaveText("idle", { timeout: 60_000 });
+  await expect(screen.getByTestId("working-status")).toHaveText("idle", { timeout: 60_000 });
+  await expect(screen.getByTestId("task-agent-status")).toHaveCount(0);
 
-  // A live plan run adds no floating card above the transcript. The removed
-  // element was the unlabelled card wrapper around task-agent-status, so pin
-  // the absence of any card chrome on its ancestors instead of a gone testid.
+  // The run's only status is the composer dock row; a run must not add another.
   await scrollTranscript(browser, 0.45);
   const beforePlanRun = await readTranscript(browser);
   expect(beforePlanRun).not.toBeNull();
@@ -371,9 +312,13 @@ test("the planning questions card never steals the transcript", {
   await expect(screen.getByTestId(`task-detail-planning-${taskId}`)).toBeVisible({
     timeout: 30_000,
   });
-  await expect(screen.getByTestId("task-agent-status")).toHaveAttribute("data-open", "true", {
+  await expect(screen.getByTestId("working-status")).toHaveAttribute("data-open", "true", {
     timeout: 30_000,
   });
+  await expect(screen.getByTestId("header-activity")).toHaveText("planning", {
+    timeout: 30_000,
+  });
+  await expect(screen.getByTestId("task-agent-status")).toHaveCount(0);
   await settle(browser);
 
   const duringPlanRun = await readTranscript(browser);
@@ -381,15 +326,13 @@ test("the planning questions card never steals the transcript", {
   if (duringPlanRun === null) return;
   expect(duringPlanRun.scrollTop).toBe(beforePlanRun.scrollTop);
   expect(duringPlanRun.composerTop).toBe(beforePlanRun.composerTop);
-  expect(await readStatusChrome(browser)).toEqual([]);
-  const type = await readStatusTypography(browser);
-  expect(type.plan).not.toBe("missing");
-  expect(type.plan).toBe(type.chat);
+  expect(duringPlanRun.composerHeight).toBe(beforePlanRun.composerHeight);
 
   expect(await stopPlanRun(browser, taskId)).toBe(200);
-  await expect(screen.getByTestId("task-agent-status")).toHaveAttribute("data-open", "false", {
+  await expect(screen.getByTestId("working-status")).toHaveAttribute("data-open", "false", {
     timeout: 30_000,
   });
+  await expect(screen.getByTestId("working-status")).toHaveText("idle", { timeout: 30_000 });
   await expect(screen.getByTestId(`task-detail-planning-${taskId}`)).toHaveCount(0, {
     timeout: 30_000,
   });
@@ -400,7 +343,8 @@ test("the planning questions card never steals the transcript", {
   if (afterPlanRun === null) return;
   expect(afterPlanRun.scrollTop).toBe(beforePlanRun.scrollTop);
   expect(afterPlanRun.composerTop).toBe(beforePlanRun.composerTop);
-  expect(await readStatusChrome(browser)).toEqual([]);
+  expect(afterPlanRun.composerHeight).toBe(beforePlanRun.composerHeight);
+  await expect(screen.getByTestId("task-agent-status")).toHaveCount(0);
 
   // 1. Arrival while reading the middle: the card appears below, the offset does not move.
   await scrollTranscript(browser, 0.45);
@@ -637,7 +581,8 @@ test("the plan chat renders the same activity surface as the chat page", {
   expect(await postPlanMessage(browser, taskId, prompt)).toBe(202);
   const transcript = screen.getByTestId("task-agent-transcript");
   await expect(transcript.getByTestId("run-info")).toBeVisible({ timeout: 60_000 });
-  await expect(screen.getByTestId("task-agent-status")).toHaveText("idle", { timeout: 60_000 });
+  await expect(screen.getByTestId("working-status")).toHaveText("idle", { timeout: 60_000 });
+  await expect(screen.getByTestId("task-agent-status")).toHaveCount(0);
   const plan = await readActivitySurface(browser, '[data-testid="task-agent-transcript"]');
   expect(plan).not.toBeNull();
   if (plan === null) return;

@@ -1614,49 +1614,6 @@ export function TranscriptRows({
   );
 }
 
-/**
- * The one run-status line, above whichever composer the conversation owns. The plan
- * chat passes its "Planning" label; otherwise this is byte-identical to the main chat.
- */
-export function RunStatusLine({
-  running,
-  thinking,
-  ready,
-  label,
-  testId = "working-status",
-}: {
-  running: boolean;
-  thinking: boolean;
-  ready: boolean;
-  label?: string;
-  /** One status implementation; the plan pane names its own node so both can be queried. */
-  testId?: string;
-}) {
-  return (
-    <div
-      data-testid={testId}
-      data-open={running ? "true" : "false"}
-      aria-live="polite"
-      className="min-w-0 flex-1 truncate font-mono text-[11px] leading-4 text-muted-foreground"
-    >
-      {running ? (
-        <WorkingIndicator
-          running={running}
-          thinking={thinking}
-          {...(label === undefined ? {} : { word: label })}
-          {...(testId === "working-status"
-            ? {}
-            : { testId: `${testId}-indicator`, activityTestId: `${testId}-activity` })}
-        />
-      ) : (
-        // Idle is a server statement. Before the first snapshot the answer
-        // is not known yet, so do not paint a guess that can be wrong.
-        <span>{ready ? "idle" : "connecting"}</span>
-      )}
-    </div>
-  );
-}
-
 function lastUserMessageOrder(timeline: TimelineItem[]): number {
   let order = Number.NEGATIVE_INFINITY;
   for (const item of timeline) {

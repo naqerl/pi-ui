@@ -1,7 +1,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_NEW_TASK_TITLE } from "../shared/tasks";
 import type { ChatMessage, MessageMode, Task } from "../shared/types";
-import { ActivityDialog, Composer, RunStatusLine, TranscriptRows } from "./ChatView";
+import { ActivityDialog, Composer, TranscriptRows } from "./ChatView";
 import type { TimelineItem } from "./chat-timeline";
 import { EmptyCaption } from "./EmptyCaption";
 import { cn } from "./lib/utils";
@@ -194,16 +194,6 @@ export function TaskAgentChat({
           )}
         </div>
       </main>
-      {/* The plan status is a plain line, not a floating card above the composer. */}
-      <div className="flex shrink-0 items-center px-3 pb-1">
-        <RunStatusLine
-          running={chat.running}
-          thinking={chat.thinking}
-          ready={chat.ready}
-          label="Planning"
-          testId="task-agent-status"
-        />
-      </div>
       {!dock && composer !== null && (
         <div className="glass-composer theme-radius shrink-0">{composer}</div>
       )}
