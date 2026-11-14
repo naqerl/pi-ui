@@ -8,12 +8,43 @@ test("a failed run shows a thin dismissible error header without another action"
 }) => {
   await app.open("/");
   const composer = screen.getByRole("textbox", "Message");
+  await browser.evaluate(async () => {
+    await fetch("/api/e2e/push", { method: "DELETE" });
+    await fetch("/api/push/subscribe", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        endpoint: "https://push.example/e2e-run-error",
+        keys: { p256dh: "run-error-key", auth: "run-error-auth" },
+      }),
+    });
+    return true;
+  });
   await composer.fill("DELEGATE_FAIL");
   await screen.getByRole("button", "Send").tap();
 
   const header = screen.getByTestId("run-error-header");
   await expect(header).toBeVisible({ timeout: 30_000 });
   await expect(screen.getByTestId("run-error-class")).toHaveText(/Error$/);
+
+  // The failure reaches the phone over the existing push path, with a chat deep link.
+  await expect
+    .poll(async () =>
+      browser.evaluate(async () => {
+        const response = await fetch("/api/e2e/push", { cache: "no-store" });
+        const body = (await response.json()) as {
+          notifications?: Array<{ title?: unknown; body?: unknown; url?: unknown }>;
+        };
+        const match = body.notifications?.find((item) => item.title === "Turn failed in chat");
+        return match === undefined
+          ? null
+          : {
+              body: typeof match.body === "string" ? match.body : null,
+              url: typeof match.url === "string" ? match.url : null,
+            };
+      }),
+    )
+    .toEqual({ body: expect.stringMatching(/delegate failure/i), url: "/chat" });
   const placement = await browser.evaluate(() => {
     const element = document.querySelector<HTMLElement>('[data-testid="run-error-header"]');
     if (element === null) return null;

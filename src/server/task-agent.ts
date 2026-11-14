@@ -52,6 +52,7 @@ import { withConversationIdentity } from "./billion-context.js";
 import type { MediaStore } from "./media.js";
 import { PlanTurnNotifier, type PlanTurnPushSender } from "./plan-push.js";
 import { retrySettings } from "./retry.js";
+import { RunErrorNotifier, type RunErrorPushInput, type RunErrorPushSender } from "./run-push.js";
 import { buildTranscript, SESSION_CONTEXT } from "./session.js";
 import type { SseFrame } from "./sse.js";
 import { StreamHub } from "./stream-hub.js";
@@ -153,6 +154,10 @@ export interface TaskAgentManagerOptions {
   readonly media?: MediaStore;
   /** Where a finished planning turn is announced. Defaults to web push. */
   readonly notify?: PlanTurnPushSender;
+  /** Where a failed planning turn is announced. Defaults to web push. */
+  readonly runErrorNotify?: RunErrorPushSender;
+  /** Reuse the chat page's failure notifier, so their 60 s windows share one clock. */
+  readonly runErrorNotifier?: Pick<RunErrorNotifier, "deliver">;
   /** Minimum milliseconds between pushes for the same task. Zero disables the guard. */
   readonly pushWindowMs?: number;
   readonly burstWindowMs?: number;
@@ -503,6 +508,10 @@ export class DurableTaskAgentSession implements TaskAgentSession {
   readonly hub = new StreamHub();
   private runState: RunState = "idle";
   private runError: RunError | null = null;
+  /** A deliberate stop must not turn its aborted turn into a phone notification. */
+  private stopRequested = false;
+  /** One failure id reaches the notifier once, even if a watch replays it. */
+  private pushedRunErrorId: string | undefined;
   private currentText = "";
   private currentThinking = "";
   private draftRevision = 0;
@@ -525,6 +534,7 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     private readonly relay?: (frame: SseFrame) => void,
     private readonly media?: MediaStore,
     private readonly onTurnFinished?: (taskId: string) => void | Promise<void>,
+    private readonly onRunError?: (input: RunErrorPushInput) => void | Promise<void>,
   ) {}
 
   private readonly mediaRef = (data: string, mimeType: string) =>
@@ -890,10 +900,22 @@ export class DurableTaskAgentSession implements TaskAgentSession {
       if (!cancelledFollowUp) {
         if (runError !== null) {
           this.setRunState(this.runState === "running" ? "idle" : this.runState, runError);
+          await this.announceRunError(runError);
         } else if (this.queued.size === 0) {
           this.setRunState(this.runState === "running" ? "idle" : this.runState, this.runError);
         }
       }
+    }
+  }
+
+  /** Sends one failed planning turn to the phone, unless it was deliberately stopped. */
+  private async announceRunError(runError: RunError): Promise<void> {
+    if (this.stopRequested || this.pushedRunErrorId === runError.id) return;
+    this.pushedRunErrorId = runError.id;
+    try {
+      await this.onRunError?.({ taskId: this.taskId, message: runError.message });
+    } catch (error) {
+      console.error(`[task-agent] plan error push failed for ${this.taskId}`, error);
     }
   }
 
@@ -957,7 +979,10 @@ export class DurableTaskAgentSession implements TaskAgentSession {
         SESSION_CONTEXT,
       ),
     );
-    if (startsRun) this.setRunState("running", null);
+    if (startsRun) {
+      this.stopRequested = false;
+      this.setRunState("running", null);
+    }
     const id = String(submission.id);
     const { message, placed } = await this.submittedMessage(
       submission,
@@ -1083,6 +1108,7 @@ export class DurableTaskAgentSession implements TaskAgentSession {
 
   async stop(): Promise<void> {
     if (this.closed || this.runState !== "running") return;
+    this.stopRequested = true;
     try {
       await this.identity(() => this.conversation.abort(SESSION_CONTEXT));
     } catch (error) {
@@ -1097,6 +1123,7 @@ export class DurableTaskAgentSession implements TaskAgentSession {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.stopRequested = true;
     void this.watch?.stop();
     this.watch = undefined;
     const shutdown = async () => {
@@ -1133,9 +1160,20 @@ export class TaskAgentManager {
   private closed = false;
   readonly root: string;
   private readonly planTurnNotifier: PlanTurnNotifier;
+  private readonly runErrorNotifier: Pick<RunErrorNotifier, "deliver">;
 
   constructor(private readonly options: TaskAgentManagerOptions) {
     this.root = join(options.dataDir, "task-agents");
+    const runErrorNotify = options.runErrorNotify ?? options.notify;
+    this.runErrorNotifier =
+      options.runErrorNotifier ??
+      new RunErrorNotifier({
+        ...(runErrorNotify === undefined ? {} : { notify: runErrorNotify }),
+        ...(options.now === undefined ? {} : { now: options.now }),
+        ...(options.pushWindowMs === undefined ? {} : { windowMs: options.pushWindowMs }),
+        ...(options.burstWindowMs === undefined ? {} : { burstWindowMs: options.burstWindowMs }),
+        ...(options.coalesceMs === undefined ? {} : { coalesceMs: options.coalesceMs }),
+      });
     this.planTurnNotifier = new PlanTurnNotifier(options.store, {
       ...(options.notify === undefined ? {} : { notify: options.notify }),
       ...(options.now === undefined ? {} : { now: options.now }),
@@ -1457,6 +1495,9 @@ export class TaskAgentManager {
       this.options.media,
       (finishedTaskId) => {
         void this.planTurnNotifier.notifyTurn(finishedTaskId);
+      },
+      async (input) => {
+        await this.runErrorNotifier.deliver(input);
       },
     );
     await session.start();
