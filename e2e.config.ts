@@ -32,8 +32,7 @@ export default {
       name: "web",
       // Headless CI does not need the continuously drifting shader in every
       // test; reduced motion still paints the background and keeps the suite
-      // from burning a core per browser. The shader's normal-motion test opts
-      // back in explicitly.
+      // from burning a core per browser.
       engine: web({ browser: "chromium", reducedMotion: "reduce" }),
       app: {
         url: "http://127.0.0.1:0",
