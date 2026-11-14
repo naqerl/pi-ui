@@ -1,3 +1,9 @@
+## 1.6.183
+
+### Fixed
+
+- One failure, one notice: a failed plan run no longer paints itself in the plan pane, in the composer and in the app-level header at once. The header is the single place, fed by whichever conversation failed, and it keeps its dismiss and its absolute placement. The composer still reports send failures, which are a different kind of error and cannot ride the header.
+
 ## 1.6.182
 
 ### Fixed
