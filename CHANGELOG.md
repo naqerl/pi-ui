@@ -1,3 +1,12 @@
+## 1.6.172
+
+### Changed
+
+- The browser e2e suite is cut to the core that only a browser can prove: 29 specs and 59 tests
+  instead of 71 files and 306 tests, about four minutes instead of eighteen. The workflow that ran
+  the old suite in 1119 s now finishes in 163 s end to end, its clock guard drops from 1200 s to
+  420 s, and AGENTS.md records the anti-regrowth rule so a spec that needs a browser has to earn it.
+
 ## 1.6.171
 
 ### Added
