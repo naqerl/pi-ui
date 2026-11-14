@@ -50,6 +50,9 @@ import {
 } from "../shared/types.js";
 import { withConversationIdentity } from "./billion-context.js";
 import type { MediaStore } from "./media.js";
+import { composeInstructions, type SnapshotCache } from "./memory/snapshot.js";
+import type { MemoryStore } from "./memory/store.js";
+import { createMemoryTools } from "./memory/tools.js";
 import { PlanTurnNotifier, type PlanTurnPushSender } from "./plan-push.js";
 import { retrySettings } from "./retry.js";
 import { RunErrorNotifier, type RunErrorPushInput, type RunErrorPushSender } from "./run-push.js";
@@ -66,8 +69,9 @@ import { TaskError, type TaskStore } from "./tasks.js";
 
 /**
  * The only tools a task planning agent may call: inspect the repo, edit its task,
- * ask the operator, and propose distinct follow-up work for approval.
+ * ask the operator, propose distinct follow-up work for approval, and read memory.
  */
+export const TASK_AGENT_MEMORY_TOOL_NAMES = ["memory_read", "memory_grep", "memory_find"] as const;
 export const TASK_AGENT_TOOL_NAMES = [
   "bash",
   "read",
@@ -75,10 +79,18 @@ export const TASK_AGENT_TOOL_NAMES = [
   "propose_task",
   "ask_questions",
   "append_questions",
+  ...TASK_AGENT_MEMORY_TOOL_NAMES,
 ] as const;
 export type TaskAgentToolName = (typeof TASK_AGENT_TOOL_NAMES)[number];
 
 const TASK_AGENT_TOOL_SET = new Set<string>(TASK_AGENT_TOOL_NAMES);
+const TASK_AGENT_MEMORY_TOOL_SET = new Set<string>(TASK_AGENT_MEMORY_TOOL_NAMES);
+/**
+ * Planning is read-only, even if someone later widens the allow-list above. The
+ * memory factory is shared with the main chat, so its write tool is filtered out
+ * both at installation and again when the registry snapshot is selected.
+ */
+const TASK_AGENT_FORBIDDEN_TOOL_SET = new Set<string>(["memory_write"]);
 
 export class TaskAgentError extends Error {
   constructor(
@@ -135,6 +147,12 @@ export interface TaskAgentSession {
   answerQuestions?(setId: string, answers: unknown): Promise<TaskAgentChatSnapshot>;
 }
 
+/** The memory tree and its injected-snapshot cache, shared with the main chat. */
+export interface TaskAgentMemory {
+  readonly store: MemoryStore;
+  readonly snapshot: SnapshotCache;
+}
+
 export interface TaskAgentManagerOptions {
   readonly dataDir: string;
   readonly cwd: string;
@@ -144,6 +162,8 @@ export interface TaskAgentManagerOptions {
   readonly publish: (ledger: TaskLedger) => void;
   /** Base system prompt (coding-agent path with only read and bash described). */
   readonly baseInstructions: string;
+  /** Read-only memory and the snapshot block injected into the plan prompt. */
+  readonly memory?: TaskAgentMemory;
   /** Tests inject a fake session instead of opening a durable harness. */
   readonly openSession?: (taskId: string, manager: TaskAgentManager) => Promise<TaskAgentSession>;
   /** Forward session frames onto the main /api/stream so the browser can reuse that EventSource. */
@@ -171,7 +191,24 @@ export interface TaskAgentManagerOptions {
  * and in tests that assert the restriction without starting a harness.
  */
 export function selectTaskAgentTools<T extends { name: string }>(tools: readonly T[]): T[] {
-  return tools.filter((tool) => TASK_AGENT_TOOL_SET.has(tool.name));
+  return tools.filter(
+    (tool) => TASK_AGENT_TOOL_SET.has(tool.name) && !TASK_AGENT_FORBIDDEN_TOOL_SET.has(tool.name),
+  );
+}
+
+/** Keep only the three read-only memory tools, never the shared factory's writer. */
+export function selectTaskAgentMemoryTools<T extends { name: string }>(tools: readonly T[]): T[] {
+  return tools.filter((tool) => TASK_AGENT_MEMORY_TOOL_SET.has(tool.name));
+}
+
+/** Compose the plan's base prompt with the same snapshot block the main chat uses. */
+export async function taskAgentMemoryBase(
+  base: string,
+  memory: TaskAgentMemory | undefined,
+): Promise<string> {
+  if (memory === undefined) return base;
+  const block = await memory.snapshot.get(memory.store, "first_turn");
+  return composeInstructions(base, block);
 }
 
 export function isTaskAgentToolName(name: string): name is TaskAgentToolName {
@@ -225,6 +262,7 @@ Your job is to help the operator formulate the task and propose a solution — a
 Plan mode only:
 - You may use the read and bash tools to inspect the repository.
 - You must not edit, write, create or delete any files, and you must not run commands that change the workspace.
+- Memory is what previous turns learned: read it with memory_read, memory_grep and memory_find before planning from scratch, and never write to it from a planning turn.
 - You have additional tools, edit_task, propose_task, ask_questions and append_questions. edit_task updates this task's title, markdown body and/or project. Use it to capture the formulated task: a clear title, a markdown body with the problem and the proposed design (mermaid fences are allowed), and a project when one fits.
 - Use propose_task to hand a follow-up task to the operator for approval. A proposal is not a task: only a human approving it creates work, so do not treat it as started or done. Do not propose a duplicate of the task you are planning; propose only distinct follow-up work.
 - When a decision would be guessed in prose, call ask_questions with a structured set (single, multi or text) and wait for the operator's answers. Use append_questions to add to the same unanswered set while you are still composing it.
@@ -1432,6 +1470,12 @@ export class TaskAgentManager {
         tools: createTaskQuestionTools({ taskId, questions }),
       }),
     );
+    if (this.options.memory !== undefined) {
+      const memoryTools = selectTaskAgentMemoryTools(
+        createMemoryTools(this.options.memory.store, this.options.memory.snapshot),
+      );
+      registry.install(defineExtension({ name: "task-agent-memory-tools", tools: memoryTools }));
+    }
     const tools = selectTaskAgentTools(
       registry
         .snapshot()
@@ -1454,7 +1498,7 @@ export class TaskAgentManager {
       },
       SESSION_CONTEXT,
     );
-    const instructions = taskAgentInstructions(this.options.baseInstructions, task);
+    const instructions = taskAgentInstructions(await this.resolveMemoryBase(), task);
     const savedId = await readConversationId(currentPath);
     let conversation: Conversation | undefined;
     if (savedId !== undefined) {
@@ -1504,13 +1548,23 @@ export class TaskAgentManager {
     return session;
   }
 
+  /**
+   * The snapshot cache returns its built block without touching memory files;
+   * only an invalidation, a new day or a long-term write rebuilds it. Ledger
+   * updates therefore compose from the cache instead of rereading the tree.
+   */
+  private resolveMemoryBase(): Promise<string> {
+    return taskAgentMemoryBase(this.options.baseInstructions, this.options.memory);
+  }
+
   private async refreshInstructions(taskId: string): Promise<void> {
     const session = this.sessions.get(taskId);
     if (session === undefined || session.closed || session.applyInstructions === undefined) return;
     const task = this.options.store.ledger().tasks.find((item) => item.id === taskId);
     if (task === undefined) return;
     try {
-      await session.applyInstructions(taskAgentInstructions(this.options.baseInstructions, task));
+      const base = await this.resolveMemoryBase();
+      await session.applyInstructions(taskAgentInstructions(base, task));
     } catch (error) {
       console.error(`[task-agent] could not refresh instructions for ${taskId}`, error);
     }

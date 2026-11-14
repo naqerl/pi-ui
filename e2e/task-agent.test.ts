@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
+import { SnapshotCache } from "../src/server/memory/snapshot.js";
+import { MemoryStore } from "../src/server/memory/store.js";
+import { createMemoryTools } from "../src/server/memory/tools.js";
 import type { SseFrame } from "../src/server/sse.js";
 import { StreamHub } from "../src/server/stream-hub.js";
 import {
@@ -12,12 +15,15 @@ import {
   derivePlanningTaskIds,
   isTaskAgentToolName,
   openingTaskPatch,
+  selectTaskAgentMemoryTools,
   selectTaskAgentTools,
+  TASK_AGENT_MEMORY_TOOL_NAMES,
   TASK_AGENT_TOOL_NAMES,
   TaskAgentManager,
   type TaskAgentSession,
   taskAgentHarnessSettings,
   taskAgentInstructions,
+  taskAgentMemoryBase,
   visibleTaskAgentMessages,
 } from "../src/server/task-agent.js";
 import { createProposeTaskTool, createTaskTools } from "../src/server/task-tools.js";
@@ -40,10 +46,12 @@ after(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
-test("task agents may only call bash, read, edit_task, propose_task and the question tools", () => {
+test("task agents may only call bash, read, edit_task, propose_task, the question tools and read-only memory", () => {
   const coding = (createCodingTools().tools ?? []).map((tool) => ({ name: tool.name }));
+  const memory = createMemoryTools({} as never).map((tool) => ({ name: tool.name }));
   const extras = [
     ...coding,
+    ...memory,
     { name: "edit_task" },
     { name: "propose_task" },
     { name: "ask_questions" },
@@ -63,13 +71,38 @@ test("task agents may only call bash, read, edit_task, propose_task and the ques
       .sort(),
     [...TASK_AGENT_TOOL_NAMES].sort(),
   );
+  assert.deepEqual([...TASK_AGENT_TOOL_NAMES].sort(), [
+    "append_questions",
+    "ask_questions",
+    "bash",
+    "edit_task",
+    "memory_find",
+    "memory_grep",
+    "memory_read",
+    "propose_task",
+    "read",
+  ]);
+  assert.deepEqual([...TASK_AGENT_MEMORY_TOOL_NAMES].sort(), [
+    "memory_find",
+    "memory_grep",
+    "memory_read",
+  ]);
+  assert.deepEqual(
+    selectTaskAgentMemoryTools(memory)
+      .map((tool) => tool.name)
+      .sort(),
+    [...TASK_AGENT_MEMORY_TOOL_NAMES].sort(),
+  );
   assert.ok(TASK_AGENT_TOOL_NAMES.includes("propose_task"));
+  assert.equal(TASK_AGENT_TOOL_NAMES.includes("memory_write" as never), false);
+  assert.deepEqual(selectTaskAgentTools([{ name: "memory_write" }]), []);
   for (const forbidden of [
     "task_done",
     "task_working",
     "task_release",
     "task_block",
     "task_edit",
+    "memory_write",
   ]) {
     assert.equal(TASK_AGENT_TOOL_NAMES.includes(forbidden as never), false);
     assert.equal(isTaskAgentToolName(forbidden), false);
@@ -78,6 +111,51 @@ test("task agents may only call bash, read, edit_task, propose_task and the ques
   assert.equal(isTaskAgentToolName("write"), false);
   assert.equal(isTaskAgentToolName("propose_task"), true);
   assert.equal(isTaskAgentToolName("task_edit"), false);
+  assert.equal(isTaskAgentToolName("memory_read"), true);
+});
+
+test("a planning session has no callable memory_write tool", () => {
+  const memory = createMemoryTools({} as never);
+  const planTools = selectTaskAgentTools([
+    ...memory,
+    { name: "bash" },
+    { name: "read" },
+    { name: "edit_task" },
+    { name: "propose_task" },
+    { name: "ask_questions" },
+    { name: "append_questions" },
+  ]);
+  const names = planTools.map((tool) => tool.name).sort();
+  assert.deepEqual(names, [...TASK_AGENT_TOOL_NAMES].sort());
+  assert.equal(
+    planTools.some((tool) => tool.name === "memory_write"),
+    false,
+    "memory_write must not be selectable from a planning session",
+  );
+});
+
+test("the plan prompt carries the same snapshot block as the main chat", async () => {
+  const memoryStore = new MemoryStore(join(directory, "plan-memory"));
+  await memoryStore.ensure();
+  const marker = `plan-snapshot-${Date.now()}`;
+  await memoryStore.atomicWrite(
+    memoryStore.memoryFile,
+    `# MEMORY\n\n## Standing rules\n\n- ${marker} is the known trap.\n`,
+  );
+  const base = await taskAgentMemoryBase("BASE INSTRUCTIONS", {
+    store: memoryStore,
+    snapshot: new SnapshotCache(),
+  });
+  const prompt = taskAgentInstructions(base, {
+    id: "mem1",
+    title: "Use memory",
+    project: "pi-ui",
+    body: "Plan with the trap in mind.",
+  });
+  assert.match(prompt, new RegExp(marker));
+  assert.ok(prompt.indexOf("BASE INSTRUCTIONS") < prompt.indexOf(marker));
+  assert.match(prompt, /memory_read.*memory_grep.*memory_find/s);
+  assert.match(prompt, /never write to it from a planning turn/i);
 });
 
 test("a settled model failure becomes one dismissible run error", () => {
