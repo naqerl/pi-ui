@@ -93,10 +93,10 @@ async function openSnapshot(
 }
 
 /**
- * Elements on the tasks page whose content is wider than their own box. The
- * offscreen dashboard pager, the visually-hidden labels and ellipsised text are
- * excluded: they clip or translate their content on purpose, so they cannot
- * widen the page.
+ * Elements on the tasks page whose content is wider than their own box. Only
+ * the nodes that intentionally clip their own overflow are exempt: the
+ * offscreen dashboard pager is excluded by scanning inside the tasks page, and
+ * visually-hidden labels and the ellipsised run-error label never show it.
  */
 async function horizontalOverflow(browser: Browser) {
   return browser.evaluate(() => {
@@ -106,12 +106,10 @@ async function horizontalOverflow(browser: Browser) {
     return nodes
       .filter((node) => {
         const style = getComputedStyle(node);
-        return (
-          style.display !== "none" &&
-          style.visibility !== "hidden" &&
-          style.textOverflow !== "ellipsis" &&
-          node.closest(".sr-only") === null
-        );
+        const clipped =
+          node.closest(".sr-only") !== null ||
+          node.closest('[data-testid="run-error-open"]') !== null;
+        return style.display !== "none" && style.visibility !== "hidden" && !clipped;
       })
       .filter((node) => node.scrollWidth > node.clientWidth)
       .slice(0, 8)
@@ -191,9 +189,11 @@ describe("task detail against a mocked state route", { serial: true }, () => {
       if (pane === null || bar === null || description === null) {
         return null;
       }
-      const paneTop = pane.getBoundingClientRect().top;
+      const paneBox = pane.getBoundingClientRect();
+      const barBox = bar.getBoundingClientRect();
       return {
-        bar: bar.getBoundingClientRect().top - paneTop,
+        barAbovePane: barBox.bottom <= paneBox.top,
+        barGap: paneBox.top - barBox.bottom,
         label: (bar.textContent ?? "").includes("Task details"),
         hasTitle: document.querySelector('[data-testid="task-title"]') !== null,
         hasMeta: document.querySelector('[data-testid="task-header-meta"]') !== null,
@@ -204,7 +204,9 @@ describe("task detail against a mocked state route", { serial: true }, () => {
       };
     });
     expect(contentTop).not.toBeNull();
-    expect(contentTop?.bar ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(2);
+    expect(contentTop?.barAbovePane).toBe(true);
+    expect(contentTop?.barGap ?? Number.POSITIVE_INFINITY).toBeGreaterThanOrEqual(0);
+    expect(contentTop?.barGap ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(20);
     expect(contentTop?.label).toBe(true);
     expect(contentTop?.hasTitle).toBe(false);
     expect(contentTop?.hasMeta).toBe(false);
