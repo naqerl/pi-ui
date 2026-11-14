@@ -1,3 +1,13 @@
+## 1.6.184
+
+### Fixed
+
+- The plan chat states its status once: the pane no longer repeats the composer dock's idle or planning word, so a run in progress is not announced twice across the same screen.
+
+### Changed
+
+- The task-detail pane uses the same eight-pixel rhythm as the task list, so the two columns line up instead of drifting apart section by section.
+
 ## 1.6.183
 
 ### Fixed
