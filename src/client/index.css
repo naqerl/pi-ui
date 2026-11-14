@@ -278,9 +278,11 @@
 
   /* The job/sub-agent counts ride inside the status row. Only their own opacity
      and transform animates: the row keeps its height, so the composer and the
-     transcript never move when work starts or finishes. */
+     transcript never move when work starts, finishes, or the reader pages. The
+     node itself is removed after the exit, so another surface has no counter. */
   .bg-jobs-counts {
     animation: bg-jobs-counts-in 180ms ease-out;
+    transform-origin: left bottom;
     transition:
       opacity 160ms ease,
       transform 160ms ease;
@@ -288,14 +290,14 @@
 
   .bg-jobs-counts[data-open="false"] {
     opacity: 0;
-    transform: translateY(-2px);
+    transform: translateY(6px);
     pointer-events: none;
   }
 
   @keyframes bg-jobs-counts-in {
     from {
       opacity: 0;
-      transform: translateY(2px);
+      transform: translateY(6px);
     }
   }
 
