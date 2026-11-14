@@ -1,3 +1,13 @@
+## 1.6.187
+
+### Added
+
+- The plan agent can write memory: alongside its read tools it now has the memory write tool, so a planning session can record what it decided. Its instructions are rebuilt for each session from the current memory snapshot instead of a copy taken at first turn.
+
+### Fixed
+
+- The plan switch sits on the composer's top line with its `Plan task` label, where the rest of the composer's controls live, instead of in the row beside the plus.
+
 ## 1.6.186
 
 ### Fixed
