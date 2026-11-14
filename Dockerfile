@@ -71,7 +71,11 @@ COPY --chown=pi:pi themes/omarchy /usr/share/omarchy/themes
 USER pi
 EXPOSE 8787
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+# A cold start after an image pull takes longer than the old 15 s start period: Docker then
+# marked the fresh container unhealthy at ~105 s and pi-ui-update rolled the release back, only to
+# succeed on a later retry when the layers were already local. Give the first start two minutes
+# and one extra retry, so a slow boot is not mistaken for a broken release.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=4 \
     CMD curl -fsS "http://127.0.0.1:${PORT:-8787}/" || exit 1
 
 STOPSIGNAL SIGTERM

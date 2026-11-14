@@ -1,3 +1,9 @@
+## 1.6.186
+
+### Fixed
+
+- A release no longer rolls itself back on a cold start: the container's health check now allows two minutes for the first boot instead of fifteen seconds, so the update service sees a slow start as slow rather than broken. This is why 1.6.176, 1.6.180, 1.6.182 and 1.6.185 each appeared, vanished and returned a few minutes later.
+
 ## 1.6.185
 
 ### Changed
