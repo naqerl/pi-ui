@@ -1,3 +1,9 @@
+## 1.6.178
+
+### Added
+
+- A turn that ends with an error sends a push notification, on the chat and on the plan chat alike: the headline names the surface, the body is the error, and a tap opens that conversation or the task's plan tab. The same error twice within a minute arrives once, and a turn you cancelled yourself — or one resumed after a restart — stays silent.
+
 ## 1.6.177
 
 ### Fixed
