@@ -76,6 +76,34 @@ const SECOND_QUESTIONS = [
   },
 ] as const;
 
+const OTHER_QUESTIONS = [
+  {
+    id: "transport",
+    prompt: "How should the client connect?",
+    kind: "single",
+    allowOther: true,
+    options: [
+      { value: "http", label: "HTTP" },
+      { value: "ws", label: "WebSocket" },
+    ],
+  },
+  {
+    id: "storage",
+    prompt: "Where should the cache live?",
+    kind: "single",
+    allowOther: true,
+    options: [
+      { value: "disk", label: "On disk" },
+      { value: "memory", label: "In memory" },
+    ],
+  },
+] as const;
+
+interface AnswerSubmission {
+  setId: string;
+  answers: Array<{ id: string; values: string[]; text: string }>;
+}
+
 interface PanelGeometry {
   height: number;
   clientHeight: number;
@@ -372,5 +400,84 @@ test("the planning questions card never steals the transcript", {
     .poll(async () => (await readTranscript(browser))?.distance ?? 99)
     .toBeLessThanOrEqual(8);
 
+  await removeTasks(browser, [title]);
+});
+
+test("typing in Other replaces and disables that question's choices", {
+  timeout: 300_000,
+}, async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await browser.unrouteAll();
+  const submissions: AnswerSubmission[] = [];
+  await browser.route("**/api/tasks/**/questions/answer", async (route) => {
+    submissions.push(JSON.parse(route.request.postData ?? "{}") as AnswerSubmission);
+    await route.continue();
+  });
+
+  await app.open("/?page=tasks");
+  const title = `Plan questions other ${Date.now()}`;
+  await createOpenTask(screen, title, { project: "pi-ui" });
+  await openTaskChatTab(screen);
+  await expect(screen.getByTestId("task-agent-chat")).toBeVisible();
+  const taskId = await taskIdFor(browser, title);
+
+  expect(
+    await postPlanMessage(
+      browser,
+      taskId,
+      `TOOLCALLS ${JSON.stringify([
+        { name: "append_questions", arguments: { questions: OTHER_QUESTIONS } },
+      ])}`,
+    ),
+  ).toBe(202);
+
+  const panel = screen.getByTestId("task-questions-panel");
+  await expect(panel).toBeVisible({ timeout: 30_000 });
+  const transportHttp = screen.getByTestId("question-transport-http");
+  const transportWs = screen.getByTestId("question-transport-ws");
+  const storageDisk = screen.getByTestId("question-storage-disk");
+  const transportOther = screen.getByTestId("question-transport-other");
+
+  await transportHttp.tap();
+  await expect(transportHttp).toBeChecked();
+  await transportOther.fill("Carrier pigeon");
+  await expect(transportHttp).not.toBeChecked();
+  await expect(transportHttp).toBeDisabled();
+  await expect(transportWs).toBeDisabled();
+  await expect(storageDisk).toBeEnabled();
+
+  await transportOther.fill("   ");
+  await expect(transportHttp).toBeEnabled();
+  await expect(transportWs).toBeEnabled();
+  await expect(transportHttp).not.toBeChecked();
+
+  await transportOther.fill("");
+  await expect(transportHttp).toBeEnabled();
+  await expect(transportHttp).not.toBeChecked();
+
+  await transportOther.fill("Carrier pigeon");
+  await storageDisk.tap();
+  await expect(storageDisk).toBeChecked();
+  const send = screen.getByTestId("task-questions-send");
+  await expect(send).toBeEnabled();
+  await send.tap();
+  await expect(panel).toHaveCount(0, { timeout: 30_000 });
+
+  await expect.poll(() => submissions.length).toBe(1);
+  const payload = submissions[0] as AnswerSubmission;
+  expect(payload.answers.map((answer) => answer.id)).toEqual(["transport", "storage"]);
+  expect(payload.answers.find((answer) => answer.id === "transport")).toEqual({
+    id: "transport",
+    values: [],
+    text: "Carrier pigeon",
+  });
+  expect(payload.answers.find((answer) => answer.id === "storage")).toEqual({
+    id: "storage",
+    values: ["disk"],
+    text: "",
+  });
+  expect(new Set(payload.answers.map((answer) => answer.id)).size).toBe(payload.answers.length);
+
+  await browser.unrouteAll();
   await removeTasks(browser, [title]);
 });
