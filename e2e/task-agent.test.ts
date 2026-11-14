@@ -436,6 +436,7 @@ class FakeSession implements TaskAgentSession {
         timestamp: new Date().toISOString(),
         order: index,
       })),
+      activity: [],
       run: this.run,
       draft: { text: "", thinking: "", revision: 0 },
       questions: null,

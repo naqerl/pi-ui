@@ -113,7 +113,7 @@ interface ChatViewProps {
 // The side pages and the Markdown renderer are their own chunks, so the chat paints first.
 const loadStatsView = () => import("./StatsView");
 const loadTasksView = () => import("./TasksView");
-const ActivityDialog = lazy(() =>
+export const ActivityDialog = lazy(() =>
   import("./ActivityView").then((m) => ({ default: m.ActivityDialog })),
 );
 const StatsView = lazy(() => loadStatsView().then((m) => ({ default: m.StatsView })));

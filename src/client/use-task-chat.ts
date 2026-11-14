@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  ActivityItem,
   ContextUsage,
   McpStatus,
   MessageMode,
@@ -28,6 +29,7 @@ const EMPTY_MCP: McpStatus = { servers: [], unavailable: [] };
 interface TaskAgentSnapshot {
   taskId: string;
   messages: Snapshot["messages"];
+  activity?: ActivityItem[];
   run: Snapshot["run"];
   runError?: Snapshot["runError"];
   draft: { text: string; thinking: string; revision: number };
@@ -41,7 +43,7 @@ function asSnapshot(taskId: string, snapshot: TaskAgentSnapshot): Snapshot {
   return {
     conversationId: `task:${taskId}`,
     messages: snapshot.messages,
-    activity: [],
+    activity: snapshot.activity ?? [],
     from: 0,
     hasEarlier: false,
     run: snapshot.run,
@@ -85,6 +87,7 @@ function createTaskTransport(
           snapshot: asSnapshot(taskId, {
             taskId,
             messages: [],
+            activity: [],
             run: "idle",
             draft: { text: "", thinking: "", revision: 0 },
             questions: null,

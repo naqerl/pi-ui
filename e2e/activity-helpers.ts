@@ -111,3 +111,82 @@ export async function chevronCentreGap(
   const measured = await chevronMeasurement(browser, testId, index);
   return Math.abs(measured.gap);
 }
+
+/** One transcript run-info chip, plus the rows its activity dialog shows. */
+export interface ActivitySurface {
+  chips: Array<{ label: string; ariaLabel: string }>;
+  rows: Array<{ name: string; summary: string }>;
+  /** The first row's details after one disclosure click, then after the second. */
+  expands: boolean;
+  collapses: boolean;
+}
+
+/**
+ * Read the activity surface a transcript renders: the run-info chips, the dialog
+ * the newest chip opens, and whether its rows expand and collapse. Both the chat
+ * page and the plan chat use this, so an equivalent turn is compared honestly.
+ */
+export function readActivitySurface(
+  browser: Browser,
+  scopeSelector: string,
+): Promise<ActivitySurface | null> {
+  return browser.evaluate(async (selector) => {
+    const frames = () =>
+      new Promise<boolean>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)));
+      });
+    const normalize = (text: string) =>
+      text
+        .replace(/\b\d+m \d+s\b/g, "<duration>")
+        .replace(/\b\d+(?:\.\d+)?s\b/g, "<duration>")
+        .replace(/\s+/g, " ")
+        .trim();
+    const scope = document.querySelector<HTMLElement>(selector);
+    if (scope === null) return null;
+    const chips = [...scope.querySelectorAll<HTMLElement>('[data-testid="run-info"]')].map(
+      (chip) => ({
+        label: normalize(
+          chip.querySelector<HTMLElement>('[data-testid="run-info-summary"]')?.textContent ?? "",
+        ),
+        ariaLabel: normalize(chip.getAttribute("aria-label") ?? ""),
+      }),
+    );
+    const trigger = scope.querySelectorAll<HTMLElement>('[data-testid="run-info"]');
+    const newest = trigger[trigger.length - 1];
+    if (newest === undefined) return { chips, rows: [], expands: false, collapses: false };
+    newest.click();
+    const deadline = performance.now() + 10_000;
+    let dialog: HTMLElement | null = null;
+    while (performance.now() < deadline) {
+      dialog = document.querySelector<HTMLElement>('[data-testid="activity-dialog"]');
+      if (dialog !== null) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    if (dialog === null) return null;
+    await frames();
+    const rows = [...dialog.querySelectorAll<HTMLElement>('[data-testid="activity-row"]')].map(
+      (row) => ({
+        name: row.dataset.activityName ?? "",
+        summary: normalize(row.textContent ?? ""),
+      }),
+    );
+    const first = dialog.querySelector<HTMLElement>('[data-testid="activity-row"]');
+    const details = () => dialog?.querySelectorAll("pre").length ?? 0;
+    first?.click();
+    await frames();
+    const expands = details() > 0;
+    first?.click();
+    await frames();
+    const collapses = details() === 0;
+    dialog.querySelector<HTMLElement>('[data-testid="activity-dialog-close"]')?.click();
+    const closeDeadline = performance.now() + 5_000;
+    while (
+      document.querySelector('[data-testid="activity-dialog"]') !== null &&
+      performance.now() < closeDeadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    await frames();
+    return { chips, rows, expands, collapses };
+  }, scopeSelector);
+}

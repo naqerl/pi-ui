@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_NEW_TASK_TITLE } from "../shared/tasks";
 import type { ChatMessage, MessageMode, Task } from "../shared/types";
-import { Composer, RunStatusLine, TranscriptRows } from "./ChatView";
+import { ActivityDialog, Composer, RunStatusLine, TranscriptRows } from "./ChatView";
 import type { TimelineItem } from "./chat-timeline";
 import { EmptyCaption } from "./EmptyCaption";
 import { cn } from "./lib/utils";
@@ -34,6 +34,8 @@ export function TaskAgentChat({
   const chat = useTaskChat(task.id, done);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [composerError, setComposerError] = useState<string | null>(null);
+  const [activityRun, setActivityRun] = useState<string | null | undefined>(undefined);
+  const activityTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   const fixtureChat = readTaskDetailFixture() && task.id === FIXTURE_PLAN_ID;
   const timeline = useMemo<TimelineItem[]>(() => {
@@ -67,6 +69,21 @@ export function TaskAgentChat({
   const placeholderIdle =
     task.title === DEFAULT_NEW_TASK_TITLE ? "Describe the task to plan…" : "Message the task agent";
   const dock = composerTarget === "dock";
+
+  const openActivity = useCallback((run: string, trigger: HTMLButtonElement) => {
+    activityTriggerRef.current = trigger;
+    setActivityRun(run);
+  }, []);
+
+  const closeActivity = useCallback(() => {
+    const trigger = activityTriggerRef.current;
+    activityTriggerRef.current = null;
+    setActivityRun(undefined);
+    requestAnimationFrame(() => {
+      if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+      else inputRef.current?.focus({ preventScroll: true });
+    });
+  }, []);
 
   const sendMessage = useCallback(
     async (text: string, mode: MessageMode = "queue", attachments: string[] = []) => {
@@ -163,7 +180,11 @@ export function TaskAgentChat({
               </EmptyCaption>
             </div>
           ) : (
-            <TranscriptRows groups={groups} onCancelQueued={chat.cancelQueued} />
+            <TranscriptRows
+              groups={groups}
+              onCancelQueued={chat.cancelQueued}
+              onOpen={openActivity}
+            />
           )}
           {chat.questions !== null && (
             <TaskQuestionPanel
@@ -191,6 +212,16 @@ export function TaskAgentChat({
       )}
       {!dock && composer !== null && (
         <div className="glass-composer theme-radius shrink-0">{composer}</div>
+      )}
+      {activityRun !== undefined && (
+        <Suspense fallback={null}>
+          <ActivityDialog
+            timeline={timeline}
+            ready={chat.ready}
+            run={activityRun}
+            onClose={closeActivity}
+          />
+        </Suspense>
       )}
     </div>
   );

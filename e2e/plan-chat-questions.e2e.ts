@@ -1,5 +1,6 @@
 import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
+import { readActivitySurface } from "./activity-helpers";
 import { createOpenTask, openTaskChatTab, removeTasks } from "./tasks-helpers";
 
 const FIRST_QUESTIONS = [
@@ -595,5 +596,58 @@ test("typing in Other replaces and disables that question's choices", {
   expect(new Set(payload.answers.map((answer) => answer.id)).size).toBe(payload.answers.length);
 
   await browser.unrouteAll();
+  await removeTasks(browser, [title]);
+});
+
+test("the plan chat renders the same activity surface as the chat page", {
+  timeout: 300_000,
+}, async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 900 });
+  const prompt = `TOOLCALLS ${JSON.stringify([
+    { name: "bash", arguments: { command: "printf plan-activity" } },
+  ])}`;
+
+  await app.open("/");
+  const composer = screen.getByRole("textbox", "Message");
+  await composer.fill(prompt);
+  await screen.getByRole("button", { name: "Send" }).tap();
+  await expect(screen.getByText(/Tool result:/)).toBeVisible({ timeout: 60_000 });
+  await expect
+    .poll(
+      () =>
+        browser.evaluate(
+          () =>
+            document.querySelectorAll('[data-testid="chat-content"] [data-testid="run-info"]')
+              .length,
+        ),
+      { timeout: 30_000 },
+    )
+    .toBeGreaterThan(0);
+  const chat = await readActivitySurface(browser, '[data-testid="chat-content"]');
+  expect(chat).not.toBeNull();
+  if (chat === null) return;
+
+  await app.open("/?page=tasks");
+  const title = `Plan activity ${Date.now()}`;
+  await createOpenTask(screen, title);
+  await openTaskChatTab(screen);
+  await expect(screen.getByTestId("task-agent-chat")).toBeVisible();
+  const taskId = await taskIdFor(browser, title);
+
+  expect(await postPlanMessage(browser, taskId, prompt)).toBe(202);
+  const transcript = screen.getByTestId("task-agent-transcript");
+  await expect(transcript.getByTestId("run-info")).toBeVisible({ timeout: 60_000 });
+  await expect(screen.getByTestId("task-agent-status")).toHaveText("idle", { timeout: 60_000 });
+  const plan = await readActivitySurface(browser, '[data-testid="task-agent-transcript"]');
+  expect(plan).not.toBeNull();
+  if (plan === null) return;
+
+  expect(plan).toEqual(chat);
+  expect(plan.rows).toEqual([{ name: "bash", summary: expect.any(String) }]);
+  expect(plan.expands).toBe(true);
+  expect(plan.collapses).toBe(true);
+
+  await app.screenshot("plan-chat-activity");
+
   await removeTasks(browser, [title]);
 });

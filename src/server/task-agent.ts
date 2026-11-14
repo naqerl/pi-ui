@@ -36,6 +36,7 @@ import { runErrorFromUnanswered } from "../shared/run-error.js";
 import { steerDropReason } from "../shared/steers.js";
 import { DEFAULT_NEW_TASK_TITLE, isActiveStatus, TASK_BODY_MAX_LENGTH } from "../shared/tasks.js";
 import {
+  type ActivityItem,
   type ChatMessage,
   type MessageMode,
   type QueuedMessage,
@@ -105,6 +106,8 @@ export class TaskAgentError extends Error {
 export interface TaskAgentChatSnapshot {
   taskId: string;
   messages: ChatMessage[];
+  /** Tool calls and thinking blocks from the same transcript the chat page renders. */
+  activity: ActivityItem[];
   run: RunState;
   /** The last plan-run failure, until dismissed or the next submit. */
   runError?: RunError | null;
@@ -639,6 +642,7 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     return {
       taskId: this.taskId,
       messages: visibleTaskAgentMessages(built.messages),
+      activity: built.activity,
       run: this.runState,
       runError: this.runError,
       draft: {
