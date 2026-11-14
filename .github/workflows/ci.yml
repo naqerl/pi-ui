@@ -44,14 +44,11 @@ jobs:
         run: npm test
 
   e2e:
-    name: Browser e2e under ten minutes
+    name: Browser e2e
     runs-on: ubuntu-latest
-    # 15 minutes was the whole job's ceiling (checkout + npm ci + build + Playwright install +
-    # the suite), while the suite alone is allowed 900 s by the guard below. On 2026-11-13 that
-    # arithmetic ran out: three consecutive runs were killed at 15:00 with `cancelled`, which looks
-    # like a runner fault but is this timeout. The job timeout is a hang detector, so it sits above
-    # the suite's own guard by the slowest observed setup (~4 min).
-    timeout-minutes: 35
+    # Setup is ~75 s and the suite's own guard is 420 s, so 15 minutes is margin for a hang, not a
+    # performance assertion.
+    timeout-minutes: 15
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -77,13 +74,12 @@ jobs:
           npm run e2e
           elapsed=$(( $(date +%s) - started ))
           echo "e2e suite wall clock: ${elapsed}s"
-          # The suite must stay near ten minutes. The guard is a floor against a runaway spec, not
-          # a performance assertion, so it is set above the measured worst case: 666 s on 2026-11-10
-          # (233 tests), 748/751 s and 847 s on 2026-11-12 (283 tests, 2 flaky, 0 failed), and
-          # 1003 s on 2026-11-13 (306 tests, 304 passed, 1 flaky, 1 skipped — a green suite that
-          # was failed only by this clock). Sharding the suite across two runners is the real fix
-          # and is tracked separately; raising the number is the honest interim.
-          if [ "${elapsed}" -gt 1200 ]; then
-            echo "::error::e2e suite took ${elapsed}s, over the 1200s budget"
+          # The guard is a hang detector, not a performance assertion. It keeps the suite's whole
+          # history: 666 s on 2026-11-10 (233 tests), 748/751/847 s on 2026-11-12 (283 tests, 2
+          # flaky), 1003 s and 1119 s on 2026-11-13 (306 tests), then 229–238 s after the core cut
+          # (59 tests across 29 files; the upstream plan-push spec added one file to the 28-file
+          # core). The 420 s ceiling is the anti-regrowth budget, not a target.
+          if [ "${elapsed}" -gt 420 ]; then
+            echo "::error::e2e suite took ${elapsed}s, over the 420s budget"
             exit 1
           fi

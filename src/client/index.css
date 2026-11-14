@@ -241,7 +241,7 @@
   /* A page slide moves the layout under the dock; a full-area blur recomputed
      every frame is the expensive half of the transition. Flatten it while the
      pager is in flight, then restore the glass once the pages settle. */
-  /* Keep data-transitioning for stats-transitions e2e; do not flatten the glass. */
+  /* Keep data-transitioning available for the pager state; do not flatten the glass. */
   .float-footer[data-transitioning="true"] {
     transition: none;
   }

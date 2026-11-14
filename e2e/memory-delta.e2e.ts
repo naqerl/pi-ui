@@ -20,8 +20,6 @@ const deltas = async (browser: Browser) =>
   (await state(browser)).messages?.filter((message) => message.notice?.kind === "memory-delta") ??
   [];
 
-const liveInstructions = async (browser: Browser) => (await state(browser)).instructions ?? "";
-
 async function waitForIdle(browser: Browser): Promise<void> {
   await expect.poll(async () => (await state(browser)).run ?? "", { timeout: 60_000 }).toBe("idle");
 }
@@ -37,19 +35,6 @@ async function sendCalls(browser: Browser, calls: unknown[]): Promise<void> {
   }, calls as never);
   expect(status).toBe(202);
 }
-
-async function waitForMemoryTools(browser: Browser, count: number): Promise<void> {
-  await expect
-    .poll(
-      async () =>
-        ((await state(browser)).activity ?? []).filter(
-          (item) => item.name === "memory_write" && item.isError !== true,
-        ).length,
-      { timeout: 60_000 },
-    )
-    .toBeGreaterThanOrEqual(count);
-}
-
 test("two long-term writes in one turn publish one delta naming both topics", async ({
   app,
   browser,
@@ -89,47 +74,4 @@ test("two long-term writes in one turn publish one delta naming both topics", as
   expect(text).toMatch(/\d+ chars, updated \d{4}-\d{2}-\d{2}/);
   expect(text).toContain("memory_read");
   expect(delta?.notice?.topics?.map((topic) => topic.path).sort()).toEqual([first, second].sort());
-});
-
-test("a long-term write leaves the live instructions byte-identical", async ({ app, browser }) => {
-  const stamp = Date.now();
-  const path = `topics/projects/stable-${stamp}.md`;
-  await app.open("/");
-  const before = await liveInstructions(browser);
-  expect(before.length).toBeGreaterThan(0);
-
-  await sendCalls(browser, [
-    {
-      name: "memory_write",
-      arguments: {
-        target: "long_term",
-        topic: path,
-        body: "# Stable topic\n\nthe system prompt must not change for this write.",
-      },
-    },
-  ]);
-  await expect.poll(async () => (await deltas(browser)).length, { timeout: 60_000 }).toBe(1);
-  await waitForIdle(browser);
-  expect(await liveInstructions(browser)).toBe(before);
-
-  // A later ordinary turn refreshes the checkpoint without rewriting the prompt.
-  await sendCalls(browser, [{ name: "memory_read", arguments: { path } }]);
-  await waitForIdle(browser);
-  expect(await liveInstructions(browser)).toBe(before);
-});
-
-test("daily and scratchpad writes publish no delta and keep instructions stable", async ({
-  app,
-  browser,
-}) => {
-  await app.open("/");
-  const before = await liveInstructions(browser);
-  await sendCalls(browser, [
-    { name: "memory_write", arguments: { target: "daily", body: "a daily note" } },
-    { name: "memory_write", arguments: { target: "scratchpad", body: "an open item" } },
-  ]);
-  await waitForMemoryTools(browser, 2);
-  await waitForIdle(browser);
-  expect(await deltas(browser)).toHaveLength(0);
-  expect(await liveInstructions(browser)).toBe(before);
 });

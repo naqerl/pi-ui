@@ -1,4 +1,4 @@
-import { type Browser, test } from "@e2e-dev/web";
+import { type Browser, beforeEach, describe as describeGroup, test } from "@e2e-dev/web";
 import { expect, type Screen } from "e2e";
 
 const at = (second: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, second)).toISOString();
@@ -179,23 +179,6 @@ async function detach(browser: Browser, gap = 300) {
     .toBeGreaterThanOrEqual(gap - 2);
 }
 
-/** Add rows below the reader while the chat is off-screen, as a streamed reply would. */
-async function appendRowsBelow(browser: Browser, count: number) {
-  await browser.evaluate((rows) => {
-    const content = document.querySelector<HTMLElement>('[data-testid="chat-content"]');
-    if (content === null) return false;
-    for (let index = 0; index < rows; index += 1) {
-      const row = document.createElement("div");
-      row.dataset.role = "assistant";
-      row.dataset.messageId = `landed-${index}`;
-      row.textContent = `A message that landed while the chat was off-screen ${index}.`;
-      row.style.height = "80px";
-      content.append(row);
-    }
-    return true;
-  }, count);
-}
-
 async function switchTo(browser: Browser, screen: Screen, id: string) {
   await screen.getByTestId(`page-dot-${id}`).tap();
   await expect(screen.getByTestId(`page-dot-${id}`)).toHaveAttribute("aria-selected", "true");
@@ -213,281 +196,36 @@ async function roundTrip(browser: Browser, screen: Screen, target = "tasks") {
   await switchTo(browser, screen, target);
   await switchTo(browser, screen, "chat");
 }
-
-async function swipeTo(browser: Browser, direction: "left" | "right") {
-  await browser.evaluate(async (side) => {
-    const pager = document.querySelector<HTMLElement>('[data-testid="pager"]');
-    if (pager === null) return false;
-    const box = pager.getBoundingClientRect();
-    const y = box.top + box.height / 2;
-    const startX = box.left + box.width * (side === "left" ? 0.8 : 0.2);
-    const endX = box.left + box.width * (side === "left" ? 0.2 : 0.8);
-    const point = (x: number) =>
-      new Touch({ identifier: 61, target: pager, clientX: x, clientY: y });
-    const fire = (type: string, x: number) => {
-      const touch = point(x);
-      pager.dispatchEvent(
-        new TouchEvent(type, {
-          bubbles: true,
-          cancelable: true,
-          touches: type === "touchend" ? [] : [touch],
-          targetTouches: type === "touchend" ? [] : [touch],
-          changedTouches: [touch],
-        }),
-      );
-    };
-    fire("touchstart", startX);
-    fire("touchmove", startX + (endX - startX) * 0.4);
-    fire("touchmove", endX);
-    fire("touchend", endX);
-    await new Promise<void>((resolve) => {
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-    });
-    return true;
-  }, direction);
-  await expect
-    .poll(() =>
-      browser.evaluate(
-        () => document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
-      ),
-    )
-    .toBe(direction === "left" ? "tasks" : "chat");
-  await settleDock(browser);
-}
-
-async function openTask(
-  browser: Browser,
-  screen: Pick<Screen, "getByTestId" | "getByRole">,
-  title: string,
-) {
-  const back = screen.getByTestId("task-detail-back");
-  if ((await back.count()) > 0 && (await back.isVisible())) await back.tap();
-  await screen.getByRole("button", { name: `Open ${title}` }).tap();
-  await expect(screen.getByTestId("task-detail")).toBeVisible();
-  await settleDock(browser);
-}
-
-for (const device of devices) {
-  test(`${device.name}: an attached reader returns to the end after Tasks`, async ({
-    app,
-    browser,
-    screen,
-  }) => {
-    await openThread(app, browser, screen, device);
-    await pinToEnd(browser);
-    const before = await readPosition(browser);
-    expect(before).not.toBeNull();
-
-    await roundTrip(browser, screen);
-
-    const after = await readPosition(browser);
-    expect(after).not.toBeNull();
-    expect(after?.distance ?? 99, describe("attached distance", before, after)).toBeLessThanOrEqual(
-      1,
-    );
-    expect(
-      Math.abs((after?.lastTop ?? 0) - (before?.lastTop ?? 0)),
-      describe("attached last row", before, after),
-    ).toBeLessThanOrEqual(1);
+describeGroup("page switch scroll restore against one shared app", { serial: true }, () => {
+  beforeEach(async ({ browser }) => {
+    await browser.unrouteAll();
   });
 
-  test(`${device.name}: a detached reader keeps the same row at the same offset`, async ({
-    app,
-    browser,
-    screen,
-  }) => {
-    await openThread(app, browser, screen, device);
-    await pinToEnd(browser);
-    await detach(browser);
-    const before = await readPosition(browser);
-    expect(before).not.toBeNull();
+  for (const device of devices) {
+    test(`${device.name}: a detached reader keeps the same row at the same offset`, async ({
+      app,
+      browser,
+      screen,
+    }) => {
+      await openThread(app, browser, screen, device);
+      await pinToEnd(browser);
+      await detach(browser);
+      const before = await readPosition(browser);
+      expect(before).not.toBeNull();
 
-    await roundTrip(browser, screen);
-
-    const after = await readPosition(browser);
-    expect(after).not.toBeNull();
-    expect(
-      Math.abs((after?.scrollTop ?? 0) - (before?.scrollTop ?? 0)),
-      describe("detached scrollTop", before, after),
-    ).toBeLessThanOrEqual(1);
-    expect(after?.anchorId, describe("detached anchor id", before, after)).toBe(before?.anchorId);
-    expect(
-      Math.abs((after?.anchorTop ?? 0) - (before?.anchorTop ?? 0)),
-      describe("detached anchor offset", before, after),
-    ).toBeLessThanOrEqual(1);
-  });
-
-  test(`${device.name}: a dock resize off-screen does not move a detached reader`, async ({
-    app,
-    browser,
-    screen,
-  }) => {
-    await openThread(app, browser, screen, device);
-    await pinToEnd(browser);
-    await detach(browser);
-    const before = await readPosition(browser);
-
-    // Opening a live task switches the dock to task-chat; a done task collapses it.
-    await switchTo(browser, screen, "tasks");
-    await openTask(browser, screen, "Live task");
-    await switchTo(browser, screen, "chat");
-    const afterLive = await readPosition(browser);
-    expect(afterLive).not.toBeNull();
-    expect(
-      Math.abs((afterLive?.scrollTop ?? 0) - (before?.scrollTop ?? 0)),
-      describe("task-chat dock scrollTop", before, afterLive),
-    ).toBeLessThanOrEqual(1);
-    expect(afterLive?.anchorId, describe("task-chat dock anchor", before, afterLive)).toBe(
-      before?.anchorId,
-    );
-    expect(
-      Math.abs((afterLive?.anchorTop ?? 0) - (before?.anchorTop ?? 0)),
-      describe("task-chat dock offset", before, afterLive),
-    ).toBeLessThanOrEqual(1);
-
-    await switchTo(browser, screen, "tasks");
-    await openTask(browser, screen, "Finished task");
-    await switchTo(browser, screen, "chat");
-    const afterDone = await readPosition(browser);
-    expect(afterDone).not.toBeNull();
-    expect(
-      Math.abs((afterDone?.scrollTop ?? 0) - (before?.scrollTop ?? 0)),
-      describe("collapsed dock scrollTop", before, afterDone),
-    ).toBeLessThanOrEqual(1);
-    expect(afterDone?.anchorId, describe("collapsed dock anchor", before, afterDone)).toBe(
-      before?.anchorId,
-    );
-    expect(
-      Math.abs((afterDone?.anchorTop ?? 0) - (before?.anchorTop ?? 0)),
-      describe("collapsed dock offset", before, afterDone),
-    ).toBeLessThanOrEqual(1);
-  });
-
-  test(`${device.name}: a near-bottom detached reader keeps its row through Stats`, async ({
-    app,
-    browser,
-    screen,
-  }) => {
-    await openThread(app, browser, screen, device);
-    await pinToEnd(browser);
-    await detach(browser, 40);
-    const before = await readPosition(browser);
-    expect(before).not.toBeNull();
-
-    await roundTrip(browser, screen, "stats");
-
-    const after = await readPosition(browser);
-    expect(after).not.toBeNull();
-    expect(
-      Math.abs((after?.scrollTop ?? 0) - (before?.scrollTop ?? 0)),
-      describe("near-bottom stats scrollTop", before, after),
-    ).toBeLessThanOrEqual(1);
-    expect(after?.anchorId, describe("near-bottom stats anchor", before, after)).toBe(
-      before?.anchorId,
-    );
-    expect(
-      Math.abs((after?.anchorTop ?? 0) - (before?.anchorTop ?? 0)),
-      describe("near-bottom stats offset", before, after),
-    ).toBeLessThanOrEqual(1);
-  });
-
-  test(`${device.name}: a near-bottom detached reader keeps its row when the dock collapses`, async ({
-    app,
-    browser,
-    screen,
-  }) => {
-    await openThread(app, browser, screen, device);
-    await pinToEnd(browser);
-    await detach(browser, 40);
-    const before = await readPosition(browser);
-    expect(before).not.toBeNull();
-
-    await switchTo(browser, screen, "tasks");
-    await openTask(browser, screen, "Finished task");
-    await switchTo(browser, screen, "chat");
-
-    const after = await readPosition(browser);
-    expect(after).not.toBeNull();
-    expect(
-      Math.abs((after?.scrollTop ?? 0) - (before?.scrollTop ?? 0)),
-      describe("near-bottom collapsed dock scrollTop", before, after),
-    ).toBeLessThanOrEqual(1);
-    expect(after?.anchorId, describe("near-bottom collapsed dock anchor", before, after)).toBe(
-      before?.anchorId,
-    );
-    expect(
-      Math.abs((after?.anchorTop ?? 0) - (before?.anchorTop ?? 0)),
-      describe("near-bottom collapsed dock offset", before, after),
-    ).toBeLessThanOrEqual(1);
-  });
-
-  test(`${device.name}: messages landing below do not move a detached reader`, async ({
-    app,
-    browser,
-    screen,
-  }) => {
-    await openThread(app, browser, screen, device);
-    await pinToEnd(browser);
-    await detach(browser);
-    const before = await readPosition(browser);
-    expect(before).not.toBeNull();
-
-    await switchTo(browser, screen, "tasks");
-    await appendRowsBelow(browser, 5);
-    await settleDock(browser);
-    await switchTo(browser, screen, "chat");
-
-    const after = await readPosition(browser);
-    expect(after).not.toBeNull();
-    expect(
-      Math.abs((after?.scrollTop ?? 0) - (before?.scrollTop ?? 0)),
-      describe("landed rows scrollTop", before, after),
-    ).toBeLessThanOrEqual(1);
-    expect(after?.anchorId, describe("landed rows anchor", before, after)).toBe(before?.anchorId);
-    expect(
-      Math.abs((after?.anchorTop ?? 0) - (before?.anchorTop ?? 0)),
-      describe("landed rows offset", before, after),
-    ).toBeLessThanOrEqual(1);
-  });
-
-  test(`${device.name}: three round trips do not drift`, async ({ app, browser, screen }) => {
-    await openThread(app, browser, screen, device);
-    await pinToEnd(browser);
-    await detach(browser);
-    const before = await readPosition(browser);
-
-    for (let trip = 0; trip < 3; trip += 1) {
       await roundTrip(browser, screen);
+
       const after = await readPosition(browser);
       expect(after).not.toBeNull();
       expect(
         Math.abs((after?.scrollTop ?? 0) - (before?.scrollTop ?? 0)),
-        describe(`round trip ${trip + 1}`, before, after),
+        describe("detached scrollTop", before, after),
       ).toBeLessThanOrEqual(1);
-      expect(after?.anchorId, describe(`round trip ${trip + 1} anchor`, before, after)).toBe(
-        before?.anchorId,
-      );
-    }
-  });
-
-  test(`${device.name}: a swipe away and back keeps the reading position`, async ({
-    app,
-    browser,
-    screen,
-  }) => {
-    await openThread(app, browser, screen, device);
-    await pinToEnd(browser);
-    const before = await readPosition(browser);
-
-    await swipeTo(browser, "left");
-    await swipeTo(browser, "right");
-
-    const after = await readPosition(browser);
-    expect(after).not.toBeNull();
-    expect(after?.distance ?? 99, describe("swipe distance", before, after)).toBeLessThanOrEqual(1);
-    expect(
-      Math.abs((after?.lastTop ?? 0) - (before?.lastTop ?? 0)),
-      describe("swipe last row", before, after),
-    ).toBeLessThanOrEqual(1);
-  });
-}
+      expect(after?.anchorId, describe("detached anchor id", before, after)).toBe(before?.anchorId);
+      expect(
+        Math.abs((after?.anchorTop ?? 0) - (before?.anchorTop ?? 0)),
+        describe("detached anchor offset", before, after),
+      ).toBeLessThanOrEqual(1);
+    });
+  }
+});

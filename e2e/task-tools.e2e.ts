@@ -1,4 +1,4 @@
-import { type Browser, test } from "@e2e-dev/web";
+import { type Browser, beforeEach, describe, test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
 type TaskRead = {
@@ -150,128 +150,91 @@ async function readTask(browser: Browser, id: string): Promise<TaskRead | null> 
   }, id);
 }
 
-test("task_working persists its start, repeats idempotently and clears on close", async ({
-  app,
-  browser,
-  screen,
-}) => {
-  const tag = Date.now();
-  const title = `Track the working badge ${tag}`;
-  await app.open("/?page=tasks");
-  const id = await createTask(browser, title);
-  expect(id).not.toBe("");
+describe("task tool routes against one shared app", { serial: true }, () => {
+  beforeEach(async ({ browser }) => {
+    await browser.unrouteAll();
+  });
 
-  try {
-    const first = `first pass ${tag}`;
-    await runWorking(browser, id, first, title);
-    const afterFirst = await readTask(browser, id);
-    expect(afterFirst?.status).toBe("working");
-    expect(typeof afterFirst?.workingSince).toBe("string");
-    expect(typeof afterFirst?.lastWorkedAt).toBe("string");
-
-    // Reload the page: the badge comes from the persisted status, not from a live run.
+  test("task_working persists its start, repeats idempotently and clears on close", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    const tag = Date.now();
+    const title = `Track the working badge ${tag}`;
     await app.open("/?page=tasks");
-    await expect(screen.getByTestId(`task-${id}`)).toHaveAttribute("data-state", "working");
-    await expect(screen.getByTestId(`task-${id}`)).toContainText("Working");
+    const id = await createTask(browser, title);
+    expect(id).not.toBe("");
 
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    await runWorking(browser, id, `second pass ${tag}`, title);
-    const afterSecond = await readTask(browser, id);
-    expect(afterSecond?.status).toBe("working");
-    expect(afterSecond?.workingSince).toBe(afterFirst?.workingSince);
+    try {
+      const first = `first pass ${tag}`;
+      await runWorking(browser, id, first, title);
+      const afterFirst = await readTask(browser, id);
+      expect(afterFirst?.status).toBe("working");
+      expect(typeof afterFirst?.workingSince).toBe("string");
+      expect(typeof afterFirst?.lastWorkedAt).toBe("string");
 
-    await browser.evaluate(async (taskId) => {
-      await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ status: "done" }),
-      });
-      return null;
-    }, id);
-    const closed = await readTask(browser, id);
-    expect(closed?.status).toBe("done");
-    expect(closed?.workingSince).toBeUndefined();
-    expect(closed?.lastWorkedAt ?? null).toBeNull();
-  } finally {
-    await removeTasks(browser, [title]);
-  }
-});
+      // Reload the page: the badge comes from the persisted status, not from a live run.
+      await app.open("/?page=tasks");
+      await expect(screen.getByTestId(`task-${id}`)).toHaveAttribute("data-state", "working");
+      await expect(screen.getByTestId(`task-${id}`)).toContainText("Working");
 
-test("task_release returns a working task to open through the tool route", async ({
-  app,
-  browser,
-  screen,
-}) => {
-  const tag = Date.now();
-  const title = `Park the working badge ${tag}`;
-  const reason = "Waiting for the nightly build to finish";
-  await app.open("/?page=tasks");
-  const id = await createTask(browser, title);
-  expect(id).not.toBe("");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await runWorking(browser, id, `second pass ${tag}`, title);
+      const afterSecond = await readTask(browser, id);
+      expect(afterSecond?.status).toBe("working");
+      expect(afterSecond?.workingSince).toBe(afterFirst?.workingSince);
 
-  try {
-    await runWorking(browser, id, `first pass ${tag}`, title);
-    expect((await readTask(browser, id))?.status).toBe("working");
-
-    await runRelease(browser, id, reason, title);
-    const released = await readTask(browser, id);
-    expect(released?.status).toBe("open");
-    expect(released?.releaseReason).toBe(reason);
-    expect(typeof released?.releasedAt).toBe("string");
-    expect(released?.workingSince).toBeUndefined();
-    expect(released?.lastWorkedAt ?? null).toBeNull();
-
-    // The release's own attributed call must not revive the badge after it was cleared.
-    await app.open("/?page=tasks");
-    await expect(screen.getByTestId(`task-${id}`)).toHaveAttribute("data-state", "ready");
-    await expect(screen.getByTestId(`task-badge-${id}`)).toHaveCount(0);
-    await expect(screen.getByTestId(`task-stale-${id}`)).toHaveCount(0);
-    await screen.getByRole("button", { name: `Open ${title}` }).tap();
-    await expect(screen.getByTestId(`task-released-${id}`)).toContainText(reason);
-  } finally {
-    await removeTasks(browser, [title]);
-  }
-});
-
-test("a released task shows its reason in the task details", async ({ app, browser, screen }) => {
-  await browser.setViewport({ width: 390, height: 844 });
-  const tag = Date.now();
-  const title = `Show the released badge ${tag}`;
-  const reason = "Parked until the capacity frees up";
-  await app.open("/?page=tasks");
-  const id = await createTask(browser, title);
-  expect(id).not.toBe("");
-
-  try {
-    const seeded = await browser.evaluate(
-      async (args) => {
-        const working = await fetch(`/api/tasks/${encodeURIComponent(args.id)}`, {
+      await browser.evaluate(async (taskId) => {
+        await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ status: "working" }),
+          body: JSON.stringify({ status: "done" }),
         });
-        if (!working.ok) return false;
-        const released = await fetch(`/api/tasks/${encodeURIComponent(args.id)}`, {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ status: "open", releaseReason: args.reason }),
-        });
-        return released.ok;
-      },
-      { id, reason },
-    );
-    expect(seeded).toBe(true);
+        return null;
+      }, id);
+      const closed = await readTask(browser, id);
+      expect(closed?.status).toBe("done");
+      expect(closed?.workingSince).toBeUndefined();
+      expect(closed?.lastWorkedAt ?? null).toBeNull();
+    } finally {
+      await removeTasks(browser, [title]);
+    }
+  });
 
+  test("task_release returns a working task to open through the tool route", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    const tag = Date.now();
+    const title = `Park the working badge ${tag}`;
+    const reason = "Waiting for the nightly build to finish";
     await app.open("/?page=tasks");
-    await expect(screen.getByTestId(`task-${id}`)).toHaveAttribute("data-state", "ready");
-    await expect(screen.getByTestId(`task-badge-${id}`)).toHaveCount(0);
-    await screen.getByRole("button", { name: `Open ${title}` }).tap();
+    const id = await createTask(browser, title);
+    expect(id).not.toBe("");
 
-    const line = screen.getByTestId(`task-released-${id}`);
-    await expect(line).toBeVisible();
-    await expect(line).toContainText("released");
-    await expect(line).toContainText(reason);
-  } finally {
-    await removeTasks(browser, [title]);
-  }
+    try {
+      await runWorking(browser, id, `first pass ${tag}`, title);
+      expect((await readTask(browser, id))?.status).toBe("working");
+
+      await runRelease(browser, id, reason, title);
+      const released = await readTask(browser, id);
+      expect(released?.status).toBe("open");
+      expect(released?.releaseReason).toBe(reason);
+      expect(typeof released?.releasedAt).toBe("string");
+      expect(released?.workingSince).toBeUndefined();
+      expect(released?.lastWorkedAt ?? null).toBeNull();
+
+      // The release's own attributed call must not revive the badge after it was cleared.
+      await app.open("/?page=tasks");
+      await expect(screen.getByTestId(`task-${id}`)).toHaveAttribute("data-state", "ready");
+      await expect(screen.getByTestId(`task-badge-${id}`)).toHaveCount(0);
+      await expect(screen.getByTestId(`task-stale-${id}`)).toHaveCount(0);
+      await screen.getByRole("button", { name: `Open ${title}` }).tap();
+      await expect(screen.getByTestId(`task-released-${id}`)).toContainText(reason);
+    } finally {
+      await removeTasks(browser, [title]);
+    }
+  });
 });

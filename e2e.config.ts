@@ -20,6 +20,8 @@ if (process.env.PLAYWRIGHT_BROWSERS_PATH === undefined && existsSync("/opt/playw
 }
 
 export default {
+  // This glob already selects the core suite, so no allowlist is needed. A new `*.e2e.ts`
+  // is a budget decision: the suite has a 420 s guard and a new spec must displace one.
   tests: ["e2e/**/*.e2e.ts"],
   workers,
   // A busy host can stretch a long UI test past the 120s default; keep a
@@ -30,8 +32,7 @@ export default {
       name: "web",
       // Headless CI does not need the continuously drifting shader in every
       // test; reduced motion still paints the background and keeps the suite
-      // from burning a core per browser. The shader's normal-motion test opts
-      // back in explicitly.
+      // from burning a core per browser.
       engine: web({ browser: "chromium", reducedMotion: "reduce" }),
       app: {
         url: "http://127.0.0.1:0",

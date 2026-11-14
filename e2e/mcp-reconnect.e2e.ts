@@ -207,7 +207,11 @@ test("concurrent calls share one bounded recovery instead of failing a parallel 
       })
       .toBe(2);
     expect(lines(fixture.statePath).filter((line) => line === "drop")).toHaveLength(1);
-    expect(lines(fixture.statePath).filter((line) => line === "call")).toHaveLength(2);
+    // The fixture logs a call after the response body is piped, so a loaded
+    // runner can observe the client result a tick before the log line lands.
+    await expect
+      .poll(() => lines(fixture.statePath).filter((line) => line === "call").length)
+      .toBe(2);
     expect(
       messages.filter((text) =>
         /session lost \(http404\), re-initialized, tool list refreshed/.test(text),
@@ -332,7 +336,11 @@ test("method-not-found is a real failure, never a session recovery", async () =>
         timeout: 10_000,
       })
       .toBe(1);
-    expect(lines(fixture.statePath).filter((line) => line === "call")).toHaveLength(1);
+    // The fixture logs a call after piping the response, so the client can
+    // observe the result a tick before the log line lands.
+    await expect
+      .poll(() => lines(fixture.statePath).filter((line) => line === "call").length)
+      .toBe(1);
     expect(messages.filter((text) => /session lost|re-initialized/.test(text))).toHaveLength(0);
     expect(
       started.runtime.status.servers.find((server) => server.name === "tracer")?.available,

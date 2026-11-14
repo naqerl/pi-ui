@@ -12,7 +12,7 @@ npm install && npm run build && npm start
 
 Open the URL printed by the server (by default <http://localhost:8787>). The server and the Vite client share the same origin in production; `npm run dev` runs the API on port 8787 and Vite on <http://localhost:5173>.
 
-The browser suite is offline by default: `npm run e2e` starts the built server against a temporary `DATA_DIR` and a local fake OpenAI-compatible endpoint. Set `PI_E2E_LIVE=1` to run the opt-in live-model spec instead (it is skipped otherwise).
+The browser suite is offline: `npm run e2e` starts the built server against a temporary `DATA_DIR` and a local fake OpenAI-compatible endpoint; the old opt-in live-model spec has been removed.
 
 ## Run the container
 
