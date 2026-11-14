@@ -130,10 +130,13 @@ function workingNote(value: unknown): string | undefined {
   return note.length === 0 ? undefined : note;
 }
 
-function formatLedger(ledger: TaskLedger): string {
+function formatLedger(ledger: TaskLedger, includePlanning = false): string {
   const lines = [`revision ${ledger.revision}`];
   const active = ledger.tasks.filter(
-    (task) => task.status !== "proposed" && task.status !== "backlog",
+    (task) =>
+      task.status !== "proposed" &&
+      task.status !== "backlog" &&
+      (includePlanning || task.status !== "planning"),
   );
   const ids = new Set(active.map((task) => task.id));
   const write = (task: Task, depth: number) => {
@@ -158,6 +161,12 @@ function formatLedger(ledger: TaskLedger): string {
   for (const root of roots) write(root, 0);
   const proposals = ledger.tasks.filter((task) => task.status === "proposed").length;
   if (proposals > 0) lines.push(`proposals: ${proposals} waiting for approval`);
+  const planning = includePlanning
+    ? ledger.tasks.filter((task) => task.status === "planning").length
+    : 0;
+  if (planning > 0) {
+    lines.push(`planning: ${planning} draft(s) are still being specified; do not execute them yet`);
+  }
   return lines.join("\n");
 }
 
@@ -228,10 +237,24 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
     defineTool({
       name: "task_list",
       description:
-        "List the shared todo ledger: id, status, live blockers, attached image count, @project when set, and title. Ready tasks come first, then blocked, then done. A done blocker is omitted. Proposals and backlog tasks are not work: proposals appear only as a waiting count; use task_proposals to read them. Use task_view to see a task's images.",
-      parameters: Type.Object({}),
-      async execute() {
-        return { output: [{ type: "text", text: formatLedger(bridge.store.ledger()) }] };
+        "List the shared todo ledger: id, status, live blockers, attached image count, @project when set, and title. Ready tasks come first, then blocked, then done. A done blocker is omitted. Proposals and backlog tasks are not work: proposals appear only as a waiting count; use task_proposals to read them. Planning drafts are still being specified and must not be executed yet; they are hidden unless includePlanning is true. Use task_view to see a task's images.",
+      parameters: Type.Object({
+        includePlanning: Type.Optional(
+          Type.Boolean({
+            description:
+              "Include tasks still in the planning state. They are drafts being specified and must not be executed yet. Default false.",
+          }),
+        ),
+      }),
+      async execute(args) {
+        return {
+          output: [
+            {
+              type: "text",
+              text: formatLedger(bridge.store.ledger(), args.includePlanning === true),
+            },
+          ],
+        };
       },
     }),
     defineTool({
@@ -302,6 +325,11 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
         if (current.status === "proposed") {
           return failure(new TaskError("Task is not open; a proposal must be approved first", 409));
         }
+        if (current.status === "planning") {
+          return failure(
+            new TaskError("Task is still being planned; approve it before executing it", 409),
+          );
+        }
         const parsed = parseCompletion(args);
         if (!parsed.ok) return failure(new TaskError(parsed.error, 400));
         return changed(bridge, () =>
@@ -361,6 +389,11 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
         }
         if (current.status === "proposed") {
           return failure(new TaskError("Task is not open; a proposal must be approved first", 409));
+        }
+        if (current.status === "planning") {
+          return failure(
+            new TaskError("Task is still being planned; approve it before marking it working", 409),
+          );
         }
         let note: string | undefined;
         try {

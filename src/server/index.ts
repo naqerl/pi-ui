@@ -120,7 +120,7 @@ function taskView(ledger: TaskLedger = taskStore.ledger()): TaskLedger {
     planning,
     tasks: ledger.tasks.map((task) => ({
       ...task,
-      planning: live.has(task.id) && isActiveStatus(task.status),
+      planning: live.has(task.id) && (isActiveStatus(task.status) || task.status === "planning"),
     })),
     activity: taskActivity.view(),
     reopenStats: taskReopenStats(ledger.tasks),
@@ -899,10 +899,17 @@ app.post("/api/tasks", async (c) => {
   if (
     requestedStatus !== undefined &&
     requestedStatus !== "open" &&
-    requestedStatus !== "backlog"
+    requestedStatus !== "backlog" &&
+    requestedStatus !== "planning"
   ) {
-    return c.text('Status must be "open" or "backlog"', 400);
+    return c.text('Status must be "open", "backlog" or "planning"', 400);
   }
+  const planFlag =
+    typeof body === "object" && body !== null && "plan" in body ? body.plan : undefined;
+  if (planFlag !== undefined && typeof planFlag !== "boolean") {
+    return c.text("plan must be a boolean", 400);
+  }
+  const plan = planFlag === true || requestedStatus === "planning";
   const backlogFlag =
     typeof body === "object" && body !== null && "backlog" in body ? body.backlog : undefined;
   if (backlogFlag !== undefined && typeof backlogFlag !== "boolean") {
@@ -928,6 +935,10 @@ app.post("/api/tasks", async (c) => {
       return c.text(`body must be at most ${TASK_BODY_MAX_LENGTH} characters`, 400);
     }
   }
+  const draftBody = plan && taskBody === undefined ? title : taskBody;
+  if (draftBody !== taskBody && (draftBody ?? "").trim().length > TASK_BODY_MAX_LENGTH) {
+    return c.text(`body must be at most ${TASK_BODY_MAX_LENGTH} characters`, 400);
+  }
   try {
     const attachments = parseAttachmentIds(
       media,
@@ -943,6 +954,24 @@ app.post("/api/tasks", async (c) => {
         ),
         201,
       );
+    }
+    if (plan) {
+      const { ledger, task: created } = await taskStore.createWithResult(
+        title,
+        parentId,
+        attachments,
+        project,
+        draftBody,
+        { status: "planning" },
+      );
+      publishTasks(ledger);
+      try {
+        await taskAgents.submit(created.id, created.body ?? title);
+      } catch (error) {
+        // The draft still exists; its chat shows the failed run instead of losing the task.
+        console.error(`[pi] could not start the plan run for ${created.id}`, error);
+      }
+      return c.json(taskView(), 201);
     }
     return c.json(
       publishTasks(

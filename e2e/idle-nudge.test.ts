@@ -56,6 +56,7 @@ test("the prompt names the count and ids, and only unblocked open tasks count", 
   const tasks = [
     task("a1"),
     task("p1", "proposed"),
+    task("draft1", "planning"),
     task("d1", "done"),
     task("blocked", "open", ["a1"]),
     task("b2"),

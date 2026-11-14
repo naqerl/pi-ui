@@ -412,6 +412,7 @@ const TASK_STATUS: Record<Task["status"], string> = {
   done: "Done",
   proposed: "Proposed",
   backlog: "Backlog",
+  planning: "Draft",
 };
 
 type PreviewPosition = { left: number; width: number; top?: number; bottom?: number };

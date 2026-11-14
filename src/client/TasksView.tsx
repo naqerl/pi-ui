@@ -384,7 +384,17 @@ function TasksViewImpl({
     [tasks, activity, facts, createFailures],
   );
   const state = (task: Task): TaskState => stateOf.get(task.id) ?? "ready";
-  const activeTasks = useMemo(() => tasks.filter((task) => task.status !== "proposed"), [tasks]);
+  const activeTasks = useMemo(
+    () => tasks.filter((task) => task.status !== "proposed" && task.status !== "planning"),
+    [tasks],
+  );
+  const draftTasks = useMemo(
+    () =>
+      tasks
+        .filter((task) => task.status === "planning" && createFailures?.[task.id] === undefined)
+        .sort(compareTasks.bind(null, tasks)),
+    [tasks, createFailures],
+  );
   const rowIndex = useMemo(() => indexTasks(activeTasks), [activeTasks]);
   const proposedTasks = tasks
     .filter((task) => task.status === "proposed")
@@ -393,9 +403,10 @@ function TasksViewImpl({
       const right = b.proposedAt ?? b.createdAt;
       return left === right ? (a.id < b.id ? -1 : 1) : left < right ? -1 : 1;
     });
-  // A failed create is still the operator's problem even when its row is a backlog task.
-  const failedTasks = activeTasks.filter(
-    (task) => task.status !== "done" && state(task) === "failed",
+  // A failed create is still the operator's problem, including a plan draft that never
+  // reached the server. It must stay in the retryable row instead of a phantom draft.
+  const failedTasks = tasks.filter(
+    (task) => task.status !== "done" && task.status !== "proposed" && state(task) === "failed",
   );
   const ids = new Set(activeTasks.map((task) => task.id));
   const roots = activeTasks
@@ -466,7 +477,8 @@ function TasksViewImpl({
     if (openTask === undefined) return null;
     const word = taskStatusWord(
       openTask.id,
-      planning.has(openTask.id) && isActiveStatus(openTask.status),
+      planning.has(openTask.id) &&
+        (isActiveStatus(openTask.status) || openTask.status === "planning"),
     );
     return word === null ? null : { taskId: openTask.id, word };
   }, [openTask, planning]);
@@ -733,6 +745,25 @@ function TasksViewImpl({
           </ul>
         </Section>
       )}
+      {draftTasks.length > 0 && (
+        <Section title="Drafts" count={draftTasks.length} id="drafts" dark collapsible>
+          <ul className={TASK_STACK} data-testid="task-drafts">
+            {draftTasks.map((task) => (
+              <ProposedTask
+                key={task.id}
+                task={task}
+                showProject
+                selected={openTaskId === task.id}
+                notice={problem?.id === task.id ? problem.message : null}
+                onOpen={() => openDetail(task.id)}
+                onApprove={() => approve(task)}
+                onDismiss={() => dismiss(task)}
+                draft
+              />
+            ))}
+          </ul>
+        </Section>
+      )}
       {activeRoots.length > 0 && (
         <Section title="Open" count={activeRoots.length} id="active" dark collapsible>
           {grouped ? (
@@ -820,7 +851,10 @@ function TasksViewImpl({
         state={state(openTask)}
         trace={activity?.traces[openTask.id]}
         wide={wide}
-        planning={planning.has(openTask.id) && isActiveStatus(openTask.status)}
+        planning={
+          planning.has(openTask.id) &&
+          (isActiveStatus(openTask.status) || openTask.status === "planning")
+        }
         statusPending={statusPending[openTask.id] === true}
         notice={problem?.id === openTask.id && menu === null ? problem.message : null}
         onClose={closeDetail}
@@ -1160,6 +1194,8 @@ export function stateBadge(state: TaskState, trace: TaskTrace | undefined): stri
       return failureLabel(trace);
     case "proposed":
       return "Proposed";
+    case "planning":
+      return "Draft";
     case "backlog":
       return "Backlog";
     case "done":
@@ -1266,7 +1302,8 @@ export function TaskRow({
   const selected = selectedId === task.id;
   const trace = activity?.traces[task.id];
   const badge = history || (done && depth > 0) ? null : stateBadge(current, trace);
-  const planningLive = planning.has(task.id) && isActiveStatus(task.status);
+  const planningLive =
+    planning.has(task.id) && (isActiveStatus(task.status) || task.status === "planning");
   const stale = current === "working" && isStaleWorking(task, activity);
   const note = rowNote(task, tasks, current, trace, activity?.traces ?? {}, index);
   const project = showProject && depth === 0 ? task.project : undefined;
@@ -1474,6 +1511,7 @@ function ProposedTask({
   onOpen,
   onApprove,
   onDismiss,
+  draft = false,
 }: {
   task: Task;
   showProject: boolean;
@@ -1482,16 +1520,22 @@ function ProposedTask({
   onOpen: () => void;
   onApprove: () => void;
   onDismiss: () => void;
+  /** A plan draft is approved into open work, not a proposed idea. */
+  draft?: boolean;
 }) {
   const stop = (event: { stopPropagation: () => void }) => event.stopPropagation();
   return (
-    <li data-testid={`proposal-${task.id}`} data-state="proposed" className="min-w-0">
+    <li
+      data-testid={`${draft ? "draft" : "proposal"}-${task.id}`}
+      data-state={draft ? "planning" : "proposed"}
+      className="min-w-0"
+    >
       {/* biome-ignore lint/a11y/useSemanticElements: the row contains its own approve and dismiss buttons. */}
       <div
         role="button"
         tabIndex={0}
         aria-current={selected ? "true" : undefined}
-        aria-label={`Open proposal ${plainInline(task.title)}`}
+        aria-label={`Open ${draft ? "draft" : "proposal"} ${plainInline(task.title)}`}
         className={cn(
           "flex min-h-11 w-full cursor-pointer select-none flex-col gap-2 overflow-hidden rounded-md bg-surface px-3 py-2 text-left hover:bg-muted",
           selected && "bg-muted hover:bg-muted",
@@ -1508,7 +1552,7 @@ function ProposedTask({
           <InlineMarkdown text={task.title} />
         </span>
         <TaskCardMeta task={task} project={showProject ? task.project : undefined}>
-          <Badge variant="outline">Proposed</Badge>
+          <Badge variant="outline">{draft ? "Draft" : "Proposed"}</Badge>
         </TaskCardMeta>
         <span
           data-testid="proposal-decision"
@@ -1867,6 +1911,7 @@ export function TaskDetail({
   };
   const done = task.status === "done";
   const proposed = task.status === "proposed";
+  const draft = task.status === "planning";
   const parked = task.status === "backlog";
   const backlogLabel = parked ? "Reopen" : "Backlog";
   const openChildren = !done && hasOpenDescendant(tasks, task.id);
@@ -1929,6 +1974,7 @@ export function TaskDetail({
       acceptProject,
       done,
       proposed,
+      draft,
       parked,
       backlogLabel,
       openChildren,

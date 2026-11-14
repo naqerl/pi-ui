@@ -431,7 +431,7 @@ export interface DraftSync {
   revision: number;
 }
 
-export type TaskStatus = "open" | "working" | "done" | "proposed" | "backlog";
+export type TaskStatus = "open" | "working" | "done" | "proposed" | "backlog" | "planning";
 
 /**
  * Where a reviewer can check the work. Time, tokens and cost are measured from the runs that
@@ -514,6 +514,7 @@ export interface TaskLedger {
 export type TaskState =
   | "proposed"
   | "backlog"
+  | "planning"
   | "ready"
   | "working"
   | "blocked"

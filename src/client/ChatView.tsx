@@ -30,6 +30,7 @@ import type {
   Task,
   TaskActivity,
   TaskLedger,
+  TaskStatus,
   TokenSpend,
   ToolActivity,
 } from "../shared/types";
@@ -41,6 +42,7 @@ import {
 } from "./BackgroundJobs";
 import { Button } from "./components/ui/button";
 import { Textarea } from "./components/ui/textarea";
+import { readPlanTaskDraft, writePlanTaskDraft } from "./composer-preferences";
 import { DiagramPart } from "./DiagramPart";
 import { EmptyCaption } from "./EmptyCaption";
 import { haptic } from "./haptics";
@@ -161,7 +163,7 @@ interface CreateTaskRequest {
   title: string;
   attachments: string[];
   project?: string;
-  options?: { backlog?: boolean };
+  options?: { backlog?: boolean; plan?: boolean; status?: TaskStatus; body?: string };
   /** The composer draft that submitted this create, before @project and whitespace parsing. */
   draft?: { key: string; text: string };
 }
@@ -996,6 +998,7 @@ export function Composer({
   placeholder,
   draftKey,
   clearDraft,
+  planDraft = false,
 }: {
   tasksPage: boolean;
   /** When set, @project suggestions work even if this is not the create-task composer. */
@@ -1009,7 +1012,7 @@ export function Composer({
     text: string,
     attachments: string[],
     project?: string,
-    options?: { backlog?: boolean },
+    options?: { backlog?: boolean; plan?: boolean; status?: TaskStatus; body?: string },
     draft?: { key: string; text: string },
   ) => Promise<boolean>;
   /** Known project names, A–Z, for the `@` autocomplete. */
@@ -1024,6 +1027,8 @@ export function Composer({
   placeholder?: string;
   /** Stable instance: text drafts are stored per target instead of remounting. */
   draftKey?: string;
+  /** The status row's plan-draft toggle was left on for this session. */
+  planDraft?: boolean;
   /** A successful Retry consumes the exact draft that was restored for its failed row. */
   clearDraft?: {
     key: string;
@@ -1245,7 +1250,7 @@ export function Composer({
         parsed.title,
         ids,
         parsed.project ?? undefined,
-        backlog ? { backlog: true } : undefined,
+        planDraft ? { plan: true } : backlog ? { backlog: true } : undefined,
         { key, text },
       );
     } else {
@@ -1733,11 +1738,13 @@ export function ChatView({
   const [pageAnimating, setPageAnimating] = useState(false);
   const [taskSelection, setTaskSelection] = useState<{ id: string; request: number } | null>(null);
   const [composerMode, setComposerMode] = useState<"create" | "task-chat" | "collapsed">("create");
+  const [planDraft, setPlanDraft] = useState(readPlanTaskDraft);
   const [taskDock, setTaskDock] = useState<TaskDockSession | null>(null);
   const [taskSurfaceStatus, setTaskSurfaceStatus] = useState<TaskSurfaceStatus | null>(null);
   const wantTaskDock = tasksPage && composerMode === "task-chat";
   const dockToTask = wantTaskDock && taskDock !== null;
   const hideTasksComposer = statsPage || (tasksPage && composerMode === "collapsed");
+  const showPlanToggle = tasksPage && !wantTaskDock && !hideTasksComposer;
   // Each surface speaks for itself: the open task's plan run on the tasks page,
   // the main conversation's run everywhere else. No task open means an empty slot.
   const chatStatusWord = running ? workingWord(thinking) : ready ? "idle" : "connecting";
@@ -1992,12 +1999,19 @@ export function ChatView({
   const attemptCreate = useCallback(
     async (created: OptimisticTask, retried = false): Promise<boolean> => {
       const { title } = created.request;
+      const requestOptions =
+        created.request.options?.plan === true
+          ? {
+              ...created.request.options,
+              body: created.request.draft?.text.trim() ?? title,
+            }
+          : created.request.options;
       const outcome = await createTask(
         title,
         null,
         created.request.attachments,
         created.request.project,
-        created.request.options,
+        requestOptions,
       );
       if (!outcome.ok) {
         // The row keeps the text and the server's reason so Retry has something to send.
@@ -2032,13 +2046,17 @@ export function ChatView({
           .sort((left, right) => (left.createdAt < right.createdAt ? 1 : -1))[0];
         if (opened !== undefined) {
           openTaskFromChat(opened.id);
-          void fetch(`/api/tasks/${encodeURIComponent(opened.id)}/chat`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: title }),
-          }).catch((error: unknown) => {
-            console.error("[pi] could not start the task agent", error);
-          });
+          // A plan create starts its run with the create response; a plain create starts
+          // the plan chat here, from the text that just named the task.
+          if (created.request.options?.plan !== true) {
+            void fetch(`/api/tasks/${encodeURIComponent(opened.id)}/chat`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ text: title }),
+            }).catch((error: unknown) => {
+              console.error("[pi] could not start the task agent", error);
+            });
+          }
           requestAnimationFrame(() => {
             window.dispatchEvent(new Event("pi-focus-task-chat"));
           });
@@ -2065,7 +2083,7 @@ export function ChatView({
     text: string,
     attachments: string[],
     project?: string,
-    options?: { backlog?: boolean },
+    options?: { backlog?: boolean; plan?: boolean; status?: TaskStatus; body?: string },
     draft?: { key: string; text: string },
   ) => {
     const title = text.trim();
@@ -2081,7 +2099,8 @@ export function ChatView({
       task: {
         id: `pending-${key}`,
         title: paintedTitle,
-        status: options?.backlog === true ? "backlog" : "open",
+        status:
+          options?.plan === true ? "planning" : options?.backlog === true ? "backlog" : "open",
         parentId: null,
         blockedBy: [],
         createdAt: new Date().toISOString(),
@@ -2307,6 +2326,29 @@ export function ChatView({
                 </div>
               )}
             </div>
+            {showPlanToggle && (
+              <button
+                type="button"
+                data-testid="plan-task-toggle"
+                aria-label="Plan this task"
+                aria-pressed={planDraft}
+                title={planDraft ? "Creates a plan draft" : "Plan this task first"}
+                className={cn(
+                  "min-h-6 shrink-0 rounded-md border px-1.5 font-mono text-[10px] leading-4 tracking-tight transition-colors",
+                  planDraft
+                    ? "border-foreground bg-foreground text-background"
+                    : "border-border bg-surface text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => {
+                  const next = !planDraft;
+                  setPlanDraft(next);
+                  writePlanTaskDraft(next);
+                  haptic();
+                }}
+              >
+                Plan this task
+              </button>
+            )}
             <div
               role="tablist"
               aria-label="Pages"
@@ -2370,6 +2412,7 @@ export function ChatView({
               projects={projects}
               error={dockToTask ? taskDock.error : composerError}
               onDismissError={dockToTask ? taskDock.dismissError : () => setComposerError(null)}
+              planDraft={showPlanToggle ? planDraft : false}
               clearDraft={draftClear}
               textareaRef={composerRef}
               inputTestId={wantTaskDock ? "task-agent-input" : undefined}

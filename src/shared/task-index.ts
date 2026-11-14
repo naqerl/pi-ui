@@ -32,13 +32,15 @@ export function indexTasks(tasks: readonly Task[]) {
   const rank = (task: Task) =>
     task.status === "proposed"
       ? 0
-      : task.status === "backlog"
-        ? 4
-        : task.status === "done"
-          ? 3
-          : (blockers.get(task.id)?.length ?? 0) > 0
-            ? 2
-            : 1;
+      : task.status === "planning"
+        ? 1
+        : task.status === "backlog"
+          ? 5
+          : task.status === "done"
+            ? 4
+            : (blockers.get(task.id)?.length ?? 0) > 0
+              ? 3
+              : 2;
   const compare = (a: Task, b: Task): number =>
     rank(a) - rank(b) ||
     (a.createdAt !== b.createdAt

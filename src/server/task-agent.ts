@@ -183,7 +183,9 @@ export function derivePlanningTaskIds(
 ): string[] {
   const live = new Set(running);
   return tasks
-    .filter((task) => live.has(task.id) && isActiveStatus(task.status))
+    .filter(
+      (task) => live.has(task.id) && (isActiveStatus(task.status) || task.status === "planning"),
+    )
     .map((task) => task.id);
 }
 
