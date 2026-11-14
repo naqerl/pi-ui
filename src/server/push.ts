@@ -44,6 +44,45 @@ export interface PushNotification {
   readonly data?: Record<string, unknown>;
 }
 
+/** One delivery captured by the browser-suite stub instead of a real push endpoint. */
+export interface PushSinkRecord extends PushNotification {
+  readonly endpoint: string;
+  readonly sentAt: string;
+}
+
+const pushSinkRecords: PushSinkRecord[] = [];
+
+/** The browser suite starts its backend with this env var; production never sets it. */
+export function e2ePushSinkEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.PI_E2E_DATA_DIR !== undefined;
+}
+
+export function readPushSink(): readonly PushSinkRecord[] {
+  return [...pushSinkRecords];
+}
+
+export function clearPushSink(): void {
+  pushSinkRecords.length = 0;
+}
+
+function recordPushSink(endpoint: string, payload: string): void {
+  try {
+    const parsed: unknown = JSON.parse(payload);
+    if (!isRecord(parsed) || typeof parsed.title !== "string") return;
+    pushSinkRecords.push({
+      endpoint,
+      sentAt: new Date().toISOString(),
+      title: parsed.title,
+      ...(typeof parsed.body === "string" ? { body: parsed.body } : {}),
+      ...(typeof parsed.url === "string" ? { url: parsed.url } : {}),
+      ...(typeof parsed.tag === "string" ? { tag: parsed.tag } : {}),
+      ...(isRecord(parsed.data) ? { data: parsed.data } : {}),
+    });
+  } catch {
+    // A malformed payload cannot have come from this service; leave the sink alone.
+  }
+}
+
 export interface PushSubscriptionStoreOptions {
   /** Minimum milliseconds between background writes. */
   readonly throttleMs?: number;
@@ -561,8 +600,13 @@ export class PushService {
       });
     this.send =
       resolved.send ??
-      ((subscription, payload, sendOptions) =>
-        webpush.sendNotification(subscription, payload, sendOptions));
+      (e2ePushSinkEnabled()
+        ? async (subscription, payload) => {
+            recordPushSink(subscription.endpoint, payload);
+            return { statusCode: 201 };
+          }
+        : (subscription, payload, sendOptions) =>
+            webpush.sendNotification(subscription, payload, sendOptions));
   }
 
   private vapidKeys(): Promise<PushVapidKeys> {
