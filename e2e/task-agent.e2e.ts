@@ -123,6 +123,28 @@ describe("plan runs against one shared app", { serial: true }, () => {
     await openTaskChatTab(screen);
     await expect(screen.getByTestId("task-agent-chat")).toBeVisible();
 
+    const taskId = await browser.evaluate(async (taskTitle) => {
+      const ledger = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
+        tasks: Array<{ id: string; title: string }>;
+      };
+      return ledger.tasks.find((task) => task.title === taskTitle)?.id ?? null;
+    }, title);
+    expect(taskId).not.toBeNull();
+    if (taskId === null) return;
+
+    await browser.evaluate(async () => {
+      await fetch("/api/e2e/push", { method: "DELETE" });
+      await fetch("/api/push/subscribe", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          endpoint: "https://push.example/e2e-plan-run-error",
+          keys: { p256dh: "plan-error-key", auth: "plan-error-auth" },
+        }),
+      });
+      return true;
+    });
+
     const input = screen.getByTestId("task-agent-input");
     await input.fill("DELEGATE_FAIL");
     await screen.getByTestId("task-agent-send").tap();
@@ -131,6 +153,36 @@ describe("plan runs against one shared app", { serial: true }, () => {
     await expect(header).toBeVisible({ timeout: 60_000 });
     await expect(screen.getByTestId("run-error-class")).toHaveText("ModelError");
     await expect(screen.getByTestId("run-error-message")).toContainText(/delegate failure/i);
+
+    await expect
+      .poll(async () =>
+        browser.evaluate(async (id) => {
+          const response = await fetch("/api/e2e/push", { cache: "no-store" });
+          const body = (await response.json()) as {
+            notifications?: Array<{
+              title?: unknown;
+              body?: unknown;
+              url?: unknown;
+              tag?: unknown;
+            }>;
+          };
+          const match = body.notifications?.find(
+            (item) => item.title === `Turn failed in the plan chat for ${id}`,
+          );
+          return match === undefined
+            ? null
+            : {
+                body: typeof match.body === "string" ? match.body : null,
+                url: typeof match.url === "string" ? match.url : null,
+                tag: typeof match.tag === "string" ? match.tag : null,
+              };
+        }, taskId),
+      )
+      .toEqual({
+        body: expect.stringMatching(/delegate failure/i),
+        url: `/#/tasks/${taskId}?tab=plan`,
+        tag: `run-error-${taskId}`,
+      });
 
     // The chat is idle with the error, never bare idle and nothing else.
     await expect

@@ -12,17 +12,26 @@ import {
   type PushRowState,
   PushSettingsRow,
 } from "../src/client/PushSettings.js";
+import { ChatService } from "../src/server/chat-service.js";
 import {
   configurePush,
   createPushService,
   loadOrCreateVapidKeys,
   MAX_BODY_CHARS,
+  type PushNotification,
   type PushSubscriptionRecord,
   PushSubscriptionStore,
   resetPushServiceForTests,
 } from "../src/server/push.js";
+import {
+  RUN_ERROR_PUSH_BODY_CHARS,
+  RUN_ERROR_PUSH_WINDOW_MS,
+  RunErrorNotifier,
+  runErrorNotification,
+} from "../src/server/run-push.js";
 import { TaskStore } from "../src/server/tasks.js";
 import { PAGE_PATHS, pageIdFromPath } from "../src/shared/pages.js";
+import type { RunError } from "../src/shared/types.js";
 
 async function tempDir(t: { after: (fn: () => Promise<void>) => void }): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "pi-push-"));
@@ -45,6 +54,275 @@ function subscription(endpoint = "https://push.example/one"): PushSubscriptionRe
     lastOkAt: null,
   };
 }
+
+type ErrorChat = {
+  runState: string;
+  runStopped: boolean;
+  runReleased: boolean;
+  runError: RunError | null;
+  noteRunError(errorClass: string, message: string, detail?: string): void;
+  clearRunError(errorClass?: string): void;
+  setRunState(state: "idle" | "running" | "interrupted"): void;
+  stop(): Promise<void>;
+  handleEvent(
+    event:
+      | {
+          type: "tool_execution_start";
+          toolCallId: string;
+          toolName: string;
+          args: unknown;
+        }
+      | {
+          type: "tool_execution_end";
+          toolCallId: string;
+          toolName: string;
+          args?: unknown;
+          result?: { isError?: boolean; output?: string };
+        },
+  ): Promise<void>;
+};
+
+function makeErrorChat(notifier: Pick<RunErrorNotifier, "deliver">): {
+  chat: ChatService;
+  internal: ErrorChat;
+} {
+  const conversation = {
+    id: 1,
+    submit: async () => ({ id: 1 }),
+    abort: async () => "aborted",
+  };
+  const chat = new ChatService(
+    {} as never,
+    conversation as never,
+    { broadcast() {} } as never,
+    undefined,
+    false,
+    { clear: async () => undefined, write: async () => undefined } as never,
+    undefined,
+    { servers: [], unavailable: [] },
+    {} as never,
+    undefined,
+    {} as never,
+    {} as never,
+    async () => undefined,
+    () => undefined,
+    () => [],
+    undefined,
+    undefined,
+    notifier,
+  );
+  return { chat, internal: chat as unknown as ErrorChat };
+}
+
+async function settlePush(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+test("a run error pushes once, repeats inside the window coalesce, and a new message pushes", async () => {
+  const sent: PushNotification[] = [];
+  let now = 1_000;
+  const notifier = new RunErrorNotifier({ now: () => now, notify: (item) => sent.push(item) });
+  const { chat, internal } = makeErrorChat(notifier);
+  try {
+    internal.noteRunError("ModelError", "the provider returned an empty answer");
+    await settlePush();
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]?.title, "Turn failed in chat");
+    assert.equal(sent[0]?.body, "the provider returned an empty answer");
+    assert.equal(sent[0]?.url, PAGE_PATHS.chat);
+
+    // The same sequence is never announced twice, even when its detail changes.
+    internal.noteRunError("ModelError", "the provider returned an empty answer", "more detail");
+    await settlePush();
+    assert.equal(sent.length, 1);
+
+    // A later run with the same text inside the window is still one notification.
+    internal.clearRunError();
+    internal.noteRunError("ModelError", "the provider returned an empty answer");
+    await settlePush();
+    assert.equal(sent.length, 1);
+
+    // Past the window, the same error is news again; a different one always is.
+    now += RUN_ERROR_PUSH_WINDOW_MS;
+    internal.clearRunError();
+    internal.noteRunError("ModelError", "the provider returned an empty answer");
+    await settlePush();
+    assert.equal(sent.length, 2);
+
+    internal.clearRunError();
+    internal.noteRunError("ProviderError", "the provider kept failing");
+    await settlePush();
+    assert.equal(sent.length, 3);
+    assert.equal(sent[2]?.body, "the provider kept failing");
+    assert.ok((sent[2]?.body ?? "").length <= RUN_ERROR_PUSH_BODY_CHARS);
+  } finally {
+    await chat.close();
+  }
+});
+
+test("the same failure in a later turn is news again after the window", async () => {
+  const sent: PushNotification[] = [];
+  let now = 1_000;
+  const notifier = new RunErrorNotifier({ now: () => now, notify: (item) => sent.push(item) });
+  const { chat, internal } = makeErrorChat(notifier);
+  try {
+    internal.noteRunError("ModelError", "the same failure every turn");
+    await settlePush();
+    assert.equal(sent.length, 1);
+
+    // The old header is still shown, but a new turn makes the same text a new failure.
+    now += RUN_ERROR_PUSH_WINDOW_MS;
+    internal.setRunState("running");
+    internal.setRunState("idle");
+    internal.noteRunError("ModelError", "the same failure every turn");
+    await settlePush();
+    assert.equal(sent.length, 2);
+  } finally {
+    await chat.close();
+  }
+});
+
+test("an idle connection error is not a failed turn", async () => {
+  const sent: PushNotification[] = [];
+  const notifier = new RunErrorNotifier({ notify: (item) => sent.push(item) });
+  const { chat, internal } = makeErrorChat(notifier);
+  try {
+    internal.noteRunError("ConnectionError", "Lost the connection to the agent; reconnecting.");
+    internal.noteRunError("ConnectionError", "Could not reconnect to the agent.");
+    await settlePush();
+    assert.equal(sent.length, 0);
+  } finally {
+    await chat.close();
+  }
+});
+
+test("a failure waits for its run to settle and a retried one never rings", async () => {
+  const sent: PushNotification[] = [];
+  const notifier = new RunErrorNotifier({ notify: (item) => sent.push(item) });
+  const { chat, internal } = makeErrorChat(notifier);
+  try {
+    internal.runState = "running";
+    internal.noteRunError("ModelError", "a transient provider failure");
+    await settlePush();
+    assert.equal(sent.length, 0, "a failure while running is not the turn's outcome yet");
+
+    // The retry clears it before the run ends, so it never becomes a phone notification.
+    internal.clearRunError();
+    internal.setRunState("idle");
+    await settlePush();
+    assert.equal(sent.length, 0);
+
+    internal.runState = "running";
+    internal.noteRunError("ModelError", "the run's final failure");
+    await settlePush();
+    assert.equal(sent.length, 0);
+    internal.setRunState("idle");
+    await settlePush();
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]?.body, "the run's final failure");
+  } finally {
+    await chat.close();
+  }
+});
+
+test("a deliberate stop or successful release of this run's task keeps the failure off the phone", async () => {
+  const sent: PushNotification[] = [];
+  const notifier = new RunErrorNotifier({ notify: (item) => sent.push(item) });
+  const { chat, internal } = makeErrorChat(notifier);
+  try {
+    internal.setRunState("running");
+    await internal.stop();
+    internal.noteRunError("ModelError", "stopped from the chat");
+    await settlePush();
+    assert.equal(sent.length, 0);
+
+    internal.setRunState("running");
+    await internal.handleEvent({
+      type: "tool_execution_start",
+      toolCallId: "working-1",
+      toolName: "task_working",
+      args: { id: "t1" },
+    });
+    await internal.handleEvent({
+      type: "tool_execution_start",
+      toolCallId: "release-1",
+      toolName: "task_release",
+      args: { id: "t1", reason: "parked" },
+    });
+    await internal.handleEvent({
+      type: "tool_execution_end",
+      toolCallId: "release-1",
+      toolName: "task_release",
+      args: { id: "t1", reason: "parked" },
+      result: { isError: false, output: "t1 open" },
+    });
+    internal.setRunState("idle");
+    internal.noteRunError("ModelError", "released work");
+    await settlePush();
+    assert.equal(sent.length, 0);
+  } finally {
+    await chat.close();
+  }
+});
+
+test("a failed or unrelated release leaves a real failure on the push path", async () => {
+  const sent: PushNotification[] = [];
+  const notifier = new RunErrorNotifier({ notify: (item) => sent.push(item) });
+  const { chat, internal } = makeErrorChat(notifier);
+  try {
+    internal.setRunState("running");
+    await internal.handleEvent({
+      type: "tool_execution_start",
+      toolCallId: "working-1",
+      toolName: "task_working",
+      args: { id: "t1" },
+    });
+    await internal.handleEvent({
+      type: "tool_execution_start",
+      toolCallId: "release-1",
+      toolName: "task_release",
+      args: { id: "t1" },
+    });
+    await internal.handleEvent({
+      type: "tool_execution_end",
+      toolCallId: "release-1",
+      toolName: "task_release",
+      args: { id: "t1" },
+      result: { isError: true, output: "Only a working task can be released" },
+    });
+    internal.setRunState("idle");
+    internal.noteRunError("ModelError", "a real failure after a failed release");
+    await settlePush();
+    assert.equal(sent.length, 1);
+
+    internal.setRunState("running");
+    await internal.handleEvent({
+      type: "tool_execution_start",
+      toolCallId: "working-2",
+      toolName: "task_working",
+      args: { id: "t1" },
+    });
+    await internal.handleEvent({
+      type: "tool_execution_start",
+      toolCallId: "release-2",
+      toolName: "task_release",
+      args: { id: "t2" },
+    });
+    await internal.handleEvent({
+      type: "tool_execution_end",
+      toolCallId: "release-2",
+      toolName: "task_release",
+      args: { id: "t2" },
+      result: { isError: false, output: "t2 open" },
+    });
+    internal.setRunState("idle");
+    internal.noteRunError("ModelError", "a real failure after another task's release");
+    await settlePush();
+    assert.equal(sent.length, 2);
+  } finally {
+    await chat.close();
+  }
+});
 
 test("the VAPID key pair is generated once, persisted at 0600 and stable across starts", async (t) => {
   const dir = await tempDir(t);
@@ -319,6 +597,69 @@ test("the worker stays quiet only while a client is focused", async () => {
   assert.equal(shouldNotify?.([{ focused: true }]), false);
   assert.equal(shouldNotify?.([{ focused: false }]), true);
   assert.equal(shouldNotify?.([]), true);
+});
+
+interface PushEvent {
+  data: { json: () => unknown };
+  waitUntil: (promise: Promise<void>) => void;
+}
+
+async function loadPushWorker(clients: readonly unknown[]): Promise<{
+  push: (event: PushEvent) => void;
+  shown: Array<{ title: string; options: Record<string, unknown> }>;
+}> {
+  const source = await readFile(new URL("../public/sw.js", import.meta.url), "utf8");
+  const listeners = new Map<string, (event: PushEvent) => void>();
+  const shown: Array<{ title: string; options: Record<string, unknown> }> = [];
+  const sandbox = {
+    self: {
+      addEventListener(type: string, listener: (event: PushEvent) => void) {
+        listeners.set(type, listener);
+      },
+      clients: { matchAll: async () => clients },
+      registration: {
+        showNotification: async (title: string, options: Record<string, unknown>) => {
+          shown.push({ title, options });
+        },
+      },
+    },
+    caches: {},
+    Response,
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(source, sandbox);
+  const push = listeners.get("push");
+  assert.equal(typeof push, "function");
+  return { push: push as (event: PushEvent) => void, shown };
+}
+
+async function deliverPush(push: (event: PushEvent) => void, payload: unknown): Promise<void> {
+  let pending: Promise<void> | undefined;
+  push({
+    data: { json: () => payload },
+    waitUntil(promise) {
+      pending = promise;
+    },
+  });
+  assert.ok(pending);
+  await pending;
+}
+
+test("a run-error push stays silent while a client is focused", async () => {
+  const payload = runErrorNotification({ message: "the provider refused the request" });
+  const focused = await loadPushWorker([{ focused: true }]);
+  await deliverPush(focused.push, payload);
+  assert.equal(focused.shown.length, 0);
+
+  const background = await loadPushWorker([{ focused: false }]);
+  await deliverPush(background.push, payload);
+  assert.equal(background.shown.length, 1);
+  assert.equal(background.shown[0]?.title, "Turn failed in chat");
+  assert.equal(background.shown[0]?.options.body, "the provider refused the request");
+  assert.equal(
+    (background.shown[0]?.options.data as { url?: unknown } | undefined)?.url,
+    PAGE_PATHS.chat,
+  );
 });
 
 interface ClickEvent {

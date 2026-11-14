@@ -86,6 +86,7 @@ import { listAvailableModels, modelOption } from "./models.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
 import { retryBudgetExhausted, retryBudgetMs, retryGiveUpMessage, retrySpentMs } from "./retry.js";
 import type { RunMarker, RunMarkerStore } from "./run-marker.js";
+import { RunErrorNotifier } from "./run-push.js";
 import {
   appendAssistantError,
   appendJobNotice,
@@ -237,6 +238,13 @@ export interface McpEventEnvelope {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The task a task tool names, used to tell a release of this run's work from another task's. */
+function taskIdFromToolArgs(args: unknown): string | undefined {
+  if (!isRecord(args)) return undefined;
+  const id = args.id;
+  return typeof id === "string" && id.trim().length > 0 ? id.trim() : undefined;
 }
 
 /** The envelope around an MCP event notice, or null for another kind of message. */
@@ -642,6 +650,13 @@ export class ChatService {
   private runErrorTurn: number | null = null;
   /** Guards the abort path so a burst of retry events abandons a turn once. */
   private abandoning = false;
+  /** A deliberate stop or release keeps its failure off the phone until the next run. */
+  private runStopped = false;
+  private runReleased = false;
+  /** The ledger tasks this run has touched, so another task's release is not ours. */
+  private readonly runTaskIds = new Set<string>();
+  /** The last failure sequence already offered to the phone, so a replay cannot ring twice. */
+  private pushedRunErrorSequence = 0;
   /** Guards the pre-boundary merge so a nested commit cannot start it twice. */
   private mergingMcpQueue = false;
   private readonly mergeMcpQueue = () => this.mergeQueuedMcpNotices();
@@ -675,6 +690,8 @@ export class ChatService {
     idleNudgeDataDirOrTasks?: string | IdleTaskSource,
     /** Re-run the durable doctor when a view read throws; it repairs and the read is retried. */
     private readonly repairDurableState?: () => Promise<DurableDoctorReport>,
+    /** Announces a failed turn over the push path; the plan chat shares one notifier. */
+    private readonly runErrorNotifier: Pick<RunErrorNotifier, "deliver"> = new RunErrorNotifier(),
   ) {
     this.mcpStatus = typeof mcpStatus === "function" ? mcpStatus : () => mcpStatus;
     let idleTasksSource: IdleTaskSource;
@@ -1535,6 +1552,8 @@ export class ChatService {
   async stop(): Promise<void> {
     if (this.runState !== "running" && this.queued.size === 0) return;
     const wasRunning = this.runState === "running";
+    // A stop from the UI is deliberate: its aborted turn must not ring the phone.
+    if (wasRunning) this.runStopped = true;
     if (wasRunning && this.marker !== undefined) {
       this.marker = {
         ...this.marker,
@@ -2915,6 +2934,12 @@ export class ChatService {
       case "tool_execution_start": {
         if (event.parentToolCallId !== undefined) return;
         const taskId = this.taskActivity?.toolStarted(event.toolName, event.args);
+        // Track the work this run owns. A release is checked when it succeeds below.
+        if (taskId !== undefined) this.runTaskIds.add(taskId);
+        if (event.toolName !== "task_release") {
+          const namedTask = taskIdFromToolArgs(event.args);
+          if (namedTask !== undefined) this.runTaskIds.add(namedTask);
+        }
         const timestamp = new Date().toISOString();
         this.activeTools.set(event.toolCallId, {
           name: event.toolName,
@@ -2941,6 +2966,16 @@ export class ChatService {
         const active = this.activeTools.get(event.toolCallId);
         this.activeTools.delete(event.toolCallId);
         this.taskActivity?.toolEnded(active?.taskId);
+        // Only a successful release of this run's own task deliberately parks the work.
+        if (event.toolName === "task_release" && event.result?.isError === false) {
+          const releasedId = taskIdFromToolArgs(active?.args ?? event.args);
+          const related =
+            releasedId === undefined ||
+            this.runTaskIds.size === 0 ||
+            this.runTaskIds.has(releasedId) ||
+            active?.taskId === releasedId;
+          if (related) this.runReleased = true;
+        }
         this.toolsRevision += 1;
         const activity = this.toolActivity(event, active);
         this.hub.broadcast({
@@ -3177,6 +3212,10 @@ export class ChatService {
     this.idleNudge.noteActivity();
     if (state === "running") {
       this.runTurn += 1;
+      // A new run is not the stop or release that ended the previous one.
+      this.runStopped = false;
+      this.runReleased = false;
+      this.runTaskIds.clear();
       this.taskActivity?.runStarted();
     } else this.taskActivity?.runEnded(state === "interrupted");
     if (state === "running") {
@@ -3195,6 +3234,7 @@ export class ChatService {
       event: "run.state",
       data: this.getRunStatus(),
     });
+    if (state !== "running") this.pushRunErrorWhenSettled();
   }
 
   /** Hand a finished model reply to the task tracker: its attributed tool calls, cost and failure. */
@@ -3248,7 +3288,14 @@ export class ChatService {
     const fullDetail = detail?.trim();
     const nextDetail = fullDetail === undefined || fullDetail.length === 0 ? undefined : fullDetail;
     const current = this.runError;
-    if (current !== null && current.class === errorClass && current.message === summary) {
+    // A stale header from an earlier turn is not this turn's failure, even when its
+    // text matches: each failed turn gets its own sequence and its own push window.
+    if (
+      current !== null &&
+      current.class === errorClass &&
+      current.message === summary &&
+      this.runErrorTurn === this.runTurn
+    ) {
       if (current.detail === nextDetail) return;
       this.runError = {
         ...current,
@@ -3267,6 +3314,27 @@ export class ChatService {
     };
     this.runErrorTurn = this.runTurn;
     this.broadcastRunError();
+    this.pushRunErrorWhenSettled();
+  }
+
+  /** A failure is news only once its turn has actually ended, not while a retry is in flight. */
+  private pushRunErrorWhenSettled(): void {
+    if (this.runState === "running" || this.runError === null) return;
+    // Losing the stream or reconnecting is not a failed turn; it is repaired in place.
+    if (this.runError.class === "ConnectionError") return;
+    this.pushRunError(this.runError.message);
+  }
+
+  /** Announce this one failure unless the turn was deliberately stopped or released. */
+  private pushRunError(message: string): void {
+    const sequence = this.runErrorSequence;
+    if (sequence === 0 || this.pushedRunErrorSequence === sequence) return;
+    // Mark it even when suppressed: a later view of the same failure must not ring.
+    this.pushedRunErrorSequence = sequence;
+    if (this.runStopped || this.runReleased || this.marker?.stopRequested === true) return;
+    void Promise.resolve(this.runErrorNotifier.deliver({ message })).catch((error: unknown) => {
+      console.error("[pi] run error push failed", error);
+    });
   }
 
   /** Drop a ModelError recorded by an attempt this turn is still retrying. */

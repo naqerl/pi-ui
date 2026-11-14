@@ -10,6 +10,7 @@ import {
   planTurnNotification,
 } from "../src/server/plan-push.js";
 import type { PushNotification } from "../src/server/push.js";
+import { RunErrorNotifier } from "../src/server/run-push.js";
 import { DurableTaskAgentSession } from "../src/server/task-agent.js";
 import { TaskStore } from "../src/server/tasks.js";
 import { taskDeepLinkFromLocation, taskPlanUrl } from "../src/shared/pages.js";
@@ -95,7 +96,12 @@ test("a zero window keeps one push per finished turn", async (t) => {
   assert.equal(sent.length, 2);
 });
 
-type Settlement = { type: "input"; status: "done" | "unanswered"; reason?: string };
+type Settlement = {
+  type: "input";
+  status: "done" | "unanswered";
+  reason?: string;
+  detail?: unknown;
+};
 
 class FakeConversation {
   private calls = 0;
@@ -140,6 +146,48 @@ async function settledTurn(settlement: Settlement): Promise<number> {
   }
   return finished;
 }
+
+test("a failed plan run pushes the task id and opens that task's plan chat", async () => {
+  const sent: PushNotification[] = [];
+  const notifier = new RunErrorNotifier({ notify: (notification) => sent.push(notification) });
+  const session = new DurableTaskAgentSession(
+    "taskplan",
+    {} as never,
+    new FakeConversation([
+      {
+        type: "input",
+        status: "unanswered",
+        reason: "model_error",
+        detail: "the planning provider refused the request",
+      },
+    ]) as never,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async (input) => {
+      await notifier.deliver(input);
+    },
+  );
+  await session.submit("draft the plan");
+  for (let attempt = 0; attempt < 100 && sent.length === 0; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]?.title, "Turn failed in the plan chat for taskplan");
+  assert.equal(sent[0]?.body, "the planning provider refused the request");
+  assert.equal(sent[0]?.url, taskPlanUrl("taskplan"));
+  assert.deepEqual(sent[0]?.data, { taskId: "taskplan", tab: "plan" });
+
+  // The same failure id does not ring a second time.
+  await session.submit("retry");
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(sent.length, 1);
+});
 
 test("only a successful plan run announces its turn", async () => {
   assert.equal(await settledTurn({ type: "input", status: "done" }), 1);
