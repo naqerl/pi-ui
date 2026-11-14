@@ -939,7 +939,7 @@ function TasksViewImpl({
       <div
         className={
           wide
-            ? "tasks-split grid h-full min-h-0 w-full grid-cols-[minmax(260px,320px)_minmax(280px,1fr)_minmax(300px,400px)] gap-4 px-4"
+            ? "tasks-split grid h-full min-h-0 w-full grid-cols-[minmax(260px,320px)_minmax(280px,1fr)_minmax(300px,400px)] grid-rows-[auto_minmax(0,1fr)] gap-4 px-4"
             : cn(
                 "mx-auto flex h-full min-h-0 w-full max-w-[72ch] flex-col",
                 openTask === undefined ? "gap-4 px-4" : "overflow-hidden",
@@ -953,7 +953,7 @@ function TasksViewImpl({
       >
         {wide ? (
           <>
-            <div data-col="side" className="flex h-full min-h-0 min-w-0 flex-col">
+            <div data-col="side" className="row-span-2 flex h-full min-h-0 min-w-0 flex-col">
               <div
                 className={cn(
                   "min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain",
@@ -965,13 +965,7 @@ function TasksViewImpl({
             </div>
             {openTask !== undefined ? (
               <>
-                <div
-                  data-col="mid"
-                  data-testid="tasks-mid-col"
-                  className="flex h-full min-h-0 min-w-0 flex-col"
-                >
-                  {detail}
-                </div>
+                {detail}
                 <div
                   data-col="chat"
                   data-testid="tasks-chat-col"
@@ -990,7 +984,7 @@ function TasksViewImpl({
               <div
                 data-col="main"
                 data-testid="task-detail-empty"
-                className="col-span-2 flex h-full min-h-0 min-w-0 flex-1 items-center justify-center px-4"
+                className="col-span-2 row-span-2 flex h-full min-h-0 min-w-0 flex-1 items-center justify-center px-4"
               >
                 <EmptyCaption>Select a task to see its details.</EmptyCaption>
               </div>

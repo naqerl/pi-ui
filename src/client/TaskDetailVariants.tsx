@@ -858,7 +858,10 @@ function TitleCard({
 
   if (model.wide) {
     return (
-      <header data-testid="task-header" className="flex flex-col gap-2">
+      <header
+        data-testid="task-header"
+        className="col-start-2 col-span-2 flex min-w-0 flex-col gap-2"
+      >
         <SectionBar
           testId="task-details-bar"
           actions={
@@ -1077,9 +1080,8 @@ function DesktopPlan({ model }: { model: TaskDetailModel }) {
       data-testid="task-detail"
       data-layout="desktop"
       aria-label={model.title}
-      className="flex h-full min-h-0 flex-col gap-3 overflow-hidden"
+      className="flex h-full min-h-0 min-w-0 flex-col gap-3 overflow-hidden"
     >
-      <TitleCard key={model.task.id} model={model} />
       <PlanSections model={model} />
     </article>
   );
@@ -1089,7 +1091,16 @@ export function TaskDetailVariant({ model }: { model: TaskDetailModel }) {
   return (
     <>
       {model.wide ? (
-        <DesktopPlan model={model} />
+        <>
+          <TitleCard key={model.task.id} model={model} />
+          <div
+            data-col="mid"
+            data-testid="tasks-mid-col"
+            className="flex h-full min-h-0 min-w-0 flex-col"
+          >
+            <DesktopPlan model={model} />
+          </div>
+        </>
       ) : (
         <MobileDetail key={model.task.id} model={model} />
       )}
