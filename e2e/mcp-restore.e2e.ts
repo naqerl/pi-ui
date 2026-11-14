@@ -4,7 +4,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test } from "@e2e-dev/web";
+import { beforeEach, describe, test } from "@e2e-dev/web";
 import { expect } from "e2e";
 import type { Snapshot } from "../src/shared/types";
 
@@ -180,364 +180,181 @@ function mcpNotices(state: Snapshot) {
   });
 }
 
-test("a restored subscription the server rejects is cancelled and never polled again", async ({
-  app,
-}) => {
-  const spawned = await startRestoreApp();
-  try {
-    await app.open(`${spawned.url}/`);
+describe("durable restore against one shared browser", { serial: true }, () => {
+  beforeEach(async ({ browser }) => {
+    await browser.unrouteAll();
+  });
 
-    await expect
-      .poll(
-        async () => {
-          const state = await readState(spawned.url);
-          const subscriptions = state.mcpEvents?.subscriptions ?? [];
-          return {
-            gone: subscriptions.find((item) => item.name === "gone-stream")?.status,
-            old: subscriptions.find((item) => item.name === "old-stream")?.cursor,
-            live: subscriptions.find((item) => item.name === "live-stream")?.status,
-            paged: subscriptions.find((item) => item.name === "paged-stream")?.status,
-            recent: subscriptions.find((item) => item.name === "recent-stream")?.cursor,
-            flood: subscriptions.find((item) => item.name === "flood-stream")?.cursor,
-            restored: subscriptions.map((item) => item.name).sort(),
-          };
-        },
-        { timeout: 60_000 },
-      )
-      .toEqual({
-        gone: "cancelled",
-        old: null,
-        live: "active",
-        paged: "active",
-        recent: "recent-stream:1",
-        flood: null,
-        restored: [
-          "burst-stream",
-          "flood-stream",
-          "gone-stream",
-          "live-stream",
-          "old-stream",
-          "paged-stream",
-          "recent-stream",
-        ],
-      });
+  test("a restored subscription the server rejects is cancelled and never polled again", async ({
+    app,
+  }) => {
+    const spawned = await startRestoreApp();
+    try {
+      await app.open(`${spawned.url}/`);
 
-    // The healthy restore still delivers its new event as a chat notice.
-    await expect
-      .poll(
-        async () => {
-          const state = await readState(spawned.url);
-          return mcpNotices(state).some(
-            (notice) => notice.kind === "mcp" && notice.ids.includes("live-1"),
-          );
-        },
-        { timeout: 30_000 },
-      )
-      .toBe(true);
+      await expect
+        .poll(
+          async () => {
+            const state = await readState(spawned.url);
+            const subscriptions = state.mcpEvents?.subscriptions ?? [];
+            return {
+              gone: subscriptions.find((item) => item.name === "gone-stream")?.status,
+              old: subscriptions.find((item) => item.name === "old-stream")?.cursor,
+              live: subscriptions.find((item) => item.name === "live-stream")?.status,
+              paged: subscriptions.find((item) => item.name === "paged-stream")?.status,
+              recent: subscriptions.find((item) => item.name === "recent-stream")?.cursor,
+              flood: subscriptions.find((item) => item.name === "flood-stream")?.cursor,
+              restored: subscriptions.map((item) => item.name).sort(),
+            };
+          },
+          { timeout: 60_000 },
+        )
+        .toEqual({
+          gone: "cancelled",
+          old: null,
+          live: "active",
+          paged: "active",
+          recent: "recent-stream:1",
+          flood: null,
+          restored: [
+            "burst-stream",
+            "flood-stream",
+            "gone-stream",
+            "live-stream",
+            "old-stream",
+            "paged-stream",
+            "recent-stream",
+          ],
+        });
 
-    // Give the old backlog and the 22-event burst time to arrive.
-    await new Promise((resolve) => setTimeout(resolve, 1_500));
-    const state = await readState(spawned.url);
-    const notices = mcpNotices(state);
-    // Two backlogs are one gap status chip each, never a replayed event chip:
-    // the old one by its timestamp, the flood one by its size.
-    expect(
-      state.messages.filter(
-        (message) =>
-          message.role === "user" &&
-          message.text.includes("events were missed while pi was not running"),
-      ),
-    ).toHaveLength(2);
-    expect(
-      state.messages.some((message) =>
-        message.text.includes("25+ events were missed while pi was not running (from flood:9"),
-      ),
-    ).toBe(true);
-    expect(
-      state.messages.some((message) =>
-        message.text.includes(`from old:42 since ${OLD_BACKLOG_AT}`),
-      ),
-    ).toBe(true);
-    expect(
-      notices.filter((notice) => notice.ids.some((id) => id.startsWith("flood-"))),
-    ).toHaveLength(0);
-    expect(notices.filter((notice) => notice.ids.includes("old-stream-backlog"))).toHaveLength(0);
-    expect(notices.filter((notice) => notice.ids.includes("recent-stream-backlog"))).toHaveLength(
-      1,
-    );
-    expect(
-      notices.filter((notice) => notice.ids.some((id) => id.startsWith("burst-"))).length,
-    ).toBe(1);
-    expect(
-      notices
-        .flatMap((notice) => notice.ids)
-        .filter((id) => id.startsWith("burst-"))
-        .sort(),
-    ).toEqual(Array.from({ length: 22 }, (_, index) => `burst-${index + 1}`).sort());
-    expect(
-      notices.filter((notice) => notice.ids.some((id) => id.startsWith("gone-stream"))),
-    ).toHaveLength(0);
+      // The healthy restore still delivers its new event as a chat notice.
+      await expect
+        .poll(
+          async () => {
+            const state = await readState(spawned.url);
+            return mcpNotices(state).some(
+              (notice) => notice.kind === "mcp" && notice.ids.includes("live-1"),
+            );
+          },
+          { timeout: 30_000 },
+        )
+        .toBe(true);
 
-    const calls = readFileSync(spawned.logPath, "utf8").split("\n").filter(Boolean);
-    // One rejection at boot, then the dropped id is remembered.
-    expect(calls.filter((line) => line.startsWith("poll:gone-stream:"))).toHaveLength(1);
-    expect(calls.filter((line) => line.startsWith("stream:gone-stream:"))).toHaveLength(0);
-    // An old backlog starts from now; a recent one still replays its cursor.
-    expect(calls).toContain("stream:old-stream:null");
-    expect(calls).not.toContain("stream:old-stream:old:42");
-    expect(calls).toContain("stream:recent-stream:recent:41");
-    // A burst that fills the probe page is a backlog even when it is recent.
-    expect(calls).toContain("stream:flood-stream:null");
-    expect(calls).not.toContain("stream:flood-stream:flood:9");
-    // A zero position is not sent to events/poll either.
-    expect(calls).toContain("poll:live-stream:null");
-    expect(calls).toContain("poll:burst-stream:null");
-    expect(calls).not.toContain("poll:live-stream:live:0");
-    expect(calls).not.toContain("poll:burst-stream:burst:0");
+      // Give the old backlog and the 22-event burst time to arrive.
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      const state = await readState(spawned.url);
+      const notices = mcpNotices(state);
+      // Two backlogs are one gap status chip each, never a replayed event chip:
+      // the old one by its timestamp, the flood one by its size.
+      expect(
+        state.messages.filter(
+          (message) =>
+            message.role === "user" &&
+            message.text.includes("events were missed while pi was not running"),
+        ),
+      ).toHaveLength(2);
+      expect(
+        state.messages.some((message) =>
+          message.text.includes("25+ events were missed while pi was not running (from flood:9"),
+        ),
+      ).toBe(true);
+      expect(
+        state.messages.some((message) =>
+          message.text.includes(`from old:42 since ${OLD_BACKLOG_AT}`),
+        ),
+      ).toBe(true);
+      expect(
+        notices.filter((notice) => notice.ids.some((id) => id.startsWith("flood-"))),
+      ).toHaveLength(0);
+      expect(notices.filter((notice) => notice.ids.includes("old-stream-backlog"))).toHaveLength(0);
+      expect(notices.filter((notice) => notice.ids.includes("recent-stream-backlog"))).toHaveLength(
+        1,
+      );
+      expect(
+        notices.filter((notice) => notice.ids.some((id) => id.startsWith("burst-"))).length,
+      ).toBe(1);
+      expect(
+        notices
+          .flatMap((notice) => notice.ids)
+          .filter((id) => id.startsWith("burst-"))
+          .sort(),
+      ).toEqual(Array.from({ length: 22 }, (_, index) => `burst-${index + 1}`).sort());
+      expect(
+        notices.filter((notice) => notice.ids.some((id) => id.startsWith("gone-stream"))),
+      ).toHaveLength(0);
 
-    // No events/poll on this server, so the catalog fallback must follow nextCursor.
-    const pagedCalls = readFileSync(spawned.pagedLogPath, "utf8").split("\n").filter(Boolean);
-    expect(pagedCalls).toContain("list:first");
-    expect(pagedCalls).toContain("list:page-2");
-    expect(pagedCalls).toContain("stream:paged-stream:null");
+      const calls = readFileSync(spawned.logPath, "utf8").split("\n").filter(Boolean);
+      // One rejection at boot, then the dropped id is remembered.
+      expect(calls.filter((line) => line.startsWith("poll:gone-stream:"))).toHaveLength(1);
+      expect(calls.filter((line) => line.startsWith("stream:gone-stream:"))).toHaveLength(0);
+      // An old backlog starts from now; a recent one still replays its cursor.
+      expect(calls).toContain("stream:old-stream:null");
+      expect(calls).not.toContain("stream:old-stream:old:42");
+      expect(calls).toContain("stream:recent-stream:recent:41");
+      // A burst that fills the probe page is a backlog even when it is recent.
+      expect(calls).toContain("stream:flood-stream:null");
+      expect(calls).not.toContain("stream:flood-stream:flood:9");
+      // A zero position is not sent to events/poll either.
+      expect(calls).toContain("poll:live-stream:null");
+      expect(calls).toContain("poll:burst-stream:null");
+      expect(calls).not.toContain("poll:live-stream:live:0");
+      expect(calls).not.toContain("poll:burst-stream:burst:0");
 
-    await spawned.stop();
-    const persisted = JSON.parse(
-      readFileSync(join(spawned.dataDir, "mcp-subscriptions.json"), "utf8"),
-    ) as { subscriptions: Array<{ name: string; status: string; cursor: string | null }> };
-    expect(persisted.subscriptions.find((item) => item.name === "gone-stream")?.status).toBe(
-      "cancelled",
-    );
-    expect(persisted.subscriptions.find((item) => item.name === "old-stream")?.cursor).toBeNull();
-    expect(persisted.subscriptions.find((item) => item.name === "recent-stream")?.cursor).toBe(
-      "recent-stream:1",
-    );
-  } finally {
-    await spawned.stop();
-    rmSync(spawned.dataDir, { recursive: true, force: true });
-  }
-});
+      // No events/poll on this server, so the catalog fallback must follow nextCursor.
+      const pagedCalls = readFileSync(spawned.pagedLogPath, "utf8").split("\n").filter(Boolean);
+      expect(pagedCalls).toContain("list:first");
+      expect(pagedCalls).toContain("list:page-2");
+      expect(pagedCalls).toContain("stream:paged-stream:null");
 
-test("a restore whose backlog predates this process starts from now and reports one gap", async ({
-  app,
-}) => {
-  // Only the age-stale stream, so the latest gap is unambiguously its own;
-  // the size-stale flood stream has its own assertion in the first test.
-  const spawned = await startRestoreApp([
-    subscription("restore", "old-stream", "old:42", OLD_BACKLOG_AT),
-  ]);
-  try {
-    await app.open(`${spawned.url}/`);
+      await spawned.stop();
+      const persisted = JSON.parse(
+        readFileSync(join(spawned.dataDir, "mcp-subscriptions.json"), "utf8"),
+      ) as { subscriptions: Array<{ name: string; status: string; cursor: string | null }> };
+      expect(persisted.subscriptions.find((item) => item.name === "gone-stream")?.status).toBe(
+        "cancelled",
+      );
+      expect(persisted.subscriptions.find((item) => item.name === "old-stream")?.cursor).toBeNull();
+      expect(persisted.subscriptions.find((item) => item.name === "recent-stream")?.cursor).toBe(
+        "recent-stream:1",
+      );
+    } finally {
+      await spawned.stop();
+      rmSync(spawned.dataDir, { recursive: true, force: true });
+    }
+  });
+  test("a restore a few seconds behind still replays", async ({ app }) => {
+    const spawned = await startRestoreApp();
+    try {
+      await app.open(`${spawned.url}/`);
 
-    await expect
-      .poll(
-        async () => {
-          const state = await readState(spawned.url);
-          const gap = state.mcpEvents?.gap;
-          return gap === undefined ? "" : `${gap.from}|${gap.missedSince}`;
-        },
-        { timeout: 60_000 },
-      )
-      .toBe(`old:42|${OLD_BACKLOG_AT}`);
+      await expect
+        .poll(
+          async () => {
+            const state = await readState(spawned.url);
+            return state.mcpEvents?.subscriptions.find((item) => item.name === "recent-stream")
+              ?.cursor;
+          },
+          { timeout: 60_000 },
+        )
+        .toBe("recent-stream:1");
 
-    const state = await readState(spawned.url);
-    expect(
-      state.messages.filter(
-        (message) =>
-          message.role === "user" &&
-          message.text.includes("events were missed while pi was not running"),
-      ),
-    ).toHaveLength(1);
-    expect(mcpNotices(state).flatMap((notice) => notice.ids)).not.toContain("old-stream-backlog");
-
-    const calls = readFileSync(spawned.logPath, "utf8").split("\n").filter(Boolean);
-    expect(calls).toContain("stream:old-stream:null");
-    expect(calls).not.toContain("stream:old-stream:old:42");
-  } finally {
-    await spawned.stop();
-    rmSync(spawned.dataDir, { recursive: true, force: true });
-  }
-});
-
-test("a restore a few seconds behind still replays", async ({ app }) => {
-  const spawned = await startRestoreApp();
-  try {
-    await app.open(`${spawned.url}/`);
-
-    await expect
-      .poll(
-        async () => {
-          const state = await readState(spawned.url);
-          return state.mcpEvents?.subscriptions.find((item) => item.name === "recent-stream")
-            ?.cursor;
-        },
-        { timeout: 60_000 },
-      )
-      .toBe("recent-stream:1");
-
-    // The cursor advances before the queued notice is committed to chat.
-    await expect
-      .poll(
-        async () => {
-          const state = await readState(spawned.url);
-          return mcpNotices(state)
-            .flatMap((notice) => notice.ids)
-            .filter((id) => id === "recent-stream-backlog").length;
-        },
-        { timeout: 30_000 },
-      )
-      .toBe(1);
-    const calls = readFileSync(spawned.logPath, "utf8").split("\n").filter(Boolean);
-    expect(calls).toContain("stream:recent-stream:recent:41");
-  } finally {
-    await spawned.stop();
-    rmSync(spawned.dataDir, { recursive: true, force: true });
-  }
-});
-
-test("an old lastEventAt with an empty poll keeps the current cursor and records no gap", async ({
-  app,
-}) => {
-  const spawned = await startRestoreApp([
-    subscription("restore", "idle-stream", "idle:7", OLD_BACKLOG_AT),
-  ]);
-  try {
-    await app.open(`${spawned.url}/`);
-
-    await expect
-      .poll(
-        async () => {
-          const state = await readState(spawned.url);
-          return state.mcpEvents?.subscriptions.find((item) => item.name === "idle-stream")?.cursor;
-        },
-        { timeout: 60_000 },
-      )
-      .toBe("idle:7");
-
-    const state = await readState(spawned.url);
-    expect(state.mcpEvents?.gap).toBeUndefined();
-    expect(
-      state.messages.some(
-        (message) =>
-          message.role === "user" &&
-          message.text.includes("events were missed while pi was not running"),
-      ),
-    ).toBe(false);
-
-    const calls = readFileSync(spawned.logPath, "utf8").split("\n").filter(Boolean);
-    expect(calls).toContain("stream:idle-stream:idle:7");
-    expect(calls).not.toContain("stream:idle-stream:null");
-
-    await spawned.stop();
-    const persisted = JSON.parse(
-      readFileSync(join(spawned.dataDir, "mcp-subscriptions.json"), "utf8"),
-    ) as { subscriptions: Array<{ name: string; cursor: string | null }> };
-    expect(persisted.subscriptions.find((item) => item.name === "idle-stream")?.cursor).toBe(
-      "idle:7",
-    );
-  } finally {
-    await spawned.stop();
-    rmSync(spawned.dataDir, { recursive: true, force: true });
-  }
-});
-
-test("a stream batch older than the restore grace is counted and never delivered", async ({
-  app,
-}) => {
-  const spawned = await startRestoreApp([
-    subscription("restore", "stale-batch-stream", "stale-batch:40"),
-  ]);
-  try {
-    await app.open(`${spawned.url}/`);
-
-    await expect
-      .poll(
-        async () => {
-          const state = await readState(spawned.url);
-          return state.mcpEvents?.gap?.dropped ?? 0;
-        },
-        { timeout: 60_000 },
-      )
-      .toBe(40);
-
-    // Let any late delivery surface before asserting that the batch never
-    // became a chat entry or an event chip.
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
-    const state = await readState(spawned.url);
-    expect(state.messages).toHaveLength(0);
-    expect(mcpNotices(state).flatMap((notice) => notice.ids)).toHaveLength(0);
-    expect(state.mcpEvents?.events).toHaveLength(0);
-    expect(state.mcpEvents?.notice).toBe("40 older events dropped from this batch");
-  } finally {
-    await spawned.stop();
-    rmSync(spawned.dataDir, { recursive: true, force: true });
-  }
-});
-
-test("old events in a stream batch do not drop or delay its fresh siblings", async ({ app }) => {
-  const spawned = await startRestoreApp([
-    subscription("restore", "mixed-batch-stream", "mixed-batch:40"),
-  ]);
-  try {
-    await app.open(`${spawned.url}/`);
-
-    const freshIds = Array.from({ length: 37 }, (_, index) => `mixed-batch-${index + 4}`).sort();
-    await expect
-      .poll(
-        async () => {
-          const state = await readState(spawned.url);
-          return mcpNotices(state)
-            .flatMap((notice) => notice.ids)
-            .filter((id) => id.startsWith("mixed-batch-"))
-            .sort();
-        },
-        { timeout: 60_000 },
-      )
-      .toEqual(freshIds);
-
-    const state = await readState(spawned.url);
-    expect(state.mcpEvents?.gap?.dropped).toBe(3);
-    expect(
-      state.messages.some((message) =>
-        message.text.includes("3 older events dropped from this batch"),
-      ),
-    ).toBe(true);
-  } finally {
-    await spawned.stop();
-    rmSync(spawned.dataDir, { recursive: true, force: true });
-  }
-});
-
-test("a stream batch entirely within the restore grace is delivered whole", async ({ app }) => {
-  const spawned = await startRestoreApp([
-    subscription("restore", "fresh-batch-stream", "fresh-batch:40"),
-  ]);
-  try {
-    await app.open(`${spawned.url}/`);
-
-    const freshIds = Array.from({ length: 40 }, (_, index) => `fresh-batch-${index + 1}`).sort();
-    await expect
-      .poll(
-        async () => {
-          const state = await readState(spawned.url);
-          return mcpNotices(state)
-            .flatMap((notice) => notice.ids)
-            .filter((id) => id.startsWith("fresh-batch-"))
-            .sort();
-        },
-        { timeout: 60_000 },
-      )
-      .toEqual(freshIds);
-
-    const state = await readState(spawned.url);
-    expect(state.mcpEvents?.gap).toBeUndefined();
-    expect(
-      state.messages.some((message) =>
-        message.text.includes("older events dropped from this batch"),
-      ),
-    ).toBe(false);
-  } finally {
-    await spawned.stop();
-    rmSync(spawned.dataDir, { recursive: true, force: true });
-  }
+      // The cursor advances before the queued notice is committed to chat.
+      await expect
+        .poll(
+          async () => {
+            const state = await readState(spawned.url);
+            return mcpNotices(state)
+              .flatMap((notice) => notice.ids)
+              .filter((id) => id === "recent-stream-backlog").length;
+          },
+          { timeout: 30_000 },
+        )
+        .toBe(1);
+      const calls = readFileSync(spawned.logPath, "utf8").split("\n").filter(Boolean);
+      expect(calls).toContain("stream:recent-stream:recent:41");
+    } finally {
+      await spawned.stop();
+      rmSync(spawned.dataDir, { recursive: true, force: true });
+    }
+  });
 });

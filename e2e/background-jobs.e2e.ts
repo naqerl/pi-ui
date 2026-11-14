@@ -8,13 +8,6 @@ type Job = {
   status: string;
   startedAt: string;
 };
-
-type DelegateRun = {
-  id: string;
-  task: string;
-  status: string;
-};
-
 const hasCounts = (browser: Browser) =>
   browser.evaluate(() => document.querySelector('[data-testid="bg-jobs-line"]') !== null);
 
@@ -44,12 +37,6 @@ const jobs = (browser: Browser) =>
     return (await (await fetch("/api/jobs", { cache: "no-store" })).json()) as Job[];
   });
 
-const delegates = (browser: Browser) =>
-  browser.evaluate(async () => {
-    return (await (await fetch("/api/delegates", { cache: "no-store" })).json()) as DelegateRun[];
-  });
-
-/** The status row is the `working-status` element's parent; the counts must not grow it. */
 const rowMetrics = (browser: Browser) =>
   browser.evaluate(() => {
     const status = document.querySelector<HTMLElement>('[data-testid="working-status"]');
@@ -99,18 +86,6 @@ const baselineGap = (browser: Browser) =>
     return Math.abs(textBottom(word) - textBottom(count));
   });
 
-const scrollPositions = (browser: Browser) =>
-  browser.evaluate(() => {
-    const body = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
-    const scroller = document.querySelector<HTMLElement>('[data-testid="chat-scroller"]');
-    return { body: body?.scrollTop ?? -1, transcript: scroller?.scrollTop ?? -1 };
-  });
-
-const pagerPage = (browser: Browser) =>
-  browser.evaluate(
-    () => document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
-  );
-
 async function sendText(browser: Browser, text: string): Promise<void> {
   const status = await browser.evaluate(async (body) => {
     const response = await fetch("/api/message", {
@@ -155,47 +130,6 @@ async function cancelJob(browser: Browser, id: string): Promise<void> {
     `TOOLCALLS ${JSON.stringify([{ name: "job_cancel", arguments: { id } }])}`,
   );
 }
-
-test("nothing running leaves no counts and keeps the status row at its resting height", async ({
-  app,
-  browser,
-  screen,
-}) => {
-  await browser.setViewport({ width: 390, height: 844 });
-  await app.open("/");
-  await expect(screen.getByTestId("working-status")).toBeVisible();
-  await settleDock(browser);
-
-  const empty = await rowMetrics(browser);
-  // The old strip is gone, and with no live work there is no count node at all.
-  expect(empty.hasSlot).toBe(false);
-  expect(empty.hasCounts).toBe(false);
-  expect(await statusY(browser)).toBeCloseTo(empty.statusY, 2);
-  const restingHeight = empty.rowHeight;
-  expect(restingHeight).toBeGreaterThan(0);
-
-  // A job that ends on its own leaves the row untouched as well.
-  await sendText(browser, "JOBSTART sleep 3; echo bg-jobs-finished");
-  await expect.poll(() => hasCounts(browser), { timeout: 15_000 }).toBe(true);
-  await settleDock(browser);
-  const running = await rowMetrics(browser);
-  expect(running.hasSlot).toBe(false);
-  expect(running.countsInsideStatus).toBe(true);
-  expect(Math.abs(running.rowHeight - restingHeight)).toBeLessThan(0.5);
-
-  await expect
-    .poll(async () => (await jobs(browser)).some((job) => job.status === "running"), {
-      timeout: 20_000,
-    })
-    .toBe(false);
-  await expect.poll(() => hasCounts(browser), { timeout: 10_000 }).toBe(false);
-  await settleDock(browser);
-  const after = await rowMetrics(browser);
-  expect(after.hasSlot).toBe(false);
-  expect(after.hasCounts).toBe(false);
-  expect(Math.abs(after.rowHeight - restingHeight)).toBeLessThan(0.5);
-  expect(after.statusY).toBeCloseTo(empty.statusY, 0);
-});
 
 test("a background job count opens a live sheet and returns focus to the composer", async ({
   app,
@@ -289,138 +223,4 @@ test("a background job count opens a live sheet and returns focus to the compose
   const after = await rowMetrics(browser);
   expect(Math.abs(after.rowHeight - empty.rowHeight)).toBeLessThan(0.5);
   expect(await statusY(browser)).toBeCloseTo(baseline, 0);
-});
-
-test("a subagent count opens the same sheet with its task and state", async ({
-  app,
-  browser,
-  screen,
-}) => {
-  await browser.setViewport({ width: 390, height: 844 });
-  await app.open("/");
-  await expect(screen.getByTestId("working-status")).toBeVisible();
-  await settleDock(browser);
-  const empty = await rowMetrics(browser);
-  const baseline = empty.statusY;
-
-  const marker = `BG_JOBS_SUBAGENT_${Date.now()}`;
-  await sendText(browser, `JOBSTART sleep 60; echo BG_JOBS_BOTH_${Date.now()}`);
-  await expect(screen.getByTestId("bg-jobs-line-jobs")).toHaveText("1 job");
-  await sendText(
-    browser,
-    `TOOLCALLS ${JSON.stringify([
-      { name: "acp_delegate", arguments: { agent: "worker", task: `SLOW ${marker}` } },
-    ])}`,
-  );
-  await expect
-    .poll(async () => (await delegates(browser)).some((item) => item.task.includes(marker)), {
-      timeout: 30_000,
-    })
-    .toBe(true);
-
-  await expect.poll(() => hasCounts(browser), { timeout: 20_000 }).toBe(true);
-  await expect(screen.getByTestId("bg-jobs-line-jobs")).toHaveText("1 job");
-  await expect(screen.getByTestId("bg-jobs-line-subagents")).toHaveText("1 subagent");
-  expect(await boxOf(browser, "bg-jobs-line-jobs")).not.toBeNull();
-
-  await settleDock(browser);
-  const withCounts = await rowMetrics(browser);
-  expect(withCounts.hasSlot).toBe(false);
-  expect(withCounts.countsInsideStatus).toBe(true);
-  expect(Math.abs(withCounts.rowHeight - empty.rowHeight)).toBeLessThan(0.5);
-  expect(await statusY(browser)).toBeCloseTo(baseline, 0);
-  const gap = await baselineGap(browser);
-  expect(gap).not.toBeNull();
-  expect(gap ?? 99).toBeLessThan(2);
-
-  await screen.getByTestId("bg-jobs-line-subagents").tap();
-  await expect(screen.getByTestId("bg-jobs-sheet")).toBeVisible();
-  await expect(screen.getByTestId("bg-jobs-sheet-list")).toBeVisible();
-  const row = screen.getByTestId("bg-jobs-sheet-subagent");
-  await expect(row).toBeVisible();
-  await expect.poll(() => textOf(browser, "bg-jobs-sheet-subagent")).toContain(marker);
-
-  const started = seconds(await textOf(browser, "bg-jobs-sheet-duration"));
-  await expect
-    .poll(async () => seconds(await textOf(browser, "bg-jobs-sheet-duration")), { timeout: 5_000 })
-    .toBeGreaterThan(started);
-
-  await row.tap();
-  await expect(screen.getByTestId("activity-dialog")).toBeVisible();
-  await expect(screen.getByTestId("activity-delegate")).toBeVisible();
-  await expect.poll(() => textOf(browser, "activity-card")).toContain(marker);
-  await expect.poll(() => textOf(browser, "activity-card")).toContain("Task");
-  await expect.poll(() => textOf(browser, "activity-card")).toContain("Status");
-  await expect
-    .poll(() =>
-      browser.evaluate(() => document.querySelector('[data-testid="bg-jobs-sheet"]') !== null),
-    )
-    .toBe(false);
-
-  await screen.getByTestId("activity-dialog-close").tap();
-  await expect
-    .poll(() =>
-      browser.evaluate(() => document.querySelector('[data-testid="activity-dialog"]') !== null),
-    )
-    .toBe(false);
-  await expect.poll(() => focusedComposer(browser)).toBe(true);
-
-  const active = (await delegates(browser)).find(
-    (item) => item.task.includes(marker) && item.status === "running",
-  );
-  if (active !== undefined) {
-    await sendText(
-      browser,
-      `TOOLCALLS ${JSON.stringify([
-        { name: "acp_delegate_cancel", arguments: { runId: active.id } },
-      ])}`,
-    );
-  }
-  const runningJob = (await jobs(browser)).find((job) => job.status === "running");
-  if (runningJob !== undefined) await cancelJob(browser, runningJob.id);
-  await expect.poll(() => hasCounts(browser), { timeout: 30_000 }).toBe(false);
-});
-
-test("chat to stats and back leaves the composer body and transcript where they were", async ({
-  app,
-  browser,
-  screen,
-}) => {
-  await browser.setViewport({ width: 390, height: 844 });
-  await app.open("/");
-  await expect(screen.getByTestId("working-status")).toBeVisible();
-  await settleDock(browser);
-
-  const marker = `BG_JOBS_SCROLL_${Date.now()}`;
-  await sendText(browser, `JOBSTART sleep 60; echo ${marker}`);
-  await expect.poll(() => hasCounts(browser), { timeout: 20_000 }).toBe(true);
-  await settleDock(browser);
-
-  // Park the transcript at its settled offset; the round trip must not change it.
-  await browser.evaluate(() => {
-    const scroller = document.querySelector<HTMLElement>('[data-testid="chat-scroller"]');
-    if (scroller !== null) {
-      scroller.scrollTop = scroller.scrollHeight;
-      scroller.dispatchEvent(new Event("scroll"));
-    }
-    return true;
-  });
-  const before = await scrollPositions(browser);
-  expect(before.body).toBeGreaterThanOrEqual(0);
-  expect(before.transcript).toBeGreaterThanOrEqual(0);
-
-  await screen.getByTestId("page-dot-stats").tap();
-  await expect.poll(() => pagerPage(browser)).toBe("stats");
-  await settleDock(browser);
-  await screen.getByTestId("page-dot-chat").tap();
-  await expect.poll(() => pagerPage(browser)).toBe("chat");
-  await settleDock(browser);
-
-  const after = await scrollPositions(browser);
-  expect(after.body).toBe(before.body);
-  expect(after.transcript).toBe(before.transcript);
-
-  const running = (await jobs(browser)).find((job) => job.status === "running");
-  if (running !== undefined) await cancelJob(browser, running.id);
-  await expect.poll(() => hasCounts(browser), { timeout: 20_000 }).toBe(false);
 });

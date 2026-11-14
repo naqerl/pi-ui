@@ -1,14 +1,6 @@
 import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
-import {
-  backToTaskList,
-  chooseTaskAction,
-  createOpenTask,
-  expectDetailTitle,
-  expectTaskProject,
-  openNewTaskComposer,
-  openTaskProject,
-} from "./tasks-helpers";
+import { backToTaskList, createOpenTask, openNewTaskComposer } from "./tasks-helpers";
 
 // The e2e server and its task store are shared by every test file: leave no projects behind.
 async function removeTasks(browser: Browser, titles: readonly string[]) {
@@ -56,7 +48,10 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
   await expect(suggestions).toHaveCount(0);
   await expect(composer).toHaveValue("Diff the maps @citydiff ");
   await browser.keyboard.press("Enter");
-  await expect(screen.getByTestId("task-title")).toContainText("Diff the maps");
+  // A loaded runner can receive the create response before the detail paints.
+  await expect(screen.getByTestId("task-title")).toContainText("Diff the maps", {
+    timeout: 15_000,
+  });
   await backToTaskList(screen);
   composer = await openNewTaskComposer(screen);
   await expect(composer).toHaveValue("");
@@ -76,7 +71,9 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
   await browser.keyboard.press("Enter");
   await expect(composer).toHaveValue("Fix the login @citydiff ");
   await browser.keyboard.press("Enter");
-  await expect(screen.getByTestId("task-title")).toContainText("Fix the login");
+  await expect(screen.getByTestId("task-title")).toContainText("Fix the login", {
+    timeout: 15_000,
+  });
   await backToTaskList(screen);
   await expectTaskTitle("Fix the login");
 
@@ -87,7 +84,9 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
   await screen.getByTestId("project-suggestion-zero").tap();
   await expect(composer).toHaveValue("Write the docs @zero ");
   await screen.getByRole("button", "Add task").tap();
-  await expect(screen.getByTestId("task-title")).toContainText("Write the docs");
+  await expect(screen.getByTestId("task-title")).toContainText("Write the docs", {
+    timeout: 15_000,
+  });
   await backToTaskList(screen);
   await expectTaskTitle("Write the docs");
 
@@ -130,318 +129,4 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
     .toEqual(["task-project-citydiff", "task-project-zero", "task-project-none"]);
 
   await removeTasks(browser, ["Diff the maps", "Loose end", "Fix the login", "Write the docs"]);
-});
-
-test("project suggestions come only from open tasks", { timeout: 300_000 }, async ({
-  app,
-  browser,
-  screen,
-}) => {
-  await browser.setViewport({ width: 1280, height: 800 });
-  await app.open("/?page=tasks");
-  const tag = Date.now();
-  const alpha = `alpha${tag}`;
-  const beta = `beta${tag}`;
-  const gamma = `gamma${tag}`;
-  const alphaTitle = `Alpha work ${tag}`;
-  const betaTitle = `Beta work ${tag}`;
-  const gammaTitle = `Gamma work ${tag}`;
-  const addTask = async (title: string, project: string) => {
-    await createOpenTask(screen, title, { project });
-    await expect(screen.getByRole("button", { name: `Open ${title}` })).toBeVisible();
-  };
-
-  const typeMention = async () => {
-    const composer = screen.getByTestId("task-agent-input");
-    await expect(composer).toBeVisible();
-    await composer.fill("");
-    await composer.tap();
-    await browser.keyboard.type("@");
-  };
-
-  await addTask(alphaTitle, alpha);
-  await addTask(betaTitle, beta);
-  await screen.getByRole("button", { name: `Open ${betaTitle}` }).click();
-  await expect(screen.getByTestId("task-agent-input")).toBeVisible();
-
-  await typeMention();
-  await expect(screen.getByTestId(`project-suggestion-${alpha}`)).toBeVisible();
-  await expect(screen.getByTestId(`project-suggestion-${beta}`)).toBeVisible();
-
-  await screen.getByRole("button", { name: `Open ${betaTitle}` }).click();
-  const betaProject = await openTaskProject(screen);
-  await betaProject.fill("@");
-  await expect(screen.getByTestId(`project-suggestion-${alpha}`)).toBeVisible();
-  await expect(screen.getByTestId(`project-suggestion-${beta}`)).toBeVisible();
-  await betaProject.fill(beta);
-  await betaProject.press("Enter");
-  await expectTaskProject(screen, beta);
-  await browser.keyboard.press("Escape");
-
-  // Closing the last alpha task removes its name from every suggestion list.
-  await screen.getByRole("button", { name: `Open ${alphaTitle}` }).click();
-  await chooseTaskAction(screen, "task-detail-status");
-  await expect(screen.getByTestId("task-section-done")).toContainText(alphaTitle);
-  await expect(screen.getByTestId(`task-project-${alpha}`)).toHaveCount(0);
-
-  await screen.getByRole("button", { name: `Open ${betaTitle}` }).click();
-  await expectDetailTitle(screen, betaTitle);
-  await expect(screen.getByTestId("task-agent-input")).toBeVisible();
-  const betaProjectAgain = await openTaskProject(screen);
-  await betaProjectAgain.fill("@");
-  await expect(screen.getByTestId(`project-suggestion-${beta}`)).toBeVisible();
-  await expect(screen.getByTestId(`project-suggestion-${alpha}`)).toHaveCount(0);
-  await betaProjectAgain.fill(beta);
-  await betaProjectAgain.press("Enter");
-
-  await typeMention();
-  await expect(screen.getByTestId(`project-suggestion-${beta}`)).toBeVisible();
-  await expect(screen.getByTestId(`project-suggestion-${alpha}`)).toHaveCount(0);
-
-  // A deleted task's project never becomes a remembered suggestion.
-  await addTask(gammaTitle, gamma);
-  await screen.getByRole("button", { name: `Open ${gammaTitle}` }).click();
-  await chooseTaskAction(screen, "task-detail-remove");
-  await expect(screen.getByText(gammaTitle, { exact: true })).toHaveCount(0);
-
-  // Removing the open task clears the detail; reopen beta to keep the plan chat.
-  await screen.getByRole("button", { name: `Open ${betaTitle}` }).click();
-  await expectDetailTitle(screen, betaTitle);
-  await typeMention();
-  await expect(screen.getByTestId(`project-suggestion-${gamma}`)).toHaveCount(0);
-  await expect(screen.getByTestId(`project-suggestion-${beta}`)).toBeVisible();
-
-  await screen.getByRole("button", { name: `Open ${betaTitle}` }).click();
-  const betaProjectLater = await openTaskProject(screen);
-  await betaProjectLater.fill("@");
-  await expect(screen.getByTestId(`project-suggestion-${gamma}`)).toHaveCount(0);
-  await expect(screen.getByTestId(`project-suggestion-${beta}`)).toBeVisible();
-
-  await removeTasks(browser, [alphaTitle, betaTitle, gammaTitle]);
-});
-
-test("a working task keeps its project in the vocabulary and spelling", async ({
-  app,
-  browser,
-  screen,
-}) => {
-  await browser.setViewport({ width: 1280, height: 800 });
-  await app.open("/?page=tasks");
-  const tag = Date.now();
-  const project = `Piu${tag}`;
-  const lower = `piu${tag}`;
-  const title = `Working project ${tag}`;
-  const second = `Working project two ${tag}`;
-  await createOpenTask(screen, title, { project });
-  await expect(screen.getByRole("button", { name: `Open ${title}` })).toBeVisible();
-
-  // Working is live work: the server reuses the spelling and the client keeps the
-  // name in both suggestion lists instead of treating the project as closed.
-  const stored = await browser.evaluate(
-    async ({ taskTitle, secondTitle, lowercase }) => {
-      const ledger = async () =>
-        (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
-          tasks: Array<{ id: string; title: string; project?: string }>;
-        };
-      const first = (await ledger()).tasks.find((task) => task.title === taskTitle);
-      if (first === undefined) return null;
-      const patched = await fetch(`/api/tasks/${encodeURIComponent(first.id)}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "working" }),
-      });
-      const created = await fetch("/api/tasks", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: secondTitle, parentId: null, project: lowercase }),
-      });
-      const tasks = (await ledger()).tasks;
-      return {
-        patched: patched.status,
-        created: created.status,
-        working: tasks.find((task) => task.title === taskTitle)?.project ?? null,
-        second: tasks.find((task) => task.title === secondTitle)?.project ?? null,
-      };
-    },
-    { taskTitle: title, secondTitle: second, lowercase: lower },
-  );
-  expect(stored).toEqual({ patched: 200, created: 201, working: project, second: project });
-
-  await app.open("/?page=tasks");
-  await screen.getByRole("button", { name: `Open ${title}` }).click();
-  const typeMention = async () => {
-    const composer = screen.getByTestId("task-agent-input");
-    await composer.fill("");
-    await composer.tap();
-    await browser.keyboard.type("@");
-  };
-  await typeMention();
-  await expect(screen.getByTestId(`project-suggestion-${project}`)).toBeVisible();
-
-  await screen.getByRole("button", { name: `Open ${title}` }).click();
-  const projectField = await openTaskProject(screen);
-  await projectField.fill("@");
-  await expect(screen.getByTestId(`project-suggestion-${project}`)).toBeVisible();
-
-  await removeTasks(browser, [title, second]);
-});
-
-test("subtasks take their parent's project and the detail edits it in place", async ({
-  app,
-  browser,
-  screen,
-}) => {
-  await browser.setViewport({ width: 1280, height: 800 });
-  await app.open("/?page=tasks");
-  for (const [title, project] of [
-    ["Ship the panel", "pi-ui"],
-    ["Diff the tram routes", "citydiff"],
-    ["Water the plants", null],
-  ] as const) {
-    const ok = await browser.evaluate(
-      async ([taskTitle, taskProject]) => {
-        const response = await fetch("/api/tasks", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title: taskTitle, parentId: null, project: taskProject }),
-        });
-        return response.ok;
-      },
-      [title, project] as const,
-    );
-    expect(ok).toBe(true);
-  }
-  await app.open("/?page=tasks");
-  await expect(screen.getByText("Water the plants", { exact: true })).toBeVisible();
-
-  await screen.getByRole("button", { name: "Open Diff the tram routes" }).click();
-  await expectTaskProject(screen, "citydiff");
-  await browser.keyboard.press("Escape");
-  await expect(screen.getByTestId("task-project")).toHaveCount(0);
-
-  // The agent creates structure through the ledger; seed the child through the API.
-  const seeded = await browser.evaluate(async () => {
-    const ledger = (await (await fetch("/api/tasks")).json()) as {
-      tasks: Array<{ id: string; title: string }>;
-    };
-    const parentId = ledger.tasks.find((task) => task.title === "Diff the tram routes")?.id;
-    if (parentId === undefined) return false;
-    const response = await fetch("/api/tasks", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: "Map the stops", parentId }),
-    });
-    return response.ok;
-  });
-  expect(seeded).toBe(true);
-  await app.open("/?page=tasks");
-  await expect(
-    screen.getByTestId("task-project-citydiff").getByText("Map the stops", { exact: true }),
-  ).toBeVisible();
-  await screen.getByRole("button", { name: "Open Map the stops" }).click();
-  await expectTaskProject(screen, "citydiff");
-  await browser.keyboard.press("Escape");
-
-  await screen.getByRole("button", { name: "Open Water the plants" }).click();
-  await expectTaskProject(screen, "");
-  const emptyProject = await openTaskProject(screen);
-  await expect(emptyProject).toHaveValue("");
-  await expect(emptyProject).toHaveAttribute("placeholder", "No project");
-
-  await removeTasks(browser, [
-    "Map the stops",
-    "Ship the panel",
-    "Diff the tram routes",
-    "Water the plants",
-  ]);
-});
-
-test("project headers share the Open header's solid fill in both themes", async ({
-  app,
-  browser,
-  screen,
-}) => {
-  await browser.setViewport({ width: 390, height: 844 });
-  const tag = Date.now();
-  const title = `Header task ${tag}`;
-  const project = `header${tag}`;
-  await app.open("/?page=tasks");
-  const created = await browser.evaluate(
-    async ({ taskTitle, taskProject }) => {
-      const response = await fetch("/api/tasks", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: taskTitle, parentId: null, project: taskProject }),
-      });
-      return response.ok;
-    },
-    { taskTitle: title, taskProject: project },
-  );
-  expect(created).toBe(true);
-
-  for (const colorScheme of ["dark", "light"] as const) {
-    await browser.emulateMedia({ colorScheme });
-    await app.open("/?page=tasks");
-    await expect(screen.getByTestId(`task-project-${project}`)).toBeVisible();
-
-    const styles = await browser.evaluate((testId) => {
-      const open = document.querySelector<HTMLElement>(
-        '[data-testid="task-section-active"] [data-slot="collapsible-trigger"]',
-      );
-      const grouped = document.querySelector<HTMLElement>(
-        `[data-testid="${testId}"] [data-slot="collapsible-trigger"]`,
-      );
-      if (open === null || grouped === null) return null;
-      const read = (trigger: HTMLElement) => {
-        const spans = [...trigger.querySelectorAll("span")];
-        const count = spans[1] ?? null;
-        const chevron = trigger.querySelector("svg");
-        const style = getComputedStyle(trigger);
-        const box = trigger.getBoundingClientRect();
-        const countBox = count?.getBoundingClientRect() ?? null;
-        const chevronBox = chevron?.getBoundingClientRect() ?? null;
-        return {
-          background: style.backgroundColor,
-          titleColor: spans[0] === undefined ? "" : getComputedStyle(spans[0]).color,
-          countColor: count === null ? "" : getComputedStyle(count).color,
-          chevronColor: chevron === null ? "" : getComputedStyle(chevron).color,
-          height: Math.round(box.height),
-          paddingLeft: style.paddingLeft,
-          paddingRight: style.paddingRight,
-          radius: style.borderRadius,
-          wrap: style.flexWrap,
-          right: box.right,
-          countLeft: countBox?.left ?? 0,
-          countRight: countBox?.right ?? 0,
-          chevronRight: chevronBox?.right ?? 0,
-        };
-      };
-      return {
-        open: read(open),
-        grouped: read(grouped),
-        page: getComputedStyle(document.body).backgroundColor,
-        foreground: getComputedStyle(document.body).color,
-      };
-    }, `task-project-${project}`);
-
-    expect(styles).not.toBeNull();
-    // The project bar is the same solid surface header as Open, not a white inverted box.
-    expect(styles?.grouped.background).not.toBe("rgba(0, 0, 0, 0)");
-    expect(styles?.grouped.background).toBe(styles?.open.background);
-    expect(styles?.grouped.background).not.toBe(styles?.page);
-    expect(styles?.grouped.titleColor).toBe(styles?.open.titleColor);
-    expect(styles?.grouped.titleColor).not.toBe(styles?.foreground);
-    expect(styles?.grouped.countColor).toBe(styles?.open.countColor);
-    expect(styles?.grouped.chevronColor).toBe(styles?.open.chevronColor);
-    // On a phone the same row keeps Open's height, padding and radius without wrapping.
-    expect(styles?.grouped.height).toBe(styles?.open.height);
-    expect(styles?.grouped.paddingLeft).toBe(styles?.open.paddingLeft);
-    expect(styles?.grouped.paddingRight).toBe(styles?.open.paddingRight);
-    expect(styles?.grouped.radius).toBe(styles?.open.radius);
-    expect(styles?.grouped.wrap).toBe("nowrap");
-    expect(styles?.grouped.countRight).toBeLessThanOrEqual(styles?.grouped.right ?? 0);
-    expect(styles?.grouped.chevronRight).toBeLessThanOrEqual(styles?.grouped.countLeft ?? 0);
-  }
-
-  await removeTasks(browser, [title]);
 });

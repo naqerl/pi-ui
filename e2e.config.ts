@@ -20,6 +20,8 @@ if (process.env.PLAYWRIGHT_BROWSERS_PATH === undefined && existsSync("/opt/playw
 }
 
 export default {
+  // This glob already selects the 28-file core, so no allowlist is needed. A new `*.e2e.ts`
+  // is a budget decision: the suite has a 420 s guard and a new spec must displace one.
   tests: ["e2e/**/*.e2e.ts"],
   workers,
   // A busy host can stretch a long UI test past the 120s default; keep a
