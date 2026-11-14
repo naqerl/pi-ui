@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -24,6 +24,7 @@ import {
   taskAgentHarnessSettings,
   taskAgentInstructions,
   taskAgentMemoryBase,
+  taskAgentProjectInstructions,
   visibleTaskAgentMessages,
 } from "../src/server/task-agent.js";
 import { createProposeTaskTool, createTaskTools } from "../src/server/task-tools.js";
@@ -35,18 +36,25 @@ import type { ChatMessage, RunState, StreamRunState, TaskLedger } from "../src/s
 let directory = "";
 let store: TaskStore;
 let published: TaskLedger[] = [];
+const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 
 before(async () => {
   directory = await mkdtemp(join(tmpdir(), "pi-ui-task-agent-"));
   store = new TaskStore(join(directory, "tasks.json"));
   await store.load();
+  // Keep project-guidance tests hermetic: no developer ~/.pi/agent/AGENTS.md.
+  const agentDir = join(directory, "agent");
+  await mkdir(agentDir, { recursive: true });
+  process.env.PI_CODING_AGENT_DIR = agentDir;
 });
 
 after(async () => {
+  if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
   await rm(directory, { recursive: true, force: true });
 });
 
-test("task agents may only call bash, read, edit_task, propose_task, the question tools and read-only memory", () => {
+test("task agents may only call bash, read, edit_task, propose_task, the question tools and memory", () => {
   const coding = (createCodingTools().tools ?? []).map((tool) => ({ name: tool.name }));
   const memory = createMemoryTools({} as never).map((tool) => ({ name: tool.name }));
   const extras = [
@@ -79,6 +87,7 @@ test("task agents may only call bash, read, edit_task, propose_task, the questio
     "memory_find",
     "memory_grep",
     "memory_read",
+    "memory_write",
     "propose_task",
     "read",
   ]);
@@ -86,6 +95,7 @@ test("task agents may only call bash, read, edit_task, propose_task, the questio
     "memory_find",
     "memory_grep",
     "memory_read",
+    "memory_write",
   ]);
   assert.deepEqual(
     selectTaskAgentMemoryTools(memory)
@@ -94,15 +104,19 @@ test("task agents may only call bash, read, edit_task, propose_task, the questio
     [...TASK_AGENT_MEMORY_TOOL_NAMES].sort(),
   );
   assert.ok(TASK_AGENT_TOOL_NAMES.includes("propose_task"));
-  assert.equal(TASK_AGENT_TOOL_NAMES.includes("memory_write" as never), false);
-  assert.deepEqual(selectTaskAgentTools([{ name: "memory_write" }]), []);
+  assert.equal(TASK_AGENT_TOOL_NAMES.includes("memory_write"), true);
+  assert.deepEqual(
+    selectTaskAgentTools([{ name: "memory_write" }]).map((tool) => tool.name),
+    ["memory_write"],
+  );
   for (const forbidden of [
     "task_done",
     "task_working",
     "task_release",
     "task_block",
     "task_edit",
-    "memory_write",
+    "write",
+    "edit",
   ]) {
     assert.equal(TASK_AGENT_TOOL_NAMES.includes(forbidden as never), false);
     assert.equal(isTaskAgentToolName(forbidden), false);
@@ -112,26 +126,245 @@ test("task agents may only call bash, read, edit_task, propose_task, the questio
   assert.equal(isTaskAgentToolName("propose_task"), true);
   assert.equal(isTaskAgentToolName("task_edit"), false);
   assert.equal(isTaskAgentToolName("memory_read"), true);
+  assert.equal(isTaskAgentToolName("memory_write"), true);
 });
 
-test("a planning session has no callable memory_write tool", () => {
-  const memory = createMemoryTools({} as never);
-  const planTools = selectTaskAgentTools([
-    ...memory,
-    { name: "bash" },
-    { name: "read" },
-    { name: "edit_task" },
-    { name: "propose_task" },
-    { name: "ask_questions" },
-    { name: "append_questions" },
-  ]);
-  const names = planTools.map((tool) => tool.name).sort();
-  assert.deepEqual(names, [...TASK_AGENT_TOOL_NAMES].sort());
-  assert.equal(
-    planTools.some((tool) => tool.name === "memory_write"),
-    false,
-    "memory_write must not be selectable from a planning session",
+test("a plan write lands in the same store the chat agent reads", async () => {
+  const memoryStore = new MemoryStore(join(directory, "plan-write-memory"));
+  await memoryStore.ensure();
+  const plan = new Map(
+    selectTaskAgentTools(createMemoryTools(memoryStore, new SnapshotCache())).map((tool) => [
+      tool.name,
+      tool,
+    ]),
   );
+  const write = plan.get("memory_write");
+  assert.ok(write);
+  const marker = `plan-memory-${Date.now()}`;
+  const result = await write.execute(
+    {
+      target: "long_term",
+      topic: "plan-decision",
+      scope: "projects",
+      body: `# Plan decision\n\n${marker}`,
+    } as never,
+    {} as never,
+    {} as never,
+  );
+  assert.equal(result.isError === true, false);
+
+  // The chat agent's own factory reads the same topic file the plan just wrote.
+  const chat = new Map(createMemoryTools(memoryStore).map((tool) => [tool.name, tool]));
+  const read = chat.get("memory_read");
+  assert.ok(read);
+  const readResult = await read.execute(
+    { path: "topics/projects/plan-decision.md" } as never,
+    {} as never,
+    {} as never,
+  );
+  const text = readResult.output?.find((part) => part.type === "text");
+  assert.ok(text && text.type === "text");
+  assert.match(text.text, new RegExp(marker));
+});
+
+test("building a fresh plan block leaves the chat snapshot cache alone", async () => {
+  const memoryStore = new MemoryStore(join(directory, "plan-cache-isolation"));
+  await memoryStore.ensure();
+  await memoryStore.atomicWrite(memoryStore.memoryFile, "# MEMORY\n\n- chat block\n");
+  const shared = new SnapshotCache();
+  const chatBlock = await shared.get(memoryStore, "first_turn");
+  await memoryStore.appendScratchpad("plan-only scratchpad item");
+
+  const plan = await taskAgentMemoryBase(
+    "BASE INSTRUCTIONS",
+    { store: memoryStore, snapshot: shared },
+    { fresh: true },
+  );
+  assert.match(plan, /plan-only scratchpad item/);
+
+  // The plan build reads the files itself; the chat's cached prefix must survive.
+  assert.equal(await shared.get(memoryStore, "first_turn"), chatBlock);
+  assert.doesNotMatch(chatBlock, /plan-only scratchpad item/);
+});
+
+test("the current project guidance replaces the boot-time block and follows override rules", async () => {
+  const project = join(directory, "plan-current-agents");
+  await mkdir(project, { recursive: true });
+  const newMarker = `current-guidance-${Date.now()}`;
+  const oldMarker = `stale-guidance-${Date.now()}`;
+  const agentsPath = join(project, "AGENTS.md");
+  await writeFile(agentsPath, `# AGENTS.md\n\n- ${newMarker}\n`, "utf8");
+  const bootBase = `BASE INSTRUCTIONS\n\n<project_context>\nProject-specific instructions and guidelines:\n\n<project_instructions path="${agentsPath}">\n# AGENTS.md\n\n- ${oldMarker}\n</project_instructions>\n</project_context>`;
+
+  const current = await taskAgentMemoryBase(bootBase, undefined, { cwd: project });
+  assert.doesNotMatch(current, new RegExp(oldMarker));
+  assert.match(current, new RegExp(newMarker));
+  assert.equal((current.match(new RegExp(newMarker, "g")) ?? []).length, 1);
+
+  const overrideMarker = `override-guidance-${Date.now()}`;
+  await writeFile(
+    join(project, "AGENTS.override.md"),
+    `# AGENTS.override.md\n\n- ${overrideMarker}\n`,
+    "utf8",
+  );
+  const overridden = await taskAgentMemoryBase(bootBase, undefined, { cwd: project });
+  assert.match(overridden, new RegExp(overrideMarker));
+  assert.doesNotMatch(overridden, new RegExp(newMarker));
+});
+
+test("the chat agent keeps its own memory tools and plain instructions", async () => {
+  const names = createMemoryTools({} as never).map((tool) => tool.name);
+  assert.deepEqual(names, [
+    "memory_write",
+    "memory_read",
+    "memory_grep",
+    "memory_find",
+    "memory_dream",
+    "memory_status",
+  ]);
+
+  const chatBase = "You are the main chat agent for pi-ui.";
+  assert.equal(await taskAgentMemoryBase(chatBase, undefined), chatBase);
+  assert.doesNotMatch(chatBase, /plan mode/i);
+  assert.match(
+    taskAgentInstructions(chatBase, {
+      id: "chat",
+      title: "Only the plan prompt changes",
+      project: "pi-ui",
+      body: "",
+    }),
+    /plan mode/i,
+  );
+});
+
+test("a new plan session reads current memory and the project AGENTS.md", async () => {
+  const memoryStore = new MemoryStore(join(directory, "plan-current-memory"));
+  await memoryStore.ensure();
+  const project = join(directory, "plan-current-project");
+  await mkdir(project, { recursive: true });
+  const projectMarker = `project-guidance-${Date.now()}`;
+  await writeFile(join(project, "AGENTS.md"), `# AGENTS.md\n\n- ${projectMarker}\n`, "utf8");
+
+  // Prime the cache the way boot does, then prove a session does not trust it.
+  const cache = new SnapshotCache();
+  await memoryStore.atomicWrite(memoryStore.memoryFile, "# MEMORY\n\n- old note\n");
+  await cache.get(memoryStore, "first_turn");
+
+  const task = {
+    id: "mem2",
+    title: "Use current memory",
+    project: "pi-ui",
+    body: "Plan with today's note.",
+  };
+  const before = await taskAgentMemoryBase(
+    "BASE INSTRUCTIONS",
+    { store: memoryStore, snapshot: cache },
+    { cwd: project },
+  );
+  assert.doesNotMatch(before, /new note after boot/);
+  assert.match(before, new RegExp(projectMarker));
+
+  const marker = "new note after boot";
+  const plan = new Map(
+    selectTaskAgentTools(createMemoryTools(memoryStore, cache)).map((tool) => [tool.name, tool]),
+  );
+  const write = plan.get("memory_write");
+  assert.ok(write);
+  await write.execute({ target: "scratchpad", body: marker } as never, {} as never, {} as never);
+
+  // A session that existed before the write still sees the old block until its
+  // refresh runs; a session created afterwards reads the files as they are now.
+  const stale = await taskAgentMemoryBase(
+    "BASE INSTRUCTIONS",
+    { store: memoryStore, snapshot: cache },
+    { cwd: project, fresh: false },
+  );
+  assert.doesNotMatch(stale, new RegExp(marker));
+  const after = await taskAgentMemoryBase(
+    "BASE INSTRUCTIONS",
+    { store: memoryStore, snapshot: cache },
+    { cwd: project },
+  );
+  assert.match(after, new RegExp(marker));
+  assert.match(taskAgentInstructions(after, task), new RegExp(marker));
+});
+
+test("the project AGENTS.md is the skills equivalent and optional", async () => {
+  const project = join(directory, "plan-agents-only");
+  await mkdir(project, { recursive: true });
+  assert.equal(await taskAgentProjectInstructions(project), undefined);
+  const marker = `agents-guidance-${Date.now()}`;
+  await writeFile(join(project, "AGENTS.md"), `# AGENTS.md\n\n- ${marker}\n`, "utf8");
+  const loaded = await taskAgentProjectInstructions(project);
+  assert.ok(loaded);
+  assert.match(loaded, new RegExp(marker));
+
+  const base = await taskAgentMemoryBase("BASE INSTRUCTIONS", undefined, { cwd: project });
+  assert.match(base, new RegExp(marker));
+  assert.match(base, /<project_instructions/);
+  assert.match(
+    taskAgentInstructions(base, { id: "a1", title: "AGENTS", project: "pi-ui", body: "" }),
+    /AGENTS\.md/,
+  );
+});
+
+test("a plan write refreshes the existing session without touching the chat cache", async () => {
+  const memoryStore = new MemoryStore(join(directory, "plan-refresh-memory"));
+  await memoryStore.ensure();
+  const beforeMarker = `before-plan-write-${Date.now()}`;
+  await memoryStore.atomicWrite(
+    memoryStore.memoryFile,
+    `# MEMORY\n\n- ${beforeMarker} is already known.\n`,
+  );
+  const shared = new SnapshotCache();
+  const chatBlock = await shared.get(memoryStore, "first_turn");
+
+  const fakes = new Map<string, FakeSession>();
+  const manager = new TaskAgentManager({
+    dataDir: directory,
+    cwd: directory,
+    models: {} as never,
+    model: undefined,
+    store,
+    publish: () => undefined,
+    baseInstructions: "BASE",
+    memory: { store: memoryStore, snapshot: shared },
+    openSession: async (taskId) => {
+      const session = new FakeSession(taskId);
+      fakes.set(taskId, session);
+      return session;
+    },
+  });
+
+  const task = (await store.create("Refresh the plan prompt", null)).tasks.find(
+    (item) => item.title === "Refresh the plan prompt",
+  );
+  assert.ok(task);
+  await manager.ensure(task.id);
+  const session = fakes.get(task.id);
+  assert.ok(session);
+
+  // The session starts with the block as it was before the write.
+  await manager.refreshInstructions(task.id, true);
+  const initial = session.instructions.at(-1);
+  assert.ok(initial);
+  assert.match(initial, new RegExp(beforeMarker));
+
+  const marker = `after-plan-write-${Date.now()}`;
+  const tools = new Map(manager.planMemoryTools(task.id).map((tool) => [tool.name, tool]));
+  const write = tools.get("memory_write");
+  assert.ok(write);
+  await write.execute({ target: "scratchpad", body: marker } as never, {} as never, {} as never);
+
+  // The same session was refreshed by the write, while the chat cache stayed put.
+  assert.equal(session.instructions.length, 2);
+  const refreshed = session.instructions.at(-1);
+  assert.ok(refreshed);
+  assert.match(refreshed, new RegExp(marker));
+  assert.equal(await shared.get(memoryStore, "first_turn"), chatBlock);
+  assert.doesNotMatch(chatBlock, new RegExp(marker));
+
+  await manager.close();
 });
 
 test("the plan prompt carries the same snapshot block as the main chat", async () => {
@@ -155,7 +388,8 @@ test("the plan prompt carries the same snapshot block as the main chat", async (
   assert.match(prompt, new RegExp(marker));
   assert.ok(prompt.indexOf("BASE INSTRUCTIONS") < prompt.indexOf(marker));
   assert.match(prompt, /memory_read.*memory_grep.*memory_find/s);
-  assert.match(prompt, /never write to it from a planning turn/i);
+  assert.match(prompt, /memory_write/);
+  assert.match(prompt, /AGENTS\.md/);
 });
 
 test("a settled model failure becomes one dismissible run error", () => {
@@ -417,6 +651,7 @@ class FakeSession implements TaskAgentSession {
   stopped = 0;
   submitted: string[] = [];
   attachments: string[][] = [];
+  instructions: string[] = [];
   readonly hub = new StreamHub();
   run: RunState = "idle";
 
@@ -424,6 +659,10 @@ class FakeSession implements TaskAgentSession {
 
   running(): boolean {
     return this.run === "running";
+  }
+
+  async applyInstructions(instructions: string) {
+    this.instructions.push(instructions);
   }
 
   async snapshot() {

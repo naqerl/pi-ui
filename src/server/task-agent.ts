@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
-import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import {
+  getAgentDir,
+  loadProjectContextFiles,
+  type ModelRuntime,
+} from "@earendil-works/pi-coding-agent";
 import {
   type Conversation,
   type ConversationId,
@@ -51,7 +55,7 @@ import {
 } from "../shared/types.js";
 import { withConversationIdentity } from "./billion-context.js";
 import type { MediaStore } from "./media.js";
-import { composeInstructions, type SnapshotCache } from "./memory/snapshot.js";
+import { buildSnapshot, composeInstructions, SnapshotCache } from "./memory/snapshot.js";
 import type { MemoryStore } from "./memory/store.js";
 import { createMemoryTools } from "./memory/tools.js";
 import { PlanTurnNotifier, type PlanTurnPushSender } from "./plan-push.js";
@@ -70,9 +74,15 @@ import { TaskError, type TaskStore } from "./tasks.js";
 
 /**
  * The only tools a task planning agent may call: inspect the repo, edit its task,
- * ask the operator, propose distinct follow-up work for approval, and read memory.
+ * ask the operator, propose distinct follow-up work for approval, and use memory.
+ * Planning may record a durable decision; it shares the chat agent's write path.
  */
-export const TASK_AGENT_MEMORY_TOOL_NAMES = ["memory_read", "memory_grep", "memory_find"] as const;
+export const TASK_AGENT_MEMORY_TOOL_NAMES = [
+  "memory_read",
+  "memory_grep",
+  "memory_find",
+  "memory_write",
+] as const;
 export const TASK_AGENT_TOOL_NAMES = [
   "bash",
   "read",
@@ -86,12 +96,6 @@ export type TaskAgentToolName = (typeof TASK_AGENT_TOOL_NAMES)[number];
 
 const TASK_AGENT_TOOL_SET = new Set<string>(TASK_AGENT_TOOL_NAMES);
 const TASK_AGENT_MEMORY_TOOL_SET = new Set<string>(TASK_AGENT_MEMORY_TOOL_NAMES);
-/**
- * Planning is read-only, even if someone later widens the allow-list above. The
- * memory factory is shared with the main chat, so its write tool is filtered out
- * both at installation and again when the registry snapshot is selected.
- */
-const TASK_AGENT_FORBIDDEN_TOOL_SET = new Set<string>(["memory_write"]);
 
 export class TaskAgentError extends Error {
   constructor(
@@ -150,7 +154,7 @@ export interface TaskAgentSession {
   answerQuestions?(setId: string, answers: unknown): Promise<TaskAgentChatSnapshot>;
 }
 
-/** The memory tree and its injected-snapshot cache, shared with the main chat. */
+/** The memory tree and the chat snapshot cache; plan sessions keep their own cache. */
 export interface TaskAgentMemory {
   readonly store: MemoryStore;
   readonly snapshot: SnapshotCache;
@@ -165,7 +169,7 @@ export interface TaskAgentManagerOptions {
   readonly publish: (ledger: TaskLedger) => void;
   /** Base system prompt (coding-agent path with only read and bash described). */
   readonly baseInstructions: string;
-  /** Read-only memory and the snapshot block injected into the plan prompt. */
+  /** The memory tree and snapshot block injected into the plan prompt. */
   readonly memory?: TaskAgentMemory;
   /** Tests inject a fake session instead of opening a durable harness. */
   readonly openSession?: (taskId: string, manager: TaskAgentManager) => Promise<TaskAgentSession>;
@@ -194,24 +198,70 @@ export interface TaskAgentManagerOptions {
  * and in tests that assert the restriction without starting a harness.
  */
 export function selectTaskAgentTools<T extends { name: string }>(tools: readonly T[]): T[] {
-  return tools.filter(
-    (tool) => TASK_AGENT_TOOL_SET.has(tool.name) && !TASK_AGENT_FORBIDDEN_TOOL_SET.has(tool.name),
-  );
+  return tools.filter((tool) => TASK_AGENT_TOOL_SET.has(tool.name));
 }
 
-/** Keep only the three read-only memory tools, never the shared factory's writer. */
+/** Keep the memory tools the plan agent is allowed to call, including the shared writer. */
 export function selectTaskAgentMemoryTools<T extends { name: string }>(tools: readonly T[]): T[] {
   return tools.filter((tool) => TASK_AGENT_MEMORY_TOOL_SET.has(tool.name));
 }
 
-/** Compose the plan's base prompt with the same snapshot block the main chat uses. */
+export interface TaskAgentMemoryBaseOptions {
+  /** Read the project's current guidance files as part of the block. */
+  readonly cwd?: string;
+  /**
+   * Build the memory block from the files instead of the shared snapshot cache.
+   * Defaults to true so a new session never inherits a block cached at boot.
+   */
+  readonly fresh?: boolean;
+}
+
+const EMBEDDED_PROJECT_CONTEXT = /<project_context>[\s\S]*?<\/project_context>\s*/g;
+
+/** Drop the boot-time project block so the current files can be the only copy. */
+function withoutEmbeddedProjectContext(base: string): string {
+  return base.replace(EMBEDDED_PROJECT_CONTEXT, "").trimEnd();
+}
+
+/**
+ * The project guidance a session can be given, using the same files the coding
+ * agent loads (AGENTS.override.md, AGENTS.md, CLAUDE.md, ancestor and global
+ * files). This server has no skills loader; AGENTS.md is the skills equivalent.
+ */
+export async function taskAgentProjectInstructions(cwd: string): Promise<string | undefined> {
+  const files = loadProjectContextFiles({ cwd, agentDir: getAgentDir() });
+  const blocks: string[] = [];
+  for (const file of files) {
+    const content = file.content.replace(/^\uFEFF/, "").trim();
+    if (content.length === 0) continue;
+    blocks.push(`<project_instructions path="${file.path}">\n${content}\n</project_instructions>`);
+  }
+  return blocks.length === 0 ? undefined : blocks.join("\n\n");
+}
+
+/**
+ * Compose the plan's base prompt with the memory snapshot as it is now, plus the
+ * current project guidance. The fresh path builds from the files and never
+ * invalidates the chat's shared snapshot cache.
+ */
 export async function taskAgentMemoryBase(
   base: string,
   memory: TaskAgentMemory | undefined,
+  options: TaskAgentMemoryBaseOptions = {},
 ): Promise<string> {
-  if (memory === undefined) return base;
-  const block = await memory.snapshot.get(memory.store, "first_turn");
-  return composeInstructions(base, block);
+  let prompt = options.cwd === undefined ? base : withoutEmbeddedProjectContext(base);
+  if (memory !== undefined) {
+    const block =
+      options.fresh === false
+        ? await memory.snapshot.get(memory.store, "first_turn")
+        : await buildSnapshot(memory.store, "first_turn");
+    prompt = composeInstructions(prompt, block);
+  }
+  if (options.cwd !== undefined) {
+    const project = await taskAgentProjectInstructions(options.cwd);
+    if (project !== undefined) prompt = composeInstructions(prompt, project);
+  }
+  return prompt;
 }
 
 export function isTaskAgentToolName(name: string): name is TaskAgentToolName {
@@ -264,8 +314,9 @@ Your job is to help the operator formulate the task and propose a solution — a
 
 Plan mode only:
 - You may use the read and bash tools to inspect the repository.
-- You must not edit, write, create or delete any files, and you must not run commands that change the workspace.
-- Memory is what previous turns learned: read it with memory_read, memory_grep and memory_find before planning from scratch, and never write to it from a planning turn.
+- You must not edit, write, create or delete any workspace files, and you must not run commands that change the workspace. The memory_write tool is the one write you may make, and it only touches the memory store.
+- Memory is what previous turns learned: read it with memory_read, memory_grep and memory_find before planning from scratch, and record a durable decision with memory_write (long_term for a topic, daily for the journal).
+- Project guidance lives in the repository's AGENTS.md. This server has no separate skills loader, so treat AGENTS.md as the skills equivalent.
 - You have additional tools, edit_task, propose_task, ask_questions and append_questions. edit_task updates this task's title, markdown body and/or project. Use it to capture the formulated task: a clear title, a markdown body with the problem and the proposed design (mermaid fences are allowed), and a project when one fits.
 - Use propose_task to hand a follow-up task to the operator for approval. A proposal is not a task: only a human approving it creates work, so do not treat it as started or done. Do not propose a duplicate of the task you are planning; propose only distinct follow-up work.
 - When a decision would be guessed in prose, call ask_questions with a structured set (single, multi or text) and wait for the operator's answers. Use append_questions to add to the same unanswered set while you are still composing it.
@@ -1474,10 +1525,8 @@ export class TaskAgentManager {
         tools: createTaskQuestionTools({ taskId, questions }),
       }),
     );
-    if (this.options.memory !== undefined) {
-      const memoryTools = selectTaskAgentMemoryTools(
-        createMemoryTools(this.options.memory.store, this.options.memory.snapshot),
-      );
+    const memoryTools = this.planMemoryTools(taskId);
+    if (memoryTools.length > 0) {
       registry.install(defineExtension({ name: "task-agent-memory-tools", tools: memoryTools }));
     }
     const tools = selectTaskAgentTools(
@@ -1502,7 +1551,7 @@ export class TaskAgentManager {
       },
       SESSION_CONTEXT,
     );
-    const instructions = taskAgentInstructions(await this.resolveMemoryBase(), task);
+    const instructions = taskAgentInstructions(await this.resolveMemoryBase(true), task);
     const savedId = await readConversationId(currentPath);
     let conversation: Conversation | undefined;
     if (savedId !== undefined) {
@@ -1552,22 +1601,48 @@ export class TaskAgentManager {
     return session;
   }
 
-  /**
-   * The snapshot cache returns its built block without touching memory files;
-   * only an invalidation, a new day or a long-term write rebuilds it. Ledger
-   * updates therefore compose from the cache instead of rereading the tree.
-   */
-  private resolveMemoryBase(): Promise<string> {
-    return taskAgentMemoryBase(this.options.baseInstructions, this.options.memory);
+  /** The plan keeps its own snapshot cache so the chat's stable prefix is untouched. */
+  private readonly planSnapshot = new SnapshotCache();
+
+  private planMemory(): TaskAgentMemory | undefined {
+    if (this.options.memory === undefined) return undefined;
+    return { store: this.options.memory.store, snapshot: this.planSnapshot };
   }
 
-  private async refreshInstructions(taskId: string): Promise<void> {
+  /**
+   * The plan registry's memory tools, with the same write path as chat. A plan
+   * write invalidates only the plan-local snapshot and then runs the existing
+   * instruction refresh, so the next turn sees the new block.
+   */
+  planMemoryTools(taskId: string): ToolRegistration[] {
+    const memory = this.planMemory();
+    if (memory === undefined) return [];
+    return selectTaskAgentMemoryTools(
+      createMemoryTools(memory.store, memory.snapshot, {
+        onWrite: () => {
+          this.planSnapshot.invalidate();
+          return this.refreshInstructions(taskId);
+        },
+      }),
+    );
+  }
+
+  private resolveMemoryBase(fresh: boolean): Promise<string> {
+    if (fresh) this.planSnapshot.invalidate();
+    return taskAgentMemoryBase(this.options.baseInstructions, this.planMemory(), {
+      cwd: this.options.cwd,
+      fresh,
+    });
+  }
+
+  /** Rebuild a live plan session's instructions from the current task and files. */
+  async refreshInstructions(taskId: string, fresh = false): Promise<void> {
     const session = this.sessions.get(taskId);
     if (session === undefined || session.closed || session.applyInstructions === undefined) return;
     const task = this.options.store.ledger().tasks.find((item) => item.id === taskId);
     if (task === undefined) return;
     try {
-      const base = await this.resolveMemoryBase();
+      const base = await this.resolveMemoryBase(fresh);
       await session.applyInstructions(taskAgentInstructions(base, task));
     } catch (error) {
       console.error(`[task-agent] could not refresh instructions for ${taskId}`, error);
