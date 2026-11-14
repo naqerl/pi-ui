@@ -117,6 +117,7 @@ export function taskState(
   index?: TaskIndex,
 ): TaskState {
   if (task.status === "proposed") return "proposed";
+  if (task.status === "planning") return "planning";
   if (task.status === "backlog") return "backlog";
   if (task.status === "done") return "done";
   if (task.status === "working") return "working";

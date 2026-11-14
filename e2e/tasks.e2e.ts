@@ -213,6 +213,218 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     await expect(screen.getByTestId("task-agent-input")).toHaveValue(raw);
   });
 
+  test("the plan toggle survives a reload and a submission lands in the plan chat", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    const title = `SLOW plan the launch ${Date.now()}`;
+    await app.open("/?page=tasks");
+    await browser.evaluate(() => {
+      sessionStorage.removeItem("pi-ui:plan-task-draft");
+      return null;
+    });
+    await app.open("/?page=tasks");
+
+    const toggle = screen.getByRole("button", { name: "Plan this task" });
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await toggle.tap();
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+
+    // A reload in the same browser session keeps the choice.
+    await app.open("/?page=tasks");
+    await expect(screen.getByRole("button", { name: "Plan this task" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    const composer = screen.getByRole("textbox", "New task");
+    await composer.fill(title);
+    await screen.getByTestId("add-task").tap();
+
+    await expect(screen.getByTestId("task-detail")).toBeVisible();
+    await expect(screen.getByTestId("task-agent-input")).toBeVisible();
+    const created = await browser.evaluate(async (needle) => {
+      const ledger = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
+        tasks: Array<{ id: string; title: string; status: string; body?: string }>;
+      };
+      const task = ledger.tasks.find((item) => item.title === needle);
+      return task === undefined
+        ? null
+        : { id: task.id, status: task.status, body: task.body ?? "" };
+    }, title);
+    expect(created?.status).toBe("planning");
+    expect(created?.body).toContain(title);
+    if (created === null) throw new Error("the plan draft is missing");
+    await expect(screen.getByTestId(`task-detail-planning-${created.id}`)).toBeVisible();
+
+    // The create itself started the plan run, with the composer text as its first message.
+    await expect
+      .poll(
+        () =>
+          browser.evaluate(
+            async ({ id, needle }) => {
+              const chat = (await (
+                await fetch(`/api/tasks/${encodeURIComponent(id)}/chat`, { cache: "no-store" })
+              ).json()) as { messages: Array<{ role: string; text: string }> };
+              return chat.messages.some(
+                (message) => message.role === "user" && message.text.includes(needle),
+              );
+            },
+            { id: created.id, needle: title },
+          ),
+        { timeout: 20_000 },
+      )
+      .toBe(true);
+
+    try {
+      expect(
+        await browser.evaluate(async (taskId) => {
+          const ledger = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
+            tasks: Array<{ id: string; status: string }>;
+          };
+          return ledger.tasks.find((task) => task.id === taskId)?.status ?? null;
+        }, created.id),
+      ).toBe("planning");
+    } finally {
+      await browser.evaluate(async (taskId) => {
+        await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, { method: "DELETE" });
+        sessionStorage.removeItem("pi-ui:plan-task-draft");
+        return null;
+      }, created.id);
+    }
+  });
+
+  test("a failed plan create stays retryable instead of becoming a phantom draft", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    const title = `Retry the plan draft ${Date.now()}`;
+    await app.open("/?page=tasks");
+    await browser.evaluate(() => {
+      sessionStorage.removeItem("pi-ui:plan-task-draft");
+      return null;
+    });
+    await app.open("/?page=tasks");
+    await screen.getByRole("button", { name: "Plan this task" }).tap();
+
+    let attempts = 0;
+    await browser.route("**/api/tasks", async (route) => {
+      if (route.request.method !== "POST") {
+        await route.continue();
+        return;
+      }
+      attempts += 1;
+      if (attempts === 1) {
+        await route.fulfill({ status: 500, body: "Task list is full" });
+        return;
+      }
+      await route.continue();
+    });
+
+    const composer = screen.getByRole("textbox", "New task");
+    await composer.fill(title);
+    await screen.getByTestId("add-task").tap();
+
+    await expect(screen.getByTestId("composer-error")).toHaveText("Task list is full");
+    const failed = browser.locator('[data-create-failed="true"]').filter({ hasText: title });
+    await expect(failed).toBeVisible();
+    await expect(failed.getByTestId("task-error")).toHaveText("Task list is full");
+    await expect(browser.locator('[data-testid^="draft-"]').filter({ hasText: title })).toHaveCount(
+      0,
+    );
+
+    await failed.getByRole("button", { name: `Retry ${title}` }).tap();
+    await expect(browser.locator('[data-create-failed="true"]')).toHaveCount(0);
+    await expect(screen.getByTestId("task-detail")).toBeVisible();
+    await expect(screen.getByTestId("task-agent-input")).toBeVisible();
+
+    const copies = await browser.evaluate(async (needle) => {
+      const ledger = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
+        tasks: Array<{ id: string; title: string; status: string }>;
+      };
+      const matching = ledger.tasks.filter((task) => task.title === needle);
+      for (const task of matching) {
+        await fetch(`/api/tasks/${encodeURIComponent(task.id)}`, { method: "DELETE" });
+      }
+      sessionStorage.removeItem("pi-ui:plan-task-draft");
+      return matching.map((task) => task.status);
+    }, title);
+    expect(copies).toEqual(["planning"]);
+    expect(attempts).toBe(2);
+  });
+
+  test("concurrent plan creates start the run for their own draft", async ({ app, browser }) => {
+    const titles = [`Parallel plan one ${Date.now()}`, `Parallel plan two ${Date.now()}`];
+    await app.open("/?page=tasks");
+    const ids = await browser.evaluate(async (names) => {
+      const responses = await Promise.all(
+        names.map((title) =>
+          fetch("/api/tasks", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ title, plan: true }),
+          }),
+        ),
+      );
+      const ledgers = (await Promise.all(responses.map((response) => response.json()))) as Array<{
+        tasks: Array<{ id: string; title: string; status: string }>;
+      }>;
+      return names.map(
+        (title) =>
+          ledgers.flatMap((ledger) => ledger.tasks).find((task) => task.title === title)?.id ??
+          null,
+      );
+    }, titles);
+    expect(ids.every((id) => typeof id === "string")).toBe(true);
+    const taskIds = ids.filter((id): id is string => typeof id === "string");
+    try {
+      await expect
+        .poll(
+          () =>
+            browser.evaluate(
+              async ({ ids: taskIdsToRead, titles: expected }) => {
+                const checks = await Promise.all(
+                  taskIdsToRead.map(async (id, index) => {
+                    const chat = (await (
+                      await fetch(`/api/tasks/${encodeURIComponent(id)}/chat`, {
+                        cache: "no-store",
+                      })
+                    ).json()) as { messages: Array<{ role: string; text: string }> };
+                    return chat.messages.some(
+                      (message) =>
+                        message.role === "user" && message.text.includes(expected[index] ?? ""),
+                    );
+                  }),
+                );
+                return checks.every(Boolean);
+              },
+              { ids: taskIds, titles },
+            ),
+          { timeout: 20_000 },
+        )
+        .toBe(true);
+      expect(
+        await browser.evaluate(async (expected) => {
+          const ledger = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
+            tasks: Array<{ id: string; title: string; status: string }>;
+          };
+          return expected.map(
+            (title) => ledger.tasks.find((task) => task.title === title)?.status ?? null,
+          );
+        }, titles),
+      ).toEqual(["planning", "planning"]);
+    } finally {
+      await browser.evaluate(async (taskIdsToDelete) => {
+        for (const id of taskIdsToDelete) {
+          await fetch(`/api/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
+        }
+        return null;
+      }, taskIds);
+    }
+  });
+
   type ReopenTaskRead = {
     id: string;
     title: string;
@@ -312,6 +524,28 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
         .map((entry) => entry.output as string);
     }, name);
   }
+
+  test("hides the plan toggle when the tasks composer is collapsed", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    const title = `Collapsed composer ${Date.now()}`;
+    await app.open("/?page=tasks");
+    const id = await createReopenTask(browser, title, { done: true });
+    expect(id).not.toBe("");
+
+    try {
+      await app.open("/?page=tasks");
+      await expect(screen.getByTestId("plan-task-toggle")).toBeVisible();
+      await screen.getByRole("button", { name: `Open ${title}` }).tap();
+      await expect(screen.getByTestId("task-detail")).toBeVisible();
+      await expect(screen.getByTestId("composer-body")).toHaveAttribute("data-collapsed", "true");
+      await expect(screen.getByTestId("plan-task-toggle")).toHaveCount(0);
+    } finally {
+      await deleteReopenTasks(browser, [title]);
+    }
+  });
 
   test("reopens a done task with a reason and keeps the old completion", async ({
     app,

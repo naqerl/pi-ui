@@ -175,7 +175,8 @@ function isTask(value: unknown): value is Task {
       task.status === "working" ||
       task.status === "done" ||
       task.status === "proposed" ||
-      task.status === "backlog") &&
+      task.status === "backlog" ||
+      task.status === "planning") &&
     (task.parentId === null || typeof task.parentId === "string") &&
     Array.isArray(task.blockedBy) &&
     task.blockedBy.every((id) => typeof id === "string") &&
@@ -366,7 +367,7 @@ export class TaskStore {
       typeof revision === "number" && Number.isInteger(revision) && revision >= 0 ? revision : 0;
   }
 
-  private insertTask(
+  private async insertTaskResult(
     title: string,
     parentId: string | null,
     attachments: readonly string[],
@@ -377,7 +378,7 @@ export class TaskStore {
       rationale?: string;
       createdBy: NonNullable<Task["createdBy"]>;
     },
-  ): Promise<TaskLedger> {
+  ): Promise<{ ledger: TaskLedger; task: Task }> {
     const text = title.trim();
     if (text.length === 0) return Promise.reject(new TaskError("Task title is required", 400));
     let content: string | undefined;
@@ -395,7 +396,8 @@ export class TaskStore {
         ),
       );
     }
-    return this.commit((tasks) => {
+    let createdId: string | undefined;
+    const ledger = await this.commit((tasks) => {
       if (tasks.length >= TASK_LIMIT) throw new TaskError("Task list is full", 400);
       let parent: Task | undefined;
       if (parentId !== null) {
@@ -424,7 +426,48 @@ export class TaskStore {
         ...(content === undefined ? {} : { body: content }),
         createdBy: options.createdBy,
       };
+      createdId = task.id;
       return [...tasks, task];
+    });
+    const created = ledger.tasks.find((task) => task.id === createdId);
+    if (created === undefined) throw new TaskError("Created task is missing", 500);
+    return { ledger, task: created };
+  }
+
+  private async insertTask(
+    title: string,
+    parentId: string | null,
+    attachments: readonly string[],
+    project: string | null | undefined,
+    body: string | null | undefined,
+    options: {
+      status: TaskStatus;
+      rationale?: string;
+      createdBy: NonNullable<Task["createdBy"]>;
+    },
+  ): Promise<TaskLedger> {
+    return (await this.insertTaskResult(title, parentId, attachments, project, body, options))
+      .ledger;
+  }
+
+  /** Create a task and return the exact row this call inserted, even under concurrent writes. */
+  createWithResult(
+    title: string,
+    parentId: string | null,
+    attachments: readonly string[] = [],
+    project?: string | null,
+    body?: string | null,
+    mode?: TaskStatus | { status?: TaskStatus; backlog?: boolean } | boolean,
+  ): Promise<{ ledger: TaskLedger; task: Task }> {
+    let status: TaskStatus;
+    try {
+      status = createStatus(mode);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    return this.insertTaskResult(title, parentId, attachments, project, body, {
+      status,
+      createdBy: "operator",
     });
   }
 
@@ -436,16 +479,9 @@ export class TaskStore {
     body?: string | null,
     mode?: TaskStatus | { status?: TaskStatus; backlog?: boolean } | boolean,
   ): Promise<TaskLedger> {
-    let status: TaskStatus;
-    try {
-      status = createStatus(mode);
-    } catch (error) {
-      return Promise.reject(error);
-    }
-    return this.insertTask(title, parentId, attachments, project, body, {
-      status,
-      createdBy: "operator",
-    });
+    return this.createWithResult(title, parentId, attachments, project, body, mode).then(
+      (result) => result.ledger,
+    );
   }
 
   /** Record a task idea for human approval. It is not open work until approved. */
@@ -558,12 +594,16 @@ export class TaskStore {
           patch.status !== "working" &&
           patch.status !== "done" &&
           patch.status !== "proposed" &&
-          patch.status !== "backlog"
+          patch.status !== "backlog" &&
+          patch.status !== "planning"
         ) {
           throw new TaskError(
-            'Status must be "open", "working", "done", "proposed" or "backlog"',
+            'Status must be "open", "working", "done", "proposed", "backlog" or "planning"',
             400,
           );
+        }
+        if (patch.status === "planning") {
+          throw new TaskError("A task cannot be moved to planning", 409);
         }
         // A finished task can only come back through the audited open-plus-reason path.
         if (current.status === "done" && patch.status !== "done" && patch.status !== "open") {
@@ -575,11 +615,17 @@ export class TaskStore {
         if (patch.status === "working" && current.status === "proposed") {
           throw new TaskError("Task is not open; a proposal must be approved first", 409);
         }
+        if (patch.status === "working" && current.status === "planning") {
+          throw new TaskError("Task is still being planned; approve it first", 409);
+        }
         if (patch.status === "proposed" && current.status !== "proposed") {
           throw new TaskError("Only a proposal can be moved to proposed", 409);
         }
         if (patch.status === "done" && current.status === "proposed") {
           throw new TaskError("Task is not open; a proposal must be approved first", 409);
+        }
+        if (patch.status === "done" && current.status === "planning") {
+          throw new TaskError("Task is still being planned; approve it first", 409);
         }
         // A parent stays open until every subtask is done, same as kata's close rule.
         if (patch.status === "done" && hasOpenDescendant(tasks, id)) {
@@ -924,8 +970,8 @@ function createStatus(
         : typeof mode === "string"
           ? mode
           : (mode.status ?? (mode.backlog === true ? "backlog" : "open"));
-  if (status !== "open" && status !== "backlog") {
-    throw new TaskError('A new task must be "open" or "backlog"', 400);
+  if (status !== "open" && status !== "backlog" && status !== "planning") {
+    throw new TaskError('A new task must be "open", "backlog" or "planning"', 400);
   }
   return status;
 }

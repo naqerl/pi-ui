@@ -79,6 +79,7 @@ export interface TaskDetailModel {
   acceptProject: (name: string) => void;
   done: boolean;
   proposed: boolean;
+  draft: boolean;
   parked: boolean;
   backlogLabel: string;
   openChildren: boolean;
@@ -606,6 +607,7 @@ export function TaskActionsMenu({
     statusPending,
     done,
     proposed,
+    draft,
     parked,
     backlogLabel,
     openChildren,
@@ -651,7 +653,26 @@ export function TaskActionsMenu({
           </DropdownMenuItem>
         )}
         {(onRename !== undefined || onChangeProject !== undefined) && <DropdownMenuSeparator />}
-        {proposed ? (
+        {draft ? (
+          <>
+            <DropdownMenuItem
+              data-testid="task-detail-approve"
+              onSelect={onApprove}
+              aria-label={`Approve ${title} draft`}
+            >
+              Approve draft
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              variant="destructive"
+              data-testid="task-detail-remove"
+              onSelect={onRemove}
+              aria-label={`Remove ${title} draft`}
+            >
+              Remove
+            </DropdownMenuItem>
+          </>
+        ) : proposed ? (
           <>
             <DropdownMenuItem onSelect={onApprove} aria-label={`Approve ${title} proposal`}>
               Approve
