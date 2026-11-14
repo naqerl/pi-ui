@@ -1,3 +1,12 @@
+## 1.6.176
+
+### Changed
+
+- The `Plan this task` switch is the leftmost control in the composer's status row, because it
+  changes what the send button does. It starts on, still remembers a session's choice to turn it
+  off, and a tap no longer drops the keyboard: the composer keeps focus, so the next keystroke
+  lands where it was typed.
+
 ## 1.6.175
 
 ### Added
