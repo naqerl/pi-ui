@@ -50,6 +50,7 @@ import {
 } from "../shared/types.js";
 import { withConversationIdentity } from "./billion-context.js";
 import type { MediaStore } from "./media.js";
+import { PlanTurnNotifier, type PlanTurnPushSender } from "./plan-push.js";
 import { retrySettings } from "./retry.js";
 import { buildTranscript, SESSION_CONTEXT } from "./session.js";
 import type { SseFrame } from "./sse.js";
@@ -150,6 +151,14 @@ export interface TaskAgentManagerOptions {
   readonly onRunState?: (taskId: string) => void;
   /** Used to resolve image attachments sent in the plan chat. */
   readonly media?: MediaStore;
+  /** Where a finished planning turn is announced. Defaults to web push. */
+  readonly notify?: PlanTurnPushSender;
+  /** Minimum milliseconds between pushes for the same task. Zero disables the guard. */
+  readonly pushWindowMs?: number;
+  readonly burstWindowMs?: number;
+  readonly coalesceMs?: number;
+  /** Override the clock in tests. */
+  readonly now?: () => number;
 }
 
 /**
@@ -513,6 +522,7 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     private readonly onRunState?: (taskId: string) => void,
     private readonly relay?: (frame: SseFrame) => void,
     private readonly media?: MediaStore,
+    private readonly onTurnFinished?: (taskId: string) => void | Promise<void>,
   ) {}
 
   private readonly mediaRef = (data: string, mimeType: string) =>
@@ -857,6 +867,16 @@ export class DurableTaskAgentSession implements TaskAgentSession {
       this.broadcastQueue();
     }
 
+    // `done` is the run's successful answer, including a steer or follow-up placed into it.
+    // A failed, stopped or cancelled run settles `unanswered`, and keeps its in-app error.
+    if (final !== undefined && final.status === "done") {
+      try {
+        await this.onTurnFinished?.(this.taskId);
+      } catch (error) {
+        console.error(`[task-agent] plan notification failed for ${this.taskId}`, error);
+      }
+    }
+
     // A cancelled queued follow-up settles `unanswered`/`aborted` while the earlier run is
     // still live. It must not turn that run idle or hand it a run error. The submission that
     // started the run still ends it normally (including a deliberate stop).
@@ -1110,9 +1130,22 @@ export class TaskAgentManager {
   private readonly opening = new Map<string, Promise<TaskAgentSession>>();
   private closed = false;
   readonly root: string;
+  private readonly planTurnNotifier: PlanTurnNotifier;
 
   constructor(private readonly options: TaskAgentManagerOptions) {
     this.root = join(options.dataDir, "task-agents");
+    this.planTurnNotifier = new PlanTurnNotifier(options.store, {
+      ...(options.notify === undefined ? {} : { notify: options.notify }),
+      ...(options.now === undefined ? {} : { now: options.now }),
+      ...(options.pushWindowMs === undefined ? {} : { windowMs: options.pushWindowMs }),
+      ...(options.burstWindowMs === undefined ? {} : { burstWindowMs: options.burstWindowMs }),
+      ...(options.coalesceMs === undefined ? {} : { coalesceMs: options.coalesceMs }),
+    });
+  }
+
+  /** Announce one finished planning turn. Exposed so a caller can flush or test the path. */
+  notifyTurnFinished(taskId: string): Promise<boolean> {
+    return this.planTurnNotifier.notifyTurn(taskId);
   }
 
   taskDir(taskId: string): string {
@@ -1420,6 +1453,9 @@ export class TaskAgentManager {
       this.options.onRunState,
       this.options.relay === undefined ? undefined : (frame) => this.options.relay?.(taskId, frame),
       this.options.media,
+      (finishedTaskId) => {
+        void this.planTurnNotifier.notifyTurn(finishedTaskId);
+      },
     );
     await session.start();
     return session;
