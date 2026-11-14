@@ -230,7 +230,7 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     });
     await app.open("/?page=tasks");
 
-    const toggle = screen.getByRole("button", { name: "Plan this task" });
+    const toggle = screen.getByTestId("plan-task-toggle");
     // A fresh session starts with planning enabled.
     await expect(toggle).toHaveAttribute("aria-pressed", "true");
 
@@ -274,7 +274,7 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
 
     // A reload in the same browser session keeps the off choice over the default.
     await app.open("/?page=tasks");
-    const offToggle = screen.getByRole("button", { name: "Plan this task" });
+    const offToggle = screen.getByTestId("plan-task-toggle");
     await expect(offToggle).toHaveAttribute("aria-pressed", "false");
 
     // A tap keeps the draft focused too and turns planning back on.
@@ -288,10 +288,7 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
 
     // The on choice is remembered, and the submission starts a plan draft.
     await app.open("/?page=tasks");
-    await expect(screen.getByRole("button", { name: "Plan this task" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
+    await expect(screen.getByTestId("plan-task-toggle")).toHaveAttribute("aria-pressed", "true");
 
     const draft = screen.getByRole("textbox", "New task");
     await draft.fill(title);
@@ -365,10 +362,7 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     });
     await app.open("/?page=tasks");
     // A fresh session is already planning.
-    await expect(screen.getByRole("button", { name: "Plan this task" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
+    await expect(screen.getByTestId("plan-task-toggle")).toHaveAttribute("aria-pressed", "true");
 
     let attempts = 0;
     await browser.route("**/api/tasks", async (route) => {

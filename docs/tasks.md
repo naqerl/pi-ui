@@ -5,7 +5,7 @@ with "No project" last.
 
 ## Draft planning
 
-The create composer's status row has a `Plan this task` toggle, on by default and remembered for
+The create composer's status row has a `Plan task` toggle, on by default and remembered for
 the browser session when the operator turns it off. With it on, submitting creates the task in the
 `planning` state and starts its plan run with the composer text as the task body. The draft is not
 open work: idle nudges ignore it, `task_working` refuses it, and it waits in the Drafts section
