@@ -197,6 +197,118 @@ test("nothing running leaves no counts and keeps the status row at its resting h
   expect(after.statusY).toBeCloseTo(empty.statusY, 0);
 });
 
+test("counts stay on chat, align with the plus, and the sheet is a centred partial sheet", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/");
+  await expect(screen.getByTestId("working-status")).toBeVisible();
+  await settleDock(browser);
+
+  await sendText(browser, `JOBSTART sleep 60; echo ALIGN_${Date.now()}`);
+  await expect.poll(() => hasCounts(browser), { timeout: 20_000 }).toBe(true);
+  await expect(screen.getByTestId("bg-jobs-line-jobs")).toHaveText("1 job");
+  await settleDock(browser);
+
+  const alignment = () =>
+    browser.evaluate(() => {
+      const counts = document.querySelector<HTMLElement>('[data-testid="bg-jobs-line"]');
+      const plus = document.querySelector<HTMLElement>('button[aria-label="Attach image"]');
+      if (counts === null || plus === null) return null;
+      const countsBox = counts.getBoundingClientRect();
+      const plusBox = plus.getBoundingClientRect();
+      return {
+        delta: Math.abs(countsBox.left - plusBox.left),
+        countsLeft: countsBox.left,
+        plusLeft: plusBox.left,
+      };
+    });
+
+  const phone = await alignment();
+  expect(phone).not.toBeNull();
+  expect(phone?.delta ?? 99).toBeLessThanOrEqual(1);
+
+  await screen.getByTestId("bg-jobs-line-jobs").tap();
+  await expect(screen.getByTestId("bg-jobs-sheet")).toBeVisible();
+  const sheetLayout = await browser.evaluate(() => {
+    const sheet = document.querySelector<HTMLElement>('[data-testid="bg-jobs-sheet"]');
+    const title = sheet?.querySelector<HTMLElement>("h2");
+    const duration = document.querySelector<HTMLElement>('[data-testid="bg-jobs-sheet-duration"]');
+    if (sheet === null || title === undefined || title === null) return null;
+    const sheetBox = sheet.getBoundingClientRect();
+    const titleBox = title.getBoundingClientRect();
+    return {
+      height: sheetBox.height,
+      viewport: window.innerHeight,
+      titleDelta: Math.abs(
+        titleBox.left + titleBox.width / 2 - (sheetBox.left + sheetBox.width / 2),
+      ),
+      duration: duration?.textContent ?? "",
+    };
+  });
+  expect(sheetLayout).not.toBeNull();
+  expect(sheetLayout?.height ?? 99_999).toBeLessThanOrEqual((sheetLayout?.viewport ?? 0) * 0.85);
+  expect(sheetLayout?.titleDelta ?? 99).toBeLessThanOrEqual(1);
+  expect(sheetLayout?.duration ?? "").toMatch(/^\d{2}:\d{2}$/);
+  await screen.getByTestId("bg-jobs-sheet-close").tap();
+  await expect
+    .poll(() =>
+      browser.evaluate(() => document.querySelector('[data-testid="bg-jobs-sheet"]') !== null),
+    )
+    .toBe(false);
+
+  const switching = await browser.evaluate(async () => {
+    const counts = document.querySelector<HTMLElement>('[data-testid="bg-jobs-line"]');
+    const before =
+      counts === null
+        ? null
+        : {
+            transform: getComputedStyle(counts).transform,
+            height: getComputedStyle(counts).height,
+          };
+    document.querySelector<HTMLElement>('[data-testid="page-dot-stats"]')?.click();
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 50));
+    const mid =
+      counts === null
+        ? null
+        : {
+            transform: getComputedStyle(counts).transform,
+            height: getComputedStyle(counts).height,
+            connected: counts.isConnected,
+          };
+    return { before, mid };
+  });
+  expect(switching.before).not.toBeNull();
+  expect(switching.mid).not.toBeNull();
+  expect(switching.mid?.connected).toBe(true);
+  expect(switching.mid?.transform).not.toBe(switching.before?.transform);
+  expect(switching.mid?.height).toBe(switching.before?.height);
+  await expect.poll(() => pagerPage(browser)).toBe("stats");
+  await expect.poll(() => hasCounts(browser)).toBe(false);
+
+  await screen.getByTestId("page-dot-tasks").tap();
+  await expect.poll(() => pagerPage(browser)).toBe("tasks");
+  await settleDock(browser);
+  expect(await hasCounts(browser)).toBe(false);
+
+  await screen.getByTestId("page-dot-chat").tap();
+  await expect.poll(() => pagerPage(browser)).toBe("chat");
+  await expect.poll(() => hasCounts(browser)).toBe(true);
+  await settleDock(browser);
+
+  await browser.setViewport({ width: 1280, height: 800 });
+  await settleDock(browser);
+  const desktop = await alignment();
+  expect(desktop).not.toBeNull();
+  expect(desktop?.delta ?? 99).toBeLessThanOrEqual(1);
+
+  const running = (await jobs(browser)).find((job) => job.status === "running");
+  if (running !== undefined) await cancelJob(browser, running.id);
+  await expect.poll(() => hasCounts(browser), { timeout: 20_000 }).toBe(false);
+});
+
 test("a background job count opens a live sheet and returns focus to the composer", async ({
   app,
   browser,
@@ -218,7 +330,7 @@ test("a background job count opens a live sheet and returns focus to the compose
 
   await settleDock(browser);
   const withCounts = await rowMetrics(browser);
-  // Same row, same width budget: the count rides after the working indicator.
+  // Same row, same width budget: the count leads the working indicator.
   expect(withCounts.hasSlot).toBe(false);
   expect(withCounts.countsInsideStatus).toBe(true);
   expect(withCounts.countBottom).toBeGreaterThan(withCounts.rowTop);

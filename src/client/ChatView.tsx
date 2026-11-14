@@ -1340,6 +1340,7 @@ export function Composer({
             variant="ghost"
             size="icon"
             aria-label={tasksPage ? "Attach image to task" : "Attach image"}
+            data-testid="composer-plus"
             className={ACTION_BUTTON_CLASS}
             onClick={() => fileRef.current?.click()}
           >
@@ -2292,6 +2293,12 @@ export function ChatView({
               data-open={statusRunning ? "true" : "false"}
               className="flex min-w-0 flex-1 items-baseline gap-2 font-mono text-[11px] leading-4 text-muted-foreground"
             >
+              <BackgroundJobsCounts
+                jobs={jobs}
+                delegates={delegates ?? []}
+                onOpen={setJobsSheet}
+                visible={chatPage}
+              />
               {statusWord !== null && (
                 <div aria-live="polite" className="min-w-0 truncate">
                   {statusRunning ? (
@@ -2303,7 +2310,6 @@ export function ChatView({
                   )}
                 </div>
               )}
-              <BackgroundJobsCounts jobs={jobs} delegates={delegates ?? []} onOpen={setJobsSheet} />
             </div>
             <div
               role="tablist"

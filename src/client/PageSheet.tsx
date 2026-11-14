@@ -2,8 +2,9 @@ import { type ReactNode, useEffect, useRef } from "react";
 import { cn } from "./lib/utils";
 
 /**
- * The one native page-sheet shell: modal focus, scroll lock and backdrop close.
- * Both the activity view and the background-work sheet mount inside it.
+ * The native dialog shell: modal focus, scroll lock and backdrop close. The
+ * activity view mounts inside it; the background-work sheet uses the npm
+ * page-sheet with real detents instead.
  */
 export function PageSheet({
   testId,
