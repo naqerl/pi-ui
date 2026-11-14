@@ -96,10 +96,11 @@ export function blockerClosesCycle(
 export function compareTasks(tasks: readonly Task[], a: Task, b: Task): number {
   const rank = (task: Task) => {
     if (task.status === "proposed") return 0;
-    if (task.status === "backlog") return 4;
-    if (task.status === "done") return 3;
-    if (liveBlockerIds(tasks, task).length > 0) return 2;
-    return 1;
+    if (task.status === "planning") return 1;
+    if (task.status === "backlog") return 5;
+    if (task.status === "done") return 4;
+    if (liveBlockerIds(tasks, task).length > 0) return 3;
+    return 2;
   };
   const delta = rank(a) - rank(b);
   if (delta !== 0) return delta;

@@ -6,6 +6,11 @@ import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
+  PLAN_TASK_DRAFT_KEY,
+  readPlanTaskDraft,
+  writePlanTaskDraft,
+} from "../src/client/composer-preferences.js";
+import {
   dayLabel,
   doneDayLabel,
   groupByDay,
@@ -61,14 +66,21 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function renderTaskCard(task: Task) {
+function renderTaskCard(task: Task, planning: readonly string[] = []) {
   return renderToStaticMarkup(
     createElement(TaskRow, {
       task,
       tasks: [task],
+      planning: new Set(planning),
       activity: undefined,
       state: (item: Task) =>
-        item.status === "done" ? "done" : item.status === "proposed" ? "proposed" : "ready",
+        item.status === "done"
+          ? "done"
+          : item.status === "proposed"
+            ? "proposed"
+            : item.status === "planning"
+              ? "planning"
+              : "ready",
       depth: 0,
       selectedId: null,
       cardClickGuard: { current: { pointer: null, ignore: null, timer: null } },
@@ -80,6 +92,54 @@ function renderTaskCard(task: Task) {
     }),
   );
 }
+
+test("the plan-task composer choice is off by default and remembered for the session", () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      values.set(key, value);
+    },
+  };
+  assert.equal(readPlanTaskDraft(storage), false);
+  writePlanTaskDraft(true, storage);
+  assert.equal(values.get(PLAN_TASK_DRAFT_KEY), "1");
+  assert.equal(readPlanTaskDraft(storage), true);
+  writePlanTaskDraft(false, storage);
+  assert.equal(readPlanTaskDraft(storage), false);
+  assert.equal(readPlanTaskDraft(undefined), false);
+});
+
+test("concurrent creates each return the exact task they inserted", async () => {
+  const { directory, store } = await temporaryStore();
+  try {
+    const titles = ["First plan draft", "Second plan draft"];
+    const [first, second] = await Promise.all(
+      titles.map((title) =>
+        store.createWithResult(title, null, [], undefined, `${title} body`, {
+          status: "planning",
+        }),
+      ),
+    );
+    assert.equal(first.task.title, titles[0]);
+    assert.equal(second.task.title, titles[1]);
+    assert.notEqual(first.task.id, second.task.id);
+    assert.equal(first.ledger.tasks.find((task) => task.id === first.task.id)?.title, titles[0]);
+    assert.equal(second.ledger.tasks.find((task) => task.id === second.task.id)?.title, titles[1]);
+    assert.deepEqual(
+      store
+        .ledger()
+        .tasks.filter((task) => titles.includes(task.title))
+        .map((task) => [task.title, task.status, task.body]),
+      [
+        [titles[0], "planning", `${titles[0]} body`],
+        [titles[1], "planning", `${titles[1]} body`],
+      ],
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("task ordering puts proposals first, then ready, blocked and done deterministically", () => {
   const base: Omit<Task, "id" | "title" | "status" | "blockedBy" | "createdAt"> = {
@@ -296,6 +356,24 @@ test("a task card shows only the created time while the task is open", () => {
   assert.match(markup, new RegExp(`dateTime="${task.createdAt}"`));
   assert.match(markup, new RegExp(`Created ${created}`));
   assert.doesNotMatch(markup, /Closed/);
+});
+
+test("a planning task row shows the live planning badge", () => {
+  const task: Task = {
+    id: "card-planning",
+    title: "Specify the launch",
+    status: "planning",
+    parentId: null,
+    blockedBy: [],
+    createdAt: "2026-01-01T12:00:00.000Z",
+    completedAt: null,
+    completion: null,
+  };
+  const idle = renderTaskCard(task);
+  assert.doesNotMatch(idle, /data-testid="task-planning-card-planning"/);
+  const live = renderTaskCard(task, [task.id]);
+  assert.match(live, /data-testid="task-planning-card-planning"/);
+  assert.match(live, /data-state="planning"/);
 });
 
 test("a done task card shows the created and closed times", () => {

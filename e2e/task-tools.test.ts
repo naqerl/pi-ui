@@ -112,6 +112,59 @@ test("task tools list, mark done, and create a blocker", async () => {
   assert.equal(published.at(-1)?.revision, bridge.store.ledger().revision);
 });
 
+test("planning drafts are hidden unless asked for and cannot be claimed as work", async () => {
+  const created = (
+    await bridge.store.create(
+      "Draft the launch plan",
+      null,
+      [],
+      "pi-ui",
+      "The composer text becomes the draft body.",
+      { status: "planning" },
+    )
+  ).tasks.find((task) => task.title === "Draft the launch plan");
+  assert.ok(created);
+  assert.equal(created.status, "planning");
+  assert.equal(created.body, "The composer text becomes the draft body.");
+
+  const hidden = text(await call("task_list", {}));
+  assert.doesNotMatch(hidden.text, /Draft the launch plan/);
+  assert.doesNotMatch(hidden.text, /planning:/);
+
+  const included = text(await call("task_list", { includePlanning: true }));
+  assert.match(included.text, new RegExp(`${created.id} planning @pi-ui Draft the launch plan`));
+  assert.match(included.text, /planning: 1 draft\(s\).*do not execute them yet/);
+
+  const listTool = tools().get("task_list");
+  assert.ok(listTool);
+  assert.match(listTool.description ?? "", /still being specified.*must not be executed/i);
+  const schema = listTool.parameters as {
+    properties?: Record<string, { type?: string }>;
+  };
+  assert.equal(schema.properties?.includePlanning?.type, "boolean");
+
+  const refused = text(await call("task_working", { id: created.id, note: "start" }));
+  assert.equal(refused.isError, true);
+  assert.match(refused.text, /still being planned/i);
+  assert.equal(
+    bridge.store.ledger().tasks.find((task) => task.id === created.id)?.status,
+    "planning",
+  );
+
+  const refusedDone = text(
+    await call("task_done", { id: created.id, evidence: "e2e/task-tools.test.ts draft" }),
+  );
+  assert.equal(refusedDone.isError, true);
+  assert.match(refusedDone.text, /still being planned/i);
+
+  const approved = await bridge.store.update(created.id, { status: "open" });
+  assert.equal(approved.tasks.find((task) => task.id === created.id)?.status, "open");
+  assert.equal(
+    text(await call("task_working", { id: created.id, note: "approved" })).isError,
+    false,
+  );
+});
+
 test("task_view returns a task's images", async () => {
   const media = bridge.media;
   assert.ok(media);
