@@ -174,7 +174,8 @@ export function TaskAgentChat({
           )}
         </div>
       </main>
-      <div className="theme-radius mx-3 mb-1 flex shrink-0 items-center border border-border/70 bg-surface/90 px-2 py-1 backdrop-blur-md">
+      {/* The plan status is a plain line, not a floating card above the composer. */}
+      <div className="flex shrink-0 items-center px-3 pb-1">
         <RunStatusLine
           running={chat.running}
           thinking={chat.thinking}
