@@ -1,3 +1,9 @@
+## 1.6.185
+
+### Changed
+
+- The "Plan this task" control is a square switch instead of a wide text pill: a 30×16 track with no corner radius and a square knob, its left edge and vertical centre flush with the composer's plus button, and its name kept for screen readers. It moved into the composer's action row, which is where the plus lives.
+
 ## 1.6.184
 
 ### Fixed
