@@ -182,6 +182,18 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     await expectProjectAboveBody(browser);
     await expect(screen.getByTestId("task-filters")).toHaveCount(0);
 
+    // One assertion holds both stacks to the same rhythm, so they cannot drift apart.
+    const rhythm = await browser.evaluate(() => {
+      const detail = document.querySelector<HTMLElement>('[data-testid="task-detail-stack"]');
+      const list = document.querySelector<HTMLElement>('[data-testid="task-list"]');
+      if (detail === null || list === null) return null;
+      return {
+        detail: getComputedStyle(detail).rowGap,
+        list: getComputedStyle(list).rowGap,
+      };
+    });
+    expect(rhythm).toEqual({ detail: "8px", list: "8px" });
+
     const contentTop = await browser.evaluate(() => {
       const pane = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
       const bar = document.querySelector<HTMLElement>('[data-testid="task-details-bar"]');

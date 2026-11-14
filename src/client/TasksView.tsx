@@ -39,6 +39,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./component
 import { EmptyCaption } from "./EmptyCaption";
 import { haptic } from "./haptics";
 import { RefreshIcon } from "./icons";
+import { STACK_8 } from "./lib/spacing";
 import { cn } from "./lib/utils";
 import { InlineMarkdown, plainInline } from "./markdown";
 import { projectSuggestions } from "./ProjectSuggestions";
@@ -64,7 +65,7 @@ const DAY_PAGE = 7;
 /** TaskRow also renders on its own in tests, where no plan run is live. */
 const EMPTY_PLANNING: ReadonlySet<string> = new Set();
 /** One vertical rhythm for every header and card stack on the tasks page. */
-const TASK_STACK = "flex flex-col space-y-2";
+const TASK_STACK = STACK_8;
 /** Same type as a stats widget section title. */
 const STATS_SECTION_TITLE =
   "text-[11px] tracking-wide text-muted-foreground [overflow-wrap:anywhere]";
