@@ -1,3 +1,13 @@
+## 1.6.174
+
+### Added
+
+- A `Plan this task` toggle in the composer's status bar: with it on, the text you send becomes a
+  `planning` draft, the plan agent starts on it and the plan chat opens. Such a draft is never
+  approved by itself, never offered to the agent as work and cannot be claimed as working, and
+  `task_list`/`task_view` only include drafts when the tool call asks for them (`includePlanning`),
+  where they are described as still being specified.
+
 ## 1.6.173
 
 ### Fixed
