@@ -3,6 +3,9 @@ import type { Task, TaskCompletion } from "./types.js";
 /** The longest task body the ledger and the API accept, in characters. */
 export const TASK_BODY_MAX_LENGTH = 20_000;
 
+/** The most images one task can carry after creation; creation itself keeps the composer cap. */
+export const TASK_ATTACHMENTS_MAX = 12;
+
 /** Placeholder title for a task created from the plus button, until the first message or the task agent names it. */
 export const DEFAULT_NEW_TASK_TITLE = "New task";
 

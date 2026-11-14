@@ -61,6 +61,7 @@ export function updateTask(
     blockedBy?: string[];
     completion?: { evidence: string };
     project?: string | null;
+    attachments?: string[];
     reopenReason?: string;
   },
 ): Promise<TaskOutcome> {

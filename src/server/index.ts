@@ -15,6 +15,7 @@ import {
   parseCompletion,
   parseReleaseReason,
   parseReopenReason,
+  TASK_ATTACHMENTS_MAX,
   TASK_BODY_MAX_LENGTH,
 } from "../shared/tasks.js";
 import type { TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
@@ -33,7 +34,13 @@ import { JobError, JobManager, jobNotice } from "./jobs.js";
 import { McpEventFeed } from "./mcp-events.js";
 import { McpIntake, McpOutbox } from "./mcp-outbox.js";
 import { acceptMcpStatusNotice } from "./mcp-status-intake.js";
-import { MAX_MEDIA_BYTES, MediaError, MediaStore, parseAttachmentIds } from "./media.js";
+import {
+  MAX_MEDIA_BYTES,
+  MediaError,
+  MediaStore,
+  parseAttachmentIds,
+  validateAttachmentIds,
+} from "./media.js";
 import { composeInstructions, SnapshotCache, SnapshotController } from "./memory/snapshot.js";
 import { MemoryStore } from "./memory/store.js";
 import type { MemoryWriteRecord } from "./memory/tools.js";
@@ -970,6 +977,7 @@ app.patch("/api/tasks/:id", async (c) => {
     blockedBy?: string[];
     completion?: TaskCompletion;
     project?: string | null;
+    attachments?: string[];
     reopenReason?: string;
     releaseReason?: string;
   } = {};
@@ -989,6 +997,17 @@ app.patch("/api/tasks/:id", async (c) => {
     if (body.project !== null && typeof body.project !== "string")
       return c.text("project must be a string or null", 400);
     patch.project = body.project;
+  }
+  if ("attachments" in body) {
+    try {
+      patch.attachments = await validateAttachmentIds(
+        media,
+        body.attachments,
+        TASK_ATTACHMENTS_MAX,
+      );
+    } catch (error) {
+      return taskFailure(c, error);
+    }
   }
   if ("status" in body) {
     if (

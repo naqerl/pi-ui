@@ -50,6 +50,7 @@ import { FIXTURE_PLAN_ID, mergeFixtureTasks } from "./task-detail-fixture";
 import { useTaskDetailFixture } from "./task-detail-query";
 import { useRegisterTaskSurfaceStatus } from "./task-dock-composer";
 import { TaskLinkProvider } from "./task-link";
+import { useTaskMedia } from "./use-task-media";
 import { useWide, WIDE_QUERY } from "./use-wide";
 import { taskStatusWord } from "./working-state";
 
@@ -1694,6 +1695,7 @@ export function TaskDetail({
   const projectAnchor = useRef<HTMLDivElement>(null);
   const projectBusy = useRef(false);
   const projects = projectsOf(tasks.filter((item) => isActiveStatus(item.status)));
+  const media = useTaskMedia(task, onLedger);
   const projectQuery = projectDraft.trim().replace(/^@/, "");
   const projectMatches =
     projectOpen && projectDraft.trim().length > 0 ? projectSuggestions(projects, projectQuery) : [];
@@ -1887,6 +1889,7 @@ export function TaskDetail({
     const model: TaskDetailModel = {
       task,
       tasks,
+      media,
       state,
       trace,
       wide,

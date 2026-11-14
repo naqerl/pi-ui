@@ -466,7 +466,7 @@ export interface Task {
   rationale?: string;
   /** Free markdown shown under the title. Not the proposer's rationale. */
   body?: string;
-  /** Media ids attached when the task was created. */
+  /** Media ids currently attached to the task. */
   attachments?: string[];
   /** Short project name such as `pi-ui`. Absent means no project. */
   project?: string;

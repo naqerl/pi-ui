@@ -131,6 +131,61 @@ test("task_view returns a task's images", async () => {
   assert.equal(image.data, Buffer.from(png).toString("base64"));
 });
 
+test("task_edit replaces images with named unknown ids, a cap and an empty clear", async () => {
+  const media = bridge.media;
+  assert.ok(media);
+  const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  const refs = await Promise.all(
+    Array.from({ length: 13 }, (_, index) =>
+      media.save(Uint8Array.from([...signature, index + 1, index + 2]), "image/png"),
+    ),
+  );
+  const first = refs[0];
+  const second = refs[1];
+  assert.ok(first);
+  assert.ok(second);
+  const created = (await bridge.store.create("Manage these images", null)).tasks.find(
+    (task) => task.title === "Manage these images",
+  );
+  assert.ok(created);
+
+  const added = text(
+    await call("task_edit", { id: created.id, attachments: [first.id, second.id] }),
+  );
+  assert.equal(added.isError, false);
+  assert.match(added.text, new RegExp(`${created.id} open images=2`));
+  assert.match(text(await call("task_list", {})).text, new RegExp(`${created.id} open images=2`));
+  const viewed = await call("task_view", { id: created.id });
+  assert.equal(viewed.output?.filter((item) => item.type === "image").length, 2);
+
+  const unknownId = `${"f".repeat(32)}.png`;
+  const unknown = text(await call("task_edit", { id: created.id, attachments: [unknownId] }));
+  assert.equal(unknown.isError, true);
+  assert.match(unknown.text, new RegExp(`Unknown attachment ${unknownId}`));
+  assert.equal(
+    bridge.store.ledger().tasks.find((task) => task.id === created.id)?.attachments?.length,
+    2,
+  );
+
+  const tooMany = text(
+    await call("task_edit", { id: created.id, attachments: refs.map((ref) => ref.id) }),
+  );
+  assert.equal(tooMany.isError, true);
+  assert.match(tooMany.text, /At most 12 images can be attached/);
+  assert.equal(
+    bridge.store.ledger().tasks.find((task) => task.id === created.id)?.attachments?.length,
+    2,
+  );
+
+  const cleared = text(await call("task_edit", { id: created.id, attachments: [] }));
+  assert.equal(cleared.isError, false);
+  assert.doesNotMatch(cleared.text, new RegExp(`${created.id} open images=`));
+  assert.equal(
+    bridge.store.ledger().tasks.find((task) => task.id === created.id)?.attachments,
+    undefined,
+  );
+});
+
 test("agent task tools set and edit a body without touching the rationale", async () => {
   const rationale = "A body keeps the plan next to the task instead of in a chat message.";
   const proposed = text(

@@ -67,6 +67,11 @@ export class MediaStore {
     return { id, mimeType };
   }
 
+  /** Whether an id names a saved file, checked without reading the image bytes. */
+  async has(id: string): Promise<boolean> {
+    return this.isId(id) && (await exists(join(this.dir, id)));
+  }
+
   /** The bytes and type for an id, or a 404 MediaError. */
   async read(id: string): Promise<{ bytes: Buffer; mimeType: string }> {
     const mimeType = this.isId(id) ? mimeOf(id) : undefined;
@@ -111,16 +116,36 @@ export class MediaStore {
 }
 
 /** Attachment ids from a request body field, or a MediaError. */
-export function parseAttachmentIds(store: MediaStore, value: unknown): string[] {
+export function parseAttachmentIds(
+  store: MediaStore,
+  value: unknown,
+  max = MAX_ATTACHMENTS,
+): string[] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
     throw new MediaError("attachments must be a list of ids", 400);
   }
-  if (value.length > MAX_ATTACHMENTS) {
-    throw new MediaError(`At most ${MAX_ATTACHMENTS} images can be attached`, 400);
+  if (value.length > max) {
+    throw new MediaError(`At most ${max} images can be attached`, 400);
   }
-  for (const id of value) if (!store.isId(id)) throw new MediaError("Unknown attachment", 400);
-  return [...new Set(value)];
+  const ids = [...new Set(value)];
+  for (const id of ids) {
+    if (!store.isId(id)) throw new MediaError(`Unknown attachment ${id}`, 400);
+  }
+  return ids;
+}
+
+/** Ids the media store actually holds, or a 400 that names the first missing one. */
+export async function validateAttachmentIds(
+  store: MediaStore,
+  value: unknown,
+  max = MAX_ATTACHMENTS,
+): Promise<string[]> {
+  const ids = parseAttachmentIds(store, value, max);
+  for (const id of ids) {
+    if (!(await store.has(id))) throw new MediaError(`Unknown attachment ${id}`, 400);
+  }
+  return ids;
 }
 
 async function exists(path: string): Promise<boolean> {

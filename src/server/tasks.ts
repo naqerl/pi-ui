@@ -12,6 +12,7 @@ import {
   isReleasedTask,
   parseReleaseReason,
   parseReopenReason,
+  TASK_ATTACHMENTS_MAX,
   TASK_BODY_MAX_LENGTH,
 } from "../shared/tasks.js";
 import type {
@@ -124,6 +125,11 @@ function withBody(task: Task, body: string | undefined): Task {
   return body === undefined ? rest : { ...rest, body };
 }
 
+function withAttachments(task: Task, attachments: readonly string[]): Task {
+  const { attachments: _drop, ...rest } = task;
+  return attachments.length === 0 ? rest : { ...rest, attachments: [...attachments] };
+}
+
 function withoutWorkingSince(task: Task): Task {
   const { workingSince: _drop, ...rest } = task;
   return rest;
@@ -150,6 +156,18 @@ function normalizeBody(value: unknown): string | undefined {
     throw new TaskError(`body must be at most ${TASK_BODY_MAX_LENGTH} characters`, 400);
   }
   return body.length === 0 ? undefined : body;
+}
+
+/** A deduplicated media-id list, or a 400 when the shape or cap is wrong. */
+function normalizeAttachments(value: unknown): string[] {
+  if (!Array.isArray(value) || !value.every((id) => typeof id === "string")) {
+    throw new TaskError("attachments must be a list of media ids", 400);
+  }
+  const attachments = [...new Set(value)];
+  if (attachments.length > TASK_ATTACHMENTS_MAX) {
+    throw new TaskError(`At most ${TASK_ATTACHMENTS_MAX} images can be attached`, 400);
+  }
+  return attachments;
 }
 
 function newId(taken: Set<string>): string {
@@ -521,6 +539,8 @@ export class TaskStore {
       completion?: TaskCompletion;
       /** A new project name, or null to clear it. */
       project?: string | null;
+      /** Replaces the task's images; an empty list removes them all. */
+      attachments?: string[];
       /** Why a done task is coming back; required only when moving done to open. */
       reopenReason?: string;
       /** Why a working task is being parked; required only when releasing to open. */
@@ -534,7 +554,8 @@ export class TaskStore {
       patch.body === undefined &&
       patch.status === undefined &&
       patch.blockedBy === undefined &&
-      patch.project === undefined
+      patch.project === undefined &&
+      patch.attachments === undefined
     ) {
       return Promise.reject(new TaskError("Nothing to update", 400));
     }
@@ -680,6 +701,9 @@ export class TaskStore {
       }
       if (patch.project !== undefined)
         next = withProject(next, chooseProject(patch.project, tasks));
+      if (patch.attachments !== undefined) {
+        next = withAttachments(next, normalizeAttachments(patch.attachments));
+      }
       const copy = tasks.slice();
       copy[index] = next;
       return copy;
