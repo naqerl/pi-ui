@@ -20,6 +20,7 @@ import {
   DropdownMenuTrigger,
 } from "./components/ui/dropdown-menu";
 import { CheckIcon, CloseIcon, MoreIcon, MoreVerticalIcon, PlusIcon, RefreshIcon } from "./icons";
+import { STACK_4, STACK_8 } from "./lib/spacing";
 import { cn } from "./lib/utils";
 import { MediaViewer } from "./MediaViewer";
 import { InlineMarkdown, Markdown } from "./markdown";
@@ -128,7 +129,7 @@ function TitleField({ model, className }: { model: TaskDetailModel; className?: 
   } = model;
   if (editingTitle) {
     return (
-      <div className="flex min-w-0 flex-col gap-1">
+      <div className={cn("min-w-0", STACK_4)}>
         <textarea
           ref={titleRef}
           aria-label="Task title"
@@ -160,7 +161,7 @@ function TitleField({ model, className }: { model: TaskDetailModel; className?: 
     );
   }
   return (
-    <div className="flex w-full min-w-0 flex-col gap-1">
+    <div className={cn("w-full min-w-0", STACK_4)}>
       {/* biome-ignore lint/a11y/useSemanticElements: the read-only markdown is replaced by a textarea when focused. */}
       <div
         role="textbox"
@@ -347,7 +348,7 @@ function BodyField({ model, fill }: { model: TaskDetailModel; fill?: boolean }) 
     return (
       <div
         data-testid="task-body-section"
-        className={cn("flex min-w-0 flex-col gap-1", grow && "min-h-32 flex-1")}
+        className={cn("min-w-0", STACK_4, grow && "min-h-32 flex-1")}
       >
         <div
           ref={bodyEditorRef}
@@ -402,7 +403,8 @@ function BodyField({ model, fill }: { model: TaskDetailModel; fill?: boolean }) 
       aria-label="Task body"
       {...{ tabIndex: 0 }}
       className={cn(
-        "flex min-w-0 cursor-text flex-col gap-1 outline-none focus-visible:ring-1 focus-visible:ring-foreground",
+        "min-w-0 cursor-text outline-none focus-visible:ring-1 focus-visible:ring-foreground",
+        STACK_4,
         grow && "min-h-32 flex-1",
       )}
       onClick={(event) => {
@@ -447,11 +449,11 @@ function BodyField({ model, fill }: { model: TaskDetailModel; fill?: boolean }) 
 function MetaBlock({ model }: { model: TaskDetailModel }) {
   const { task, reason } = model;
   return (
-    <div className="flex flex-col gap-3">
+    <div className={STACK_8}>
       {task.reopens !== undefined && task.reopens.length > 0 && (
         <section
           data-testid="task-reopen"
-          className="flex flex-col gap-1 rounded-md border border-border bg-background px-3 py-2"
+          className={cn(STACK_4, "rounded-md border border-border bg-background px-3 py-2")}
         >
           <Badge
             variant="outline"
@@ -499,7 +501,7 @@ function MetaBlock({ model }: { model: TaskDetailModel }) {
         </div>
       )}
       {model.done && (
-        <section className="flex flex-col gap-1" data-testid="task-modal-completion">
+        <section className={STACK_4} data-testid="task-modal-completion">
           <SectionLabel>Evidence</SectionLabel>
           {task.completion == null ? (
             <p className={cn("text-sm leading-5", QUIET)}>No evidence recorded</p>
@@ -541,7 +543,7 @@ function RelationRow({
   return (
     <li
       className={cn(
-        "flex items-center gap-2 border-t border-border px-1 py-2 text-sm leading-5 first:border-t-0",
+        "flex items-center gap-2 border-t border-border px-1 py-1 text-sm leading-5 first:border-t-0",
         wide ? "min-h-8" : "min-h-11",
       )}
     >
@@ -554,7 +556,7 @@ function RelationRow({
 function Subtasks({ model, heading = true }: { model: TaskDetailModel; heading?: boolean }) {
   if (model.children.length === 0) return null;
   return (
-    <section className="flex flex-col gap-1">
+    <section className={STACK_4}>
       {heading ? <SectionLabel>Subtasks</SectionLabel> : null}
       <ul>
         {model.children.map((child) => (
@@ -833,10 +835,7 @@ function TitleCard({
 
   if (model.wide) {
     return (
-      <header
-        data-testid="task-header"
-        className="col-start-2 col-span-2 flex min-w-0 flex-col gap-2"
-      >
+      <header data-testid="task-header" className={cn("col-start-2 col-span-2 min-w-0", STACK_8)}>
         <SectionBar
           testId="task-details-bar"
           actions={
@@ -895,10 +894,10 @@ function TitleCard({
       className={cn(
         "flex flex-col bg-surface",
         flush ? "rounded-t-none rounded-b-[var(--radius)] overflow-hidden" : "theme-radius",
-        tabs || flush ? "overflow-hidden" : "gap-2 p-3",
+        tabs || flush ? "overflow-hidden" : cn(STACK_8, "p-3"),
       )}
     >
-      <div className={cn("flex flex-col gap-2", (tabs || flush) && "p-3")}>
+      <div className={cn(STACK_8, (tabs || flush) && "p-3")}>
         <div className="flex min-w-0 items-center gap-1">
           <div className="min-w-0 flex-1">
             <MetaLine model={model} />
@@ -975,12 +974,10 @@ function PlanSections({ model }: { model: TaskDetailModel }) {
   const leftoverMeta = hasLeftoverMeta(model);
   return (
     <div
-      className={cn(
-        "flex min-h-0 flex-col gap-3",
-        model.wide ? "min-h-0 flex-1 overflow-hidden" : undefined,
-      )}
+      className={cn(STACK_8, "min-h-0", model.wide ? "min-h-0 flex-1 overflow-hidden" : undefined)}
+      data-testid="task-detail-stack"
     >
-      <div className="flex shrink-0 flex-col gap-3">
+      <div className={cn("shrink-0", STACK_8)}>
         {model.children.length > 0 && (
           <div data-testid="task-subtasks-card" className={DETAIL_CARD}>
             <Subtasks model={model} />
@@ -1068,7 +1065,7 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
           tab === "plan" ? "overflow-y-auto" : "overflow-hidden",
         )}
       >
-        <div className={cn("flex flex-col gap-3 px-3 pt-3", tab !== "plan" && "hidden")}>
+        <div className={cn(STACK_8, "px-3 pt-3", tab !== "plan" && "hidden")}>
           <PlanSections model={model} />
         </div>
         <div className={cn("flex min-h-0 flex-1 flex-col px-3", tab !== "chat" && "hidden")}>
@@ -1092,7 +1089,7 @@ function DesktopPlan({ model }: { model: TaskDetailModel }) {
       data-testid="task-detail"
       data-layout="desktop"
       aria-label={model.title}
-      className="flex h-full min-h-0 min-w-0 flex-col gap-3 overflow-hidden"
+      className={cn("h-full min-h-0 min-w-0 overflow-hidden", STACK_8)}
     >
       <PlanSections model={model} />
     </article>
