@@ -1,3 +1,12 @@
+## 1.6.182
+
+### Fixed
+
+- The plan chat shows the same thinking and tool rows the chat page does: the plan session already
+  built them, but its snapshot never carried them and the transport handed the view an empty list, so
+  nothing was rendered. Both now expose and draw the shared rows, with the questions card, the status
+  line and the scroll behaviour unchanged.
+
 ## 1.6.181
 
 ### Changed
