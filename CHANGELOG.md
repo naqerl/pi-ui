@@ -1,3 +1,9 @@
+## 1.6.179
+
+### Fixed
+
+- The task-detail header spans the whole width on a wide screen: it sits above the detail and plan columns as one band instead of repeating in each column, so the title and its controls are not squeezed into the left pane. The phone layout stacks as before.
+
 ## 1.6.178
 
 ### Added
