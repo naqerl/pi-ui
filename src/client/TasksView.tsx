@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { taskDeepLinkFromLocation } from "../shared/pages";
 import { projectsOf, sameProject } from "../shared/project";
 import { indexTasks, type TaskIndex } from "../shared/task-index";
 import { isStaleWorking, subtaskCount, taskState } from "../shared/task-status";
@@ -329,12 +330,15 @@ function TasksViewImpl({
 }: TasksViewProps) {
   const wide = useWide();
   const fixtureOn = useTaskDetailFixture();
+  const linkedTask = useRef(
+    typeof window === "undefined" ? null : taskDeepLinkFromLocation(window.location.href),
+  );
   const serverTasks = fixtureOn ? mergeFixtureTasks(incomingTasks) : incomingTasks;
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [problem, setProblem] = useState<{ id: string; message: string } | null>(null);
   const [statusPending, setStatusPending] = useState<Record<string, boolean>>({});
   const [openTaskId, setOpenTaskId] = useState<string | null>(() =>
-    fixtureOn ? FIXTURE_PLAN_ID : null,
+    fixtureOn ? FIXTURE_PLAN_ID : (linkedTask.current?.id ?? null),
   );
   const [reopenTaskId, setReopenTaskId] = useState<string | null>(null);
   const [dayLimit, setDayLimit] = useState(DAY_PAGE);
@@ -545,18 +549,35 @@ function TasksViewImpl({
   }, [wide]);
 
   useEffect(() => {
+    if (!ready) return;
     if (openTaskId !== null && !tasks.some((task) => task.id === openTaskId)) {
       setOpenTaskId(null);
     }
-  }, [openTaskId, tasks]);
+  }, [openTaskId, ready, tasks]);
 
   useEffect(() => {
     if (fixtureOn) {
       openDetail(FIXTURE_PLAN_ID);
       return;
     }
+    // A notification's task link owns the first render. Later layout changes
+    // keep the existing narrow-list behaviour.
+    if (!wide && linkedTask.current?.id === openTaskIdRef.current) {
+      linkedTask.current = null;
+      return;
+    }
     if (!wide) setOpenTaskId(null);
   }, [wide, fixtureOn, openDetail]);
+
+  useEffect(() => {
+    const openLinkedTask = () => {
+      const link =
+        typeof window === "undefined" ? null : taskDeepLinkFromLocation(window.location.href);
+      if (link !== null) openDetail(link.id);
+    };
+    window.addEventListener("hashchange", openLinkedTask);
+    return () => window.removeEventListener("hashchange", openLinkedTask);
+  }, [openDetail]);
 
   const armCardClickIgnore = useCallback((token: CardPointerToken) => {
     const guard = cardClickGuard.current;

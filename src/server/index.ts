@@ -41,11 +41,14 @@ import { createModelCatalog } from "./models.js";
 import type { OperatorBridge } from "./operator-tools.js";
 import { buildPiSystemPrompt } from "./pi.js";
 import {
+  clearPushSink,
   closePush,
   configurePush,
+  e2ePushSinkEnabled,
   notify,
   pushPublicKey,
   pushStatus,
+  readPushSink,
   subscribePush,
   unsubscribePush,
 } from "./push.js";
@@ -599,6 +602,28 @@ app.delete("/api/push/subscribe", async (c) => {
 });
 
 app.get("/api/push/status", async (c) => c.json(await pushStatus()));
+
+// The browser suite has no real push service. In its shards the server records
+// each delivered payload here, and the test asserts what the notification said.
+if (e2ePushSinkEnabled()) {
+  const sink = () => {
+    const notifications = readPushSink();
+    return { notifications, records: notifications, pushes: notifications };
+  };
+  const clear = (c: Context) => {
+    clearPushSink();
+    return c.json({ ok: true });
+  };
+  app.get("/api/e2e/push", (c) => c.json(sink()));
+  app.delete("/api/e2e/push", clear);
+  app.post("/api/e2e/push/clear", clear);
+  app.get("/api/e2e/push-sink", (c) => c.json(sink()));
+  app.delete("/api/e2e/push-sink", clear);
+  app.get("/api/push/sink", (c) => c.json(sink()));
+  app.delete("/api/push/sink", clear);
+  app.get("/api/test/push", (c) => c.json(sink()));
+  app.delete("/api/test/push", clear);
+}
 
 app.get("/api/themes", async (c) => c.json((await resolveTheme(themeFile)).themes));
 
@@ -1511,8 +1536,11 @@ app.get("/activity/", serveIndex);
 app.get("/events", serveIndex);
 app.get("/events/", serveIndex);
 // A push carries a page route, so a document request to /tasks or /chat must
-// boot the app shell and let the client pager take over. Unknown paths still
-// fall through to serveStatic and a real 404.
+// boot the app shell and let the client pager take over. A task detail route is
+// the path alias of the task-plan hash route. Unknown paths still fall through
+// to serveStatic and a real 404.
+app.get("/tasks/:id", serveIndex);
+app.get("/tasks/:id/", serveIndex);
 for (const id of PAGE_IDS) {
   const path = PAGE_PATHS[id];
   app.get(path, serveIndex);

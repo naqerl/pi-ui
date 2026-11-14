@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { taskDeepLinkFromLocation } from "../shared/pages";
 import { TASK_BODY_MAX_LENGTH } from "../shared/tasks";
 import { formatCompactDateTime } from "../shared/time";
 import type { Task, TaskLedger, TaskState, TaskTrace } from "../shared/types";
@@ -947,8 +948,20 @@ function TabBar({ tab, onTab }: { tab: "plan" | "chat"; onTab: (tab: "plan" | "c
   );
 }
 
+function linkedTab(taskId: string): "plan" | "chat" {
+  const link =
+    typeof window === "undefined" ? null : taskDeepLinkFromLocation(window.location.href);
+  return link !== null && link.id === taskId && link.tab !== null ? "chat" : "plan";
+}
+
 function MobileDetail({ model }: { model: TaskDetailModel }) {
-  const [tab, setTab] = useState<"plan" | "chat">("plan");
+  const [tab, setTab] = useState<"plan" | "chat">(() => linkedTab(model.task.id));
+
+  useEffect(() => {
+    const sync = () => setTab(linkedTab(model.task.id));
+    window.addEventListener("hashchange", sync);
+    return () => window.removeEventListener("hashchange", sync);
+  }, [model.task.id]);
 
   return (
     <article

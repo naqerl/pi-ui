@@ -1,3 +1,17 @@
+## 1.6.171
+
+### Added
+
+- A planning turn that finishes sends a web push, and tapping it opens that task's plan chat rather
+  than the main chat. Nothing is sent for a run that failed, a burst is coalesced into one
+  notification, and no push goes out while the app is focused.
+
+### Fixed
+
+- The background job and subagent counts belong to the chat surface: they are hidden on the tasks,
+  stats and left pages, their left edge lines up with the composer's `+` control, and the page
+  sheet now uses the shared sheet with a centred title instead of a bespoke overlay.
+
 ## 1.6.170
 
 ### Changed

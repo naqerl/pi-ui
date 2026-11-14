@@ -14,7 +14,7 @@ import {
 } from "react";
 import type { BuiltinJob } from "../shared/dashboard";
 import type { MemoryPathMatch, MemoryReadRange, MemoryToolDetails } from "../shared/memory";
-import { pageIdFromPath } from "../shared/pages";
+import { pageIdFromPath, taskDeepLinkFromLocation } from "../shared/pages";
 import { acceptMention, mentionAt, parseProjectToken, projectsOf } from "../shared/project";
 import { isQueuedNotice, queuedMessageIds, resolveNoticeIconName } from "../shared/queue";
 import { isActiveStatus } from "../shared/tasks";
@@ -135,6 +135,9 @@ const TASKS_PAGE = 2;
 const PAGE_SETTLE_MS = 320;
 
 function pageFromLocation(): number {
+  // A task-plan push opens the tasks page and the detail itself; the hash route
+  // is the canonical link and the path form is accepted for bookmarks.
+  if (taskDeepLinkFromLocation(window.location.href) !== null) return TASKS_PAGE;
   const name = new URLSearchParams(window.location.search).get("page");
   const fromQuery = PAGES.findIndex((item) => item.id === name);
   if (fromQuery >= 0) return fromQuery;
@@ -1340,6 +1343,7 @@ export function Composer({
             variant="ghost"
             size="icon"
             aria-label={tasksPage ? "Attach image to task" : "Attach image"}
+            data-testid="composer-plus"
             className={ACTION_BUTTON_CLASS}
             onClick={() => fileRef.current?.click()}
           >
@@ -1852,7 +1856,11 @@ export function ChatView({
   useEffect(() => {
     const onPop = () => pager.setPage(pageFromLocation());
     window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
+    window.addEventListener("hashchange", onPop);
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      window.removeEventListener("hashchange", onPop);
+    };
   }, [pager.setPage]);
   useEffect(() => {
     // Fetch the side pages once the chat is up, so a swipe does not wait on the network.
@@ -2292,6 +2300,12 @@ export function ChatView({
               data-open={statusRunning ? "true" : "false"}
               className="flex min-w-0 flex-1 items-baseline gap-2 font-mono text-[11px] leading-4 text-muted-foreground"
             >
+              <BackgroundJobsCounts
+                jobs={jobs}
+                delegates={delegates ?? []}
+                onOpen={setJobsSheet}
+                visible={chatPage}
+              />
               {statusWord !== null && (
                 <div aria-live="polite" className="min-w-0 truncate">
                   {statusRunning ? (
@@ -2303,7 +2317,6 @@ export function ChatView({
                   )}
                 </div>
               )}
-              <BackgroundJobsCounts jobs={jobs} delegates={delegates ?? []} onOpen={setJobsSheet} />
             </div>
             <div
               role="tablist"

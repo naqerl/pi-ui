@@ -1,10 +1,10 @@
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useReducer, useState } from "react";
+import { Sheet } from "react-modal-sheet";
 import type { BuiltinJob } from "../shared/dashboard";
 import { formatDateTime, formatTime } from "../shared/time";
 import type { DelegateRunView } from "../shared/types";
 import { haptic } from "./haptics";
 import { CloseIcon } from "./icons";
-import { PageSheet } from "./PageSheet";
 
 export type BackgroundJobsKind = "jobs" | "subagents";
 
@@ -36,53 +36,81 @@ function elapsed(startedAt: string | null, now: number): string {
 }
 
 /** How long the counts stay mounted for their opacity/transform exit. */
-const EXIT_MS = 160;
+const EXIT_MS = 220;
+/** Open at a partial detent; the 80dvh cap keeps the top of the page visible. */
+const SHEET_SNAP_POINTS = [0, 0.72, 1];
 
 interface JobCounts {
   jobs: number;
   subagents: number;
 }
 
+type CountsState = { counts: JobCounts | null; open: boolean };
+type CountsAction = { type: "show"; counts: JobCounts } | { type: "hide" } | { type: "unmount" };
+
+function countsReducer(state: CountsState, action: CountsAction): CountsState {
+  switch (action.type) {
+    case "show":
+      if (
+        state.open &&
+        state.counts !== null &&
+        state.counts.jobs === action.counts.jobs &&
+        state.counts.subagents === action.counts.subagents
+      ) {
+        return state;
+      }
+      return { counts: action.counts, open: true };
+    case "hide":
+      if (state.counts === null || !state.open) return state;
+      return { ...state, open: false };
+    case "unmount":
+      return state.counts === null ? state : { counts: null, open: false };
+  }
+}
+
 /**
- * The live jobs/sub-agent counts, painted inline at the end of the composer's
+ * The live jobs/sub-agent counts, painted inline at the start of the composer's
  * status row. They are deliberately absent when both lists are empty, and only
  * their own opacity/transform animates: the row keeps its height, so the
- * composer and the transcript never move when work starts or finishes.
+ * composer and the transcript never move when work starts, finishes, or the
+ * reader switches pages. The node is removed after the exit, so a non-chat
+ * surface never carries a hidden counter.
  */
 export function BackgroundJobsCounts({
   jobs,
   delegates,
   onOpen,
+  visible,
 }: {
   jobs: readonly BuiltinJob[];
   delegates: readonly DelegateRunView[];
   onOpen: (kind: BackgroundJobsKind) => void;
+  /** Counts belong to the chat page only; the exit still paints before they unmount. */
+  visible: boolean;
 }) {
   const jobCount = activeJobs(jobs).length;
   const subagentCount = activeSubagents(delegates).length;
   const live = jobCount > 0 || subagentCount > 0;
-  // The counts stay mounted through the exit so the fade has content; an empty
-  // status row never keeps a node around.
-  const [shown, setShown] = useState<JobCounts | null>(
-    live ? { jobs: jobCount, subagents: subagentCount } : null,
-  );
+  const [state, dispatch] = useReducer(countsReducer, {
+    counts: visible && live ? { jobs: jobCount, subagents: subagentCount } : null,
+    open: visible && live,
+  });
 
   useEffect(() => {
-    if (live) {
-      setShown((current) =>
-        current !== null && current.jobs === jobCount && current.subagents === subagentCount
-          ? current
-          : { jobs: jobCount, subagents: subagentCount },
-      );
+    if (visible && live) {
+      dispatch({ type: "show", counts: { jobs: jobCount, subagents: subagentCount } });
       return;
     }
-    if (shown === null) return;
-    const timer = window.setTimeout(() => setShown(null), EXIT_MS);
-    return () => window.clearTimeout(timer);
-  }, [live, jobCount, subagentCount, shown]);
+    dispatch({ type: "hide" });
+  }, [visible, live, jobCount, subagentCount]);
 
-  // Live counts paint straight from props; the kept snapshot only carries the exit.
-  const rendered = live ? { jobs: jobCount, subagents: subagentCount } : shown;
+  useEffect(() => {
+    if (state.counts === null || state.open) return;
+    const timer = window.setTimeout(() => dispatch({ type: "unmount" }), EXIT_MS);
+    return () => window.clearTimeout(timer);
+  }, [state.counts, state.open]);
+
+  const rendered = state.counts;
   if (rendered === null) return null;
 
   const chip = (kind: BackgroundJobsKind, count: number, noun: string) => (
@@ -103,8 +131,11 @@ export function BackgroundJobsCounts({
   return (
     <span
       data-testid="bg-jobs-line"
-      data-open={live ? "true" : "false"}
-      className="bg-jobs-counts inline-flex min-w-0 shrink-0 items-baseline gap-1.5"
+      data-open={state.open ? "true" : "false"}
+      data-surface={visible ? "chat" : "away"}
+      // The outer box starts at the plus button's box; the inset puts the text
+      // ink on the plus icon's ink, so the edge reads aligned on both sizes.
+      className="bg-jobs-counts -ml-3 inline-flex min-w-0 shrink-0 items-baseline gap-1.5 pl-[11px]"
     >
       {rendered.jobs > 0 && chip("jobs", rendered.jobs, "job")}
       {rendered.jobs > 0 && rendered.subagents > 0 && (
@@ -184,34 +215,54 @@ export function BackgroundJobsSheet({
   }, [runItems, delegates]);
   const title = kind === "jobs" ? "Background jobs" : "Subagents";
 
-  return (
-    <PageSheet
-      testId="bg-jobs-sheet"
-      titleId={titleId}
-      onClose={onClose}
-      className="h-[100dvh] max-h-[100dvh] sm:h-auto sm:max-h-[85vh]"
-    >
-      <div
-        data-kind={kind}
-        className="flex min-h-0 flex-1 flex-col pb-[env(safe-area-inset-bottom)]"
-      >
-        <header className="flex shrink-0 items-center gap-3 border-b border-border px-3 py-2">
-          <span className="min-w-0 flex-1" />
-          <h2 id={titleId} className="min-w-0 flex-1 text-sm font-medium">
-            {title}
-          </h2>
-          <button
-            type="button"
-            data-testid="bg-jobs-sheet-close"
-            aria-label="Close"
-            onClick={onClose}
-            className="-mr-1 shrink-0 rounded-md px-2 py-1 font-mono text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
-          >
-            <CloseIcon size={16} />
-          </button>
-        </header>
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+  return (
+    <Sheet
+      isOpen
+      onClose={onClose}
+      snapPoints={SHEET_SNAP_POINTS}
+      initialSnap={1}
+      tweenConfig={{ ease: "easeOut", duration: 0.24 }}
+    >
+      <Sheet.Container
+        data-testid="bg-jobs-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        style={{ backgroundColor: "var(--surface)" }}
+        className="max-h-[80dvh] overflow-hidden rounded-t-xl border border-foreground/15 text-foreground shadow-xl"
+      >
+        <Sheet.Header>
+          <header className="grid shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 border-b border-border px-3 py-2">
+            <span aria-hidden="true" />
+            <h2 id={titleId} className="whitespace-nowrap text-sm font-medium">
+              {title}
+            </h2>
+            <button
+              type="button"
+              data-testid="bg-jobs-sheet-close"
+              aria-label="Close"
+              onClick={onClose}
+              className="-mr-1 justify-self-end rounded-md px-2 py-1 font-mono text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+            >
+              <CloseIcon size={16} />
+            </button>
+          </header>
+        </Sheet.Header>
+
+        <Sheet.Content
+          data-kind={kind}
+          disableDrag
+          className="min-h-0 flex-1"
+          scrollClassName="px-3 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]"
+        >
           <div data-testid="bg-jobs-sheet-list" className="flex flex-col gap-1.5">
             {kind === "jobs"
               ? liveJobs.map((job) => (
@@ -286,8 +337,9 @@ export function BackgroundJobsSheet({
               <p className="font-mono text-xs text-muted-foreground">No subagents are running.</p>
             )}
           </div>
-        </div>
-      </div>
-    </PageSheet>
+        </Sheet.Content>
+      </Sheet.Container>
+      <Sheet.Backdrop onTap={onClose} />
+    </Sheet>
   );
 }
