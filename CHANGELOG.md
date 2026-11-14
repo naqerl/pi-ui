@@ -1,3 +1,13 @@
+## 1.6.173
+
+### Fixed
+
+- Typing into the questions card's `Other` field deselects and disables that question's options,
+  and clearing it re-enables them, so one question cannot end up with two answers; the payload
+  carries exactly one answer per question.
+- The plan agent's activity no longer switches the page or moves focus: only a notification's
+  deep link navigates, so a run in the background stays out of the way.
+
 ## 1.6.172
 
 ### Changed
