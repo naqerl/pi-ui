@@ -17,23 +17,34 @@ function mergedDrafts(current: Drafts, questions: readonly TaskQuestion[]): Draf
   );
 }
 
+/** Free text wins over the choices for a question that offers an Other field. */
+function otherAnswers(
+  question: TaskQuestion,
+  draft: Pick<TaskQuestionAnswer, "values" | "text">,
+): boolean {
+  return question.kind !== "text" && question.allowOther === true && draft.text.trim().length > 0;
+}
+
 function OptionRow({
   question,
   option,
   checked,
+  disabled,
   multi,
   onToggle,
 }: {
   question: TaskQuestion;
   option: NonNullable<TaskQuestion["options"]>[number];
   checked: boolean;
+  disabled: boolean;
   multi: boolean;
   onToggle: () => void;
 }) {
   return (
     <label
       className={cn(
-        "flex cursor-pointer items-start gap-2 py-1 text-sm leading-5 text-foreground",
+        "flex items-start gap-2 py-1 text-sm leading-5 text-foreground",
+        disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer",
         "has-[:focus-visible]:outline has-[:focus-visible]:outline-1 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-foreground",
       )}
     >
@@ -42,6 +53,7 @@ function OptionRow({
         name={`question-${question.id}`}
         value={option.value}
         checked={checked}
+        disabled={disabled}
         aria-label={option.label}
         data-testid={`question-${question.id}-${option.value}`}
         onChange={onToggle}
@@ -104,6 +116,7 @@ export function TaskQuestionPanel({
 
   const toggle = (question: TaskQuestion, value: string) => {
     update(question.id, (draft) => {
+      if (otherAnswers(question, draft)) return draft;
       if (question.kind === "single") return { ...draft, values: [value] };
       const values = draft.values.includes(value)
         ? draft.values.filter((item) => item !== value)
@@ -112,15 +125,26 @@ export function TaskQuestionPanel({
     });
   };
 
+  const updateText = (question: TaskQuestion, text: string) => {
+    update(question.id, (draft) =>
+      question.kind !== "text" && text.trim().length > 0
+        ? { values: [], text }
+        : { ...draft, text },
+    );
+  };
+
   const submit = async () => {
     if (busy || !ready) return;
     setBusy(true);
     setError(null);
-    const answers = set.questions.map((question) => ({
-      id: question.id,
-      values: drafts[question.id]?.values ?? [],
-      text: drafts[question.id]?.text ?? "",
-    }));
+    const answers = set.questions.map((question) => {
+      const draft = drafts[question.id] ?? { values: [], text: "" };
+      return {
+        id: question.id,
+        values: otherAnswers(question, draft) ? [] : draft.values,
+        text: draft.text,
+      };
+    });
     const ok = await onAnswer(set.id, answers);
     setBusy(false);
     if (!ok) setError("Could not send the answers. Try again.");
@@ -147,6 +171,7 @@ export function TaskQuestionPanel({
         {set.questions.map((question) => {
           const draft = drafts[question.id] ?? { values: [], text: "" };
           const multi = question.kind === "multi";
+          const disabled = otherAnswers(question, draft);
           return (
             <fieldset
               key={question.id}
@@ -162,9 +187,7 @@ export function TaskQuestionPanel({
                   data-testid={`question-${question.id}-text`}
                   rows={2}
                   value={draft.text}
-                  onChange={(event) =>
-                    update(question.id, (current) => ({ ...current, text: event.target.value }))
-                  }
+                  onChange={(event) => updateText(question, event.target.value)}
                   placeholder="Type your answer"
                   className="theme-radius w-full resize-y border border-border/70 bg-background px-2 py-1.5 text-sm leading-5 text-foreground outline-none focus-visible:ring-1 focus-visible:ring-foreground"
                 />
@@ -176,6 +199,7 @@ export function TaskQuestionPanel({
                       question={question}
                       option={option}
                       checked={draft.values.includes(option.value)}
+                      disabled={disabled}
                       multi={multi}
                       onToggle={() => toggle(question, option.value)}
                     />
@@ -188,9 +212,7 @@ export function TaskQuestionPanel({
                   aria-label={`${question.prompt} free text`}
                   data-testid={`question-${question.id}-other`}
                   value={draft.text}
-                  onChange={(event) =>
-                    update(question.id, (current) => ({ ...current, text: event.target.value }))
-                  }
+                  onChange={(event) => updateText(question, event.target.value)}
                   placeholder="Other (optional)"
                   className="theme-radius w-full border border-border/70 bg-background px-2 py-1.5 text-sm leading-5 text-foreground outline-none focus-visible:ring-1 focus-visible:ring-foreground"
                 />
