@@ -19,7 +19,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "./components/ui/dropdown-menu";
-import { CloseIcon, MoreIcon, MoreVerticalIcon, PlusIcon, RefreshIcon } from "./icons";
+import { CheckIcon, CloseIcon, MoreIcon, MoreVerticalIcon, PlusIcon, RefreshIcon } from "./icons";
 import { cn } from "./lib/utils";
 import { MediaViewer } from "./MediaViewer";
 import { InlineMarkdown, Markdown } from "./markdown";
@@ -660,8 +660,6 @@ export function TaskActionsMenu({
     backlogLabel,
     openChildren,
     onStatus,
-    onApprove,
-    onDismiss,
     onRemove,
   } = model;
   return (
@@ -709,45 +707,22 @@ export function TaskActionsMenu({
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         {draft ? (
-          <>
-            <DropdownMenuItem
-              data-testid="task-detail-approve"
-              onSelect={onApprove}
-              aria-label={`Approve ${title} draft`}
-            >
-              Approve draft
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              variant="destructive"
-              data-testid="task-detail-remove"
-              onSelect={onRemove}
-              aria-label={`Remove ${title} draft`}
-            >
-              Remove
-            </DropdownMenuItem>
-          </>
+          <DropdownMenuItem
+            variant="destructive"
+            data-testid="task-detail-remove"
+            onSelect={onRemove}
+            aria-label={`Remove ${title} draft`}
+          >
+            Remove
+          </DropdownMenuItem>
         ) : proposed ? (
-          <>
-            <DropdownMenuItem onSelect={onApprove} aria-label={`Approve ${title} proposal`}>
-              Approve
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              disabled={statusPending}
-              data-testid="task-detail-backlog"
-              onSelect={() => onStatus(task, parked ? "open" : "backlog")}
-            >
-              {backlogLabel}
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              variant="destructive"
-              onSelect={onDismiss}
-              aria-label={`Dismiss ${title} proposal`}
-            >
-              Dismiss
-            </DropdownMenuItem>
-          </>
+          <DropdownMenuItem
+            disabled={statusPending}
+            data-testid="task-detail-backlog"
+            onSelect={() => onStatus(task, parked ? "open" : "backlog")}
+          >
+            {backlogLabel}
+          </DropdownMenuItem>
         ) : (
           <>
             {!done && (
@@ -959,6 +934,42 @@ function hasLeftoverMeta(model: TaskDetailModel): boolean {
   );
 }
 
+/** The one place a proposal or plan draft is approved or dismissed. */
+function DecisionActions({ model }: { model: TaskDetailModel }) {
+  const { draft, proposed, title, onApprove, onDismiss } = model;
+  if (!draft && !proposed) return null;
+  return (
+    <div
+      data-testid="task-decision-actions"
+      className={cn(DETAIL_CARD, "flex shrink-0 flex-wrap items-center justify-end gap-2")}
+    >
+      {proposed && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="min-h-9 gap-1.5 rounded-md px-3"
+          aria-label={`Dismiss ${title} proposal`}
+          onClick={onDismiss}
+        >
+          <CloseIcon size={14} />
+          Dismiss
+        </Button>
+      )}
+      <Button
+        type="button"
+        size="sm"
+        className="min-h-9 gap-1.5 rounded-md px-3"
+        aria-label={draft ? `Approve ${title} draft` : `Approve ${title} proposal`}
+        onClick={onApprove}
+      >
+        <CheckIcon size={14} />
+        {draft ? "Approve draft" : "Approve"}
+      </Button>
+    </div>
+  );
+}
+
 function PlanSections({ model }: { model: TaskDetailModel }) {
   const hasAttachments = model.media.attachments.length + model.media.pending.length > 0;
   const leftoverMeta = hasLeftoverMeta(model);
@@ -994,6 +1005,7 @@ function PlanSections({ model }: { model: TaskDetailModel }) {
       >
         <BodyField model={model} fill={model.wide} />
       </section>
+      <DecisionActions model={model} />
     </div>
   );
 }

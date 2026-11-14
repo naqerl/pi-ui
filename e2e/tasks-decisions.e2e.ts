@@ -17,6 +17,7 @@ async function createProposal(
   browser: Browser,
   title: string,
   rationale: string,
+  project?: string,
 ): Promise<Proposal> {
   return browser.evaluate(
     async (args) => {
@@ -29,7 +30,23 @@ async function createProposal(
       const task = ledger.tasks.find((item) => item.title === args.title);
       return task ?? { id: "", title: "" };
     },
-    { title, rationale },
+    { title, rationale, ...(project === undefined ? {} : { project }) },
+  );
+}
+
+async function createOpenTask(browser: Browser, title: string, project: string): Promise<Proposal> {
+  return browser.evaluate(
+    async (args) => {
+      const response = await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(args),
+      });
+      const ledger = (await response.json()) as { tasks: Proposal[] };
+      const task = ledger.tasks.find((item) => item.title === args.title);
+      return task ?? { id: "", title: "" };
+    },
+    { title, project },
   );
 }
 
@@ -251,7 +268,14 @@ describe("task decisions against one shared app", { serial: true }, () => {
       await route.continue();
     });
     try {
-      await screen.getByRole("button", { name: `Approve ${title}` }).tap();
+      await screen
+        .getByTestId(`proposal-${proposal.id}`)
+        .getByRole("button", { name: `Open proposal ${title}` })
+        .tap();
+      await screen
+        .getByTestId("task-decision-actions")
+        .getByRole("button", { name: `Approve ${title} proposal` })
+        .tap();
       await expect(screen.getByTestId(`proposal-${proposal.id}`)).toHaveCount(0);
       await expect(screen.getByTestId(`task-${proposal.id}`)).toBeVisible();
       releasePatch?.();
@@ -265,6 +289,143 @@ describe("task decisions against one shared app", { serial: true }, () => {
       releasePatch?.();
       await browser.unroute("**/api/tasks/**").catch(() => undefined);
       if (proposal !== undefined) await removeProposal(browser, title).catch(() => undefined);
+    }
+  });
+
+  test("a proposal card keeps a tag instead of decision buttons, and approves from the details", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    const tag = Date.now();
+    const title = `Decide from the details ${tag}`;
+    const rationale = "The card should carry the decision state, not its own approval controls.";
+    let proposal: Proposal | undefined;
+    await browser.setViewport({ width: 1280, height: 800 });
+    try {
+      await app.open("/?page=tasks");
+      proposal = await createProposal(browser, title, rationale);
+      expect(proposal.id).not.toBe("");
+      await app.open("/?page=tasks");
+
+      const card = screen.getByTestId(`proposal-${proposal.id}`);
+      await expect(card).toBeVisible();
+      await expect(card.getByTestId("task-decision-tag")).toHaveText("Needs you");
+      await expect(card.getByRole("button", { name: /approve/i })).toHaveCount(0);
+      await expect(card.getByRole("button", { name: /dismiss/i })).toHaveCount(0);
+
+      await card.getByRole("button", { name: `Open proposal ${title}` }).tap();
+      const actions = screen.getByTestId("task-decision-actions");
+      await expect(actions).toBeVisible();
+      const approve = actions.getByRole("button", { name: `Approve ${title} proposal` });
+      const dismiss = actions.getByRole("button", { name: `Dismiss ${title} proposal` });
+      await expect(approve).toBeVisible();
+      await expect(dismiss).toBeVisible();
+      expect(
+        await browser.evaluate(() => {
+          const plan = document.querySelector('[data-testid="task-plan-card"]');
+          const controls = document.querySelector('[data-testid="task-decision-actions"]');
+          return (
+            plan !== null &&
+            controls !== null &&
+            (plan.compareDocumentPosition(controls) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+          );
+        }),
+      ).toBe(true);
+
+      await approve.tap();
+      await expect(screen.getByTestId(`proposal-${proposal.id}`)).toHaveCount(0);
+      await expect(screen.getByTestId(`task-${proposal.id}`)).toBeVisible();
+      await expect(screen.getByTestId("task-decision-actions")).toHaveCount(0);
+    } finally {
+      if (proposal !== undefined) await removeProposal(browser, title).catch(() => undefined);
+    }
+  });
+
+  test("a project group puts the decision above open work and keeps the phone controls reachable", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    const tag = Date.now();
+    const project = `Zorder${tag}`;
+    const openTitle = `Open work ${tag}`;
+    const proposalTitle = `Decision first ${tag}`;
+    const rationale =
+      "A project group should surface the task that needs a person before open work.";
+    let openTask: Proposal | undefined;
+    let proposal: Proposal | undefined;
+    await browser.setViewport({ width: 390, height: 844 });
+    try {
+      await app.open("/?page=tasks");
+      openTask = await createOpenTask(browser, openTitle, project);
+      proposal = await createProposal(browser, proposalTitle, rationale, project);
+      expect(openTask.id).not.toBe("");
+      expect(proposal.id).not.toBe("");
+      await app.open("/?page=tasks");
+
+      const groupTestId = `task-project-${project}`;
+      const group = screen.getByTestId(groupTestId);
+      await expect(group).toBeVisible();
+      const order = await browser.evaluate((testId) => {
+        const node = document.querySelector(`[data-testid="${testId}"]`);
+        return [...(node?.querySelectorAll("li[data-testid]") ?? [])].map((item) =>
+          item.getAttribute("data-testid"),
+        );
+      }, groupTestId);
+      expect(order).toEqual([`proposal-${proposal.id}`, `task-${openTask.id}`]);
+
+      const card = screen.getByTestId(`proposal-${proposal.id}`);
+      const titleFit = await browser.evaluate((id) => {
+        const row = document.querySelector(`[data-testid="proposal-${id}"]`);
+        const title = row?.querySelector<HTMLElement>('[data-testid="task-card-title"]');
+        if (row === null || row === undefined || title === null || title === undefined) {
+          return null;
+        }
+        const box = row.getBoundingClientRect();
+        const text = title.getBoundingClientRect();
+        return {
+          inside: text.left >= box.left - 1 && text.right <= box.right + 1,
+          clipped: title.scrollWidth > title.clientWidth + 1,
+        };
+      }, proposal.id);
+      expect(titleFit).toEqual({ inside: true, clipped: false });
+
+      await card.getByRole("button", { name: `Open proposal ${proposalTitle}` }).tap();
+      const actions = screen.getByTestId("task-decision-actions");
+      await browser.evaluate(() => {
+        document
+          .querySelector<HTMLElement>('[data-testid="task-decision-actions"]')
+          ?.scrollIntoView({ block: "nearest" });
+        return null;
+      });
+      await expect(
+        actions.getByRole("button", { name: `Dismiss ${proposalTitle} proposal` }),
+      ).toBeVisible();
+      await expect(
+        actions.getByRole("button", { name: `Approve ${proposalTitle} proposal` }),
+      ).toBeVisible();
+      const width = await browser.evaluate(() => {
+        const controls = document.querySelector<HTMLElement>(
+          '[data-testid="task-decision-actions"]',
+        );
+        if (controls === null) return null;
+        const box = controls.getBoundingClientRect();
+        return {
+          left: box.left,
+          right: box.right,
+          viewport: window.innerWidth,
+          pageOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        };
+      });
+      expect(width).not.toBeNull();
+      expect(width?.left ?? -1).toBeGreaterThanOrEqual(0);
+      expect(width?.right ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(width?.viewport ?? 0);
+      expect(width?.pageOverflow ?? 1).toBeLessThanOrEqual(1);
+    } finally {
+      await removeProposal(browser, openTitle).catch(() => undefined);
+      await removeProposal(browser, proposalTitle).catch(() => undefined);
+      await browser.setViewport({ width: 1280, height: 720 });
     }
   });
 });
