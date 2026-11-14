@@ -38,7 +38,7 @@ import { Card, CardContent, CardFooter, CardHeader } from "./components/ui/card"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
 import { EmptyCaption } from "./EmptyCaption";
 import { haptic } from "./haptics";
-import { CheckIcon, CloseIcon, RefreshIcon } from "./icons";
+import { RefreshIcon } from "./icons";
 import { cn } from "./lib/utils";
 import { InlineMarkdown, plainInline } from "./markdown";
 import { projectSuggestions } from "./ProjectSuggestions";
@@ -417,8 +417,11 @@ function TasksViewImpl({
   const activeRoots = roots.filter(
     (task) => task.status !== "done" && !(state(task) === "failed" && !hasChildren(task)),
   );
-  // Open work is grouped by project once any task has one; grouped rows drop the label.
-  const projectGroups = groupByProject(activeRoots);
+  // Decisions stay in the project's own list, above its open work. Each block keeps its
+  // existing order; only the concatenation puts proposals first, then drafts, then open.
+  const listRoots = [...proposedTasks, ...draftTasks, ...activeRoots];
+  // Work is grouped by project once any task has one; grouped rows drop the label.
+  const projectGroups = groupByProject(listRoots);
   const grouped = projectGroups.some(([name]) => name !== null);
   const doneRoots = roots.filter((task) => task.status === "done").sort(byCompletedDesc);
   const days = groupByDay(doneRoots, (task) => task.completedAt ?? task.createdAt);
@@ -711,61 +714,37 @@ function TasksViewImpl({
     createFailures,
   };
 
-  const proposal = (task: Task) => (
-    <ProposedTask
-      key={task.id}
-      task={task}
-      showProject
-      selected={openTaskId === task.id}
-      notice={problem?.id === task.id ? problem.message : null}
-      onOpen={() => openDetail(task.id)}
-      onApprove={() => approve(task)}
-      onDismiss={() => dismiss(task)}
-    />
-  );
+  const card = (task: Task, showProject: boolean) =>
+    task.status === "proposed" || task.status === "planning" ? (
+      <ProposedTask
+        key={task.id}
+        task={task}
+        draft={task.status === "planning"}
+        showProject={showProject}
+        selected={openTaskId === task.id}
+        notice={problem?.id === task.id ? problem.message : null}
+        onOpen={() => openDetail(task.id)}
+      />
+    ) : (
+      <TaskRow key={task.id} task={task} depth={0} {...rowProps} showProject={showProject} />
+    );
 
   const list = (
     <div
       className={cn(TASK_STACK, "min-w-0", ready && tasks.length === 0 && "flex h-full min-h-0")}
       data-testid="task-list"
     >
-      {(proposedTasks.length > 0 || failedTasks.length > 0) && (
-        <Section
-          title="Needs you"
-          count={proposedTasks.length + failedTasks.length}
-          id="needs"
-          dark
-          collapsible
-        >
+      {failedTasks.length > 0 && (
+        <Section title="Needs you" count={failedTasks.length} id="needs" dark collapsible>
           <ul id="proposed-tasks" className={TASK_STACK} data-testid="task-proposals">
-            {proposedTasks.map(proposal)}
             {failedTasks.map((task) => (
               <TaskRow key={task.id} task={task} depth={0} {...rowProps} flat />
             ))}
           </ul>
         </Section>
       )}
-      {draftTasks.length > 0 && (
-        <Section title="Drafts" count={draftTasks.length} id="drafts" dark collapsible>
-          <ul className={TASK_STACK} data-testid="task-drafts">
-            {draftTasks.map((task) => (
-              <ProposedTask
-                key={task.id}
-                task={task}
-                showProject
-                selected={openTaskId === task.id}
-                notice={problem?.id === task.id ? problem.message : null}
-                onOpen={() => openDetail(task.id)}
-                onApprove={() => approve(task)}
-                onDismiss={() => dismiss(task)}
-                draft
-              />
-            ))}
-          </ul>
-        </Section>
-      )}
-      {activeRoots.length > 0 && (
-        <Section title="Open" count={activeRoots.length} id="active" dark collapsible>
+      {listRoots.length > 0 && (
+        <Section title="Open" count={listRoots.length} id="active" dark collapsible>
           {grouped ? (
             projectGroups.map(([name, items]) => (
               <Group
@@ -776,25 +755,11 @@ function TasksViewImpl({
                 defaultOpen
                 dark
               >
-                <ul className={TASK_STACK}>
-                  {items.map((task) => (
-                    <TaskRow
-                      key={task.id}
-                      task={task}
-                      depth={0}
-                      {...rowProps}
-                      showProject={false}
-                    />
-                  ))}
-                </ul>
+                <ul className={TASK_STACK}>{items.map((task) => card(task, false))}</ul>
               </Group>
             ))
           ) : (
-            <ul className={TASK_STACK}>
-              {activeRoots.map((task) => (
-                <TaskRow key={task.id} task={task} depth={0} {...rowProps} />
-              ))}
-            </ul>
+            <ul className={TASK_STACK}>{listRoots.map((task) => card(task, true))}</ul>
           )}
         </Section>
       )}
@@ -1503,8 +1468,6 @@ function ProposedTask({
   selected,
   notice,
   onOpen,
-  onApprove,
-  onDismiss,
   draft = false,
 }: {
   task: Task;
@@ -1512,20 +1475,18 @@ function ProposedTask({
   selected: boolean;
   notice: string | null;
   onOpen: () => void;
-  onApprove: () => void;
-  onDismiss: () => void;
   /** A plan draft is approved into open work, not a proposed idea. */
   draft?: boolean;
 }) {
-  const stop = (event: { stopPropagation: () => void }) => event.stopPropagation();
   return (
     <li
       data-testid={`${draft ? "draft" : "proposal"}-${task.id}`}
       data-state={draft ? "planning" : "proposed"}
       className="min-w-0"
     >
-      {/* biome-ignore lint/a11y/useSemanticElements: the row contains its own approve and dismiss buttons. */}
+      {/* biome-ignore lint/a11y/useSemanticElements: the title may hold inline markdown links. */}
       <div
+        data-task-card=""
         role="button"
         tabIndex={0}
         aria-current={selected ? "true" : undefined}
@@ -1542,42 +1503,17 @@ function ProposedTask({
           onOpen();
         }}
       >
-        <span className="line-clamp-2 min-w-0 text-sm leading-5 [overflow-wrap:anywhere]">
+        <span
+          data-testid="task-card-title"
+          className="line-clamp-2 min-w-0 text-sm leading-5 [overflow-wrap:anywhere]"
+        >
           <InlineMarkdown text={task.title} />
         </span>
         <TaskCardMeta task={task} project={showProject ? task.project : undefined}>
-          <Badge variant="outline">{draft ? "Draft" : "Proposed"}</Badge>
+          <Badge variant="outline" data-testid="task-decision-tag">
+            {draft ? "Draft" : "Needs you"}
+          </Badge>
         </TaskCardMeta>
-        <span
-          data-testid="proposal-decision"
-          className="flex min-h-9 items-center justify-end gap-2 border-t border-border pt-2"
-        >
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 shrink-0 gap-1.5 rounded-md px-2"
-            aria-label={`Dismiss ${plainInline(task.title)}`}
-            onClick={(event) => {
-              stop(event);
-              onDismiss();
-            }}
-          >
-            <CloseIcon size={14} />
-            Dismiss
-          </Button>
-          <Button
-            size="sm"
-            className="h-7 shrink-0 gap-1.5 rounded-md px-3"
-            aria-label={`Approve ${plainInline(task.title)}`}
-            onClick={(event) => {
-              stop(event);
-              onApprove();
-            }}
-          >
-            <CheckIcon size={14} />
-            Approve
-          </Button>
-        </span>
       </div>
       {notice !== null && (
         <div className="mt-1">
