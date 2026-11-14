@@ -1,7 +1,7 @@
 import { type Browser, beforeEach, describe, test } from "@e2e-dev/web";
 import { expect } from "e2e";
 import { IdleNudge } from "../src/server/idle-nudge.js";
-import { backToTaskList } from "./tasks-helpers";
+import { backToTaskList, setPlanDraft } from "./tasks-helpers";
 
 /** The built app registers /sw.js, and a worker's requests bypass Playwright routes. */
 async function disableServiceWorker(browser: Browser) {
@@ -31,6 +31,7 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     const list = screen.getByTestId("task-list");
     await expect(list).toBeVisible();
     await expect(screen.getByRole("textbox", "New task")).toBeVisible();
+    await setPlanDraft(screen, false);
     let release: () => void = () => undefined;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -92,6 +93,7 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
   }) => {
     await app.open("/?page=tasks");
     await expect(screen.getByRole("textbox", "New task")).toBeVisible();
+    await setPlanDraft(screen, false);
     let attempts = 0;
     await browser.route("**/api/tasks", async (route) => {
       if (route.request.method !== "POST") {
@@ -147,6 +149,7 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
   }) => {
     await app.open("/?page=tasks");
     await expect(screen.getByRole("textbox", "New task")).toBeVisible();
+    await setPlanDraft(screen, false);
 
     const tag = Date.now();
     const existingTitle = `Existing draft ${tag}`;
@@ -213,12 +216,13 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     await expect(screen.getByTestId("task-agent-input")).toHaveValue(raw);
   });
 
-  test("the plan toggle survives a reload and a submission lands in the plan chat", async ({
+  test("the plan toggle is first, on by default, and keeps the composer focused", async ({
     app,
     browser,
     screen,
   }) => {
     const title = `SLOW plan the launch ${Date.now()}`;
+    await browser.setViewport({ width: 390, height: 844 });
     await app.open("/?page=tasks");
     await browser.evaluate(() => {
       sessionStorage.removeItem("pi-ui:plan-task-draft");
@@ -227,19 +231,70 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     await app.open("/?page=tasks");
 
     const toggle = screen.getByRole("button", { name: "Plan this task" });
-    await expect(toggle).toHaveAttribute("aria-pressed", "false");
-    await toggle.tap();
+    // A fresh session starts with planning enabled.
     await expect(toggle).toHaveAttribute("aria-pressed", "true");
 
-    // A reload in the same browser session keeps the choice.
+    // The plan control is the first focusable control in the status row: before
+    // the live counts, the run word, the page tabs and the menu.
+    expect(
+      await browser.evaluate(() => {
+        const button = document.querySelector<HTMLElement>('[data-testid="plan-task-toggle"]');
+        const row = button?.parentElement;
+        if (button === null || row === null || row === undefined) return false;
+        return (
+          row.querySelector(
+            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+          ) === button
+        );
+      }),
+    ).toBe(true);
+
+    const statusRowHeight = () =>
+      browser.evaluate(() => {
+        const button = document.querySelector<HTMLElement>('[data-testid="plan-task-toggle"]');
+        return button?.parentElement?.getBoundingClientRect().height ?? -1;
+      });
+    const focusedInput = () =>
+      browser.evaluate(() => {
+        const active = document.activeElement;
+        return active instanceof HTMLTextAreaElement
+          ? (active.getAttribute("aria-label") ?? active.tagName)
+          : (active?.tagName ?? "");
+      });
+
+    const initialHeight = await statusRowHeight();
+    const composer = screen.getByRole("textbox", "New task");
+    await composer.fill("keep this draft");
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await expect.poll(focusedInput).toBe("New task");
+    await expect(composer).toHaveValue("keep this draft");
+    // The state change only recolours the control; the row keeps its height.
+    expect(Math.abs((await statusRowHeight()) - initialHeight)).toBeLessThan(0.5);
+
+    // A reload in the same browser session keeps the off choice over the default.
+    await app.open("/?page=tasks");
+    const offToggle = screen.getByRole("button", { name: "Plan this task" });
+    await expect(offToggle).toHaveAttribute("aria-pressed", "false");
+
+    // A tap keeps the draft focused too and turns planning back on.
+    const tapComposer = screen.getByRole("textbox", "New task");
+    await tapComposer.fill("keep this tapped draft");
+    await offToggle.tap();
+    await expect(offToggle).toHaveAttribute("aria-pressed", "true");
+    await expect.poll(focusedInput).toBe("New task");
+    await expect(tapComposer).toHaveValue("keep this tapped draft");
+    expect(Math.abs((await statusRowHeight()) - initialHeight)).toBeLessThan(0.5);
+
+    // The on choice is remembered, and the submission starts a plan draft.
     await app.open("/?page=tasks");
     await expect(screen.getByRole("button", { name: "Plan this task" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
 
-    const composer = screen.getByRole("textbox", "New task");
-    await composer.fill(title);
+    const draft = screen.getByRole("textbox", "New task");
+    await draft.fill(title);
     await screen.getByTestId("add-task").tap();
 
     await expect(screen.getByTestId("task-detail")).toBeVisible();
@@ -292,6 +347,8 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
         sessionStorage.removeItem("pi-ui:plan-task-draft");
         return null;
       }, created.id);
+      // Leave the default viewport for the specs that follow this one.
+      await browser.setViewport({ width: 1280, height: 720 });
     }
   });
 
@@ -307,7 +364,11 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
       return null;
     });
     await app.open("/?page=tasks");
-    await screen.getByRole("button", { name: "Plan this task" }).tap();
+    // A fresh session is already planning.
+    await expect(screen.getByRole("button", { name: "Plan this task" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
 
     let attempts = 0;
     await browser.route("**/api/tasks", async (route) => {

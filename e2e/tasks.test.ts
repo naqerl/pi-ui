@@ -93,7 +93,7 @@ function renderTaskCard(task: Task, planning: readonly string[] = []) {
   );
 }
 
-test("the plan-task composer choice is off by default and remembered for the session", () => {
+test("the plan-task composer choice is on by default and remembered for the session", () => {
   const values = new Map<string, string>();
   const storage = {
     getItem: (key: string) => values.get(key) ?? null,
@@ -101,13 +101,14 @@ test("the plan-task composer choice is off by default and remembered for the ses
       values.set(key, value);
     },
   };
-  assert.equal(readPlanTaskDraft(storage), false);
-  writePlanTaskDraft(true, storage);
-  assert.equal(values.get(PLAN_TASK_DRAFT_KEY), "1");
+  // A fresh session starts planning; only an explicit off choice wins over it.
   assert.equal(readPlanTaskDraft(storage), true);
   writePlanTaskDraft(false, storage);
+  assert.equal(values.get(PLAN_TASK_DRAFT_KEY), "0");
   assert.equal(readPlanTaskDraft(storage), false);
-  assert.equal(readPlanTaskDraft(undefined), false);
+  writePlanTaskDraft(true, storage);
+  assert.equal(readPlanTaskDraft(storage), true);
+  assert.equal(readPlanTaskDraft(undefined), true);
 });
 
 test("concurrent creates each return the exact task they inserted", async () => {

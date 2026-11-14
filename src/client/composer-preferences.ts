@@ -11,12 +11,12 @@ function browserSession(): SessionStore | undefined {
   }
 }
 
-/** Whether the create composer should make a plan draft. Off by default. */
+/** Whether the create composer should make a plan draft. On by default. */
 export function readPlanTaskDraft(storage: SessionStore | undefined = browserSession()): boolean {
   try {
-    return storage?.getItem(PLAN_TASK_DRAFT_KEY) === "1";
+    return storage?.getItem(PLAN_TASK_DRAFT_KEY) !== "0";
   } catch {
-    return false;
+    return true;
   }
 }
 
