@@ -68,6 +68,7 @@ import { createTask } from "./task-client";
 import {
   TaskDockComposerProvider,
   type TaskDockSession,
+  type TaskRunErrorSurface,
   type TaskSurfaceStatus,
 } from "./task-dock-composer";
 import { TaskLinkProvider } from "./task-link";
@@ -1741,6 +1742,7 @@ export function ChatView({
   const [planDraft, setPlanDraft] = useState(readPlanTaskDraft);
   const [taskDock, setTaskDock] = useState<TaskDockSession | null>(null);
   const [taskSurfaceStatus, setTaskSurfaceStatus] = useState<TaskSurfaceStatus | null>(null);
+  const [taskRunError, setTaskRunError] = useState<TaskRunErrorSurface | null>(null);
   const wantTaskDock = tasksPage && composerMode === "task-chat";
   const dockToTask = wantTaskDock && taskDock !== null;
   const hideTasksComposer = statsPage || (tasksPage && composerMode === "collapsed");
@@ -1750,6 +1752,13 @@ export function ChatView({
   const chatStatusWord = running ? workingWord(thinking) : ready ? "idle" : "connecting";
   const statusWord = tasksPage ? (taskSurfaceStatus?.word ?? null) : chatStatusWord;
   const statusRunning = tasksPage ? statusWord === "planning" : running;
+  // One header, fed by the active surface: the open task's plan run on the tasks
+  // page when it has one, the main conversation everywhere else (and as the
+  // fallback, so a chat failure stays visible while a task is open).
+  const taskError = tasksPage ? (taskRunError?.error ?? null) : null;
+  const shownRunError = taskError ?? runError;
+  const dismissShownRunError =
+    taskError !== null && taskRunError !== null ? taskRunError.dismiss : dismissRunError;
   const lastPagerState = useRef({ page: pager.page, dragging: pager.dragging });
   // Paint the server's row instead of the card it replaces in the same render: a push and
   // the create response can both land before the cleanup effect below runs.
@@ -2194,9 +2203,11 @@ export function ChatView({
       )}
 
       <div className="relative min-h-0 flex-1">
-        {runError !== undefined && runError !== null && dismissRunError !== undefined && (
-          <RunErrorHeader error={runError} onDismiss={dismissRunError} />
-        )}
+        {shownRunError !== undefined &&
+          shownRunError !== null &&
+          dismissShownRunError !== undefined && (
+            <RunErrorHeader error={shownRunError} onDismiss={dismissShownRunError} />
+          )}
         <div
           {...pager.pagerProps}
           data-testid="pager"
@@ -2468,7 +2479,11 @@ export function ChatView({
 
   return (
     <TaskLinkProvider tasks={shownTasks} openTask={openTaskFromChat}>
-      <TaskDockComposerProvider onSession={setTaskDock} onStatus={setTaskSurfaceStatus}>
+      <TaskDockComposerProvider
+        onSession={setTaskDock}
+        onStatus={setTaskSurfaceStatus}
+        onRunError={setTaskRunError}
+      >
         {content}
       </TaskDockComposerProvider>
     </TaskLinkProvider>

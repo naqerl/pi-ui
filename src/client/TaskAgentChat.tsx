@@ -5,11 +5,14 @@ import { ActivityDialog, Composer, RunStatusLine, TranscriptRows } from "./ChatV
 import type { TimelineItem } from "./chat-timeline";
 import { EmptyCaption } from "./EmptyCaption";
 import { cn } from "./lib/utils";
-import { RunErrorHeader } from "./RunErrorHeader";
 import { TaskQuestionPanel } from "./TaskQuestionPanel";
 import { FIXTURE_CHAT, FIXTURE_PLAN_ID } from "./task-detail-fixture";
 import { readTaskDetailFixture } from "./task-detail-query";
-import { type TaskDockSession, useRegisterTaskDock } from "./task-dock-composer";
+import {
+  type TaskDockSession,
+  useRegisterTaskDock,
+  useRegisterTaskRunError,
+} from "./task-dock-composer";
 import { groupTimeline } from "./timeline-groups";
 import { useStickToBottom } from "./use-stick-to-bottom";
 import { useTaskChat } from "./use-task-chat";
@@ -33,7 +36,6 @@ export function TaskAgentChat({
   const done = task.status === "done";
   const chat = useTaskChat(task.id, done);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const [composerError, setComposerError] = useState<string | null>(null);
   const [activityRun, setActivityRun] = useState<string | null | undefined>(undefined);
   const activityTriggerRef = useRef<HTMLButtonElement | null>(null);
 
@@ -62,10 +64,6 @@ export function TaskAgentChat({
     return () => window.removeEventListener("pi-focus-task-chat", focus);
   }, []);
 
-  useEffect(() => {
-    setComposerError(chat.error);
-  }, [chat.error]);
-
   const placeholderIdle =
     task.title === DEFAULT_NEW_TASK_TITLE ? "Describe the task to plan…" : "Message the task agent";
   const dock = composerTarget === "dock";
@@ -88,7 +86,6 @@ export function TaskAgentChat({
   const sendMessage = useCallback(
     async (text: string, mode: MessageMode = "queue", attachments: string[] = []) => {
       const ok = await chat.send(text, attachments, mode);
-      if (!ok && chat.error !== null) setComposerError(chat.error);
       if (ok) requestAnimationFrame(() => stick.scrollToBottom());
       return ok;
     },
@@ -107,13 +104,10 @@ export function TaskAgentChat({
       taskId: task.id,
       placeholder: placeholderIdle,
       running: chat.running,
-      error: composerError,
+      error: chat.error,
       send: sendDock,
       stop: chat.stop,
-      dismissError: () => {
-        setComposerError(null);
-        chat.dismissError();
-      },
+      dismissError: chat.dismissError,
     };
   }, [
     dock,
@@ -123,11 +117,18 @@ export function TaskAgentChat({
     chat.running,
     chat.stop,
     chat.dismissError,
-    composerError,
+    chat.error,
     sendDock,
   ]);
 
   useRegisterTaskDock(session);
+
+  // The plan pane has no header of its own: the one app-level host owns run errors.
+  const runErrorSurface = useMemo(
+    () => ({ taskId: task.id, error: chat.runError, dismiss: chat.dismissError }),
+    [task.id, chat.runError, chat.dismissError],
+  );
+  useRegisterTaskRunError(runErrorSurface);
 
   const composer = done ? null : (
     <Composer
@@ -141,11 +142,9 @@ export function TaskAgentChat({
       unsendSteer={chat.unsendSteer}
       addTask={async () => false}
       projects={projects}
-      error={composerError}
-      onDismissError={() => {
-        setComposerError(null);
-        chat.dismissError();
-      }}
+      // Send failures are not RunErrors; the global run-error header cannot carry them.
+      error={chat.error}
+      onDismissError={chat.dismissError}
       textareaRef={inputRef}
       inputTestId="task-agent-input"
       sendTestId="task-agent-send"
@@ -205,11 +204,6 @@ export function TaskAgentChat({
           testId="task-agent-status"
         />
       </div>
-      {chat.runError !== null && (
-        <div className="relative h-9 shrink-0">
-          <RunErrorHeader error={chat.runError} onDismiss={chat.dismissError} />
-        </div>
-      )}
       {!dock && composer !== null && (
         <div className="glass-composer theme-radius shrink-0">{composer}</div>
       )}
