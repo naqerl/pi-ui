@@ -1,3 +1,9 @@
+## 1.6.180
+
+### Added
+
+- The planning agent can read the memory tree: its prompt carries the same memory snapshot the chat gets, and it has the read, grep and find tools. It has no write tool — a planning turn must not change what later turns are told.
+
 ## 1.6.179
 
 ### Fixed
