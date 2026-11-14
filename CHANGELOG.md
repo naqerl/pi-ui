@@ -1,3 +1,9 @@
+## 1.6.177
+
+### Fixed
+
+- The plan chat's run-status line is a line again: the bordered, blurred card wrapper around it is gone, so the word "Planning" no longer floats over the transcript. The header badge and the status word itself are unchanged.
+
 ## 1.6.176
 
 ### Changed

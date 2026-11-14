@@ -227,6 +227,78 @@ async function postPlanMessage(browser: Browser, taskId: string, text: string): 
   );
 }
 
+async function stopPlanRun(browser: Browser, taskId: string): Promise<number> {
+  return browser.evaluate(
+    async (id) =>
+      (
+        await fetch(`/api/tasks/${encodeURIComponent(id)}/chat/stop`, {
+          method: "POST",
+        })
+      ).status,
+    taskId,
+  );
+}
+
+/** Any card chrome on the status line's ancestors between it and the plan chat. */
+function readStatusChrome(
+  browser: Browser,
+): Promise<Array<{ testId: string | null; chrome: string }>> {
+  return browser.evaluate(() => {
+    const status = document.querySelector<HTMLElement>('[data-testid="task-agent-status"]');
+    if (status === null) return [];
+    const chat = document.querySelector<HTMLElement>('[data-testid="task-agent-chat"]');
+    const found: Array<{ testId: string | null; chrome: string }> = [];
+    let node = status.parentElement;
+    while (node !== null && node !== chat && node !== document.body) {
+      const style = getComputedStyle(node);
+      const chrome: string[] = [];
+      if (
+        style.position === "absolute" ||
+        style.position === "fixed" ||
+        style.position === "sticky"
+      ) {
+        chrome.push(`position:${style.position}`);
+      }
+      if (style.backgroundColor !== "rgba(0, 0, 0, 0)" && style.backgroundColor !== "transparent") {
+        chrome.push(`background:${style.backgroundColor}`);
+      }
+      if (
+        Number.parseFloat(style.borderTopWidth) > 0 ||
+        Number.parseFloat(style.borderRightWidth) > 0 ||
+        Number.parseFloat(style.borderBottomWidth) > 0 ||
+        Number.parseFloat(style.borderLeftWidth) > 0
+      ) {
+        chrome.push("border");
+      }
+      if (Number.parseFloat(style.borderTopLeftRadius) > 0) chrome.push("radius");
+      if (style.backdropFilter !== "none" && style.backdropFilter !== "") {
+        chrome.push(`backdrop:${style.backdropFilter}`);
+      }
+      if (chrome.length > 0) {
+        found.push({ testId: node.getAttribute("data-testid"), chrome: chrome.join(",") });
+      }
+      node = node.parentElement;
+    }
+    return found;
+  });
+}
+
+/** The plan status line and the chat's own status row must share the same 11px mono type. */
+function readStatusTypography(browser: Browser): Promise<Record<string, string>> {
+  return browser.evaluate(() => {
+    const type = (selector: string) => {
+      const node = document.querySelector<HTMLElement>(selector);
+      if (node === null) return "missing";
+      const style = getComputedStyle(node);
+      return `${style.fontSize}/${style.lineHeight}/${style.fontFamily}`;
+    };
+    return {
+      plan: type('[data-testid="task-agent-status"]'),
+      chat: type('[data-testid="working-status"]'),
+    };
+  });
+}
+
 async function scrollTranscript(browser: Browser, fraction: number): Promise<void> {
   await browser.evaluate((part) => {
     const scroller = document.querySelector<HTMLElement>('[data-testid="task-agent-transcript"]');
@@ -284,6 +356,50 @@ test("the planning questions card never steals the transcript", {
     )
     .toBeGreaterThanOrEqual(14);
   await expect(screen.getByTestId("task-agent-status")).toHaveText("idle", { timeout: 60_000 });
+
+  // A live plan run adds no floating card above the transcript. The removed
+  // element was the unlabelled card wrapper around task-agent-status, so pin
+  // the absence of any card chrome on its ancestors instead of a gone testid.
+  await scrollTranscript(browser, 0.45);
+  const beforePlanRun = await readTranscript(browser);
+  expect(beforePlanRun).not.toBeNull();
+  if (beforePlanRun === null) return;
+  expect(beforePlanRun.distance).toBeGreaterThan(100);
+
+  expect(await postPlanMessage(browser, taskId, "SLOW keep the plan run open")).toBe(202);
+  await expect(screen.getByTestId(`task-detail-planning-${taskId}`)).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(screen.getByTestId("task-agent-status")).toHaveAttribute("data-open", "true", {
+    timeout: 30_000,
+  });
+  await settle(browser);
+
+  const duringPlanRun = await readTranscript(browser);
+  expect(duringPlanRun).not.toBeNull();
+  if (duringPlanRun === null) return;
+  expect(duringPlanRun.scrollTop).toBe(beforePlanRun.scrollTop);
+  expect(duringPlanRun.composerTop).toBe(beforePlanRun.composerTop);
+  expect(await readStatusChrome(browser)).toEqual([]);
+  const type = await readStatusTypography(browser);
+  expect(type.plan).not.toBe("missing");
+  expect(type.plan).toBe(type.chat);
+
+  expect(await stopPlanRun(browser, taskId)).toBe(200);
+  await expect(screen.getByTestId("task-agent-status")).toHaveAttribute("data-open", "false", {
+    timeout: 30_000,
+  });
+  await expect(screen.getByTestId(`task-detail-planning-${taskId}`)).toHaveCount(0, {
+    timeout: 30_000,
+  });
+  await settle(browser);
+
+  const afterPlanRun = await readTranscript(browser);
+  expect(afterPlanRun).not.toBeNull();
+  if (afterPlanRun === null) return;
+  expect(afterPlanRun.scrollTop).toBe(beforePlanRun.scrollTop);
+  expect(afterPlanRun.composerTop).toBe(beforePlanRun.composerTop);
+  expect(await readStatusChrome(browser)).toEqual([]);
 
   // 1. Arrival while reading the middle: the card appears below, the offset does not move.
   await scrollTranscript(browser, 0.45);
