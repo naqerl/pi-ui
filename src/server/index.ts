@@ -395,6 +395,7 @@ const taskAgents = new TaskAgentManager({
     hub.broadcast({ event: "tasks", data: taskView() });
   },
   baseInstructions: await taskAgentPrompt,
+  memory: { store: memory, snapshot: memorySnapshot },
 });
 planningTaskIds = () => taskAgents.planningTaskIds();
 function builtinJobs() {
