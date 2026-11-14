@@ -38,4 +38,4 @@ time. Plan or product surfaces differ by tool set and system prompt, never by re
 
 E2E is for journeys a unit test structurally cannot reach. Geometry, frame-budget and screenshot
 assertions belong in the unit gate or in manual review, not in the browser suite. A new spec must
-displace one of the 28 core files — the 420 s guard is the ceiling, not a target.
+displace one of the core files — the 420 s guard is the ceiling, not a target.

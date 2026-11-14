@@ -76,9 +76,9 @@ jobs:
           echo "e2e suite wall clock: ${elapsed}s"
           # The guard is a hang detector, not a performance assertion. It keeps the suite's whole
           # history: 666 s on 2026-11-10 (233 tests), 748/751/847 s on 2026-11-12 (283 tests, 2
-          # flaky), 1003 s and 1119 s on 2026-11-13 (306 tests), then 222–231 s after the core cut
-          # (58 tests). The upstream plan-push spec landed after the cut and displaced mcp-status,
-          # keeping the core at 28 files. The 420 s ceiling is the anti-regrowth budget, not a target.
+          # flaky), 1003 s and 1119 s on 2026-11-13 (306 tests), then 229–238 s after the core cut
+          # (59 tests across 29 files; the upstream plan-push spec added one file to the 28-file
+          # core). The 420 s ceiling is the anti-regrowth budget, not a target.
           if [ "${elapsed}" -gt 420 ]; then
             echo "::error::e2e suite took ${elapsed}s, over the 420s budget"
             exit 1
