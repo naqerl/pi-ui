@@ -1,3 +1,12 @@
+## 1.6.175
+
+### Added
+
+- A task's images can be managed after it was created: the detail view shows each attachment as a
+  thumbnail with its own remove control, and the existing media picker adds more, up to twelve per
+  task. The server takes the whole list in one request and rejects ids it does not know, so a
+  partial update cannot silently drop an image.
+
 ## 1.6.174
 
 ### Added
