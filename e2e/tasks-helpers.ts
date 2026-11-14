@@ -20,7 +20,7 @@ type TaskScreen = Pick<Screen, "getByTestId" | "getByRole">;
 
 /** Set the create composer's plan-draft choice when it differs from the stored one. */
 export async function setPlanDraft(screen: TaskScreen, on: boolean): Promise<void> {
-  const toggle = screen.getByRole("button", { name: "Plan this task" });
+  const toggle = screen.getByTestId("plan-task-toggle");
   if ((await toggle.count()) === 0) return;
   const pressed = (await toggle.getAttribute("aria-pressed")) === "true";
   if (pressed !== on) await toggle.tap();

@@ -5,18 +5,30 @@ import { createOpenTask, openTaskChatTab, removeTasks } from "./tasks-helpers";
 interface PlanSwitchGeometry {
   radius: string;
   left: number;
-  plusLeft: number;
+  statusLeft: number;
+  statusCentre: number;
   centre: number;
-  plusCentre: number;
+  lineTextCentre: number;
   background: string;
+  dockHeight: number;
   composerHeight: number;
+  lineHeight: number;
+  inTopLine: boolean;
+  inComposerForm: boolean;
+  parentTestId: string | null;
 }
 
-test("the plan switch is square, flush with the plus, and keeps the composer focused", {
+// Measured on main at 390x844: the dock is 90 px, the composer body 48 px and
+// the top line 41 px. The switch must ride that existing line, not grow it.
+const DOCK_HEIGHT = 90;
+const COMPOSER_HEIGHT = 48;
+const TOP_LINE_HEIGHT = 41;
+
+test("the plan switch sits on the dock's top line with a visible label", {
   timeout: 120_000,
 }, async ({ app, browser, screen }) => {
-  // The phone is the first acceptance surface: the dock and its action row
-  // collapse differently there, so sample the alignment before the wide view.
+  // The phone is the first acceptance surface: the dock's top line and its
+  // action row collapse differently there, so sample the alignment before wide.
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/?page=tasks");
   await browser.evaluate(() => {
@@ -26,9 +38,14 @@ test("the plan switch is square, flush with the plus, and keeps the composer foc
   await app.open("/?page=tasks");
 
   const toggle = screen.getByTestId("plan-task-toggle");
-  const plus = screen.getByTestId("composer-plus");
   await expect(toggle).toBeVisible();
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  // The visible label is the whole accessible name, exactly once.
+  await expect(screen.getByRole("button", "Plan task")).toHaveCount(1);
+  await expect(toggle).toHaveAccessibleName("Plan task");
+  const visibleLabel = toggle.getByText("Plan task", { exact: true });
+  await expect(visibleLabel).toBeVisible();
+  await expect(visibleLabel).toHaveText("Plan task");
 
   const composer = screen.getByRole("textbox", "New task");
   await composer.fill("keep this draft");
@@ -37,32 +54,74 @@ test("the plan switch is square, flush with the plus, and keeps the composer foc
   const readGeometry = (): Promise<PlanSwitchGeometry> =>
     browser.evaluate(() => {
       const button = document.querySelector<HTMLElement>('[data-testid="plan-task-toggle"]');
-      const plusButton = document.querySelector<HTMLElement>('[data-testid="composer-plus"]');
+      const status = document.querySelector<HTMLElement>('[data-testid="working-status"]');
       const dock = document.querySelector<HTMLElement>('[data-testid="composer-dock"]');
-      if (button === null || plusButton === null || dock === null) {
-        throw new Error("the plan switch, plus, or dock is missing");
+      const composerBody = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
+      const track = button?.querySelector<HTMLElement>('[data-testid="plan-task-switch-track"]');
+      if (
+        button === null ||
+        track === null ||
+        track === undefined ||
+        status === null ||
+        dock === null ||
+        composerBody === null
+      ) {
+        throw new Error(
+          "the plan switch, its track, status line, dock, or composer body is missing",
+        );
       }
+      const line = button.closest<HTMLElement>(".ink-line");
+      if (line === null) throw new Error("the plan switch is not on the dock's top line");
       const rect = button.getBoundingClientRect();
-      const plusRect = plusButton.getBoundingClientRect();
+      const statusRect = status.getBoundingClientRect();
+      const lineRect = line.getBoundingClientRect();
+      const lineStyle = getComputedStyle(line);
+      const lineContentTop =
+        lineRect.top +
+        Number.parseFloat(lineStyle.borderTopWidth) +
+        Number.parseFloat(lineStyle.paddingTop);
+      const lineContentHeight =
+        lineRect.height -
+        Number.parseFloat(lineStyle.borderTopWidth) -
+        Number.parseFloat(lineStyle.borderBottomWidth) -
+        Number.parseFloat(lineStyle.paddingTop) -
+        Number.parseFloat(lineStyle.paddingBottom);
       return {
         radius: getComputedStyle(button).borderTopLeftRadius,
         left: rect.left,
-        plusLeft: plusRect.left,
+        statusLeft: statusRect.left,
+        statusCentre: statusRect.top + statusRect.height / 2,
         centre: rect.top + rect.height / 2,
-        plusCentre: plusRect.top + plusRect.height / 2,
-        background: getComputedStyle(button).backgroundColor,
-        composerHeight: dock.getBoundingClientRect().height,
+        lineTextCentre: lineContentTop + lineContentHeight / 2,
+        background: getComputedStyle(track).backgroundColor,
+        dockHeight: dock.getBoundingClientRect().height,
+        composerHeight: composerBody.getBoundingClientRect().height,
+        lineHeight: lineRect.height,
+        inTopLine: line !== null,
+        inComposerForm: button.closest('[data-testid="composer-form"]') !== null,
+        parentTestId: button.parentElement?.getAttribute("data-testid") ?? null,
       };
     });
 
-  const checkGeometry = async (sample: PlanSwitchGeometry) => {
+  const checkGeometry = (sample: PlanSwitchGeometry) => {
     expect(sample.radius).toBe("0px");
-    expect(Math.abs(sample.left - sample.plusLeft)).toBeLessThanOrEqual(1);
-    expect(Math.abs(sample.centre - sample.plusCentre)).toBeLessThanOrEqual(1);
+    expect(sample.inTopLine).toBe(true);
+    expect(sample.inComposerForm).toBe(false);
+    expect(sample.parentTestId).toBe("working-status");
+    expect(Math.abs(sample.left - sample.statusLeft)).toBeLessThanOrEqual(1);
+    expect(Math.abs(sample.centre - sample.lineTextCentre)).toBeLessThanOrEqual(1);
+    expect(Math.abs(sample.centre - sample.statusCentre)).toBeLessThanOrEqual(1);
+  };
+
+  const checkHeights = (sample: PlanSwitchGeometry) => {
+    expect(sample.dockHeight).toBe(DOCK_HEIGHT);
+    expect(sample.composerHeight).toBe(COMPOSER_HEIGHT);
+    expect(sample.lineHeight).toBe(TOP_LINE_HEIGHT);
   };
 
   const on = await readGeometry();
-  await checkGeometry(on);
+  checkGeometry(on);
+  checkHeights(on);
   const focusedInput = () =>
     browser.evaluate(() => {
       const active = document.activeElement;
@@ -75,26 +134,27 @@ test("the plan switch is square, flush with the plus, and keeps the composer foc
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
   await expect.poll(focusedInput).toBe("New task");
   const off = await readGeometry();
-  await checkGeometry(off);
+  checkGeometry(off);
+  checkHeights(off);
   expect(off.background).not.toBe(on.background);
-  expect(Math.abs(off.composerHeight - on.composerHeight)).toBeLessThan(0.5);
   await app.screenshot("plan-task-switch-off");
 
   await toggle.tap();
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
   await expect.poll(focusedInput).toBe("New task");
   const again = await readGeometry();
-  await checkGeometry(again);
+  checkGeometry(again);
+  checkHeights(again);
   expect(again.background).toBe(on.background);
-  expect(Math.abs(again.composerHeight - on.composerHeight)).toBeLessThan(0.5);
   await expect(composer).toHaveValue("keep this draft");
   await app.screenshot("plan-task-switch-on");
 
-  // The same slot alignment holds when the dock is wide.
+  // The same top-line alignment holds when the dock is wide.
   await browser.setViewport({ width: 1280, height: 900 });
   await expect(toggle).toBeVisible();
-  await checkGeometry(await readGeometry());
-  await expect(plus).toBeVisible();
+  const wide = await readGeometry();
+  checkGeometry(wide);
+  await expect(screen.getByTestId("composer-plus")).toBeVisible();
 });
 
 test("a plan run that dies without an answer shows a dismissible error", {
