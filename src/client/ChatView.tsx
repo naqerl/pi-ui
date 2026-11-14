@@ -2168,6 +2168,19 @@ export function ChatView({
     pager.setPage(index);
   };
 
+  const togglePlanDraft = () => {
+    const next = !planDraft;
+    setPlanDraft(next);
+    writePlanTaskDraft(next);
+    haptic();
+    // The toggle changes what Send does, not where the operator is typing. Put the
+    // keyboard back on the draft immediately and again after the state change, for
+    // a tap and a click alike.
+    const focusComposer = () => composerRef.current?.focus({ preventScroll: true });
+    focusComposer();
+    window.requestAnimationFrame(focusComposer);
+  };
+
   const content = (
     <div className="chat-shell min-h-0" data-testid="chat-shell">
       {interrupted && (
@@ -2303,6 +2316,28 @@ export function ChatView({
       >
         <div data-testid="composer-slide">
           <div className="ink-line flex items-center gap-3 border-b py-1.5 pr-1.5 pl-[18px]">
+            {showPlanToggle && (
+              <button
+                type="button"
+                data-testid="plan-task-toggle"
+                aria-label="Plan this task"
+                aria-pressed={planDraft}
+                title={planDraft ? "Creates a plan draft" : "Plan this task first"}
+                className={cn(
+                  "min-h-6 shrink-0 rounded-md border px-1.5 font-mono text-[10px] leading-4 tracking-tight transition-colors",
+                  planDraft
+                    ? "border-foreground bg-foreground text-background"
+                    : "border-border bg-surface text-muted-foreground hover:text-foreground",
+                )}
+                onPointerDown={(event) => {
+                  // Keep the composer focused so a phone's keyboard stays open.
+                  event.preventDefault();
+                }}
+                onClick={togglePlanDraft}
+              >
+                Plan this task
+              </button>
+            )}
             <div
               data-testid="working-status"
               data-open={statusRunning ? "true" : "false"}
@@ -2326,29 +2361,6 @@ export function ChatView({
                 </div>
               )}
             </div>
-            {showPlanToggle && (
-              <button
-                type="button"
-                data-testid="plan-task-toggle"
-                aria-label="Plan this task"
-                aria-pressed={planDraft}
-                title={planDraft ? "Creates a plan draft" : "Plan this task first"}
-                className={cn(
-                  "min-h-6 shrink-0 rounded-md border px-1.5 font-mono text-[10px] leading-4 tracking-tight transition-colors",
-                  planDraft
-                    ? "border-foreground bg-foreground text-background"
-                    : "border-border bg-surface text-muted-foreground hover:text-foreground",
-                )}
-                onClick={() => {
-                  const next = !planDraft;
-                  setPlanDraft(next);
-                  writePlanTaskDraft(next);
-                  haptic();
-                }}
-              >
-                Plan this task
-              </button>
-            )}
             <div
               role="tablist"
               aria-label="Pages"

@@ -18,6 +18,14 @@ export async function removeTasks(browser: Browser, titles: readonly string[]) {
 
 type TaskScreen = Pick<Screen, "getByTestId" | "getByRole">;
 
+/** Set the create composer's plan-draft choice when it differs from the stored one. */
+export async function setPlanDraft(screen: TaskScreen, on: boolean): Promise<void> {
+  const toggle = screen.getByRole("button", { name: "Plan this task" });
+  if ((await toggle.count()) === 0) return;
+  const pressed = (await toggle.getAttribute("aria-pressed")) === "true";
+  if (pressed !== on) await toggle.tap();
+}
+
 /** Focus the tasks-page composer, going back to the list first on mobile. */
 export async function openNewTaskComposer(screen: TaskScreen): Promise<Locator> {
   await backToTaskList(screen);
@@ -33,6 +41,8 @@ export async function createOpenTask(
   options?: { project?: string },
 ) {
   const input = await openNewTaskComposer(screen);
+  // These callers create ordinary open work; planning is now the composer default.
+  await setPlanDraft(screen, false);
   const text = options?.project === undefined ? title : `@${options.project} ${title}`;
   await input.fill(text);
   await screen.getByRole("button", "Add task").tap();

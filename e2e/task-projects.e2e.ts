@@ -1,6 +1,6 @@
 import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
-import { backToTaskList, createOpenTask, openNewTaskComposer } from "./tasks-helpers";
+import { backToTaskList, createOpenTask, openNewTaskComposer, setPlanDraft } from "./tasks-helpers";
 
 // The e2e server and its task store are shared by every test file: leave no projects behind.
 async function removeTasks(browser: Browser, titles: readonly string[]) {
@@ -26,6 +26,8 @@ test("@ tags new tasks with a project and open work is grouped by project", asyn
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/?page=tasks");
   await expect(screen.getByRole("textbox", "New task")).toBeVisible();
+  // This spec is about ordinary open work, not the default plan draft.
+  await setPlanDraft(screen, false);
   const taskList = screen.getByTestId("task-list");
   // A just-added task can appear as both its optimistic row and the settled row
   // for a moment; wait for exactly one visible match instead of sampling both.

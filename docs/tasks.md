@@ -5,11 +5,12 @@ with "No project" last.
 
 ## Draft planning
 
-The create composer's status row has a `Plan this task` toggle, remembered for the browser
-session. With it on, submitting creates the task in the `planning` state and starts its plan run
-with the composer text as the task body. The draft is not open work: idle nudges ignore it,
-`task_working` refuses it, and it waits in the Drafts section until a human approves it. The
-agent's `task_list` hides drafts unless it asks with `includePlanning: true`.
+The create composer's status row has a `Plan this task` toggle, on by default and remembered for
+the browser session when the operator turns it off. With it on, submitting creates the task in the
+`planning` state and starts its plan run with the composer text as the task body. The draft is not
+open work: idle nudges ignore it, `task_working` refuses it, and it waits in the Drafts section
+until a human approves it. The agent's `task_list` hides drafts unless it asks with
+`includePlanning: true`.
 
 ## Planning chat
 
