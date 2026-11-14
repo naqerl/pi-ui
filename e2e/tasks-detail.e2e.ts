@@ -92,6 +92,37 @@ async function openSnapshot(
   await app.open("/?page=tasks");
 }
 
+/**
+ * Elements on the tasks page whose content is wider than their own box. Only
+ * the nodes that intentionally clip their own overflow are exempt: the
+ * offscreen dashboard pager is excluded by scanning inside the tasks page, and
+ * visually-hidden labels and the ellipsised run-error label never show it.
+ */
+async function horizontalOverflow(browser: Browser) {
+  return browser.evaluate(() => {
+    const page = document.querySelector<HTMLElement>('[data-testid="tasks-page"]');
+    if (page === null) return [null];
+    const nodes = [document.documentElement, document.body, page, ...page.querySelectorAll("*")];
+    return nodes
+      .filter((node) => {
+        const style = getComputedStyle(node);
+        const clipped =
+          node.closest(".sr-only") !== null ||
+          node.closest('[data-testid="run-error-open"]') !== null;
+        return style.display !== "none" && style.visibility !== "hidden" && !clipped;
+      })
+      .filter((node) => node.scrollWidth > node.clientWidth)
+      .slice(0, 8)
+      .map((node) => ({
+        tag: node.tagName.toLowerCase(),
+        testId: node.getAttribute("data-testid"),
+        className: node.className.toString().slice(0, 120),
+        scrollWidth: node.scrollWidth,
+        clientWidth: node.clientWidth,
+      }));
+  });
+}
+
 async function expectProjectAboveBody(browser: Browser) {
   const projectAboveBody = await browser.evaluate(() => {
     const detail = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
@@ -158,9 +189,11 @@ describe("task detail against a mocked state route", { serial: true }, () => {
       if (pane === null || bar === null || description === null) {
         return null;
       }
-      const paneTop = pane.getBoundingClientRect().top;
+      const paneBox = pane.getBoundingClientRect();
+      const barBox = bar.getBoundingClientRect();
       return {
-        bar: bar.getBoundingClientRect().top - paneTop,
+        barAbovePane: barBox.bottom <= paneBox.top,
+        barGap: paneBox.top - barBox.bottom,
         label: (bar.textContent ?? "").includes("Task details"),
         hasTitle: document.querySelector('[data-testid="task-title"]') !== null,
         hasMeta: document.querySelector('[data-testid="task-header-meta"]') !== null,
@@ -171,7 +204,9 @@ describe("task detail against a mocked state route", { serial: true }, () => {
       };
     });
     expect(contentTop).not.toBeNull();
-    expect(contentTop?.bar ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(2);
+    expect(contentTop?.barAbovePane).toBe(true);
+    expect(contentTop?.barGap ?? Number.POSITIVE_INFINITY).toBeGreaterThanOrEqual(0);
+    expect(contentTop?.barGap ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(20);
     expect(contentTop?.label).toBe(true);
     expect(contentTop?.hasTitle).toBe(false);
     expect(contentTop?.hasMeta).toBe(false);
@@ -218,6 +253,83 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     await browser.keyboard.press("Escape");
     await expect(screen.getByTestId("task-detail")).toHaveCount(0);
     await expect(screen.getByTestId("task-detail-empty")).toBeVisible();
+  });
+
+  test("on a wide screen the detail header spans the detail and plan columns", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    await openSnapshot(app, browser, snapshot, 1440, 900);
+    await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
+    await expect(screen.getByTestId("task-header")).toBeVisible();
+
+    const wide = await browser.evaluate(() => {
+      const header = document.querySelector<HTMLElement>('[data-testid="task-header"]');
+      const detail = document.querySelector<HTMLElement>('[data-testid="tasks-mid-col"]');
+      const plan = document.querySelector<HTMLElement>('[data-testid="tasks-chat-col"]');
+      if (header === null || detail === null || plan === null) return null;
+      const h = header.getBoundingClientRect();
+      const d = detail.getBoundingClientRect();
+      const p = plan.getBoundingClientRect();
+      return {
+        leftGap: Math.abs(h.left - d.left),
+        rightGap: Math.abs(h.right - p.right),
+        aboveDetail: h.top < d.top,
+        abovePlan: h.top < p.top,
+        detailWidth: d.width,
+        planWidth: p.width,
+      };
+    });
+    expect(wide).not.toBeNull();
+    expect(wide?.leftGap ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(2);
+    expect(wide?.rightGap ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(2);
+    expect(wide?.aboveDetail).toBe(true);
+    expect(wide?.abovePlan).toBe(true);
+    expect(wide?.detailWidth ?? 0).toBeGreaterThanOrEqual(280);
+    expect(wide?.planWidth ?? 0).toBeGreaterThanOrEqual(300);
+    expect(wide?.planWidth ?? 0).toBeLessThanOrEqual(400);
+    expect(await horizontalOverflow(browser)).toEqual([]);
+
+    // The reporter judges the layout by eye, so keep the wide frame as evidence.
+    await app.screenshot("tasks-wide");
+
+    await browser.setViewport({ width: 1280, height: 800 });
+    await expect(screen.getByTestId("tasks-page")).toHaveAttribute("data-layout", "split");
+    expect(await horizontalOverflow(browser)).toEqual([]);
+
+    await openSnapshot(app, browser, snapshot, 390, 844);
+    await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
+    await expect(screen.getByTestId("task-detail")).toHaveAttribute("data-layout", "mobile");
+
+    const phone = await browser.evaluate(() => {
+      const header = document.querySelector<HTMLElement>('[data-testid="task-header"]');
+      const detail = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
+      const plan = document.querySelector<HTMLElement>('[data-testid="task-plan-card"]');
+      if (header === null || detail === null || plan === null) return null;
+      const h = header.getBoundingClientRect();
+      const d = detail.getBoundingClientRect();
+      return {
+        insideDetail: detail.contains(header),
+        within:
+          h.left >= d.left - 1 &&
+          h.right <= d.right + 1 &&
+          h.top >= d.top - 1 &&
+          h.bottom <= d.bottom + 1,
+        headerBeforePlan: !!(
+          header.compareDocumentPosition(plan) & Node.DOCUMENT_POSITION_FOLLOWING
+        ),
+        detailBeforePlan: !!(
+          detail.compareDocumentPosition(plan) & Node.DOCUMENT_POSITION_FOLLOWING
+        ),
+      };
+    });
+    expect(phone).not.toBeNull();
+    expect(phone?.insideDetail).toBe(true);
+    expect(phone?.within).toBe(true);
+    expect(phone?.headerBeforePlan).toBe(true);
+    expect(phone?.detailBeforePlan).toBe(true);
+    expect(await horizontalOverflow(browser)).toEqual([]);
   });
 
   test("body markdown links and copy controls stay interactive until the text is clicked", async ({
