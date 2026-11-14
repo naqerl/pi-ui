@@ -2,6 +2,101 @@ import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
 import { createOpenTask, openTaskChatTab, removeTasks } from "./tasks-helpers";
 
+interface PlanSwitchGeometry {
+  radius: string;
+  left: number;
+  plusLeft: number;
+  centre: number;
+  plusCentre: number;
+  background: string;
+  composerHeight: number;
+}
+
+test("the plan switch is square, flush with the plus, and keeps the composer focused", {
+  timeout: 120_000,
+}, async ({ app, browser, screen }) => {
+  // The phone is the first acceptance surface: the dock and its action row
+  // collapse differently there, so sample the alignment before the wide view.
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/?page=tasks");
+  await browser.evaluate(() => {
+    sessionStorage.removeItem("pi-ui:plan-task-draft");
+    return null;
+  });
+  await app.open("/?page=tasks");
+
+  const toggle = screen.getByTestId("plan-task-toggle");
+  const plus = screen.getByTestId("composer-plus");
+  await expect(toggle).toBeVisible();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+
+  const composer = screen.getByRole("textbox", "New task");
+  await composer.fill("keep this draft");
+  await composer.focus();
+
+  const readGeometry = (): Promise<PlanSwitchGeometry> =>
+    browser.evaluate(() => {
+      const button = document.querySelector<HTMLElement>('[data-testid="plan-task-toggle"]');
+      const plusButton = document.querySelector<HTMLElement>('[data-testid="composer-plus"]');
+      const dock = document.querySelector<HTMLElement>('[data-testid="composer-dock"]');
+      if (button === null || plusButton === null || dock === null) {
+        throw new Error("the plan switch, plus, or dock is missing");
+      }
+      const rect = button.getBoundingClientRect();
+      const plusRect = plusButton.getBoundingClientRect();
+      return {
+        radius: getComputedStyle(button).borderTopLeftRadius,
+        left: rect.left,
+        plusLeft: plusRect.left,
+        centre: rect.top + rect.height / 2,
+        plusCentre: plusRect.top + plusRect.height / 2,
+        background: getComputedStyle(button).backgroundColor,
+        composerHeight: dock.getBoundingClientRect().height,
+      };
+    });
+
+  const checkGeometry = async (sample: PlanSwitchGeometry) => {
+    expect(sample.radius).toBe("0px");
+    expect(Math.abs(sample.left - sample.plusLeft)).toBeLessThanOrEqual(1);
+    expect(Math.abs(sample.centre - sample.plusCentre)).toBeLessThanOrEqual(1);
+  };
+
+  const on = await readGeometry();
+  await checkGeometry(on);
+  const focusedInput = () =>
+    browser.evaluate(() => {
+      const active = document.activeElement;
+      return active instanceof HTMLTextAreaElement
+        ? (active.getAttribute("aria-label") ?? active.tagName)
+        : (active?.tagName ?? "");
+    });
+
+  await toggle.tap();
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await expect.poll(focusedInput).toBe("New task");
+  const off = await readGeometry();
+  await checkGeometry(off);
+  expect(off.background).not.toBe(on.background);
+  expect(Math.abs(off.composerHeight - on.composerHeight)).toBeLessThan(0.5);
+  await app.screenshot("plan-task-switch-off");
+
+  await toggle.tap();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(focusedInput).toBe("New task");
+  const again = await readGeometry();
+  await checkGeometry(again);
+  expect(again.background).toBe(on.background);
+  expect(Math.abs(again.composerHeight - on.composerHeight)).toBeLessThan(0.5);
+  await expect(composer).toHaveValue("keep this draft");
+  await app.screenshot("plan-task-switch-on");
+
+  // The same slot alignment holds when the dock is wide.
+  await browser.setViewport({ width: 1280, height: 900 });
+  await expect(toggle).toBeVisible();
+  await checkGeometry(await readGeometry());
+  await expect(plus).toBeVisible();
+});
+
 test("a plan run that dies without an answer shows a dismissible error", {
   timeout: 180_000,
 }, async ({ app, browser, screen }) => {

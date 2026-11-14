@@ -751,7 +751,39 @@ function ActivityGroup({
 }
 
 const ACTION_BUTTON_CLASS = "h-9 w-full hover:bg-foreground/10";
+/** A square switch in the plus's action slot; it shares that button's left edge. */
+const PLAN_SWITCH_CLASS = "absolute top-1/2 left-0 z-10 h-4 w-[30px] -translate-y-1/2";
 const BACKLOG_LONG_PRESS_MS = 500;
+
+function PlanTaskSwitch({ pressed, onToggle }: { pressed: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      data-testid="plan-task-toggle"
+      aria-label="Plan this task"
+      aria-pressed={pressed}
+      title="Plan this task"
+      className={cn(
+        PLAN_SWITCH_CLASS,
+        "shrink-0 cursor-pointer rounded-none border p-0 transition-colors duration-[120ms] ease-out motion-reduce:transition-none",
+        pressed ? "border-foreground bg-foreground" : "border-border bg-surface",
+      )}
+      onPointerDown={(event) => {
+        // Keep the composer focused so a phone's keyboard stays open.
+        event.preventDefault();
+      }}
+      onClick={onToggle}
+    >
+      <span
+        aria-hidden="true"
+        className={cn(
+          "absolute top-1/2 block h-3 w-3 -translate-y-1/2 rounded-none transition-[left,background-color] duration-[120ms] ease-out motion-reduce:transition-none",
+          pressed ? "left-[15px] bg-background" : "left-px bg-muted-foreground",
+        )}
+      />
+    </button>
+  );
+}
 /** Space above the first message and below the last, on every viewport. */
 const TRANSCRIPT_END_GAP = 16;
 
@@ -999,7 +1031,7 @@ export function Composer({
   placeholder,
   draftKey,
   clearDraft,
-  planDraft = false,
+  planToggle,
 }: {
   tasksPage: boolean;
   /** When set, @project suggestions work even if this is not the create-task composer. */
@@ -1028,8 +1060,8 @@ export function Composer({
   placeholder?: string;
   /** Stable instance: text drafts are stored per target instead of remounting. */
   draftKey?: string;
-  /** The status row's plan-draft toggle was left on for this session. */
-  planDraft?: boolean;
+  /** The create composer's plan-draft switch, when the tasks surface shows it. */
+  planToggle?: { pressed: boolean; onToggle: () => void };
   /** A successful Retry consumes the exact draft that was restored for its failed row. */
   clearDraft?: {
     key: string;
@@ -1251,7 +1283,7 @@ export function Composer({
         parsed.title,
         ids,
         parsed.project ?? undefined,
-        planDraft ? { plan: true } : backlog ? { backlog: true } : undefined,
+        planToggle?.pressed ? { plan: true } : backlog ? { backlog: true } : undefined,
         { key, text },
       );
     } else {
@@ -1332,14 +1364,27 @@ export function Composer({
       <AttachmentStrip items={attachments.items} onRemove={removeAttachment} />
       <div ref={rowRef} className="flex w-full items-end gap-1 p-1.5">
         {picker.input}
-        <div className="flex h-9 w-9 shrink-0 items-stretch">
+        {/* The switch sits in the action row so it shares the plus's left edge and
+            vertical centre; the dock line keeps working-status and its counts. */}
+        <div
+          className={cn(
+            "relative flex h-9 shrink-0 items-stretch",
+            planToggle === undefined ? "w-9" : "w-16",
+          )}
+        >
+          {planToggle !== undefined && (
+            <PlanTaskSwitch pressed={planToggle.pressed} onToggle={planToggle.onToggle} />
+          )}
           <Button
             type="button"
             variant="ghost"
             size="icon"
             aria-label={tasksPage ? "Attach image to task" : "Attach image"}
             data-testid="composer-plus"
-            className={ACTION_BUTTON_CLASS}
+            className={cn(
+              ACTION_BUTTON_CLASS,
+              planToggle !== undefined && "justify-start pl-[34px]",
+            )}
             onClick={picker.open}
           >
             <PlusIcon />
@@ -2284,28 +2329,6 @@ export function ChatView({
       >
         <div data-testid="composer-slide">
           <div className="ink-line flex items-center gap-3 border-b py-1.5 pr-1.5 pl-[18px]">
-            {showPlanToggle && (
-              <button
-                type="button"
-                data-testid="plan-task-toggle"
-                aria-label="Plan this task"
-                aria-pressed={planDraft}
-                title={planDraft ? "Creates a plan draft" : "Plan this task first"}
-                className={cn(
-                  "min-h-6 shrink-0 rounded-md border px-1.5 font-mono text-[10px] leading-4 tracking-tight transition-colors",
-                  planDraft
-                    ? "border-foreground bg-foreground text-background"
-                    : "border-border bg-surface text-muted-foreground hover:text-foreground",
-                )}
-                onPointerDown={(event) => {
-                  // Keep the composer focused so a phone's keyboard stays open.
-                  event.preventDefault();
-                }}
-                onClick={togglePlanDraft}
-              >
-                Plan this task
-              </button>
-            )}
             <div
               data-testid="working-status"
               data-open={statusRunning ? "true" : "false"}
@@ -2392,7 +2415,9 @@ export function ChatView({
               projects={projects}
               error={dockToTask ? taskDock.error : composerError}
               onDismissError={dockToTask ? taskDock.dismissError : () => setComposerError(null)}
-              planDraft={showPlanToggle ? planDraft : false}
+              planToggle={
+                showPlanToggle ? { pressed: planDraft, onToggle: togglePlanDraft } : undefined
+              }
               clearDraft={draftClear}
               textareaRef={composerRef}
               inputTestId={wantTaskDock ? "task-agent-input" : undefined}
