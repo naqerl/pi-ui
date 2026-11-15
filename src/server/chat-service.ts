@@ -1180,6 +1180,9 @@ export class ChatService {
       ascends(entries)
     ) {
       if (entries.length === cache.count) {
+        // The same view read again after the reuse window: keep the reference so the next
+        // poll takes the identity shortcut instead of walking the ids again.
+        cache.entries = entries;
         cache.builder.refreshDiagrams();
         return cache.builder.build();
       }
@@ -1187,6 +1190,7 @@ export class ChatService {
         const entry = entries[index];
         if (entry !== undefined) cache.builder.append(entry);
       }
+      cache.entries = entries;
       cache.count = entries.length;
       cache.tail = entries[entries.length - 1]?.id;
       // A replace or edit raises a drawing's revision without adding an entry.
