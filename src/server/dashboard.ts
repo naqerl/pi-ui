@@ -18,6 +18,7 @@ import {
   HISTORY_POINTS,
   type LayoutSection,
   type LayoutSlot,
+  type LoopLagStats,
   MAX_POLL_WIDGETS,
   MAX_SECTIONS,
   MAX_WIDGETS,
@@ -66,6 +67,8 @@ export interface DashboardHost {
     taskReopens?: TaskReopenStats;
     taskDurations?: TaskDurationStats;
   };
+  /** The current event-loop delay window. Optional so older test hosts stay valid. */
+  loop?(): LoopLagStats;
   notify(text: string): void;
   broadcast(state: DashboardState): void;
 }
@@ -808,6 +811,7 @@ export class DashboardManager {
         jobs: [],
         session: { conversationId: "", model: null, run: "idle" },
       },
+      loop: this.host?.loop?.() ?? { p50: 0, p95: 0, max: 0, lastBlockedMs: 0 },
       polling: this.polling(),
       ...(this.config.defaultVersion === undefined
         ? {}

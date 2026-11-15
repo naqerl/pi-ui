@@ -328,6 +328,13 @@ traffic, volumes, backups and primary IPs.
 `e2e/dashboard.e2e.ts` runs these widgets against a fake ExampleCloud endpoint in
 `e2e/fake-model.mjs`, never the real API.
 
+## Event-loop lag
+
+`GET /api/dashboard` and the `dashboard` stream frame carry `loop: {p50, p95, max,
+lastBlockedMs}`. A 100 ms timer compares its scheduled time with the time it actually ran and
+keeps the samples from the last 60 seconds. The values are milliseconds; `lastBlockedMs` is the
+most recent sample. This is the server's own event-loop health, not a model or network latency.
+
 ## Tests
 
 - `e2e/dashboard.test.ts` (in `npm test`): paths, rendering of each kind,

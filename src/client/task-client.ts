@@ -1,4 +1,4 @@
-import type { TaskLedger, TaskStatus } from "../shared/types";
+import type { Task, TaskLedger, TaskStatus } from "../shared/types";
 
 const FALLBACK_ERROR = "Could not update tasks";
 
@@ -28,6 +28,16 @@ async function requestTask(url: string, init: RequestInit): Promise<TaskOutcome>
     return { ok: false, error: failureText(await response.text()) };
   } catch {
     return { ok: false, error: FALLBACK_ERROR };
+  }
+}
+
+/** One task with the long fields the lean state list omits. */
+export async function getTask(id: string): Promise<Task | null> {
+  try {
+    const response = await fetch(`/api/tasks/${encodeURIComponent(id)}`, { cache: "no-store" });
+    return response.ok ? ((await response.json()) as Task) : null;
+  } catch {
+    return null;
   }
 }
 

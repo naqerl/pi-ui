@@ -33,6 +33,7 @@ export function App() {
       tasks={chat.tasks}
       planning={chat.planning}
       taskActivity={chat.taskActivity}
+      loadTask={chat.loadTask}
       send={chat.send}
       stop={chat.stop}
       unsendSteer={chat.unsendSteer}

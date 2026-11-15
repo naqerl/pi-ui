@@ -205,7 +205,7 @@ export function useTaskChat(taskId: string, closed: boolean) {
       }),
     [taskId],
   );
-  const chat = useChat({ transport });
+  const chat = useChat({ transport, taskActivity: false });
   const { refresh, running, dismissRunError } = chat;
 
   // The plan agent can ask a question mid-run without a transcript row, so poll while it works.

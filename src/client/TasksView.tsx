@@ -84,6 +84,8 @@ interface TasksViewProps {
   /** Task ids whose plan agent currently has a live run. */
   planning?: readonly string[];
   activity?: TaskActivity;
+  /** Reads one task's long fields if the lean state list omitted them. */
+  onLoadTask?: (id: string) => boolean | Promise<boolean>;
   ready: boolean;
   footerClearance: number;
   onLedger: (ledger: TaskLedger) => void;
@@ -323,6 +325,7 @@ function TasksViewImpl({
   tasks: incomingTasks,
   planning: planningIds = [],
   activity,
+  onLoadTask,
   ready,
   onLedger,
   selection = null,
@@ -353,6 +356,11 @@ function TasksViewImpl({
   const returnTo = useRef<{ id: string | null; offset: number; top: number } | null>(null);
   const openTaskIdRef = useRef(openTaskId);
   openTaskIdRef.current = openTaskId;
+  const onLoadTaskRef = useRef(onLoadTask);
+  onLoadTaskRef.current = onLoadTask;
+  const loadedBodyHash = useRef(new Map<string, string>());
+  const loadingBodyHash = useRef(new Map<string, string>());
+  const loadRetryTimer = useRef<number | undefined>(undefined);
   const now = new Date();
 
   const tasks = useMemo(
@@ -364,6 +372,44 @@ function TasksViewImpl({
       }),
     [serverTasks, optimisticTasks],
   );
+  // Opening a task from a card, a deep link or a notification goes through the same state
+  // change, so the lean row is filled on every path. A changed body hash refetches it.
+  useEffect(() => {
+    if (fixtureOn || openTaskId === null) return;
+    const open = tasks.find((task) => task.id === openTaskId);
+    if (open?.bodyOmitted !== true) return;
+    const hash = open.bodyHash ?? "";
+    if (loadedBodyHash.current.get(openTaskId) === hash) return;
+    if (loadingBodyHash.current.get(openTaskId) === hash) return;
+    let cancelled = false;
+    const run = async () => {
+      loadingBodyHash.current.set(openTaskId, hash);
+      let ok = false;
+      try {
+        ok = (await onLoadTaskRef.current?.(openTaskId)) !== false;
+      } catch {
+        ok = false;
+      }
+      if (loadingBodyHash.current.get(openTaskId) === hash) {
+        loadingBodyHash.current.delete(openTaskId);
+      }
+      if (cancelled) return;
+      if (ok) {
+        loadedBodyHash.current.set(openTaskId, hash);
+        return;
+      }
+      loadRetryTimer.current = window.setTimeout(() => void run(), 2_000);
+    };
+    void run();
+    return () => {
+      cancelled = true;
+      if (loadRetryTimer.current !== undefined) {
+        window.clearTimeout(loadRetryTimer.current);
+        loadRetryTimer.current = undefined;
+      }
+    };
+  }, [fixtureOn, openTaskId, tasks]);
+
   const planning = useMemo(() => {
     const live = new Set(planningIds);
     for (const task of tasks) {

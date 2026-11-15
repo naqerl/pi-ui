@@ -42,6 +42,7 @@ import type {
   StreamToolEnd,
   StreamToolStart,
   SubmitMessageResponse,
+  TaskActivity,
   TaskLedger,
   ToolActivity,
   TranscriptHistory,
@@ -57,6 +58,7 @@ import {
 import { setDashboard } from "./dashboard-store";
 import { frameBatch, reduceDraft, refreshBatch } from "./stream-batch";
 import { publishTaskChatEvent } from "./task-chat-events";
+import { getTask } from "./task-client";
 import { isThinking } from "./working-state";
 
 export type { TimelineItem } from "./chat-timeline";
@@ -148,6 +150,27 @@ const HISTORY_PAGE = 30;
 const RETRY_MIN_MS = 1_000;
 const RETRY_MAX_MS = 30_000;
 
+/**
+ * True only when a task card (or the open task detail) is actually on screen. The tasks page
+ * stays mounted behind the pager, so a DOM match alone would fetch activity on the chat page.
+ */
+function taskSurfaceVisible(): boolean {
+  if (typeof document === "undefined") return false;
+  for (const node of document.querySelectorAll<HTMLElement>(
+    '[data-task-card], [data-testid="task-detail"]',
+  )) {
+    if (node.closest("[inert]") !== null) continue;
+    const rect = node.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    if (rect.bottom < 0 || rect.right < 0) continue;
+    if (rect.top > window.innerHeight || rect.left > window.innerWidth) continue;
+    const style = window.getComputedStyle(node);
+    if (style.display === "none" || style.visibility === "hidden") continue;
+    return true;
+  }
+  return false;
+}
+
 /** The same transcript row can arrive as a provisional copy before its entry is placed. */
 function sameMessage(left: ChatMessage, right: ChatMessage): boolean {
   return left.id === right.id || (left.steerKey !== undefined && left.steerKey === right.steerKey);
@@ -171,8 +194,12 @@ function newerReset(next: string | undefined, current: string | null): boolean {
 
 /** A snapshot read, with the service worker's stale-cache marker kept out of the data. */
 export interface SnapshotRead {
-  snapshot: Snapshot;
+  snapshot: Snapshot | null;
   stale: boolean;
+  /** True for a 304: the held snapshot is still current and no body was sent. */
+  notModified?: boolean;
+  /** The ETag of the snapshot in this response, held by the hook that applied it. */
+  etag?: string;
 }
 
 export type TransportSendResult =
@@ -191,7 +218,7 @@ export interface QueueMutation {
  * steer revisions, optimistic rows, run status and the stream reducer.
  */
 export interface ChatTransport {
-  readSnapshot(from: number | null): Promise<SnapshotRead | null>;
+  readSnapshot(from: number | null, etag: string | null): Promise<SnapshotRead | null>;
   readHistory(before: number, limit: number): Promise<TranscriptHistory | null>;
   send(
     text: string,
@@ -210,14 +237,18 @@ export interface ChatTransport {
 }
 
 const MAIN_CHAT_TRANSPORT: ChatTransport = {
-  async readSnapshot(from) {
+  async readSnapshot(from, etag) {
     const response = await fetch(from === null ? "/api/state" : `/api/state?from=${from}`, {
       cache: "no-store",
+      headers: etag === null ? undefined : { "If-None-Match": etag },
     });
+    if (response.status === 304) return { snapshot: null, stale: false, notModified: true };
     if (!response.ok) return null;
+    const responseEtag = response.headers.get("etag");
     return {
       snapshot: (await response.json()) as Snapshot,
       stale: response.headers.get("x-pi-stale") === "1",
+      ...(responseEtag === null ? {} : { etag: responseEtag }),
     };
   },
   async readHistory(before, limit) {
@@ -322,10 +353,13 @@ export interface UseChatOptions {
   transport?: ChatTransport;
   /** Observe each snapshot; the plan chat reads its pending question set from here. */
   onSnapshot?: (snapshot: Snapshot) => void;
+  /** Fetch the task activity ledger separately when a task card is on screen. */
+  taskActivity?: boolean;
 }
 
 export function useChat(options: UseChatOptions = {}) {
   const fullHistory = options.fullHistory === true;
+  const trackTaskActivity = options.taskActivity !== false;
   const transport = options.transport ?? MAIN_CHAT_TRANSPORT;
   const onSnapshotRef = useRef(options.onSnapshot);
   onSnapshotRef.current = options.onSnapshot;
@@ -378,6 +412,7 @@ export function useChat(options: UseChatOptions = {}) {
   const windowFrom = useRef<number | null>(null);
   const hasEarlierRef = useRef(false);
   const conversationRef = useRef<string | null>(null);
+  const stateEtag = useRef<string | null>(null);
   const historyLoading = useRef(false);
   const refreshSequence = useRef(0);
   const draftRevision = useRef(0);
@@ -388,6 +423,9 @@ export function useChat(options: UseChatOptions = {}) {
   const initialLedger = { tasks: [], revision: -1 } satisfies TaskLedger;
   const taskLedgerRef = useRef<TaskLedger>(initialLedger);
   const [taskLedger, setTaskLedger] = useState<TaskLedger>(initialLedger);
+  const taskActivityEtag = useRef<string | null>(null);
+  const taskActivityLoading = useRef(false);
+  const refreshTaskActivityRef = useRef<() => Promise<void>>(async () => undefined);
   /** The current refresh function, so a retry timer never holds a stale closure. */
   const refreshRef = useRef<() => Promise<void>>(async () => undefined);
   const retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -398,13 +436,79 @@ export function useChat(options: UseChatOptions = {}) {
     taskRevision.current = ledger.revision;
     // A snapshot that omits run activity must not take a Working badge back down.
     const previous = taskLedgerRef.current;
+    const held = new Map(previous.tasks.map((task) => [task.id, task]));
+    const tasks = ledger.tasks.map((task) => {
+      if (task.bodyOmitted !== true) return task;
+      const before = held.get(task.id);
+      if (before === undefined) return task;
+      if (before.body === undefined && before.rationale === undefined) return task;
+      // A lean list row must not blank an already open detail; a full row still clears it.
+      // Keeping its marker/hash lets the open detail refresh after the text changes.
+      return {
+        ...task,
+        ...(before.body === undefined ? {} : { body: before.body }),
+        ...(before.rationale === undefined ? {} : { rationale: before.rationale }),
+      };
+    });
     const next: TaskLedger = {
       ...ledger,
+      tasks,
       planning: ledger.planning ?? previous.planning ?? [],
-      activity: carryWorkingTraces(previous.activity, ledger.activity, ledger.tasks),
+      activity: carryWorkingTraces(previous.activity, ledger.activity, tasks),
     };
     taskLedgerRef.current = next;
     setTaskLedger(next);
+  }, []);
+
+  const applyTaskActivity = useCallback((activity: TaskActivity) => {
+    const current = taskLedgerRef.current;
+    const next: TaskLedger = {
+      ...current,
+      activity: carryWorkingTraces(current.activity, activity, current.tasks),
+    };
+    taskLedgerRef.current = next;
+    setTaskLedger(next);
+  }, []);
+
+  /** A 304 keeps the cached data but not its server clock; refresh `now` for stale badges. */
+  const refreshTaskActivityClock = useCallback((now?: string) => {
+    const current = taskLedgerRef.current;
+    if (current.activity === undefined) return;
+    const valid = now !== undefined && Number.isFinite(Date.parse(now));
+    const next: TaskLedger = {
+      ...current,
+      activity: { ...current.activity, now: valid ? (now as string) : new Date().toISOString() },
+    };
+    taskLedgerRef.current = next;
+    setTaskLedger(next);
+  }, []);
+
+  /** Fill the long fields a lean state row omits; the card list never waits for this. */
+  const loadTask = useCallback(async (id: string): Promise<boolean> => {
+    const task = await getTask(id);
+    if (task === null) return false;
+    const current = taskLedgerRef.current;
+    const existing = current.tasks.find((item) => item.id === id);
+    if (existing === undefined) return false;
+    if (
+      (existing.body ?? "") === (task.body ?? "") &&
+      (existing.rationale ?? "") === (task.rationale ?? "")
+    ) {
+      return true;
+    }
+    const filled: TaskLedger["tasks"][number] = { ...existing };
+    if (task.body === undefined) delete filled.body;
+    else filled.body = task.body;
+    if (task.rationale === undefined) delete filled.rationale;
+    else filled.rationale = task.rationale;
+    delete filled.bodyOmitted;
+    const next: TaskLedger = {
+      ...current,
+      tasks: current.tasks.map((item) => (item.id === id ? filled : item)),
+    };
+    taskLedgerRef.current = next;
+    setTaskLedger(next);
+    return true;
   }, []);
 
   const applyDraft = useCallback(
@@ -452,17 +556,67 @@ export function useChat(options: UseChatOptions = {}) {
     return true;
   }, []);
 
+  /** The task activity ledger is its own request; 304 means the held value is still current. */
+  const refreshTaskActivity = useCallback(async () => {
+    if (!trackTaskActivity || !taskSurfaceVisible()) return;
+    if (taskActivityLoading.current) return;
+    taskActivityLoading.current = true;
+    try {
+      const response = await fetch("/api/tasks/activity", {
+        cache: "no-store",
+        headers:
+          taskActivityEtag.current === null
+            ? undefined
+            : { "If-None-Match": taskActivityEtag.current },
+      });
+      if (response.status === 304) {
+        refreshTaskActivityClock(response.headers.get("x-pi-activity-now") ?? undefined);
+        return;
+      }
+      if (!response.ok) return;
+      const etag = response.headers.get("etag");
+      if (etag !== null) taskActivityEtag.current = etag;
+      applyTaskActivity((await response.json()) as TaskActivity);
+    } catch {
+      // A later tick retries; the last activity value stays on screen meanwhile.
+    } finally {
+      taskActivityLoading.current = false;
+    }
+  }, [applyTaskActivity, refreshTaskActivityClock, trackTaskActivity]);
+  refreshTaskActivityRef.current = refreshTaskActivity;
+
   const readState = useCallback(async () => {
     const sequence = ++refreshSequence.current;
     try {
       const from = windowFrom.current ?? (fullHistory ? 0 : null);
-      const read = await transport.readSnapshot(from);
+      // An ETag belongs to this hook's held snapshot; a fresh mount has none to validate.
+      const read = await transport.readSnapshot(
+        from,
+        conversationRef.current === null ? null : stateEtag.current,
+      );
       if (read === null) {
         scheduleRetry();
         return;
       }
-      const { snapshot } = read;
       if (sequence !== refreshSequence.current) return;
+      if (read.notModified === true || read.snapshot === null) {
+        if (read.notModified !== true) {
+          scheduleRetry();
+          return;
+        }
+        if (conversationRef.current === null) {
+          // Never keep an ETag for a body this hook has not applied.
+          stateEtag.current = null;
+          scheduleRetry();
+          return;
+        }
+        // The held snapshot is still current; only the separately-polled activity may move.
+        queueMicrotask(() => void refreshTaskActivityRef.current());
+        clearRetry();
+        return;
+      }
+      const { snapshot } = read;
+      stateEtag.current = read.etag ?? null;
       onSnapshotRef.current?.(snapshot);
       const snapshotFrom = snapshot.from ?? 0;
       // The first snapshot may have been read before a send committed. Keep what
@@ -544,6 +698,7 @@ export function useChat(options: UseChatOptions = {}) {
       if (snapshot.draft !== undefined) applyDraft(snapshot.draft, true);
       if (snapshot.mcpEvents !== undefined) applyEvents(snapshot.mcpEvents);
       if (snapshot.tasks !== undefined) applyTasks(snapshot.tasks);
+      queueMicrotask(() => void refreshTaskActivityRef.current());
       setReady(true);
       // A service worker may answer a failed request from its cache; keep what it showed,
       // but ask the network again instead of treating the cached render as hydrated.
@@ -601,6 +756,16 @@ export function useChat(options: UseChatOptions = {}) {
       setLoadingEarlier(false);
     }
   }, [transport]);
+
+  useEffect(() => {
+    if (!trackTaskActivity) return;
+    const tick = () => {
+      if (document.visibilityState === "visible") void refreshTaskActivityRef.current();
+    };
+    const timer = window.setInterval(tick, 1_000);
+    tick();
+    return () => window.clearInterval(timer);
+  }, [trackTaskActivity]);
 
   useEffect(() => {
     void refreshState();
@@ -716,7 +881,9 @@ export function useChat(options: UseChatOptions = {}) {
 
     source.addEventListener("tasks", (event) => {
       const data = parseEvent<TaskLedger>(event as MessageEvent<string>);
-      if (data) applyTasks(data);
+      if (!data) return;
+      applyTasks(data);
+      void refreshTaskActivityRef.current();
     });
 
     source.addEventListener("task.chat", (event) => {
@@ -1108,6 +1275,7 @@ export function useChat(options: UseChatOptions = {}) {
     tasks: taskLedger.tasks,
     planning: taskLedger.planning ?? [],
     taskActivity: taskLedger.activity,
+    loadTask,
     ready,
     hasEarlier,
     loadingEarlier,

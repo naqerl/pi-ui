@@ -478,7 +478,9 @@ function TaskCodeChip({ task, openTask }: { task: Task; openTask: (id: string) =
   }, [position]);
 
   const label = `Open task ${plainInline(task.title)}`;
-  const line = lastBodyLine(task.body);
+  const line = lastBodyLine(
+    task.bodyOmitted === true ? task.bodyExcerpt : (task.body ?? task.bodyExcerpt),
+  );
 
   return (
     <>

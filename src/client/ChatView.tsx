@@ -97,6 +97,8 @@ interface ChatViewProps {
   planning?: readonly string[];
   /** Measured run activity per task, from the ledger view. */
   taskActivity?: TaskActivity;
+  /** Reads one task's long fields that the lean state list omits. */
+  loadTask?: (id: string) => boolean | Promise<boolean>;
   send: (text: string, mode?: MessageMode, attachments?: string[]) => Promise<SendOutcome>;
   stop: () => Promise<void>;
   /** Takes back the newest steer the run has not reached yet; absent or null when none can be. */
@@ -1695,6 +1697,7 @@ export function ChatView({
   tasks,
   planning = [],
   taskActivity,
+  loadTask,
   send,
   stop,
   unsendSteer,
@@ -2294,6 +2297,7 @@ export function ChatView({
                   tasks={shownTasks}
                   planning={planning}
                   activity={taskActivity}
+                  onLoadTask={loadTask}
                   ready={ready}
                   footerClearance={0}
                   onLedger={applyTasks}

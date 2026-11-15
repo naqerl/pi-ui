@@ -115,6 +115,8 @@ export class TaskActivityTracker {
   private lastMemoryWriteAt: string | null = null;
   private listeners = new Set<() => void>();
   private saveTimer: NodeJS.Timeout | undefined;
+  /** Bumped whenever the measured view may have changed, so HTTP views can cache by it. */
+  private revision = 0;
 
   constructor(
     private readonly path: string | undefined,
@@ -168,6 +170,16 @@ export class TaskActivityTracker {
   onChange(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /** A monotonic counter for caching a rendered view; time alone does not bump it. */
+  viewRevision(): number {
+    return this.revision;
+  }
+
+  /** True while a run is live, when measured time keeps advancing between events. */
+  isRunning(): boolean {
+    return this.runId !== null;
   }
 
   view(): TaskActivity {
@@ -407,6 +419,7 @@ export class TaskActivityTracker {
   }
 
   private changed(): void {
+    this.revision += 1;
     for (const listener of this.listeners) listener();
     if (this.path === undefined || this.saveTimer !== undefined) return;
     this.saveTimer = setTimeout(() => {

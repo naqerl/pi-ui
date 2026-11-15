@@ -44,6 +44,7 @@ import {
 import { steerDropReason, steerFromInboxItem } from "../shared/steers.js";
 import {
   type ChatMessage,
+  type ContextUsage,
   type McpEventsState,
   type McpStatus,
   type MessageMode,
@@ -640,6 +641,10 @@ export class ChatService {
   private markerTimer: ReturnType<typeof setTimeout> | undefined;
   private shuttingDown = false;
   private modelWindow: number | undefined;
+  /** The last full transcript build and the conversation revision it describes. */
+  private transcriptCache: { key: string; built: ReturnType<typeof buildTranscript> } | undefined;
+  /** Context usage shares the revision key, plus the model window that scales its percent. */
+  private contextCache: { key: string; context: ContextUsage } | undefined;
   /** First retry of the current episode; the budget is measured from here. */
   private retryStartedAt: number | undefined;
   /** How many retries this episode has already asked for. */
@@ -1118,11 +1123,39 @@ export class ChatService {
     await appendSessionResetMarker(this.conversation, resetAt);
   }
 
+  /** The committed entries' identity: count plus the newest id, which only moves on commit. */
+  private conversationRevision(entries: readonly EntryRecord[]): string {
+    let newest = 0;
+    for (const entry of entries) newest = Math.max(newest, entry.id);
+    return `${entries.length}:${newest}`;
+  }
+
+  /** A diagram's revision is not a conversation entry, so its publisher invalidates this. */
+  invalidateTranscriptCache(): void {
+    this.transcriptCache = undefined;
+  }
+
+  /** Building the transcript is the expensive part; reuse it until the conversation commits. */
+  private transcriptFor(entries: readonly EntryRecord[]): ReturnType<typeof buildTranscript> {
+    const key = this.conversationRevision(entries);
+    if (this.transcriptCache?.key === key) return this.transcriptCache.built;
+    const built = buildTranscript(entries, this.mediaRef, this.diagramRevision);
+    this.transcriptCache = { key, built };
+    return built;
+  }
+
+  private contextFor(entries: readonly EntryRecord[]): ContextUsage {
+    const key = `${this.conversationRevision(entries)}:${this.modelWindow ?? ""}`;
+    if (this.contextCache?.key === key) return this.contextCache.context;
+    const context = contextUsage(entries, this.modelWindow);
+    this.contextCache = { key, context };
+    return context;
+  }
+
   /** One page of older transcript, ending just below `request.before`. */
   async getHistory(request: WindowRequest): Promise<TranscriptHistory> {
     const context = await this.conversation.context(SESSION_CONTEXT);
-    const transcript = buildTranscript(context.entries, this.mediaRef, this.diagramRevision);
-    return windowTranscript(transcript, request);
+    return windowTranscript(this.transcriptFor(context.entries), request);
   }
 
   /** Usage, context and MCP status without building the transcript window. */
@@ -1132,7 +1165,7 @@ export class ChatService {
     return {
       conversationId: String(this.conversation.id),
       usage: summarizeUsage(usage),
-      context: contextUsage(context.entries, this.modelWindow),
+      context: this.contextFor(context.entries),
       mcp: this.mcpStatus(),
     };
   }
@@ -1152,7 +1185,7 @@ export class ChatService {
       this.resetAt =
         reset.resetAt ?? this.pendingResetAt ?? this.resetAt ?? new Date().toISOString();
     }
-    const built = buildTranscript(context.entries, this.mediaRef, this.diagramRevision);
+    const built = this.transcriptFor(context.entries);
     const transcript = windowTranscript(built, request.before === undefined ? request : {});
     return {
       conversationId: String(this.conversation.id),
@@ -1166,7 +1199,7 @@ export class ChatService {
       steers,
       queueRevision,
       usage: summarizeUsage(usage),
-      context: contextUsage(context.entries, this.modelWindow),
+      context: this.contextFor(context.entries),
       mcp: this.mcpStatus(),
       mcpEvents: this.mcpEventsState(),
       draft: {

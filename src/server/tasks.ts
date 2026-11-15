@@ -344,6 +344,12 @@ export class TaskStore {
     return { tasks: this.tasks.map(cloneTask), revision: this.revision };
   }
 
+  /** One task with its long fields, for a detail view opened from a lean list. */
+  get(id: string): Task | undefined {
+    const task = this.tasks.find((item) => item.id === id);
+    return task === undefined ? undefined : cloneTask(task);
+  }
+
   /**
    * Remember that a tool call was attributed to this task. Only open work is touched: a closed
    * task keeps its empty stamp, and a call that finishes after `task_done` must not revive it.
@@ -1023,7 +1029,7 @@ function normalizeBlockers(
 }
 
 /** Start of the current week, Monday 00:00 UTC, so stats do not depend on the browser. */
-function startOfWeek(now: number): number {
+export function startOfWeek(now: number): number {
   const date = new Date(now);
   date.setUTCHours(0, 0, 0, 0);
   date.setUTCDate(date.getUTCDate() - ((date.getUTCDay() + 6) % 7));

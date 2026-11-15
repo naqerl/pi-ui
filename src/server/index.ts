@@ -18,7 +18,7 @@ import {
   TASK_ATTACHMENTS_MAX,
   TASK_BODY_MAX_LENGTH,
 } from "../shared/tasks.js";
-import type { TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
+import type { TaskActivity, TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
 import {
   ChatService,
@@ -30,7 +30,9 @@ import { DashboardError, DashboardManager } from "./dashboard.js";
 import { DelegateManager } from "./delegates.js";
 import type { DiagramBridge } from "./diagram-tools.js";
 import { DiagramStore } from "./diagrams.js";
+import { etagForBody, matchesEtag, sendJsonWithEtag } from "./http-cache.js";
 import { JobError, JobManager, jobNotice } from "./jobs.js";
+import { LoopLagMonitor } from "./loop-lag.js";
 import { McpEventFeed } from "./mcp-events.js";
 import { McpIntake, McpOutbox } from "./mcp-outbox.js";
 import { acceptMcpStatusNotice } from "./mcp-status-intake.js";
@@ -64,7 +66,7 @@ import { StreamHub } from "./stream-hub.js";
 import { TaskActivityTracker } from "./task-activity.js";
 import { TaskAgentError, TaskAgentManager, type TaskAgentSession } from "./task-agent.js";
 import type { TaskBridge } from "./task-tools.js";
-import { TaskError, TaskStore, taskDurationStats, taskReopenStats } from "./tasks.js";
+import { startOfWeek, TaskError, TaskStore, taskDurationStats, taskReopenStats } from "./tasks.js";
 import { liveDataDirInTestError } from "./test-mode.js";
 import { injectTheme, resolveTheme, themeManifest, writeThemeSlug } from "./themes.js";
 import { windowRequestFromQuery } from "./transcript-window.js";
@@ -111,20 +113,146 @@ await taskActivity.load();
 taskActivity.observeLedger(taskStore.ledger().tasks);
 /** Filled once the task-agent manager exists; before that no plan run can be live. */
 let planningTaskIds = (): string[] => [];
-/** The ledger as clients see it: tasks plus what the runs measured and planned for them. */
-function taskView(ledger: TaskLedger = taskStore.ledger()): TaskLedger {
+
+const ACTIVITY_CACHE_MS = 30_000;
+let taskLedgerCache: { key: string; view: TaskLedger; body: string; etag: string } | undefined;
+let taskSummaryCache: { key: string; view: TaskLedger } | undefined;
+let taskActivityCache: { key: string; view: TaskActivity } | undefined;
+let taskViewCache: { key: string; view: TaskLedger; body: string; etag: string } | undefined;
+
+/**
+ * Activity data is stable between tracker events. Only a live run's measured time keeps moving,
+ * so only then does the identity also follow the clock; an idle ledger keeps its ETag.
+ */
+function taskActivityKey(): string {
+  const clock = taskActivity.isRunning() ? Math.floor(Date.now() / ACTIVITY_CACHE_MS) : "idle";
+  return `${taskActivity.viewRevision()}:${clock}`;
+}
+
+function taskActivityEtag(key: string): string {
+  // The body stamps `now` per response; a weak validator describes the persisted trace data.
+  return `W/${etagForBody(key)}`;
+}
+
+function currentTaskActivity(): { key: string; view: TaskActivity } {
+  const key = taskActivityKey();
+  if (taskActivityCache?.key === key) return taskActivityCache;
+  const view = taskActivity.view();
+  const entry = { key, view };
+  taskActivityCache = entry;
+  return entry;
+}
+
+/** Tasks, planning flags and reopen stats without the much larger activity ledger. */
+function taskLedgerView(ledger: TaskLedger = taskStore.ledger()): {
+  key: string;
+  view: TaskLedger;
+  body: string;
+  etag: string;
+} {
   const planning = planningTaskIds();
+  // Reopen "this week" uses the same Monday boundary as taskReopenStats itself.
+  const now = Date.now();
+  const weekStart = startOfWeek(now);
+  const key = `${ledger.revision}:${planning.join(",")}:${weekStart}`;
+  if (taskLedgerCache?.key === key) return taskLedgerCache;
   const live = new Set(planning);
-  return {
+  const view: TaskLedger = {
     ...ledger,
     planning,
     tasks: ledger.tasks.map((task) => ({
       ...task,
       planning: live.has(task.id) && (isActiveStatus(task.status) || task.status === "planning"),
     })),
-    activity: taskActivity.view(),
-    reopenStats: taskReopenStats(ledger.tasks),
+    reopenStats: taskReopenStats(ledger.tasks, now),
   };
+  const body = JSON.stringify(view);
+  const entry = { key, view, body, etag: etagForBody(body) };
+  taskLedgerCache = entry;
+  return entry;
+}
+
+function taskViewWithoutActivity(ledger: TaskLedger = taskStore.ledger()): TaskLedger {
+  return taskLedgerView(ledger).view;
+}
+
+/** A cheap fingerprint of the omitted text, so an open detail can see that it changed. */
+function bodyFingerprint(
+  body: string | undefined,
+  rationale: string | undefined,
+): string | undefined {
+  if (body === undefined && rationale === undefined) return undefined;
+  const text = `${body ?? ""}\u0000${rationale ?? ""}`;
+  let hash = 2_166_136_261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function bodyExcerpt(body: string | undefined): string | undefined {
+  if (body === undefined) return undefined;
+  const lines = body.split(/\r?\n/);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]?.trim() ?? "";
+    if (line.length > 0) return line.slice(0, 56);
+  }
+  return undefined;
+}
+
+/** Long markdown is detail, not list data; the detail endpoint fills it on open. */
+function summaryTask(task: TaskLedger["tasks"][number]): TaskLedger["tasks"][number] {
+  const { body, rationale, ...rest } = task;
+  const hash = bodyFingerprint(body, rationale);
+  const excerpt = bodyExcerpt(body);
+  return {
+    ...rest,
+    ...(hash === undefined ? {} : { bodyOmitted: true, bodyHash: hash }),
+    ...(excerpt === undefined ? {} : { bodyExcerpt: excerpt }),
+  };
+}
+
+/**
+ * The state stream carries every row plus its timing, but not the long bodies readers only need
+ * after opening one task. `/api/tasks` keeps the full ledger and `/api/tasks/:id` fills a detail.
+ */
+function taskSummaryView(ledger: TaskLedger = taskStore.ledger()): TaskLedger {
+  const full = taskLedgerView(ledger);
+  if (taskSummaryCache?.key === full.key) return taskSummaryCache.view;
+  const view: TaskLedger = { ...full.view, tasks: full.view.tasks.map(summaryTask) };
+  taskSummaryCache = { key: full.key, view };
+  return view;
+}
+
+/** The ledger as clients see it: tasks plus what the runs measured and planned for them. */
+function taskView(ledger: TaskLedger = taskStore.ledger()): TaskLedger {
+  const base = taskLedgerView(ledger);
+  const activity = currentTaskActivity();
+  const key = `${base.key}|${activity.key}`;
+  if (taskViewCache?.key === key) return taskViewCache.view;
+  const view: TaskLedger = { ...base.view, activity: activity.view };
+  const body = JSON.stringify(view);
+  const entry = { key, view, body, etag: etagForBody(body) };
+  taskViewCache = entry;
+  return entry.view;
+}
+
+function taskViewEntry(ledger: TaskLedger = taskStore.ledger()): {
+  view: TaskLedger;
+  body: string;
+  etag: string;
+} {
+  taskView(ledger);
+  return taskViewCache as { view: TaskLedger; body: string; etag: string };
+}
+
+function wantsTaskActivity(query: Record<string, string | undefined>): boolean {
+  return query.activity === "1" || query.activity === "true";
+}
+
+function wantsJobs(query: Record<string, string | undefined>): boolean {
+  return query.jobs === "1" || query.jobs === "true";
 }
 await diagrams.load();
 const taskBridge: TaskBridge = {
@@ -264,7 +392,7 @@ const e2eMemoryHook = process.env.PI_E2E_DATA_DIR !== undefined;
 const hub = new StreamHub();
 taskBridge.publish = (ledger) => {
   taskActivity.observeLedger(ledger.tasks);
-  hub.broadcast({ event: "tasks", data: taskView(ledger) });
+  hub.broadcast({ event: "tasks", data: taskSummaryView(ledger) });
   dashboard.broadcast();
 };
 // Tool calls arrive in bursts; one refresh per half second keeps the tasks page live enough.
@@ -273,11 +401,13 @@ taskActivity.onChange(() => {
   if (activityTimer !== undefined) return;
   activityTimer = setTimeout(() => {
     activityTimer = undefined;
-    hub.broadcast({ event: "tasks", data: taskView() });
+    hub.broadcast({ event: "tasks", data: taskSummaryView() });
   }, 500);
   activityTimer.unref?.();
 });
+let diagramTranscriptInvalidator: (() => void) | undefined;
 diagramBridge.publish = (diagram) => {
+  diagramTranscriptInvalidator?.();
   hub.broadcast({ event: "diagram", data: { id: diagram.id, revision: diagram.revision } });
 };
 const chat = new ChatService(
@@ -310,6 +440,7 @@ const chat = new ChatService(
   dataDir,
   boot.repairDurableState,
 );
+diagramTranscriptInvalidator = () => chat.invalidateTranscriptCache();
 operatorNotices.current = (record) => chat.recordOperatorNotice(record);
 taskNotices.current = (record) => chat.recordTaskDecision(record);
 memoryWrites.current = (record) =>
@@ -409,13 +540,13 @@ const taskAgents = new TaskAgentManager({
     hub.broadcast({ event: "task.chat", data: { taskId, event: frame.event, data: frame.data } });
   },
   onRunState: () => {
-    hub.broadcast({ event: "tasks", data: taskView() });
+    hub.broadcast({ event: "tasks", data: taskSummaryView() });
   },
   baseInstructions: await taskAgentPrompt,
   memory: { store: memory, snapshot: memorySnapshot },
 });
 planningTaskIds = () => taskAgents.planningTaskIds();
-function builtinJobs() {
+function mapJobs() {
   return jobs.list().map((job) => ({
     id: job.id,
     name: job.name,
@@ -427,6 +558,20 @@ function builtinJobs() {
     cwd: job.cwd,
   }));
 }
+let jobsViewCache:
+  | { key: string; view: ReturnType<typeof mapJobs>; body: string; etag: string }
+  | undefined;
+function currentJobs(): { view: ReturnType<typeof mapJobs>; body: string; etag: string } {
+  const view = mapJobs();
+  const body = JSON.stringify(view);
+  if (jobsViewCache?.key === body) return jobsViewCache;
+  const entry = { key: body, view, body, etag: etagForBody(body) };
+  jobsViewCache = entry;
+  return entry;
+}
+function builtinJobs() {
+  return currentJobs().view;
+}
 function builtinSession() {
   const model = chat.currentModel();
   return {
@@ -435,6 +580,8 @@ function builtinSession() {
     run: chat.getRunStatus().state,
   };
 }
+const loopLag = new LoopLagMonitor();
+loopLag.start();
 dashboard.setHost({
   async builtinInputs() {
     const stats = await chat.statsSnapshot();
@@ -449,6 +596,7 @@ dashboard.setHost({
       taskDurations: taskDurationStats(taskStore.ledger().tasks),
     };
   },
+  loop: () => loopLag.stats(),
   builtinsLite: () => ({
     jobs: builtinJobs(),
     session: builtinSession(),
@@ -719,20 +867,27 @@ app.post("/api/run/error/dismiss", async (c) => {
 });
 
 app.get("/api/state", async (c) => {
-  const snapshot = await chat.getSnapshot(windowRequestFromQuery(c.req.query()));
+  const query = c.req.query();
+  const withActivity = wantsTaskActivity(query);
+  const withJobs = withActivity || wantsJobs(query);
+  const snapshot = await chat.getSnapshot(windowRequestFromQuery(query));
   const live = e2eMemoryHook ? await boot.conversation.agent(SESSION_CONTEXT) : undefined;
-  return c.json({
+  const body = JSON.stringify({
     ...snapshot,
-    tasks: taskView(),
+    tasks: withActivity ? taskView() : taskSummaryView(),
     delegates: delegates.list(),
-    jobs: builtinJobs(),
+    ...(withJobs ? { jobs: builtinJobs() } : {}),
     ...(live?.instructions === undefined ? {} : { instructions: live.instructions }),
   });
+  return sendJsonWithEtag(c, body, etagForBody(body));
 });
 
 app.get("/api/delegates", (c) => c.json(delegates.list()));
 
-app.get("/api/jobs", (c) => c.json(builtinJobs()));
+app.get("/api/jobs", (c) => {
+  const jobsView = currentJobs();
+  return sendJsonWithEtag(c, jobsView.body, jobsView.etag);
+});
 
 app.get("/api/jobs/:id", (c) => {
   const id = c.req.param("id");
@@ -804,7 +959,39 @@ app.get("/api/history", async (c) => {
   return c.json(await chat.getHistory(request));
 });
 
-app.get("/api/tasks", (c) => c.json(taskView()));
+app.get("/api/tasks/activity", (c) => {
+  const key = taskActivityKey();
+  const etag = taskActivityEtag(key);
+  c.header("ETag", etag);
+  c.header("Cache-Control", "no-store");
+  if (matchesEtag(c.req.header("If-None-Match"), etag)) {
+    c.header("X-Pi-Activity-Now", new Date().toISOString());
+    return c.body(null, 304);
+  }
+  const view = taskActivity.view();
+  c.header("X-Pi-Activity-Now", view.now);
+  return c.body(JSON.stringify(view), 200, { "Content-Type": "application/json; charset=utf-8" });
+});
+
+app.get("/api/tasks", (c) => {
+  if (wantsTaskActivity(c.req.query())) {
+    const full = taskViewEntry();
+    return sendJsonWithEtag(c, full.body, full.etag);
+  }
+  const plain = taskLedgerView();
+  return sendJsonWithEtag(c, plain.body, plain.etag);
+});
+
+app.get("/api/tasks/:id", (c) => {
+  const id = c.req.param("id");
+  const task = taskStore.get(id);
+  if (task === undefined) return c.notFound();
+  const planning = planningTaskIds();
+  return c.json({
+    ...task,
+    planning: planning.includes(id) && (isActiveStatus(task.status) || task.status === "planning"),
+  });
+});
 
 app.get("/api/dashboard", (c) => c.json(dashboard.state()));
 
@@ -873,7 +1060,7 @@ app.post("/api/dashboard/viewer", async (c) => {
 
 function publishTasks(ledger: TaskLedger) {
   taskBridge.publish(ledger);
-  return taskView(ledger);
+  return taskViewWithoutActivity(ledger);
 }
 
 function taskFailure(c: Context, error: unknown) {
@@ -989,7 +1176,7 @@ app.post("/api/tasks", async (c) => {
         // The draft still exists; its chat shows the failed run instead of losing the task.
         console.error(`[pi] could not start the plan run for ${created.id}`, error);
       }
-      return c.json(taskView(), 201);
+      return c.json(taskViewWithoutActivity(), 201);
     }
     return c.json(
       publishTasks(
@@ -1533,7 +1720,7 @@ app.get("/api/stream", (c) => {
       }
       await client.send({ event: "liveness", data: { at: new Date().toISOString() } });
       await client.send({ event: "run.state", data: chat.getRunStatus() });
-      await client.send({ event: "tasks", data: taskView() });
+      await client.send({ event: "tasks", data: taskSummaryView() });
       await client.send({ event: "dashboard", data: dashboard.state() });
       await client.send({ event: "delegates", data: delegates.list() });
       await client.send({ event: "jobs", data: builtinJobs() });
@@ -1693,6 +1880,7 @@ let shuttingDown = false;
 async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
+  loopLag.stop();
   await mcpIntake.close();
   await mcpOutbox.close();
   chat.beginShutdown();

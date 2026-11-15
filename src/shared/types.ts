@@ -468,6 +468,12 @@ export interface Task {
   rationale?: string;
   /** Free markdown shown under the title. Not the proposer's rationale. */
   body?: string;
+  /** True on a lean list view: long detail fields were omitted and `/api/tasks/:id` has them. */
+  bodyOmitted?: boolean;
+  /** Fingerprint of the omitted body/rationale, so an open detail can refresh after an edit. */
+  bodyHash?: string;
+  /** The last non-empty body line, kept in the lean row for link previews. */
+  bodyExcerpt?: string;
   /** Media ids currently attached to the task. */
   attachments?: string[];
   /** Short project name such as `pi-ui`. Absent means no project. */

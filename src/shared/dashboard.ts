@@ -242,6 +242,15 @@ export interface BuiltinSession {
   run: string;
 }
 
+/** Event-loop delay over the last minute, in milliseconds. */
+export interface LoopLagStats {
+  p50: number;
+  p95: number;
+  max: number;
+  /** The most recent sample, so the current stall is visible even if p95 is healthy. */
+  lastBlockedMs: number;
+}
+
 /** The `dashboard` stream frame and `GET /api/dashboard`. Poll scripts are not sent. */
 export interface DashboardState {
   widgets: Widget[];
@@ -253,6 +262,8 @@ export interface DashboardState {
     taskReopens?: TaskReopenStats;
     taskDurations?: TaskDurationStats;
   };
+  /** Measured by the server's 100 ms timer; this is what "slow" means in numbers. */
+  loop: LoopLagStats;
   /** True while some client has the dashboard open, so polls run. */
   polling: boolean;
   /** Present when a newer default board is available; offer reset. */

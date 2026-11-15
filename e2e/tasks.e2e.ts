@@ -758,4 +758,223 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
       await deleteReopenTasks(browser, [title]);
     }
   });
+  test("repeats an unchanged task poll as a bodyless 304 and serves activity separately", async ({
+    app,
+    browser,
+  }) => {
+    await app.open("/?page=tasks");
+    const result = await browser.evaluate(async () => {
+      const first = await fetch("/api/tasks", { cache: "no-store" });
+      const etag = first.headers.get("etag") ?? "";
+      const firstBody = await first.text();
+      const second = await fetch("/api/tasks", {
+        cache: "no-store",
+        headers: etag === "" ? {} : { "If-None-Match": etag },
+      });
+      const secondBody = await second.text();
+
+      const plain = JSON.parse(firstBody) as { activity?: unknown };
+      const full = (await (await fetch("/api/tasks?activity=1", { cache: "no-store" })).json()) as {
+        activity?: unknown;
+      };
+
+      const activity = await fetch("/api/tasks/activity", { cache: "no-store" });
+      const activityEtag = activity.headers.get("etag") ?? "";
+      const activityBody = await activity.text();
+      // An idle activity view must not move its ETag with the clock.
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
+      const activityAgain = await fetch("/api/tasks/activity", {
+        cache: "no-store",
+        headers: activityEtag === "" ? {} : { "If-None-Match": activityEtag },
+      });
+      const activityAgainBody = await activityAgain.text();
+      const activityNow = activityAgain.headers.get("x-pi-activity-now");
+
+      const stateFirst = await fetch("/api/state?activity=0", { cache: "no-store" });
+      const stateFirstBody = await stateFirst.text();
+      const stateEtag = stateFirst.headers.get("etag") ?? "";
+      const stateSecond = await fetch("/api/state?activity=0", { cache: "no-store" });
+      const stateSecondBody = await stateSecond.text();
+      const stateAgain = await fetch("/api/state?activity=0", {
+        cache: "no-store",
+        headers: stateEtag === "" ? {} : { "If-None-Match": stateEtag },
+      });
+      const stateAgainBody = await stateAgain.text();
+
+      return {
+        secondStatus: second.status,
+        secondBody,
+        plainHasActivity: Object.hasOwn(plain, "activity"),
+        fullHasActivity: Object.hasOwn(full, "activity"),
+        activityBody,
+        activityAgainStatus: activityAgain.status,
+        activityAgainBody,
+        activityNow,
+        stateHasActivity: Object.hasOwn(JSON.parse(stateFirstBody) as object, "tasks")
+          ? Object.hasOwn((JSON.parse(stateFirstBody) as { tasks: object }).tasks, "activity")
+          : true,
+        stateSame: stateFirstBody === stateSecondBody,
+        stateAgainStatus: stateAgain.status,
+        stateAgainBody,
+      };
+    });
+
+    expect(result.secondStatus).toBe(304);
+    expect(result.secondBody).toBe("");
+    expect(result.plainHasActivity).toBe(false);
+    expect(result.fullHasActivity).toBe(true);
+    expect(result.activityBody.length).toBeGreaterThan(0);
+    expect(result.activityAgainStatus).toBe(304);
+    expect(result.activityAgainBody).toBe("");
+    expect(result.activityNow).not.toBeNull();
+    expect(result.stateHasActivity).toBe(false);
+    expect(result.stateSame).toBe(true);
+    expect(result.stateAgainStatus).toBe(304);
+    expect(result.stateAgainBody).toBe("");
+  });
+  test("keeps long task bodies out of state and serves them from the detail route", async ({
+    app,
+    browser,
+  }) => {
+    await app.open("/?page=tasks");
+    const result = await browser.evaluate(async () => {
+      const title = `Lean state ${Date.now()}`;
+      const body = `# Detail\n\n${"Long body text. ".repeat(50).trimEnd()}`;
+      const createdResponse = await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title, body }),
+      });
+      const created = (await createdResponse.json()) as {
+        tasks: Array<{ id: string; title: string }>;
+      };
+      const id = created.tasks.find((task) => task.title === title)?.id;
+      if (id === undefined) throw new Error("created task is missing");
+      try {
+        const state = (await (
+          await fetch("/api/state?activity=0", { cache: "no-store" })
+        ).json()) as {
+          tasks: { tasks: Array<{ id: string; body?: string; bodyOmitted?: boolean }> };
+        };
+        const row = state.tasks.tasks.find((task) => task.id === id);
+        const full = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
+          tasks: Array<{ id: string; body?: string }>;
+        };
+        const detail = (await (
+          await fetch(`/api/tasks/${encodeURIComponent(id)}`, { cache: "no-store" })
+        ).json()) as { body?: string };
+        return {
+          stateHasBody: row !== undefined && Object.hasOwn(row, "body"),
+          stateMarked: row?.bodyOmitted === true,
+          fullHasBody: full.tasks.find((task) => task.id === id)?.body === body,
+          detailHasBody: detail.body === body,
+        };
+      } finally {
+        await fetch(`/api/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
+      }
+    });
+
+    expect(result.stateHasBody).toBe(false);
+    expect(result.stateMarked).toBe(true);
+    expect(result.fullHasBody).toBe(true);
+    expect(result.detailHasBody).toBe(true);
+  });
+  test("loads a deep-linked lean task's body after the list arrives", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    await app.open("/?page=tasks");
+    const created = await browser.evaluate(async () => {
+      const title = `Deep linked plan ${Date.now()}`;
+      const response = await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title, body: "Deep linked plan body" }),
+      });
+      const ledger = (await response.json()) as {
+        tasks: Array<{ id: string; title: string }>;
+      };
+      return { id: ledger.tasks.find((task) => task.title === title)?.id ?? "", title };
+    });
+    expect(created.id).not.toBe("");
+    try {
+      await app.open(`/#/tasks/${encodeURIComponent(created.id)}?tab=plan`);
+      await expect(screen.getByTestId("task-detail")).toBeVisible();
+      await expect(screen.getByTestId("task-body")).toContainText("Deep linked plan body");
+    } finally {
+      await browser.evaluate(async (id) => {
+        await fetch(`/api/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
+        return null;
+      }, created.id);
+    }
+  });
+
+  test("refetches an open lean detail when another client edits its body", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    await app.open("/?page=tasks");
+    const created = await browser.evaluate(async () => {
+      const title = `Body edit ${Date.now()}`;
+      const response = await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title, body: "OLD PLAN BODY" }),
+      });
+      const ledger = (await response.json()) as {
+        tasks: Array<{ id: string; title: string }>;
+      };
+      return { id: ledger.tasks.find((task) => task.title === title)?.id ?? "", title };
+    });
+    expect(created.id).not.toBe("");
+    try {
+      await app.open("/?page=tasks");
+      await screen.getByRole("button", { name: `Open ${created.title}` }).tap();
+      await expect(screen.getByTestId("task-body")).toContainText("OLD PLAN BODY");
+      await browser.evaluate(async (id) => {
+        await fetch(`/api/tasks/${encodeURIComponent(id)}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ body: "NEW PLAN BODY" }),
+        });
+        return null;
+      }, created.id);
+      await expect(screen.getByTestId("task-body")).toContainText("NEW PLAN BODY", {
+        timeout: 10_000,
+      });
+    } finally {
+      await browser.evaluate(async (id) => {
+        await fetch(`/api/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
+        return null;
+      }, created.id);
+    }
+  });
+  test("the main client validates a held state snapshot with If-None-Match", async ({
+    app,
+    browser,
+  }) => {
+    await app.open("/?page=tasks");
+    let conditional = false;
+    await browser.route("**/api/state**", async (route) => {
+      const sent = Object.keys(route.request.headers).some(
+        (key) => key.toLowerCase() === "if-none-match",
+      );
+      if (sent) conditional = true;
+      await route.continue();
+    });
+    try {
+      await browser.evaluate(async () => {
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 400));
+          window.dispatchEvent(new Event("focus"));
+        }
+        return null;
+      });
+      await expect.poll(() => conditional, { timeout: 10_000 }).toBe(true);
+    } finally {
+      await browser.unroute("**/api/state**").catch(() => undefined);
+    }
+  });
 });
