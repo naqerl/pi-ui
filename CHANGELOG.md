@@ -1,3 +1,9 @@
+## 1.6.188
+
+### Changed
+
+- A draft's plan body ends with its own decision controls, so approving or dismissing happens where the plan is read rather than back at the top of the pane. The rest of the details pane is unchanged.
+
 ## 1.6.187
 
 ### Added
