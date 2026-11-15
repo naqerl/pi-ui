@@ -72,6 +72,25 @@ const snapshot = {
         completedAt: null,
         completion: null,
       },
+      {
+        id: "p2",
+        title: "Draft the cache cleanup",
+        status: "planning",
+        parentId: null,
+        blockedBy: [],
+        createdAt: at(3),
+        proposedAt: null,
+        body: [
+          "# Clean the cache",
+          "",
+          "The cache keeps stale entries for a whole day.",
+          "",
+          "- Drop entries older than a day.",
+          "- Keep the last successful run.",
+        ].join("\n"),
+        completedAt: null,
+        completion: null,
+      },
     ],
   },
 };
@@ -341,6 +360,89 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     expect(phone?.within).toBe(true);
     expect(phone?.headerBeforePlan).toBe(true);
     expect(phone?.detailBeforePlan).toBe(true);
+    expect(await horizontalOverflow(browser)).toEqual([]);
+  });
+
+  test("a draft's decision controls end its plan body without a card of their own", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    const title = "Draft the cache cleanup";
+    const readDecision = () =>
+      browser.evaluate(() => {
+        const controls = document.querySelector<HTMLElement>(
+          '[data-testid="task-decision-actions"]',
+        );
+        const body = document.querySelector<HTMLElement>('[data-testid="task-body"]');
+        const plan = document.querySelector<HTMLElement>('[data-testid="task-plan-card"]');
+        const detail = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
+        if (controls === null || body === null || plan === null || detail === null) return null;
+        const lastBlock = body.firstElementChild?.firstElementChild?.lastElementChild ?? null;
+        const style = getComputedStyle(controls);
+        let surface: HTMLElement | null = controls.parentElement;
+        while (surface !== null && surface !== detail) {
+          const background = getComputedStyle(surface).backgroundColor;
+          if (background !== "rgba(0, 0, 0, 0)" && background !== "transparent") break;
+          surface = surface.parentElement;
+        }
+        return {
+          groups: document.querySelectorAll('[data-testid="task-decision-actions"]').length,
+          insideBody: body.contains(controls),
+          insidePlan: plan.contains(controls),
+          belowLastBlock:
+            lastBlock === null
+              ? null
+              : controls.getBoundingClientRect().top >=
+                lastBlock.getBoundingClientRect().bottom - 0.5,
+          lastBlock: lastBlock?.tagName ?? null,
+          borderWidths: [
+            style.borderTopWidth,
+            style.borderRightWidth,
+            style.borderBottomWidth,
+            style.borderLeftWidth,
+          ],
+          background: style.backgroundColor,
+          boxShadow: style.boxShadow,
+          surface: surface?.getAttribute("data-testid") ?? null,
+        };
+      });
+
+    await openSnapshot(app, browser, snapshot, 390, 844);
+    await screen
+      .getByTestId("draft-p2")
+      .getByRole("button", { name: `Open draft ${title}` })
+      .tap();
+    await expect(screen.getByTestId("task-decision-actions")).toBeVisible();
+    const phone = await readDecision();
+    expect(phone).not.toBeNull();
+    expect(phone?.groups).toBe(1);
+    expect(phone?.insideBody).toBe(true);
+    expect(phone?.insidePlan).toBe(true);
+    expect(phone?.belowLastBlock).toBe(true);
+    expect(phone?.lastBlock).toBe("UL");
+    expect(phone?.borderWidths).toEqual(["0px", "0px", "0px", "0px"]);
+    expect(phone?.background).toBe("rgba(0, 0, 0, 0)");
+    expect(phone?.boxShadow).toBe("none");
+    expect(phone?.surface).toBe("task-plan-card");
+    await app.screenshot("task-draft-decision");
+
+    await openSnapshot(app, browser, snapshot, 1280, 800);
+    await screen
+      .getByTestId("draft-p2")
+      .getByRole("button", { name: `Open draft ${title}` })
+      .tap();
+    await expect(screen.getByTestId("task-decision-actions")).toBeVisible();
+    const wide = await readDecision();
+    expect(wide).not.toBeNull();
+    expect(wide?.groups).toBe(1);
+    expect(wide?.insideBody).toBe(true);
+    expect(wide?.insidePlan).toBe(true);
+    expect(wide?.belowLastBlock).toBe(true);
+    expect(wide?.borderWidths).toEqual(["0px", "0px", "0px", "0px"]);
+    expect(wide?.background).toBe("rgba(0, 0, 0, 0)");
+    expect(wide?.boxShadow).toBe("none");
+    expect(wide?.surface).toBe("task-plan-card");
     expect(await horizontalOverflow(browser)).toEqual([]);
   });
 
