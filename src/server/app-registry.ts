@@ -20,7 +20,9 @@ import { type McpRuntime, startMcpRuntime } from "./mcp-runtime.js";
 import type { SnapshotCache } from "./memory/snapshot.js";
 import type { MemoryStore } from "./memory/store.js";
 import { createMemoryTools, type MemoryWriteRecord } from "./memory/tools.js";
+import type { ModelCatalogReload } from "./models.js";
 import { createOperatorTools, type OperatorBridge } from "./operator-tools.js";
+import { createReloadTool } from "./reload-tools.js";
 import { attributeTools } from "./task-attribution.js";
 import { createTaskTools, type TaskBridge } from "./task-tools.js";
 
@@ -35,6 +37,7 @@ export interface AppRegistryBoot {
   readonly memoryTools: readonly string[];
   readonly diagramTools: readonly string[];
   readonly operatorTools: readonly string[];
+  readonly reloadTools: readonly string[];
 }
 
 export interface AppRegistryOptions {
@@ -57,6 +60,11 @@ export interface AppRegistryOptions {
   readonly diagrams?: DiagramBridge;
   /** Web push plus the chat chip for an explicit operator request. */
   readonly operator?: OperatorBridge;
+  /** Rebuild the chat session's own prompt or model catalog when `reload` is called. */
+  readonly reload?: {
+    readonly prompt?: () => Promise<{ readonly instructions: string; readonly changed: boolean }>;
+    readonly models?: () => Promise<ModelCatalogReload>;
+  };
 }
 
 /**
@@ -122,10 +130,61 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
   const mcp = await startMcpRuntime(
     options.dataDir === undefined ? {} : { dataDir: options.dataDir },
   );
-  if (mcp.toolNames.length > 0) {
-    mcp.install(registry);
-    registry.install(createToolSearchExtension());
-  }
+  // A reload can add servers after boot, so keep the MCP extension installed
+  // even when the catalog starts empty and tool_search ready to expose it.
+  mcp.install(registry);
+  registry.install(createToolSearchExtension());
+
+  const reloadTool = createReloadTool({
+    mcp: async () => {
+      const result = await mcp.reload();
+      return {
+        ok: result.ok,
+        details: {
+          added: result.added,
+          removed: result.removed,
+          changed: result.changed,
+          unchanged: result.unchanged,
+        },
+        errors: [...result.errors],
+      };
+    },
+    ...(options.reload?.prompt === undefined
+      ? {}
+      : {
+          prompt: async () => {
+            const result = await options.reload?.prompt?.();
+            if (result === undefined) {
+              return { ok: false, details: {}, errors: ["reload prompt is not available"] };
+            }
+            return {
+              ok: true,
+              details: { changed: result.changed, chars: result.instructions.length },
+            };
+          },
+        }),
+    ...(options.reload?.models === undefined
+      ? {}
+      : {
+          models: async () => {
+            const result = await options.reload?.models?.();
+            if (result === undefined) {
+              return { ok: false, details: {}, errors: ["reload models is not available"] };
+            }
+            return {
+              ok: result.errors.length === 0,
+              details: {
+                total: result.models.length,
+                added: result.added,
+                removed: result.removed,
+                models: result.models,
+              },
+              errors: [...result.errors],
+            };
+          },
+        }),
+  });
+  registry.install(defineExtension({ name: "pi-ui-reload-tools", tools: [reloadTool] }));
 
   const biliTools = await createBiliTools(options.bili);
   if (biliTools.length > 0) {
@@ -148,5 +207,6 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
     memoryTools: memoryTools.map((tool) => tool.name),
     diagramTools: diagramTools.map((tool) => tool.name),
     operatorTools: operatorTools.map((tool) => tool.name),
+    reloadTools: [reloadTool.name],
   };
 }

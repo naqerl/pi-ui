@@ -54,6 +54,34 @@ export function modelOption(model: Model<Api>): ModelOption {
   };
 }
 
+export interface ModelCatalogReload {
+  readonly models: readonly ModelOption[];
+  readonly added: readonly ModelOption[];
+  readonly removed: readonly ModelOption[];
+  readonly errors: readonly string[];
+}
+
+/**
+ * Re-read models.json and the provider catalogs on the live runtime, so every
+ * consumer of this catalog sees a newly added model without a restart.
+ */
+export async function reloadModelCatalog(runtime: ModelRuntime): Promise<ModelCatalogReload> {
+  const before = await listAvailableModels(runtime);
+  const result = await runtime.refresh({ allowNetwork: false });
+  const after = await listAvailableModels(runtime);
+  const beforeKeys = new Set(before.map((model) => `${model.provider}/${model.id}`));
+  const afterKeys = new Set(after.map((model) => `${model.provider}/${model.id}`));
+  return {
+    models: after,
+    added: after.filter((model) => !beforeKeys.has(`${model.provider}/${model.id}`)),
+    removed: before.filter((model) => !afterKeys.has(`${model.provider}/${model.id}`)),
+    errors: [...result.errors].map(
+      ([provider, error]) =>
+        `${provider}: ${error instanceof Error ? error.message : String(error)}`,
+    ),
+  };
+}
+
 /** Models with configured credentials. The snapshot is filled during catalog creation. */
 export async function listAvailableModels(runtime: ModelRuntime): Promise<ModelOption[]> {
   const available = await runtime.getAvailable();

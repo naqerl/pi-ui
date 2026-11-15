@@ -44,7 +44,7 @@ import {
 import { composeInstructions, SnapshotCache, SnapshotController } from "./memory/snapshot.js";
 import { MemoryStore } from "./memory/store.js";
 import type { MemoryWriteRecord } from "./memory/tools.js";
-import { createModelCatalog } from "./models.js";
+import { createModelCatalog, reloadModelCatalog } from "./models.js";
 import type { OperatorBridge } from "./operator-tools.js";
 import { buildPiSystemPrompt } from "./pi.js";
 import {
@@ -178,9 +178,7 @@ await memory.ensure();
 const memorySnapshot = new SnapshotCache();
 const memoryWrites: { current?: (record: MemoryWriteRecord) => void | Promise<void> } = {};
 const memoryBlock = await memorySnapshot.get(memory, "first_turn");
-const baseInstructions = `${await buildPiSystemPrompt(cwd, catalog.runtime)}
-
-Tasks are a shared todo ledger on the tasks page. You can list them with task_list, mark one done with task_done (with evidence a reviewer can check), reopen a done task with task_reopen when the operator says it is still wrong, edit a title, body or project with task_edit, and create a blocker for one with task_block. Every task needs human approval: write down work you think is worth doing with propose_task, and a human can approve it from the tasks page. A proposal is not a task and does not appear in task_list; use task_proposals to read the waiting proposals. A done blocker does not block. A task with an open subtask cannot be marked done. You cannot add a task that blocks nothing or delete one. Keep the task you are doing in the working state with task_working: while exactly one task is working, the tools you call are measured against its time and cost. If no task or several tasks are working, calls are not charged to any task. When the work is parked — queued, scheduled or waiting on another task — or when a working claim turns out to be wrong, release it with task_release and a reason; never use a release as a way to stop tracking real work. A released task is open again and no longer counts as working.
+const CHAT_EXTRA_INSTRUCTIONS = `Tasks are a shared todo ledger on the tasks page. You can list them with task_list, mark one done with task_done (with evidence a reviewer can check), reopen a done task with task_reopen when the operator says it is still wrong, edit a title, body or project with task_edit, and create a blocker for one with task_block. Every task needs human approval: write down work you think is worth doing with propose_task, and a human can approve it from the tasks page. A proposal is not a task and does not appear in task_list; use task_proposals to read the waiting proposals. A done blocker does not block. A task with an open subtask cannot be marked done. You cannot add a task that blocks nothing or delete one. Keep the task you are doing in the working state with task_working: while exactly one task is working, the tools you call are measured against its time and cost. If no task or several tasks are working, calls are not charged to any task. When the work is parked — queued, scheduled or waiting on another task — or when a working claim turns out to be wrong, release it with task_release and a reason; never use a release as a way to stop tracking real work. A released task is open again and no longer counts as working.
 
 Draw a diagram into the chat with draw_diagram (Mermaid source) and revise it later with replace_diagram and the id from the first result. If a diagram fails to parse, fix it in place with edit_diagram and the id it already has instead of redrawing the whole body. The drawing is part of your reply; do not repeat its source in your text.
 
@@ -189,7 +187,12 @@ Long-running shell commands (builds, test suites, servers) can run in the backgr
 For a self-contained investigation, review or implementation that should not use this conversation's context, hand it to a sub-agent with acp_delegate (roles: reviewer, researcher, worker, planner, oracle). It runs in a clean context and writes its answer to a result file; acp_delegate_wait blocks for the result, acp_delegate_cancel stops a run, and a finished run also sends one notice chip. Give a delegate every path, goal and constraint it needs because it cannot see this chat.
 
 The dashboard page (the Stats tab, left of chat) is yours to arrange for the user: dashboard_get shows it, dashboard_upsert adds or changes a widget (built-in pi-ui stats, a poll script that fetches JSON, or data you push with dashboard_push), dashboard_remove deletes one and dashboard_layout places them. Widgets only display data. Poll scripts read secrets from env; never put a token in a widget.`;
-const instructions = composeInstructions(baseInstructions, memoryBlock);
+async function buildChatBaseInstructions(): Promise<string> {
+  return `${await buildPiSystemPrompt(cwd, catalog.runtime)}\n\n${CHAT_EXTRA_INSTRUCTIONS}`;
+}
+let baseInstructions = await buildChatBaseInstructions();
+let instructions = composeInstructions(baseInstructions, memoryBlock);
+let memoryCheckpoints: SnapshotController | undefined;
 const taskAgentPrompt = buildPiSystemPrompt(cwd, catalog.runtime, ["read", "bash"]);
 const boot = await openDurableSession({
   cwd,
@@ -212,6 +215,20 @@ const boot = await openDurableSession({
   },
   diagrams: diagramBridge,
   operator: operatorBridge,
+  reload: {
+    prompt: async () => {
+      const base = await buildChatBaseInstructions();
+      memorySnapshot.invalidate();
+      const block = await memorySnapshot.get(memory, "reload");
+      const next = composeInstructions(base, block);
+      const changed = next !== instructions;
+      baseInstructions = base;
+      instructions = next;
+      memoryCheckpoints?.rebase(base, next);
+      return { instructions: next, changed };
+    },
+    models: () => reloadModelCatalog(catalog.runtime),
+  },
 });
 const activeModel =
   boot.model === undefined
@@ -233,7 +250,7 @@ if (activeModel !== undefined) {
     );
   }
 }
-const memoryCheckpoints = new SnapshotController(
+memoryCheckpoints = new SnapshotController(
   memory,
   baseInstructions,
   async (next) => {

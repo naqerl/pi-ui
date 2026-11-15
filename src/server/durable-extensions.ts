@@ -182,6 +182,17 @@ export class DurableExtensionShim implements DurableExtensionApi {
     this.extensionTools.set(tool.name, tool);
   }
 
+  /** Drop tools a reloaded extension no longer offers. */
+  removeTools(names: readonly string[]): void {
+    if (names.length === 0) return;
+    const removed = new Set(names);
+    for (let index = this.installed.length - 1; index >= 0; index -= 1) {
+      const tool = this.installed[index];
+      if (tool !== undefined && removed.has(tool.name)) this.installed.splice(index, 1);
+    }
+    for (const name of removed) this.extensionTools.delete(name);
+  }
+
   /**
    * Invoke an extension tool directly. pi-mcp-events registers `mcp_events`
    * this way, so boot-time restoration can subscribe with a stored cursor
@@ -249,7 +260,8 @@ export class DurableExtensionShim implements DurableExtensionApi {
   };
 
   install(registry: Registry<ToolRegistration>): void {
-    if (this.installed.length === 0) return;
+    // Install even when empty: a reload may have removed the last server, and
+    // the empty replacement is what drops its tools from the registry.
     registry.install(
       Object.freeze({
         name: "pi-ui-mcp-tools",

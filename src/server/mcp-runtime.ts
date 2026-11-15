@@ -197,6 +197,7 @@ export interface ServerFailure {
 }
 
 interface ProtocolConnection {
+  readonly server: string;
   readonly client: Client;
   readonly transport: Transport;
   readonly controller: AbortController;
@@ -451,17 +452,32 @@ function webAccessServer(agentDir: string): HostManagedMcpServer | undefined {
   }
 }
 
+/** Compare config entries by value, not by the order their keys were written in. */
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(",")}]`;
+  if (isRecord(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
 async function readServers(): Promise<{
   servers: Record<string, HostManagedMcpServer>;
   timeouts: Record<string, number>;
   configuredNames: readonly string[];
+  signatures: Record<string, string>;
   failures: ServerFailure[];
+  configError?: string;
 }> {
   const agentDir = resolve(
     process.env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent"),
   );
   const path = resolve(agentDir, "mcp.json");
   let parsed: unknown;
+  let configError: string | undefined;
   try {
     parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
   } catch (error) {
@@ -471,11 +487,27 @@ async function readServers(): Promise<{
         : undefined;
     if (code !== "ENOENT") {
       console.warn(`mcp: could not read ${path}`);
+      configError = "mcp.json could not be read or parsed; previous connections kept";
     }
     parsed = undefined;
   }
 
   const root = isRecord(parsed) ? parsed : undefined;
+  if (parsed !== undefined && root === undefined) {
+    configError = "mcp.json must contain an object; previous connections kept";
+  }
+  const invalidSection =
+    root === undefined
+      ? undefined
+      : Object.hasOwn(root, "mcpServers") && !isRecord(root.mcpServers)
+        ? "mcpServers"
+        : Object.hasOwn(root, "servers") && !isRecord(root.servers)
+          ? "servers"
+          : undefined;
+  if (invalidSection !== undefined) {
+    console.warn(`mcp: ${invalidSection} must be an object`);
+    configError = `mcp.json ${invalidSection} must be an object; previous connections kept`;
+  }
   const configured =
     (root === undefined ? undefined : isRecord(root.mcpServers) ? root.mcpServers : undefined) ??
     (root === undefined ? undefined : isRecord(root.servers) ? root.servers : undefined) ??
@@ -485,6 +517,7 @@ async function readServers(): Promise<{
 
   const servers: Record<string, HostManagedMcpServer> = {};
   const timeouts: Record<string, number> = {};
+  const signatures: Record<string, string> = {};
   const failures: ServerFailure[] = [];
   const names: string[] = [];
   if (configured !== undefined) {
@@ -493,6 +526,7 @@ async function readServers(): Promise<{
       const entry = serverEntry(raw);
       if (entry.disabled === true) continue;
       names.push(name);
+      signatures[name] = stableJson(raw);
       try {
         const definition = buildServerDefinition(name, raw);
         servers[name] = definition;
@@ -511,11 +545,19 @@ async function readServers(): Promise<{
     } else {
       servers.web = web;
       timeouts.web = REQUEST_TIMEOUT_MS;
+      signatures.web = `builtin:web:${agentDir}`;
       if (!names.includes("web")) names.push("web");
     }
   }
 
-  return { servers, timeouts, configuredNames: names, failures };
+  return {
+    servers,
+    timeouts,
+    configuredNames: names,
+    signatures,
+    failures,
+    ...(configError === undefined ? {} : { configError }),
+  };
 }
 
 function httpStatus(error: unknown): number | undefined {
@@ -896,8 +938,8 @@ class McpServerChannel {
 
   constructor(
     private readonly name: string,
-    private readonly definition: HostManagedMcpServer,
-    private readonly timeout: number,
+    private definition: HostManagedMcpServer,
+    private timeout: number,
     private readonly shim: DurableExtensionShim,
     private readonly hooks: McpChannelHooks,
   ) {}
@@ -907,8 +949,58 @@ class McpServerChannel {
     return [...this.tools.keys()];
   }
 
+  /** The tools currently registered with the shim, even if the adapter is down. */
+  get registeredToolNames(): readonly string[] {
+    return [...this.registered];
+  }
+
   initialize(reason?: StaleSessionReason, announce = true): Promise<boolean> {
     return this.startInitialize(reason, announce, false);
+  }
+
+  /**
+   * Replace this server's definition without dropping the old connection first.
+   * The replacement is fully connected before anything is committed; a failed
+   * reconnect closes only the candidate adapter and keeps the old tools live.
+   */
+  reload(definition: HostManagedMcpServer, timeout: number): Promise<boolean> {
+    return this.enqueue(async () => {
+      await this.initPromise?.catch(() => {});
+      if (this.closed) return false;
+      const adapter = this.createAdapter(definition, timeout);
+      let captured: Map<string, DurableExtensionTool>;
+      try {
+        await adapter.ready();
+        captured = new Map<string, DurableExtensionTool>();
+        adapter.extensionFactory(this.captureApi(captured));
+      } catch (error) {
+        await adapter.close().catch(() => {});
+        console.warn(
+          `mcp: could not reconnect server ${this.name}: ${transportFailureReason(error)}`,
+        );
+        return false;
+      }
+      if (this.closed) {
+        await adapter.close().catch(() => {});
+        return false;
+      }
+
+      const previous = this.adapter;
+      const previousNames = [...this.registered];
+      this.definition = definition;
+      this.timeout = timeout;
+      this.adapter = adapter;
+      this.tools = captured;
+      this.shim.removeTools(previousNames);
+      this.registered.clear();
+      for (const tool of captured.values()) this.registerPassthrough(tool);
+      this.hadFailure = false;
+      this.attempt = 0;
+      this.clearRetry();
+      this.hooks.onConnected(this.name);
+      await previous?.close().catch(() => {});
+      return true;
+    });
   }
 
   async call(
@@ -973,8 +1065,11 @@ class McpServerChannel {
     }
     await this.initPromise?.catch(() => {});
     const adapter = this.adapter;
+    const registered = [...this.registered];
     this.adapter = undefined;
     this.tools = new Map();
+    this.registered.clear();
+    this.shim.removeTools(registered);
     await adapter?.close().catch(() => {});
   }
 
@@ -1052,18 +1147,21 @@ class McpServerChannel {
     }
   }
 
-  private createAdapter(): HostManagedMcpAdapter {
-    const definition: HostManagedMcpServer = {
-      ...this.definition,
+  private createAdapter(
+    definition: HostManagedMcpServer = this.definition,
+    timeout: number = this.timeout,
+  ): HostManagedMcpAdapter {
+    const hostDefinition: HostManagedMcpServer = {
+      ...definition,
       createTransport: async (context) =>
-        watchToolListChanges(await this.definition.createTransport(context), () =>
+        watchToolListChanges(await definition.createTransport(context), () =>
           this.onToolListChanged(),
         ),
     };
     return hostManagedModule.createHostManagedMcpAdapter({
-      servers: { [this.name]: definition },
+      servers: { [this.name]: hostDefinition },
       onToolCall: (call) => this.onToolCall(call),
-      requestTimeoutMs: this.timeout,
+      requestTimeoutMs: timeout,
     });
   }
 
@@ -1268,14 +1366,27 @@ class McpServerChannel {
  * registry. There is no extension loader: the shim has exactly the surface
  * these two packages need.
  */
+export interface McpReloadResult {
+  readonly ok: boolean;
+  readonly added: number;
+  readonly removed: number;
+  readonly changed: number;
+  readonly unchanged: number;
+  readonly errors: readonly string[];
+}
+
 export class McpRuntime {
   readonly shim: DurableExtensionShim;
-  readonly serverNames: readonly string[];
   readonly failedServers: ServerFailure[];
   readonly protocol: McpProtocol;
   /** Process start time; no event from before it may become a chat notice. */
   readonly startedAt: number;
   private readonly servers: Record<string, HostManagedMcpServer>;
+  private currentNames: readonly string[];
+  private signatures: Record<string, string>;
+  private readonly timeouts: Record<string, number>;
+  private reloading: Promise<McpReloadResult> | undefined;
+  private registry: Parameters<DurableExtensionShim["install"]>[0] | undefined;
   private readonly channels = new Map<string, McpServerChannel>();
   private readonly protocolConnections = new Set<ProtocolConnection>();
   private readonly subscriptionStore: McpSubscriptionRegistry | undefined;
@@ -1299,7 +1410,9 @@ export class McpRuntime {
   private constructor(
     shim: DurableExtensionShim,
     servers: Record<string, HostManagedMcpServer>,
+    timeouts: Record<string, number>,
     serverNames: readonly string[],
+    signatures: Record<string, string>,
     failedServers: ServerFailure[],
     protocol: McpProtocol,
     subscriptionStore: McpSubscriptionRegistry | undefined,
@@ -1307,7 +1420,9 @@ export class McpRuntime {
   ) {
     this.shim = shim;
     this.servers = servers;
-    this.serverNames = serverNames;
+    this.timeouts = timeouts;
+    this.currentNames = serverNames;
+    this.signatures = signatures;
     this.failedServers = [...failedServers];
     this.protocol = protocol;
     this.subscriptionStore = subscriptionStore;
@@ -1321,7 +1436,7 @@ export class McpRuntime {
     const subscriptionStore =
       options.subscriptions ??
       (options.dataDir === undefined ? undefined : new McpSubscriptionRegistry(options.dataDir));
-    const { servers, timeouts, configuredNames, failures } = await readServers();
+    const { servers, timeouts, configuredNames, signatures, failures } = await readServers();
 
     shim.events.on(adapterModule.MCP_TOOL_APPROVAL_REQUEST_EVENT, (request: unknown) => {
       if (!isRecord(request) || typeof request.claim !== "function") return;
@@ -1381,7 +1496,9 @@ export class McpRuntime {
     const runtime = new McpRuntime(
       shim,
       servers,
+      timeouts,
       configuredNames,
+      signatures,
       failures,
       protocol,
       subscriptionStore,
@@ -1410,6 +1527,11 @@ export class McpRuntime {
 
     await runtime.restoreSubscriptions();
     return runtime;
+  }
+
+  /** The configured servers, including built-in web when its package is present. */
+  get serverNames(): readonly string[] {
+    return this.currentNames;
   }
 
   /** The shared durable registry, or undefined when this runtime was started without a data dir. */
@@ -1715,7 +1837,7 @@ export class McpRuntime {
   /** Names and availability only: never a URL, command, header, or token. */
   get status(): McpStatus {
     const failures = new Map(this.failedServers.map((failure) => [failure.name, failure]));
-    const servers: McpServerStatus[] = this.serverNames.map((name) => {
+    const servers: McpServerStatus[] = this.currentNames.map((name) => {
       const failure = failures.get(name);
       const channel = this.channels.get(name);
       return {
@@ -2086,7 +2208,174 @@ export class McpRuntime {
   }
 
   install(registry: Parameters<DurableExtensionShim["install"]>[0]): void {
+    this.registry = registry;
     this.shim.install(registry);
+  }
+
+  /**
+   * Re-read mcp.json and reconcile the live servers. A changed server is
+   * connected on a candidate adapter before its old one is touched, and a
+   * failed candidate leaves the old tools and connection in place. Direct
+   * callers are coalesced; the agent-facing tool reports a concurrent call as
+   * busy before it gets here.
+   */
+  reload(): Promise<McpReloadResult> {
+    if (this.reloading !== undefined) return this.reloading;
+    const run = this.runReload().finally(() => {
+      if (this.reloading === run) this.reloading = undefined;
+    });
+    this.reloading = run;
+    return run;
+  }
+
+  /** Close a server's event connections and poll session so a new definition is used lazily. */
+  private async closeServerProtocol(name: string): Promise<void> {
+    const poll = this.pollSessions.get(name);
+    if (poll !== undefined) {
+      poll.close();
+      this.pollSessions.delete(name);
+    }
+    const connections = [...this.protocolConnections].filter(
+      (connection) => connection.server === name,
+    );
+    await Promise.allSettled(
+      connections.map(async (connection) => {
+        if (!this.protocolConnections.delete(connection)) return;
+        connection.controller.abort();
+        await connection.client.close().catch(() => {});
+        await connection.transport.close().catch(() => {});
+      }),
+    );
+  }
+
+  private async runReload(): Promise<McpReloadResult> {
+    if (this.closed) {
+      return {
+        ok: false,
+        added: 0,
+        removed: 0,
+        changed: 0,
+        unchanged: 0,
+        errors: ["MCP runtime is closed"],
+      };
+    }
+
+    const next = await readServers();
+    if (next.configError !== undefined) {
+      return {
+        ok: false,
+        added: 0,
+        removed: 0,
+        changed: 0,
+        unchanged: 0,
+        errors: [next.configError],
+      };
+    }
+    const errors: string[] = [];
+    const current = new Set(this.currentNames);
+    const nextNames = new Set(next.configuredNames);
+    // A configured server without a channel never connected, so the next call
+    // must try it as an addition again rather than waiting for a change.
+    const added = next.configuredNames.filter(
+      (name) => !current.has(name) || !this.channels.has(name),
+    );
+    const removed = this.currentNames.filter((name) => !nextNames.has(name));
+    const changed = next.configuredNames.filter(
+      (name) =>
+        current.has(name) &&
+        this.channels.has(name) &&
+        (this.signatures[name] ?? "") !== (next.signatures[name] ?? ""),
+    );
+    const changedSet = new Set(changed);
+    const unchanged = next.configuredNames.filter(
+      (name) => current.has(name) && this.channels.has(name) && !changedSet.has(name),
+    );
+
+    for (const name of removed) {
+      const channel = this.channels.get(name);
+      const tools = channel === undefined ? [] : [...channel.registeredToolNames];
+      this.channels.delete(name);
+      delete this.servers[name];
+      delete this.timeouts[name];
+      delete this.signatures[name];
+      for (let index = this.failedServers.length - 1; index >= 0; index -= 1) {
+        if (this.failedServers[index]?.name === name) this.failedServers.splice(index, 1);
+      }
+      await this.closeServerProtocol(name);
+      if (channel !== undefined) await channel.close();
+      this.shim.removeTools(tools);
+    }
+
+    for (const name of added) {
+      const definition = next.servers[name];
+      const failure = next.failures.find((entry) => entry.name === name);
+      if (definition === undefined) {
+        errors.push(`server ${name} has an invalid configuration`);
+        if (failure !== undefined) this.markFailure(name, failure.auth, failure.reason);
+        continue;
+      }
+      const channel = new McpServerChannel(
+        name,
+        definition,
+        next.timeouts[name] ?? REQUEST_TIMEOUT_MS,
+        this.shim,
+        {
+          onFailure: (server, auth, reason) => this.markFailure(server, auth, reason),
+          onConnected: (server) => this.markConnected(server),
+          onNotice: (text, details) => this.notifyChannel(text, details),
+        },
+      );
+      if (!(await channel.initialize())) {
+        await channel.close();
+        errors.push(`server ${name} could not connect`);
+        this.markFailure(name, false, "server unreachable");
+        continue;
+      }
+      this.channels.set(name, channel);
+      this.servers[name] = definition;
+      this.timeouts[name] = next.timeouts[name] ?? REQUEST_TIMEOUT_MS;
+      this.signatures[name] = next.signatures[name] ?? "";
+      this.markConnected(name);
+    }
+
+    for (const name of changed) {
+      const definition = next.servers[name];
+      if (definition === undefined) {
+        errors.push(`server ${name} has an invalid configuration; previous connection kept`);
+        continue;
+      }
+      const channel = this.channels.get(name);
+      if (channel === undefined) {
+        errors.push(`server ${name} is not connected; previous connection kept`);
+        continue;
+      }
+      const timeout = next.timeouts[name] ?? REQUEST_TIMEOUT_MS;
+      if (!(await channel.reload(definition, timeout))) {
+        errors.push(`server ${name} could not reconnect; previous connection kept`);
+        continue;
+      }
+      this.servers[name] = definition;
+      this.timeouts[name] = timeout;
+      this.signatures[name] = next.signatures[name] ?? "";
+      this.markConnected(name);
+      await this.closeServerProtocol(name);
+    }
+
+    this.currentNames = [...next.configuredNames];
+    if (
+      this.registry !== undefined &&
+      (added.length > 0 || removed.length > 0 || changed.length > 0)
+    ) {
+      this.shim.install(this.registry);
+    }
+    return {
+      ok: errors.length === 0,
+      added: added.length,
+      removed: removed.length,
+      changed: changed.length,
+      unchanged: unchanged.length,
+      errors,
+    };
   }
 
   async protocolConnection(name: string): Promise<{
@@ -2134,7 +2423,7 @@ export class McpRuntime {
     setTimeout(() => {
       void this.restorePendingFor(name);
     }, 0).unref?.();
-    const entry = { client, transport, controller };
+    const entry = { server: name, client, transport, controller };
     this.protocolConnections.add(entry);
     const watched = watchStaleSession(transport, () => {
       if (!this.protocolConnections.delete(entry)) return;
