@@ -14,6 +14,7 @@ import {
   LiveDoc,
   type ModelRef,
   type Registry,
+  ResetEntry,
   ToolResultEntry,
   type UsageState,
   UserEntry,
@@ -213,6 +214,15 @@ const DurableRepairEntry = defineEntry<{
   droppedToolCalls: number;
   createdAt: string;
 }>("ui.durable-repair");
+
+/**
+ * The time a plain `pi.reset` was applied. durable's reset entry carries no data, so this
+ * companion write follows it and lets a snapshot reconcile a client that missed the frame.
+ */
+const SessionResetMarkerEntry = defineEntry<{ resetAt: string }>("ui.session-reset");
+
+export const SESSION_RESET_MARKER_ENTRY_KIND = SessionResetMarkerEntry.kind;
+export const SESSION_RESET_TEXT = "Session context reset";
 
 export interface DurableSessionOptions {
   readonly cwd: string;
@@ -758,6 +768,55 @@ export async function appendInterruptionNote(
   }
 }
 
+/** The newest durable reset and its companion timestamp, if this transcript has one. */
+export function latestSessionReset(
+  entries: readonly EntryRecord[],
+): { entry: EntryRecord; order: number; resetAt: string | undefined } | undefined {
+  const sorted = [...entries].sort((a, b) => a.id - b.id);
+  let reset: EntryRecord | undefined;
+  for (const entry of sorted) {
+    if (ResetEntry.is(entry)) reset = entry;
+  }
+  if (reset === undefined) return undefined;
+
+  let resetAt: string | undefined;
+  for (const entry of sorted) {
+    if (entry.id <= reset.id || entry.kind !== SESSION_RESET_MARKER_ENTRY_KIND) continue;
+    if (!isRecord(entry.data) || typeof entry.data.resetAt !== "string") continue;
+    if (!Number.isFinite(Date.parse(entry.data.resetAt))) continue;
+    resetAt = entry.data.resetAt;
+  }
+  if (resetAt === undefined) {
+    const message = asRecord(reset.model?.[0]);
+    const timestamp = message.timestamp;
+    const parsed =
+      typeof timestamp === "number"
+        ? timestamp
+        : typeof timestamp === "string"
+          ? Date.parse(timestamp)
+          : Number.NaN;
+    if (Number.isFinite(parsed)) resetAt = new Date(parsed).toISOString();
+  }
+  if (resetAt === undefined && isRecord(reset.data) && typeof reset.data.resetAt === "string") {
+    resetAt = reset.data.resetAt;
+  }
+  return { entry: reset, order: reset.id * 10_000, resetAt };
+}
+
+/** Record when a reset was applied, in an entry that never renders as a chat row. */
+export async function appendSessionResetMarker(
+  conversation: Conversation,
+  resetAt: string,
+): Promise<void> {
+  await conversation.submit(
+    {
+      type: "write",
+      entry: { kind: SESSION_RESET_MARKER_ENTRY_KIND, data: { resetAt } },
+    },
+    SESSION_CONTEXT,
+  );
+}
+
 /** Maps an image block in a user entry to its served media id. */
 export type MediaResolver = (data: string, mimeType: string) => MediaRef | undefined;
 
@@ -774,7 +833,14 @@ export function buildTranscript(
 } {
   const messages: ChatMessage[] = [];
   const activity: ActivityItem[] = [];
-  const sorted = [...entries].sort((a, b) => a.id - b.id);
+  const ordered = [...entries].sort((a, b) => a.id - b.id);
+  const reset = latestSessionReset(ordered);
+  // A reset starts the active context at itself. Older entries stay in storage, but the chat
+  // starts at the newest reset so its reset row is the only thing left above later rows.
+  const sorted =
+    reset === undefined
+      ? ordered
+      : ordered.slice(ordered.findIndex((entry) => entry.id === reset.entry.id));
   const toolCalls = new Map<string, { name: string; arguments: unknown }>();
   const pendingToolSpend = new Map<string, TokenSpend>();
   const partialEntryIds = new Set<number>();
@@ -830,6 +896,17 @@ export function buildTranscript(
 
   for (const entry of sorted) {
     const kind = entry.kind;
+    if (kind === ResetEntry.kind) {
+      messages.push({
+        id: entryMessageId(entry),
+        role: "system",
+        kind: "session-reset",
+        text: SESSION_RESET_TEXT,
+        timestamp: reset?.resetAt ?? new Date().toISOString(),
+        order: entry.id * 10_000,
+      });
+      continue;
+    }
     if (kind === DelegateNoticeEntry.kind) {
       if (!isRecord(entry.data) || typeof entry.data.text !== "string") continue;
       const notice = parseNotice(entry.data.text);

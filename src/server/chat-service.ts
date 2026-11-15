@@ -14,6 +14,7 @@ import {
   type InboxItem,
   type InputEntry,
   type LiveState,
+  ResetEntry,
   type SettledSubmissionRecord,
   type Submission,
   type SubmissionId,
@@ -58,6 +59,7 @@ import {
   type StreamMessageDone,
   type StreamNotice,
   type StreamRunState,
+  type StreamSessionReset,
   type StreamSteerDropped,
   type StreamTextDelta,
   type StreamToolEnd,
@@ -93,6 +95,7 @@ import {
   appendMcpNotice,
   appendMemoryWriteNotice,
   appendOperatorNotice,
+  appendSessionResetMarker,
   appendTaskDecisionNotice,
   assistantMessageFromEntry,
   buildTranscript,
@@ -101,6 +104,7 @@ import {
   type DiagramRevisionResolver,
   IDLE_NUDGE_ENTRY_KIND,
   JOB_NOTICE_ENTRY_KIND,
+  latestSessionReset,
   MCP_NOTICE_ENTRY_KIND,
   MEMORY_DELTA_ENTRY_KIND,
   recordDurableRepairNotice,
@@ -661,6 +665,11 @@ export class ChatService {
   private mergingMcpQueue = false;
   private readonly mergeMcpQueue = () => this.mergeQueuedMcpNotices();
   private selected: ModelOption | null;
+  /** The newest durable reset's row order and ISO time, carried into snapshots. */
+  private resetOrder: number | undefined;
+  private resetAt: string | undefined;
+  /** The time named when the reset was requested, until its durable entry is placed. */
+  private pendingResetAt: string | undefined;
   /** Read on every snapshot, so a server may recover after its boot probe fails. */
   private readonly mcpStatus: () => McpStatus;
 
@@ -1097,6 +1106,18 @@ export class ChatService {
     return choice;
   }
 
+  /**
+   * Queue a durable reset. While a run is live durable holds it for the post-tools boundary;
+   * that run ends with reason `reset` after its tools finish, instead of being torn down.
+   */
+  async resetSession(): Promise<void> {
+    const resetAt = new Date().toISOString();
+    this.pendingResetAt = resetAt;
+    await this.conversation.reset(undefined, SESSION_CONTEXT);
+    // The reset entry has no data, so a companion write keeps its time for later snapshots.
+    await appendSessionResetMarker(this.conversation, resetAt);
+  }
+
   /** One page of older transcript, ending just below `request.before`. */
   async getHistory(request: WindowRequest): Promise<TranscriptHistory> {
     const context = await this.conversation.context(SESSION_CONTEXT);
@@ -1125,6 +1146,12 @@ export class ChatService {
     const steers = this.steerItems();
     const context = await this.conversation.context(SESSION_CONTEXT);
     const usage = await this.harness.usage(SESSION_CONTEXT);
+    const reset = latestSessionReset(context.entries);
+    if (reset !== undefined) {
+      this.resetOrder = reset.order;
+      this.resetAt =
+        reset.resetAt ?? this.pendingResetAt ?? this.resetAt ?? new Date().toISOString();
+    }
     const built = buildTranscript(context.entries, this.mediaRef, this.diagramRevision);
     const transcript = windowTranscript(built, request.before === undefined ? request : {});
     return {
@@ -1149,6 +1176,7 @@ export class ChatService {
       },
       activeTools: this.activeToolActivities(),
       toolsRevision: this.toolsRevision,
+      ...(this.resetAt === undefined ? {} : { resetAt: this.resetAt }),
     };
   }
 
@@ -2453,6 +2481,11 @@ export class ChatService {
       if (newest === undefined || entry.id > newest) newest = entry.id;
     }
     this.lastViewEntryId = newest;
+    const reset = latestSessionReset(view.entries);
+    if (reset !== undefined) {
+      this.resetOrder = reset.order;
+      this.resetAt = reset.resetAt ?? this.resetAt;
+    }
     this.viewLive = view.docs["pi.live"] as LiveState | undefined;
     return this.viewSnapshot(view);
   }
@@ -2531,6 +2564,42 @@ export class ChatService {
 
     for (const entry of newEntries) {
       if (this.closed) return;
+      if (ResetEntry.is(entry)) {
+        const reset = latestSessionReset(view.entries);
+        const resetAt =
+          this.pendingResetAt ??
+          (reset?.order === entry.id * 10_000 ? reset.resetAt : undefined) ??
+          new Date().toISOString();
+        this.pendingResetAt = undefined;
+        this.resetOrder = entry.id * 10_000;
+        this.resetAt = resetAt;
+        const row = buildTranscript([entry], this.mediaRef, this.diagramRevision).messages[0];
+        const message = row === undefined ? undefined : { ...row, timestamp: resetAt };
+        const revision = this.bumpDraft();
+        this.hub.broadcast([
+          {
+            event: "message.done",
+            data: { message: message ?? null } satisfies StreamMessageDone,
+          },
+          {
+            event: "session.reset",
+            data: {
+              order: this.resetOrder,
+              resetAt,
+              ...(message === undefined ? {} : { message }),
+            } satisfies StreamSessionReset,
+          },
+          {
+            event: "draft.sync",
+            data: { text: "", thinking: "", revision } satisfies StreamDraftSync,
+          },
+          {
+            event: "run.state",
+            data: this.getRunStatus() satisfies StreamRunState,
+          },
+        ]);
+        continue;
+      }
       try {
         await this.handleEvent(
           entry.model?.[0] === undefined

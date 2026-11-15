@@ -1465,6 +1465,16 @@ app.post("/api/steer/:id", async (c) => {
   });
 });
 
+app.post("/api/session/reset", async (c) => {
+  try {
+    await chat.resetSession();
+    return c.json({ ok: true });
+  } catch (error) {
+    console.error("[pi] session reset failed", error);
+    return c.text("Could not reset the session", 500);
+  }
+});
+
 app.post("/api/stop", async (c) => {
   await chat.stop();
   return c.json({ ok: true, queue: (await chat.getSnapshot()).queue });

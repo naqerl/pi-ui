@@ -38,6 +38,8 @@ export interface QueuedNotice {
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
+  /** The one system row a durable session reset leaves at the top of the transcript. */
+  kind?: "session-reset";
   text: string;
   /** Images sent with a user message. */
   attachments?: MediaRef[];
@@ -629,6 +631,8 @@ export interface Snapshot {
   /** Tools still running. A refresh uses this when `toolsRevision` is current. */
   activeTools?: ToolActivity[];
   toolsRevision?: number;
+  /** ISO time of the newest durable session reset, so a sleeping client can converge. */
+  resetAt?: string;
 }
 
 export interface TranscriptHistory {
@@ -710,6 +714,14 @@ export interface StreamRunState {
   steers?: QueuedMessage[];
   /** Server revision for `queue`/`steers`; older frames must not replace a newer list. */
   queueRevision?: number;
+}
+
+/** A durable session reset, carrying the row every older transcript entry must yield to. */
+export interface StreamSessionReset {
+  order: number;
+  resetAt: string;
+  /** The reset row itself, so a client that missed the preceding message frame still keeps it. */
+  message?: ChatMessage;
 }
 
 /** A pending steer the server could not deliver; it leaves the queue with a reason. */

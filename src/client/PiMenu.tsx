@@ -51,6 +51,7 @@ export function PiMenu() {
   const [models, setModels] = useState<ModelOption[]>([]);
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [model, setModel] = useState<ModelOption | null>(null);
+  const [resetState, setResetState] = useState<"idle" | "busy" | "error">("idle");
   const [anchor, setAnchor] = useState<{
     top: number;
     left: number;
@@ -174,6 +175,20 @@ export function PiMenu() {
     persistTheme(theme.slug);
   };
 
+  const resetSession = async () => {
+    if (resetState === "busy") return;
+    haptic();
+    setResetState("busy");
+    try {
+      const response = await fetch("/api/session/reset", { method: "POST" });
+      if (!response.ok) throw new Error("session reset failed");
+      setResetState("idle");
+      setOpen(false);
+    } catch {
+      setResetState("error");
+    }
+  };
+
   const chooseModel = (option: ModelOption) => {
     haptic();
     const previous = model;
@@ -265,6 +280,27 @@ export function PiMenu() {
                   </span>
                 </button>
                 <PushSettings />
+                <div className="border-t border-border p-2">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    aria-label="Reset session"
+                    data-testid="reset-session"
+                    disabled={resetState === "busy"}
+                    className="flex w-full flex-col items-start gap-0.5 px-2 py-1.5 text-left text-sm text-destructive hover:bg-destructive/10 disabled:opacity-60"
+                    onClick={() => void resetSession()}
+                  >
+                    <span>Reset session</span>
+                    <span className="font-mono text-[11px] font-normal leading-4 text-muted-foreground">
+                      Conversation history is cleared; the workspace is not.
+                    </span>
+                  </button>
+                  {resetState === "error" && (
+                    <p role="alert" className="px-2 pt-1 font-mono text-[11px] text-destructive">
+                      Could not reset the session.
+                    </p>
+                  )}
+                </div>
               </div>
             ) : section === "theme" ? (
               <div>

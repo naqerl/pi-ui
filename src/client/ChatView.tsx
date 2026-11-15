@@ -423,6 +423,19 @@ export function MessageBubble({
   onSteer?: (text: string) => void;
   onCancelQueued?: (id: string) => unknown;
 }) {
+  if (message.kind === "session-reset") {
+    return (
+      <div
+        data-message-id={message.id}
+        data-role={message.role}
+        data-kind="session-reset"
+        data-testid="session-reset"
+        className="theme-radius mx-auto w-fit min-w-0 max-w-[92%] border border-foreground/10 bg-surface/90 px-3 py-1 text-center font-mono text-[11px] leading-5 text-muted-foreground backdrop-blur-md [overflow-wrap:anywhere]"
+      >
+        {message.text}
+      </div>
+    );
+  }
   if (message.pendingQueue === true && isQueuedNotice(message.notice)) {
     return (
       <QueuedNoticeChip

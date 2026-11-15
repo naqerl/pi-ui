@@ -35,6 +35,7 @@ import type {
   StreamMessageDone,
   StreamNotice,
   StreamRunState,
+  StreamSessionReset,
   StreamSteerDropped,
   StreamTextDelta,
   StreamTheme,
@@ -156,6 +157,16 @@ function sameMessage(left: ChatMessage, right: ChatMessage): boolean {
 function prependPage<T extends { id: string }>(current: T[], page: T[]): T[] {
   const held = new Set(current.map((item) => item.id));
   return [...page.filter((item) => !held.has(item.id)), ...current];
+}
+
+/** True when a snapshot reset is newer than the one this page already applied. */
+function newerReset(next: string | undefined, current: string | null): boolean {
+  if (next === undefined) return false;
+  if (current === null) return true;
+  const nextAt = Date.parse(next);
+  const currentAt = Date.parse(current);
+  if (!Number.isFinite(nextAt)) return false;
+  return !Number.isFinite(currentAt) || nextAt > currentAt;
 }
 
 /** A snapshot read, with the service worker's stale-cache marker kept out of the data. */
@@ -350,6 +361,9 @@ export function useChat(options: UseChatOptions = {}) {
   const [queue, setQueue] = useState<QueuedMessage[]>([]);
   /** Newest queue/steer revision applied; a snapshot below it is stale for those lists. */
   const queueRevision = useRef(0);
+  /** The newest reset this page applied, and the order below which rows must not survive. */
+  const resetAt = useRef<string | null>(null);
+  const resetOrder = useRef<number | null>(null);
   const [mcp, setMcp] = useState<McpStatus>({ servers: [], unavailable: [] });
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [context, setContext] = useState<ContextUsage | null>(null);
@@ -465,9 +479,31 @@ export function useChat(options: UseChatOptions = {}) {
       const freshActivity = [...snapshot.activity, ...fresh.activity].sort(
         (a, b) => a.order - b.order,
       );
+      const snapshotResetRow = fresh.messages.find((message) => message.kind === "session-reset");
+      if (snapshotResetRow !== undefined && newerReset(snapshot.resetAt, resetAt.current)) {
+        resetAt.current = snapshot.resetAt ?? null;
+        resetOrder.current = snapshotResetRow.order;
+      }
+      // A tab that missed the live frame still has the old rows. The snapshot's resetAt
+      // says which reset it already knows; a newer one drops everything below its row.
+      const floor = resetOrder.current;
       if (sameConversation || firstSnapshot) {
-        setMessages((current) => mergeWindow(current, snapshotFrom, fresh.messages, sameMessage));
-        setActivity((current) => mergeWindow(current, snapshotFrom, freshActivity, sameActivity));
+        setMessages((current) =>
+          mergeWindow(
+            floor === null ? current : current.filter((message) => message.order >= floor),
+            snapshotFrom,
+            fresh.messages,
+            sameMessage,
+          ),
+        );
+        setActivity((current) =>
+          mergeWindow(
+            floor === null ? current : current.filter((item) => item.order >= floor),
+            snapshotFrom,
+            freshActivity,
+            sameActivity,
+          ),
+        );
       } else {
         setMessages(fresh.messages);
         setActivity(freshActivity);
@@ -639,6 +675,28 @@ export function useChat(options: UseChatOptions = {}) {
     source.addEventListener("draft.sync", (event) => {
       const data = parseEvent<StreamDraftSync>(event as MessageEvent<string>);
       if (data) applyDraft(data);
+    });
+
+    source.addEventListener("session.reset", (event) => {
+      const data = parseEvent<StreamSessionReset>(event as MessageEvent<string>);
+      if (!data || !Number.isFinite(data.order)) return;
+      const at = typeof data.resetAt === "string" ? data.resetAt : new Date().toISOString();
+      resetAt.current = at;
+      resetOrder.current = data.order;
+      // A stale delta from the run the reset ended must not paint above the reset line.
+      draftBatch.clear();
+      draftRevision.current += 1;
+      setDraftText("");
+      setDraftThinking("");
+      setLiveTools([]);
+      const row = data.message;
+      setMessages((current) => {
+        const kept = current.filter((message) => message.order >= data.order);
+        if (row === undefined || kept.some((message) => message.id === row.id)) return kept;
+        return [...kept, row].sort((left, right) => left.order - right.order);
+      });
+      setActivity((current) => current.filter((item) => item.order >= data.order));
+      void refreshState();
     });
 
     source.addEventListener("mcp.events", (event) => {
