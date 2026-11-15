@@ -75,7 +75,7 @@ EXPOSE 8787
 # marked the fresh container unhealthy at ~105 s and pi-ui-update rolled the release back, only to
 # succeed on a later retry when the layers were already local. Give the first start two minutes
 # and one extra retry, so a slow boot is not mistaken for a broken release.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=4 \
+HEALTHCHECK --interval=30s --timeout=30s --start-period=120s --retries=4 \
     CMD curl -fsS "http://127.0.0.1:${PORT:-8787}/" || exit 1
 
 STOPSIGNAL SIGTERM

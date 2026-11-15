@@ -54,4 +54,13 @@ services:
       # pubring.db, which bookworm's gpg 2.2 cannot read. Export from the host and
       # import into this directory instead (README: SOPS and GPG keys).
       - "${GNUPGHOME_DIR:-$HOME/.pi-ui/gnupg}:/home/pi/.gnupg"
+    # Containment. The two things that grow without bound are the fold state in
+    # billion-context and the transcript of a month-long conversation, and the host
+    # is smaller than either on a bad day. A cap turns a runaway fold into one
+    # container restart instead of a dead host (which happened in November).
+    # Sized from the measured peak; raise it only with the host, not instead of it.
+    mem_limit: 2800m
+    memswap_limit: 3600m
+    cpus: 1.5
+    pids_limit: 512
     restart: unless-stopped

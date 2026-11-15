@@ -198,8 +198,12 @@ describe("task decisions against one shared app", { serial: true }, () => {
         .toContain(
           `Task proposal ${proposal.id} was approved and is now task ${proposal.id}: ${title}.`,
         );
-      const reply = await assistantText(browser);
-      expect(reply).toContain("You may start working on it now");
+      // The reply streams in, and a delta carries the text so far rather than one whole
+      // sentence: the poll above can return while the notice is still being painted, so
+      // the part asserted next is waited for on its own rather than read straight after.
+      await expect
+        .poll(() => assistantText(browser), { timeout: 60_000 })
+        .toContain("You may start working on it now");
 
       const expected = `proposal ${proposal.id} approved as ${proposal.id} · ${title}`;
       await expect
