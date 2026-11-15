@@ -1,3 +1,9 @@
+## 1.6.189
+
+### Added
+
+- An agent can reload what it was told without restarting: a `reload` tool re-reads the MCP server list from `mcp.json`, the system prompt, the model catalog and the plan-chat prompt, and says per target whether it took effect. Servers whose entries changed are reconnected and the others are left alone; a target that cannot be reloaded says so instead of pretending.
+
 ## 1.6.188
 
 ### Changed
