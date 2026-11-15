@@ -506,6 +506,9 @@ function logSubmitTiming(timing: {
   beforeTurnMs: number;
   markerMs: number;
   conversationMs: number;
+  /** Inside `statusMs`: the submission record read and the placed entry read. */
+  submissionMs: number;
+  entryMs: number;
   statusMs: number;
   broadcastMs: number;
   totalMs: number;
@@ -1391,6 +1394,8 @@ export class ChatService {
       beforeTurnMs: 0,
       markerMs: 0,
       conversationMs: 0,
+      submissionMs: 0,
+      entryMs: 0,
       statusMs: 0,
       broadcastMs: 0,
     };
@@ -1580,8 +1585,12 @@ export class ChatService {
       attachments,
       steerKey,
       pendingKey,
+      timing,
     );
     timing.statusMs = Date.now() - statusStart;
+    // The retry guard answers from the cached view; it must not answer from a view that
+    // was read before this placement, or a retried send would be placed twice.
+    if (placed) this.entriesCache = undefined;
     // An idle steer is already in the transcript; the response carries it, so no pending bubble
     // is left behind. A queued steer stays tracked until its entry is actually appended.
     if (steer && placed && this.steers.delete(id)) this.markQueueChanged();
@@ -1884,9 +1893,26 @@ export class ChatService {
   }
 
   /** The transcript message a retried client send already produced, if it is placed. */
+  /**
+   * One entry by id without reading the conversation. `context()` re-parses every entry of
+   * a month-long transcript — 0.8-0.9 s measured — and the send path only needs the entry
+   * it just placed. Bounding the scan to that id reads a single row.
+   */
+  private async readEntryById(id: EntryRecord["id"]): Promise<EntryRecord | undefined> {
+    const page = await this.conversation.entries(
+      { minEntryId: id, maxEntryId: id, order: "ascending" },
+      1,
+      undefined,
+      SESSION_CONTEXT,
+    );
+    return page.items[0];
+  }
+
   private async placedClientMessage(queueKey: string): Promise<ChatMessage | undefined> {
-    const context = await this.conversation.context(SESSION_CONTEXT);
-    const entry = context.entries.find((candidate) => clientKeyFromEntry(candidate) === queueKey);
+    // The retry guard asks whether a message already landed; the page has just polled the
+    // same view, so read it through the cache instead of re-parsing the conversation.
+    const entries = await this.contextEntries();
+    const entry = entries.find((candidate) => clientKeyFromEntry(candidate) === queueKey);
     if (entry === undefined) return undefined;
     return buildTranscript([entry], this.mediaRef, this.diagramRevision).messages[0];
   }
@@ -1898,13 +1924,17 @@ export class ChatService {
     attachments: string[] = [],
     steerKey?: string,
     pendingKey?: string,
+    timing?: { submissionMs: number; entryMs: number },
   ): Promise<{ message: ChatMessage; placed: boolean }> {
+    const submissionStart = Date.now();
     const record = await submission.status(SESSION_CONTEXT);
     const entryId = "entry" in record ? record.entry : undefined;
     const placed = record.status === "placed" || record.status === "done";
+    if (timing !== undefined) timing.submissionMs += Date.now() - submissionStart;
     if (entryId !== undefined) {
-      const context = await this.conversation.context(SESSION_CONTEXT);
-      const entry = context.entries.find((candidate) => candidate.id === entryId);
+      const entryStart = Date.now();
+      const entry = await this.readEntryById(entryId);
+      if (timing !== undefined) timing.entryMs += Date.now() - entryStart;
       if (entry) {
         const message = buildTranscript([entry], this.mediaRef, this.diagramRevision).messages[0];
         if (message) {
@@ -2015,8 +2045,7 @@ export class ChatService {
 
   /** Reads an entry by id and consumes its pending steer, for events that arrived out of order. */
   private async consumeSteerEntry(entryId: number, submissionId?: string): Promise<boolean> {
-    const context = await this.conversation.context(SESSION_CONTEXT);
-    const entry = context.entries.find((candidate) => candidate.id === entryId);
+    const entry = await this.readEntryById(entryId as EntryRecord["id"]);
     return entry === undefined ? false : this.consumeSteerEntryRecord(entry, submissionId);
   }
 
