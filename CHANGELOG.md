@@ -1,3 +1,14 @@
+## 1.6.193
+
+### Fixed
+
+- Plan sessions are closed when nobody is using them instead of kept for the life of the process: ten idle minutes, at most eight idle ones, never one with a live run. Each holds a durable store, a harness and its own transcript — 2.5 MB measured — and the live instance has 298 tasks, so the pool had grown to ~750 MB on top of the ~450 MB the chat caches hold. The container's 2.8 GB cap made V8 size its heap to ~1.4 GB, and the process sat at 1392 MB doing 700 ms full collections ("allocation failure; scavenge might not succeed") — which is what a slow send and a slow plan-chat open look like from the browser.
+- V8 gets `--max-old-space-size=1792` as headroom below the container cap, so a spike collects instead of stalling.
+
+### Added
+
+- A send over one second logs its own breakdown (`[pi] slow send mediaMs=… beforeTurnMs=… conversationMs=…`) instead of needing the debug flag to be measured.
+
 ## 1.6.192
 
 ### Changed
