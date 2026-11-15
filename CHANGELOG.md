@@ -1,3 +1,14 @@
+## 1.6.191
+
+### Changed
+
+- The chat transcript is appended to instead of rebuilt: one builder per conversation follows the entries that arrive, so a poll costs milliseconds where it used to rebuild every entry in the conversation first. On a month-long conversation that was 0.6-1.1 s of CPU every two seconds while a run was live, and the stall it caused on the single-threaded server is why the page kept answering 502.
+
+### Fixed
+
+- A busy server is no longer mistaken for a broken one: the container health probe waits 30 s for an answer instead of 5, so a page served from a run in progress does not flap the container unhealthy.
+- billion-context 0.1.215 stops evicting and cold-loading the live session on every turn, and the container is capped at 2.8 GiB / 1.5 CPUs so a runaway fold costs one restart rather than the host.
+
 ## 1.6.190
 
 ### Added
