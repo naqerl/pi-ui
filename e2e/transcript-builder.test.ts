@@ -11,6 +11,14 @@ import { buildTranscript, TranscriptBuilder } from "../src/server/session.js";
 
 const diagramId = "abcdefghij";
 
+/** An MCP status notice the parser recognises: a head line plus its JSON payload. */
+function mcpStatus(status: string): string {
+  return [
+    "MCP subscription status follows.",
+    JSON.stringify({ subscriptions: [{ server: "tracer", name: "session", status }] }),
+  ].join("\n");
+}
+
 /** A sequence that exercises every row kind, every retroactive update and the reset cut. */
 function conversation(): EntryRecord[] {
   const entries: unknown[] = [
@@ -69,13 +77,11 @@ function conversation(): EntryRecord[] {
       data: {
         noticeId: "notice-1",
         key: "mcp/status",
-        text: "MCP status follows.\nmcp tracer: connected",
+        text: mcpStatus("connected"),
         at: "2026-01-01T00:00:02.000Z",
         createdAt: "2026-01-01T00:00:02.000Z",
       },
-      model: [
-        { role: "user", content: "MCP status follows.\nmcp tracer: connected", timestamp: 5 },
-      ],
+      model: [{ role: "user", content: mcpStatus("connected"), timestamp: 5 }],
     },
     {
       id: 16,
@@ -83,7 +89,7 @@ function conversation(): EntryRecord[] {
       data: {
         noticeId: "notice-1",
         key: "mcp/status",
-        text: "MCP status follows.\nmcp tracer: connected, list refreshed",
+        text: mcpStatus("connected, list refreshed"),
         at: "2026-01-01T00:00:03.000Z",
         createdAt: "2026-01-01T00:00:03.000Z",
       },
@@ -135,19 +141,19 @@ test("a later MCP notice updates the one row its group already shows", () => {
   const transcript = buildTranscript(conversation());
   const notices = transcript.messages.filter((message) => message.id === "m-15");
   assert.equal(notices.length, 1);
-  assert.equal(notices[0]?.text, "MCP status follows.\nmcp tracer: connected, list refreshed");
+  assert.equal(notices[0]?.text, mcpStatus("connected, list refreshed"));
   assert.equal(notices[0]?.timestamp, "2026-01-01T00:00:03.000Z");
 });
 
 test("a decision drops the queued copy it shares a key with", () => {
   const transcript = buildTranscript(conversation());
+  // The notice owns the shared id; the queued input must not also show as a user message.
+  const shared = transcript.messages.filter((message) => message.id === "m-queue-1");
+  assert.equal(shared.length, 1);
+  assert.equal(shared[0]?.notice?.kind, "decision");
   assert.equal(
-    transcript.messages.some((message) => message.id === "m-queue-1"),
+    transcript.messages.some((message) => message.text === "queued input"),
     false,
-  );
-  assert.equal(
-    transcript.messages.some((message) => message.notice?.kind === "decision"),
-    true,
   );
 });
 
