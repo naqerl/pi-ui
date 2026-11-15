@@ -27,6 +27,7 @@ import {
   taskAgentProjectInstructions,
   visibleTaskAgentMessages,
 } from "../src/server/task-agent.js";
+import { TaskQuestionsStore } from "../src/server/task-questions.js";
 import { createProposeTaskTool, createTaskTools } from "../src/server/task-tools.js";
 import { TaskStore } from "../src/server/tasks.js";
 import { runErrorFromUnanswered, runErrorMatchesDismissal } from "../src/shared/run-error.js";
@@ -639,10 +640,18 @@ test("visible task chat rows omit notice and keep ordinary messages", () => {
       notice: { kind: "job" },
     } as ChatMessage,
     { id: "a", role: "assistant", text: "plan", timestamp: "", order: 3 },
+    {
+      id: "q",
+      role: "system",
+      text: "answers",
+      timestamp: "",
+      order: 4,
+      notice: { kind: "questions", setId: "s", count: 1, text: "answers", summary: "Answers sent" },
+    } as ChatMessage,
   ];
   assert.deepEqual(
     visibleTaskAgentMessages(rows).map((item) => item.id),
-    ["u", "a"],
+    ["u", "a", "q"],
   );
 });
 
@@ -820,6 +829,36 @@ test("moving a queued follow-up to a steer does not resend one already placed", 
   assert.equal((await session.snapshot()).queue?.length, 0);
 });
 
+test("answering while a plan run is live queues the answer chip at its next boundary", async () => {
+  const questions = new TaskQuestionsStore(join(directory, "queued-question-nudge.json"));
+  await questions.load();
+  const added = await questions.add("tasknudge", [
+    {
+      id: "scope",
+      prompt: "Which part first?",
+      kind: "single",
+      options: [{ value: "inbox", label: "Inbox" }],
+    },
+  ]);
+  const conversation = new FakeCancelConversation();
+  const session = new DurableTaskAgentSession(
+    "tasknudge",
+    { abortSubmission: async () => "aborted" } as never,
+    conversation as never,
+    questions,
+  );
+
+  // A live run holds the nudge instead of cutting into its turn.
+  await session.send("start the run");
+  await session.answerQuestions(added.set.id, [{ id: "scope", values: ["inbox"], text: "" }]);
+  const snapshot = await session.snapshot();
+  assert.equal(snapshot.run, "running");
+  assert.equal(snapshot.queue?.[0]?.notice?.label, "Answers sent");
+  assert.equal(snapshot.queue?.[0]?.notice?.glyph, "questions");
+  assert.equal(conversation.submissionCount, 2);
+  assert.equal(await questions.pending(), null);
+});
+
 test("an undelivered plan steer leaves a dropped bubble instead of vanishing", async () => {
   const conversation = new FakeCancelConversation();
   const session = new DurableTaskAgentSession(
@@ -938,6 +977,48 @@ test("the agent session is created on first use, stopped when the task is done, 
   const { access } = await import("node:fs/promises");
   await assert.rejects(access(manager.taskDir(created.id)));
 
+  await store.remove(created.id);
+  await manager.close();
+});
+
+test("pending question sets load before their task opens and clear when it leaves planning", async () => {
+  const created = (
+    await store.create("Plan the waiting questions", null, [], undefined, undefined, "planning")
+  ).tasks.find((item) => item.title === "Plan the waiting questions");
+  assert.ok(created);
+  const directoryPath = join(directory, "task-agents", created.id);
+  await mkdir(directoryPath, { recursive: true });
+  const questions = new TaskQuestionsStore(join(directoryPath, "questions.json"));
+  await questions.load();
+  const added = await questions.add(created.id, [
+    { id: "scope", prompt: "Which part first?", kind: "text" },
+  ]);
+
+  const manager = new TaskAgentManager({
+    dataDir: directory,
+    cwd: directory,
+    models: {} as never,
+    model: undefined,
+    store,
+    publish: () => undefined,
+    baseInstructions: "base",
+    openSession: async (taskId) => new FakeSession(taskId),
+  });
+  // The constructor loads each task's store, so a restart can badge the row immediately.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(manager.pendingQuestions(created.id)?.id, added.set.id);
+  assert.deepEqual(manager.questionTaskIds(), [created.id]);
+
+  // Approving the draft leaves planning, so the pending set is dropped and published.
+  const approved = await store.update(created.id, { status: "open" });
+  manager.syncQuestionStatus(approved);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(manager.pendingQuestions(created.id), null);
+  assert.deepEqual(manager.questionTaskIds(), []);
+
+  await manager.remove(created.id);
+  assert.equal(manager.pendingQuestions(created.id), null);
+  assert.deepEqual(manager.questionTaskIds(), []);
   await store.remove(created.id);
   await manager.close();
 });

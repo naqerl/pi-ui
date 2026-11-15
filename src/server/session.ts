@@ -35,6 +35,7 @@ import {
   type OperatorNoticeRecord,
   operatorNoticeSummary,
   parseNotice,
+  type QuestionNoticeDetails,
   type TaskDecisionNoticeDetails,
   type TaskDecisionNoticeRecord,
   taskDecisionPrompt,
@@ -45,6 +46,7 @@ import { steerKeyFromEntryData } from "../shared/steers.js";
 import { toIsoTimestamp } from "../shared/time.js";
 import {
   type ActivityItem,
+  type AnsweredQuestionItem,
   type ChatMessage,
   type ContextUsage,
   type MediaRef,
@@ -195,6 +197,29 @@ const TaskDecisionPromptEntry = defineEntry<{
 }>("ui.task-decision-prompt");
 
 export const TASK_DECISION_PROMPT_ENTRY_KIND = TaskDecisionPromptEntry.kind;
+
+/**
+ * Answers the operator submitted from the Plan tab. It carries the model prompt, so an idle
+ * agent starts a run and a busy one reads it at its next boundary, and it renders as a chip.
+ */
+type QuestionPromptAnswer = {
+  id: string;
+  prompt: string;
+  kind: "single" | "multi" | "text";
+  values: string[];
+  labels: string[];
+  text: string;
+};
+
+const TaskQuestionPromptEntry = defineEntry<{
+  setId: string;
+  taskId: string;
+  text: string;
+  answers: QuestionPromptAnswer[];
+  createdAt: string;
+}>("ui.task-question-prompt");
+
+export const TASK_QUESTION_PROMPT_ENTRY_KIND = TaskQuestionPromptEntry.kind;
 
 /** A notify_operator call. It carries no model message and shows as a chat chip. */
 const OperatorNoticeEntry = defineEntry<{
@@ -823,6 +848,37 @@ export type MediaResolver = (data: string, mimeType: string) => MediaRef | undef
 /** Reads a diagram's current revision, so a replaced drawing updates without a new entry. */
 export type DiagramRevisionResolver = (id: string) => number | undefined;
 
+/** Reads the stored answer rows a question card or prompt chip shows. */
+function readAnsweredQuestionItems(value: unknown): AnsweredQuestionItem[] {
+  if (!Array.isArray(value)) return [];
+  const answers: AnsweredQuestionItem[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    const kind = item.kind;
+    if (
+      typeof item.id !== "string" ||
+      typeof item.prompt !== "string" ||
+      (kind !== "single" && kind !== "multi" && kind !== "text") ||
+      !Array.isArray(item.values) ||
+      !item.values.every((entry) => typeof entry === "string") ||
+      !Array.isArray(item.labels) ||
+      !item.labels.every((label) => typeof label === "string") ||
+      typeof item.text !== "string"
+    ) {
+      continue;
+    }
+    answers.push({
+      id: item.id,
+      prompt: item.prompt,
+      kind,
+      values: item.values as string[],
+      labels: item.labels as string[],
+      text: item.text,
+    });
+  }
+  return answers;
+}
+
 export function buildTranscript(
   entries: readonly EntryRecord[],
   media?: MediaResolver,
@@ -972,6 +1028,37 @@ export function buildTranscript(
       });
       continue;
     }
+    if (kind === TASK_QUESTION_PROMPT_ENTRY_KIND) {
+      if (
+        !isRecord(entry.data) ||
+        typeof entry.data.setId !== "string" ||
+        typeof entry.data.text !== "string"
+      ) {
+        continue;
+      }
+      const answers = readAnsweredQuestionItems(entry.data.answers);
+      const summary =
+        answers.length === 0
+          ? "Questions dismissed"
+          : `Answers sent · ${answers.length} question${answers.length === 1 ? "" : "s"}`;
+      const notice: QuestionNoticeDetails = {
+        kind: "questions",
+        setId: entry.data.setId,
+        count: answers.length,
+        text: entry.data.text,
+        summary,
+        answers,
+      };
+      messages.push({
+        id: entryMessageId(entry),
+        role: "system",
+        text: entry.data.text,
+        timestamp: entryTimestamp(entry.data),
+        order: entry.id * 10_000,
+        notice,
+      });
+      continue;
+    }
     if (kind === TaskQuestionAnswerEntry.kind) {
       if (
         !isRecord(entry.data) ||
@@ -981,31 +1068,7 @@ export function buildTranscript(
       ) {
         continue;
       }
-      const answers: NonNullable<ChatMessage["questionAnswers"]>["answers"] = [];
-      for (const item of entry.data.answers) {
-        if (!isRecord(item)) continue;
-        const kind = item.kind;
-        if (
-          typeof item.id !== "string" ||
-          typeof item.prompt !== "string" ||
-          (kind !== "single" && kind !== "multi" && kind !== "text") ||
-          !Array.isArray(item.values) ||
-          !item.values.every((value) => typeof value === "string") ||
-          !Array.isArray(item.labels) ||
-          !item.labels.every((label) => typeof label === "string") ||
-          typeof item.text !== "string"
-        ) {
-          continue;
-        }
-        answers.push({
-          id: item.id,
-          prompt: item.prompt,
-          kind,
-          values: item.values as string[],
-          labels: item.labels as string[],
-          text: item.text,
-        });
-      }
+      const answers = readAnsweredQuestionItems(entry.data.answers);
       messages.push({
         id: `m-${entry.id}`,
         role: "system",

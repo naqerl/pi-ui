@@ -10,6 +10,7 @@ import {
   type MemoryNoticeDetails,
   memoryUndoPrompt,
   type OperatorNoticeDetails,
+  type QuestionNoticeDetails,
   type TaskDecisionNoticeDetails,
 } from "../shared/notices";
 import { noticeIconName } from "../shared/queue";
@@ -220,11 +221,13 @@ function NoticeDialog({
                             : "Idle nudge"
                           : notice.kind === "decision"
                             ? "Proposal decision"
-                            : notice.kind === "operator"
-                              ? "Operator request"
-                              : notice.stopped
-                                ? "Run stopped"
-                                : "Run interrupted"}
+                            : notice.kind === "questions"
+                              ? "Question answers"
+                              : notice.kind === "operator"
+                                ? "Operator request"
+                                : notice.stopped
+                                  ? "Run stopped"
+                                  : "Run interrupted"}
               {dateTime !== "" && ` · ${dateTime}`}
             </div>
             <h2 id={titleId} className="mt-0.5 font-mono text-sm [overflow-wrap:anywhere]">
@@ -256,6 +259,8 @@ function NoticeDialog({
             <IdleDetails notice={notice} />
           ) : notice.kind === "decision" ? (
             <TaskDecisionDetails notice={notice} />
+          ) : notice.kind === "questions" ? (
+            <QuestionsDetails notice={notice} />
           ) : notice.kind === "operator" ? (
             <OperatorDetails notice={notice} />
           ) : (
@@ -345,6 +350,45 @@ function TaskDecisionDetails({ notice }: { notice: TaskDecisionNoticeDetails }) 
           ["Title", notice.taskTitle],
         ]}
       />
+      <Block label="Prompt sent to the agent">{notice.text}</Block>
+    </>
+  );
+}
+
+function QuestionsDetails({ notice }: { notice: QuestionNoticeDetails }) {
+  const answers = notice.answers ?? [];
+  return (
+    <>
+      {answers.length === 0 ? (
+        <p className="[overflow-wrap:anywhere]">
+          The operator dismissed this question set; the agent decides it itself.
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-3">
+          {answers.map((answer) => (
+            <li key={answer.id} data-question-id={answer.id} className="min-w-0">
+              <p className="min-w-0 [overflow-wrap:anywhere]">{answer.prompt}</p>
+              {answer.labels.length > 0 && (
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  {answer.labels.map((label) => (
+                    <span
+                      key={label}
+                      className="theme-radius border border-border/70 bg-background px-2 py-0.5 font-mono text-[11px] leading-5 text-foreground"
+                    >
+                      {label}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {answer.text.length > 0 && (
+                <p className="mt-1 whitespace-pre-wrap border-l-2 border-border/70 pl-2 text-muted-foreground [overflow-wrap:anywhere]">
+                  {answer.text}
+                </p>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
       <Block label="Prompt sent to the agent">{notice.text}</Block>
     </>
   );

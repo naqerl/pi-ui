@@ -79,9 +79,11 @@ function OptionRow({
 export function TaskQuestionPanel({
   set,
   onAnswer,
+  onDismiss,
 }: {
   set: TaskQuestionSet;
   onAnswer: (setId: string, answers: TaskQuestionAnswer[]) => Promise<boolean>;
+  onDismiss?: (setId: string) => Promise<boolean>;
 }) {
   const [state, setState] = useState(() => ({
     setId: set.id,
@@ -131,6 +133,15 @@ export function TaskQuestionPanel({
         ? { values: [], text }
         : { ...draft, text },
     );
+  };
+
+  const dismiss = async () => {
+    if (busy || onDismiss === undefined) return;
+    setBusy(true);
+    setError(null);
+    const ok = await onDismiss(set.id);
+    setBusy(false);
+    if (!ok) setError("Could not dismiss the questions. Try again.");
   };
 
   const submit = async () => {
@@ -228,12 +239,23 @@ export function TaskQuestionPanel({
         )}
       </div>
 
-      <div className="mt-1 border-t border-border/70 bg-surface px-3 py-2">
+      <div className="mt-1 flex items-center justify-end gap-2 border-t border-border/70 bg-surface px-3 py-2">
+        {onDismiss !== undefined && (
+          <Button
+            type="button"
+            variant="ghost"
+            data-testid="task-questions-dismiss"
+            disabled={busy}
+            onClick={() => void dismiss()}
+          >
+            Dismiss
+          </Button>
+        )}
         <Button
           type="submit"
           data-testid="task-questions-send"
           disabled={busy || !ready}
-          className="w-full sm:w-auto sm:self-end"
+          className="w-full sm:w-auto"
         >
           {busy ? "Sending…" : "Send answers"}
         </Button>

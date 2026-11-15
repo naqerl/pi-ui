@@ -18,7 +18,7 @@ import {
   TASK_ATTACHMENTS_MAX,
   TASK_BODY_MAX_LENGTH,
 } from "../shared/tasks.js";
-import type { TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
+import type { TaskCompletion, TaskLedger, TaskQuestionSet, TaskStatus } from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
 import {
   ChatService,
@@ -111,6 +111,10 @@ await taskActivity.load();
 taskActivity.observeLedger(taskStore.ledger().tasks);
 /** Filled once the task-agent manager exists; before that no plan run can be live. */
 let planningTaskIds = (): string[] => [];
+/** Filled with the manager too; before that no task can have a pending set. */
+let pendingQuestionsFor = (_taskId: string): TaskQuestionSet | null => null;
+/** Filled once the manager exists; a status change can then drop a stale pending set. */
+let syncQuestionStatus = (_ledger: TaskLedger): void => undefined;
 /** The ledger as clients see it: tasks plus what the runs measured and planned for them. */
 function taskView(ledger: TaskLedger = taskStore.ledger()): TaskLedger {
   const planning = planningTaskIds();
@@ -121,6 +125,7 @@ function taskView(ledger: TaskLedger = taskStore.ledger()): TaskLedger {
     tasks: ledger.tasks.map((task) => ({
       ...task,
       planning: live.has(task.id) && (isActiveStatus(task.status) || task.status === "planning"),
+      questions: pendingQuestionsFor(task.id),
     })),
     activity: taskActivity.view(),
     reopenStats: taskReopenStats(ledger.tasks),
@@ -264,6 +269,7 @@ const e2eMemoryHook = process.env.PI_E2E_DATA_DIR !== undefined;
 const hub = new StreamHub();
 taskBridge.publish = (ledger) => {
   taskActivity.observeLedger(ledger.tasks);
+  syncQuestionStatus(ledger);
   hub.broadcast({ event: "tasks", data: taskView(ledger) });
   dashboard.broadcast();
 };
@@ -411,10 +417,15 @@ const taskAgents = new TaskAgentManager({
   onRunState: () => {
     hub.broadcast({ event: "tasks", data: taskView() });
   },
+  onQuestions: () => {
+    hub.broadcast({ event: "tasks", data: taskView() });
+  },
   baseInstructions: await taskAgentPrompt,
   memory: { store: memory, snapshot: memorySnapshot },
 });
 planningTaskIds = () => taskAgents.planningTaskIds();
+pendingQuestionsFor = (taskId) => taskAgents.pendingQuestions(taskId);
+syncQuestionStatus = (ledger) => taskAgents.syncQuestionStatus(ledger);
 function builtinJobs() {
   return jobs.list().map((job) => ({
     id: job.id,
@@ -1201,13 +1212,12 @@ app.post("/api/tasks/:id/chat/steer/:steerId", async (c) => {
   }
 });
 
-app.get("/api/tasks/:id/questions", async (c) => {
-  try {
-    const session = await taskAgents.ensure(c.req.param("id"));
-    return c.json({ questions: (await session.pendingQuestions?.()) ?? null });
-  } catch (error) {
-    return taskAgentFailure(c, error);
+app.get("/api/tasks/:id/questions", (c) => {
+  const id = c.req.param("id");
+  if (!taskStore.ledger().tasks.some((task) => task.id === id)) {
+    return c.text("Unknown task", 404);
   }
+  return c.json({ questions: taskAgents.pendingQuestions(id) });
 });
 
 async function answerTaskQuestions(c: Context) {
@@ -1229,7 +1239,8 @@ async function answerTaskQuestions(c: Context) {
     return c.text("answers must be a list", 400);
   }
   try {
-    return c.json(await taskAgents.answerQuestions(c.req.param("id") ?? "", setId, body.answers));
+    await taskAgents.answerQuestions(c.req.param("id") ?? "", setId, body.answers);
+    return c.json({ ledger: taskView() });
   } catch (error) {
     return taskAgentFailure(c, error);
   }
@@ -1237,6 +1248,29 @@ async function answerTaskQuestions(c: Context) {
 
 app.post("/api/tasks/:id/questions/answer", (c) => answerTaskQuestions(c));
 app.post("/api/tasks/:id/questions", (c) => answerTaskQuestions(c));
+
+app.post("/api/tasks/:id/questions/dismiss", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.text("Expected a JSON body", 400);
+  }
+  if (typeof body !== "object" || body === null) return c.text("Expected a JSON body", 400);
+  const setId =
+    "setId" in body && typeof body.setId === "string"
+      ? body.setId
+      : "id" in body && typeof body.id === "string"
+        ? body.id
+        : "";
+  if (setId.length === 0) return c.text("setId is required", 400);
+  try {
+    await taskAgents.dismissQuestions(c.req.param("id") ?? "", setId);
+    return c.json({ ledger: taskView() });
+  } catch (error) {
+    return taskAgentFailure(c, error);
+  }
+});
 
 app.post("/api/tasks/:id/chat/stop", async (c) => {
   try {

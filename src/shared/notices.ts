@@ -123,6 +123,28 @@ export interface TaskDecisionNoticeDetails extends TaskDecisionNoticeRecord {
   summary: string;
 }
 
+/** One answer row carried by a question-answer chip, so its dialog can show every choice. */
+export interface QuestionNoticeAnswer {
+  id: string;
+  prompt: string;
+  kind: "single" | "multi" | "text";
+  values: string[];
+  labels: string[];
+  text: string;
+}
+
+/** The chip that tells the plan agent its question set was answered or dismissed. */
+export interface QuestionNoticeDetails {
+  kind: "questions";
+  setId: string;
+  count: number;
+  /** The prompt the agent received, also shown when the chip is opened. */
+  text: string;
+  summary: string;
+  /** The rows the operator submitted; empty or absent for a dismissed set. */
+  answers?: QuestionNoticeAnswer[];
+}
+
 /** A finished sub-agent run, announced once as a chip. */
 export interface DelegateNoticeDetails {
   kind: "delegate";
@@ -157,7 +179,8 @@ export type ChatNotice =
   | MemoryDeltaDetails
   | IdleNoticeDetails
   | OperatorNoticeDetails
-  | TaskDecisionNoticeDetails;
+  | TaskDecisionNoticeDetails
+  | QuestionNoticeDetails;
 
 const JOB_HEAD = /^\[background job (\S+) finished\] (\S+) (.+?): (.*)$/;
 const DELEGATE_HEAD =

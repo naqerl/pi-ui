@@ -16,6 +16,7 @@ const NOTICE_ICON_NAMES = [
   "decision-declined",
   "memory",
   "operator",
+  "questions",
   "warning",
 ] as const satisfies readonly string[];
 
@@ -44,6 +45,7 @@ export function noticeIconName(kind: string, decision?: "approved" | "declined")
   }
   if (name.startsWith("memory")) return "memory";
   if (name.startsWith("operator")) return "operator";
+  if (name.startsWith("question") || name.startsWith("task-question")) return "questions";
   return "warning";
 }
 

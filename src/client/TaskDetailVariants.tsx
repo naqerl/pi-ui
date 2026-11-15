@@ -9,7 +9,7 @@ import {
 import { taskDeepLinkFromLocation } from "../shared/pages";
 import { TASK_BODY_MAX_LENGTH } from "../shared/tasks";
 import { formatCompactDateTime } from "../shared/time";
-import type { Task, TaskLedger, TaskState, TaskTrace } from "../shared/types";
+import type { Task, TaskLedger, TaskQuestionAnswer, TaskState, TaskTrace } from "../shared/types";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import {
@@ -29,6 +29,7 @@ import type { ProjectSuggestion } from "./ProjectSuggestions";
 import { SECTION_BAR_ICON_BUTTON, SECTION_BAR_LABEL, SectionBar } from "./SectionBar";
 import { TaskAgentChat } from "./TaskAgentChat";
 import { TaskPlanningBadge } from "./TaskPlanningBadge";
+import { TaskQuestionPanel } from "./TaskQuestionPanel";
 import type { TaskMedia } from "./use-task-media";
 
 function shortId(id: string): string {
@@ -101,6 +102,8 @@ export interface TaskDetailModel {
   onDismiss: () => void;
   onRemove: () => void;
   onLedger?: (ledger: TaskLedger) => void;
+  answerQuestions: (setId: string, answers: TaskQuestionAnswer[]) => Promise<boolean>;
+  dismissQuestions: (setId: string) => Promise<boolean>;
 }
 
 function ErrorLine({ children }: { children: ReactNode }) {
@@ -979,7 +982,14 @@ function PlanSections({ model }: { model: TaskDetailModel }) {
       className={cn(STACK_8, "min-h-0", model.wide ? "min-h-0 flex-1 overflow-hidden" : undefined)}
       data-testid="task-detail-stack"
     >
-      <div className={cn("shrink-0", STACK_8)}>
+      <div
+        className={cn(
+          STACK_8,
+          model.wide
+            ? "min-h-0 max-h-[60dvh] shrink overflow-y-auto overscroll-contain pr-1"
+            : "shrink-0",
+        )}
+      >
         {model.children.length > 0 && (
           <div data-testid="task-subtasks-card" className={DETAIL_CARD}>
             <Subtasks model={model} />
@@ -997,6 +1007,14 @@ function PlanSections({ model }: { model: TaskDetailModel }) {
         )}
         {model.media.error !== null && <ErrorLine>{model.media.error}</ErrorLine>}
         {model.notice !== null && <ErrorLine>{model.notice}</ErrorLine>}
+        {model.task.questions != null && (
+          <TaskQuestionPanel
+            key={model.task.questions.id}
+            set={model.task.questions}
+            onAnswer={model.answerQuestions}
+            onDismiss={model.dismissQuestions}
+          />
+        )}
       </div>
       <section
         data-testid="task-plan-card"
@@ -1077,6 +1095,7 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
             variant="pane"
             composerTarget="dock"
             active={tab === "chat"}
+            onShowPlan={() => setTab("plan")}
           />
         </div>
       </div>

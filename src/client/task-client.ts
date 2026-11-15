@@ -1,4 +1,4 @@
-import type { TaskLedger, TaskStatus } from "../shared/types";
+import type { TaskLedger, TaskQuestionAnswer, TaskStatus } from "../shared/types";
 
 const FALLBACK_ERROR = "Could not update tasks";
 
@@ -29,6 +29,40 @@ async function requestTask(url: string, init: RequestInit): Promise<TaskOutcome>
   } catch {
     return { ok: false, error: FALLBACK_ERROR };
   }
+}
+
+/** The question routes answer with `{ ledger }` so one reply refreshes the whole tasks view. */
+async function requestQuestionLedger(url: string, body: unknown): Promise<TaskOutcome> {
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) return { ok: false, error: failureText(await response.text()) };
+    const parsed = (await response.json()) as { ledger?: TaskLedger };
+    if (parsed.ledger === undefined) return { ok: false, error: FALLBACK_ERROR };
+    return { ok: true, ledger: parsed.ledger };
+  } catch {
+    return { ok: false, error: FALLBACK_ERROR };
+  }
+}
+
+export function answerTaskQuestions(
+  taskId: string,
+  setId: string,
+  answers: TaskQuestionAnswer[],
+): Promise<TaskOutcome> {
+  return requestQuestionLedger(`/api/tasks/${encodeURIComponent(taskId)}/questions/answer`, {
+    setId,
+    answers,
+  });
+}
+
+export function dismissTaskQuestions(taskId: string, setId: string): Promise<TaskOutcome> {
+  return requestQuestionLedger(`/api/tasks/${encodeURIComponent(taskId)}/questions/dismiss`, {
+    setId,
+  });
 }
 
 export function createTask(

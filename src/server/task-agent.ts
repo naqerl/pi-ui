@@ -29,12 +29,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { Type } from "typebox";
 import { parseProjectToken, projectsOf, sameProject } from "../shared/project.js";
-import {
-  parseTaskQuestions,
-  questionAnswerItems,
-  taskQuestionAnswerPayload,
-  taskQuestionAnswerSummary,
-} from "../shared/questions.js";
+import { parseTaskQuestions, taskQuestionAnswerPayload } from "../shared/questions.js";
 import { PENDING_QUEUE_ORDER, QUEUE_ENTRY_KIND } from "../shared/queue.js";
 import { runErrorFromUnanswered } from "../shared/run-error.js";
 import { steerDropReason } from "../shared/steers.js";
@@ -44,6 +39,7 @@ import {
   type ChatMessage,
   type MessageMode,
   type QueuedMessage,
+  type QueuedNotice,
   type RunError,
   type RunState,
   STEER_ENTRY_KIND,
@@ -52,6 +48,7 @@ import {
   type Task,
   type TaskLedger,
   type TaskQuestionSet,
+  type TaskStatus,
 } from "../shared/types.js";
 import { withConversationIdentity } from "./billion-context.js";
 import type { MediaStore } from "./media.js";
@@ -61,12 +58,13 @@ import { createMemoryTools } from "./memory/tools.js";
 import { PlanTurnNotifier, type PlanTurnPushSender } from "./plan-push.js";
 import { retrySettings } from "./retry.js";
 import { RunErrorNotifier, type RunErrorPushInput, type RunErrorPushSender } from "./run-push.js";
-import { buildTranscript, SESSION_CONTEXT } from "./session.js";
+import { buildTranscript, SESSION_CONTEXT, TASK_QUESTION_PROMPT_ENTRY_KIND } from "./session.js";
 import type { SseFrame } from "./sse.js";
 import { StreamHub } from "./stream-hub.js";
 import {
   type QuestionAnswerResult,
-  TaskQuestionAnswerEntry,
+  questionAnswerPrompt,
+  questionDismissPrompt,
   TaskQuestionsStore,
 } from "./task-questions.js";
 import { createProposeTaskTool } from "./task-tools.js";
@@ -116,8 +114,6 @@ export interface TaskAgentChatSnapshot {
   /** The last plan-run failure, until dismissed or the next submit. */
   runError?: RunError | null;
   draft: { text: string; thinking: string; revision: number };
-  /** The unanswered set, or null. Persisted beside the task agent's conversation. */
-  questions: TaskQuestionSet | null;
   /** Follow-ups waiting for the current plan run to end. */
   queue?: QueuedMessage[];
   /** Steers waiting for the run's next turn boundary. */
@@ -148,10 +144,10 @@ export interface TaskAgentSession {
   close(): Promise<void>;
   replayFrames(): SseFrame[];
   applyInstructions?(instructions: string): Promise<void>;
-  /** The pending set for the answer panel, or null when nothing waits. */
-  pendingQuestions?(): Promise<TaskQuestionSet | null>;
-  /** Record the operator's answers, add a readable transcript row, and wake the tool. */
-  answerQuestions?(setId: string, answers: unknown): Promise<TaskAgentChatSnapshot>;
+  /** Record the operator's answers and nudge the agent with them. */
+  answerQuestions?(setId: string, answers: unknown): Promise<void>;
+  /** Drop the pending set and tell the agent to decide those questions itself. */
+  dismissQuestions?(setId: string): Promise<void>;
 }
 
 /** The memory tree and the chat snapshot cache; plan sessions keep their own cache. */
@@ -177,6 +173,8 @@ export interface TaskAgentManagerOptions {
   readonly relay?: (taskId: string, frame: SseFrame) => void;
   /** A plan run started or ended, so the tasks payload can be pushed again with `planning`. */
   readonly onRunState?: (taskId: string) => void;
+  /** A pending question set changed, so the tasks payload can be pushed with `questions`. */
+  readonly onQuestions?: (taskId: string) => void;
   /** Used to resolve image attachments sent in the plan chat. */
   readonly media?: MediaStore;
   /** Where a finished planning turn is announced. Defaults to web push. */
@@ -284,10 +282,11 @@ export function derivePlanningTaskIds(
     .map((task) => task.id);
 }
 
-/** Visible chat rows: user and assistant text, plus system notes. Never tool-call lists. */
+/** Visible chat rows: user and assistant text, system notes, and question-answer chips. */
 export function visibleTaskAgentMessages(messages: readonly ChatMessage[]): ChatMessage[] {
   return messages.filter((message) => {
-    if (message.notice !== undefined) return false;
+    // The plan chat shows the answered/dismissed chip; other machine notices stay off it.
+    if (message.notice !== undefined) return message.notice.kind === "questions";
     return message.role === "user" || message.role === "assistant" || message.role === "system";
   });
 }
@@ -319,7 +318,12 @@ Plan mode only:
 - Project guidance lives in the repository's AGENTS.md. This server has no separate skills loader, so treat AGENTS.md as the skills equivalent.
 - You have additional tools, edit_task, propose_task, ask_questions and append_questions. edit_task updates this task's title, markdown body and/or project. Use it to capture the formulated task: a clear title, a markdown body with the problem and the proposed design (mermaid fences are allowed), and a project when one fits.
 - Use propose_task to hand a follow-up task to the operator for approval. A proposal is not a task: only a human approving it creates work, so do not treat it as started or done. Do not propose a duplicate of the task you are planning; propose only distinct follow-up work.
-- When a decision would be guessed in prose, call ask_questions with a structured set (single, multi or text) and wait for the operator's answers. Use append_questions to add to the same unanswered set while you are still composing it.
+- Investigate before asking. Read the files, the task body, the docs and prior tasks with read/bash first; most questions answer themselves.
+- Decide alone: naming, file layout, data shape, library choice, UI micro-layout, defaults, test style, and anything the repo or the task body already answers. State the decision and its reason in the task body instead of asking.
+- Ask only when the answer changes what gets built and cannot be derived: product intent, an irreversible trade-off, two requirements that contradict each other, or access you cannot see. Never ask "should I proceed", "is this ok", "any preferences", or anything already written in the task body.
+- At most 3 questions in one set, each with 2–4 concrete options, one line of detail, and your recommended option named in the detail text.
+- ask_questions returns immediately — never wait for answers. Keep working on everything they do not block, or end the turn with a short status. The answers arrive as a notice; apply them, then update the task body.
+- Never re-ask an answered question. If a set was dismissed, decide it yourself.
 - Do not change the task's status. The operator owns that.
 - Do not list or narrate your tool calls in the task body.
 
@@ -456,10 +460,10 @@ export function createTaskQuestionTools(options: {
     defineTool({
       name: "ask_questions",
       description:
-        "Ask the operator a structured set of questions and wait for the answers. Use single for one choice, multi for several, and text for free text. Every single or multi question needs options. Returns the answers as JSON plus a one-line summary.",
+        "Register up to 3 genuinely unobvious, scope-level questions for the operator on this task's Plan tab, then return immediately. Investigate first and decide naming, layout, data shape, libraries, defaults and anything the repo or task body already answers yourself. Ask only when the answer changes what gets built and cannot be derived. Never ask whether to proceed or for preferences. Each question uses single, multi or text; single and multi need 2–4 concrete options with one line of detail naming your recommendation. Never wait for answers: keep working on what they do not block, end the turn with a status, and apply the answers when the notice arrives.",
       parameters: questionsSchema,
       replay: "safe",
-      async execute(args, api, context) {
+      async execute(args, api) {
         try {
           const parsed = parseTaskQuestions(args.questions);
           if (!parsed.ok) return questionFailure(new Error(parsed.error));
@@ -468,8 +472,16 @@ export function createTaskQuestionTools(options: {
             askedBy === undefined ? null : await options.questions.answeredBy(askedBy);
           if (replayed !== null) return answerToolResult(replayed);
           const { set } = await options.questions.add(options.taskId, parsed.questions, askedBy);
-          const answered = await options.questions.waitForAnswers(set.id, context.abortSignal);
-          return answerToolResult(answered);
+          const count = set.questions.length;
+          return {
+            output: [
+              {
+                type: "text" as const,
+                text: `Registered ${count} question${count === 1 ? "" : "s"} (set ${set.id}). The operator answers them on this task's Plan tab.\nDo not wait and do not repeat them. Keep working on what the answers do not block, or end your turn with a short status; the answers arrive as a new notice.`,
+              },
+            ],
+            details: { setId: set.id, questions: set.questions } as never,
+          };
         } catch (error) {
           return questionFailure(error);
         }
@@ -478,7 +490,7 @@ export function createTaskQuestionTools(options: {
     defineTool({
       name: "append_questions",
       description:
-        "Add questions to the same unanswered set ask_questions is composing. Duplicate ids are refused. Use this when you learn something while writing the questions, before the operator answers.",
+        "Add questions to the same unanswered set ask_questions registered, up to 8 in total. Investigate first and decide anything the repo or task body already answers yourself; ask only genuinely unobvious, scope-level questions, at most 3 per set, each with 2–4 concrete options and your recommendation. Duplicate ids are refused. Never wait for answers; the operator answers on the Plan tab and the answers arrive as a notice.",
       parameters: questionsSchema,
       replay: "safe",
       async execute(args, api) {
@@ -701,45 +713,106 @@ export class DurableTaskAgentSession implements TaskAgentSession {
         thinking: this.currentThinking,
         revision: this.draftRevision,
       },
-      questions: this.questions === undefined ? null : await this.questions.pending(),
       queue: this.queueItems(),
       steers: this.steerItems(),
       queueRevision: this.queueRevision,
     };
   }
 
-  async pendingQuestions(): Promise<TaskQuestionSet | null> {
-    return this.questions === undefined ? null : this.questions.pending();
-  }
-
-  async answerQuestions(setId: string, answers: unknown): Promise<TaskAgentChatSnapshot> {
+  async answerQuestions(setId: string, answers: unknown): Promise<void> {
     if (this.closed) throw new TaskAgentError("Task agent has been closed", 409);
     if (this.questions === undefined) {
       throw new TaskAgentError("Questions are not available for this task", 409);
     }
     const result = await this.questions.answer(setId, answers);
-    const answersBlock = questionAnswerItems(result.record.questions, result.record.answers);
-    try {
-      await this.conversation.commit(
-        (tx) =>
-          tx.appendEntry(TaskQuestionAnswerEntry, this.conversation.id, {
-            data: {
-              setId: result.set.id,
-              taskId: this.taskId,
-              text: taskQuestionAnswerSummary(answersBlock),
-              answers: answersBlock,
-              createdAt: result.record.answeredAt,
-            },
-          }),
-        SESSION_CONTEXT,
-      );
-    } catch (error) {
-      console.error(`[task-agent] could not record answers for ${this.taskId}`, error);
-    } finally {
-      // The tool result must not stay blocked just because the display row failed.
-      this.questions.resolve(setId, result);
+    await this.submitQuestionNudge(
+      questionAnswerPrompt(result),
+      result.set.id,
+      result.items,
+      result.record.answeredAt,
+      { kind: "questions", label: "Answers sent", glyph: "questions" },
+    );
+  }
+
+  async dismissQuestions(setId: string): Promise<void> {
+    if (this.closed) throw new TaskAgentError("Task agent has been closed", 409);
+    if (this.questions === undefined) {
+      throw new TaskAgentError("Questions are not available for this task", 409);
     }
-    return this.snapshot();
+    const set = await this.questions.dismiss(setId);
+    await this.submitQuestionNudge(
+      questionDismissPrompt(set),
+      set.id,
+      [],
+      new Date().toISOString(),
+      { kind: "questions", label: "Questions dismissed", glyph: "questions" },
+    );
+  }
+
+  /**
+   * A question thread is a chip, not a parked tool: the durable entry carries the model
+   * prompt and renders as a notice. `followUp` starts an idle run now and joins a live one
+   * at its next boundary without cutting the turn in progress.
+   */
+  private async submitQuestionNudge(
+    text: string,
+    setId: string,
+    answers: QuestionAnswerResult["items"],
+    createdAt: string,
+    notice: QueuedNotice,
+  ): Promise<void> {
+    const promptAnswers = answers.map((answer) => ({
+      id: answer.id,
+      prompt: answer.prompt,
+      kind: answer.kind,
+      values: [...answer.values],
+      labels: [...answer.labels],
+      text: answer.text,
+    }));
+    const startsRun = this.runState !== "running" && this.queued.size === 0;
+    const submission = await this.identity(() =>
+      this.conversation.submit(
+        {
+          type: "input",
+          content: text,
+          whenBusy: "followUp",
+          requestId: `questions:${setId}`,
+          entry: {
+            kind: TASK_QUESTION_PROMPT_ENTRY_KIND,
+            data: { setId, taskId: this.taskId, text, answers: promptAnswers, createdAt },
+          },
+        },
+        SESSION_CONTEXT,
+      ),
+    );
+    if (startsRun) {
+      this.stopRequested = false;
+      this.setRunState("running", null);
+    }
+    const id = String(submission.id);
+    const key = `questions-${setId}`;
+    const { placed } = await this.submittedMessage(
+      submission,
+      text,
+      false,
+      [],
+      undefined,
+      key,
+      notice,
+    );
+    if (!placed) {
+      this.queued.set(id, {
+        id,
+        text,
+        createdAt,
+        key,
+        requestId: `questions:${setId}`,
+        notice,
+      });
+    }
+    this.markQueueChanged();
+    this.broadcastQueue();
+    void this.monitorSubmission(submission, startsRun, id, undefined);
   }
 
   async applyInstructions(instructions: string): Promise<void> {
@@ -877,6 +950,7 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     attachments: string[],
     steerKey: string | undefined,
     pendingKey: string | undefined,
+    notice?: QueuedNotice,
   ): Promise<{ message: ChatMessage; placed: boolean }> {
     const status = (
       submission as { status?: (context: typeof SESSION_CONTEXT) => Promise<unknown> }
@@ -921,6 +995,7 @@ export class DurableTaskAgentSession implements TaskAgentSession {
         order: PENDING_QUEUE_ORDER,
         ...(steer ? { steer: true } : {}),
         ...(steerKey === undefined ? {} : { steerKey }),
+        ...(notice === undefined ? {} : { notice }),
       },
       placed,
     };
@@ -1250,6 +1325,10 @@ export class DurableTaskAgentSession implements TaskAgentSession {
 export class TaskAgentManager {
   private readonly sessions = new Map<string, TaskAgentSession>();
   private readonly opening = new Map<string, Promise<TaskAgentSession>>();
+  private readonly questionStores = new Map<string, TaskQuestionsStore>();
+  private readonly taskStatuses = new Map<string, TaskStatus>();
+  /** Tasks whose set is being cleared, so the immediate tasks payload cannot repaint it. */
+  private readonly dismissingQuestions = new Set<string>();
   private closed = false;
   readonly root: string;
   private readonly planTurnNotifier: PlanTurnNotifier;
@@ -1274,6 +1353,38 @@ export class TaskAgentManager {
       ...(options.burstWindowMs === undefined ? {} : { burstWindowMs: options.burstWindowMs }),
       ...(options.coalesceMs === undefined ? {} : { coalesceMs: options.coalesceMs }),
     });
+    // A restart must still show pending sets before their task is opened.
+    for (const task of options.store.ledger().tasks) {
+      this.taskStatuses.set(task.id, task.status);
+      const store = this.createQuestionStore(task.id);
+      this.questionStores.set(task.id, store);
+      void store
+        .load()
+        .then(() => {
+          if (store.pendingSync() !== null) this.options.onQuestions?.(task.id);
+        })
+        .catch((error: unknown) => {
+          console.error(`[task-agent] could not load questions for ${task.id}`, error);
+        });
+    }
+  }
+
+  private createQuestionStore(taskId: string): TaskQuestionsStore {
+    return new TaskQuestionsStore(join(this.taskDir(taskId), "questions.json"), () => {
+      this.options.onQuestions?.(taskId);
+    });
+  }
+
+  private async questionStore(taskId: string): Promise<TaskQuestionsStore> {
+    const existing = this.questionStores.get(taskId);
+    if (existing !== undefined) {
+      await existing.load();
+      return existing;
+    }
+    const store = this.createQuestionStore(taskId);
+    await store.load();
+    this.questionStores.set(taskId, store);
+    return store;
   }
 
   /** Announce one finished planning turn. Exposed so a caller can flush or test the path. */
@@ -1415,16 +1526,77 @@ export class TaskAgentManager {
     await session.stop();
   }
 
-  async answerQuestions(
-    taskId: string,
-    setId: string,
-    answers: unknown,
-  ): Promise<TaskAgentChatSnapshot> {
+  async answerQuestions(taskId: string, setId: string, answers: unknown): Promise<void> {
     const session = await this.ensure(taskId);
     if (session.answerQuestions === undefined) {
       throw new TaskAgentError("Questions are not available for this task", 409);
     }
-    return session.answerQuestions(setId, answers);
+    await session.answerQuestions(setId, answers);
+  }
+
+  async dismissQuestions(taskId: string, setId: string): Promise<void> {
+    const session = await this.ensure(taskId);
+    if (session.dismissQuestions === undefined) {
+      throw new TaskAgentError("Questions are not available for this task", 409);
+    }
+    await session.dismissQuestions(setId);
+  }
+
+  /** The pending set for a task without waiting on the store. */
+  pendingQuestions(taskId: string): TaskQuestionSet | null {
+    if (this.dismissingQuestions.has(taskId)) return null;
+    return this.questionStores.get(taskId)?.pendingSync() ?? null;
+  }
+
+  /**
+   * A set belongs to the plan the operator is still deciding. Once the task leaves that
+   * decision (a draft is approved, or work is parked or closed), drop it instead of letting
+   * it wake a plan agent for work that is no longer being planned.
+   */
+  syncQuestionStatus(ledger: TaskLedger): void {
+    const seen = new Set<string>();
+    for (const task of ledger.tasks) {
+      seen.add(task.id);
+      const previous = this.taskStatuses.get(task.id);
+      this.taskStatuses.set(task.id, task.status);
+      if (previous === undefined || previous === task.status) continue;
+      const leftPlanning =
+        previous === "planning" || previous === "proposed" || previous === "backlog";
+      const parked =
+        task.status === "done" || task.status === "backlog" || task.status === "proposed";
+      if (leftPlanning || parked) void this.dismissQuestionsForTask(task.id);
+    }
+    for (const taskId of this.taskStatuses.keys()) {
+      if (!seen.has(taskId)) this.taskStatuses.delete(taskId);
+    }
+  }
+
+  private async dismissQuestionsForTask(taskId: string): Promise<void> {
+    const store = this.questionStores.get(taskId);
+    const pending = store?.pendingSync();
+    if (store === undefined || pending == null) return;
+    // Hide it before the disk write so the response and broadcast for this transition
+    // cannot carry the set that is about to be cleared.
+    this.dismissingQuestions.add(taskId);
+    try {
+      await store.dismiss(pending.id);
+    } catch (error) {
+      if (!(error instanceof TaskError && error.status === 409)) {
+        console.error(`[task-agent] could not dismiss questions for ${taskId}`, error);
+      }
+    } finally {
+      this.dismissingQuestions.delete(taskId);
+      this.options.onQuestions?.(taskId);
+    }
+  }
+
+  /** Task ids that currently have an unanswered question set. */
+  questionTaskIds(): string[] {
+    const ids: string[] = [];
+    for (const [taskId, store] of this.questionStores) {
+      if (!this.dismissingQuestions.has(taskId) && store.pendingSync() !== null) ids.push(taskId);
+    }
+    return ids;
   }
 
   async remove(taskId: string): Promise<void> {
@@ -1444,6 +1616,8 @@ export class TaskAgentManager {
     }
     const session = this.sessions.get(taskId);
     this.sessions.delete(taskId);
+    this.questionStores.delete(taskId);
+    this.dismissingQuestions.delete(taskId);
     if (session !== undefined) await session.close();
     await rm(this.taskDir(taskId), { recursive: true, force: true });
   }
@@ -1465,27 +1639,29 @@ export class TaskAgentManager {
   }
 
   private async open(taskId: string): Promise<TaskAgentSession> {
+    const questions = await this.questionStore(taskId);
     if (this.options.openSession !== undefined) {
       const session = await this.options.openSession(taskId, this);
       this.sessions.set(taskId, session);
       if (session.running()) this.options.onRunState?.(taskId);
       return session;
     }
-    const session = await this.openDurable(taskId);
+    const session = await this.openDurable(taskId, questions);
     this.sessions.set(taskId, session);
     if (session.running()) this.options.onRunState?.(taskId);
     return session;
   }
 
-  private async openDurable(taskId: string): Promise<DurableTaskAgentSession> {
+  private async openDurable(
+    taskId: string,
+    questions: TaskQuestionsStore,
+  ): Promise<DurableTaskAgentSession> {
     const task = this.options.store.ledger().tasks.find((item) => item.id === taskId);
     if (task === undefined) throw new TaskAgentError("Unknown task", 404);
     const dir = this.taskDir(taskId);
     await mkdir(dir, { recursive: true });
     const databasePath = join(dir, "pi.sqlite3");
     const currentPath = join(dir, "current.json");
-    const questions = new TaskQuestionsStore(join(dir, "questions.json"));
-    await questions.load();
     const storage = await openNodeSqliteStorage(databasePath);
     const registry = createRegistry<ToolRegistration>();
     const coding = (createCodingTools().tools ?? []).filter(

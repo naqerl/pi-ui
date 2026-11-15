@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 import { createTaskQuestionTools } from "../src/server/task-agent.js";
-import { TaskQuestionsStore } from "../src/server/task-questions.js";
+import {
+  MAX_PENDING_QUESTIONS,
+  questionAnswerPrompt,
+  questionDismissPrompt,
+  TaskQuestionsStore,
+} from "../src/server/task-questions.js";
 import type { TaskQuestion } from "../src/shared/types.js";
 
 let directory = "";
@@ -12,7 +17,7 @@ let path = "";
 let store: TaskQuestionsStore;
 let tools: ReturnType<typeof createTaskQuestionTools>;
 
-const context = { abortSignal: undefined } as never;
+const context = {} as never;
 
 function tool(name: string) {
   const found = tools.find((item) => item.name === name);
@@ -34,6 +39,10 @@ function text(result: Awaited<ReturnType<typeof call>>) {
 
 async function pending() {
   return store.pending();
+}
+
+function question(id: string): TaskQuestion {
+  return { id, prompt: `Question ${id}?`, kind: "text" };
 }
 
 before(async () => {
@@ -135,7 +144,7 @@ test("append_questions merges into the same persisted pending set", async () => 
   assert.deepEqual(await reloaded.pending(), merged);
 });
 
-test("ask_questions returns the same ids and clears the pending set after answering", async () => {
+test("ask_questions returns without an answer and the set stays pending", async () => {
   const questions: TaskQuestion[] = [
     {
       id: "layout",
@@ -162,17 +171,18 @@ test("ask_questions returns the same ids and clears the pending set after answer
       allowOther: true,
     },
   ];
-  const running = call("ask_questions", questions, "tool-ask");
-  let set = await pending();
-  for (let attempt = 0; attempt < 50 && set === null; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    set = await pending();
-  }
+  // No answer is submitted: the call itself must resolve.
+  const result = text(await call("ask_questions", questions, "tool-ask"));
+  assert.equal(result.isError, false);
+  assert.match(result.text, /Registered 3 questions/);
+  assert.match(result.text, /Do not wait/);
+  const set = await pending();
   assert.ok(set);
   assert.deepEqual(
     set.questions.map((question) => question.id),
     ["layout", "parts", "notes"],
   );
+  assert.match(result.text, new RegExp(set.id));
 
   const answers = [
     { id: "layout", values: ["split"], text: "" },
@@ -180,20 +190,74 @@ test("ask_questions returns the same ids and clears the pending set after answer
     { id: "notes", values: [], text: "Keep the phone width in mind." },
   ];
   const answered = await store.answer(set.id, answers);
-  store.resolve(set.id, answered);
-  const result = text(await running);
-  assert.equal(result.isError, false);
-  const [summary, json] = result.text.split("\n");
-  assert.match(summary ?? "", /Answered 3 questions/);
-  assert.match(summary ?? "", /Split/);
-  const payload = JSON.parse(json ?? "{}") as {
-    answers: Array<{ id: string; values: string[]; text: string }>;
-  };
-  assert.deepEqual(payload.answers, answers);
   assert.equal(await pending(), null);
+  assert.match(answered.summary, /Answered 3 questions/);
+  assert.match(answered.summary, /Split/);
+  assert.deepEqual(answered.record.answers, answers);
+
+  // A fresh store reads the same cleared state, as after a server restart.
   const reloaded = new TaskQuestionsStore(path);
   await reloaded.load();
   assert.equal(await reloaded.pending(), null);
+
+  // A replayed tool call still returns the recorded answers instead of asking again.
+  const replay = text(await call("ask_questions", questions, "tool-ask"));
+  assert.equal(replay.isError, false);
+  assert.match(replay.text, /Answered 3 questions/);
+  assert.equal(await pending(), null);
+
+  const prompt = questionAnswerPrompt(answered);
+  assert.match(prompt, new RegExp(`set ${set.id}`));
+  assert.match(prompt, /Which layout\?: Split/);
+  assert.match(prompt, /Keep the phone width in mind/);
+  assert.match(prompt, /Do not ask them again/);
+});
+
+test("a question set is capped and the over-cap call is refused", async () => {
+  const tooMany = Array.from({ length: MAX_PENDING_QUESTIONS + 1 }, (_, index) =>
+    question(`q${index}`),
+  );
+  const refused = text(await call("ask_questions", tooMany));
+  assert.equal(refused.isError, true);
+  assert.match(refused.text, new RegExp(`at most ${MAX_PENDING_QUESTIONS}`));
+  assert.equal(await pending(), null);
+
+  const allowed = Array.from({ length: MAX_PENDING_QUESTIONS }, (_, index) =>
+    question(`q${index}`),
+  );
+  const registered = text(await call("ask_questions", allowed));
+  assert.equal(registered.isError, false);
+  const set = await pending();
+  assert.ok(set);
+  assert.equal(set.questions.length, MAX_PENDING_QUESTIONS);
+
+  const over = text(await call("append_questions", [question("q-extra")]));
+  assert.equal(over.isError, true);
+  assert.match(over.text, new RegExp(`at most ${MAX_PENDING_QUESTIONS}`));
+  assert.equal((await pending())?.questions.length, MAX_PENDING_QUESTIONS);
+});
+
+test("dismiss clears the pending set and tells the agent to decide itself", async () => {
+  const added = await store.add("task-1", [question("scope")]);
+  assert.equal((await store.pending())?.id, added.set.id);
+  const dismissed = await store.dismiss(added.set.id);
+  assert.equal(dismissed.id, added.set.id);
+  assert.equal(await pending(), null);
+  await assert.rejects(store.dismiss(added.set.id), /no longer waiting/i);
+  const prompt = questionDismissPrompt(dismissed);
+  assert.match(prompt, /dismissed your questions/);
+  assert.match(prompt, /Decide these yourself/);
+});
+
+test("the store reports every add and answer through onChange", async () => {
+  let changes = 0;
+  const watched = new TaskQuestionsStore(path, () => {
+    changes += 1;
+  });
+  const added = await watched.add("task-1", [question("scope")]);
+  assert.equal(changes, 1);
+  await watched.answer(added.set.id, [{ id: "scope", values: [], text: "Ship it" }]);
+  assert.equal(changes, 2);
 });
 
 test("answers are validated against the waiting questions", async () => {
@@ -214,4 +278,11 @@ test("answers are validated against the waiting questions", async () => {
     /does not match/i,
   );
   assert.ok(await pending());
+
+  // Re-posting the same set after it was answered is a conflict, not a new record.
+  await store.answer(added.set.id, [{ id: "layout", values: ["split"], text: "" }]);
+  await assert.rejects(
+    store.answer(added.set.id, [{ id: "layout", values: ["split"], text: "" }]),
+    /no longer waiting/i,
+  );
 });

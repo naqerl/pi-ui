@@ -5,7 +5,6 @@ import { ActivityDialog, Composer, TranscriptRows } from "./ChatView";
 import type { TimelineItem } from "./chat-timeline";
 import { EmptyCaption } from "./EmptyCaption";
 import { cn } from "./lib/utils";
-import { TaskQuestionPanel } from "./TaskQuestionPanel";
 import { FIXTURE_CHAT, FIXTURE_PLAN_ID } from "./task-detail-fixture";
 import { readTaskDetailFixture } from "./task-detail-query";
 import {
@@ -23,6 +22,7 @@ export function TaskAgentChat({
   variant = "pane",
   composerTarget = "local",
   active = true,
+  onShowPlan,
 }: {
   task: Task;
   projects: string[];
@@ -32,6 +32,8 @@ export function TaskAgentChat({
   composerTarget?: "local" | "dock";
   /** False while a mobile tab hides the pane; the shared scroll hook restores on return. */
   active?: boolean;
+  /** Switches a phone layout to the Plan tab, where the question panel lives. */
+  onShowPlan?: () => void;
 }) {
   const done = task.status === "done";
   const chat = useTaskChat(task.id, done);
@@ -49,9 +51,7 @@ export function TaskAgentChat({
     }));
   }, [chat.timeline, fixtureChat]);
   const groups = useMemo(() => groupTimeline(timeline), [timeline]);
-  const questionsRevision =
-    chat.questions === null ? "none" : `${chat.questions.id}:${chat.questions.questions.length}`;
-  const stick = useStickToBottom(`${timeline.length}:${questionsRevision}`, { active });
+  const stick = useStickToBottom(`${timeline.length}`, { active });
 
   useEffect(() => {
     const focus = () => {
@@ -170,7 +170,7 @@ export function TaskAgentChat({
         )}
       >
         <div ref={stick.contentRef} className="flex min-h-0 flex-col gap-3">
-          {groups.length === 0 && chat.questions === null ? (
+          {groups.length === 0 ? (
             <div className="flex min-h-0 flex-1 items-center justify-center">
               <EmptyCaption>
                 {done
@@ -185,15 +185,29 @@ export function TaskAgentChat({
               onOpen={openActivity}
             />
           )}
-          {chat.questions !== null && (
-            <TaskQuestionPanel
-              key={chat.questions.id}
-              set={chat.questions}
-              onAnswer={chat.answerQuestions}
-            />
-          )}
         </div>
       </main>
+      {task.questions != null && !done && (
+        <div className="shrink-0 px-3 py-1.5">
+          {onShowPlan === undefined ? (
+            <div
+              data-testid="task-questions-chip"
+              className="theme-radius border border-border/70 bg-surface px-3 py-1.5 text-xs leading-4 text-foreground"
+            >
+              {task.questions.questions.length} questions waiting · Answer in Plan
+            </div>
+          ) : (
+            <button
+              type="button"
+              data-testid="task-questions-chip"
+              onClick={onShowPlan}
+              className="theme-radius w-full border border-border/70 bg-surface px-3 py-1.5 text-left text-xs leading-4 text-foreground hover:border-foreground/25"
+            >
+              {task.questions.questions.length} questions waiting · Answer in Plan
+            </button>
+          )}
+        </div>
+      )}
       {!dock && composer !== null && (
         <div className="glass-composer theme-radius shrink-0">{composer}</div>
       )}

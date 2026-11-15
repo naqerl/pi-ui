@@ -29,6 +29,7 @@ import type {
   TaskActivity,
   TaskLedger,
   TaskMeasured,
+  TaskQuestionAnswer,
   TaskState,
   TaskTrace,
 } from "../shared/types";
@@ -45,8 +46,14 @@ import { InlineMarkdown, plainInline } from "./markdown";
 import { projectSuggestions } from "./ProjectSuggestions";
 import { TaskAgentChat } from "./TaskAgentChat";
 import { type TaskDetailModel, TaskDetailVariant } from "./TaskDetailVariants";
-import { TaskPlanningBadge } from "./TaskPlanningBadge";
-import { removeTask, type TaskOutcome, updateTask } from "./task-client";
+import { TaskPlanningBadge, TaskQuestionsBadge } from "./TaskPlanningBadge";
+import {
+  answerTaskQuestions,
+  dismissTaskQuestions,
+  removeTask,
+  type TaskOutcome,
+  updateTask,
+} from "./task-client";
 import { FIXTURE_PLAN_ID, mergeFixtureTasks } from "./task-detail-fixture";
 import { useTaskDetailFixture } from "./task-detail-query";
 import { useRegisterTaskSurfaceStatus } from "./task-dock-composer";
@@ -1404,6 +1411,13 @@ export function TaskRow({
           {planningLive && (
             <TaskPlanningBadge testId={`task-planning-${task.id}`} className="h-4" />
           )}
+          {task.questions != null && (
+            <TaskQuestionsBadge
+              testId={`task-questions-${task.id}`}
+              count={task.questions.questions.length}
+              className="h-4"
+            />
+          )}
           {stale && <StaleMarker id={task.id} />}
           <ReopenBadge task={task} />
         </TaskCardMeta>
@@ -1514,6 +1528,13 @@ function ProposedTask({
           <Badge variant="outline" data-testid="task-decision-tag">
             {draft ? "Draft" : "Needs you"}
           </Badge>
+          {task.questions != null && (
+            <TaskQuestionsBadge
+              testId={`task-questions-${task.id}`}
+              count={task.questions.questions.length}
+              className="h-4"
+            />
+          )}
         </TaskCardMeta>
       </div>
       {notice !== null && (
@@ -1840,6 +1861,21 @@ export function TaskDetail({
     setProjectError(null);
     void saveProject(name);
   };
+
+  const answerQuestions = async (setId: string, answers: TaskQuestionAnswer[]) => {
+    const outcome = await answerTaskQuestions(task.id, setId, answers);
+    if (!outcome.ok) return false;
+    onLedger?.(outcome.ledger);
+    return true;
+  };
+
+  const dismissQuestions = async (setId: string) => {
+    const outcome = await dismissTaskQuestions(task.id, setId);
+    if (!outcome.ok) return false;
+    onLedger?.(outcome.ledger);
+    return true;
+  };
+
   const done = task.status === "done";
   const proposed = task.status === "proposed";
   const draft = task.status === "planning";
@@ -1923,6 +1959,8 @@ export function TaskDetail({
       onDismiss,
       onRemove,
       onLedger,
+      answerQuestions,
+      dismissQuestions,
     };
     return <TaskDetailVariant model={model} />;
   }

@@ -1,12 +1,18 @@
 import { type Browser, test } from "@e2e-dev/web";
 import { expect } from "e2e";
 import { readActivitySurface } from "./activity-helpers";
-import { createOpenTask, openTaskChatTab, removeTasks } from "./tasks-helpers";
+import {
+  createOpenTask,
+  openNewTaskComposer,
+  openTaskChatTab,
+  removeTasks,
+  setPlanDraft,
+} from "./tasks-helpers";
 
 const FIRST_QUESTIONS = [
   {
     id: "layout",
-    prompt: "Which layout should the inbox use?",
+    prompt: "SLOW which layout should the inbox use?",
     kind: "single",
     options: [
       { value: "split", label: "Split layout" },
@@ -26,54 +32,6 @@ const FIRST_QUESTIONS = [
     id: "notes",
     prompt: "What should I keep in mind?",
     kind: "text",
-  },
-  {
-    id: "density",
-    prompt: "How dense should the list feel?",
-    kind: "single",
-    options: [
-      { value: "compact", label: "Compact rows" },
-      { value: "roomy", label: "Roomy rows" },
-    ],
-  },
-  {
-    id: "theme",
-    prompt: "Which theme should the inbox use?",
-    kind: "single",
-    options: [
-      { value: "light", label: "Light theme" },
-      { value: "dark", label: "Dark theme" },
-    ],
-  },
-] as const;
-
-const SECOND_QUESTIONS = [
-  {
-    id: "s1",
-    prompt: "Search where?",
-    kind: "single",
-    options: [
-      { value: "header", label: "Header" },
-      { value: "list", label: "List" },
-    ],
-  },
-  {
-    id: "s2",
-    prompt: "Preview?",
-    kind: "single",
-    options: [
-      { value: "sender", label: "Sender" },
-      { value: "subject", label: "Subject" },
-    ],
-  },
-  {
-    id: "s3",
-    prompt: "Unread count?",
-    kind: "single",
-    options: [
-      { value: "yes", label: "Keep" },
-      { value: "no", label: "Drop" },
-    ],
   },
 ] as const;
 
@@ -100,109 +58,39 @@ const OTHER_QUESTIONS = [
   },
 ] as const;
 
+const DISMISS_QUESTIONS = [
+  {
+    id: "scope",
+    prompt: "Which part should ship first?",
+    kind: "single",
+    options: [
+      { value: "inbox", label: "Inbox" },
+      { value: "search", label: "Search" },
+    ],
+  },
+] as const;
+
+const DOUBLE_QUESTIONS = [
+  {
+    id: "density",
+    prompt: "How dense should the list feel?",
+    kind: "single",
+    options: [
+      { value: "compact", label: "Compact rows" },
+      { value: "roomy", label: "Roomy rows" },
+    ],
+  },
+] as const;
+
 interface AnswerSubmission {
   setId: string;
   answers: Array<{ id: string; values: string[]; text: string }>;
 }
 
-interface PanelGeometry {
-  height: number;
-  clientHeight: number;
-  scrollHeight: number;
-  top: number;
-  bottom: number;
-}
-
-interface TranscriptGeometry {
-  scrollTop: number;
-  scrollHeight: number;
-  clientHeight: number;
-  distance: number;
-  scrollerTop: number;
-  scrollerBottom: number;
-  composerTop: number | null;
-  composerHeight: number | null;
-  anchorId: string | null;
-  anchorOffset: number | null;
-  visibleMessageIds: string[];
-  messagesAbovePanel: number;
-  panel: PanelGeometry | null;
-  panelOverflow: string[];
-  panelSetId: string | null;
-}
-
-function readTranscript(browser: Browser): Promise<TranscriptGeometry | null> {
-  return browser.evaluate(() => {
-    const scroller = document.querySelector<HTMLElement>('[data-testid="task-agent-transcript"]');
-    if (scroller === null) return null;
-    const scrollerRect = scroller.getBoundingClientRect();
-    const rows = [...scroller.querySelectorAll<HTMLElement>("[data-message-id]")];
-    const visible = rows.filter((row) => {
-      const rect = row.getBoundingClientRect();
-      return rect.bottom > scrollerRect.top + 1 && rect.top < scrollerRect.bottom - 1;
-    });
-    const anchor =
-      visible.find((row) => row.getBoundingClientRect().top >= scrollerRect.top - 1) ?? visible[0];
-    const panel = document.querySelector<HTMLElement>('[data-testid="task-questions-panel"]');
-    const panelRect = panel?.getBoundingClientRect() ?? null;
-    const composer = document.querySelector<HTMLElement>('[data-testid="composer-form"]');
-    return {
-      scrollTop: scroller.scrollTop,
-      scrollHeight: scroller.scrollHeight,
-      clientHeight: scroller.clientHeight,
-      distance: scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight,
-      scrollerTop: scrollerRect.top,
-      scrollerBottom: scrollerRect.bottom,
-      composerTop: composer?.getBoundingClientRect().top ?? null,
-      composerHeight: composer?.getBoundingClientRect().height ?? null,
-      anchorId: anchor?.dataset.messageId ?? null,
-      anchorOffset:
-        anchor === undefined ? null : anchor.getBoundingClientRect().top - scrollerRect.top,
-      visibleMessageIds: visible.flatMap((row) =>
-        row.dataset.messageId === undefined ? [] : [row.dataset.messageId],
-      ),
-      messagesAbovePanel:
-        panelRect === null
-          ? 0
-          : rows.filter((row) => {
-              const rect = row.getBoundingClientRect();
-              return rect.bottom > scrollerRect.top + 1 && rect.top < panelRect.top - 1;
-            }).length,
-      panel:
-        panelRect === null
-          ? null
-          : {
-              height: panelRect.height,
-              clientHeight: panel?.clientHeight ?? 0,
-              scrollHeight: panel?.scrollHeight ?? 0,
-              top: panelRect.top,
-              bottom: panelRect.bottom,
-            },
-      panelOverflow:
-        panel === null
-          ? []
-          : [panel, ...panel.querySelectorAll<HTMLElement>("*")].flatMap((element) =>
-              element.scrollWidth > element.clientWidth + 1
-                ? [
-                    `${element.tagName.toLowerCase()}${
-                      element.dataset.testid === undefined ? "" : `[${element.dataset.testid}]`
-                    } ${element.scrollWidth}>${element.clientWidth}`,
-                  ]
-                : [],
-            ),
-      panelSetId: panel?.dataset.setId ?? null,
-    };
-  });
-}
-
-async function settle(browser: Browser): Promise<void> {
-  await browser.evaluate(
-    () =>
-      new Promise<boolean>((resolve) => {
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)));
-      }),
-  );
-}
+type PlanMessage = {
+  text: string;
+  notice?: { kind?: string; summary?: string };
+};
 
 async function taskIdFor(browser: Browser, title: string): Promise<string> {
   const id = await browser.evaluate(async (taskTitle) => {
@@ -230,27 +118,44 @@ async function postPlanMessage(browser: Browser, taskId: string, text: string): 
   );
 }
 
-async function stopPlanRun(browser: Browser, taskId: string): Promise<number> {
-  return browser.evaluate(
-    async (id) =>
-      (
-        await fetch(`/api/tasks/${encodeURIComponent(id)}/chat/stop`, {
-          method: "POST",
-        })
-      ).status,
-    taskId,
-  );
+async function askQuestions(
+  browser: Browser,
+  taskId: string,
+  questions: readonly unknown[],
+): Promise<void> {
+  expect(
+    await postPlanMessage(
+      browser,
+      taskId,
+      `TOOLCALLS ${JSON.stringify([{ name: "append_questions", arguments: { questions } }])}`,
+    ),
+  ).toBe(202);
 }
 
-async function scrollTranscript(browser: Browser, fraction: number): Promise<void> {
-  await browser.evaluate((part) => {
-    const scroller = document.querySelector<HTMLElement>('[data-testid="task-agent-transcript"]');
-    if (scroller === null) return false;
-    scroller.scrollTop = Math.floor((scroller.scrollHeight - scroller.clientHeight) * part);
-    scroller.dispatchEvent(new Event("scroll"));
-    return true;
-  }, fraction);
-  await settle(browser);
+async function taskQuestions(
+  browser: Browser,
+  taskId: string,
+): Promise<{ id: string; questions: unknown[] } | null> {
+  return browser.evaluate(async (id) => {
+    const ledger = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
+      tasks: Array<{
+        id: string;
+        questions?: { id: string; questions: Array<{ id: string }> } | null;
+      }>;
+    };
+    return ledger.tasks.find((task) => task.id === id)?.questions ?? null;
+  }, taskId);
+}
+
+async function planMessages(browser: Browser, taskId: string): Promise<PlanMessage[]> {
+  return browser.evaluate(async (id) => {
+    const response = await fetch(`/api/tasks/${encodeURIComponent(id)}/chat`, {
+      cache: "no-store",
+    });
+    if (!response.ok) return [];
+    const snapshot = (await response.json()) as { messages?: PlanMessage[] };
+    return snapshot.messages ?? [];
+  }, taskId);
 }
 
 async function answerQuestions(
@@ -272,194 +177,168 @@ async function answerQuestions(
   );
 }
 
-test("the planning questions card never steals the transcript", {
+async function dismissQuestions(browser: Browser, taskId: string, setId: string): Promise<number> {
+  return browser.evaluate(
+    async ({ id, set }) => {
+      const response = await fetch(`/api/tasks/${encodeURIComponent(id)}/questions/dismiss`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ setId: set }),
+      });
+      return response.status;
+    },
+    { id: taskId, set: setId },
+  );
+}
+
+test("the Plan tab shows questions and the answers arrive as a chat chip", {
   timeout: 300_000,
 }, async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/?page=tasks");
-  const title = `Plan questions scroll ${Date.now()}`;
+  const title = `Plan questions ${Date.now()}`;
   await createOpenTask(screen, title, { project: "pi-ui" });
-  await openTaskChatTab(screen);
-  await expect(screen.getByTestId("task-agent-chat")).toBeVisible();
   const taskId = await taskIdFor(browser, title);
 
-  // Make the plan transcript taller than the phone viewport before asking anything.
-  for (let index = 0; index < 6; index += 1) {
-    expect(await postPlanMessage(browser, taskId, `Planning row ${index} for ${title}`)).toBe(202);
-  }
-  await expect
-    .poll(
-      () =>
-        browser.evaluate(
-          () =>
-            document.querySelectorAll('[data-testid="task-agent-transcript"] [data-message-id]')
-              .length,
-        ),
-      { timeout: 60_000 },
-    )
-    .toBeGreaterThanOrEqual(14);
-  await expect(screen.getByTestId("working-status")).toHaveText("idle", { timeout: 60_000 });
-  await expect(screen.getByTestId("task-agent-status")).toHaveCount(0);
-
-  // The run's only status is the composer dock row; a run must not add another.
-  await scrollTranscript(browser, 0.45);
-  const beforePlanRun = await readTranscript(browser);
-  expect(beforePlanRun).not.toBeNull();
-  if (beforePlanRun === null) return;
-  expect(beforePlanRun.distance).toBeGreaterThan(100);
-
-  expect(await postPlanMessage(browser, taskId, "SLOW keep the plan run open")).toBe(202);
-  await expect(screen.getByTestId(`task-detail-planning-${taskId}`)).toBeVisible({
-    timeout: 30_000,
-  });
-  await expect(screen.getByTestId("working-status")).toHaveAttribute("data-open", "true", {
-    timeout: 30_000,
-  });
-  await expect(screen.getByTestId("header-activity")).toHaveText("planning", {
-    timeout: 30_000,
-  });
-  await expect(screen.getByTestId("task-agent-status")).toHaveCount(0);
-  await settle(browser);
-
-  const duringPlanRun = await readTranscript(browser);
-  expect(duringPlanRun).not.toBeNull();
-  if (duringPlanRun === null) return;
-  expect(duringPlanRun.scrollTop).toBe(beforePlanRun.scrollTop);
-  expect(duringPlanRun.composerTop).toBe(beforePlanRun.composerTop);
-  expect(duringPlanRun.composerHeight).toBe(beforePlanRun.composerHeight);
-
-  expect(await stopPlanRun(browser, taskId)).toBe(200);
-  await expect(screen.getByTestId("working-status")).toHaveAttribute("data-open", "false", {
-    timeout: 30_000,
-  });
-  await expect(screen.getByTestId("working-status")).toHaveText("idle", { timeout: 30_000 });
-  await expect(screen.getByTestId(`task-detail-planning-${taskId}`)).toHaveCount(0, {
-    timeout: 30_000,
-  });
-  await settle(browser);
-
-  const afterPlanRun = await readTranscript(browser);
-  expect(afterPlanRun).not.toBeNull();
-  if (afterPlanRun === null) return;
-  expect(afterPlanRun.scrollTop).toBe(beforePlanRun.scrollTop);
-  expect(afterPlanRun.composerTop).toBe(beforePlanRun.composerTop);
-  expect(afterPlanRun.composerHeight).toBe(beforePlanRun.composerHeight);
-  await expect(screen.getByTestId("task-agent-status")).toHaveCount(0);
-
-  // 1. Arrival while reading the middle: the card appears below, the offset does not move.
-  await scrollTranscript(browser, 0.45);
-  const beforeArrival = await readTranscript(browser);
-  expect(beforeArrival).not.toBeNull();
-  if (beforeArrival === null) return;
-  expect(beforeArrival.distance).toBeGreaterThan(100);
-  expect(beforeArrival.anchorId).not.toBeNull();
-
-  expect(
-    await postPlanMessage(
-      browser,
-      taskId,
-      `TOOLCALLS ${JSON.stringify([
-        { name: "append_questions", arguments: { questions: FIRST_QUESTIONS } },
-      ])}`,
-    ),
-  ).toBe(202);
-
+  // The panel lives in the Plan tab, which is the mobile default.
+  await askQuestions(browser, taskId, FIRST_QUESTIONS);
   const panel = screen.getByTestId("task-questions-panel");
   await expect(panel).toBeVisible({ timeout: 30_000 });
-  await settle(browser);
-  const afterArrival = await readTranscript(browser);
-  expect(afterArrival).not.toBeNull();
-  if (afterArrival === null) return;
+  await expect(panel).toHaveAttribute("data-set-id", /.+/);
+  expect(await taskQuestions(browser, taskId)).not.toBeNull();
 
-  expect(afterArrival.scrollTop).toBe(beforeArrival.scrollTop);
-  expect(
-    Math.abs((afterArrival.anchorOffset ?? 0) - (beforeArrival.anchorOffset ?? 0)),
-  ).toBeLessThanOrEqual(1);
-  expect(afterArrival.visibleMessageIds).toContain(beforeArrival.anchorId);
-  expect(afterArrival.panelSetId).not.toBeNull();
-
-  // 3. The questions card takes its natural height: no cap, no inner scrollbar.
-  expect(afterArrival.panel).not.toBeNull();
-  if (afterArrival.panel === null) return;
-  expect(afterArrival.panel.scrollHeight).toBe(afterArrival.panel.clientHeight);
-  expect(afterArrival.panelOverflow).toEqual([]);
-  expect(afterArrival.scrollHeight).toBeGreaterThan(afterArrival.clientHeight);
-
-  // 4. Answering while detached rewrites no transcript offset.
-  const beforeAnswer = await readTranscript(browser);
-  expect(beforeAnswer).not.toBeNull();
-  if (beforeAnswer === null || afterArrival.panelSetId === null) return;
-  expect(
-    await answerQuestions(browser, taskId, afterArrival.panelSetId, [
-      { id: "layout", values: ["split"], text: "" },
-      { id: "parts", values: ["sidebar"], text: "" },
-      { id: "notes", values: [], text: "Keep the phone width in mind." },
-      { id: "density", values: ["compact"], text: "" },
-      { id: "theme", values: ["light"], text: "" },
-    ]),
-  ).toBe(200);
-  await expect(panel).toHaveCount(0, { timeout: 30_000 });
-  const afterAnswer = await readTranscript(browser);
-  expect(afterAnswer).not.toBeNull();
-  if (afterAnswer === null) return;
-  expect(afterAnswer.scrollTop).toBe(beforeAnswer.scrollTop);
-  expect(afterAnswer.visibleMessageIds).toContain(beforeAnswer.anchorId);
-
-  // 2. Arrival while at the bottom still follows the new content, as before.
-  await scrollTranscript(browser, 1);
+  // ask_questions no longer parks the run: a message sent right after is answered.
+  expect(await postPlanMessage(browser, taskId, `AFTER_ASK ${title}`)).toBe(202);
   await expect
-    .poll(async () => (await readTranscript(browser))?.distance ?? 99)
-    .toBeLessThanOrEqual(8);
-  const beforeBottomArrival = await readTranscript(browser);
-  expect(beforeBottomArrival).not.toBeNull();
-  if (beforeBottomArrival === null) return;
+    .poll(
+      async () => (await planMessages(browser, taskId)).some((m) => m.text.includes("AFTER_ASK")),
+      { timeout: 60_000 },
+    )
+    .toBe(true);
+  await expect(panel).toBeVisible();
 
-  expect(
-    await postPlanMessage(
-      browser,
-      taskId,
-      `TOOLCALLS ${JSON.stringify([
-        { name: "append_questions", arguments: { questions: SECOND_QUESTIONS } },
-      ])}`,
-    ),
-  ).toBe(202);
-  await expect(panel).toBeVisible({ timeout: 30_000 });
-  await expect
-    .poll(async () => (await readTranscript(browser))?.panelSetId ?? null)
-    .not.toBe(afterArrival.panelSetId);
-  await settle(browser);
-  const afterBottomArrival = await readTranscript(browser);
-  expect(afterBottomArrival).not.toBeNull();
-  if (afterBottomArrival === null) return;
-  expect(afterBottomArrival.distance).toBeLessThanOrEqual(8);
-  expect(afterBottomArrival.scrollTop).toBeGreaterThanOrEqual(beforeBottomArrival.scrollTop);
-  expect(afterBottomArrival.panel).not.toBeNull();
-  if (afterBottomArrival.panel === null) return;
-  expect(afterBottomArrival.panel.scrollHeight).toBe(afterBottomArrival.panel.clientHeight);
-  expect(afterBottomArrival.panelOverflow).toEqual([]);
+  // The chat keeps one chip instead of a second panel; it switches to Plan on a phone.
+  await openTaskChatTab(screen);
+  const chip = screen.getByTestId("task-questions-chip");
+  await expect(chip).toBeVisible();
+  await expect(chip).toContainText("3 questions waiting · Answer in Plan");
+  await chip.tap();
+  await expect(screen.getByTestId("task-tab-plan")).toHaveAttribute("aria-selected", "true");
+  await expect(panel).toBeVisible();
 
-  // 5. On the phone the card's end is reachable above the composer, and the
-  // pane, not the card, is what scrolls.
-  expect(afterBottomArrival.panel.bottom).toBeLessThanOrEqual(
-    afterBottomArrival.scrollerBottom + 1,
-  );
-  expect(afterBottomArrival.composerTop).not.toBeNull();
-  if (afterBottomArrival.composerTop !== null) {
-    expect(
-      Math.abs(afterBottomArrival.composerTop - (beforeBottomArrival.composerTop ?? 0)),
-    ).toBeLessThanOrEqual(1);
-  }
-
-  for (const question of SECOND_QUESTIONS) {
-    await screen.getByTestId(`question-${question.id}-${question.options[0].value}`).tap();
-  }
+  await screen.getByTestId("question-layout-split").tap();
+  await screen.getByTestId("question-parts-sidebar").tap();
+  await screen.getByTestId("question-notes-text").fill("Keep the phone width in mind.");
   const send = screen.getByTestId("task-questions-send");
   await expect(send).toBeEnabled();
   await send.tap();
   await expect(panel).toHaveCount(0, { timeout: 30_000 });
+  expect(await taskQuestions(browser, taskId)).toBeNull();
+  await expect(screen.getByTestId(`task-detail-planning-${taskId}`)).toBeVisible({
+    timeout: 30_000,
+  });
+
+  // The answer is one "Answers sent" notice, not a user bubble.
+  await openTaskChatTab(screen);
+  const notice = screen.getByTestId("chat-notice");
+  await expect(notice).toBeVisible({ timeout: 30_000 });
+  await expect(notice).toHaveAttribute("data-notice-kind", "questions");
+  await expect(notice).toContainText("Answers sent · 3 questions");
   await expect
-    .poll(async () => (await readTranscript(browser))?.distance ?? 99)
-    .toBeLessThanOrEqual(8);
+    .poll(
+      async () =>
+        (await planMessages(browser, taskId)).filter(
+          (message) => message.notice?.kind === "questions",
+        ).length,
+      { timeout: 30_000 },
+    )
+    .toBe(1);
+
+  await removeTasks(browser, [title]);
+});
+
+test("a draft row badges pending questions and leaving planning clears them", {
+  timeout: 300_000,
+}, async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 900 });
+  await app.open("/?page=tasks");
+  const title = `Plan questions draft ${Date.now()}`;
+  const input = await openNewTaskComposer(screen);
+  await setPlanDraft(screen, true);
+  await input.fill(title);
+  await screen.getByRole("button", "Add task").tap();
+  await expect(screen.getByTestId("task-detail")).toBeVisible();
+  const taskId = await taskIdFor(browser, title);
+
+  await askQuestions(browser, taskId, DISMISS_QUESTIONS);
+  const panel = screen.getByTestId("task-questions-panel");
+  await expect(panel).toBeVisible({ timeout: 30_000 });
+  const badge = screen.getByTestId(`task-questions-${taskId}`);
+  await expect(badge).toBeVisible();
+  expect(await taskQuestions(browser, taskId)).not.toBeNull();
+
+  // Approving a draft is leaving planning: the pending set must not survive it.
+  await screen.getByRole("button", { name: /Approve .+ draft/ }).tap();
+  await expect(panel).toHaveCount(0, { timeout: 30_000 });
+  await expect(badge).toHaveCount(0, { timeout: 30_000 });
+  await expect.poll(async () => taskQuestions(browser, taskId), { timeout: 30_000 }).toBeNull();
+
+  // Closing the task is the other terminal transition that drops a pending set.
+  await askQuestions(browser, taskId, DOUBLE_QUESTIONS);
+  await expect(panel).toBeVisible({ timeout: 30_000 });
+  expect(await taskQuestions(browser, taskId)).not.toBeNull();
+  await browser.evaluate(async (id) => {
+    const response = await fetch(`/api/tasks/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "done" }),
+    });
+    return response.status;
+  }, taskId);
+  await expect(panel).toHaveCount(0, { timeout: 30_000 });
+  await expect(badge).toHaveCount(0, { timeout: 30_000 });
+  await expect.poll(async () => taskQuestions(browser, taskId), { timeout: 30_000 }).toBeNull();
+
+  await removeTasks(browser, [title]);
+});
+
+test("a tall desktop question set keeps Send answers reachable", {
+  timeout: 300_000,
+}, async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 900 });
+  await app.open("/?page=tasks");
+  const title = `Plan questions tall ${Date.now()}`;
+  await createOpenTask(screen, title);
+  const taskId = await taskIdFor(browser, title);
+  const questions = Array.from({ length: 8 }, (_, index) => ({
+    id: `q${index}`,
+    prompt: `Question ${index + 1} about the plan?`,
+    kind: "text",
+  }));
+
+  await askQuestions(browser, taskId, questions);
+  const panel = screen.getByTestId("task-questions-panel");
+  await expect(panel).toBeVisible({ timeout: 30_000 });
+  const send = screen.getByTestId("task-questions-send");
+  await send.scrollIntoView();
+  const reachable = await browser.evaluate(() => {
+    const button = document.querySelector<HTMLElement>('[data-testid="task-questions-send"]');
+    if (button === null) return false;
+    const rect = button.getBoundingClientRect();
+    return (
+      rect.top >= 0 &&
+      rect.left >= 0 &&
+      rect.bottom <= window.innerHeight &&
+      rect.right <= window.innerWidth
+    );
+  });
+  expect(reachable).toBe(true);
+
+  for (let index = 0; index < questions.length; index += 1) {
+    await screen.getByTestId(`question-q${index}-text`).fill(`Answer ${index + 1}`);
+  }
+  await send.tap();
+  await expect(panel).toHaveCount(0, { timeout: 30_000 });
 
   await removeTasks(browser, [title]);
 });
@@ -478,20 +357,9 @@ test("typing in Other replaces and disables that question's choices", {
   await app.open("/?page=tasks");
   const title = `Plan questions other ${Date.now()}`;
   await createOpenTask(screen, title, { project: "pi-ui" });
-  await openTaskChatTab(screen);
-  await expect(screen.getByTestId("task-agent-chat")).toBeVisible();
   const taskId = await taskIdFor(browser, title);
 
-  expect(
-    await postPlanMessage(
-      browser,
-      taskId,
-      `TOOLCALLS ${JSON.stringify([
-        { name: "append_questions", arguments: { questions: OTHER_QUESTIONS } },
-      ])}`,
-    ),
-  ).toBe(202);
-
+  await askQuestions(browser, taskId, OTHER_QUESTIONS);
   const panel = screen.getByTestId("task-questions-panel");
   await expect(panel).toBeVisible({ timeout: 30_000 });
   const transportHttp = screen.getByTestId("question-transport-http");
@@ -540,6 +408,78 @@ test("typing in Other replaces and disables that question's choices", {
   expect(new Set(payload.answers.map((answer) => answer.id)).size).toBe(payload.answers.length);
 
   await browser.unrouteAll();
+  await removeTasks(browser, [title]);
+});
+
+test("dismiss clears the panel and sends the decide-yourself notice", {
+  timeout: 300_000,
+}, async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/?page=tasks");
+  const title = `Plan questions dismiss ${Date.now()}`;
+  await createOpenTask(screen, title, { project: "pi-ui" });
+  const taskId = await taskIdFor(browser, title);
+
+  await askQuestions(browser, taskId, DISMISS_QUESTIONS);
+  const panel = screen.getByTestId("task-questions-panel");
+  await expect(panel).toBeVisible({ timeout: 30_000 });
+  const setId = await panel.getAttribute("data-set-id");
+  expect(setId).not.toBeNull();
+  if (setId === null) return;
+
+  await screen.getByTestId("task-questions-dismiss").tap();
+  await expect(panel).toHaveCount(0, { timeout: 30_000 });
+  expect(await taskQuestions(browser, taskId)).toBeNull();
+  expect(await dismissQuestions(browser, taskId, setId)).toBe(409);
+
+  await openTaskChatTab(screen);
+  const notice = screen.getByTestId("chat-notice");
+  await expect(notice).toBeVisible({ timeout: 30_000 });
+  await expect(notice).toHaveAttribute("data-notice-kind", "questions");
+  await expect(notice).toContainText("Questions dismissed");
+  await expect
+    .poll(
+      async () =>
+        (await planMessages(browser, taskId)).find(
+          (message) => message.notice?.kind === "questions",
+        )?.text ?? "",
+      { timeout: 30_000 },
+    )
+    .toContain("dismissed your questions");
+
+  await removeTasks(browser, [title]);
+});
+
+test("a second answer is a conflict and creates no second prompt entry", {
+  timeout: 300_000,
+}, async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/?page=tasks");
+  const title = `Plan questions double ${Date.now()}`;
+  await createOpenTask(screen, title, { project: "pi-ui" });
+  const taskId = await taskIdFor(browser, title);
+
+  await askQuestions(browser, taskId, DOUBLE_QUESTIONS);
+  const panel = screen.getByTestId("task-questions-panel");
+  await expect(panel).toBeVisible({ timeout: 30_000 });
+  const setId = await panel.getAttribute("data-set-id");
+  expect(setId).not.toBeNull();
+  if (setId === null) return;
+
+  const answers = [{ id: "density", values: ["compact"], text: "" }];
+  expect(await answerQuestions(browser, taskId, setId, answers)).toBe(200);
+  expect(await answerQuestions(browser, taskId, setId, answers)).toBe(409);
+  await expect(panel).toHaveCount(0, { timeout: 30_000 });
+  await expect
+    .poll(
+      async () =>
+        (await planMessages(browser, taskId)).filter(
+          (message) => message.notice?.kind === "questions",
+        ).length,
+      { timeout: 30_000 },
+    )
+    .toBe(1);
+
   await removeTasks(browser, [title]);
 });
 

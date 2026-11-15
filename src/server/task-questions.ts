@@ -18,6 +18,8 @@ import type {
 import { TaskError } from "./tasks.js";
 
 const MAX_ANSWERED_HISTORY = 20;
+/** A single pending set the operator has to read; past this it stops being a decision. */
+export const MAX_PENDING_QUESTIONS = 8;
 
 interface StoredQuestions {
   pending: TaskQuestionSet | null;
@@ -107,9 +109,11 @@ export class TaskQuestionsStore {
   private state: StoredQuestions = { pending: null, answered: [] };
   private loading: Promise<void> | undefined;
   private lock: Promise<unknown> = Promise.resolve();
-  private readonly waiters = new Map<string, Set<(result: QuestionAnswerResult) => void>>();
 
-  constructor(private readonly path: string) {}
+  constructor(
+    private readonly path: string,
+    private readonly onChange?: () => void,
+  ) {}
 
   load(): Promise<void> {
     this.loading ??= this.read();
@@ -152,6 +156,11 @@ export class TaskQuestionsStore {
     return this.state.pending === null ? null : clone(this.state.pending);
   }
 
+  /** The pending set as already loaded, for the synchronous tasks payload. */
+  pendingSync(): TaskQuestionSet | null {
+    return this.state.pending === null ? null : clone(this.state.pending);
+  }
+
   async answeredBy(askedBy: string): Promise<QuestionAnswerResult | null> {
     await this.load();
     const record = this.state.answered.find((item) => item.askedBy === askedBy);
@@ -181,7 +190,7 @@ export class TaskQuestionsStore {
     questions: readonly TaskQuestion[],
     askedBy?: string,
   ): Promise<{ set: TaskQuestionSet; added: number }> {
-    return this.mutate(() => {
+    const result = await this.mutate(() => {
       const current = this.state.pending;
       if (current !== null && askedBy !== undefined && current.askedBy === askedBy) {
         const replay = questions.every((question) =>
@@ -194,6 +203,12 @@ export class TaskQuestionsStore {
         if (existingIds.has(question.id)) {
           throw new TaskError(`Question id "${question.id}" is already waiting`, 400);
         }
+      }
+      if ((current?.questions.length ?? 0) + questions.length > MAX_PENDING_QUESTIONS) {
+        throw new TaskError(
+          `A question set may hold at most ${MAX_PENDING_QUESTIONS} questions`,
+          400,
+        );
       }
       const set: TaskQuestionSet =
         current === null
@@ -210,38 +225,13 @@ export class TaskQuestionsStore {
       this.state.pending = set;
       return { set: clone(set), added: questions.length };
     });
-  }
-
-  async waitForAnswers(setId: string, signal?: AbortSignal): Promise<QuestionAnswerResult> {
-    await this.load();
-    const existing = this.state.answered.find((record) => record.setId === setId);
-    if (existing !== undefined) return this.result(existing);
-    return new Promise((resolve, reject) => {
-      const listeners = this.waiters.get(setId) ?? new Set();
-      const finish = (result: QuestionAnswerResult) => {
-        listeners.delete(finish);
-        if (listeners.size === 0) this.waiters.delete(setId);
-        signal?.removeEventListener("abort", abort);
-        resolve(result);
-      };
-      const abort = () => {
-        listeners.delete(finish);
-        if (listeners.size === 0) this.waiters.delete(setId);
-        reject(signal?.reason ?? new Error("Question wait aborted"));
-      };
-      if (signal?.aborted === true) {
-        abort();
-        return;
-      }
-      listeners.add(finish);
-      this.waiters.set(setId, listeners);
-      signal?.addEventListener("abort", abort, { once: true });
-    });
+    this.onChange?.();
+    return result;
   }
 
   /** Record answers, clear the pending set, and keep a bounded history for replay. */
   async answer(setId: string, answers: unknown): Promise<QuestionAnswerResult> {
-    return this.mutate(() => {
+    const result = await this.mutate(() => {
       const pending = this.state.pending;
       if (pending === null || pending.id !== setId) {
         throw new TaskError("This question set is no longer waiting for answers", 409);
@@ -263,15 +253,49 @@ export class TaskQuestionsStore {
       }
       return this.result(record);
     });
+    this.onChange?.();
+    return result;
   }
 
-  /** Wake the tool that is waiting on this set, after its transcript row is committed. */
-  resolve(setId: string, result: QuestionAnswerResult): void {
-    const listeners = this.waiters.get(setId);
-    if (listeners === undefined) return;
-    this.waiters.delete(setId);
-    for (const listener of [...listeners]) listener(result);
+  /** Drop the pending set. The agent decides the questions itself instead of waiting. */
+  async dismiss(setId: string): Promise<TaskQuestionSet> {
+    const result = await this.mutate(() => {
+      const pending = this.state.pending;
+      if (pending === null || pending.id !== setId) {
+        throw new TaskError("This question set is no longer waiting for answers", 409);
+      }
+      this.state.pending = null;
+      return clone(pending);
+    });
+    this.onChange?.();
+    return result;
   }
+}
+
+/** The model prompt that turns submitted answers into a decision the agent applies. */
+export function questionAnswerPrompt(result: QuestionAnswerResult): string {
+  const lines = result.items.map((item) => {
+    const choice =
+      item.labels.length > 0
+        ? item.labels.join(", ")
+        : item.text.length > 0
+          ? item.text
+          : "(blank)";
+    return `- ${item.prompt}: ${choice}`;
+  });
+  return [
+    `The operator answered your questions (set ${result.set.id}).`,
+    ...lines,
+    "Treat these as decided. Do not ask them again; continue the plan and record the design in this task's body.",
+  ].join("\n");
+}
+
+/** The model prompt for a dismissed set: nothing waits, so the agent must decide. */
+export function questionDismissPrompt(set: TaskQuestionSet): string {
+  return [
+    `The operator dismissed your questions (set ${set.id}) without answers.`,
+    "Decide these yourself, do not ask them again, and record the design in this task's body.",
+  ].join("\n");
 }
 
 type QuestionAnswerEntryItem = {

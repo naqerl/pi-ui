@@ -62,6 +62,12 @@ const NOTICE_ICON_PATHS: Record<NoticeIconName, ReactNode> = {
   "decision-approved": <path d="m5 12 4 4L19 6" />,
   "decision-declined": <path d="m6 6 12 12M18 6 6 18" />,
   operator: <path d="M12 3 3 12l9 9 9-9-9-9Z" />,
+  questions: (
+    <>
+      <path d="M9.1 9a2.9 2.9 0 1 1 4.2 2.6c-.8.4-1.3 1-1.3 1.9v.5" />
+      <path d="M12 17h.01" />
+    </>
+  ),
   warning: (
     <>
       <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
