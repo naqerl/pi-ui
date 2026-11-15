@@ -29,8 +29,14 @@ export function windowTranscript(
   request: WindowRequest = {},
 ): TranscriptWindow {
   const limit = Math.max(1, Math.floor(request.limit ?? TRANSCRIPT_PAGE_SIZE));
-  const messages = [...transcript.messages].sort((a, b) => a.order - b.order);
-  const activity = [...transcript.activity].sort((a, b) => a.order - b.order);
+  // A transcript from the builder already holds display order; skipping the copy keeps
+  // a poll on a long conversation from sorting tens of thousands of rows every time.
+  const messages = ordered(transcript.messages)
+    ? transcript.messages
+    : [...transcript.messages].sort((a, b) => a.order - b.order);
+  const activity = ordered(transcript.activity)
+    ? transcript.activity
+    : [...transcript.activity].sort((a, b) => a.order - b.order);
   const end = request.before ?? Number.POSITIVE_INFINITY;
 
   let from: number;
@@ -58,6 +64,14 @@ export function windowTranscript(
     from: Number.isFinite(from) ? from : 0,
     hasEarlier: Number.isFinite(from) && firstOrder < from,
   };
+}
+
+/** True when the items already ascend by `order`, so they need no copy and sort. */
+function ordered(items: readonly { order: number }[]): boolean {
+  for (let index = 1; index < items.length; index++) {
+    if ((items[index - 1]?.order ?? 0) > (items[index]?.order ?? 0)) return false;
+  }
+  return true;
 }
 
 /** Reads `from`, `before` and `limit` query values; anything malformed is ignored. */

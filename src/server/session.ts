@@ -823,95 +823,91 @@ export type MediaResolver = (data: string, mimeType: string) => MediaRef | undef
 /** Reads a diagram's current revision, so a replaced drawing updates without a new entry. */
 export type DiagramRevisionResolver = (id: string) => number | undefined;
 
-export function buildTranscript(
-  entries: readonly EntryRecord[],
-  media?: MediaResolver,
-  diagramRevision?: DiagramRevisionResolver,
-): {
+/** What a transcript holds: both lists in display order. */
+export interface BuiltTranscript {
   messages: ChatMessage[];
   activity: ActivityItem[];
-} {
-  const messages: ChatMessage[] = [];
-  const activity: ActivityItem[] = [];
-  const ordered = [...entries].sort((a, b) => a.id - b.id);
-  const reset = latestSessionReset(ordered);
-  // A reset starts the active context at itself. Older entries stay in storage, but the chat
-  // starts at the newest reset so its reset row is the only thing left above later rows.
-  const sorted =
-    reset === undefined
-      ? ordered
-      : ordered.slice(ordered.findIndex((entry) => entry.id === reset.entry.id));
-  const toolCalls = new Map<string, { name: string; arguments: unknown }>();
-  const pendingToolSpend = new Map<string, TokenSpend>();
-  const partialEntryIds = new Set<number>();
-  for (const entry of sorted) {
-    if (entry.kind !== InterruptedRunEntry.kind || !isRecord(entry.data)) continue;
-    if (
-      typeof entry.data.partialEntryId === "number" &&
-      Number.isSafeInteger(entry.data.partialEntryId)
-    ) {
-      partialEntryIds.add(entry.data.partialEntryId);
-    }
-  }
+}
 
-  // A placed queue copy shares its key with the notice entry that is its visible form.
-  // Only a decision notice owns a copy like that: an MCP status notice is *rendered* from
-  // its queue row, so dropping those copies would delete the notice itself.
-  const noticeQueueKeys = new Set<string>();
-  for (const entry of sorted) {
-    if (entry.kind !== TASK_DECISION_ENTRY_KIND) continue;
-    const queueKey = entryQueueKeyFromData(entry.data);
-    if (queueKey !== undefined) noticeQueueKeys.add(queueKey);
-    // Older notice entries only carried the logical key, not the queued input's key.
-    const key = queueKeyFromEntryData(entry.data);
-    if (key !== undefined) noticeQueueKeys.add(key);
-  }
+/** Where a diaried drawing sits, so a replace can update its row instead of adding one. */
+interface DiagramSlot {
+  message: ChatMessage;
+  diagramId: string;
+  revision: number;
+}
 
-  const mcpNotices = new Map<string, { first: EntryRecord; latest: EntryRecord }>();
-  let latestMcpNoticeText: string | null = null;
-  for (const entry of sorted) {
-    const groupId = mcpNoticeGroupId(entry);
-    if (groupId === null) continue;
-    const existing = mcpNotices.get(groupId);
-    if (existing === undefined) {
-      mcpNotices.set(groupId, { first: entry, latest: entry });
-      continue;
-    }
-    if (entry.id < existing.first.id) existing.first = entry;
-    if (mcpNoticeAt(entry) >= mcpNoticeAt(existing.latest)) existing.latest = entry;
-  }
+/**
+ * Builds the chat transcript one entry at a time, in ascending entry id.
+ *
+ * `buildTranscript()` is this over a whole list. Keeping one builder alive for a
+ * conversation turns the `/api/state` poll into an append of the few entries that
+ * arrived since the last poll instead of a rebuild of every entry in the
+ * conversation, which is the difference between milliseconds and seconds once a
+ * conversation has tens of thousands of entries.
+ */
+export class TranscriptBuilder {
+  private readonly messages: ChatMessage[] = [];
+  private readonly activity: ActivityItem[] = [];
+  private readonly toolCalls = new Map<string, { name: string; arguments: unknown }>();
+  private readonly pendingToolSpend = new Map<string, TokenSpend>();
+  private readonly partialEntryIds = new Set<number>();
+  private readonly noticeQueueKeys = new Set<string>();
+  private readonly mcpNotices = new Map<
+    string,
+    { first: EntryRecord; latest: EntryRecord; message?: ChatMessage }
+  >();
+  private readonly diagramSlots: DiagramSlot[] = [];
+  private latestMcpNoticeText: string | null = null;
+  private resetEntry: EntryRecord | undefined;
+  private resetAt: string | undefined;
+  private resetMessage: ChatMessage | undefined;
 
-  for (const entry of sorted) {
-    if (entry.kind !== AssistantEntry.kind) continue;
-    const message = asRecord(entry.model?.[0]);
-    for (const block of contentBlocks(message.content)) {
-      if (block.type === "toolCall" && typeof block.id === "string") {
-        toolCalls.set(block.id, {
-          name: typeof block.name === "string" ? block.name : "tool",
-          arguments: block.arguments,
-        });
-      }
-    }
-  }
+  constructor(
+    private readonly media?: MediaResolver,
+    private readonly diagramRevision?: DiagramRevisionResolver,
+  ) {}
 
-  for (const entry of sorted) {
+  /**
+   * Appends the next entry. Entries must arrive in ascending id order: a later
+   * entry may update a row this builder already emitted, but never reorder it.
+   */
+  append(entry: EntryRecord): void {
     const kind = entry.kind;
+
+    // A reset marker never renders; it only records when the reset was applied.
+    if (kind === SESSION_RESET_MARKER_ENTRY_KIND) {
+      this.noteResetMarker(entry);
+      return;
+    }
+    // Effects a later entry has on a row that is already in the transcript. The
+    // full-list version learned these in a pre-pass; here they arrive in order.
+    if (kind === InterruptedRunEntry.kind) this.notePartialEntry(entry);
+    if (kind === TASK_DECISION_ENTRY_KIND) this.noteDecisionQueueKeys(entry);
+    if (kind === McpNoticeEntry.kind) this.noteMcpNotice(entry);
+
     if (kind === ResetEntry.kind) {
-      messages.push({
+      // A reset starts the active context at itself. Everything before it is history
+      // that this transcript no longer shows, so the builder starts over.
+      this.clear();
+      this.resetEntry = entry;
+      this.resetAt = resetTimestampOf(entry);
+      const message: ChatMessage = {
         id: entryMessageId(entry),
         role: "system",
         kind: "session-reset",
         text: SESSION_RESET_TEXT,
-        timestamp: reset?.resetAt ?? new Date().toISOString(),
+        timestamp: this.resetAt ?? new Date().toISOString(),
         order: entry.id * 10_000,
-      });
-      continue;
+      };
+      this.resetMessage = message;
+      this.emit(message);
+      return;
     }
     if (kind === DelegateNoticeEntry.kind) {
-      if (!isRecord(entry.data) || typeof entry.data.text !== "string") continue;
+      if (!isRecord(entry.data) || typeof entry.data.text !== "string") return;
       const notice = parseNotice(entry.data.text);
-      if (notice === null || notice.kind !== "delegate") continue;
-      messages.push({
+      if (notice === null || notice.kind !== "delegate") return;
+      this.emit({
         id: `m-${entry.id}`,
         role: "system",
         text: entry.data.text,
@@ -919,50 +915,30 @@ export function buildTranscript(
         order: entry.id * 10_000,
         notice,
       });
-      continue;
+      return;
     }
     if (kind === JobNoticeEntry.kind) {
-      if (!isRecord(entry.data) || typeof entry.data.text !== "string") continue;
+      if (!isRecord(entry.data) || typeof entry.data.text !== "string") return;
       const notice = parseNotice(entry.data.text);
-      if (notice === null || notice.kind !== "job") continue;
-      activity.push({
+      if (notice === null || notice.kind !== "job") return;
+      this.emitActivity({
         kind: "job",
         id: `j-${entry.id}`,
         notice,
         timestamp: entryTimestamp(entry.data),
         order: entry.id * 10_000,
       });
-      continue;
+      return;
     }
     if (kind === McpNoticeEntry.kind) {
-      const groupId = mcpNoticeGroupId(entry);
-      if (groupId === null) continue;
-      const group = mcpNotices.get(groupId);
-      if (group === undefined || group.first.id !== entry.id) continue;
-      if (!isRecord(group.latest.data) || typeof group.latest.data.text !== "string") continue;
-      const text = group.latest.data.text;
-      latestMcpNoticeText = text;
-      const notice = parseNotice(text);
-      if (notice === null) continue;
-      const at = group.latest.data.at;
-      messages.push({
-        id: entryMessageId(entry),
-        role: "user",
-        text,
-        timestamp:
-          typeof at === "string" && Number.isFinite(Date.parse(at))
-            ? new Date(at).toISOString()
-            : entryTimestamp(group.latest.data),
-        order: entry.id * 10_000,
-        notice,
-      });
-      continue;
+      this.emitMcpNotice(entry);
+      return;
     }
     if (kind === IdleNudgeEntry.kind) {
-      if (!isRecord(entry.data) || typeof entry.data.text !== "string") continue;
+      if (!isRecord(entry.data) || typeof entry.data.text !== "string") return;
       const notice = parseNotice(entry.data.text);
-      if (notice === null || notice.kind !== "idle") continue;
-      messages.push({
+      if (notice === null || notice.kind !== "idle") return;
+      this.emit({
         id: entryMessageId(entry),
         role: "system",
         text: entry.data.text,
@@ -970,7 +946,7 @@ export function buildTranscript(
         order: entry.id * 10_000,
         notice,
       });
-      continue;
+      return;
     }
     if (kind === TaskQuestionAnswerEntry.kind) {
       if (
@@ -979,16 +955,16 @@ export function buildTranscript(
         typeof entry.data.text !== "string" ||
         !Array.isArray(entry.data.answers)
       ) {
-        continue;
+        return;
       }
       const answers: NonNullable<ChatMessage["questionAnswers"]>["answers"] = [];
       for (const item of entry.data.answers) {
         if (!isRecord(item)) continue;
-        const kind = item.kind;
+        const answerKind = item.kind;
         if (
           typeof item.id !== "string" ||
           typeof item.prompt !== "string" ||
-          (kind !== "single" && kind !== "multi" && kind !== "text") ||
+          (answerKind !== "single" && answerKind !== "multi" && answerKind !== "text") ||
           !Array.isArray(item.values) ||
           !item.values.every((value) => typeof value === "string") ||
           !Array.isArray(item.labels) ||
@@ -1000,13 +976,13 @@ export function buildTranscript(
         answers.push({
           id: item.id,
           prompt: item.prompt,
-          kind,
+          kind: answerKind,
           values: item.values as string[],
           labels: item.labels as string[],
           text: item.text,
         });
       }
-      messages.push({
+      this.emit({
         id: `m-${entry.id}`,
         role: "system",
         text: entry.data.text,
@@ -1014,7 +990,7 @@ export function buildTranscript(
         order: entry.id * 10_000,
         questionAnswers: { setId: entry.data.setId, answers },
       });
-      continue;
+      return;
     }
     if (kind === TaskDecisionEntry.kind) {
       if (
@@ -1025,7 +1001,7 @@ export function buildTranscript(
         typeof entry.data.taskTitle !== "string" ||
         (entry.data.decision !== "approved" && entry.data.decision !== "declined")
       ) {
-        continue;
+        return;
       }
       const proposalId = entry.data.proposalId;
       const taskId = entry.data.taskId;
@@ -1044,7 +1020,7 @@ export function buildTranscript(
         text: entry.data.text,
         summary: taskDecisionSummary({ proposalId, taskId, taskTitle, decision }),
       };
-      messages.push({
+      this.emit({
         id: entryMessageId(entry),
         role: "system",
         text: entry.data.text,
@@ -1052,12 +1028,12 @@ export function buildTranscript(
         order: entry.id * 10_000,
         notice,
       });
-      continue;
+      return;
     }
     if (kind === InterruptedRunEntry.kind) {
-      if (!isRecord(entry.data) || typeof entry.data.note !== "string") continue;
+      if (!isRecord(entry.data) || typeof entry.data.note !== "string") return;
       const note = entry.data.note;
-      messages.push({
+      this.emit({
         id: `m-${entry.id}`,
         role: "system",
         text: note,
@@ -1073,11 +1049,11 @@ export function buildTranscript(
               : note.startsWith("The previous run was stopped"),
         },
       });
-      continue;
+      return;
     }
     if (kind === DurableRepairEntry.kind) {
-      if (!isRecord(entry.data) || typeof entry.data.text !== "string") continue;
-      messages.push({
+      if (!isRecord(entry.data) || typeof entry.data.text !== "string") return;
+      this.emit({
         id: `m-${entry.id}`,
         role: "system",
         text: entry.data.text,
@@ -1087,11 +1063,11 @@ export function buildTranscript(
           baseRevision: typeof entry.data.baseRevision === "number" ? entry.data.baseRevision : 0,
         },
       });
-      continue;
+      return;
     }
     if (kind === VersionUpdateEntry.kind) {
-      if (!isRecord(entry.data) || typeof entry.data.note !== "string") continue;
-      messages.push({
+      if (!isRecord(entry.data) || typeof entry.data.note !== "string") return;
+      this.emit({
         id: `m-${entry.id}`,
         role: "system",
         text: entry.data.note,
@@ -1103,10 +1079,10 @@ export function buildTranscript(
           changes: typeof entry.data.changes === "string" ? entry.data.changes : "",
         },
       });
-      continue;
+      return;
     }
     if (kind === MemoryDeltaEntry.kind) {
-      if (!isRecord(entry.data) || typeof entry.data.text !== "string") continue;
+      if (!isRecord(entry.data) || typeof entry.data.text !== "string") return;
       const topics = Array.isArray(entry.data.topics)
         ? entry.data.topics.filter((topic): topic is MemoryDeltaTopic => {
             if (!isRecord(topic)) return false;
@@ -1123,7 +1099,7 @@ export function buildTranscript(
         topics,
         summary: memoryDeltaSummary(topics),
       };
-      messages.push({
+      this.emit({
         id: `m-${entry.id}`,
         role: "system",
         text: entry.data.text,
@@ -1131,11 +1107,11 @@ export function buildTranscript(
         order: entry.id * 10_000,
         notice,
       });
-      continue;
+      return;
     }
     if (kind === MemoryWriteEntry.kind) {
-      if (!isRecord(entry.data) || typeof entry.data.path !== "string") continue;
-      if (typeof entry.data.text !== "string") continue;
+      if (!isRecord(entry.data) || typeof entry.data.path !== "string") return;
+      if (typeof entry.data.text !== "string") return;
       const path = entry.data.path;
       const notice: MemoryNoticeDetails = {
         kind: "memory",
@@ -1144,7 +1120,7 @@ export function buildTranscript(
         truncated: entry.data.truncated === true,
         summary: memoryNoticeSummary(path),
       };
-      messages.push({
+      this.emit({
         id: `m-${entry.id}`,
         role: "system",
         text: notice.summary,
@@ -1152,16 +1128,16 @@ export function buildTranscript(
         order: entry.id * 10_000,
         notice,
       });
-      continue;
+      return;
     }
     if (kind === OperatorNoticeEntry.kind) {
-      if (!isRecord(entry.data)) continue;
+      if (!isRecord(entry.data)) return;
       if (
         typeof entry.data.title !== "string" ||
         typeof entry.data.body !== "string" ||
         typeof entry.data.reason !== "string"
       ) {
-        continue;
+        return;
       }
       const notice: OperatorNoticeDetails = {
         kind: "operator",
@@ -1170,7 +1146,7 @@ export function buildTranscript(
         reason: entry.data.reason,
         summary: operatorNoticeSummary(entry.data.title),
       };
-      messages.push({
+      this.emit({
         id: `m-${entry.id}`,
         role: "system",
         text: notice.summary,
@@ -1178,7 +1154,7 @@ export function buildTranscript(
         order: entry.id * 10_000,
         notice,
       });
-      continue;
+      return;
     }
     if (
       kind !== UserEntry.kind &&
@@ -1187,31 +1163,31 @@ export function buildTranscript(
       kind !== AssistantEntry.kind &&
       kind !== ToolResultEntry.kind
     ) {
-      continue;
+      return;
     }
     const message = asRecord(entry.model?.[0]);
     if (kind === UserEntry.kind || kind === STEER_ENTRY_KIND || kind === QUEUE_ENTRY_KIND) {
       const text = extractText(message.content);
-      const attachments = media === undefined ? [] : userImages(message.content, media);
+      const attachments = this.media === undefined ? [] : userImages(message.content, this.media);
       const steerKey = kind === STEER_ENTRY_KIND ? steerKeyFromEntryData(entry.data) : undefined;
       const queueKey = kind === QUEUE_ENTRY_KIND ? queueKeyFromEntryData(entry.data) : undefined;
-      if (queueKey !== undefined && noticeQueueKeys.has(queueKey)) continue;
+      if (queueKey !== undefined && this.noticeQueueKeys.has(queueKey)) return;
       if (text.length > 0 || attachments.length > 0) {
         const notice = parseNotice(text);
-        if (notice?.kind === "mcp") latestMcpNoticeText = text;
+        if (notice?.kind === "mcp") this.latestMcpNoticeText = text;
         // Older conversations stored a job result as a normal user entry. Keep it out of the chat
         // too, and show it where every other result of that run is shown.
         if (notice?.kind === "job") {
-          activity.push({
+          this.emitActivity({
             kind: "job",
             id: `j-${entry.id}`,
             notice,
             timestamp: timestampOf(message),
             order: entry.id * 10_000,
           });
-          continue;
+          return;
         }
-        messages.push({
+        this.emit({
           id: queueKey === undefined ? `m-${entry.id}` : `m-${queueKey}`,
           role: "user",
           text,
@@ -1223,7 +1199,7 @@ export function buildTranscript(
           ...(notice === null ? {} : { notice }),
         });
       }
-      continue;
+      return;
     }
 
     if (kind === AssistantEntry.kind) {
@@ -1246,18 +1222,26 @@ export function buildTranscript(
             block.type === "toolCall" && typeof block.id === "string",
         )
         .map((block) => block.id);
+      for (const block of blocks) {
+        if (block.type === "toolCall" && typeof block.id === "string") {
+          this.toolCalls.set(block.id, {
+            name: typeof block.name === "string" ? block.name : "tool",
+            arguments: block.arguments,
+          });
+        }
+      }
       const visible = text.length > 0 || errorText.length > 0;
       const echo =
-        visible && isMcpEventEcho(text.length > 0 ? text : errorText, latestMcpNoticeText);
+        visible && isMcpEventEcho(text.length > 0 ? text : errorText, this.latestMcpNoticeText);
       if (visible && !echo) {
-        messages.push({
+        this.emit({
           id: `m-${entry.id}`,
           role: "assistant",
           text: text.length > 0 ? text : errorText,
           timestamp: timestampOf(message),
           order: entry.id * 10_000 + 5_000,
           isError: errorText.length > 0,
-          ...(partialEntryIds.has(entry.id) ? { partial: true } : {}),
+          ...(this.partialEntryIds.has(entry.id) ? { partial: true } : {}),
           ...(spend !== undefined && thinkingBlocks.length === 0 && toolCallIds.length === 0
             ? { usage: spend }
             : {}),
@@ -1266,7 +1250,7 @@ export function buildTranscript(
       thinkingBlocks.forEach((block, index) => {
         const thinking = block.thinking;
         if (typeof thinking !== "string") return;
-        activity.push({
+        this.emitActivity({
           kind: "thinking",
           id: `t-${entry.id}-${index}`,
           name: "thinking",
@@ -1278,41 +1262,249 @@ export function buildTranscript(
       });
       const firstToolCall = toolCallIds[0];
       if (spend !== undefined && thinkingBlocks.length === 0 && firstToolCall !== undefined) {
-        pendingToolSpend.set(firstToolCall, spend);
+        this.pendingToolSpend.set(firstToolCall, spend);
       }
-      continue;
+      return;
     }
 
-    if (kind === ToolResultEntry.kind) {
-      const toolCallId = typeof message.toolCallId === "string" ? message.toolCallId : "";
-      const call = toolCalls.get(toolCallId);
-      const tool = toolActivityFromEntry(entry, call?.arguments);
-      if (tool) {
-        const usage = pendingToolSpend.get(toolCallId);
-        if (usage !== undefined) pendingToolSpend.delete(toolCallId);
-        activity.push(usage === undefined ? tool : { ...tool, usage });
-      }
-      // A drawing owns one message; a replace or edit only raises that message's revision, so
-      // the transcript is not rewritten with another bubble for the same diagram.
-      const diagram = parseDiagramDetails(message.details);
-      const part = diagramPartFromDetails(message.details, diagramRevision);
-      const revises = call?.name === "replace_diagram" || call?.name === "edit_diagram";
-      if (diagram !== undefined && part !== undefined && !revises) {
-        messages.push({
-          id: `m-${entry.id}`,
-          role: "assistant",
-          text: diagram.title ?? "",
-          timestamp: timestampOf(message),
-          order: entry.id * 10_000 + 5_000,
-          parts: [part],
-        });
-      }
+    // ToolResultEntry.
+    const toolCallId = typeof message.toolCallId === "string" ? message.toolCallId : "";
+    const call = this.toolCalls.get(toolCallId);
+    // A call is only needed until its result arrives, so later entries do not carry it.
+    if (toolCallId.length > 0) this.toolCalls.delete(toolCallId);
+    const tool = toolActivityFromEntry(entry, call?.arguments);
+    if (tool) {
+      const usage = this.pendingToolSpend.get(toolCallId);
+      if (usage !== undefined) this.pendingToolSpend.delete(toolCallId);
+      this.emitActivity(usage === undefined ? tool : { ...tool, usage });
+    }
+    // A drawing owns one message; a replace or edit only raises that message's revision, so
+    // the transcript is not rewritten with another bubble for the same diagram.
+    const diagram = parseDiagramDetails(message.details);
+    const part = diagramPartFromDetails(message.details, this.diagramRevision);
+    const revises = call?.name === "replace_diagram" || call?.name === "edit_diagram";
+    if (diagram !== undefined && part !== undefined && !revises) {
+      const drawn: ChatMessage = {
+        id: `m-${entry.id}`,
+        role: "assistant",
+        text: diagram.title ?? "",
+        timestamp: timestampOf(message),
+        order: entry.id * 10_000 + 5_000,
+        parts: [part],
+      };
+      this.diagramSlots.push({
+        message: drawn,
+        diagramId: part.diagram.id,
+        revision: part.diagram.revision,
+      });
+      this.emit(drawn);
     }
   }
 
-  messages.sort((a, b) => a.order - b.order);
-  activity.sort((a, b) => a.order - b.order);
-  return { messages, activity };
+  /** The transcript as it stands. Both lists are in display order. */
+  build(): BuiltTranscript {
+    return { messages: this.messages, activity: this.activity };
+  }
+
+  /**
+   * Re-reads the drawings in this transcript. A replace or edit raises a diagram's
+   * revision without adding an entry, so the row that already shows it must follow.
+   * Returns true when a row changed.
+   */
+  refreshDiagrams(): boolean {
+    let changed = false;
+    for (const slot of this.diagramSlots) {
+      const revision = this.diagramRevision?.(slot.diagramId);
+      if (revision === undefined || revision === slot.revision) continue;
+      const parts = slot.message.parts;
+      if (parts === undefined) continue;
+      const updated: ChatMessage = {
+        ...slot.message,
+        parts: parts.map((part) =>
+          part.kind === "diagram" && part.diagram.id === slot.diagramId
+            ? { kind: "diagram", diagram: { ...part.diagram, revision } }
+            : part,
+        ),
+      };
+      this.replaceMessage(slot.message, updated);
+      slot.message = updated;
+      slot.revision = revision;
+      changed = true;
+    }
+    return changed;
+  }
+
+  private clear(): void {
+    this.messages.length = 0;
+    this.activity.length = 0;
+    this.toolCalls.clear();
+    this.pendingToolSpend.clear();
+    this.partialEntryIds.clear();
+    this.noticeQueueKeys.clear();
+    this.mcpNotices.clear();
+    this.diagramSlots.length = 0;
+    this.latestMcpNoticeText = null;
+    this.resetEntry = undefined;
+    this.resetAt = undefined;
+    this.resetMessage = undefined;
+  }
+
+  /** A restart's interrupt note names the assistant entry it cut off. */
+  private notePartialEntry(entry: EntryRecord): void {
+    if (!isRecord(entry.data)) return;
+    const partialEntryId = entry.data.partialEntryId;
+    if (typeof partialEntryId !== "number" || !Number.isSafeInteger(partialEntryId)) return;
+    this.partialEntryIds.add(partialEntryId);
+    const message = this.messages.find((item) => item.id === `m-${partialEntryId}`);
+    if (message === undefined || message.partial === true) return;
+    // Keep the field order of an assistant row built with the flag already known.
+    const { usage, ...rest } = message;
+    this.replaceMessage(message, {
+      ...rest,
+      partial: true,
+      ...(usage === undefined ? {} : { usage }),
+    });
+  }
+
+  /**
+   * A placed queue copy shares its key with the decision notice that is its visible
+   * form, so the copy must not also appear as a user message.
+   */
+  private noteDecisionQueueKeys(entry: EntryRecord): void {
+    const queueKey = entryQueueKeyFromData(entry.data);
+    if (queueKey !== undefined) this.dropQueuedMessage(queueKey);
+    // Older notice entries only carried the logical key, not the queued input's key.
+    const key = queueKeyFromEntryData(entry.data);
+    if (key !== undefined) this.dropQueuedMessage(key);
+  }
+
+  private dropQueuedMessage(key: string): void {
+    if (this.noticeQueueKeys.has(key)) return;
+    this.noticeQueueKeys.add(key);
+    const id = `m-${key}`;
+    for (let index = this.messages.length - 1; index >= 0; index--) {
+      if (this.messages[index]?.id === id) this.messages.splice(index, 1);
+    }
+  }
+
+  /** Tracks the newest entry of each MCP notice, so its one row shows the latest text. */
+  private noteMcpNotice(entry: EntryRecord): void {
+    const groupId = mcpNoticeGroupId(entry);
+    if (groupId === null) return;
+    const existing = this.mcpNotices.get(groupId);
+    if (existing === undefined) {
+      this.mcpNotices.set(groupId, { first: entry, latest: entry });
+      return;
+    }
+    if (entry.id < existing.first.id) existing.first = entry;
+    if (mcpNoticeAt(entry) >= mcpNoticeAt(existing.latest)) existing.latest = entry;
+  }
+
+  private emitMcpNotice(entry: EntryRecord): void {
+    const groupId = mcpNoticeGroupId(entry);
+    if (groupId === null) return;
+    const group = this.mcpNotices.get(groupId);
+    if (group === undefined) return;
+    if (!isRecord(group.latest.data) || typeof group.latest.data.text !== "string") return;
+    const text = group.latest.data.text;
+    this.latestMcpNoticeText = text;
+    const notice = parseNotice(text);
+    const at = group.latest.data.at;
+    const timestamp =
+      typeof at === "string" && Number.isFinite(Date.parse(at))
+        ? new Date(at).toISOString()
+        : entryTimestamp(group.latest.data);
+    const existing = group.message;
+    if (notice === null) {
+      if (existing !== undefined) this.removeMessage(existing);
+      group.message = undefined;
+      return;
+    }
+    if (existing === undefined) {
+      const message: ChatMessage = {
+        id: entryMessageId(group.first),
+        role: "user",
+        text,
+        timestamp,
+        order: group.first.id * 10_000,
+        notice,
+      };
+      group.message = message;
+      this.emit(message);
+      return;
+    }
+    const updated: ChatMessage = { ...existing, text, timestamp, notice };
+    this.replaceMessage(existing, updated);
+    group.message = updated;
+  }
+
+  /** A reset marker only refines the time the reset row shows. */
+  private noteResetMarker(entry: EntryRecord): void {
+    if (this.resetEntry === undefined || entry.id <= this.resetEntry.id) return;
+    if (!isRecord(entry.data) || typeof entry.data.resetAt !== "string") return;
+    if (!Number.isFinite(Date.parse(entry.data.resetAt))) return;
+    this.resetAt = entry.data.resetAt;
+    if (this.resetMessage === undefined) return;
+    const updated: ChatMessage = { ...this.resetMessage, timestamp: entry.data.resetAt };
+    this.replaceMessage(this.resetMessage, updated);
+    this.resetMessage = updated;
+  }
+
+  private emit(message: ChatMessage): void {
+    this.messages.splice(firstOrderAbove(this.messages, message.order), 0, message);
+  }
+
+  private emitActivity(item: ActivityItem): void {
+    this.activity.splice(firstOrderAbove(this.activity, item.order), 0, item);
+  }
+
+  private replaceMessage(current: ChatMessage, next: ChatMessage): void {
+    const index = this.messages.indexOf(current);
+    if (index !== -1) this.messages[index] = next;
+  }
+
+  private removeMessage(message: ChatMessage): void {
+    const index = this.messages.indexOf(message);
+    if (index !== -1) this.messages.splice(index, 1);
+  }
+}
+
+/** Index a new item belongs at, keeping display order and matching a stable sort. */
+function firstOrderAbove(items: readonly { order: number }[], order: number): number {
+  let low = 0;
+  let high = items.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if ((items[middle]?.order ?? 0) <= order) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+/** The time a reset row shows, from the reset entry itself; a marker refines it later. */
+function resetTimestampOf(entry: EntryRecord): string | undefined {
+  const message = asRecord(entry.model?.[0]);
+  const timestamp = message.timestamp;
+  const parsed =
+    typeof timestamp === "number"
+      ? timestamp
+      : typeof timestamp === "string"
+        ? Date.parse(timestamp)
+        : Number.NaN;
+  if (Number.isFinite(parsed)) return new Date(parsed).toISOString();
+  if (isRecord(entry.data) && typeof entry.data.resetAt === "string") return entry.data.resetAt;
+  return undefined;
+}
+
+export function buildTranscript(
+  entries: readonly EntryRecord[],
+  media?: MediaResolver,
+  diagramRevision?: DiagramRevisionResolver,
+): BuiltTranscript {
+  const builder = new TranscriptBuilder(media, diagramRevision);
+  const ordered = [...entries].sort((a, b) => a.id - b.id);
+  for (const entry of ordered) builder.append(entry);
+  return builder.build();
 }
 
 export function toolActivityFromEntry(entry: EntryRecord, args: unknown): ToolActivity | undefined {

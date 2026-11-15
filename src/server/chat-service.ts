@@ -98,6 +98,7 @@ import {
   appendSessionResetMarker,
   appendTaskDecisionNotice,
   assistantMessageFromEntry,
+  type BuiltTranscript,
   buildTranscript,
   contextUsage,
   DELEGATE_NOTICE_ENTRY_KIND,
@@ -112,6 +113,7 @@ import {
   summarizeUsage,
   TASK_DECISION_ENTRY_KIND,
   TASK_DECISION_PROMPT_ENTRY_KIND,
+  TranscriptBuilder,
   toolActivityFromEntry,
 } from "./session.js";
 import type { SseFrame } from "./sse.js";
@@ -242,6 +244,14 @@ export interface McpEventEnvelope {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** True when entries ascend by id, the order the transcript cache appends in. */
+function ascends(entries: readonly EntryRecord[]): boolean {
+  for (let index = 1; index < entries.length; index++) {
+    if ((entries[index - 1]?.id ?? 0) >= (entries[index]?.id ?? 0)) return false;
+  }
+  return true;
 }
 
 /** The task a task tool names, used to tell a release of this run's work from another task's. */
@@ -672,6 +682,18 @@ export class ChatService {
   private pendingResetAt: string | undefined;
   /** Read on every snapshot, so a server may recover after its boot probe fails. */
   private readonly mcpStatus: () => McpStatus;
+  /**
+   * The transcript built so far and the exact entry range it covers. A poll that
+   * brings new entries appends them instead of rebuilding the conversation.
+   */
+  private transcriptCache:
+    | {
+        first: number | undefined;
+        tail: number | undefined;
+        count: number;
+        builder: TranscriptBuilder;
+      }
+    | undefined;
 
   constructor(
     private readonly harness: Harness,
@@ -1118,11 +1140,52 @@ export class ChatService {
     await appendSessionResetMarker(this.conversation, resetAt);
   }
 
+  /**
+   * The transcript for `entries`, reusing the previous build when only new entries
+   * arrived. A long conversation holds tens of thousands of entries, and rebuilding
+   * every one of them on each `/api/state` poll is what made the poll take seconds.
+   * Entries are immutable once committed, so the previous range stays valid.
+   */
+  private transcriptFor(entries: readonly EntryRecord[]): BuiltTranscript {
+    const cache = this.transcriptCache;
+    // The cache appends in id order, so it is only usable when the view ascends and
+    // still starts where the previous view did.
+    if (
+      cache !== undefined &&
+      entries.length >= cache.count &&
+      entries[0]?.id === cache.first &&
+      (cache.count === 0 || entries[cache.count - 1]?.id === cache.tail) &&
+      ascends(entries)
+    ) {
+      if (entries.length === cache.count) {
+        cache.builder.refreshDiagrams();
+        return cache.builder.build();
+      }
+      for (let index = cache.count; index < entries.length; index++) {
+        const entry = entries[index];
+        if (entry !== undefined) cache.builder.append(entry);
+      }
+      cache.count = entries.length;
+      cache.tail = entries[entries.length - 1]?.id;
+      // A replace or edit raises a drawing's revision without adding an entry.
+      cache.builder.refreshDiagrams();
+      return cache.builder.build();
+    }
+    const builder = new TranscriptBuilder(this.mediaRef, this.diagramRevision);
+    for (const entry of [...entries].sort((a, b) => a.id - b.id)) builder.append(entry);
+    this.transcriptCache = {
+      first: entries[0]?.id,
+      tail: entries[entries.length - 1]?.id,
+      count: entries.length,
+      builder,
+    };
+    return builder.build();
+  }
+
   /** One page of older transcript, ending just below `request.before`. */
   async getHistory(request: WindowRequest): Promise<TranscriptHistory> {
     const context = await this.conversation.context(SESSION_CONTEXT);
-    const transcript = buildTranscript(context.entries, this.mediaRef, this.diagramRevision);
-    return windowTranscript(transcript, request);
+    return windowTranscript(this.transcriptFor(context.entries), request);
   }
 
   /** Usage, context and MCP status without building the transcript window. */
@@ -1152,7 +1215,7 @@ export class ChatService {
       this.resetAt =
         reset.resetAt ?? this.pendingResetAt ?? this.resetAt ?? new Date().toISOString();
     }
-    const built = buildTranscript(context.entries, this.mediaRef, this.diagramRevision);
+    const built = this.transcriptFor(context.entries);
     const transcript = windowTranscript(built, request.before === undefined ? request : {});
     return {
       conversationId: String(this.conversation.id),
