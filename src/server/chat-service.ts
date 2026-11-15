@@ -232,6 +232,11 @@ interface SubmitOptions {
 /** `PI_UI_QUIET_AFTER_MS` shortens the quiet threshold for tests. */
 export const QUIET_AFTER_MS = positiveEnv("PI_UI_QUIET_AFTER_MS") ?? DEFAULT_QUIET_AFTER_MS;
 const WATCHDOG_INTERVAL_MS = Math.min(10_000, QUIET_AFTER_MS);
+/**
+ * How long a read context view may be reused with no view event to vouch for it. Only
+ * repairs a change that was never announced; a normal poll reuses until an event lands.
+ */
+const CONTEXT_REUSE_MS = 15_000;
 const STREAM_RETRY_MS = 1_000;
 const MCP_EVENT_HEAD = MCP_EVENTS_HEAD;
 
@@ -688,12 +693,23 @@ export class ChatService {
    */
   private transcriptCache:
     | {
+        entries: readonly EntryRecord[];
         first: number | undefined;
         tail: number | undefined;
         count: number;
         builder: TranscriptBuilder;
       }
     | undefined;
+  /**
+   * The last context view and the entry revision it describes. Reading the view of a
+   * month-long conversation means re-parsing every entry (~0.7 s) on each poll; entries
+   * only change when the view stream says so, so a poll between changes can reuse them.
+   */
+  private entriesCache:
+    | { entries: readonly EntryRecord[]; revision: number; readAt: number }
+    | undefined;
+  /** Bumped whenever the view stream may have changed the entry list. */
+  private entriesRevision = 0;
 
   constructor(
     private readonly harness: Harness,
@@ -1148,6 +1164,12 @@ export class ChatService {
    */
   private transcriptFor(entries: readonly EntryRecord[]): BuiltTranscript {
     const cache = this.transcriptCache;
+    // The common case is the same view twice: the entries reference is stable while the
+    // cache in front of it holds, so no id walk is needed to know nothing was appended.
+    if (cache !== undefined && cache.entries === entries) {
+      cache.builder.refreshDiagrams();
+      return cache.builder.build();
+    }
     // The cache appends in id order, so it is only usable when the view ascends and
     // still starts where the previous view did.
     if (
@@ -1174,6 +1196,7 @@ export class ChatService {
     const builder = new TranscriptBuilder(this.mediaRef, this.diagramRevision);
     for (const entry of [...entries].sort((a, b) => a.id - b.id)) builder.append(entry);
     this.transcriptCache = {
+      entries,
       first: entries[0]?.id,
       tail: entries[entries.length - 1]?.id,
       count: entries.length,
@@ -1182,20 +1205,42 @@ export class ChatService {
     return builder.build();
   }
 
+  /**
+   * The conversation's entries, re-read only when the view may have changed them. The
+   * time bound is insurance: if a change never announced itself, an idle page still
+   * re-reads within this window instead of showing a transcript that is behind forever.
+   */
+  private async contextEntries(): Promise<readonly EntryRecord[]> {
+    const cache = this.entriesCache;
+    if (
+      cache !== undefined &&
+      cache.revision === this.entriesRevision &&
+      Date.now() - cache.readAt < CONTEXT_REUSE_MS
+    ) {
+      return cache.entries;
+    }
+    const revision = this.entriesRevision;
+    const context = await this.conversation.context(SESSION_CONTEXT);
+    // A change that lands during the read keeps its higher revision, so the next poll
+    // reads again rather than serving a view that is already behind that change.
+    this.entriesCache = { entries: context.entries, revision, readAt: Date.now() };
+    return context.entries;
+  }
+
   /** One page of older transcript, ending just below `request.before`. */
   async getHistory(request: WindowRequest): Promise<TranscriptHistory> {
-    const context = await this.conversation.context(SESSION_CONTEXT);
-    return windowTranscript(this.transcriptFor(context.entries), request);
+    const entries = await this.contextEntries();
+    return windowTranscript(this.transcriptFor(entries), request);
   }
 
   /** Usage, context and MCP status without building the transcript window. */
   async statsSnapshot(): Promise<Pick<Snapshot, "usage" | "context" | "mcp" | "conversationId">> {
-    const context = await this.conversation.context(SESSION_CONTEXT);
+    const entries = await this.contextEntries();
     const usage = await this.harness.usage(SESSION_CONTEXT);
     return {
       conversationId: String(this.conversation.id),
       usage: summarizeUsage(usage),
-      context: contextUsage(context.entries, this.modelWindow),
+      context: contextUsage(entries, this.modelWindow),
       mcp: this.mcpStatus(),
     };
   }
@@ -1207,15 +1252,15 @@ export class ChatService {
     const queueRevision = this.queueRevision;
     const queue = this.queueItems();
     const steers = this.steerItems();
-    const context = await this.conversation.context(SESSION_CONTEXT);
+    const entries = await this.contextEntries();
     const usage = await this.harness.usage(SESSION_CONTEXT);
-    const reset = latestSessionReset(context.entries);
+    const reset = latestSessionReset(entries);
     if (reset !== undefined) {
       this.resetOrder = reset.order;
       this.resetAt =
         reset.resetAt ?? this.pendingResetAt ?? this.resetAt ?? new Date().toISOString();
     }
-    const built = this.transcriptFor(context.entries);
+    const built = this.transcriptFor(entries);
     const transcript = windowTranscript(built, request.before === undefined ? request : {});
     return {
       conversationId: String(this.conversation.id),
@@ -1229,7 +1274,7 @@ export class ChatService {
       steers,
       queueRevision,
       usage: summarizeUsage(usage),
-      context: contextUsage(context.entries, this.modelWindow),
+      context: contextUsage(entries, this.modelWindow),
       mcp: this.mcpStatus(),
       mcpEvents: this.mcpEventsState(),
       draft: {
@@ -2920,6 +2965,16 @@ export class ChatService {
 
   private async handleEvent(event: ViewEvent): Promise<void> {
     switch (event.type) {
+      // These are the events that can change the durable entry list; the rest are the
+      // live draft and run state, which the stream already paints.
+      case "message_end":
+      case "tool_execution_end":
+      case "entry_appended":
+      case "compaction_start":
+      case "compaction_end":
+        this.entriesRevision += 1;
+    }
+    switch (event.type) {
       case "snapshot": {
         this.applySnapshot(event);
         const consumed = this.consumeSteersInEntries(event.entries);
@@ -3186,6 +3241,7 @@ export class ChatService {
   }
 
   private applySnapshot(snapshot: ViewSnapshot): void {
+    this.entriesRevision += 1;
     this.currentText = "";
     this.currentThinking = "";
     this.rememberLatestMcpNotice(snapshot.entries);
