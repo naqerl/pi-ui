@@ -1511,6 +1511,11 @@ export class TaskAgentManager {
     return [...closing.keys()];
   }
 
+  /** Open plan sessions right now, for the periodic memory line. */
+  poolSize(): number {
+    return this.sessions.size;
+  }
+
   private clock(): number {
     return this.options.now?.() ?? Date.now();
   }

@@ -1221,6 +1221,21 @@ export class ChatService {
   }
 
   /**
+   * What the transcript and context caches hold right now. Counts only: the memory line
+   * exists so a report of "it got slow again" can name the holder instead of guessing.
+   */
+  memoryReport(): { entries: number; messages: number; activity: number; built: number } {
+    const transcript = this.transcriptCache;
+    const size = transcript?.builder.size();
+    return {
+      entries: this.entriesCache?.entries.length ?? 0,
+      messages: size?.messages ?? 0,
+      activity: size?.activity ?? 0,
+      built: transcript?.count ?? 0,
+    };
+  }
+
+  /**
    * The conversation's entries, re-read only when the view may have changed them. The
    * time bound is insurance: if a change never announced itself, an idle page still
    * re-reads within this window instead of showing a transcript that is behind forever.
