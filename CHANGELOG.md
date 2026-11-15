@@ -1,3 +1,14 @@
+## 1.6.194
+
+### Fixed
+
+- A send no longer re-reads the whole conversation twice on its way back: the retried-send guard reads the view the page just polled, and the message the send just placed is read by id as one row instead of being found in a parsed month-long transcript. The slow-send line from 1.6.193 put `conversationMs` at 12 ms and `statusMs` at 1623 ms, with another ~800 ms unmeasured — both halves were full context reads at 0.8-0.9 s each.
+- A steer event that arrives out of order reads its one entry instead of the conversation.
+
+### Added
+
+- `statusMs` reports `submissionMs` and `entryMs`, so a slow send names the part that is slow.
+
 ## 1.6.193
 
 ### Fixed
