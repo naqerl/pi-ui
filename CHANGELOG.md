@@ -1,3 +1,9 @@
+## 1.6.192
+
+### Changed
+
+- A poll reuses the context view it already read instead of re-reading the conversation: the view stream says when entries changed, so an idle page keeps the view it has and only a change pays for the read. On the live conversation that read alone was 0.8-0.9 s per poll, because it re-parses every entry of a month-long transcript from the store.
+
 ## 1.6.191
 
 ### Changed
