@@ -1,3 +1,9 @@
+## 1.6.195
+
+### Added
+
+- One `[pi] memory` line every five minutes (and at boot) reports RSS, heap used/total/limit, the entries and transcript rows the chat caches hold, and the number of open plan sessions. The container's high-water mark reached 2.69 GiB of a 2.73 GiB cap without any way to say what held it; the next report of slowness will be measured, not guessed.
+
 ## 1.6.194
 
 ### Fixed
