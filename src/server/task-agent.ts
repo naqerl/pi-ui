@@ -1528,6 +1528,7 @@ export class TaskAgentManager {
     if (this.options.openSession !== undefined) {
       const session = await this.options.openSession(taskId, this);
       this.sessions.set(taskId, session);
+      this.lastUsed.set(taskId, this.clock());
       if (session.running()) this.options.onRunState?.(taskId);
       return session;
     }
