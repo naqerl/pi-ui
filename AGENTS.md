@@ -39,3 +39,21 @@ time. Plan or product surfaces differ by tool set and system prompt, never by re
 E2E is for journeys a unit test structurally cannot reach. Geometry, frame-budget and screenshot
 assertions belong in the unit gate or in manual review, not in the browser suite. A new spec must
 displace one of the core files — the 420 s guard is the ceiling, not a target.
+
+## Credentials are masked by the gateway
+
+Every credential that leaves a tool result is replaced at the gateway with a placeholder of the form
+`{{KIND_xxxxxxxx}}` before it reaches the agent, and restored to its real value before any tool runs.
+This is why the workspace is safe to work in: printing a token from `.env`, `sops -d`, or `kubectl get
+secret` returns the placeholder, not the secret, and an agent that needs to *use* the secret can still
+write the placeholder in a command and have it resolved.
+
+Two consequences for anything written down here:
+
+- **Share credentials through placeholders.** When a key is needed in a prompt, a task body, a doc or
+  a commit message, write `{{KIND_xxxxxxxx}}` as it appears in context — never retype a value that was
+  resolved, and never ask the operator to paste a secret into the chat when a placeholder already
+  exists.
+- **A placeholder is not a redaction you can plan around.** It is per-consumer and per-run; it will
+  not work in another session, in a file read by CI, or in a commit that leaves this machine. If a
+  secret genuinely has to live in a repo, it goes through SOPS.
