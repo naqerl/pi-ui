@@ -18,6 +18,11 @@ services:
     # still comes from PORT (8787 by default).
     environment:
       PORT: "${PORT:-8787}"
+      # The container cap sizes V8's default heap to ~1.4 GB, which is exactly where a
+      # month-long transcript plus its caches nearly live: at the cap V8 falls into
+      # half-second full GCs instead of collecting cheaply. Give it headroom below the
+      # memory cap, so a spike collects instead of stalling the page.
+      NODE_OPTIONS: "--max-old-space-size=1792"
       PI_CWD: /workspace
       PI_CODING_AGENT_DIR: /home/pi/.pi/agent
       # The durable conversation lives in data/ inside the workspace mount.

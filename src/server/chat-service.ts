@@ -511,14 +511,22 @@ function logSubmitTiming(timing: {
   totalMs: number;
   queueDepth: number;
 }): void {
-  if (!submitTimingEnabled()) return;
-  console.debug(
-    `[pi] submit timing mediaMs=${timing.mediaMs} beforeTurnMs=${timing.beforeTurnMs} ` +
-      `markerMs=${timing.markerMs} conversationMs=${timing.conversationMs} ` +
-      `statusMs=${timing.statusMs} broadcastMs=${timing.broadcastMs} ` +
-      `totalMs=${timing.totalMs} queueDepth=${timing.queueDepth}`,
-  );
+  // A send that takes a noticeable time names its own parts in the log, so a report of
+  // "sending is slow" can be measured instead of guessed. Full timing is opt-in.
+  const slow = timing.totalMs >= SLOW_SEND_MS;
+  if (!slow && !submitTimingEnabled()) return;
+  const line =
+    `${slow ? "[pi] slow send" : "[pi] submit timing"} mediaMs=${timing.mediaMs} ` +
+    `beforeTurnMs=${timing.beforeTurnMs} markerMs=${timing.markerMs} ` +
+    `conversationMs=${timing.conversationMs} statusMs=${timing.statusMs} ` +
+    `broadcastMs=${timing.broadcastMs} totalMs=${timing.totalMs} ` +
+    `queueDepth=${timing.queueDepth}`;
+  if (slow) console.warn(line);
+  else console.debug(line);
 }
+
+/** A submit slower than this is logged with its breakdown even without the debug flag. */
+const SLOW_SEND_MS = 1_000;
 
 function submitTimingEnabled(): boolean {
   const flag = process.env.PI_UI_DEBUG;

@@ -1247,8 +1247,22 @@ export class DurableTaskAgentSession implements TaskAgentSession {
   }
 }
 
+/**
+ * A plan session holds a durable store, a harness and its own transcript. Opening one per
+ * task and keeping it for the life of the process cost 2.5 MB each: 298 tasks reached
+ * 750 MB and pushed the heap into a GC storm at V8's container-sized cap. A session nobody
+ * is looking at is closed and reopened on demand instead.
+ */
+const IDLE_SESSION_MS = 10 * 60_000;
+/** Idle sessions kept open even before one has been idle long enough to expire. */
+const IDLE_SESSION_MAX = 8;
+const IDLE_SWEEP_MS = 60_000;
+
 export class TaskAgentManager {
   private readonly sessions = new Map<string, TaskAgentSession>();
+  /** When each open session was last asked for, so the sweep can tell idle from in use. */
+  private readonly lastUsed = new Map<string, number>();
+  private sweeper: ReturnType<typeof setInterval> | undefined;
   private readonly opening = new Map<string, Promise<TaskAgentSession>>();
   private closed = false;
   readonly root: string;
@@ -1267,6 +1281,8 @@ export class TaskAgentManager {
         ...(options.burstWindowMs === undefined ? {} : { burstWindowMs: options.burstWindowMs }),
         ...(options.coalesceMs === undefined ? {} : { coalesceMs: options.coalesceMs }),
       });
+    this.sweeper = setInterval(() => void this.evictIdle(), IDLE_SWEEP_MS);
+    this.sweeper.unref?.();
     this.planTurnNotifier = new PlanTurnNotifier(options.store, {
       ...(options.notify === undefined ? {} : { notify: options.notify }),
       ...(options.now === undefined ? {} : { now: options.now }),
@@ -1290,7 +1306,10 @@ export class TaskAgentManager {
     const task = this.options.store.ledger().tasks.find((item) => item.id === taskId);
     if (task === undefined) throw new TaskAgentError("Unknown task", 404);
     const existing = this.sessions.get(taskId);
-    if (existing !== undefined && !existing.closed) return existing;
+    if (existing !== undefined && !existing.closed) {
+      this.lastUsed.set(taskId, this.clock());
+      return existing;
+    }
     let pending = this.opening.get(taskId);
     if (pending === undefined) {
       pending = this.open(taskId).finally(() => this.opening.delete(taskId));
@@ -1444,15 +1463,56 @@ export class TaskAgentManager {
     }
     const session = this.sessions.get(taskId);
     this.sessions.delete(taskId);
+    this.lastUsed.delete(taskId);
     if (session !== undefined) await session.close();
     await rm(this.taskDir(taskId), { recursive: true, force: true });
   }
 
   async close(): Promise<void> {
     this.closed = true;
+    if (this.sweeper !== undefined) clearInterval(this.sweeper);
+    this.sweeper = undefined;
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
+    this.lastUsed.clear();
     await Promise.all(sessions.map((session) => session.close()));
+  }
+
+  /**
+   * Closes the plan sessions nobody is using: never one with a live run, and never more
+   * than `IDLE_SESSION_MAX` idle ones. Returns the task ids closed, so a test can assert
+   * the choice without a timer. A closed session reopens on the next request.
+   */
+  async evictIdle(): Promise<string[]> {
+    const now = this.clock();
+    const idle: Array<{ taskId: string; session: TaskAgentSession; usedAt: number }> = [];
+    for (const [taskId, session] of this.sessions) {
+      if (session.closed || session.running()) continue;
+      idle.push({ taskId, session, usedAt: this.lastUsed.get(taskId) ?? now });
+    }
+    idle.sort((left, right) => left.usedAt - right.usedAt);
+    const expired = idle.filter((item) => now - item.usedAt >= IDLE_SESSION_MS);
+    const excess = idle.slice(0, Math.max(0, idle.length - IDLE_SESSION_MAX));
+    const closing = new Map<string, TaskAgentSession>();
+    for (const item of [...expired, ...excess]) closing.set(item.taskId, item.session);
+    for (const taskId of closing.keys()) {
+      this.sessions.delete(taskId);
+      this.lastUsed.delete(taskId);
+    }
+    await Promise.all(
+      [...closing].map(async ([taskId, session]) => {
+        try {
+          await session.close();
+        } catch (error) {
+          console.error(`[task-agent] could not close the idle session for ${taskId}`, error);
+        }
+      }),
+    );
+    return [...closing.keys()];
+  }
+
+  private clock(): number {
+    return this.options.now?.() ?? Date.now();
   }
 
   /** Task ids whose plan agent has a live run, filtered to work the UI may badge. */
@@ -1473,6 +1533,7 @@ export class TaskAgentManager {
     }
     const session = await this.openDurable(taskId);
     this.sessions.set(taskId, session);
+    this.lastUsed.set(taskId, this.clock());
     if (session.running()) this.options.onRunState?.(taskId);
     return session;
   }

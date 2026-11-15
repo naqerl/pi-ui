@@ -942,6 +942,66 @@ test("the agent session is created on first use, stopped when the task is done, 
   await manager.close();
 });
 
+test("a plan session nobody is using is closed and reopened on demand", async () => {
+  let now = 1_000_000;
+  const opened: FakeSession[] = [];
+  const manager = new TaskAgentManager({
+    dataDir: directory,
+    cwd: directory,
+    models: {} as never,
+    model: undefined,
+    store,
+    publish: () => undefined,
+    baseInstructions: "base",
+    now: () => now,
+    openSession: async (taskId) => {
+      const session = new FakeSession(taskId);
+      opened.push(session);
+      return session;
+    },
+  });
+
+  const ids: string[] = [];
+  for (let index = 0; index < 10; index++) {
+    const title = `Idle session ${index}`;
+    const task = (await store.create(title, null)).tasks.find((item) => item.title === title);
+    assert.ok(task);
+    ids.push(task.id);
+    await manager.ensure(task.id);
+  }
+  assert.equal(opened.length, 10);
+  const [firstId, secondId, thirdId] = ids;
+  assert.ok(firstId && secondId && thirdId);
+
+  // One session is planning: the pool must not close it whatever its age.
+  const busy = opened[3];
+  assert.ok(busy);
+  busy.run = "running";
+
+  // Nine are idle; the pool keeps eight, so the one touched longest ago goes.
+  const closed = await manager.evictIdle();
+  assert.deepEqual(closed, [firstId]);
+  assert.equal(opened[0]?.closed, true);
+  assert.equal(busy.closed, false);
+
+  // Asking for the closed task again opens a fresh session instead of handing out a dead one.
+  const reopened = await manager.ensure(firstId);
+  assert.notEqual(reopened, opened[0]);
+
+  // Ten minutes on, every idle session has expired and the live run is still untouched.
+  now += 10 * 60_000;
+  const expired = await manager.evictIdle();
+  assert.equal(expired.length, 8);
+  assert.equal(expired.includes(thirdId), false);
+  assert.equal(expired.includes(busy.taskId), false);
+  assert.equal(expired.includes(secondId), true);
+  assert.equal(busy.closed, false);
+
+  busy.run = "idle";
+  await manager.close();
+  assert.equal(busy.closed, true);
+});
+
 test("planning reports only live plan runs on active tasks", async () => {
   const fakes = new Map<string, FakeSession>();
   const manager = new TaskAgentManager({
