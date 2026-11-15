@@ -1306,6 +1306,11 @@ export class TranscriptBuilder {
     return { messages: this.messages, activity: this.activity };
   }
 
+  /** How many rows this transcript holds, for the periodic memory line. */
+  size(): { messages: number; activity: number } {
+    return { messages: this.messages.length, activity: this.activity.length };
+  }
+
   /**
    * Re-reads the drawings in this transcript. A replace or edit raises a diagram's
    * revision without adding an entry, so the row that already shows it must follow.

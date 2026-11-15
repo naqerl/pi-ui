@@ -2,6 +2,7 @@ import { existsSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getHeapStatistics } from "node:v8";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import type { Context } from "hono";
@@ -1689,8 +1690,31 @@ const server = serve({ fetch: app.fetch, port }, (info) => {
   console.log(`tools: ${toolParts.join(" + ")}`);
 });
 
+/**
+ * One line every five minutes naming what the process holds. The heap sits under a
+ * container-derived cap, and reaching it turned a send into a 700 ms GC pause; these
+ * numbers are what tell the next report of slowness apart from a guess.
+ */
+const MEMORY_LOG_MS = 5 * 60_000;
+const megabytes = (bytes: number) => Math.round(bytes / 1_048_576);
+function logMemory(): void {
+  const usage = process.memoryUsage();
+  const counts = chat.memoryReport();
+  console.log(
+    `[pi] memory rssMb=${megabytes(usage.rss)} heapUsedMb=${megabytes(usage.heapUsed)} ` +
+      `heapTotalMb=${megabytes(usage.heapTotal)} ` +
+      `heapLimitMb=${megabytes(getHeapStatistics().heap_size_limit)} ` +
+      `entries=${counts.entries} messages=${counts.messages} activity=${counts.activity} ` +
+      `built=${counts.built} planSessions=${taskAgents.poolSize()}`,
+  );
+}
+const memoryLog = setInterval(logMemory, MEMORY_LOG_MS);
+memoryLog.unref?.();
+logMemory();
+
 let shuttingDown = false;
 async function shutdown(): Promise<void> {
+  clearInterval(memoryLog);
   if (shuttingDown) return;
   shuttingDown = true;
   await mcpIntake.close();
