@@ -45,7 +45,7 @@ displace one of the core files — the 420 s guard is the ceiling, not a target.
 Every credential that leaves a tool result is replaced at the gateway with a placeholder of the form
 `{{KIND_xxxxxxxx}}` before it reaches the agent, and restored to its real value before any tool runs.
 This is why the workspace is safe to work in: printing a token from `.env`, `sops -d`, or `kubectl get
-secret` returns the placeholder, not the secret, and an agent that needs to *use* the secret can still
+secret` returns the placeholder, not the secret, and an agent that needs to _use_ the secret can still
 write the placeholder in a command and have it resolved.
 
 Two consequences for anything written down here:
