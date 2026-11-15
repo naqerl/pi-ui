@@ -1,3 +1,9 @@
+## 1.6.190
+
+### Added
+
+- The settings popover can reset the agent session: it queues a durable reset on the workspace, and the chat keeps one `Session context reset` row while the earlier turns stay in storage. A reset requested during a streaming run is applied after that run's tools finish, and the run ends with reason `reset` rather than being torn down.
+
 ## 1.6.189
 
 ### Added
