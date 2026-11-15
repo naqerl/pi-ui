@@ -8,6 +8,7 @@ import { createDiagramTools } from "../src/server/diagram-tools.js";
 import { createJobTools } from "../src/server/job-tools.js";
 import { createMemoryTools } from "../src/server/memory/tools.js";
 import { createOperatorTools } from "../src/server/operator-tools.js";
+import { createReloadTool } from "../src/server/reload-tools.js";
 import { createTaskTools } from "../src/server/task-tools.js";
 
 type JsonSchema = Record<string, unknown>;
@@ -100,6 +101,7 @@ function collectAgentTools(): ToolRegistration[] {
     ...createDiagramTools(unused),
     ...createOperatorTools(unused),
     ...createMemoryTools(unused),
+    createReloadTool({ mcp: async () => ({ ok: true, details: {} }) }),
   ];
 }
 
@@ -133,6 +135,7 @@ const REQUIRED_APP_TOOLS = [
   "edit_diagram",
   "replace_diagram",
   "notify_operator",
+  "reload",
   "memory_write",
   "memory_read",
   "memory_grep",

@@ -235,6 +235,11 @@ export interface DurableSessionOptions {
   readonly diagrams?: DiagramBridge;
   /** The explicit notify_operator path: web push plus its chat chip. */
   readonly operator?: OperatorBridge;
+  /** Targets the `reload` tool can rebuild in this session. */
+  readonly reload?: {
+    readonly prompt?: () => Promise<{ readonly instructions: string; readonly changed: boolean }>;
+    readonly models?: () => Promise<import("./models.js").ModelCatalogReload>;
+  };
 }
 
 export interface DurableSessionBoot {
@@ -256,6 +261,7 @@ export interface DurableSessionBoot {
   readonly memoryTools: readonly string[];
   readonly diagramTools: readonly string[];
   readonly operatorTools: readonly string[];
+  readonly reloadTools: readonly string[];
   /** Model stored on the conversation after boot. A menu choice wins over `PI_MODEL`. */
   readonly model: ModelRef | undefined;
   /** pi-ui's own version from package.json. */
@@ -286,6 +292,29 @@ export async function openDurableSession(
   }
 
   const storage = await openNodeSqliteStorage(databasePath);
+  let conversation: Conversation | undefined;
+  const reload =
+    options.reload === undefined
+      ? undefined
+      : {
+          ...(options.reload.models === undefined ? {} : { models: options.reload.models }),
+          ...(options.reload.prompt === undefined
+            ? {}
+            : {
+                prompt: async () => {
+                  if (conversation === undefined) {
+                    throw new Error("the chat session is not ready");
+                  }
+                  const result = await options.reload?.prompt?.();
+                  if (result === undefined) throw new Error("reload prompt is not available");
+                  await conversation.configure(
+                    { instructions: result.instructions },
+                    SESSION_CONTEXT,
+                  );
+                  return result;
+                },
+              }),
+        };
   const {
     registry,
     mcp,
@@ -297,6 +326,7 @@ export async function openDurableSession(
     memoryTools,
     diagramTools,
     operatorTools,
+    reloadTools,
   } = await createAppRegistry({
     dataDir,
     bili: options.bili,
@@ -307,6 +337,7 @@ export async function openDurableSession(
     ...(options.memory === undefined ? {} : { memory: options.memory }),
     ...(options.diagrams === undefined ? {} : { diagrams: options.diagrams }),
     ...(options.operator === undefined ? {} : { operator: options.operator }),
+    ...(reload === undefined ? {} : { reload }),
   });
 
   const harness = await HarnessImpl.open(
@@ -333,11 +364,13 @@ export async function openDurableSession(
     SESSION_CONTEXT,
   );
 
-  const { conversation, resumed } = await loadConversation(harness, currentPath, {
+  const loaded = await loadConversation(harness, currentPath, {
     cwd: options.cwd,
     instructions: options.instructions,
     ...(options.model === undefined ? {} : { model: options.model }),
   });
+  conversation = loaded.conversation;
+  const resumed = loaded.resumed;
   let model = options.model;
   if (resumed) {
     const stored = (await conversation.agent(SESSION_CONTEXT)).model;
@@ -404,6 +437,7 @@ export async function openDurableSession(
     memoryTools,
     diagramTools,
     operatorTools,
+    reloadTools,
     model,
     version,
     repairDurableState,

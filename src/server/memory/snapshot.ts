@@ -96,7 +96,7 @@ export class SnapshotCache {
 
   async get(store: MemoryStore, reason: SnapshotReason = "first_turn"): Promise<string> {
     const day = todayIso();
-    const forced = reason === "day_rollover" || reason === "compaction";
+    const forced = reason === "day_rollover" || reason === "compaction" || reason === "reload";
     const changed =
       this.text === undefined || day !== this.day || store.checkpoint !== this.checkpoint;
     if (!forced && !changed && this.text !== undefined) return this.text;
@@ -131,7 +131,7 @@ export class SnapshotController {
 
   constructor(
     private readonly store: MemoryStore,
-    private readonly base: string,
+    private base: string,
     private readonly apply: (instructions: string) => Promise<void>,
     private readonly cache: SnapshotCache = new SnapshotCache(),
     initialInstructions?: string,
@@ -140,6 +140,12 @@ export class SnapshotController {
     this.configured = initialInstructions !== undefined;
     this.lastDay = todayIso();
     this.lastRevision = store.checkpoint;
+  }
+
+  /** Adopt a rebuilt base prompt so later memory checkpoints keep it. */
+  rebase(base: string, instructions?: string): void {
+    this.base = base;
+    if (instructions !== undefined) this.lastInstructions = instructions;
   }
 
   async refresh(reason?: SnapshotReason): Promise<string> {
