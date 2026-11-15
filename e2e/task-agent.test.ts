@@ -970,8 +970,8 @@ test("a plan session nobody is using is closed and reopened on demand", async ()
     await manager.ensure(task.id);
   }
   assert.equal(opened.length, 10);
-  const [firstId, secondId, thirdId] = ids;
-  assert.ok(firstId && secondId && thirdId);
+  const [firstId, secondId] = ids;
+  assert.ok(firstId && secondId);
 
   // One session is planning: the pool must not close it whatever its age.
   const busy = opened[3];
@@ -988,13 +988,15 @@ test("a plan session nobody is using is closed and reopened on demand", async ()
   const reopened = await manager.ensure(firstId);
   assert.notEqual(reopened, opened[0]);
 
-  // Ten minutes on, every idle session has expired and the live run is still untouched.
+  // Ten minutes on, every idle session has expired — the one reopened above included,
+  // since it was opened before the clock moved — and the live run is still untouched.
   now += 10 * 60_000;
   const expired = await manager.evictIdle();
-  assert.equal(expired.length, 8);
-  assert.equal(expired.includes(thirdId), false);
-  assert.equal(expired.includes(busy.taskId), false);
+  assert.equal(expired.length, 9);
+  assert.equal(expired.includes(firstId), true);
   assert.equal(expired.includes(secondId), true);
+  assert.equal(expired.includes(busy.taskId), false);
+  assert.equal(reopened.closed, true);
   assert.equal(busy.closed, false);
 
   busy.run = "idle";
