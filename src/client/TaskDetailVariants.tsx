@@ -392,6 +392,7 @@ function BodyField({ model, fill }: { model: TaskDetailModel; fill?: boolean }) 
           />
         </div>
         {bodyError !== null && <ErrorLine>{bodyError}</ErrorLine>}
+        <DecisionActions model={model} />
       </div>
     );
   }
@@ -441,6 +442,7 @@ function BodyField({ model, fill }: { model: TaskDetailModel; fill?: boolean }) 
         ) : (
           <p className="whitespace-pre-wrap break-words">Write markdown…</p>
         )}
+        <DecisionActions model={model} />
       </div>
     </div>
   );
@@ -940,7 +942,7 @@ function DecisionActions({ model }: { model: TaskDetailModel }) {
   return (
     <div
       data-testid="task-decision-actions"
-      className={cn(DETAIL_CARD, "flex shrink-0 flex-wrap items-center justify-end gap-2")}
+      className="mt-4 flex flex-wrap items-center justify-end gap-2"
     >
       {proposed && (
         <Button
@@ -1002,7 +1004,6 @@ function PlanSections({ model }: { model: TaskDetailModel }) {
       >
         <BodyField model={model} fill={model.wide} />
       </section>
-      <DecisionActions model={model} />
     </div>
   );
 }
