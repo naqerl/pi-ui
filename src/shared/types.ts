@@ -671,6 +671,44 @@ export interface HealthResponse {
   ok: true;
 }
 
+/** One server-sent event frame. Event names are the browser protocol in `src/client/use-chat.ts`. */
+export interface StreamFrame {
+  event: string;
+  data: unknown;
+}
+
+/**
+ * A plan conversation frame wrapped in the main stream. The wrapper is the discriminator:
+ * an unscoped frame belongs to the main conversation, a `task.chat` frame to one task.
+ * Inner event names match the main protocol because both clients share one reducer.
+ */
+export interface TaskChatFrame {
+  taskId: string;
+  event: string;
+  data: unknown;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Validates the `data` of a `task.chat` frame before it is routed to one plan conversation. */
+export function isTaskChatFrame(value: unknown): value is TaskChatFrame {
+  return (
+    isRecord(value) &&
+    typeof value.taskId === "string" &&
+    value.taskId.length > 0 &&
+    typeof value.event === "string" &&
+    value.event.length > 0 &&
+    "data" in value
+  );
+}
+
+/** The pending question set changed; the plan chat shows it without polling. */
+export interface StreamQuestions {
+  questions: TaskQuestionSet | null;
+}
+
 /** A one-line chat notice appended outside a run; clients add it without touching the draft. */
 export interface StreamNotice {
   message: ChatMessage;

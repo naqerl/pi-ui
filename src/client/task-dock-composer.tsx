@@ -16,6 +16,8 @@ export type TaskDockSession = {
 export type TaskSurfaceStatus = {
   taskId: string;
   word: TaskStatusWord;
+  /** The plan run has sent no frame within the retry budget; keep the word, stop the clock. */
+  quiet?: boolean;
 };
 
 /** The open task's run error, hosted by the one app-level header instead of the plan pane. */
