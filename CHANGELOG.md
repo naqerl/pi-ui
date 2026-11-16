@@ -1,3 +1,9 @@
+## 1.8.1
+
+### Fixed
+
+- A steer dropped before delivery keeps the place it held while pending instead of sorting after everything forever. Its failed bubble freezes one order past the last settled row, so later replies stream below it and the bottom of the transcript no longer stays pinned to the failure.
+
 ## 1.8.0
 
 ### Added
