@@ -1,3 +1,14 @@
+## 1.7.0
+
+### Changed
+
+- `/api/state` and `/api/history` serve a page sliced from one transcript. Boot replays `entries()` into it, and later rows are appended. The two caches that kept a second copy of the month-long log are gone. A poll no longer calls `conversation.context()`, which re-parsed every entry (0.8–0.9 s) and then rebuilt the transcript (0.6–1.1 s).
+- The memory line's `entries` and `built` counts are that projection: folded rows, plus the message and activity counts. They are not a cached copy of the log.
+- On a large conversation with no compaction head, boot writes one static head at a recent user or assistant boundary (about 80 KB or 800 entries of the tail). The chat still shows the earlier rows. The model does not. Durable compaction stays off until that head exists, so it cannot summarize the whole month in one call. After the head it keeps the tail (`keepRecentTokens` 20000, `reserveTokens` 16384, `backgroundTokens` 0).
+- Billion-context's conversation id becomes `<durable id>@<head entry>` when the head moves, including a later compaction. The id is stored in `bili-identity.json` beside `current.json`. `current.json` stays the durable pointer.
+- The conversation watch no longer waits, inside the frame drain, for marker writes, queue settlement, the memory-delta flush, or the pre-compaction memory refresh.
+- The page still refreshes on `message.done` and `tool.end`. Those snapshots reconcile rows the stream does not patch, and a snapshot is now a slice.
+
 ## 1.6.195
 
 ### Added
