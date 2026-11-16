@@ -123,7 +123,7 @@ export interface TaskDecisionNoticeDetails extends TaskDecisionNoticeRecord {
   summary: string;
 }
 
-/** A finished sub-agent run, announced once as a chip. */
+/** A finished sub-agent turn, announced once as a chip. */
 export interface DelegateNoticeDetails {
   kind: "delegate";
   runId: string;
@@ -135,6 +135,8 @@ export interface DelegateNoticeDetails {
   duration: string | null;
   tokens: { input: number; output: number } | null;
   error: string | null;
+  /** Short copy of the final answer, when the chip included one. */
+  excerpt: string | null;
   summary: string;
 }
 
@@ -162,6 +164,8 @@ export type ChatNotice =
 const JOB_HEAD = /^\[background job (\S+) finished\] (\S+) (.+?): (.*)$/;
 const DELEGATE_HEAD =
   /^\[acp_delegate (completed|FAILED[^\]]*)\] \*\*(.+?)\*\* \(runId `([^`]+)`\) (completed|failed) after (.+?)\.$/;
+const DELEGATE_TURN_HEAD =
+  /^\[acp_delegate (completed|FAILED[^\]]*|cancelled)\] run `([^`]+)` (finished|failed|cancelled) after (.+?)\.$/;
 export const MCP_EVENTS_HEAD = "MCP event data follows.";
 /**
  * The fixed line after every MCP event notice. It tells the model the notice is
@@ -317,18 +321,86 @@ function parseJob(lines: string[]): JobNoticeDetails | null {
 }
 
 function parseDelegate(lines: string[]): DelegateNoticeDetails | null {
+  const modern = DELEGATE_TURN_HEAD.exec(lines[0] ?? "");
+  if (modern !== null) return parseModernDelegate(lines, modern);
   const head = DELEGATE_HEAD.exec(lines[0] ?? "");
   if (head === null) return null;
   const [, marker = "", agent = "", runId = "", outcome = "", duration = ""] = head;
   const status: DelegateNoticeDetails["status"] =
     outcome === "completed" ? "completed" : marker.startsWith("FAILED") ? "failed" : "cancelled";
+  const fields = delegateFields(lines.slice(1));
+  const state = status === "completed" ? "finished" : status === "failed" ? "FAILED" : "cancelled";
+  return {
+    kind: "delegate",
+    runId,
+    agent,
+    status,
+    task: fields.task,
+    resultPath: fields.resultPath,
+    activityPath: fields.activityPath,
+    duration: duration.length === 0 ? null : duration,
+    tokens: fields.tokens,
+    error: fields.error,
+    excerpt: fields.excerpt,
+    summary: `delegate ${agent} · ${state}`,
+  };
+}
+
+function parseModernDelegate(lines: string[], head: RegExpExecArray): DelegateNoticeDetails {
+  const [, marker = "", runId = "", verb = "", duration = ""] = head;
+  const status: DelegateNoticeDetails["status"] =
+    verb === "finished"
+      ? "completed"
+      : verb === "cancelled" || !marker.startsWith("FAILED")
+        ? "cancelled"
+        : "failed";
+  const fields = delegateFields(lines.slice(1));
+  const state = status === "completed" ? "finished" : status === "failed" ? "FAILED" : "cancelled";
+  return {
+    kind: "delegate",
+    runId,
+    agent: "subagent",
+    status,
+    task: fields.task,
+    resultPath: fields.resultPath,
+    activityPath: fields.activityPath,
+    duration: duration.length === 0 ? null : duration,
+    tokens: fields.tokens,
+    error: fields.error,
+    excerpt: fields.excerpt,
+    summary: `subagent · ${state}`,
+  };
+}
+
+function delegateFields(lines: readonly string[]): {
+  task: string;
+  resultPath: string;
+  activityPath: string;
+  error: string | null;
+  tokens: DelegateNoticeDetails["tokens"];
+  excerpt: string | null;
+} {
   let task = "";
   let resultPath = "";
   let activityPath = "";
   let error: string | null = null;
   let tokens: DelegateNoticeDetails["tokens"] = null;
-  for (const line of lines.slice(1)) {
-    if (line.startsWith("Task: ")) task = line.slice("Task: ".length);
+  const excerptLines: string[] = [];
+  let inExcerpt = false;
+  for (const line of lines) {
+    if (inExcerpt) {
+      if (line.startsWith("Continue this sub-agent") || line.startsWith("This sub-agent did not")) {
+        break;
+      }
+      excerptLines.push(line);
+      continue;
+    }
+    if (line === "Excerpt:") {
+      inExcerpt = true;
+      continue;
+    }
+    if (line.startsWith("Prompt: ")) task = line.slice("Prompt: ".length);
+    else if (line.startsWith("Task: ")) task = line.slice("Task: ".length);
     else if (line.startsWith("Result: ")) resultPath = line.slice("Result: ".length);
     else if (line.startsWith("Activity: ")) activityPath = line.slice("Activity: ".length);
     else if (line.startsWith("Error: ")) error = line.slice("Error: ".length);
@@ -342,19 +414,14 @@ function parseDelegate(lines: string[]): DelegateNoticeDetails | null {
       }
     }
   }
-  const state = status === "completed" ? "finished" : status === "failed" ? "FAILED" : "cancelled";
+  const excerpt = excerptLines.join("\n").trim();
   return {
-    kind: "delegate",
-    runId,
-    agent,
-    status,
     task,
     resultPath,
     activityPath,
-    duration: duration.length === 0 ? null : duration,
-    tokens,
     error,
-    summary: `delegate ${agent} · ${state}`,
+    tokens,
+    excerpt: excerpt.length > 0 ? excerpt : null,
   };
 }
 

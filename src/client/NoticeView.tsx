@@ -271,10 +271,13 @@ function DelegateDetails({ notice }: { notice: DelegateNoticeDetails }) {
   return (
     <div className="space-y-3 text-sm">
       <p className="[overflow-wrap:anywhere]">
-        {notice.agent} · {notice.status}
+        {notice.status}
         {notice.duration === null ? "" : ` · ${notice.duration}`}
       </p>
       {notice.task.length > 0 && <p className="[overflow-wrap:anywhere]">{notice.task}</p>}
+      {notice.excerpt !== null && notice.excerpt.length > 0 && (
+        <p className="[overflow-wrap:anywhere] whitespace-pre-wrap">{notice.excerpt}</p>
+      )}
       {notice.tokens !== null && (
         <p className="font-mono text-xs text-muted-foreground">
           {notice.tokens.input.toLocaleString()} in / {notice.tokens.output.toLocaleString()} out

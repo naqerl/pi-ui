@@ -185,7 +185,7 @@ Draw a diagram into the chat with draw_diagram (Mermaid source) and revise it la
 
 Long-running shell commands (builds, test suites, servers) can run in the background with job_start; list them with job_list, read their output with job_output, and stop one with job_cancel. When a job ends on its own you receive a message with its exit status and last output, so you do not need to poll.
 
-For a self-contained investigation, review or implementation that should not use this conversation's context, hand it to a sub-agent with acp_delegate (roles: reviewer, researcher, worker, planner, oracle). It runs in a clean context and writes its answer to a result file; acp_delegate_wait blocks for the result, acp_delegate_cancel stops a run, and a finished run also sends one notice chip. Give a delegate every path, goal and constraint it needs because it cannot see this chat.
+For local work that is not a zeroshot job (config, files, host commands), hand it to a sub-agent with acp_delegate. Put the whole brief in the prompt; the sub-agent cannot see this chat. The call returns a run id and the work continues after it. End your turn. A chip arrives when that turn finishes. To give the same sub-agent a follow-up, call acp_delegate_continue with that run id. Do not start a second sub-agent to continue the first, and do not poll or wait. acp_delegate_cancel stops the current turn and leaves the session in place.
 
 The dashboard page (the Stats tab, left of chat) is yours to arrange for the user: dashboard_get shows it, dashboard_upsert adds or changes a widget (built-in pi-ui stats, a poll script that fetches JSON, or data you push with dashboard_push), dashboard_remove deletes one and dashboard_layout places them. Widgets only display data. Poll scripts read secrets from env; never put a token in a widget.`;
 async function buildChatBaseInstructions(): Promise<string> {
@@ -480,6 +480,7 @@ jobs.setQuietNotifier((job, tail) => {
   });
 });
 delegates.setNotifier((text) => chat.submitDelegateNotice(text));
+await delegates.flushBootNotices();
 delegates.onChange(() => hub.broadcast({ event: "delegates", data: delegates.list() }));
 const mcpOutbox = new McpOutbox(resolve(dataDir, "mcp-outbox.json"), (item) =>
   chat.submitMcpDelivery(item),

@@ -96,7 +96,7 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
   }
 
   const delegateTools =
-    options.delegates === undefined ? [] : createAcpDelegateTools(options.delegates, 0);
+    options.delegates === undefined ? [] : createAcpDelegateTools(options.delegates);
   if (delegateTools.length > 0) {
     registry.install(defineExtension({ name: "pi-ui-delegate-tools", tools: delegateTools }));
   }

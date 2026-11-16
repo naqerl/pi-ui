@@ -2,7 +2,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "re
 import type { BuiltinJob } from "../shared/dashboard";
 import { noticeIconName } from "../shared/queue";
 import { formatTime } from "../shared/time";
-import type { ActivityItem, DelegateRunStatus, DelegateRunView } from "../shared/types";
+import type { ActivityItem, DelegateRunView } from "../shared/types";
 import { activitySummary } from "./activity-format";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
 import { ChevronIcon, CloseIcon, NoticeIcon } from "./icons";
@@ -215,7 +215,9 @@ function liveJobActivity(job: BuiltinJob, output: string): ActivityItem {
   };
 }
 
-function delegateStatus(status: DelegateRunStatus): string {
+function delegateStatus(run: DelegateRunView): string {
+  const status =
+    run.status === "idle" && run.lastOutcome !== undefined ? run.lastOutcome : run.status;
   switch (status) {
     case "completed":
       return "finished";
@@ -225,6 +227,8 @@ function delegateStatus(status: DelegateRunStatus): string {
       return "cancelled";
     case "running":
       return "running";
+    case "idle":
+      return "idle";
     default:
       return "queued";
   }
@@ -240,13 +244,13 @@ function DelegateRunRow({
   const [open, setOpen] = useState(defaultOpen);
   const [content, setContent] = useState<{ result: string; activity: string } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const failed = run.status === "failed";
+  const failed = run.status === "failed" || run.lastOutcome === "failed";
   const clock = formatTime(run.startedAt ?? run.queuedAt);
   const tokens =
     run.usage === undefined
       ? ""
       : ` · ${run.usage.input.toLocaleString()} in / ${run.usage.output.toLocaleString()} out`;
-  const summary = `${run.agent} · ${run.taskFirstLine} · ${delegateStatus(run.status)} · ${run.duration}${tokens}`;
+  const summary = `${run.taskFirstLine} · ${delegateStatus(run)} · ${run.duration}${tokens}`;
   const { summaryRef, disclosureClassName } = useDisclosureAlignment();
   useEffect(() => {
     if (!open || content !== null) return;
@@ -308,9 +312,8 @@ function DelegateRunRow({
         <div className="theme-radius space-y-3 border-b border-border bg-muted/40 px-3 py-3 pl-8 text-xs">
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-xs">
             <JobField label="Run" value={run.id} />
-            <JobField label="Agent" value={run.agent} />
-            <JobField label="Task" value={run.task} />
-            <JobField label="Status" value={delegateStatus(run.status)} />
+            <JobField label="Prompt" value={run.task} />
+            <JobField label="Status" value={delegateStatus(run)} />
             <JobField label="Duration" value={run.duration} />
             {run.usage !== undefined && (
               <JobField

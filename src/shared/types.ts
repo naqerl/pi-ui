@@ -155,7 +155,16 @@ export interface TokenSpend {
   output: number;
 }
 
-export type DelegateRunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type DelegateRunStatus =
+  | "queued"
+  | "running"
+  | "idle"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+/** How the sub-agent's last turn ended. The session itself stays idle so it can be continued. */
+export type DelegateTurnOutcome = "completed" | "failed" | "cancelled";
 
 export interface DelegateTokenUsage {
   input: number;
@@ -178,6 +187,8 @@ export interface DelegateRunView {
   durationMs: number;
   duration: string;
   usage?: DelegateTokenUsage;
+  /** Set once a turn has ended. Absent while the run is queued or running. */
+  lastOutcome?: DelegateTurnOutcome;
   error?: string;
   resultPath: string;
   activityPath: string;

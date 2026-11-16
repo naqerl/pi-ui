@@ -310,7 +310,7 @@ export function BackgroundJobsSheet({
                   >
                     <div className="flex min-w-0 items-center gap-2">
                       <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
-                        {run.agent} · {run.taskFirstLine}
+                        {run.taskFirstLine}
                       </span>
                       <span
                         data-testid="bg-jobs-sheet-duration"

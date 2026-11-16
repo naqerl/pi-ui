@@ -4,19 +4,7 @@ import {
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
-import {
-  DELEGATE_ROLE_NAMES,
-  DELEGATE_ROLES,
-  DelegateError,
-  type DelegateManager,
-  type DelegateRole,
-  MAX_CONCURRENT_DELEGATES,
-  MAX_DELEGATE_DEPTH,
-} from "./delegates.js";
-
-const DEFAULT_WAIT_MS = 10_000;
-const MAX_WAIT_MS = 300_000;
-const SYNC_WAIT_MS = 24 * 60 * 60 * 1_000;
+import { DelegateError, type DelegateManager, MAX_CONCURRENT_DELEGATES } from "./delegates.js";
 
 function text(value: string, isError = false): ToolExecutionResult {
   return { output: [{ type: "text", text: value }], ...(isError ? { isError: true } : {}) };
@@ -29,160 +17,67 @@ function failure(error: unknown): ToolExecutionResult {
   );
 }
 
-function waitTimeout(value: number | undefined): number {
-  if (value === undefined || !Number.isFinite(value)) return DEFAULT_WAIT_MS;
-  const ms = value < 1_000 ? value * 1_000 : value;
-  return Math.min(MAX_WAIT_MS, Math.max(1_000, ms));
-}
-
-function runText(
-  run: Awaited<ReturnType<DelegateManager["start"]>>,
-  result: string,
-  failed: boolean,
-): string {
-  const state =
-    run.status === "completed"
-      ? "completed"
-      : run.status === "cancelled"
-        ? "cancelled"
-        : run.status === "failed"
-          ? "FAILED"
-          : run.status;
+function started(run: Awaited<ReturnType<DelegateManager["start"]>>): string {
   return [
-    `Delegate ${run.agent} (runId \`${run.id}\`) ${state} after ${run.duration}.`,
-    `Task: ${run.taskFirstLine}`,
+    `Sub-agent \`${run.id}\` is ${run.status}.`,
+    `Prompt: ${run.taskFirstLine}`,
     `Result: ${run.resultPath}`,
     `Activity: ${run.activityPath}`,
-    ...(run.usage === undefined
-      ? []
-      : [
-          `Tokens: ${run.usage.input.toLocaleString()} in, ${run.usage.output.toLocaleString()} out.`,
-        ]),
-    ...(failed && run.error !== undefined ? [`Error: ${run.error}`] : []),
-    result.trim().length > 0 ? `\n${result.trim()}` : "",
-  ]
-    .filter((line) => line.length > 0)
-    .join("\n");
+    "It keeps running after this call. End your turn. A chip arrives when it finishes. Do not poll or wait.",
+  ].join("\n");
 }
 
 /**
- * The model-facing delegate surface. The role table and caps live in `delegates.ts`; this module
- * only maps the documented parameters onto it.
+ * The model-facing sub-agent surface. A call returns as soon as the prompt is accepted.
+ * The chat is told the result later, as one chip, and can continue the same session.
  */
-export function createAcpDelegateTools(
-  manager: DelegateManager,
-  depth: number,
-  onFinish?: (text: string) => void | Promise<void>,
-  parentRunId?: string,
-): ToolRegistration[] {
-  const roleList = DELEGATE_ROLE_NAMES.map((role) => {
-    return `  • ${role} — ${DELEGATE_ROLES[role].readOnly ? "read-only" : "may edit files"}`;
-  }).join("\n");
+export function createAcpDelegateTools(manager: DelegateManager): ToolRegistration[] {
   return [
     defineTool({
       name: "acp_delegate",
-      description: `Hand a self-contained task to a fresh sub-agent in a clean context. It never sees this conversation, so include every path, goal and constraint it needs.
+      description: `Hand local work that is not a zeroshot job (config, files, host commands) to a sub-agent and return immediately.
 
-Roles:
-${roleList}
+The sub-agent cannot see this chat, so put every path, goal, and constraint in the prompt. It has read, bash, edit, and write.
 
-Behavior:
-• async=true (default): returns immediately with a run id. A completion or failure notice is injected into the chat when it finishes; read the result file for details.
-• async=false: blocks until the run finishes and returns its result here.
-• Extra runs queue in launch order when ${MAX_CONCURRENT_DELEGATES} delegates are already running. Delegates cannot nest past depth ${MAX_DELEGATE_DEPTH}.
-• timeoutMinutes sets a hard wall-clock limit for this run (default 30 minutes, capped at 24 hours).
-• This pi-ui implementation runs the delegate as an independent in-process durable session, not a separate pi process. It has no resumeFrom/showThinking parameters; re-dispatch instead of resuming. Its context and token usage stay separate from this conversation.`,
+The call returns a run id. The work continues after it. End your turn. A chip arrives when the turn finishes. Do not poll and do not wait. Extra prompts queue when ${MAX_CONCURRENT_DELEGATES} sub-agents are already running.
+
+To give the same sub-agent a follow-up, call acp_delegate_continue with the run id. Do not start a second sub-agent to continue the first.`,
       parameters: Type.Object({
-        agent: Type.String({
-          description: `Role of the delegate. One of: ${DELEGATE_ROLE_NAMES.join(", ")}.`,
-        }),
-        task: Type.String({
-          description: "The self-contained task to hand off. Must be non-empty.",
+        prompt: Type.String({
+          description: "The whole brief. Must be non-empty. The sub-agent cannot see this chat.",
         }),
         cwd: Type.Optional(
           Type.String({
-            description: "Working directory for the delegate (default: the project dir).",
+            description: "Working directory for the sub-agent. Default: the project directory.",
           }),
-        ),
-        model: Type.Optional(
-          Type.String({
-            description: 'Model override as "provider/id". Default: this conversation\'s model.',
-          }),
-        ),
-        thinkingLevel: Type.Optional(
-          Type.String({ description: "off|minimal|low|medium|high|xhigh|max" }),
-        ),
-        async: Type.Optional(
-          Type.Boolean({
-            description:
-              "If true (default), return a run id immediately. If false, block for the result.",
-          }),
-        ),
-        timeoutMinutes: Type.Optional(
-          Type.Number({ description: "Hard wall-clock timeout in minutes. Default 30; max 1440." }),
         ),
       }),
       async execute(args) {
         try {
           const run = await manager.start({
-            agent: args.agent as DelegateRole,
-            task: args.task,
+            prompt: args.prompt,
             ...(args.cwd === undefined ? {} : { cwd: args.cwd }),
-            ...(args.model === undefined ? {} : { model: args.model }),
-            ...(args.thinkingLevel === undefined ? {} : { thinkingLevel: args.thinkingLevel }),
-            ...(args.async === undefined ? {} : { async: args.async }),
-            ...(args.timeoutMinutes === undefined ? {} : { timeoutMinutes: args.timeoutMinutes }),
-            depth,
-            ...(parentRunId === undefined ? {} : { parentRunId }),
-            notify: args.async !== false,
-            ...(onFinish === undefined ? {} : { onFinish }),
           });
-          if (args.async === false) {
-            const waited = await manager.wait(run.id, SYNC_WAIT_MS);
-            return text(
-              runText(waited.run, waited.result, waited.run.status === "failed"),
-              waited.run.status === "failed",
-            );
-          }
-          return text(
-            [
-              `Delegated to ${run.agent} (runId \`${run.id}\`).`,
-              `Task: ${run.taskFirstLine}`,
-              `Status: ${run.status === "queued" ? "queued" : "running"}.`,
-              `Result: ${run.resultPath}`,
-              `Activity: ${run.activityPath}`,
-              `A completion notice will arrive when it finishes. Call acp_delegate_wait({ runId: "${run.id}" }) to block for the result, or continue other work.`,
-            ].join("\n"),
-          );
+          return text(started(run));
         } catch (error) {
           return failure(error);
         }
       },
     }),
     defineTool({
-      name: "acp_delegate_wait",
+      name: "acp_delegate_continue",
       description:
-        "Block until an acp_delegate run finishes or the timeout elapses, then return its result and file paths. A timeout is not an error: the run keeps going and a completion notice still arrives later. Default timeout 10s; max 300s. Values below 1000 are treated as seconds.",
+        "Send a follow-up prompt to an existing sub-agent and return immediately. Use the run id from acp_delegate or from its chip. Refuses a run that is still queued or running: wait for the chip, then call again. Refuses a closed run: start a new one with acp_delegate. Do not poll or wait.",
       parameters: Type.Object({
-        runId: Type.String({ description: "The runId returned by acp_delegate." }),
-        timeout: Type.Optional(
-          Type.Integer({
-            description: "Maximum time to block, in milliseconds. Default 10000; max 300000.",
-          }),
-        ),
+        runId: Type.String({ description: "The run id returned by acp_delegate." }),
+        prompt: Type.String({
+          description: "The follow-up. The sub-agent still has its earlier turns.",
+        }),
       }),
       async execute(args) {
         try {
-          const waited = await manager.wait(args.runId, waitTimeout(args.timeout));
-          if (waited.timedOut) {
-            return text(
-              `Wait timed out after ${Math.round(waitTimeout(args.timeout) / 1_000)}s — delegate \`${args.runId}\` is still ${waited.run.status}. Do not poll; a completion notice will be injected when it finishes. Result file: ${waited.run.resultPath}`,
-            );
-          }
-          return text(
-            runText(waited.run, waited.result, waited.run.status === "failed"),
-            waited.run.status === "failed",
-          );
+          const run = await manager.continue(args.runId, args.prompt);
+          return text(started(run));
         } catch (error) {
           return failure(error);
         }
@@ -191,18 +86,21 @@ Behavior:
     defineTool({
       name: "acp_delegate_cancel",
       description:
-        "Stop a queued or running delegate by runId. Whatever it produced stays readable in its result and activity files.",
+        "Stop the current turn of a queued or running sub-agent. The session stays, so acp_delegate_continue can still use the run id. A cancelled turn also sends one chip.",
       parameters: Type.Object({
-        runId: Type.String({ description: "The runId returned by acp_delegate." }),
+        runId: Type.String({ description: "The run id returned by acp_delegate." }),
       }),
       async execute(args) {
         try {
           const run = manager.cancel(args.runId);
           return text(
             [
-              `Delegate ${run.agent} (runId \`${run.id}\`) is ${run.status}.`,
+              `Sub-agent \`${run.id}\` is ${run.status}.`,
               `Result: ${run.resultPath}`,
               `Activity: ${run.activityPath}`,
+              run.status === "idle"
+                ? "The session is still there. acp_delegate_continue can give it a follow-up."
+                : "The turn is stopping. A chip arrives when it has stopped.",
             ].join("\n"),
           );
         } catch (error) {
