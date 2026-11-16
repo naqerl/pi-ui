@@ -3,7 +3,7 @@ import type { BuiltinJob } from "../shared/dashboard";
 import { noticeIconName } from "../shared/queue";
 import { formatTime } from "../shared/time";
 import type { ActivityItem } from "../shared/types";
-import { activitySummary } from "./activity-format";
+import { activitySummary, formatDuration, rowDurationMs } from "./activity-format";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
 import { ChevronIcon, CloseIcon, NoticeIcon } from "./icons";
 import { cn } from "./lib/utils";
@@ -212,18 +212,27 @@ function liveJobActivity(job: BuiltinJob, output: string): ActivityItem {
 
 function ActivityRow({
   activity,
+  previous,
   defaultOpen = false,
 }: {
   activity: ActivityItem;
+  previous?: ActivityItem;
   defaultOpen?: boolean;
 }) {
   if (activity.kind === "job")
     return <JobActivityRow activity={activity} defaultOpen={defaultOpen} />;
-  return <TextActivityRow activity={activity} />;
+  return <TextActivityRow activity={activity} previous={previous} />;
 }
 
-function TextActivityRow({ activity }: { activity: Exclude<ActivityItem, { kind: "job" }> }) {
-  const summary = activitySummary(activity);
+function TextActivityRow({
+  activity,
+  previous,
+}: {
+  activity: Exclude<ActivityItem, { kind: "job" }>;
+  previous?: ActivityItem;
+}) {
+  const durationMs = rowDurationMs(activity, previous);
+  const summary = activitySummary(activity, durationMs === undefined);
   const failed = activity.kind === "tool" && activity.isError;
   const { summaryRef, disclosureClassName } = useDisclosureAlignment();
   return (
@@ -242,6 +251,14 @@ function TextActivityRow({ activity }: { activity: Exclude<ActivityItem, { kind:
         <span ref={summaryRef} className="min-w-0 flex-1 [overflow-wrap:anywhere]">
           {summary}
         </span>
+        {durationMs !== undefined && (
+          <span
+            data-testid="activity-duration"
+            className="shrink-0 whitespace-nowrap tabular-nums opacity-60"
+          >
+            {formatDuration(durationMs)}
+          </span>
+        )}
       </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="theme-radius space-y-3 border-b border-border bg-muted/40 px-3 py-3 pl-8 text-xs">
@@ -272,13 +289,11 @@ export function ActivityView({
 }: ActivityViewProps) {
   const locationRun = new URLSearchParams(window.location.search).get("run");
   const run = runProp === undefined ? locationRun : runProp;
-  const activities = useMemo(() => {
+  const activityGroups = useMemo(() => {
     const groups = groupTimeline(timeline);
-    const selected =
-      run === null
-        ? groups
-        : groups.filter((group) => group.kind === "activity" && group.key === run);
-    return selected.flatMap((group) => (group.kind === "activity" ? group.items : []));
+    return groups.flatMap((group) =>
+      group.kind === "activity" && (run === null || group.key === run) ? [group.items] : [],
+    );
   }, [run, timeline]);
   const liveJobs = useMemo(() => {
     const all = jobs ?? [];
@@ -313,10 +328,20 @@ export function ActivityView({
     () => liveJobs.map((job) => liveJobActivity(job, liveOutputs[job.id] ?? "")),
     [liveJobs, liveOutputs],
   );
-  const shownActivities =
-    focusJobId === undefined || focusJobId === null
-      ? [...liveActivities, ...activities]
-      : liveActivities;
+  const shownActivities = useMemo(() => {
+    const rows: { activity: ActivityItem; previous?: ActivityItem }[] = liveActivities.map(
+      (activity) => ({ activity }),
+    );
+    if (focusJobId !== undefined && focusJobId !== null) return rows;
+    // Each group is one contiguous turn. Its first row has no predecessor, so a new turn
+    // never measures its first step from the previous turn's last row.
+    for (const items of activityGroups) {
+      for (const [index, activity] of items.entries()) {
+        rows.push(index === 0 ? { activity } : { activity, previous: items[index - 1] });
+      }
+    }
+    return rows;
+  }, [activityGroups, focusJobId, liveActivities]);
 
   const card = (
     <div
@@ -370,10 +395,11 @@ export function ActivityView({
           </p>
         )}
         <div>
-          {shownActivities.map((activity) => (
+          {shownActivities.map(({ activity, previous }) => (
             <ActivityRow
               key={activity.id}
               activity={activity}
+              previous={previous}
               {...(activity.kind === "job" && focusJobId === activity.notice.id
                 ? { defaultOpen: true }
                 : {})}
