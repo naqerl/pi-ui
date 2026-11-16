@@ -4,6 +4,10 @@
 
 - The runtime image ships `gh` 2.104.0. The tarball's SHA-256 is checked before the binary is installed. No token is baked in: `gh` authenticates with the `GH_TOKEN` environment variable. `GH_PROMPT_DISABLED`, `GH_PAGER=cat`, and `GH_NO_UPDATE_NOTIFIER` keep it from prompting or paging in the agent's bash.
 
+### Changed
+
+- The composer dock fades the plan switch, status word and action slot when the chat, create-task and plan-chat surfaces change. Only those nodes animate, the dock and composer heights stay fixed, and reduced motion swaps immediately.
+
 ## 1.7.4
 
 ### Removed

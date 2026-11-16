@@ -301,6 +301,41 @@
     }
   }
 
+  /* Only the nodes whose identity changes fade. The dock, its top line and the
+     composer body keep their heights, so a surface change never moves the page. */
+  .dock-swap {
+    transition:
+      opacity 160ms ease-out,
+      transform 160ms ease-out;
+  }
+
+  .dock-swap[data-open="false"] {
+    opacity: 0;
+    transform: translateY(2px);
+    pointer-events: none;
+  }
+
+  /* One cell, two children: the arriving and the leaving control occupy the same box. */
+  .dock-stack {
+    display: grid;
+    min-width: 0;
+  }
+
+  .dock-stack > * {
+    grid-area: 1 / 1;
+  }
+
+  @keyframes dock-text-in {
+    from {
+      opacity: 0;
+      transform: translateY(2px);
+    }
+  }
+
+  .dock-text-in {
+    animation: dock-text-in 160ms ease-out;
+  }
+
   .composer-body[data-hidden="true"] {
     opacity: 0;
   }
@@ -321,6 +356,15 @@
     .bg-jobs-counts {
       animation: none;
       transition: none;
+    }
+
+    .dock-swap,
+    .dock-stack > * {
+      transition: none;
+    }
+
+    .dock-text-in {
+      animation: none;
     }
   }
 
@@ -367,6 +411,15 @@
   button:not(:disabled):not([aria-disabled="true"]):not([data-no-press]):active,
   [role="button"]:not([aria-disabled="true"]):not([data-no-press]):active {
     transform: scale(0.97);
+  }
+
+  /* The plan switch is a button whose own opacity/transform exit is the dock
+     swap. Keep the press feedback, but give the fade its 160 ms duration; the
+     generic rule above would otherwise shorten opacity to its colour timing. */
+  button.dock-swap:not(:disabled):not([aria-disabled="true"]):not([data-no-press]) {
+    transition-property: transform, background-color, color, border-color, opacity;
+    transition-duration: 160ms, 120ms, 120ms, 120ms, 160ms;
+    transition-timing-function: ease-out;
   }
 }
 

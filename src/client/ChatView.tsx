@@ -1,6 +1,7 @@
 import {
   lazy,
   memo,
+  type ReactNode,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
   Suspense,
@@ -75,6 +76,7 @@ import { TaskLinkProvider } from "./task-link";
 import { groupTimeline, type TimelineGroup } from "./timeline-groups";
 import type { SendOutcome, TimelineItem } from "./use-chat";
 import { usePager } from "./use-pager";
+import { usePresence } from "./use-presence";
 import { useStickToBottom } from "./use-stick-to-bottom";
 import { WorkingIndicator } from "./WorkingIndicator";
 import { workingWord } from "./working-state";
@@ -768,15 +770,36 @@ const ACTION_BUTTON_CLASS = "h-9 w-full hover:bg-foreground/10";
 const PLAN_SWITCH_TRACK_CLASS =
   "relative block h-4 w-[30px] shrink-0 rounded-none border p-0 transition-colors duration-[120ms] ease-out motion-reduce:transition-none";
 const BACKLOG_LONG_PRESS_MS = 500;
+/** Matches `.bg-jobs-counts`: the one duration every dock swap uses. */
+const DOCK_EXIT_MS = 160;
 
-function PlanTaskSwitch({ pressed, onToggle }: { pressed: boolean; onToggle: () => void }) {
+function PlanTaskSwitch({
+  present,
+  swap,
+  pressed,
+  onToggle,
+}: {
+  present: boolean;
+  swap: boolean;
+  pressed: boolean;
+  onToggle: () => void;
+}) {
+  const presence = usePresence(present, swap ? DOCK_EXIT_MS : 0);
+  if (!presence.mounted) return null;
   return (
     <button
       type="button"
       data-testid="plan-task-toggle"
+      data-open={presence.open ? "true" : "false"}
       aria-pressed={pressed}
+      aria-hidden={presence.open ? undefined : true}
+      inert={presence.open ? undefined : true}
+      tabIndex={presence.open ? 0 : -1}
       title="Plan task"
-      className="inline-flex shrink-0 cursor-pointer items-center gap-2 self-center rounded-none border-0 bg-transparent p-0 font-mono text-[11px] leading-4 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40 motion-reduce:transition-none"
+      className={cn(
+        "inline-flex shrink-0 cursor-pointer items-center gap-2 self-center rounded-none border-0 bg-transparent p-0 font-mono text-[11px] leading-4 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
+        swap && "dock-swap dock-text-in motion-reduce:transition-none",
+      )}
       onPointerDown={(event) => {
         // Keep the composer focused so a phone's keyboard stays open.
         event.preventDefault();
@@ -802,6 +825,107 @@ function PlanTaskSwitch({ pressed, onToggle }: { pressed: boolean; onToggle: () 
       <span>Plan task</span>
     </button>
   );
+}
+
+/**
+ * The one aria-live region for the dock's status word. The keyed child fades in
+ * when the surface changes, and the whole word holds its last text for the exit
+ * instead of disappearing between pages.
+ */
+function DockStatusWord({
+  word,
+  running,
+  surface,
+  swap,
+}: {
+  word: string | null;
+  running: boolean;
+  surface: string;
+  swap: boolean;
+}) {
+  const presence = usePresence(word !== null, swap ? DOCK_EXIT_MS : 0);
+  const last = useRef<{ word: string; running: boolean; surface: string } | null>(
+    word === null ? null : { word, running, surface },
+  );
+  if (word !== null) last.current = { word, running, surface };
+  const shown = word === null ? last.current : { word, running, surface };
+  const leaving = !presence.open;
+  const swapClass = swap && "dock-swap dock-text-in";
+
+  return (
+    <div aria-live="polite" className="min-w-0 truncate">
+      {presence.mounted &&
+        shown !== null &&
+        (shown.running ? (
+          <div
+            key={shown.surface}
+            data-open={presence.open ? "true" : "false"}
+            aria-hidden={leaving ? true : undefined}
+            inert={leaving ? true : undefined}
+            tabIndex={leaving ? -1 : undefined}
+            className={cn("flex min-w-0", swapClass)}
+          >
+            <WorkingIndicator running word={shown.word} />
+          </div>
+        ) : (
+          <span
+            key={shown.surface}
+            data-open={presence.open ? "true" : "false"}
+            aria-hidden={leaving ? true : undefined}
+            inert={leaving ? true : undefined}
+            tabIndex={leaving ? -1 : undefined}
+            className={cn("block min-w-0 truncate", swapClass)}
+          >
+            {shown.word}
+          </span>
+        ))}
+    </div>
+  );
+}
+
+/** One grid cell, two children: the arriving and the leaving action share a box. */
+function DockAction({
+  present,
+  swap,
+  children,
+}: {
+  present: boolean;
+  swap: boolean;
+  children: ReactNode;
+}) {
+  const presence = usePresence(present, swap ? DOCK_EXIT_MS : 0);
+  if (!presence.mounted) return null;
+  return (
+    <div
+      data-open={presence.open ? "true" : "false"}
+      aria-hidden={presence.open ? undefined : true}
+      inert={presence.open ? undefined : true}
+      tabIndex={presence.open ? undefined : -1}
+      className={cn(
+        "h-9 w-full",
+        swap && "dock-swap dock-text-in",
+        !presence.open && "pointer-events-none",
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
+/**
+ * A collapse owns the movement on both ends, so the per-node swaps stay quiet
+ * for that crossing. Clearing only on the next surface change matters: a
+ * passive effect would let a later pre-paint render start a second animation
+ * while the 220 ms composer expansion is still running.
+ */
+function useDockSwap(hidden: boolean, surface: string): boolean {
+  const [state, setState] = useState({ surface, hidden, suppressed: hidden });
+  const changed = state.surface !== surface || state.hidden !== hidden;
+  if (changed) {
+    setState({ surface, hidden, suppressed: hidden || state.hidden });
+  }
+  const suppressed = changed ? hidden || state.hidden : state.suppressed;
+  return !hidden && !suppressed;
 }
 /** Space above the first message and below the last, on every viewport. */
 const TRANSCRIPT_END_GAP = 16;
@@ -1051,6 +1175,7 @@ export function Composer({
   draftKey,
   clearDraft,
   planDraft = false,
+  dockSwap = true,
 }: {
   tasksPage: boolean;
   /** When set, @project suggestions work even if this is not the create-task composer. */
@@ -1081,6 +1206,8 @@ export function Composer({
   draftKey?: string;
   /** The status line's plan-draft toggle was left on for this session. */
   planDraft?: boolean;
+  /** A collapsed dock owns the movement, so its action slot must not fade twice. */
+  dockSwap?: boolean;
   /** A successful Retry consumes the exact draft that was restored for its failed row. */
   clearDraft?: {
     key: string;
@@ -1486,10 +1613,9 @@ export function Composer({
             }
           }}
         />
-        <div className="flex h-9 w-9 shrink-0 items-stretch">
-          {tasksPage ? (
+        <div className="dock-stack h-9 w-9 shrink-0 items-stretch">
+          <DockAction present={tasksPage} swap={dockSwap}>
             <Button
-              key="add-task"
               type="submit"
               variant="ghost"
               size="icon"
@@ -1519,9 +1645,12 @@ export function Composer({
                 )}
               </span>
             </Button>
-          ) : running && !hasText && attachments.items.length === 0 ? (
+          </DockAction>
+          <DockAction
+            present={!tasksPage && running && !hasText && attachments.items.length === 0}
+            swap={dockSwap}
+          >
             <Button
-              key="stop"
               type="button"
               variant="ghost"
               size="icon"
@@ -1535,23 +1664,26 @@ export function Composer({
             >
               <StopIcon />
             </Button>
-          ) : running ? (
+          </DockAction>
+          <DockAction
+            present={!tasksPage && running && (hasText || attachments.items.length > 0)}
+            swap={dockSwap}
+          >
             <Button
-              key="steer"
               type="button"
               variant="ghost"
               size="icon"
               aria-label="Steer"
-              data-testid={sendTestId}
+              data-testid={sendTestId === "task-agent-send" ? "task-agent-steer" : sendTestId}
               className={ACTION_BUTTON_CLASS}
               disabled={!canSend}
               onClick={() => void submit("steer")}
             >
               <SendIcon />
             </Button>
-          ) : (
+          </DockAction>
+          <DockAction present={!tasksPage && !running} swap={dockSwap}>
             <Button
-              key="send"
               type="submit"
               variant="ghost"
               size="icon"
@@ -1562,7 +1694,7 @@ export function Composer({
             >
               <SendIcon />
             </Button>
-          )}
+          </DockAction>
         </div>
       </div>
     </form>
@@ -1752,6 +1884,10 @@ export function ChatView({
   const dockToTask = wantTaskDock && taskDock !== null;
   const hideTasksComposer = statsPage || (tasksPage && composerMode === "collapsed");
   const showPlanToggle = tasksPage && !wantTaskDock && !hideTasksComposer;
+  // Collapsed is not a surface: its 220 ms height/opacity owns that change, so
+  // the individual swaps stay out of the way on either side of it.
+  const dockSurface = tasksPage ? (wantTaskDock ? "dock" : "create") : "chat";
+  const dockSwap = useDockSwap(hideTasksComposer, dockSurface);
   // Each surface speaks for itself: the open task's plan run on the tasks page,
   // the main conversation's run everywhere else. No task open means an empty slot.
   const chatStatusWord = running ? workingWord(thinking) : ready ? "idle" : "connecting";
@@ -2338,24 +2474,24 @@ export function ChatView({
               data-open={statusRunning ? "true" : "false"}
               className="flex min-w-0 flex-1 items-baseline gap-2 font-mono text-[11px] leading-4 text-muted-foreground"
             >
-              {showPlanToggle && <PlanTaskSwitch pressed={planDraft} onToggle={togglePlanDraft} />}
+              <PlanTaskSwitch
+                present={showPlanToggle}
+                swap={dockSwap}
+                pressed={planDraft}
+                onToggle={togglePlanDraft}
+              />
               <BackgroundJobsCounts
                 jobs={jobs}
                 delegates={delegates ?? []}
                 onOpen={setJobsSheet}
                 visible={chatPage}
               />
-              {statusWord !== null && (
-                <div aria-live="polite" className="min-w-0 truncate">
-                  {statusRunning ? (
-                    <WorkingIndicator running word={statusWord} />
-                  ) : (
-                    // Idle is a server statement. Before the first snapshot the answer
-                    // is not known yet, so do not paint a guess that can be wrong.
-                    <span>{statusWord}</span>
-                  )}
-                </div>
-              )}
+              <DockStatusWord
+                word={statusWord}
+                running={statusRunning}
+                surface={dockSurface}
+                swap={dockSwap}
+              />
             </div>
             <div
               role="tablist"
@@ -2396,6 +2532,7 @@ export function ChatView({
             className="composer-body"
           >
             <Composer
+              dockSwap={dockSwap}
               draftKey={
                 wantTaskDock
                   ? taskDock !== null
