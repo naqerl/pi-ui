@@ -1,3 +1,16 @@
+## 1.7.1
+
+### Changed
+
+- The chat hands local work a zeroshot job cannot do (config, files, host commands) to a sub-agent and stays free to manage. `acp_delegate` takes the whole brief, returns a run id, and the chat turn ends. One chip arrives when that turn finishes, on the same path as a job notice.
+- The sub-agent keeps its session after the turn, stored under `DATA_DIR/delegates/<id>/`. `acp_delegate_continue` sends the next prompt to that same session and returns immediately. `acp_delegate_cancel` stops the current turn and leaves the session in place.
+- The dock counts a sub-agent only while it is queued or running. The sheet row is the first line of the latest prompt.
+- A restart marks an interrupted turn failed, chips it once, and leaves the saved session idle so continue still works. A run with no saved database is closed.
+
+### Removed
+
+- `acp_delegate_wait` and the blocking wait. Role names, nested delegates, and per-run model overrides are gone.
+
 ## 1.7.0
 
 ### Changed
