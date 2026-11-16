@@ -198,6 +198,7 @@ test("continue resumes the same sub-agent and refuses a second prompt while it w
     await waitFor(() => box.manager.get(run.id).status === "running");
     assert.equal(activeSubagents(box.manager.list()).length, 1);
     await assert.rejects(() => box.manager.continue(run.id, "again"), /still running/);
+    await box.submitted(run.id);
     box.finish(run.id, { text: "reloaded" });
     await waitFor(() => box.chips.length === 2);
     assert.equal(box.manager.get(run.id).status, "idle");
@@ -243,6 +244,7 @@ test("a restart chips an interrupted turn and continue can accept the saved sess
     const follow = await box.manager.continue(id, "try the edit again");
     assert.equal(follow.id, id);
     await waitFor(() => box.manager.get(id).status === "running");
+    await box.submitted(id);
     box.finish(id, { text: "config written" });
     await waitFor(() => box.manager.get(id).status === "idle");
     assert.equal(box.manager.get(id).lastOutcome, "completed");

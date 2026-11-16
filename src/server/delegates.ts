@@ -544,6 +544,8 @@ export class DelegateManager {
         session = await this.openFor(run);
         this.sessions.set(run.id, session);
       }
+      // Cancel during open has no session to abort yet. Do not submit after that.
+      if (run.cancelRequested || this.shuttingDown || !run.turnOpen) return;
       const active = session;
       const timer = setTimeout(() => {
         run.timedOut = `after ${run.timeoutMinutes}m`;
