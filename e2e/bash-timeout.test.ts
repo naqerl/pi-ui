@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -103,6 +103,29 @@ async function logFiles(dataDir: string): Promise<string[]> {
   return (await readdir(join(dataDir, "jobs"))).filter((name) => name.endsWith(".log"));
 }
 
+function groupAlive(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function liveGroup(pid: number): string[] {
+  const result = spawnSync("ps", ["-A", "-o", "pid=,ppid=,pgid=,stat=,cmd="], {
+    encoding: "utf8",
+  });
+  if (result.error !== undefined) throw result.error;
+  return (result.stdout ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => {
+      const fields = line.split(/\s+/);
+      return Number.parseInt(fields[2] ?? "", 10) === pid && !/^[ZX]/.test(fields[3] ?? "");
+    });
+}
+
 test("a fast command returns its output and leaves no job or log", async (t) => {
   const { dataDir, jobs } = await jobStore(t);
   const tool = createTimedBashTool(jobs, { handoffMs: 5_000 });
@@ -168,6 +191,30 @@ test("cancelling a hidden command wakes waitForExit without a notice", async (t)
   assert.deepEqual(notices, [], "cancel does not send the completion notice");
   assert.deepEqual(quiet, [], "a hidden command has no cancellation notice");
   assert.equal(jobs.get(hidden.id).status, "cancelled");
+});
+
+test("discarding a cancelled hidden command keeps the SIGKILL escalation", async (t) => {
+  const { dataDir, jobs } = await jobStore(t);
+  const hidden = jobs.begin({
+    command: 'trap "" TERM; echo ready; while :; do sleep 1; done',
+    cwd: dataDir,
+    origin: "bash",
+  });
+  const pid = hidden.pid;
+  assert.ok(pid);
+  t.after(() => {
+    if (groupAlive(pid)) process.kill(-pid, "SIGKILL");
+  });
+  await until(async () => (await readFile(jobs.logPath(hidden.id), "utf8")).includes("ready"));
+  jobs.cancel(hidden.id);
+  assert.equal(jobs.get(hidden.id).status, "cancelled");
+  await jobs.discard(hidden.id);
+  assert.ok(liveGroup(pid).length > 0, "the command ignored SIGTERM and must still be alive");
+  await until(
+    () => liveGroup(pid).length === 0,
+    10_000,
+    "the process group to receive the escalation SIGKILL",
+  );
 });
 
 test("a command still running at the handoff becomes a visible bash job", async (t) => {

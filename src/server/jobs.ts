@@ -308,10 +308,14 @@ export class JobManager {
     if (job === undefined) return;
     this.jobs.delete(job.id);
     this.children.delete(job.id);
-    const timer = this.killTimers.get(job.id);
-    if (timer !== undefined) {
-      clearTimeout(timer);
-      this.killTimers.delete(job.id);
+    // A cancelled command may still be ignoring SIGTERM. Keep its escalation timer: it owns
+    // only the pid, checks groupAlive() before signalling, and removes itself when it fires.
+    if (job.status !== "cancelled") {
+      const timer = this.killTimers.get(job.id);
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        this.killTimers.delete(job.id);
+      }
     }
     this.save();
     if (options.keepLog !== true) {
