@@ -103,8 +103,7 @@ describe("notice policy against one shared app", { serial: true }, () => {
     expect(details).toMatch(new RegExp(`last output[\\s\\S]*${marker}`));
   });
   const at = (second: number) => new Date(Date.UTC(2026, 9, 30, 9, 0, second)).toISOString();
-  const interruptedNote =
-    "The previous run was interrupted by a server restart. The last response is partial; pi is resuming the run.";
+  const interruptedNote = "The previous run was interrupted by a server restart";
   const interruptedSnapshot = {
     conversationId: "notices-interrupted-e2e",
     messages: [
@@ -163,6 +162,9 @@ describe("notice policy against one shared app", { serial: true }, () => {
       const computed = {
         classes: node.className,
         text: node.textContent ?? "",
+        tag: node.tagName,
+        hasPopup: node.hasAttribute("aria-haspopup"),
+        title: node.getAttribute("title"),
         warningIcon: node.querySelector('[data-icon="warning"]') !== null,
         background: style.backgroundColor,
         warningBackground: warning.backgroundColor,
@@ -182,6 +184,10 @@ describe("notice policy against one shared app", { serial: true }, () => {
     expect(chip?.border).toBe(chip?.warningBorder);
     expect(chip?.classes ?? "").not.toContain("bg-surface/90");
     expect(chip?.classes ?? "").not.toContain("text-muted-foreground");
+    expect(chip?.classes ?? "").not.toContain("hover:");
+    expect(chip?.tag).toBe("SPAN");
+    expect(chip?.hasPopup).toBe(false);
+    expect(chip?.title).toBeNull();
 
     await browser.evaluate(() => {
       document
@@ -189,7 +195,7 @@ describe("notice policy against one shared app", { serial: true }, () => {
         ?.click();
       return null;
     });
-    await expect(screen.getByRole("dialog")).toBeVisible();
-    expect(await dialogText(browser)).toContain(interruptedNote);
+    await expect(screen.getByRole("dialog")).toHaveCount(0);
+    expect(await dialogText(browser)).toBeNull();
   });
 });

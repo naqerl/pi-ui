@@ -181,8 +181,7 @@ test("a failed job chip keeps its destructive styling", () => {
 });
 
 test("an interrupted run becomes one warning chip after the partial reply", () => {
-  const note =
-    "The previous run was interrupted by a server restart. The last response is partial; pi is resuming the run.";
+  const note = "The previous run was interrupted by a server restart";
   const transcript = buildTranscript([
     {
       id: 1,
@@ -230,7 +229,11 @@ test("an interrupted run becomes one warning chip after the partial reply", () =
   assert.doesNotMatch(markup, /class="[^"]*\bbg-surface\/90\b/);
   assert.doesNotMatch(markup, /class="[^"]*\btext-muted-foreground\b/);
   assert.doesNotMatch(markup, /class="[^"]*\bborder-foreground\/10\b/);
-  assert.match(markup, new RegExp(`title="${note.replaceAll(".", "\\.")}"`));
+  // Resuming is status: no dialog, no click affordance, no title acting as one.
+  assert.doesNotMatch(markup, /<button/);
+  assert.doesNotMatch(markup, /aria-haspopup/);
+  assert.doesNotMatch(markup, /\stitle=/);
+  assert.doesNotMatch(markup, /\shover:/);
 });
 
 test("a memory write becomes a persistent chip with an undo steer", async () => {
@@ -288,8 +291,7 @@ test("ordinary messages are not notices, while a broken MCP payload is a raw chi
 
 const stoppedNote =
   "The previous run was stopped before the server restarted. The last response may be partial.";
-const resumedNote =
-  "The previous run was interrupted by a server restart. The last response is partial; pi is resuming the run.";
+const resumedNote = "The previous run was interrupted by a server restart";
 
 function runMarker(overrides: Partial<RunMarker> = {}): RunMarker {
   return {
@@ -346,9 +348,16 @@ test("a stopped run with no partial reply still records the stopped note", async
   const message = buildTranscript(entries).messages[0];
   assert.equal(message?.text, stoppedNote);
   assert.deepEqual(message?.notice, { kind: "interrupted", note: stoppedNote, stopped: true });
+  assert.ok(message !== undefined);
+  const notice = message.notice;
+  assert.ok(notice !== undefined && !isQueuedNotice(notice));
+  // The stopped variant keeps its dialog so the recorded note stays available.
+  const markup = renderToStaticMarkup(createElement(NoticeLine, { message, notice }));
+  assert.match(markup, /<button/);
+  assert.match(markup, /aria-haspopup="dialog"/);
 });
 
-test("only a partial run that will resume promises a resume", async () => {
+test("only a partial run that will resume records the restart note", async () => {
   const resumed = recordingConversation();
   await appendInterruptionNote(
     resumed.conversation,
