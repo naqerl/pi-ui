@@ -5,7 +5,13 @@ import {
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { createToolSearchExtension } from "@earendil-works/pi-durable/tool-search";
-import { createCodingTools } from "@earendil-works/pi-durable/tools";
+import {
+  createBashTool,
+  createEditTool,
+  createReadTool,
+  createWriteTool,
+} from "@earendil-works/pi-durable/tools";
+import { createTimedBashTool } from "./bash-tool.js";
 import { createBiliTools } from "./bili-tools.js";
 import type { BillionContextInline } from "./billion-context.js";
 import type { DashboardManager } from "./dashboard.js";
@@ -76,10 +82,18 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
   // Every tool accepts and strips the legacy task id; see task-attribution.
   const registry = attributeTools(createRegistry());
   const taskTools = createTaskTools(options.tasks);
+  // The registry replaces an extension by name; a second `bash` in another extension
+  // would be a duplicate tool name. So the coding extension is installed once, with
+  // the timed bash when this server has a job manager to hand a long command to.
   registry.install(
     defineExtension({
       name: "pi-ui-coding-tools",
-      tools: createCodingTools().tools ?? [],
+      tools: [
+        createReadTool(),
+        createWriteTool(),
+        createEditTool(),
+        options.jobs === undefined ? createBashTool() : createTimedBashTool(options.jobs),
+      ],
     }),
   );
   registry.install(

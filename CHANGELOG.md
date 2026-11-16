@@ -1,3 +1,16 @@
+## 1.7.5
+
+### Added
+
+- `bash` hands a command that is still running after 120 seconds to the background job manager instead of waiting forever or killing it. The tool returns at once with the output so far and `job jN`; completion arrives as a job notice. `PI_BASH_HANDOFF_MS` overrides the window.
+- The plan agent gets `job_list`, `job_output` and `job_cancel`, but not `job_start`.
+- `MAX_LIVE_COMMANDS` (12) bounds foreground commands plus visible jobs, and `load()` adopts a hidden command whose process is still running after a restart.
+
+### Changed
+
+- Stop and turn abort hand the in-flight `bash` command over to the background instead of killing it; nothing is killed by the foreground clock.
+- The `bash` schema no longer has a `timeout` parameter. Delegates keep the old tool.
+
 ## 1.7.4
 
 ### Removed

@@ -414,6 +414,7 @@ const taskAgents = new TaskAgentManager({
   },
   baseInstructions: await taskAgentPrompt,
   memory: { store: memory, snapshot: memorySnapshot },
+  jobs,
 });
 planningTaskIds = () => taskAgents.planningTaskIds();
 function builtinJobs() {
@@ -470,7 +471,20 @@ jobs.onChange(() => {
   hub.broadcast({ event: "jobs", data: builtinJobs() });
 });
 jobs.setNotifier((job, tail) => {
-  void chat.submitJobNotice(jobNotice(job, tail)).catch((error: unknown) => {
+  const text = jobNotice(job, tail);
+  if (job.owner?.kind === "plan") {
+    void taskAgents
+      .submitJobNotice(job.owner.taskId, text)
+      .then((delivered) => {
+        // A closed plan pane is not woken: keep the result on the chat's activity page.
+        if (!delivered) return chat.recordNotice(text);
+      })
+      .catch((error: unknown) => {
+        console.error(`[pi] background job ${job.id} plan notice failed`, error);
+      });
+    return;
+  }
+  void chat.submitJobNotice(text).catch((error: unknown) => {
     console.error(`[pi] background job ${job.id} message failed`, error);
   });
 });

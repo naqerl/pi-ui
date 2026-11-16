@@ -27,7 +27,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { createCodingTools } from "@earendil-works/pi-durable/tools";
+import { createBashTool, createReadTool } from "@earendil-works/pi-durable/tools";
 import { Type } from "typebox";
 import { parseProjectToken, projectsOf, sameProject } from "../shared/project.js";
 import {
@@ -54,7 +54,10 @@ import {
   type TaskLedger,
   type TaskQuestionSet,
 } from "../shared/types.js";
+import { createTimedBashTool } from "./bash-tool.js";
 import { withConversationIdentity } from "./billion-context.js";
+import { createJobTools } from "./job-tools.js";
+import type { JobManager } from "./jobs.js";
 import type { MediaStore } from "./media.js";
 import { buildSnapshot, composeInstructions, SnapshotCache } from "./memory/snapshot.js";
 import type { MemoryStore } from "./memory/store.js";
@@ -62,7 +65,7 @@ import { createMemoryTools } from "./memory/tools.js";
 import { PlanTurnNotifier, type PlanTurnPushSender } from "./plan-push.js";
 import { retrySettings } from "./retry.js";
 import { RunErrorNotifier, type RunErrorPushInput, type RunErrorPushSender } from "./run-push.js";
-import { buildTranscript, SESSION_CONTEXT } from "./session.js";
+import { buildTranscript, JOB_NOTICE_ENTRY_KIND, SESSION_CONTEXT } from "./session.js";
 import type { SseFrame } from "./sse.js";
 import { StreamHub } from "./stream-hub.js";
 import {
@@ -87,6 +90,9 @@ export const TASK_AGENT_MEMORY_TOOL_NAMES = [
 export const TASK_AGENT_TOOL_NAMES = [
   "bash",
   "read",
+  "job_list",
+  "job_output",
+  "job_cancel",
   "edit_task",
   "propose_task",
   "ask_questions",
@@ -153,6 +159,8 @@ export interface TaskAgentSession {
   pendingQuestions?(): Promise<TaskQuestionSet | null>;
   /** Record the operator's answers, add a readable transcript row, and wake the tool. */
   answerQuestions?(setId: string, answers: unknown): Promise<TaskAgentChatSnapshot>;
+  /** Queue a finished job notice into a live session without opening one. */
+  submitJobNotice?(text: string): Promise<void>;
 }
 
 /** The memory tree and the chat snapshot cache; plan sessions keep their own cache. */
@@ -172,6 +180,8 @@ export interface TaskAgentManagerOptions {
   readonly baseInstructions: string;
   /** The memory tree and snapshot block injected into the plan prompt. */
   readonly memory?: TaskAgentMemory;
+  /** Background jobs, so the plan agent gets the timed bash and the read/cancel job tools. */
+  readonly jobs?: JobManager;
   /** Tests inject a fake session instead of opening a durable harness. */
   readonly openSession?: (taskId: string, manager: TaskAgentManager) => Promise<TaskAgentSession>;
   /** Forward session frames onto the main /api/stream so the browser can reuse that EventSource. */
@@ -314,7 +324,7 @@ You are a planning agent for a single task in pi-ui (id: ${task.id}).
 Your job is to help the operator formulate the task and propose a solution — a concrete design for how it would be solved.
 
 Plan mode only:
-- You may use the read and bash tools to inspect the repository.
+- You may use the read and bash tools to inspect the repository. A bash command gets 120 seconds in the foreground. If it is still running then, it continues as a background job and you are told when it ends with a queued notice, so do not poll. List jobs with job_list, read one with job_output and stop one with job_cancel. There is no timeout argument, and you cannot start a job directly.
 - You must not edit, write, create or delete any workspace files, and you must not run commands that change the workspace. The memory_write tool is the one write you may make, and it only touches the memory store.
 - Memory is what previous turns learned: read it with memory_read, memory_grep and memory_find before planning from scratch, and record a durable decision with memory_write (long_term for a topic, daily for the journal).
 - Project guidance lives in the repository's AGENTS.md. This server has no separate skills loader, so treat AGENTS.md as the skills equivalent.
@@ -1155,6 +1165,36 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     };
   }
 
+  /** Sends a finished job result as a queued notice, mirroring the main chat's path. */
+  async submitJobNotice(text: string): Promise<void> {
+    if (this.closed) throw new TaskAgentError("Task agent has been closed", 409);
+    const startsRun = this.runState !== "running" && this.queued.size === 0;
+    const key = randomUUID();
+    const createdAt = new Date().toISOString();
+    const submission = await this.identity(() =>
+      this.conversation.submit(
+        {
+          type: "input",
+          content: text,
+          whenBusy: "followUp",
+          requestId: `queue:${key}`,
+          entry: {
+            kind: JOB_NOTICE_ENTRY_KIND,
+            data: { text, createdAt },
+          },
+        },
+        SESSION_CONTEXT,
+      ),
+    );
+    if (startsRun) {
+      this.stopRequested = false;
+      this.setRunState("running", null);
+    }
+    this.markQueueChanged();
+    this.broadcastQueue();
+    void this.monitorSubmission(submission, startsRun, undefined, undefined);
+  }
+
   async cancelQueued(id: string): Promise<boolean> {
     if (!this.queued.has(id)) return false;
     this.queued.delete(id);
@@ -1380,6 +1420,20 @@ export class TaskAgentManager {
     }
     const session = await this.ensure(taskId);
     return session.submit(patch.message, attachments);
+  }
+
+  /**
+   * Queue a finished job notice into a plan session that is already live. Returns false
+   * without opening a session, so a closed plan pane does not wake the model; the caller
+   * records the notice on the chat activity page instead.
+   */
+  async submitJobNotice(taskId: string, text: string): Promise<boolean> {
+    const session = this.sessions.get(taskId);
+    if (session === undefined || session.closed || session.submitJobNotice === undefined) {
+      return false;
+    }
+    await session.submitJobNotice(text);
+    return true;
   }
 
   /** Send through the shared client core's main-chat-shaped endpoint. */
@@ -1612,10 +1666,20 @@ export class TaskAgentManager {
     await questions.load();
     const storage = await openNodeSqliteStorage(databasePath);
     const registry = createRegistry<ToolRegistration>();
-    const coding = (createCodingTools().tools ?? []).filter(
-      (tool) => tool.name === "read" || tool.name === "bash",
-    );
+    const jobs = this.options.jobs;
+    const coding =
+      jobs === undefined
+        ? [createReadTool(), createBashTool()]
+        : [createReadTool(), createTimedBashTool(jobs, { owner: { kind: "plan", taskId } })];
     registry.install(defineExtension({ name: "task-agent-coding-tools", tools: coding }));
+    if (jobs !== undefined) {
+      // The plan agent reads and cancels a handed-over command, but never starts one:
+      // selectTaskAgentTools drops job_start against TASK_AGENT_TOOL_NAMES.
+      const jobTools = selectTaskAgentTools(createJobTools(jobs));
+      if (jobTools.length > 0) {
+        registry.install(defineExtension({ name: "task-agent-job-tools", tools: jobTools }));
+      }
+    }
     registry.install(
       defineExtension({
         name: "task-agent-edit-tool",

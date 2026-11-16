@@ -61,6 +61,10 @@ test("task agents may only call bash, read, edit_task, propose_task, the questio
   const extras = [
     ...coding,
     ...memory,
+    { name: "job_list" },
+    { name: "job_output" },
+    { name: "job_cancel" },
+    { name: "job_start" },
     { name: "edit_task" },
     { name: "propose_task" },
     { name: "ask_questions" },
@@ -85,6 +89,9 @@ test("task agents may only call bash, read, edit_task, propose_task, the questio
     "ask_questions",
     "bash",
     "edit_task",
+    "job_cancel",
+    "job_list",
+    "job_output",
     "memory_find",
     "memory_grep",
     "memory_read",
@@ -118,6 +125,7 @@ test("task agents may only call bash, read, edit_task, propose_task, the questio
     "task_edit",
     "write",
     "edit",
+    "job_start",
   ]) {
     assert.equal(TASK_AGENT_TOOL_NAMES.includes(forbidden as never), false);
     assert.equal(isTaskAgentToolName(forbidden), false);
