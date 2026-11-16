@@ -41,6 +41,9 @@ const PREVIEW_CHARS = 4000;
 const DISCLOSURE_BOX =
   "flex size-4 shrink-0 items-center justify-center transition-transform group-data-[state=open]:rotate-90 motion-reduce:transition-none";
 const SINGLE_LINE_SHIFT = "-translate-y-[1.5px]";
+/** An expanded row's panel: a four-sided card, not a cropped strip of background. */
+const EXPANDED_PANEL =
+  "theme-radius mb-2 space-y-3 border border-border bg-muted/40 px-3 py-3 text-xs";
 
 /** Keep the optical shift for one-line summaries, but leave a wrapped block centred. */
 function useDisclosureAlignment() {
@@ -167,7 +170,7 @@ function JobActivityRow({
         )}
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="theme-radius space-y-3 border-b border-border bg-muted/40 px-3 py-3 pl-8 text-xs">
+        <div className={EXPANDED_PANEL} data-testid="activity-panel">
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-xs">
             <JobField label="Job" value={notice.id} />
             <JobField label="Name" value={notice.name} />
@@ -244,7 +247,7 @@ function TextActivityRow({ activity }: { activity: Exclude<ActivityItem, { kind:
         </span>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="theme-radius space-y-3 border-b border-border bg-muted/40 px-3 py-3 pl-8 text-xs">
+        <div className={EXPANDED_PANEL} data-testid="activity-panel">
           {activity.kind === "tool" ? (
             <>
               <Detail label="arguments">{activity.arguments}</Detail>

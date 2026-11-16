@@ -617,7 +617,7 @@ test("the repair line renders as its own carded system row", async () => {
   );
   assert.match(markup, /data-testid="durable-repair"/);
   assert.match(markup, /bg-surface\/90/);
-  assert.match(markup, /backdrop-blur-md/);
+  assert.doesNotMatch(markup, /backdrop-blur-md/);
   assert.doesNotMatch(markup, /⚠/);
 });
 

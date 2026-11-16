@@ -1066,7 +1066,7 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
           tab === "plan" ? "overflow-y-auto" : "overflow-hidden",
         )}
       >
-        <div className={cn(STACK_8, "px-3 pt-3", tab !== "plan" && "hidden")}>
+        <div className={cn(STACK_8, "px-3 pt-2", tab !== "plan" && "hidden")}>
           <PlanSections model={model} />
         </div>
         <div className={cn("flex min-h-0 flex-1 flex-col px-3", tab !== "chat" && "hidden")}>

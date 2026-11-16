@@ -85,7 +85,7 @@ export function ChipButton({
       title={title}
       onClick={onClick}
       className={cn(
-        "inline-flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-mono text-[11px] leading-5 shadow-sm backdrop-blur-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
+        "inline-flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-mono text-[11px] leading-5 shadow-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
         tone === "warning"
           ? "border-status-warn/40 bg-status-warn/10 text-status-warn hover:border-status-warn/60 hover:text-status-warn"
           : tone === "destructive"
