@@ -26,6 +26,37 @@ export type TimelineItem =
   | { kind: "message"; order: number; message: ChatMessage }
   | { kind: "activity"; order: number; activity: ActivityItem };
 
+/**
+ * The highest order a persisted row already occupies. Drafts, live tools, pending queue items,
+ * optimistic sends and optimistic or pending activity rows are not settled; notice and job extras
+ * carry their own orders but do not anchor a dropped steer. A failed steer freezes just past this
+ * so later entries sort below it.
+ */
+export function lastSettledOrder(
+  messages: readonly ChatMessage[],
+  activity: readonly ActivityItem[],
+): number {
+  let order = 0;
+  for (const message of messages) {
+    if (
+      message.pendingSend === true ||
+      message.pendingQueue === true ||
+      message.pendingSteer === true ||
+      message.notice !== undefined
+    ) {
+      continue;
+    }
+    order = Math.max(order, message.order);
+  }
+  for (const item of activity) {
+    // A live tool or an optimistic task row paints ahead of the transcript but is not settled.
+    if (item.kind === "job" || item.pending === true) continue;
+    if (item.kind === "tool" && item.optimistic === true) continue;
+    order = Math.max(order, item.order);
+  }
+  return order;
+}
+
 /** The id a pending send already has, matching the queued item the server will confirm. */
 export function optimisticId(item: OptimisticSend): string {
   return item.mode === "steer" ? `steer-pending-${item.key}` : `m-${item.key}`;

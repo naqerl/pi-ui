@@ -51,6 +51,7 @@ import { mergeWindow } from "../shared/window";
 import {
   buildChatTimeline,
   confirmedOptimistic,
+  lastSettledOrder,
   type OptimisticSend,
   optimisticId,
 } from "./chat-timeline";
@@ -392,6 +393,9 @@ export function useChat(options: UseChatOptions = {}) {
   const refreshRef = useRef<() => Promise<void>>(async () => undefined);
   const retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const retryDelay = useRef(RETRY_MIN_MS);
+  /** The highest settled order, and every order already occupied by a persisted row. */
+  const settledOrderRef = useRef(0);
+  const settledOrdersRef = useRef<ReadonlySet<number>>(new Set());
 
   const applyTasks = useCallback((ledger: TaskLedger) => {
     if (ledger.revision < taskRevision.current) return;
@@ -450,6 +454,16 @@ export function useChat(options: UseChatOptions = {}) {
     if (revision < queueRevision.current) return false;
     queueRevision.current = revision;
     return true;
+  }, []);
+
+  /**
+   * One step past the last settled row, stepping over an extra row already at that order. Real
+   * entries are spaced 10_000 apart, so the result stays inside the gap before the next one.
+   */
+  const nextDroppedOrder = useCallback((): number => {
+    let order = settledOrderRef.current + 1;
+    while (settledOrdersRef.current.has(order)) order += 1;
+    return order;
   }, []);
 
   const readState = useCallback(async () => {
@@ -615,10 +629,11 @@ export function useChat(options: UseChatOptions = {}) {
     window.addEventListener("pageshow", refreshOnFocus);
     const reportOfflineSteers = () => {
       const reason = "The connection to the server closed before the steer was delivered.";
+      const order = nextDroppedOrder();
       setSteers((current) => {
         let next = current;
         for (const steer of current) {
-          if (steer.dropped === undefined) next = dropSteer(next, steer.id, reason);
+          if (steer.dropped === undefined) next = dropSteer(next, steer.id, reason, order);
         }
         return next;
       });
@@ -772,7 +787,8 @@ export function useChat(options: UseChatOptions = {}) {
     source.addEventListener("steer.dropped", (event) => {
       const data = parseEvent<StreamSteerDropped>(event as MessageEvent<string>);
       if (!data) return;
-      setSteers((current) => dropSteer(current, data.id, data.reason));
+      const order = nextDroppedOrder();
+      setSteers((current) => dropSteer(current, data.id, data.reason, order));
     });
 
     source.addEventListener("message.delta", (event) => {
@@ -899,6 +915,7 @@ export function useChat(options: UseChatOptions = {}) {
     applyEvents,
     applyTasks,
     draftBatch,
+    nextDroppedOrder,
     refreshState,
     transport,
   ]);
@@ -936,6 +953,16 @@ export function useChat(options: UseChatOptions = {}) {
       }),
     [messages, activity, liveTools, draftText, draftThinking, steers, queue, optimistic],
   );
+
+  // A drop freezes just past the last settled row, not at the end of the transcript forever.
+  settledOrderRef.current = lastSettledOrder(messages, activity);
+  settledOrdersRef.current = new Set([
+    ...messages.map((message) => message.order),
+    ...activity.map((item) => item.order),
+    // A steer dropped earlier keeps its place, so a later drop at the same settled boundary
+    // steps over it instead of rendering ahead of it.
+    ...steers.flatMap((steer) => (steer.droppedOrder === undefined ? [] : [steer.droppedOrder])),
+  ]);
 
   const send = useCallback(
     async (
