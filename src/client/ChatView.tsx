@@ -34,7 +34,7 @@ import type {
   TokenSpend,
   ToolActivity,
 } from "../shared/types";
-import { groupSummaryParts } from "./activity-format";
+import { groupStartMs, groupSummaryParts } from "./activity-format";
 import {
   BackgroundJobsCounts,
   type BackgroundJobsKind,
@@ -710,6 +710,14 @@ function ActivityGroup({
   onOpen: (groupKey: string, trigger: HTMLButtonElement) => void;
 }) {
   const [now, setNow] = useState(Date.now);
+  // A row can be replaced by the result of the same call with a later timestamp. Keep the
+  // earliest start this group has shown, so the live duration never steps back when it is.
+  const anchoredStart = useRef<number | null>(null);
+  const derivedStart = groupStartMs(items);
+  if (derivedStart !== undefined) {
+    anchoredStart.current =
+      anchoredStart.current === null ? derivedStart : Math.min(anchoredStart.current, derivedStart);
+  }
   const memory = items.filter(
     (item): item is ToolActivity => item.kind === "tool" && item.memory !== undefined,
   );
@@ -723,7 +731,7 @@ function ActivityGroup({
     return () => window.clearInterval(timer);
   }, [live]);
 
-  const parts = groupSummaryParts(items, live, now, usage);
+  const parts = groupSummaryParts(items, live, now, usage, anchoredStart.current ?? undefined);
   const runInfo =
     other.length === 0 ? null : (
       <button
