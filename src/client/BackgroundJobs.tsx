@@ -160,8 +160,8 @@ async function readJson<T>(url: string): Promise<T | null> {
 
 /**
  * The page sheet shared by the jobs and sub-agent chips. It re-reads the registry once
- * on open; the live duration is the only thing that ticks, and it never polls. A row
- * opens the existing activity surface rather than growing a second detail panel here.
+ * on open; the live duration is the only thing that ticks, and it never polls. A job
+ * row opens the activity surface. A sub-agent row stays in this sheet.
  */
 export function BackgroundJobsSheet({
   kind,
@@ -297,16 +297,11 @@ export function BackgroundJobsSheet({
                   </button>
                 ))
               : liveRuns.map((run) => (
-                  <button
+                  <div
                     key={run.id}
-                    type="button"
                     data-testid="bg-jobs-sheet-subagent"
                     data-id={run.id}
-                    onClick={() => {
-                      haptic();
-                      onOpenItem("subagents", run.id);
-                    }}
-                    className="theme-radius w-full border border-border/70 bg-background/80 px-3 py-2 text-left transition-colors hover:bg-muted"
+                    className="theme-radius w-full border border-border/70 bg-background/80 px-3 py-2 text-left"
                   >
                     <div className="flex min-w-0 items-center gap-2">
                       <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
@@ -328,7 +323,7 @@ export function BackgroundJobsSheet({
                         {formatTime(run.startedAt ?? run.queuedAt)}
                       </time>
                     </div>
-                  </button>
+                  </div>
                 ))}
             {kind === "jobs" && liveJobs.length === 0 && (
               <p className="font-mono text-xs text-muted-foreground">No jobs are running.</p>

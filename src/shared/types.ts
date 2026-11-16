@@ -173,7 +173,7 @@ export interface DelegateTokenUsage {
   cost: number;
 }
 
-/** One sub-agent run, as the activity page and /api/state see it. */
+/** One sub-agent run, as the dock and /api/state see it. */
 export interface DelegateRunView {
   id: string;
   agent: string;

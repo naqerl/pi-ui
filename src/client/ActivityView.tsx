@@ -2,7 +2,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "re
 import type { BuiltinJob } from "../shared/dashboard";
 import { noticeIconName } from "../shared/queue";
 import { formatTime } from "../shared/time";
-import type { ActivityItem, DelegateRunView } from "../shared/types";
+import type { ActivityItem } from "../shared/types";
 import { activitySummary } from "./activity-format";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
 import { ChevronIcon, CloseIcon, NoticeIcon } from "./icons";
@@ -17,13 +17,10 @@ interface ActivityViewProps {
   ready: boolean;
   /** Restrict the list to one timeline group; defaults to the page's ?run= value. */
   run?: string | null;
-  /** Delegate runs as the server pushed them; this page never polls for state. */
-  delegates?: DelegateRunView[];
   /** Running shell jobs, shown through the same job row as finished ones. */
   jobs?: readonly BuiltinJob[];
-  /** Focus one live job, or one delegate, when arriving from the background-work sheet. */
+  /** Focus one live job when arriving from the background-work sheet. */
   focusJobId?: string | null;
-  focusDelegateId?: string | null;
   /** Render as the body of a modal instead of a standalone page. */
   dialog?: { onClose: () => void; titleId: string };
 }
@@ -32,10 +29,8 @@ interface ActivityDialogProps {
   timeline: TimelineItem[];
   ready: boolean;
   run: string | null;
-  delegates?: DelegateRunView[];
   jobs?: readonly BuiltinJob[];
   focusJobId?: string | null;
-  focusDelegateId?: string | null;
   onClose: () => void;
 }
 
@@ -215,169 +210,6 @@ function liveJobActivity(job: BuiltinJob, output: string): ActivityItem {
   };
 }
 
-function delegateStatus(run: DelegateRunView): string {
-  const status =
-    run.status === "idle" && run.lastOutcome !== undefined ? run.lastOutcome : run.status;
-  switch (status) {
-    case "completed":
-      return "finished";
-    case "failed":
-      return "failed";
-    case "cancelled":
-      return "cancelled";
-    case "running":
-      return "running";
-    case "idle":
-      return "idle";
-    default:
-      return "queued";
-  }
-}
-
-function DelegateRunRow({
-  run,
-  defaultOpen = false,
-}: {
-  run: DelegateRunView;
-  defaultOpen?: boolean;
-}) {
-  const [open, setOpen] = useState(defaultOpen);
-  const [content, setContent] = useState<{ result: string; activity: string } | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const failed = run.status === "failed" || run.lastOutcome === "failed";
-  const clock = formatTime(run.startedAt ?? run.queuedAt);
-  const tokens =
-    run.usage === undefined
-      ? ""
-      : ` · ${run.usage.input.toLocaleString()} in / ${run.usage.output.toLocaleString()} out`;
-  const summary = `${run.taskFirstLine} · ${delegateStatus(run)} · ${run.duration}${tokens}`;
-  const { summaryRef, disclosureClassName } = useDisclosureAlignment();
-  useEffect(() => {
-    if (!open || content !== null) return;
-    let active = true;
-    const load = async (url: string): Promise<string> => {
-      try {
-        const response = await fetch(url, { cache: "no-store" });
-        return response.ok ? await response.text() : "";
-      } catch {
-        return "";
-      }
-    };
-    void Promise.all([load(run.resultUrl), load(run.activityUrl)])
-      .then(([result, activity]) => {
-        if (active) {
-          setContent({ result, activity });
-          setLoadError(null);
-        }
-      })
-      .catch((error: unknown) => {
-        if (active) setLoadError(String(error));
-      });
-    return () => {
-      active = false;
-    };
-  }, [content, open, run.activityUrl, run.resultUrl]);
-  return (
-    <Collapsible defaultOpen={defaultOpen} onOpenChange={setOpen}>
-      <CollapsibleTrigger
-        data-testid="activity-delegate"
-        data-status={run.status}
-        data-notice-kind="delegate"
-        className={cn(
-          "group flex w-full items-center gap-2 border-b border-border py-3 text-left font-mono text-xs hover:text-foreground",
-          failed ? "text-destructive" : "text-muted-foreground",
-        )}
-      >
-        <span className={disclosureClassName}>
-          <ChevronIcon size={14} />
-        </span>
-        <NoticeIcon name={noticeIconName("delegate")} size={18} />
-        <span
-          ref={summaryRef}
-          data-testid="activity-delegate-summary"
-          className="min-w-0 flex-1 [overflow-wrap:anywhere]"
-        >
-          {summary}
-        </span>
-        {clock !== "" && (
-          <time
-            dateTime={run.startedAt ?? run.queuedAt}
-            className="shrink-0 tabular-nums opacity-60"
-          >
-            {clock}
-          </time>
-        )}
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className="theme-radius space-y-3 border-b border-border bg-muted/40 px-3 py-3 pl-8 text-xs">
-          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-xs">
-            <JobField label="Run" value={run.id} />
-            <JobField label="Prompt" value={run.task} />
-            <JobField label="Status" value={delegateStatus(run)} />
-            <JobField label="Duration" value={run.duration} />
-            {run.usage !== undefined && (
-              <JobField
-                label="Tokens"
-                value={`${run.usage.input.toLocaleString()} in / ${run.usage.output.toLocaleString()} out`}
-              />
-            )}
-            {run.error !== undefined && <JobField label="Error" value={run.error} />}
-          </dl>
-          <div className="flex flex-wrap gap-3 font-mono text-xs">
-            <a
-              className="underline underline-offset-2"
-              href={run.resultUrl}
-              target="_blank"
-              rel="noreferrer"
-            >
-              Result file
-            </a>
-            <a
-              className="underline underline-offset-2"
-              href={run.activityUrl}
-              target="_blank"
-              rel="noreferrer"
-            >
-              Activity file
-            </a>
-          </div>
-          {loadError !== null && <p className="text-destructive">{loadError}</p>}
-          {content === null ? (
-            open && <p className="font-mono text-muted-foreground">Loading files…</p>
-          ) : (
-            <>
-              <Detail label="result">
-                {content.result.trim().length > 0 ? content.result : "(no result yet)"}
-              </Detail>
-              <Detail label="activity">
-                {content.activity.trim().length > 0 ? content.activity : "(no activity yet)"}
-              </Detail>
-            </>
-          )}
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
-  );
-}
-
-function DelegateRuns({ runs, focusId }: { runs: DelegateRunView[]; focusId?: string | null }) {
-  const shown =
-    focusId === undefined || focusId === null ? runs : runs.filter((run) => run.id === focusId);
-  if (shown.length === 0) return null;
-  return (
-    <section data-testid="delegate-runs" className="mb-4">
-      <h2 className="mb-1 font-mono text-[11px] uppercase tracking-wide text-muted-foreground">
-        Delegates
-      </h2>
-      <div>
-        {shown.map((run) => (
-          <DelegateRunRow key={run.id} run={run} defaultOpen={run.id === focusId} />
-        ))}
-      </div>
-    </section>
-  );
-}
-
 function ActivityRow({
   activity,
   defaultOpen = false,
@@ -434,10 +266,8 @@ export function ActivityView({
   timeline,
   ready,
   run: runProp,
-  delegates,
   jobs,
   focusJobId,
-  focusDelegateId,
   dialog,
 }: ActivityViewProps) {
   const locationRun = new URLSearchParams(window.location.search).get("run");
@@ -534,7 +364,6 @@ export function ActivityView({
       </div>
       <div data-testid="activity-scroll" className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-4">
         {!ready && <p className="font-mono text-xs text-muted-foreground">Loading…</p>}
-        <DelegateRuns runs={delegates ?? []} focusId={focusDelegateId} />
         {ready && shownActivities.length === 0 && (
           <p className="font-mono text-xs text-muted-foreground">
             {run === null ? "No activity yet." : "No activity in this run."}
@@ -568,10 +397,8 @@ export function ActivityDialog({
   timeline,
   ready,
   run,
-  delegates,
   jobs,
   focusJobId,
-  focusDelegateId,
   onClose,
 }: ActivityDialogProps) {
   const titleId = useId();
@@ -586,10 +413,8 @@ export function ActivityDialog({
         timeline={timeline}
         ready={ready}
         run={run}
-        delegates={delegates}
         {...(jobs === undefined ? {} : { jobs })}
         {...(focusJobId === undefined ? {} : { focusJobId })}
-        {...(focusDelegateId === undefined ? {} : { focusDelegateId })}
         dialog={{ onClose, titleId }}
       />
     </PageSheet>

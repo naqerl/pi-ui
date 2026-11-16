@@ -311,7 +311,7 @@ export class DelegateManager {
     this.notifier = notifier;
   }
 
-  /** Called whenever a run is queued, starts, or finishes. The dock and activity page render this. */
+  /** Called whenever a run is queued, starts, or finishes. The dock renders this. */
   onChange(listener: (() => void) | undefined): void {
     this.changeListener = listener;
   }

@@ -87,7 +87,7 @@ interface ChatViewProps {
   /** The server's last unacknowledged run failure, rendered as a thin header. */
   runError?: RunError | null;
   dismissRunError?: (id: string) => void;
-  /** Pushed by the server, so the activity page does not poll for it. */
+  /** Pushed by the server, so the dock does not poll for it. */
   delegates?: DelegateRunView[];
   /** Background shell jobs, pushed by the server on every change. */
   jobs?: BuiltinJob[];
@@ -1729,10 +1729,7 @@ export function ChatView({
   const [activityRun, setActivityRun] = useState<string | null | undefined>(
     activityRunFromLocation,
   );
-  const [activityFocus, setActivityFocus] = useState<{
-    kind: "job" | "delegate";
-    id: string;
-  } | null>(null);
+  const [activityJobId, setActivityJobId] = useState<string | null>(null);
   const activityTriggerRef = useRef<HTMLButtonElement | null>(null);
   const tasksPage = pager.page === TASKS_PAGE;
   // An error belongs to the page it was raised on.
@@ -2147,14 +2144,15 @@ export function ChatView({
 
   const openActivity = (run: string, trigger: HTMLButtonElement) => {
     activityTriggerRef.current = trigger;
-    setActivityFocus(null);
+    setActivityJobId(null);
     setActivityRun(run);
   };
 
   const openBackgroundItem = (kind: BackgroundJobsKind, id: string) => {
+    if (kind !== "jobs") return;
     activityTriggerRef.current = null;
     setJobsSheet(null);
-    setActivityFocus({ kind: kind === "jobs" ? "job" : "delegate", id });
+    setActivityJobId(id);
     setActivityRun(null);
   };
 
@@ -2162,7 +2160,7 @@ export function ChatView({
     const trigger = activityTriggerRef.current;
     activityTriggerRef.current = null;
     setActivityRun(undefined);
-    setActivityFocus(null);
+    setActivityJobId(null);
     const path = window.location.pathname.replace(/\/+$/, "");
     if (path === "/activity") {
       // A direct deep link closes back to the chat rather than reloading the modal.
@@ -2453,10 +2451,8 @@ export function ChatView({
             timeline={timeline}
             ready={ready}
             run={activityRun}
-            delegates={delegates}
             jobs={jobs}
-            focusJobId={activityFocus?.kind === "job" ? activityFocus.id : null}
-            focusDelegateId={activityFocus?.kind === "delegate" ? activityFocus.id : null}
+            focusJobId={activityJobId}
             onClose={closeActivity}
           />
         </Suspense>

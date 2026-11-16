@@ -1,3 +1,9 @@
+## 1.7.3
+
+### Removed
+
+- The activity page no longer lists delegate runs. A sub-agent still shows on the dock while it is queued or running, and its notice chip still links to the result and the activity file.
+
 ## 1.7.2
 
 ### Fixed
