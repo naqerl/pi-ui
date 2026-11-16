@@ -2339,12 +2339,6 @@ export function ChatView({
               className="flex min-w-0 flex-1 items-baseline gap-2 font-mono text-[11px] leading-4 text-muted-foreground"
             >
               {showPlanToggle && <PlanTaskSwitch pressed={planDraft} onToggle={togglePlanDraft} />}
-              <BackgroundJobsCounts
-                jobs={jobs}
-                delegates={delegates ?? []}
-                onOpen={setJobsSheet}
-                visible={chatPage}
-              />
               {statusWord !== null && (
                 <div aria-live="polite" className="min-w-0 truncate">
                   {statusRunning ? (
@@ -2356,6 +2350,12 @@ export function ChatView({
                   )}
                 </div>
               )}
+              <BackgroundJobsCounts
+                jobs={jobs}
+                delegates={delegates ?? []}
+                onOpen={setJobsSheet}
+                visible={chatPage}
+              />
             </div>
             <div
               role="tablist"

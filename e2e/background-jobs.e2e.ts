@@ -42,12 +42,21 @@ const rowMetrics = (browser: Browser) =>
     const status = document.querySelector<HTMLElement>('[data-testid="working-status"]');
     const row = status?.parentElement;
     const counts = document.querySelector<HTMLElement>('[data-testid="bg-jobs-line"]');
+    const word =
+      document.querySelector<HTMLElement>('[data-testid="header-activity"]') ??
+      document.querySelector<HTMLElement>(
+        '[data-testid="working-status"] > div > span:not([aria-hidden])',
+      );
     const box = (element: HTMLElement | null | undefined) =>
       element?.getBoundingClientRect() ?? null;
     const rowBox = box(row);
     const countBox = box(counts);
+    const statusBox = box(status);
     return {
-      statusY: box(status)?.y ?? -1,
+      statusY: statusBox?.y ?? -1,
+      statusLeft: statusBox?.left ?? -1,
+      wordLeft: box(word)?.left ?? -1,
+      countLeft: countBox?.left ?? -1,
       rowHeight: rowBox?.height ?? -1,
       rowTop: rowBox?.top ?? -1,
       rowBottom: rowBox?.bottom ?? -1,
@@ -155,6 +164,8 @@ test("a background job count opens a live sheet and returns focus to the compose
   // Same row, same width budget: the count rides after the working indicator.
   expect(withCounts.hasSlot).toBe(false);
   expect(withCounts.countsInsideStatus).toBe(true);
+  expect(withCounts.countLeft).toBeGreaterThan(withCounts.wordLeft);
+  expect(withCounts.countLeft).toBeGreaterThan(withCounts.statusLeft);
   expect(withCounts.countBottom).toBeGreaterThan(withCounts.rowTop);
   expect(withCounts.countTop).toBeLessThan(withCounts.rowBottom);
   // The row does not grow when the counts arrive, so the composer cannot move.
@@ -168,6 +179,9 @@ test("a background job count opens a live sheet and returns focus to the compose
   await sendText(browser, "SLOW keep working");
   await expect(screen.getByTestId("header-activity")).toBeVisible();
   await settleDock(browser);
+  const working = await rowMetrics(browser);
+  expect(working.countLeft).toBeGreaterThan(working.wordLeft);
+  expect(working.countLeft).toBeGreaterThan(working.statusLeft);
   const workingGap = await baselineGap(browser);
   expect(workingGap).not.toBeNull();
   expect(workingGap ?? 99).toBeLessThan(2);

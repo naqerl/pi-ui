@@ -69,9 +69,9 @@ function countsReducer(state: CountsState, action: CountsAction): CountsState {
 }
 
 /**
- * The live jobs/sub-agent counts, painted inline at the start of the composer's
- * status row. They are deliberately absent when both lists are empty, and only
- * their own opacity/transform animates: the row keeps its height, so the
+ * The live jobs/sub-agent counts, painted inline after the status word in the
+ * composer's status row. They are deliberately absent when both lists are empty,
+ * and only their own opacity/transform animates: the row keeps its height, so the
  * composer and the transcript never move when work starts, finishes, or the
  * reader switches pages. The node is removed after the exit, so a non-chat
  * surface never carries a hidden counter.
@@ -133,9 +133,7 @@ export function BackgroundJobsCounts({
       data-testid="bg-jobs-line"
       data-open={state.open ? "true" : "false"}
       data-surface={visible ? "chat" : "away"}
-      // The outer box starts at the plus button's box; the inset puts the text
-      // ink on the plus icon's ink, so the edge reads aligned on both sizes.
-      className="bg-jobs-counts -ml-3 inline-flex min-w-0 shrink-0 items-baseline gap-1.5 pl-[11px]"
+      className="bg-jobs-counts inline-flex min-w-0 shrink-0 items-baseline gap-1.5"
     >
       {rendered.jobs > 0 && chip("jobs", rendered.jobs, "job")}
       {rendered.jobs > 0 && rendered.subagents > 0 && (
