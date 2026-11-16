@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { accessSync, constants, mkdirSync, readFileSync } from "node:fs";
+import { accessSync, constants, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -71,6 +71,11 @@ export interface BillionContextInline {
    * window correctly.
    */
   setModelMetadata(metadata: BiliModelMetadata): void;
+  /**
+   * Identity stamped on model requests. A delegate's `conversationScope` still
+   * wins. This wins over `current.json`. Passing `undefined` clears it.
+   */
+  setConversationIdentity(conversationId: string | undefined): void;
   registerIdentity(conversationId?: string): Promise<boolean>;
   manifest(signal?: AbortSignal): Promise<readonly BiliToolDefinition[] | undefined>;
   status(conversationId: string, signal?: AbortSignal): Promise<BiliStatus | undefined>;
@@ -149,13 +154,17 @@ export async function installBillionContextInline(
   // accessor to capture (and previously threw); reuse the live chain instead.
   const inlineFetch = hadChain ? globalThis.fetch : await importPiNativeAndCaptureInlineFetch();
   let fallbackConversationId: string | undefined;
+  let overrideConversationId: string | undefined;
 
   // pi-ui has exactly one durable conversation, so one boot-time path is
   // enough. A future multi-conversation UI must stamp the id from the durable
   // conversation handling the request; a process-global current.json would
-  // misattribute concurrent conversations.
+  // misattribute concurrent conversations. The override is the head-scoped
+  // billion-context id; it must not be written into current.json, which is a
+  // durable conversation pointer and has to stay a positive integer.
   const currentConversationId = (): string | undefined =>
     conversationScope.getStore() ??
+    overrideConversationId ??
     readConversationId(options.currentPath) ??
     fallbackConversationId;
 
@@ -193,6 +202,10 @@ export async function installBillionContextInline(
       if (isPositiveNumber(metadata.maxOutput)) {
         modelMetadata.maxOutput = Math.floor(metadata.maxOutput);
       }
+    },
+    setConversationIdentity(conversationId) {
+      overrideConversationId =
+        conversationId === undefined || conversationId.length === 0 ? undefined : conversationId;
     },
     async registerIdentity(conversationId?: string): Promise<boolean> {
       const id = conversationId ?? currentConversationId();
@@ -294,15 +307,20 @@ export async function installBillionContextInline(
 
 function createDisabled(hadChain: boolean, currentPath: string): BillionContextInline {
   const noTools = async (): Promise<undefined> => undefined;
+  let overrideConversationId: string | undefined;
   return {
     enabled: false,
     origin: BILLION_CONTEXT_INLINE_ORIGIN,
     hadChain,
     observed: [],
     fetch: globalThis.fetch,
-    currentConversationId: () => readConversationId(currentPath),
+    currentConversationId: () => overrideConversationId ?? readConversationId(currentPath),
     setModelMetadata: () => {
       // The engine is disabled, so there is nothing to size.
+    },
+    setConversationIdentity(conversationId) {
+      overrideConversationId =
+        conversationId === undefined || conversationId.length === 0 ? undefined : conversationId;
     },
     registerIdentity: async () => false,
     manifest: noTools,
@@ -466,6 +484,59 @@ function ensureBillionContextDirs(): void {
   process.env.XDG_DATA_HOME = join(base, "data");
   process.env.XDG_STATE_HOME = join(base, "state");
   console.warn(`[pi] billion-context: $HOME is not writable; using ${base} for engine state`);
+}
+
+const BILI_IDENTITY_FILE = "bili-identity.json";
+
+/**
+ * The billion-context id for one durable conversation and one compaction head.
+ * Reuses the stored id when the head matches, so a restart does not abandon a
+ * fold that is still valid. `current.json` is left untouched.
+ */
+export function biliIdentityForHead(
+  currentPath: string,
+  durableId: string,
+  headMarkerId: string,
+): string {
+  const path = join(dirname(currentPath), BILI_IDENTITY_FILE);
+  const existing = readBiliIdentity(path);
+  if (
+    existing !== undefined &&
+    existing.durableId === durableId &&
+    existing.headMarkerId === headMarkerId &&
+    existing.biliId.length > 0
+  ) {
+    return existing.biliId;
+  }
+  const biliId = `${durableId}@${headMarkerId}`;
+  try {
+    writeFileSync(path, `${JSON.stringify({ durableId, headMarkerId, biliId })}\n`);
+  } catch (error) {
+    console.warn(
+      `[pi] billion-context: could not store the conversation identity: ${errorMessage(error)}`,
+    );
+  }
+  return biliId;
+}
+
+function readBiliIdentity(
+  path: string,
+): { durableId: string; headMarkerId: string; biliId: string } | undefined {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (!isRecord(parsed)) return undefined;
+    const { durableId, headMarkerId, biliId } = parsed;
+    if (
+      typeof durableId !== "string" ||
+      typeof headMarkerId !== "string" ||
+      typeof biliId !== "string"
+    ) {
+      return undefined;
+    }
+    return { durableId, headMarkerId, biliId };
+  } catch {
+    return undefined;
+  }
 }
 
 function readConversationId(path: string): string | undefined {

@@ -74,6 +74,18 @@ import { pendingVersionNotice, writeLastSeenVersion } from "./version-notice.js"
 
 export const SESSION_CONTEXT: Context = BACKGROUND_CONTEXT;
 
+/**
+ * Durable compaction is off until the chat has a head, or the log is still small.
+ * `ChatService.start` flips this once that is true. The settings function reads it
+ * on each turn, so a harness opened at boot follows the later decision.
+ */
+let modelCompactionEnabled = false;
+
+/** Allow threshold compaction. A large headless log must not be summarized in one call. */
+export function enableModelCompaction(): void {
+  modelCompactionEnabled = true;
+}
+
 const InterruptedRunEntry = defineEntry<{
   markerKey: string;
   partialEntryId: number | null;
@@ -356,11 +368,16 @@ export async function openDurableSession(
       models: options.models,
       registry: registry as Registry,
       env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? options.cwd }),
-      settings: {
-        // billion-context compresses the request on the wire. pi-durable's own
-        // compaction would remove messages before the bridge sees them, so it
-        // stays off; manual compaction remains available.
-        compaction: { enabled: false },
+      // Read on each turn. Compaction stays off until a head exists, so the first
+      // turn cannot summarize the whole month. After the head, compaction keeps
+      // the model on a tail. Billion-context gets a new conversation id at each head.
+      settings: () => ({
+        compaction: {
+          enabled: modelCompactionEnabled,
+          reserveTokens: 16_384,
+          keepRecentTokens: 20_000,
+          backgroundTokens: 0,
+        },
         // Three attempts in all, a short backoff and a cap, instead of durable's default
         // three retries with a minute-long ceiling: a failing provider must not hold the
         // chat, and everything sent behind the turn waits with it.
@@ -368,7 +385,7 @@ export async function openDurableSession(
         // Every steer waiting at a turn boundary goes in at that boundary, in the order sent,
         // instead of one per boundary, which pushed later steers past the run's end.
         steeringMode: "all",
-      },
+      }),
       onReport: (report) => console.error(`[pi] harness report (${report.kind})`, report.error),
     },
     SESSION_CONTEXT,
@@ -1311,6 +1328,11 @@ export class TranscriptBuilder {
     return { messages: this.messages.length, activity: this.activity.length };
   }
 
+  /** The one visible row for an MCP notice. The id stays on the group's first entry. */
+  mcpChip(noticeId: string): ChatMessage | undefined {
+    return this.mcpNotices.get(noticeId)?.message;
+  }
+
   /**
    * Re-reads the drawings in this transcript. A replace or edit raises a diagram's
    * revision without adding an entry, so the row that already shows it must follow.
@@ -1574,7 +1596,7 @@ export async function appendTaskDecisionNotice(
   key?: string,
 ): Promise<ChatMessage | undefined> {
   const createdAt = new Date().toISOString();
-  await conversation.commit(
+  const entry = await conversation.commit(
     (tx) =>
       tx.appendEntry(TaskDecisionEntry, conversation.id, {
         data: {
@@ -1589,17 +1611,7 @@ export async function appendTaskDecisionNotice(
       }),
     SESSION_CONTEXT,
   );
-  const context = await conversation.context(SESSION_CONTEXT);
-  const entry = [...context.entries]
-    .reverse()
-    .find(
-      (candidate) =>
-        candidate.kind === TaskDecisionEntry.kind &&
-        isRecord(candidate.data) &&
-        candidate.data.proposalId === record.proposalId &&
-        candidate.data.createdAt === createdAt,
-    );
-  return entry === undefined ? undefined : buildTranscript([entry]).messages[0];
+  return buildTranscript([entry]).messages[0];
 }
 
 /**
@@ -1609,9 +1621,11 @@ export async function appendTaskDecisionNotice(
 export async function appendMcpNotice(
   conversation: Conversation,
   notice: { noticeId: string; key: string; text: string; at: string },
-): Promise<ChatMessage | undefined> {
+): Promise<EntryRecord> {
   const createdAt = notice.at;
-  await conversation.commit(
+  // The chip id is the group's first entry, so the caller folds this row into the
+  // transcript it already holds and reads `TranscriptBuilder.mcpChip`.
+  return conversation.commit(
     (tx) =>
       tx.appendEntry(McpNoticeEntry, conversation.id, {
         data: {
@@ -1624,17 +1638,6 @@ export async function appendMcpNotice(
       }),
     SESSION_CONTEXT,
   );
-  const context = await conversation.context(SESSION_CONTEXT);
-  const first = context.entries.find(
-    (candidate) =>
-      candidate.kind === McpNoticeEntry.kind &&
-      isRecord(candidate.data) &&
-      candidate.data.noticeId === notice.noticeId,
-  );
-  if (first === undefined) return undefined;
-  return buildTranscript(context.entries).messages.find(
-    (message) => message.id === entryMessageId(first),
-  );
 }
 
 /** Records a memory write as a persistent chip the chat can show after a reload. */
@@ -1644,24 +1647,14 @@ export async function appendMemoryWriteNotice(
 ): Promise<ChatMessage | undefined> {
   const createdAt = new Date().toISOString();
   const capped = memoryNoticeText(record.text);
-  await conversation.commit(
+  const entry = await conversation.commit(
     (tx) =>
       tx.appendEntry(MemoryWriteEntry, conversation.id, {
         data: { path: record.path, ...capped, createdAt },
       }),
     SESSION_CONTEXT,
   );
-  const context = await conversation.context(SESSION_CONTEXT);
-  const entry = [...context.entries]
-    .reverse()
-    .find(
-      (candidate) =>
-        candidate.kind === MemoryWriteEntry.kind &&
-        isRecord(candidate.data) &&
-        candidate.data.createdAt === createdAt &&
-        candidate.data.path === record.path,
-    );
-  return entry === undefined ? undefined : buildTranscript([entry]).messages[0];
+  return buildTranscript([entry]).messages[0];
 }
 
 /** Records a notify_operator call as a persistent chat chip. */
@@ -1670,24 +1663,14 @@ export async function appendOperatorNotice(
   record: OperatorNoticeRecord,
 ): Promise<ChatMessage | undefined> {
   const createdAt = new Date().toISOString();
-  await conversation.commit(
+  const entry = await conversation.commit(
     (tx) =>
       tx.appendEntry(OperatorNoticeEntry, conversation.id, {
         data: { title: record.title, body: record.body, reason: record.reason, createdAt },
       }),
     SESSION_CONTEXT,
   );
-  const context = await conversation.context(SESSION_CONTEXT);
-  const entry = [...context.entries]
-    .reverse()
-    .find(
-      (candidate) =>
-        candidate.kind === OperatorNoticeEntry.kind &&
-        isRecord(candidate.data) &&
-        candidate.data.createdAt === createdAt &&
-        candidate.data.title === record.title,
-    );
-  return entry === undefined ? undefined : buildTranscript([entry]).messages[0];
+  return buildTranscript([entry]).messages[0];
 }
 
 /** Records a job result the agent is not told about and returns its activity item. */
@@ -1696,21 +1679,11 @@ export async function appendJobNotice(
   text: string,
 ): Promise<ActivityItem | undefined> {
   const createdAt = new Date().toISOString();
-  await conversation.commit(
+  const entry = await conversation.commit(
     (tx) => tx.appendEntry(JobNoticeEntry, conversation.id, { data: { text, createdAt } }),
     SESSION_CONTEXT,
   );
-  const context = await conversation.context(SESSION_CONTEXT);
-  const entry = [...context.entries]
-    .reverse()
-    .find(
-      (candidate) =>
-        candidate.kind === JobNoticeEntry.kind &&
-        isRecord(candidate.data) &&
-        candidate.data.createdAt === createdAt &&
-        candidate.data.text === text,
-    );
-  return entry === undefined ? undefined : buildTranscript([entry]).activity[0];
+  return buildTranscript([entry]).activity[0];
 }
 
 export async function appendAssistantError(

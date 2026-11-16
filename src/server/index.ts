@@ -579,11 +579,12 @@ boot.mcp.setSubmit((text, options) => {
 });
 mcpOutbox.start();
 
+const biliIdentity = bili.currentConversationId() ?? String(boot.conversation.id);
 void bili
-  .registerIdentity(String(boot.conversation.id))
+  .registerIdentity(biliIdentity)
   .then((registered) => {
     if (registered) {
-      console.log(`billion-context: registered conversation ${boot.conversation.id}`);
+      console.log(`billion-context: registered conversation ${biliIdentity}`);
     }
   })
   .catch((error: unknown) => {

@@ -43,27 +43,40 @@ export function windowTranscript(
   if (request.from !== undefined && request.before === undefined) {
     from = request.from;
   } else {
-    const below = messages.filter((message) => message.order < end);
-    if (below.length <= limit) {
+    // First index whose order is not below `end`. The page still walks back to
+    // a user message; the search only finds the bounds.
+    const endIndex = lowerBound(messages, end);
+    if (endIndex <= limit) {
       from = Number.NEGATIVE_INFINITY;
     } else {
-      let start = below.length - limit;
-      while (start > 0 && below[start]?.role !== "user") start--;
-      from = start === 0 ? Number.NEGATIVE_INFINITY : (below[start]?.order ?? 0);
+      let start = endIndex - limit;
+      while (start > 0 && messages[start]?.role !== "user") start--;
+      from = start === 0 ? Number.NEGATIVE_INFINITY : (messages[start]?.order ?? 0);
     }
   }
 
-  const inWindow = (order: number) => order >= from && order < end;
   const firstOrder = Math.min(
     messages[0]?.order ?? Number.POSITIVE_INFINITY,
     activity[0]?.order ?? Number.POSITIVE_INFINITY,
   );
   return {
-    messages: messages.filter((message) => inWindow(message.order)),
-    activity: activity.filter((item) => inWindow(item.order)),
+    messages: messages.slice(lowerBound(messages, from), lowerBound(messages, end)),
+    activity: activity.slice(lowerBound(activity, from), lowerBound(activity, end)),
     from: Number.isFinite(from) ? from : 0,
     hasEarlier: Number.isFinite(from) && firstOrder < from,
   };
+}
+
+/** First index whose `order` is greater than or equal to `target`. */
+function lowerBound(items: readonly { order: number }[], target: number): number {
+  let low = 0;
+  let high = items.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if ((items[middle]?.order ?? 0) < target) low = middle + 1;
+    else high = middle;
+  }
+  return low;
 }
 
 /** True when the items already ascend by `order`, so they need no copy and sort. */

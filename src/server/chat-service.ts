@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
+import { join } from "node:path";
+import type { Api, AssistantMessage, Message, Model } from "@earendil-works/pi-ai";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
   AssistantEntry,
@@ -8,6 +9,8 @@ import {
   ConversationBusy,
   type ConversationView,
   type ConversationWatch,
+  type Cursor,
+  type EntryId,
   type EntryRecord,
   type Harness,
   InboxDoc,
@@ -19,6 +22,7 @@ import {
   type Submission,
   type SubmissionId,
   type ToolSlot,
+  UserEntry,
 } from "@earendil-works/pi-durable";
 import { parseMemoryToolDetails } from "../shared/memory.js";
 import {
@@ -44,6 +48,7 @@ import {
 import { steerDropReason, steerFromInboxItem } from "../shared/steers.js";
 import {
   type ChatMessage,
+  type ContextUsage,
   type McpEventsState,
   type McpStatus,
   type MessageMode,
@@ -67,7 +72,7 @@ import {
   type ToolActivity,
   type TranscriptHistory,
 } from "../shared/types.js";
-import type { BillionContextInline } from "./billion-context.js";
+import { type BillionContextInline, biliIdentityForHead } from "./billion-context.js";
 import type { DurableDoctorReport } from "./durable-doctor.js";
 import {
   type IdleNudge,
@@ -98,11 +103,10 @@ import {
   appendSessionResetMarker,
   appendTaskDecisionNotice,
   assistantMessageFromEntry,
-  type BuiltTranscript,
   buildTranscript,
-  contextUsage,
   DELEGATE_NOTICE_ENTRY_KIND,
   type DiagramRevisionResolver,
+  enableModelCompaction,
   IDLE_NUDGE_ENTRY_KIND,
   JOB_NOTICE_ENTRY_KIND,
   latestSessionReset,
@@ -110,6 +114,7 @@ import {
   MEMORY_DELTA_ENTRY_KIND,
   recordDurableRepairNotice,
   SESSION_CONTEXT,
+  SESSION_RESET_MARKER_ENTRY_KIND,
   summarizeUsage,
   TASK_DECISION_ENTRY_KIND,
   TASK_DECISION_PROMPT_ENTRY_KIND,
@@ -232,11 +237,17 @@ interface SubmitOptions {
 /** `PI_UI_QUIET_AFTER_MS` shortens the quiet threshold for tests. */
 export const QUIET_AFTER_MS = positiveEnv("PI_UI_QUIET_AFTER_MS") ?? DEFAULT_QUIET_AFTER_MS;
 const WATCHDOG_INTERVAL_MS = Math.min(10_000, QUIET_AFTER_MS);
-/**
- * How long a read context view may be reused with no view event to vouch for it. Only
- * repairs a change that was never announced; a normal poll reuses until an event lands.
- */
-const CONTEXT_REUSE_MS = 15_000;
+/** Rows read from the store in one step while the transcript is caught up. */
+const TRANSCRIPT_PAGE = 256;
+/** A log this long, or this large, gets one static head before compaction can run. */
+const LARGE_LOG_ENTRIES = 1_500;
+const LARGE_LOG_BYTES = 2_000_000;
+/** Recent tail kept verbatim: about 20k tokens, or this many rows, whichever comes first. */
+const MODEL_TAIL_BYTES = 80_000;
+const MODEL_TAIL_SCAN = 800;
+const MODEL_CONTEXT_SUMMARY =
+  "Earlier turns remain in the chat and are not in this prompt. " +
+  "A tool result from before this note is not in context; read the file again if the work depends on it.";
 const STREAM_RETRY_MS = 1_000;
 const MCP_EVENT_HEAD = MCP_EVENTS_HEAD;
 
@@ -249,14 +260,6 @@ export interface McpEventEnvelope {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** True when entries ascend by id, the order the transcript cache appends in. */
-function ascends(entries: readonly EntryRecord[]): boolean {
-  for (let index = 1; index < entries.length; index++) {
-    if ((entries[index - 1]?.id ?? 0) >= (entries[index]?.id ?? 0)) return false;
-  }
-  return true;
 }
 
 /** The task a task tool names, used to tell a release of this run's work from another task's. */
@@ -699,28 +702,32 @@ export class ChatService {
   /** Read on every snapshot, so a server may recover after its boot probe fails. */
   private readonly mcpStatus: () => McpStatus;
   /**
-   * The transcript built so far and the exact entry range it covers. A poll that
-   * brings new entries appends them instead of rebuilding the conversation.
+   * One transcript for the life of the process. Boot replays `entries()` into it;
+   * the watch and a catch-up read append only rows that are not already folded.
+   * The raw records are not kept.
    */
-  private transcriptCache:
-    | {
-        entries: readonly EntryRecord[];
-        first: number | undefined;
-        tail: number | undefined;
-        count: number;
-        builder: TranscriptBuilder;
-      }
-    | undefined;
-  /**
-   * The last context view and the entry revision it describes. Reading the view of a
-   * month-long conversation means re-parsing every entry (~0.7 s) on each poll; entries
-   * only change when the view stream says so, so a poll between changes can reuse them.
-   */
-  private entriesCache:
-    | { entries: readonly EntryRecord[]; revision: number; readAt: number }
-    | undefined;
-  /** Bumped whenever the view stream may have changed the entry list. */
-  private entriesRevision = 0;
+  private transcript!: TranscriptBuilder;
+  /** The app data directory, so the billion-context id can sit beside `current.json`. */
+  private dataDir: string | undefined;
+  private transcriptSync: Promise<void> | undefined;
+  /** True while a page of entries is being folded, so the watch cannot double-apply. */
+  private replaying = false;
+  /** True once the watch is attached. A head noticed after that rotates the fold id. */
+  private watched = false;
+  private readonly queuedNotes: EntryRecord[] = [];
+  private readonly appliedIds = new Set<number>();
+  private foldedThrough: number | undefined;
+  private foldedCount = 0;
+  private foldedBytes = 0;
+  private headMarkerId: number | undefined;
+  private adoptedHead: number | undefined;
+  private contextTokens = 0;
+  private contextUsageEntryId = -1;
+  private readonly clientMessages = new Map<string, ChatMessage>();
+  private readonly decisionProposals = new Set<string>();
+  private readonly promptedDecisions = new Set<string>();
+  private readonly memoryDeltaIds = new Set<string>();
+  private readonly mediaRef = (data: string, mimeType: string) => this.media.refFor(data, mimeType);
 
   constructor(
     private readonly harness: Harness,
@@ -766,10 +773,12 @@ export class ChatService {
     this.idleTasks = idleTasksSource;
     this.idleNudge = new IdleNudgeImpl(idleNudgeMs(), Date.now(), idleNudgeDataDir);
     this.staleRunNudge = new StaleRunNudge(staleRunNudgeMs(), idleNudgeDataDir);
+    this.dataDir = idleNudgeDataDir;
     this.runState = interrupted ? "interrupted" : "idle";
     this.modelWindow = modelWindow;
     this.selected = initialModel === undefined ? null : modelOption(initialModel);
     this.marker = initialMarker;
+    this.transcript = new TranscriptBuilder(this.mediaRef, this.diagramRevision);
     registerMcpQueueMerger(this.conversation.id, this.mergeMcpQueue);
   }
 
@@ -784,8 +793,6 @@ export class ChatService {
     throw new MediaError(`${this.selected.name} does not accept images`, 400);
   }
 
-  private readonly mediaRef = (data: string, mimeType: string) => this.media.refFor(data, mimeType);
-
   async start(): Promise<void> {
     if (this.repairDurableState !== undefined) {
       try {
@@ -794,9 +801,19 @@ export class ChatService {
         console.error("[durable] pre-resume doctor failed", error);
       }
     }
+    const started = Date.now();
+    await this.syncTranscript();
+    await this.boundModelContext();
+    await this.syncTranscript();
+    const size = this.transcript.size();
+    console.log(
+      `[pi] transcript folded entries=${this.foldedCount} messages=${size.messages} ` +
+        `activity=${size.activity} in ${Date.now() - started}ms`,
+    );
     const stream = await this.watchConversation();
     this.stream = stream;
     const snapshot = this.resetView(stream.value);
+    this.watched = true;
     this.applySnapshot(snapshot);
     if (snapshot.run !== undefined) {
       this.setRunState("running");
@@ -808,6 +825,10 @@ export class ChatService {
     await this.restorePersistedQueue();
     await this.restorePendingSteers();
     this.startIdleNudge();
+    // A large log whose head could not be written stays uncompacted. Summarizing
+    // it would be one model call over the whole month. A small log, or one that
+    // now has a head, can compact inside that bound.
+    if (this.headMarkerId !== undefined || !this.logIsLarge()) enableModelCompaction();
     // Durable carries a turn across a restart from its committed checkpoint. A
     // stop requested before the restart was settled in recovery, so leave it be.
     if (this.marker?.stopRequested !== true) this.harness.resume();
@@ -1168,109 +1189,34 @@ export class ChatService {
   }
 
   /**
-   * The transcript for `entries`, reusing the previous build when only new entries
-   * arrived. A long conversation holds tens of thousands of entries, and rebuilding
-   * every one of them on each `/api/state` poll is what made the poll take seconds.
-   * Entries are immutable once committed, so the previous range stays valid.
-   */
-  private transcriptFor(entries: readonly EntryRecord[]): BuiltTranscript {
-    const cache = this.transcriptCache;
-    // The common case is the same view twice: the entries reference is stable while the
-    // cache in front of it holds, so no id walk is needed to know nothing was appended.
-    if (cache !== undefined && cache.entries === entries) {
-      cache.builder.refreshDiagrams();
-      return cache.builder.build();
-    }
-    // The cache appends in id order, so it is only usable when the view ascends and
-    // still starts where the previous view did.
-    if (
-      cache !== undefined &&
-      entries.length >= cache.count &&
-      entries[0]?.id === cache.first &&
-      (cache.count === 0 || entries[cache.count - 1]?.id === cache.tail) &&
-      ascends(entries)
-    ) {
-      if (entries.length === cache.count) {
-        // The same view read again after the reuse window: keep the reference so the next
-        // poll takes the identity shortcut instead of walking the ids again.
-        cache.entries = entries;
-        cache.builder.refreshDiagrams();
-        return cache.builder.build();
-      }
-      for (let index = cache.count; index < entries.length; index++) {
-        const entry = entries[index];
-        if (entry !== undefined) cache.builder.append(entry);
-      }
-      cache.entries = entries;
-      cache.count = entries.length;
-      cache.tail = entries[entries.length - 1]?.id;
-      // A replace or edit raises a drawing's revision without adding an entry.
-      cache.builder.refreshDiagrams();
-      return cache.builder.build();
-    }
-    const builder = new TranscriptBuilder(this.mediaRef, this.diagramRevision);
-    for (const entry of [...entries].sort((a, b) => a.id - b.id)) builder.append(entry);
-    this.transcriptCache = {
-      entries,
-      first: entries[0]?.id,
-      tail: entries[entries.length - 1]?.id,
-      count: entries.length,
-      builder,
-    };
-    return builder.build();
-  }
-
-  /**
-   * What the transcript and context caches hold right now. Counts only: the memory line
-   * exists so a report of "it got slow again" can name the holder instead of guessing.
+   * Counts the folded projection. `entries` and `built` are the rows folded so far,
+   * not a second copy of the log.
    */
   memoryReport(): { entries: number; messages: number; activity: number; built: number } {
-    const transcript = this.transcriptCache;
-    const size = transcript?.builder.size();
+    const size = this.transcript.size();
     return {
-      entries: this.entriesCache?.entries.length ?? 0,
-      messages: size?.messages ?? 0,
-      activity: size?.activity ?? 0,
-      built: transcript?.count ?? 0,
+      entries: this.foldedCount,
+      messages: size.messages,
+      activity: size.activity,
+      built: this.foldedCount,
     };
-  }
-
-  /**
-   * The conversation's entries, re-read only when the view may have changed them. The
-   * time bound is insurance: if a change never announced itself, an idle page still
-   * re-reads within this window instead of showing a transcript that is behind forever.
-   */
-  private async contextEntries(): Promise<readonly EntryRecord[]> {
-    const cache = this.entriesCache;
-    if (
-      cache !== undefined &&
-      cache.revision === this.entriesRevision &&
-      Date.now() - cache.readAt < CONTEXT_REUSE_MS
-    ) {
-      return cache.entries;
-    }
-    const revision = this.entriesRevision;
-    const context = await this.conversation.context(SESSION_CONTEXT);
-    // A change that lands during the read keeps its higher revision, so the next poll
-    // reads again rather than serving a view that is already behind that change.
-    this.entriesCache = { entries: context.entries, revision, readAt: Date.now() };
-    return context.entries;
   }
 
   /** One page of older transcript, ending just below `request.before`. */
   async getHistory(request: WindowRequest): Promise<TranscriptHistory> {
-    const entries = await this.contextEntries();
-    return windowTranscript(this.transcriptFor(entries), request);
+    await this.syncTranscript();
+    this.transcript.refreshDiagrams();
+    return windowTranscript(this.transcript.build(), request);
   }
 
   /** Usage, context and MCP status without building the transcript window. */
   async statsSnapshot(): Promise<Pick<Snapshot, "usage" | "context" | "mcp" | "conversationId">> {
-    const entries = await this.contextEntries();
+    await this.syncTranscript();
     const usage = await this.harness.usage(SESSION_CONTEXT);
     return {
       conversationId: String(this.conversation.id),
       usage: summarizeUsage(usage),
-      context: contextUsage(entries, this.modelWindow),
+      context: this.contextSnapshot(),
       mcp: this.mcpStatus(),
     };
   }
@@ -1282,16 +1228,13 @@ export class ChatService {
     const queueRevision = this.queueRevision;
     const queue = this.queueItems();
     const steers = this.steerItems();
-    const entries = await this.contextEntries();
+    await this.syncTranscript();
     const usage = await this.harness.usage(SESSION_CONTEXT);
-    const reset = latestSessionReset(entries);
-    if (reset !== undefined) {
-      this.resetOrder = reset.order;
-      this.resetAt =
-        reset.resetAt ?? this.pendingResetAt ?? this.resetAt ?? new Date().toISOString();
-    }
-    const built = this.transcriptFor(entries);
-    const transcript = windowTranscript(built, request.before === undefined ? request : {});
+    this.transcript.refreshDiagrams();
+    const transcript = windowTranscript(
+      this.transcript.build(),
+      request.before === undefined ? request : {},
+    );
     return {
       conversationId: String(this.conversation.id),
       messages: transcript.messages,
@@ -1304,7 +1247,7 @@ export class ChatService {
       steers,
       queueRevision,
       usage: summarizeUsage(usage),
-      context: contextUsage(entries, this.modelWindow),
+      context: this.contextSnapshot(),
       mcp: this.mcpStatus(),
       mcpEvents: this.mcpEventsState(),
       draft: {
@@ -1316,6 +1259,250 @@ export class ChatService {
       toolsRevision: this.toolsRevision,
       ...(this.resetAt === undefined ? {} : { resetAt: this.resetAt }),
     };
+  }
+
+  private contextSnapshot(): ContextUsage {
+    const window = this.modelWindow;
+    return {
+      tokens: this.contextTokens,
+      window: window ?? null,
+      percent:
+        window !== undefined && window > 0
+          ? Math.min(100, Math.round((this.contextTokens / window) * 1000) / 10)
+          : null,
+    };
+  }
+
+  private logIsLarge(): boolean {
+    return this.foldedCount >= LARGE_LOG_ENTRIES || this.foldedBytes >= LARGE_LOG_BYTES;
+  }
+
+  /** Fold rows committed since the projection last caught up. One indexed read when it has. */
+  private async syncTranscript(): Promise<void> {
+    if (this.transcriptSync !== undefined) return this.transcriptSync;
+    this.transcriptSync = this.drainEntries().finally(() => {
+      this.transcriptSync = undefined;
+    });
+    return this.transcriptSync;
+  }
+
+  private async drainEntries(): Promise<void> {
+    this.replaying = true;
+    try {
+      const min =
+        this.foldedThrough === undefined ? undefined : ((this.foldedThrough + 1) as EntryId);
+      let cursor: Cursor | undefined;
+      for (;;) {
+        const page = await this.conversation.entries(
+          { ...(min === undefined ? {} : { minEntryId: min }), order: "ascending" },
+          TRANSCRIPT_PAGE,
+          cursor,
+          SESSION_CONTEXT,
+        );
+        for (const entry of page.items) this.applyEntry(entry);
+        if (page.next === undefined) break;
+        cursor = page.next;
+        // The watch is not attached yet. Yield so a long boot does not pin the thread
+        // for the whole log. After the watch is attached, a catch-up is a few rows.
+        if (!this.watched) await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    } finally {
+      this.replaying = false;
+      const pending = this.queuedNotes.splice(0);
+      pending.sort((left, right) => left.id - right.id);
+      for (const entry of pending) this.applyEntry(entry);
+    }
+  }
+
+  /** Fold one entry. The watch and the replay can both see it; the second time is a no-op. */
+  private noteEntry(entry: EntryRecord): void {
+    if (this.replaying) {
+      this.queuedNotes.push(entry);
+      return;
+    }
+    this.applyEntry(entry);
+  }
+
+  private applyEntry(entry: EntryRecord): void {
+    if (this.appliedIds.has(entry.id)) return;
+    this.appliedIds.add(entry.id);
+    this.foldedCount += 1;
+    try {
+      this.foldedBytes += JSON.stringify(entry).length;
+    } catch {
+      this.foldedBytes += 1_024;
+    }
+    if (this.foldedThrough === undefined || entry.id > this.foldedThrough) {
+      this.foldedThrough = entry.id;
+    }
+    if (
+      entry.head !== undefined &&
+      (this.headMarkerId === undefined || entry.id > this.headMarkerId)
+    ) {
+      this.headMarkerId = entry.id;
+      if (this.watched) this.adoptBiliIdentity(entry.id);
+    }
+    this.noteUsage(entry);
+    this.noteDecision(entry);
+    this.noteMemoryDelta(entry);
+    this.noteReset(entry);
+    const key = clientKeyFromEntry(entry);
+    if (key !== undefined) {
+      const message = buildTranscript([entry], this.mediaRef, this.diagramRevision).messages[0];
+      if (message !== undefined) this.clientMessages.set(key, message);
+    }
+    this.transcript.append(entry);
+  }
+
+  private noteUsage(entry: EntryRecord): void {
+    if (entry.kind !== AssistantEntry.kind || entry.id < this.contextUsageEntryId) return;
+    const message = entry.model?.[0];
+    if (message === undefined || message.role !== "assistant") return;
+    if (message.stopReason === "aborted" || message.stopReason === "error") return;
+    const usage = message.usage;
+    if (usage === undefined) return;
+    const total = usage.totalTokens;
+    const tokens =
+      (typeof total === "number" && total > 0
+        ? total
+        : usage.input + usage.output + usage.cacheRead + usage.cacheWrite) || 0;
+    if (tokens > 0) {
+      this.contextTokens = tokens;
+      this.contextUsageEntryId = entry.id;
+    }
+  }
+
+  private noteDecision(entry: EntryRecord): void {
+    if (!isRecord(entry.data) || typeof entry.data.proposalId !== "string") return;
+    const proposalId = entry.data.proposalId;
+    if (entry.kind === TASK_DECISION_ENTRY_KIND) {
+      this.decisionProposals.add(proposalId);
+      if (entry.model !== undefined && entry.model.length > 0)
+        this.promptedDecisions.add(proposalId);
+    }
+    if (entry.kind === TASK_DECISION_PROMPT_ENTRY_KIND) this.promptedDecisions.add(proposalId);
+  }
+
+  private noteMemoryDelta(entry: EntryRecord): void {
+    if (entry.kind !== MEMORY_DELTA_ENTRY_KIND || !isRecord(entry.data)) return;
+    if (typeof entry.data.deltaId === "string") this.memoryDeltaIds.add(entry.data.deltaId);
+  }
+
+  private noteReset(entry: EntryRecord): void {
+    if (ResetEntry.is(entry)) {
+      const reset = latestSessionReset([entry]);
+      if (
+        reset !== undefined &&
+        (this.resetOrder === undefined || reset.order >= this.resetOrder)
+      ) {
+        this.resetOrder = reset.order;
+        this.resetAt = reset.resetAt ?? this.pendingResetAt ?? this.resetAt;
+      }
+      return;
+    }
+    if (
+      entry.kind !== SESSION_RESET_MARKER_ENTRY_KIND ||
+      !isRecord(entry.data) ||
+      typeof entry.data.resetAt !== "string" ||
+      this.resetOrder === undefined ||
+      entry.id * 10_000 <= this.resetOrder
+    ) {
+      return;
+    }
+    this.resetAt = entry.data.resetAt;
+  }
+
+  /**
+   * One static head on a large headless log, at a recent user or assistant row.
+   * The earlier rows stay in the chat. `context()` then scans only the tail.
+   * A failure leaves compaction off: summarizing the uncut log is the outcome to avoid.
+   */
+  private async boundModelContext(): Promise<void> {
+    if (this.headMarkerId !== undefined) {
+      this.adoptBiliIdentity(this.headMarkerId);
+      return;
+    }
+    if (!this.logIsLarge()) return;
+    try {
+      const firstKept = await this.modelTailBoundary();
+      if (firstKept === undefined) return;
+      const written = await this.conversation.commit(
+        (tx) =>
+          tx.appendEntry(CompactionEntry, this.conversation.id, {
+            head: firstKept,
+            data: { reason: "manual" },
+            model: [
+              {
+                role: "user",
+                content: [{ type: "text", text: MODEL_CONTEXT_SUMMARY }],
+                timestamp: Date.now(),
+              } as Message,
+            ],
+          }),
+        SESSION_CONTEXT,
+      );
+      this.applyEntry(written);
+      this.adoptBiliIdentity(written.id);
+      console.log(`[pi] model context starts at entry ${written.id}, keeping from ${firstKept}`);
+    } catch (error) {
+      console.error("[pi] could not bound the model context; compaction stays off", error);
+    }
+  }
+
+  /** Oldest kept entry of the tail, or undefined when the log should stay whole. */
+  private async modelTailBoundary(): Promise<EntryId | undefined> {
+    let cursor: Cursor | undefined;
+    let bytes = 0;
+    let scanned = 0;
+    let crossed = false;
+    let firstKept: EntryId | undefined;
+    for (;;) {
+      const page = await this.conversation.entries(
+        { order: "descending" },
+        TRANSCRIPT_PAGE,
+        cursor,
+        SESSION_CONTEXT,
+      );
+      for (const entry of page.items) {
+        if (!crossed) {
+          bytes += JSON.stringify(entry).length;
+          scanned += 1;
+          if (bytes <= MODEL_TAIL_BYTES && scanned <= MODEL_TAIL_SCAN) continue;
+          crossed = true;
+        }
+        if (entry.kind === UserEntry.kind || entry.kind === AssistantEntry.kind) {
+          firstKept = entry.id;
+          break;
+        }
+      }
+      if (firstKept !== undefined || page.next === undefined) break;
+      cursor = page.next;
+    }
+    if (!crossed || firstKept === undefined) return undefined;
+    const older = await this.conversation.entries(
+      { maxEntryId: (firstKept - 1) as EntryId, order: "descending" },
+      1,
+      undefined,
+      SESSION_CONTEXT,
+    );
+    return older.items.length === 0 ? undefined : firstKept;
+  }
+
+  private adoptBiliIdentity(headMarkerId: number): void {
+    if (this.adoptedHead === headMarkerId) return;
+    const durableId = String(this.conversation.id);
+    const biliId =
+      this.dataDir === undefined
+        ? `${durableId}@${headMarkerId}`
+        : biliIdentityForHead(join(this.dataDir, "current.json"), durableId, String(headMarkerId));
+    if (typeof this.bili.setConversationIdentity === "function") {
+      this.bili.setConversationIdentity(biliId);
+    }
+    if (typeof this.bili.registerIdentity === "function") {
+      void this.bili.registerIdentity(biliId);
+    }
+    this.adoptedHead = headMarkerId;
+    console.log(`[pi] billion-context conversation ${biliId}`);
   }
 
   private bumpDraft(): number {
@@ -1603,9 +1790,6 @@ export class ChatService {
       timing,
     );
     timing.statusMs = Date.now() - statusStart;
-    // The retry guard answers from the cached view; it must not answer from a view that
-    // was read before this placement, or a retried send would be placed twice.
-    if (placed) this.entriesCache = undefined;
     // An idle steer is already in the transcript; the response carries it, so no pending bubble
     // is left behind. A queued steer stays tracked until its entry is actually appended.
     if (steer && placed && this.steers.delete(id)) this.markQueueChanged();
@@ -1924,12 +2108,8 @@ export class ChatService {
   }
 
   private async placedClientMessage(queueKey: string): Promise<ChatMessage | undefined> {
-    // The retry guard asks whether a message already landed; the page has just polled the
-    // same view, so read it through the cache instead of re-parsing the conversation.
-    const entries = await this.contextEntries();
-    const entry = entries.find((candidate) => clientKeyFromEntry(candidate) === queueKey);
-    if (entry === undefined) return undefined;
-    return buildTranscript([entry], this.mediaRef, this.diagramRevision).messages[0];
+    await this.syncTranscript();
+    return this.clientMessages.get(queueKey);
   }
 
   private async submittedMessage(
@@ -2379,12 +2559,17 @@ export class ChatService {
           },
         });
       } else {
-        const message = await appendMcpNotice(this.conversation, {
+        const entry = await appendMcpNotice(this.conversation, {
           noticeId,
           key: notice.key,
           text: latest,
           at,
         });
+        // A catch-up read may be in flight. Wait for it, then fold this row, so the
+        // chip keeps the group's first id instead of being applied out of order.
+        await this.syncTranscript();
+        this.noteEntry(entry);
+        const message = this.transcript.mcpChip(noticeId);
         if (message !== undefined) this.hub.broadcast({ event: "notice", data: { message } });
       }
     }
@@ -2524,13 +2709,8 @@ export class ChatService {
     const text = memoryDeltaPrompt(topics);
     const createdAt = new Date().toISOString();
     try {
-      const context = await this.conversation.context(SESSION_CONTEXT);
-      const recorded = context.entries.some(
-        (entry) =>
-          entry.kind === MEMORY_DELTA_ENTRY_KIND &&
-          isRecord(entry.data) &&
-          entry.data.deltaId === deltaId,
-      );
+      await this.syncTranscript();
+      const recorded = this.memoryDeltaIds.has(deltaId);
       if (!recorded) {
         await this.submit(text, "queue", {
           entry: {
@@ -2570,32 +2750,20 @@ export class ChatService {
     if (this.taskDecisions.has(key)) return;
     this.taskDecisions.add(key);
     try {
-      const context = await this.conversation.context(SESSION_CONTEXT);
-      const decisions = context.entries.filter(
-        (entry) =>
-          entry.kind === TASK_DECISION_ENTRY_KIND &&
-          isRecord(entry.data) &&
-          entry.data.proposalId === key,
-      );
+      await this.syncTranscript();
       const queueKey = decisionQueueKey(key);
-      if (decisions.length === 0) {
+      if (!this.decisionProposals.has(key)) {
         // The notice is a display-only write, so durable places it even while another
         // turn runs. The user sees the decision now, not when that turn ends.
         const message = await appendTaskDecisionNotice(this.conversation, record, queueKey);
+        this.decisionProposals.add(key);
         if (message !== undefined) {
           this.hub.broadcast({ event: "notice", data: { message } satisfies StreamNotice });
         }
       }
-      const prompted =
-        context.entries.some(
-          (entry) =>
-            entry.kind === TASK_DECISION_PROMPT_ENTRY_KIND &&
-            isRecord(entry.data) &&
-            entry.data.proposalId === key,
-        ) ||
-        // Entries written before the notice and prompt were split carried the prompt themselves.
-        decisions.some((entry) => entry.model !== undefined && entry.model.length > 0);
-      if (prompted) return;
+      // Entries written before the notice and prompt were split carried the prompt themselves.
+      // `noteEntry` records those on the prompted set while the log is folded.
+      if (this.promptedDecisions.has(key)) return;
       const text = taskDecisionPrompt(record);
       const createdAt = new Date().toISOString();
       await this.submit(text, "queue", {
@@ -2728,6 +2896,7 @@ export class ChatService {
 
     for (const entry of newEntries) {
       if (this.closed) return;
+      this.noteEntry(entry);
       if (ResetEntry.is(entry)) {
         const reset = latestSessionReset(view.entries);
         const resetAt =
@@ -2770,17 +2939,19 @@ export class ChatService {
             ? { type: "entry_appended", entry }
             : { type: "message_end", entry },
         );
-        await this.releasePlacedQueueEntry(entry);
       } catch (error) {
         console.error("[pi] view entry handling failed", error);
       }
+      // Marker persistence waits on disk. The watch drain awaits this listener, so
+      // the write has to leave the frame or the next entry cannot be delivered.
+      void this.releasePlacedQueueEntry(entry).catch((error: unknown) => {
+        console.error("[pi] queue retirement failed", error);
+      });
     }
     if (newEntries.length > 0) {
-      try {
-        await this.retireSettledQueueEntries();
-      } catch (error) {
+      void this.retireSettledQueueEntries().catch((error: unknown) => {
         console.error("[pi] queued settlement handling failed", error);
-      }
+      });
     }
 
     const compactionsBefore = previousLive?.compactions ?? [];
@@ -2811,7 +2982,7 @@ export class ChatService {
       !compactionsBefore.some((compaction) => compaction.taskId === failure.taskId);
     if (shortFailure) {
       this.compactionRefreshes.add(String(failure.taskId));
-      await this.beforeTurn("compaction");
+      this.refreshBeforeCompaction();
       console.error(`[pi] compaction failed: ${failure.error}`);
     }
     const shortSummary = newEntries.find((entry) => {
@@ -2822,7 +2993,7 @@ export class ChatService {
       if (shortSummary.byTaskId !== undefined) {
         this.compactionRefreshes.add(String(shortSummary.byTaskId));
       }
-      await this.beforeTurn("compaction");
+      this.refreshBeforeCompaction();
       const reason =
         CompactionEntry.is(shortSummary) && isRecord(shortSummary.data)
           ? shortSummary.data.reason
@@ -3019,17 +3190,13 @@ export class ChatService {
     });
   }
 
+  private refreshBeforeCompaction(): void {
+    void this.beforeTurn("compaction").catch((error: unknown) => {
+      console.error("[pi] memory refresh before compaction failed", error);
+    });
+  }
+
   private async handleEvent(event: ViewEvent): Promise<void> {
-    switch (event.type) {
-      // These are the events that can change the durable entry list; the rest are the
-      // live draft and run state, which the stream already paints.
-      case "message_end":
-      case "tool_execution_end":
-      case "entry_appended":
-      case "compaction_start":
-      case "compaction_end":
-        this.entriesRevision += 1;
-    }
     switch (event.type) {
       case "snapshot": {
         this.applySnapshot(event);
@@ -3077,9 +3244,9 @@ export class ChatService {
 
       case "run_end":
         this.setRunState("idle");
-        await this.flushMemoryDelta();
-        // A run that failed keeps its queued inputs; start them here, not on a nudge tick.
-        await this.drainQueuedInputs();
+        // Both read the store. Awaiting them here holds the watch drain for the whole turn's tail.
+        void this.flushMemoryDelta();
+        void this.drainQueuedInputs();
         return;
 
       case "message_update":
@@ -3258,7 +3425,7 @@ export class ChatService {
         return;
 
       case "compaction_start":
-        await this.beforeTurn("compaction");
+        this.refreshBeforeCompaction();
         console.log(`[pi] compaction started (${event.reason})`);
         return;
 
@@ -3297,7 +3464,8 @@ export class ChatService {
   }
 
   private applySnapshot(snapshot: ViewSnapshot): void {
-    this.entriesRevision += 1;
+    const ordered = [...snapshot.entries].sort((left, right) => left.id - right.id);
+    for (const entry of ordered) this.noteEntry(entry);
     this.currentText = "";
     this.currentThinking = "";
     this.rememberLatestMcpNotice(snapshot.entries);

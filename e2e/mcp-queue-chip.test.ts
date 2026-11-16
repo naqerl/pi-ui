@@ -10,6 +10,7 @@ import {
   buildTranscript,
   JOB_NOTICE_ENTRY_KIND,
   MCP_NOTICE_ENTRY_KIND,
+  TranscriptBuilder,
 } from "../src/server/session.js";
 import {
   MCP_EVENTS_HEAD,
@@ -310,12 +311,17 @@ test("an MCP update after a queued first notice stays visible", async () => {
   };
 
   const updated = mcpText("evt-43");
-  const message = await appendMcpNotice(conversation as never, {
+  const builder = new TranscriptBuilder();
+  const first = entries[0];
+  if (first !== undefined) builder.append(first);
+  const written = await appendMcpNotice(conversation as never, {
     noticeId: "github/pull_request/pr-42",
     key: "github/pull_request/pr-42",
     text: updated,
     at: "2026-10-30T12:01:00.000Z",
   });
+  builder.append(written);
+  const message = builder.mcpChip("github/pull_request/pr-42");
 
   assert.ok(message !== undefined, "the update is visible without a reload");
   assert.equal(message.id, "m-queued-notice-key");
