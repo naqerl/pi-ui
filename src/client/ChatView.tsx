@@ -137,6 +137,8 @@ const CHAT_PAGE = 1;
 const TASKS_PAGE = 2;
 // The pager slides for 300ms; the composer body's height settles sooner.
 const PAGE_SETTLE_MS = 320;
+// A fast snapshot should never flash a loading card; a slow one gets an honest placeholder.
+const TRANSCRIPT_LOADING_DELAY_MS = 180;
 
 function pageFromLocation(): number {
   // A task-plan push opens the tasks page and the detail itself; the hash route
@@ -196,6 +198,45 @@ function activityRunFromLocation(): string | null | undefined {
   const path = window.location.pathname.replace(/\/+$/, "");
   if (path !== "/activity") return undefined;
   return new URLSearchParams(window.location.search).get("run");
+}
+
+/** True only after `active` has stayed on for `delayMs`, so a quick load never flashes. */
+function useDelayedFlag(active: boolean, delayMs: number): boolean {
+  const [shown, setShown] = useState(false);
+
+  useEffect(() => {
+    if (!active) {
+      setShown(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setShown(true), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [active, delayMs]);
+
+  return active && shown;
+}
+
+/**
+ * The transcript's placeholder while the first snapshot is in flight. It fills the reading
+ * area so hydration replaces it in place instead of letting the composer move, and it is
+ * only mounted when the transcript has no live rows of its own.
+ */
+function TranscriptLoadingCard() {
+  return (
+    <div
+      data-testid="chat-loading"
+      role="status"
+      aria-live="polite"
+      className="theme-radius flex min-h-40 flex-1 flex-col justify-center gap-3 border border-border bg-surface/90 px-4 py-6 shadow-sm backdrop-blur-md"
+    >
+      <span className="font-mono text-xs text-muted-foreground">Loading…</span>
+      <div aria-hidden="true" className="flex flex-col gap-2">
+        <span className="h-2.5 w-2/3 animate-pulse rounded-sm bg-muted motion-reduce:animate-none" />
+        <span className="h-2.5 w-5/6 animate-pulse rounded-sm bg-muted [animation-delay:120ms] motion-reduce:animate-none" />
+        <span className="h-2.5 w-1/2 animate-pulse rounded-sm bg-muted [animation-delay:240ms] motion-reduce:animate-none" />
+      </div>
+    </div>
+  );
 }
 
 function MessageTime({ timestamp }: { timestamp: string }) {
@@ -1889,6 +1930,9 @@ export function ChatView({
       }),
     [timeline],
   );
+  // Hydration owns an empty, idle transcript; a live turn (with or without rows) takes priority.
+  const hydrating = !ready && !running && groups.length === 0;
+  const showTranscriptLoading = useDelayedFlag(hydrating, TRANSCRIPT_LOADING_DELAY_MS);
   const footerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -2250,20 +2294,17 @@ export function ChatView({
                 <div
                   ref={stick.contentRef}
                   data-testid="chat-content"
-                  className="mx-auto flex w-full max-w-[72ch] flex-col gap-4 px-4"
+                  data-hydrating={hydrating ? "true" : undefined}
+                  className={cn(
+                    "mx-auto flex w-full max-w-[72ch] flex-col gap-4 px-4",
+                    hydrating && "min-h-full",
+                  )}
                   style={{
                     paddingTop: TRANSCRIPT_END_GAP,
                     paddingBottom: TRANSCRIPT_END_GAP,
                   }}
                 >
-                  {!ready && (
-                    <p
-                      data-testid="chat-loading"
-                      className="theme-radius w-fit self-center border border-border bg-surface/90 px-3 py-1.5 font-mono text-xs text-muted-foreground shadow-sm backdrop-blur-md"
-                    >
-                      Loading…
-                    </p>
-                  )}
+                  {showTranscriptLoading && <TranscriptLoadingCard />}
                   {history?.hasEarlier === true && (
                     <EarlierMessages
                       history={history}
