@@ -39,7 +39,6 @@ export const DELEGATE_RESTART_ERROR = "pi-ui restarted before this turn finished
 export const MAX_CONCURRENT_DELEGATES = positiveIntegerEnv("PI_ACP_DELEGATE_MAX_CONCURRENT", 4);
 /** Idle sessions kept open so acp_delegate_continue can resume them. Oldest past this are closed. */
 export const MAX_IDLE_DELEGATES = 8;
-const DEFAULT_TIMEOUT_MINUTES = positiveNumberEnv("PI_ACP_DELEGATE_ASYNC_TIMEOUT_MINUTES", 30);
 const EXCERPT_CHARS = 1_500;
 
 export class DelegateError extends Error {}
@@ -88,7 +87,6 @@ interface SerializedDelegateRun {
   queuedAt: string;
   startedAt: string | null;
   endedAt: string | null;
-  timeoutMinutes: number;
   closed?: boolean;
   pendingNotice?: boolean;
   lastOutcome?: TurnOutcome;
@@ -104,7 +102,6 @@ interface TurnGate {
 interface DelegateRun extends SerializedDelegateRun {
   result?: string;
   cancelRequested: boolean;
-  timedOut?: string;
   /** True while a prompt has been accepted and not yet finished. */
   turnOpen: boolean;
   /** True when this turn was queued again because the process restarted. */
@@ -122,11 +119,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function positiveIntegerEnv(name: string, fallback: number): number {
   const value = Number(process.env[name]);
   return Number.isSafeInteger(value) && value > 0 ? value : fallback;
-}
-
-function positiveNumberEnv(name: string, fallback: number): number {
-  const value = Number(process.env[name]);
-  return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 function errorMessage(error: unknown): string {
@@ -362,7 +354,6 @@ export class DelegateManager {
       queuedAt: now,
       startedAt: null,
       endedAt: null,
-      timeoutMinutes: DEFAULT_TIMEOUT_MINUTES,
     });
     run.turnOpen = true;
     this.runs.set(id, run);
@@ -397,7 +388,6 @@ export class DelegateManager {
     run.error = undefined;
     run.result = undefined;
     run.lastOutcome = undefined;
-    run.timedOut = undefined;
     run.cancelRequested = false;
     run.pendingNotice = false;
     run.turnOpen = true;
@@ -481,7 +471,6 @@ export class DelegateManager {
         queuedAt: raw.queuedAt,
         startedAt: raw.startedAt,
         endedAt: null,
-        timeoutMinutes: raw.timeoutMinutes,
         ...(raw.usage === undefined ? {} : { usage: raw.usage }),
       });
       run.turnOpen = true;
@@ -606,21 +595,11 @@ export class DelegateManager {
       }
       // Cancel during open has no session to abort yet. Do not submit after that.
       if (run.cancelRequested || this.shuttingDown || !run.turnOpen) return;
-      const active = session;
-      const timer = setTimeout(() => {
-        run.timedOut = `after ${run.timeoutMinutes}m`;
-        active.abort();
-      }, run.timeoutMinutes * 60_000);
-      timer.unref?.();
-      try {
-        const result =
-          restarting && active.resume !== undefined
-            ? await active.resume(run.task)
-            : await active.submit(run.task);
-        this.applyResult(run, result);
-      } finally {
-        clearTimeout(timer);
-      }
+      const result =
+        restarting && session.resume !== undefined
+          ? await session.resume(run.task)
+          : await session.submit(run.task);
+      this.applyResult(run, result);
     } catch (error) {
       if (run.lastOutcome === undefined && !run.cancelRequested) {
         run.lastOutcome = "failed";
@@ -634,12 +613,6 @@ export class DelegateManager {
   private applyResult(run: DelegateRun, result: DelegateTurnResult): void {
     if (result.usage !== undefined) run.usage = result.usage;
     const text = result.text.trim();
-    if (run.timedOut !== undefined && !run.cancelRequested) {
-      run.lastOutcome = "failed";
-      run.error = `Timed out ${run.timedOut}.`;
-      run.result = text.length > 0 ? `${run.error}\n\nPartial output:\n${text}` : run.error;
-      return;
-    }
     if (run.cancelRequested || result.cancelled === true) {
       run.lastOutcome = "cancelled";
       run.error = run.error ?? result.error ?? "Cancelled by the parent.";
@@ -904,7 +877,6 @@ export class DelegateManager {
       queuedAt: run.queuedAt,
       startedAt: run.startedAt,
       endedAt: run.endedAt,
-      timeoutMinutes: run.timeoutMinutes,
       ...(run.closed === true ? { closed: true } : {}),
       ...(run.pendingNotice === true ? { pendingNotice: true } : {}),
       ...(run.lastOutcome === undefined ? {} : { lastOutcome: run.lastOutcome }),

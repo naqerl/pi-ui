@@ -39,7 +39,7 @@ export function createAcpDelegateTools(manager: DelegateManager): ToolRegistrati
 
 The sub-agent cannot see this chat, so put every path, goal, and constraint in the prompt. It has read, bash, edit, and write.
 
-The call returns a run id. The work continues after it. End your turn. A chip arrives when the turn finishes. Do not poll and do not wait. Extra prompts queue when ${MAX_CONCURRENT_DELEGATES} sub-agents are already running.
+The call returns a run id. The work continues after it, for as long as the turn takes. End your turn. A chip arrives when the turn finishes. Do not poll and do not wait. Extra prompts queue when ${MAX_CONCURRENT_DELEGATES} sub-agents are already running.
 
 To give the same sub-agent a follow-up, call acp_delegate_continue with the run id. Do not start a second sub-agent to continue the first.`,
       parameters: Type.Object({

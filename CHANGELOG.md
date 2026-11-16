@@ -1,3 +1,9 @@
+## 1.7.4
+
+### Removed
+
+- The 30 minute limit on a sub-agent turn. The turn runs until it finishes, or until `acp_delegate_cancel`. `PI_ACP_DELEGATE_ASYNC_TIMEOUT_MINUTES` is ignored.
+
 ## 1.7.3
 
 ### Removed
