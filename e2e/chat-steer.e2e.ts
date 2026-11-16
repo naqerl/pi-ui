@@ -3,7 +3,26 @@ import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, test } from "@e2e-dev/web";
-import { expect, type JsonValue } from "e2e";
+import { expect, type JsonValue, type Screen } from "e2e";
+
+/** Leave the shared app idle before a test acts; an earlier Stop may still be folding a steer. */
+async function settleComposer(screen: Screen) {
+  const send = screen.getByRole("button", { name: "Send" });
+  const stop = screen.getByRole("button", { name: "Stop" });
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    if ((await stop.count()) > 0) {
+      await stop.tap();
+      continue;
+    }
+    if ((await send.count()) > 0) {
+      // The first paint shows Send before the snapshot can report a live run.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      if ((await stop.count()) === 0) return;
+    }
+  }
+  await expect(send).toBeVisible({ timeout: 30_000 });
+}
 
 describe("steer reconciliation against one shared app", { serial: true }, () => {
   beforeEach(async ({ browser }) => {
@@ -38,6 +57,7 @@ describe("steer reconciliation against one shared app", { serial: true }, () => 
     } finally {
       const stop = screen.getByRole("button", "Stop");
       if ((await stop.count()) > 0) await stop.tap();
+      await expect(screen.getByRole("button", { name: "Send" })).toBeVisible({ timeout: 15_000 });
     }
   });
 
@@ -131,6 +151,168 @@ describe("steer reconciliation against one shared app", { serial: true }, () => 
     expect(gap).toBe(false);
   });
 
+  test("Stop folds pending steers into one message for the next turn", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    await app.open(`/?page=chat&fresh=${Date.now()}`);
+    await settleComposer(screen);
+    const composer = screen.getByRole("textbox", "Message");
+    await composer.fill("SLOW response please");
+    await screen.getByRole("button", "Send").tap();
+    await expect(screen.getByRole("button", "Stop")).toBeVisible();
+
+    const tag = Date.now();
+    const first = `folded first ${tag}`;
+    const second = `folded second ${tag}`;
+    await composer.fill(first);
+    await composer.press("Enter");
+    await composer.fill(second);
+    await composer.press("Enter");
+    const pending = browser.locator('[data-pending-steer="true"]');
+    await expect(pending).toHaveCount(2);
+
+    await screen.getByRole("button", "Stop").tap();
+    await expect(pending).toHaveCount(0, { timeout: 15_000 });
+    const merged = browser
+      .locator('[data-role="user"]')
+      .filter({ hasText: first })
+      .filter({ hasText: second });
+    await expect(merged).toHaveCount(1, { timeout: 15_000 });
+    await expect(browser.locator('[data-steer-error="true"]')).toHaveCount(0);
+    await expect(screen.getByText("steer · dropped", { exact: false })).toHaveCount(0);
+    await expect(screen.getByRole("button", "Send")).toBeVisible({ timeout: 15_000 });
+  });
+
+  test("right-click deletes one pending steer from its menu", async ({ app, browser, screen }) => {
+    await app.open(`/?page=chat&fresh=${Date.now()}`);
+    await settleComposer(screen);
+    const composer = screen.getByRole("textbox", "Message");
+    await composer.fill("SLOW response please");
+    await screen.getByRole("button", "Send").tap();
+    await expect(screen.getByRole("button", "Stop")).toBeVisible();
+
+    const text = `delete steer ${Date.now()}`;
+    try {
+      await composer.fill(text);
+      await composer.press("Enter");
+      const pending = browser.locator('[data-pending-steer="true"]').filter({ hasText: text });
+      const tracked = await browser.evaluate(async (needle: string) => {
+        const deadline = performance.now() + 10_000;
+        while (performance.now() < deadline) {
+          const response = await fetch("/api/state", { cache: "no-store" });
+          if (response.ok) {
+            const snapshot = (await response.json()) as {
+              steers?: { id?: string; text?: string }[];
+            };
+            const item = snapshot.steers?.find((steer) => steer.text === needle);
+            if (item?.id !== undefined) return item.id;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        return null;
+      }, text);
+      expect(tracked).toBeTruthy();
+      const messageId = `steer-pending-${tracked ?? ""}`;
+      await expect(pending).toHaveAttribute("data-message-id", messageId);
+
+      await browser.evaluate((id: string) => {
+        document
+          .querySelector(`[data-message-id="${id}"]`)
+          ?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+        return true;
+      }, messageId);
+      await expect(screen.getByTestId("pending-message-menu")).toBeVisible();
+      await screen.getByTestId("pending-menu-delete-steer").tap();
+
+      await expect(pending).toHaveCount(0);
+      await expect(browser.locator('[data-steer-error="true"]')).toHaveCount(0);
+      await expect(composer).toHaveValue("");
+    } finally {
+      const stop = screen.getByRole("button", "Stop");
+      if ((await stop.count()) > 0) await stop.tap();
+    }
+  });
+
+  test("a touch long-press opens the same delete menu", async ({ app, browser, screen }) => {
+    await browser.addInitScript(() => {
+      Object.defineProperty(navigator, "maxTouchPoints", { configurable: true, value: 5 });
+      Object.defineProperty(window, "ontouchstart", { configurable: true, value: null });
+    });
+    await app.open(`/?page=chat&fresh=${Date.now()}`);
+    await settleComposer(screen);
+    const composer = screen.getByRole("textbox", "Message");
+    await composer.fill("SLOW response please");
+    await screen.getByRole("button", "Send").tap();
+    await expect(screen.getByRole("button", "Stop")).toBeVisible();
+
+    const text = `hold steer ${Date.now()}`;
+    try {
+      await composer.fill(text);
+      await composer.press("Enter");
+      const pending = browser.locator('[data-pending-steer="true"]').filter({ hasText: text });
+      const tracked = await browser.evaluate(async (needle: string) => {
+        const deadline = performance.now() + 10_000;
+        while (performance.now() < deadline) {
+          const response = await fetch("/api/state", { cache: "no-store" });
+          if (response.ok) {
+            const snapshot = (await response.json()) as {
+              steers?: { id?: string; text?: string }[];
+            };
+            const item = snapshot.steers?.find((steer) => steer.text === needle);
+            if (item?.id !== undefined) return item.id;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        return null;
+      }, text);
+      expect(tracked).toBeTruthy();
+      const messageId = `steer-pending-${tracked ?? ""}`;
+      await expect(pending).toHaveAttribute("data-message-id", messageId);
+
+      await browser.evaluate((id: string) => {
+        const element = document.querySelector<HTMLElement>(`[data-message-id="${id}"]`);
+        if (element === null) return false;
+        const box = element.getBoundingClientRect();
+        element.dispatchEvent(
+          new PointerEvent("pointerdown", {
+            bubbles: true,
+            cancelable: true,
+            pointerId: 1,
+            pointerType: "touch",
+            isPrimary: true,
+            clientX: box.left + 20,
+            clientY: box.top + 10,
+          }),
+        );
+        return true;
+      }, messageId);
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      await browser.evaluate((id: string) => {
+        const element = document.querySelector<HTMLElement>(`[data-message-id="${id}"]`);
+        element?.dispatchEvent(
+          new PointerEvent("pointerup", {
+            bubbles: true,
+            cancelable: true,
+            pointerId: 1,
+            pointerType: "touch",
+            isPrimary: true,
+          }),
+        );
+        return true;
+      }, messageId);
+
+      await expect(screen.getByTestId("pending-message-menu")).toBeVisible();
+      await screen.getByTestId("pending-menu-delete-steer").tap();
+      await expect(pending).toHaveCount(0);
+      await expect(browser.locator('[data-steer-error="true"]')).toHaveCount(0);
+      await expect(composer).toHaveValue("");
+    } finally {
+      const stop = screen.getByRole("button", "Stop");
+      if ((await stop.count()) > 0) await stop.tap();
+    }
+  });
   test("does not revive a consumed steer from a snapshot read before delivery", async ({
     app,
     browser,

@@ -931,43 +931,50 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     if (this.closed || this.held.size === 0) return Promise.resolve();
     if (this.heldFlush !== undefined) return this.heldFlush;
     const work = (async () => {
-      const held = [...this.held.values()].sort(
-        (left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt),
-      );
-      const steers = held.filter((item) => this.heldSteers.has(item.id));
-      const folded = foldSteers(steers);
-      const sequence: { item: QueuedMessage; steers: QueuedMessage[] }[] = [];
-      let placedFold = false;
-      for (const item of held) {
-        if (this.heldSteers.has(item.id)) {
-          if (!placedFold && folded !== undefined) {
-            sequence.push({ item: folded, steers });
-            placedFold = true;
+      // A steer can settle while an earlier fold is still being sent. Keep draining until
+      // the map is empty instead of leaving that later input invisible and unsent.
+      while (!this.closed && this.held.size > 0) {
+        const held = [...this.held.values()].sort(
+          (left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt),
+        );
+        const steers = held.filter((item) => this.heldSteers.has(item.id));
+        const folded = foldSteers(steers);
+        const sequence: { item: QueuedMessage; steers: QueuedMessage[] }[] = [];
+        let placedFold = false;
+        for (const item of held) {
+          if (this.heldSteers.has(item.id)) {
+            if (!placedFold && folded !== undefined) {
+              sequence.push({ item: folded, steers });
+              placedFold = true;
+            }
+            continue;
           }
-          continue;
+          sequence.push({ item, steers: [] });
         }
-        sequence.push({ item, steers: [] });
-      }
-      if (!placedFold && folded !== undefined) sequence.push({ item: folded, steers });
-      this.held.clear();
-      this.heldSteers.clear();
-      for (const entry of sequence) {
-        const attachments = entry.item.attachments ?? [];
-        try {
-          await this.send(entry.item.text, attachments, "queue");
-        } catch (error) {
-          const reason = error instanceof Error ? error.message : String(error);
-          if (entry.steers.length > 0) {
-            for (const steer of entry.steers) this.failHeldSteer(steer, reason);
-          } else {
-            this.reportHeldQueueFailure(entry.item, reason);
+        if (!placedFold && folded !== undefined) sequence.push({ item: folded, steers });
+        this.held.clear();
+        this.heldSteers.clear();
+        for (const entry of sequence) {
+          const attachments = entry.item.attachments ?? [];
+          try {
+            await this.send(entry.item.text, attachments, "queue");
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            if (entry.steers.length > 0) {
+              for (const steer of entry.steers) this.failHeldSteer(steer, reason);
+            } else {
+              this.reportHeldQueueFailure(entry.item, reason);
+            }
           }
         }
       }
     })();
     let run: Promise<void>;
     run = work.finally(() => {
-      if (this.heldFlush === run) this.heldFlush = undefined;
+      if (this.heldFlush !== run) return;
+      this.heldFlush = undefined;
+      // A hold that landed after the last empty-map check still gets its own wake.
+      if (!this.closed && this.held.size > 0) void this.flushHeldInputs();
     });
     this.heldFlush = run;
     return run;

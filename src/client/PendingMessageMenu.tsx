@@ -8,6 +8,7 @@ export function PendingMessageMenu({
   point,
   steerId,
   queueId,
+  queueIds,
   onDeleteSteer,
   onCancelQueued,
   onClose,
@@ -15,6 +16,8 @@ export function PendingMessageMenu({
   point: ContextMenuPoint;
   steerId?: string;
   queueId?: string;
+  /** Every submission a grouped queued chip removes with one delete. */
+  queueIds?: string[];
   onDeleteSteer?: (steerId: string) => Promise<boolean>;
   onCancelQueued?: (queueId: string) => unknown;
   onClose: () => void;
@@ -27,6 +30,7 @@ export function PendingMessageMenu({
   const top = below ? point.y : Math.max(8, point.y - height - 8);
   const item =
     "flex min-h-9 w-full items-center rounded-sm px-3 text-left text-sm leading-5 hover:bg-muted";
+  const queuedIds = queueIds ?? (queueId === undefined ? [] : [queueId]);
 
   useEffect(() => {
     const dismiss = (event: Event) => {
@@ -71,7 +75,7 @@ export function PendingMessageMenu({
           Delete steer
         </button>
       )}
-      {queueId !== undefined && onCancelQueued !== undefined && (
+      {queuedIds.length > 0 && onCancelQueued !== undefined && (
         <button
           type="button"
           role="menuitem"
@@ -79,7 +83,7 @@ export function PendingMessageMenu({
           className={item}
           onClick={() => {
             onClose();
-            void onCancelQueued(queueId);
+            for (const id of queuedIds) void onCancelQueued(id);
           }}
         >
           Delete queued message

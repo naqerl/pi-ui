@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { EntryRecord } from "@earendil-works/pi-durable";
-import { createElement, type ReactElement } from "react";
+import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MessageBubble } from "../src/client/ChatView.js";
 import { ChatService, mcpMergedNoticeTexts } from "../src/server/chat-service.js";
@@ -156,17 +156,6 @@ function groupedMessage(groups: QueuedMessageGroup[], index: number): ChatMessag
   return pendingQueuedMessage(group.item, group);
 }
 
-function findButton(element: ReactElement): ReactElement<{ onClick?: () => unknown }> | null {
-  if (element.type === "button") return element as ReactElement<{ onClick?: () => unknown }>;
-  const children = (element.props as { children?: unknown }).children;
-  for (const child of Array.isArray(children) ? children : [children]) {
-    if (typeof child !== "object" || child === null || !("type" in child)) continue;
-    const found = findButton(child as ReactElement);
-    if (found !== null) return found;
-  }
-  return null;
-}
-
 test("a queued MCP notice renders as a blurred chip", async () => {
   const { chat } = queuedChat();
   await chat.submitMcpEventNotice(mcpText());
@@ -190,8 +179,8 @@ test("a queued MCP notice renders as a blurred chip", async () => {
   assert.doesNotMatch(markup, /\bbg-transparent\b/);
   assert.doesNotMatch(markup, /\bbg-surface\b/);
   assert.doesNotMatch(markup, /\bopacity-60\b/);
-  assert.match(markup, /aria-label="cancel"/);
-  assert.match(markup, /data-icon="close"/);
+  assert.match(markup, /data-pending-menu="true"/);
+  assert.doesNotMatch(markup, /aria-label="cancel"/);
 });
 
 test("an immediate MCP event queues as a chip while the agent reads the envelope", async () => {
@@ -430,7 +419,7 @@ test("a bounded merge counts down the events still remaining", () => {
   );
 });
 
-test("a burst of one notice kind is one chip that cancels every id", async () => {
+test("a burst of one notice kind is one grouped chip", async () => {
   const items = [
     notice("1", MCP_NOTICE_ENTRY_KIND, "MCP events"),
     notice("2", MCP_NOTICE_ENTRY_KIND, "MCP events"),
@@ -451,21 +440,8 @@ test("a burst of one notice kind is one chip that cancels every id", async () =>
   assert.match(markup, /data-icon="mcp"/);
   assert.match(markup, /MCP events/);
   assert.match(markup, /3 queued/);
-  assert.match(markup, /aria-label="cancel"/);
-
-  const cancelled: string[] = [];
-  const chip = MessageBubble({
-    message,
-    onCancelQueued: (id) => {
-      cancelled.push(id);
-    },
-  });
-  const rendered = (chip.type as (props: typeof chip.props) => ReactElement)(chip.props);
-  const button = findButton(rendered);
-  assert.ok(button !== null);
-  await button.props.onClick?.();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(cancelled, ["1", "2", "3"], "the close icon removes the whole group");
+  assert.match(markup, /data-pending-menu="true"/);
+  assert.doesNotMatch(markup, /aria-label="cancel"/);
 });
 
 test("a human queued message breaks a notice run without moving", () => {
@@ -602,7 +578,7 @@ test("a background-job notice uses the same chip", async () => {
   assert.match(job, /1 queued/);
   assert.doesNotMatch(job, /\[background job j12 finished\]/);
   assert.match(job, /data-pending-queue="true"/);
-  assert.match(job, /aria-label="cancel"/);
+  assert.match(job, /data-pending-menu="true"/);
 
   const mcp = (() => {
     const other = queuedChat();

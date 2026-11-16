@@ -56,8 +56,14 @@ describe("queued follow-ups against one shared app", { serial: true }, () => {
     expect(ids[0]).not.toBeNull();
     expect(ids[1]).not.toBeNull();
 
-    // Cancelling the first removes exactly that bubble and leaves the second in order.
-    await pending.nth(0).getByRole("button", { name: "cancel" }).tap();
+    // Deleting the first from its own menu removes exactly that bubble.
+    await browser.evaluate((id: string) => {
+      document
+        .querySelector(`[data-message-id="${id}"]`)
+        ?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+      return true;
+    }, ids[0] as string);
+    await screen.getByTestId("pending-menu-delete-queue").tap();
     await expect(pending).toHaveCount(1);
     await expect(pending.nth(0)).toContainText(second);
 

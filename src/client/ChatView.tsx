@@ -382,39 +382,59 @@ function QueuedNoticeChip({
   notice: QueuedNotice;
   onCancelQueued?: (id: string) => unknown;
 }) {
+  return <QueuedNoticeChipRow message={message} notice={notice} onCancelQueued={onCancelQueued} />;
+}
+
+function QueuedNoticeChipRow({
+  message,
+  notice,
+  onCancelQueued,
+}: {
+  message: ChatMessage;
+  notice: QueuedNotice;
+  onCancelQueued?: (id: string) => unknown;
+}) {
+  const menu = useContextMenu();
   const queueIds = queuedMessageIds(message);
   const count = message.queueCount ?? 1;
   const icon = resolveNoticeIconName(notice.glyph, notice.kind);
-  const cancelAll = async () => {
-    if (onCancelQueued === undefined) return;
-    haptic();
-    for (const id of queueIds) await onCancelQueued(id);
-  };
   return (
-    <div
-      data-message-id={message.id}
-      data-role={message.role}
-      data-pending-queue="true"
-      data-testid="queued-notice-chip"
-      className="flex justify-center px-2 py-0.5"
-    >
-      <div className="inline-flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border border-foreground/10 bg-background/40 px-2.5 py-0.5 font-mono text-[11px] leading-5 text-foreground/80 backdrop-blur-md">
-        <NoticeIcon name={icon} size={14} />
-        <span className="min-w-0 truncate">{notice.label}</span>
-        <span className="shrink-0 tabular-nums">{count} queued</span>
-        {queueIds.length > 0 && onCancelQueued !== undefined && (
-          <button
-            type="button"
-            title="Remove this queued message"
-            aria-label="cancel"
-            className="shrink-0 font-mono text-[11px] leading-none text-foreground hover:text-destructive"
-            onClick={() => cancelAll()}
-          >
-            <CloseIcon size={12} />
-          </button>
-        )}
+    <>
+      {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: a pending chip is a labelled group while it owns the menu. */}
+      <div
+        data-message-id={message.id}
+        data-role={message.role}
+        data-pending-queue="true"
+        data-testid="queued-notice-chip"
+        data-pending-menu={queueIds.length > 0 && onCancelQueued !== undefined ? "true" : undefined}
+        role={queueIds.length > 0 && onCancelQueued !== undefined ? "group" : undefined}
+        tabIndex={queueIds.length > 0 && onCancelQueued !== undefined ? 0 : undefined}
+        aria-label={
+          queueIds.length > 0 && onCancelQueued !== undefined ? "Queued notice" : undefined
+        }
+        style={
+          queueIds.length > 0 && onCancelQueued !== undefined
+            ? { WebkitTouchCallout: "none" }
+            : undefined
+        }
+        {...(queueIds.length > 0 && onCancelQueued !== undefined ? menu.handlers : {})}
+        className="flex shrink-0 touch-pan-y justify-center px-2 py-0.5 select-none"
+      >
+        <div className="inline-flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border border-foreground/10 bg-background/40 px-2.5 py-0.5 font-mono text-[11px] leading-5 text-foreground/80 backdrop-blur-md">
+          <NoticeIcon name={icon} size={14} />
+          <span className="min-w-0 truncate">{notice.label}</span>
+          <span className="shrink-0 tabular-nums">{count} queued</span>
+        </div>
       </div>
-    </div>
+      {menu.point !== null && queueIds.length > 0 && onCancelQueued !== undefined && (
+        <PendingMessageMenu
+          point={menu.point}
+          queueIds={queueIds}
+          onCancelQueued={onCancelQueued}
+          onClose={menu.close}
+        />
+      )}
+    </>
   );
 }
 
