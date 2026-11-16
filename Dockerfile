@@ -24,6 +24,7 @@ ENV NODE_ENV=production \
 # machines. The identity itself is not baked in: it arrives as one read-only file mount.
 # gnupg + age + sops decrypt secrets on the fly (the gitops repo's SOPS files are
 # PGP-encrypted); no key material is baked in, the keys live in a mounted GnuPG home.
+# gh is the GitHub CLI. No token is baked in: it arrives as GH_TOKEN at runtime.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         age \
@@ -47,6 +48,19 @@ RUN curl -fsSLo /usr/local/bin/sops \
     && echo "${SOPS_SHA256}  /usr/local/bin/sops" | sha256sum -c - \
     && chmod 0755 /usr/local/bin/sops \
     && sops --version
+
+# gh is not in Debian bookworm. GitHub publishes a linux/amd64 tarball. Pin the
+# version and its checksum so a re-tagged or tampered release cannot enter the
+# image silently. The release workflow builds linux/amd64 only, so the asset is fixed.
+ARG GH_VERSION=2.104.0
+ARG GH_SHA256=98cb101ad87dbbd3f6b2f2bfcbd43197ccd07643140121d8a9cfaa91eadbc24e
+RUN curl -fsSLo /tmp/gh.tgz \
+        "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+    && echo "${GH_SHA256}  /tmp/gh.tgz" | sha256sum -c - \
+    && tar -xzf /tmp/gh.tgz -C /tmp \
+    && install -m 0755 "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh \
+    && rm -rf /tmp/gh.tgz "/tmp/gh_${GH_VERSION}_linux_amd64" \
+    && gh --version
 
 # The node image already ships a uid 1000 "node" account; replace it with "pi".
 RUN set -eux; \

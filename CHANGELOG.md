@@ -1,3 +1,9 @@
+## 1.8.0
+
+### Added
+
+- The runtime image ships `gh` 2.104.0. The tarball's SHA-256 is checked before the binary is installed. No token is baked in: `gh` authenticates with the `GH_TOKEN` environment variable. `GH_PROMPT_DISABLED`, `GH_PAGER=cat`, and `GH_NO_UPDATE_NOTIFIER` keep it from prompting or paging in the agent's bash.
+
 ## 1.7.4
 
 ### Removed
