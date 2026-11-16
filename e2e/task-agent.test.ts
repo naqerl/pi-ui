@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { SnapshotCache } from "../src/server/memory/snapshot.js";
@@ -1102,4 +1103,53 @@ test("the manager forwards image attachments to the task agent session", async (
   assert.equal(imageOnly.messages.at(-1)?.text, "");
 
   await manager.close();
+});
+
+test("a restart reopens a plan agent that still has durable work", async () => {
+  const dataDir = join(directory, "plan-restart");
+  const created = (await store.create("Resume the unfinished plan", null)).tasks.find(
+    (item) => item.title === "Resume the unfinished plan",
+  );
+  const idle = (await store.create("Leave the idle plan closed", null)).tasks.find(
+    (item) => item.title === "Leave the idle plan closed",
+  );
+  assert.ok(created);
+  assert.ok(idle);
+  const runningDir = join(dataDir, "task-agents", created.id);
+  const idleDir = join(dataDir, "task-agents", idle.id);
+  await mkdir(runningDir, { recursive: true });
+  await mkdir(idleDir, { recursive: true });
+  const runningDb = new DatabaseSync(join(runningDir, "pi.sqlite3"));
+  runningDb.exec(
+    "CREATE TABLE tasks (id INTEGER PRIMARY KEY, status TEXT NOT NULL); INSERT INTO tasks (status) VALUES ('running');",
+  );
+  runningDb.close();
+  const idleDb = new DatabaseSync(join(idleDir, "pi.sqlite3"));
+  idleDb.exec(
+    "CREATE TABLE tasks (id INTEGER PRIMARY KEY, status TEXT NOT NULL); INSERT INTO tasks (status) VALUES ('terminal');",
+  );
+  idleDb.close();
+
+  const opened: string[] = [];
+  const manager = new TaskAgentManager({
+    dataDir,
+    cwd: directory,
+    models: {} as never,
+    model: undefined,
+    store,
+    publish: () => undefined,
+    baseInstructions: "BASE",
+    openSession: async (taskId) => {
+      opened.push(taskId);
+      const session = new FakeSession(taskId);
+      session.run = "running";
+      return session;
+    },
+  });
+  try {
+    assert.deepEqual(await manager.resumeInterrupted(), [created.id]);
+    assert.deepEqual(opened, [created.id]);
+  } finally {
+    await manager.close();
+  }
 });

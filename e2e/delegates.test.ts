@@ -208,7 +208,7 @@ test("continue resumes the same sub-agent and refuses a second prompt while it w
   }
 });
 
-test("a restart chips an interrupted turn and continue can accept the saved session", async () => {
+test("a restart requeues a saved sub-agent instead of failing the turn", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-ui-delegate-"));
   let manager: DelegateManager | undefined;
   try {
@@ -235,16 +235,12 @@ test("a restart chips an interrupted turn and continue can accept the saved sess
     const box = await harness(dir);
     manager = box.manager;
     await box.manager.load();
-    assert.equal(box.manager.get(id).status, "idle");
-    assert.equal(box.manager.get(id).lastOutcome, "failed");
-    assert.match(box.manager.get(id).error ?? "", new RegExp(DELEGATE_RESTART_ERROR));
+    assert.equal(box.manager.restartInterrupted(), 1);
+    assert.equal(await box.submitted(id), "fix the config");
+    assert.equal(box.manager.get(id).status, "running");
+    assert.equal(box.manager.get(id).lastOutcome, undefined);
     await box.manager.flushBootNotices();
-    assert.equal(box.chips.length, 1);
-    assert.match(box.chips[0] ?? "", /acp_delegate_continue/);
-    const follow = await box.manager.continue(id, "try the edit again");
-    assert.equal(follow.id, id);
-    await waitFor(() => box.manager.get(id).status === "running");
-    await box.submitted(id);
+    assert.equal(box.chips.length, 0);
     box.finish(id, { text: "config written" });
     await waitFor(() => box.manager.get(id).status === "idle");
     assert.equal(box.manager.get(id).lastOutcome, "completed");
@@ -278,6 +274,8 @@ test("a restart without a saved session tells the chat to start a new sub-agent"
     const box = await harness(dir);
     manager = box.manager;
     await box.manager.load();
+    assert.equal(box.manager.get("del_old").status, "idle");
+    assert.match(box.manager.get("del_old").error ?? "", new RegExp(DELEGATE_RESTART_ERROR));
     await box.manager.flushBootNotices();
     assert.match(box.chips[0] ?? "", /Start a new one with acp_delegate/);
     await assert.rejects(() => box.manager.continue("del_old", "again"), /was closed/);

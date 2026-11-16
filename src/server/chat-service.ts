@@ -831,7 +831,10 @@ export class ChatService {
     if (this.headMarkerId !== undefined || !this.logIsLarge()) enableModelCompaction();
     // Durable carries a turn across a restart from its committed checkpoint. A
     // stop requested before the restart was settled in recovery, so leave it be.
-    if (this.marker?.stopRequested !== true) this.harness.resume();
+    if (this.marker?.stopRequested !== true) {
+      this.harness.resume();
+      console.log("[pi] main agent resumed");
+    }
   }
 
   async close(): Promise<void> {

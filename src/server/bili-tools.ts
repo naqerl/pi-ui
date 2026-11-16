@@ -25,7 +25,11 @@ export async function createBiliTools(
       description: tool.description ?? `Run the billion-context ${tool.name} tool.`,
       parameters: jsonSchemaToTypeBox(tool.inputSchema),
       async execute(args, api): Promise<ToolExecutionResult> {
-        const conversationId = String(api.conversationId ?? bili.currentConversationId() ?? "");
+        // The durable id (`api.conversationId`) is the integer in current.json.
+        // The live turn is bound to the head-scoped id, or to a task/delegate
+        // scope, and that is the id billion-context witnessed this call under.
+        // Posting the integer after a compaction head is a 409.
+        const conversationId = String(bili.currentConversationId() ?? api.conversationId ?? "");
         if (conversationId.length === 0) {
           return {
             output: [{ type: "text", text: "billion-context: no conversation id" }],

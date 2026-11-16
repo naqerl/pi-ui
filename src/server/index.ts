@@ -480,6 +480,7 @@ jobs.setQuietNotifier((job, tail) => {
   });
 });
 delegates.setNotifier((text) => chat.submitDelegateNotice(text));
+delegates.restartInterrupted();
 await delegates.flushBootNotices();
 delegates.onChange(() => hub.broadcast({ event: "delegates", data: delegates.list() }));
 const mcpOutbox = new McpOutbox(resolve(dataDir, "mcp-outbox.json"), (item) =>
@@ -1656,6 +1657,8 @@ app.get("/sw.js", async (c) => {
 });
 
 app.use("/*", serveStatic({ root: clientDir }));
+
+await taskAgents.resumeInterrupted();
 
 const server = serve({ fetch: app.fetch, port }, (info) => {
   console.log(`pi-ui listening on http://localhost:${info.port}`);

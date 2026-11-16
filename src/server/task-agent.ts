@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import {
   getAgentDir,
@@ -533,6 +534,31 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+/** True when a plan session's sqlite still has a task or submission to run. */
+function planWorkPending(databasePath: string): boolean {
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(databasePath, { readOnly: true, timeout: 1_000 });
+  } catch {
+    return false;
+  }
+  const pending = (sql: string): boolean => {
+    try {
+      return db.prepare(sql).get() !== undefined;
+    } catch {
+      return false;
+    }
+  };
+  try {
+    return (
+      pending("SELECT 1 FROM tasks WHERE status != 'terminal' LIMIT 1") ||
+      pending("SELECT 1 FROM submissions WHERE status IN ('queued', 'placed') LIMIT 1")
+    );
+  } finally {
+    db.close();
+  }
+}
+
 function assistantText(message: AssistantMessage | undefined): string {
   if (message === undefined) return "";
   const content = (message as { content?: unknown }).content;
@@ -767,6 +793,10 @@ export class DurableTaskAgentSession implements TaskAgentSession {
       }
     });
     this.identity(() => this.harness.resume());
+    const inspection = await this.harness.inspect(SESSION_CONTEXT);
+    if (inspection.tasks.length > 0 || inspection.submissions.length > 0) {
+      this.setRunState("running");
+    }
   }
 
   private resetView(view: ConversationView): void {
@@ -1514,6 +1544,33 @@ export class TaskAgentManager {
   /** Open plan sessions right now, for the periodic memory line. */
   poolSize(): number {
     return this.sessions.size;
+  }
+
+  /**
+   * Open every plan agent the previous process left with unfinished durable
+   * work, so its harness resumes that turn. Idle plans stay closed.
+   */
+  async resumeInterrupted(): Promise<string[]> {
+    let names: string[];
+    try {
+      names = await readdir(this.root);
+    } catch (error) {
+      if (isRecord(error) && error.code === "ENOENT") return [];
+      throw error;
+    }
+    const resumed: string[] = [];
+    for (const taskId of names) {
+      if (this.closed) break;
+      if (!planWorkPending(join(this.taskDir(taskId), "pi.sqlite3"))) continue;
+      try {
+        await this.ensure(taskId);
+        resumed.push(taskId);
+        console.log(`[task-agent] restarted plan agent ${taskId}`);
+      } catch (error) {
+        console.error(`[task-agent] could not restart plan agent ${taskId}`, error);
+      }
+    }
+    return resumed;
   }
 
   private clock(): number {

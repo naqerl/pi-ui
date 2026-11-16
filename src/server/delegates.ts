@@ -55,6 +55,11 @@ export interface DelegateTurnResult {
 /** A kept sub-agent session. submit starts one turn and resolves when that turn ends. */
 export interface DelegateSession {
   submit(prompt: string): Promise<DelegateTurnResult>;
+  /**
+   * Continue a turn the previous process left in flight. When durable has
+   * nothing left to run, start `prompt` as a new turn.
+   */
+  resume?(prompt: string): Promise<DelegateTurnResult>;
   abort(): void;
   close(): Promise<void>;
 }
@@ -102,6 +107,8 @@ interface DelegateRun extends SerializedDelegateRun {
   timedOut?: string;
   /** True while a prompt has been accepted and not yet finished. */
   turnOpen: boolean;
+  /** True when this turn was queued again because the process restarted. */
+  resumed: boolean;
   gate: TurnGate;
 }
 
@@ -247,6 +254,8 @@ export class DelegateManager {
   private changeListener: (() => void) | undefined;
   private activeCount = 0;
   private shuttingDown = false;
+  /** Runs load() put back on the queue. Pumped once the chat can hear the chip. */
+  private pendingRestarts: string[] = [];
 
   constructor(private readonly options: DelegateManagerOptions) {
     this.dir = join(options.dataDir, "delegates");
@@ -270,8 +279,32 @@ export class DelegateManager {
       const loaded = this.loadRun(raw);
       if (loaded.changed) changed = true;
       this.runs.set(loaded.run.id, loaded.run);
+      if (loaded.restart) this.pendingRestarts.push(loaded.run.id);
     }
     if (changed) this.save();
+  }
+
+  /**
+   * Start every sub-agent whose turn was in flight when the process stopped.
+   * Call this after setNotifier, so a turn that ends immediately still chips.
+   * A run with no saved database stays failed; flushBootNotices reports that one.
+   */
+  restartInterrupted(): number {
+    if (this.shuttingDown) return 0;
+    const ids = this.pendingRestarts.splice(0);
+    let queued = 0;
+    for (const id of ids) {
+      const run = this.runs.get(id);
+      if (run === undefined || run.status !== "queued" || !run.turnOpen) continue;
+      if (this.queue.includes(id)) continue;
+      this.queue.push(id);
+      queued += 1;
+    }
+    if (queued > 0) {
+      console.log(`[delegate] restarting ${queued} sub-agent(s)`);
+      this.pump();
+    }
+    return queued;
   }
 
   setNotifier(notifier: ((text: string) => void | Promise<void>) | undefined): void {
@@ -431,8 +464,30 @@ export class DelegateManager {
     }
   }
 
-  private loadRun(raw: SerializedDelegateRun): { run: DelegateRun; changed: boolean } {
+  private loadRun(raw: SerializedDelegateRun): {
+    run: DelegateRun;
+    changed: boolean;
+    restart: boolean;
+  } {
     const wasLive = raw.status === "running" || raw.status === "queued";
+    // The session is still on disk, so the turn continues from its checkpoint
+    // instead of being failed for the parent to continue by hand.
+    if (wasLive && this.hasDatabase(raw.id)) {
+      const run = this.hydrate({
+        id: raw.id,
+        task: raw.task,
+        cwd: raw.cwd,
+        status: "queued",
+        queuedAt: raw.queuedAt,
+        startedAt: raw.startedAt,
+        endedAt: null,
+        timeoutMinutes: raw.timeoutMinutes,
+        ...(raw.usage === undefined ? {} : { usage: raw.usage }),
+      });
+      run.turnOpen = true;
+      run.resumed = true;
+      return { run, changed: raw.status !== "queued" || raw.endedAt !== null, restart: true };
+    }
     let status: DelegateRunStatus = "idle";
     let lastOutcome = isOutcome(raw.lastOutcome) ? raw.lastOutcome : undefined;
     let pendingNotice = raw.pendingNotice === true;
@@ -468,7 +523,7 @@ export class DelegateManager {
       ...(pendingNotice ? { pendingNotice } : {}),
       ...(closed ? { closed } : {}),
     });
-    return { run, changed };
+    return { run, changed, restart: false };
   }
 
   private hasDatabase(id: string): boolean {
@@ -509,6 +564,7 @@ export class DelegateManager {
       ...raw,
       cancelRequested: false,
       turnOpen: false,
+      resumed: false,
       gate,
     };
   }
@@ -531,13 +587,17 @@ export class DelegateManager {
   private async execute(run: DelegateRun): Promise<void> {
     try {
       if (!run.turnOpen || run.status !== "queued") return;
+      const restarting = run.resumed;
+      run.resumed = false;
       run.status = "running";
-      run.startedAt = new Date().toISOString();
+      if (!restarting || run.startedAt === null) run.startedAt = new Date().toISOString();
       run.endedAt = null;
       this.save();
       await this.appendActivity(
         run,
-        `[subagent] started at ${run.startedAt}\nPrompt: ${firstLine(run.task)}\n`,
+        restarting
+          ? `[subagent] restarted at ${new Date().toISOString()}\nPrompt: ${firstLine(run.task)}\n`
+          : `[subagent] started at ${run.startedAt}\nPrompt: ${firstLine(run.task)}\n`,
       );
       let session = this.sessions.get(run.id);
       if (session === undefined) {
@@ -553,7 +613,10 @@ export class DelegateManager {
       }, run.timeoutMinutes * 60_000);
       timer.unref?.();
       try {
-        const result = await active.submit(run.task);
+        const result =
+          restarting && active.resume !== undefined
+            ? await active.resume(run.task)
+            : await active.submit(run.task);
         this.applyResult(run, result);
       } finally {
         clearTimeout(timer);
@@ -881,34 +944,70 @@ class DurableDelegateSession implements DelegateSession {
         );
         return submission.wait(BACKGROUND_CONTEXT);
       });
-      const usage = usageTotals(
-        await this.harness.usage(BACKGROUND_CONTEXT).catch(() => undefined),
-      );
-      const entries = (await this.conversation.context(BACKGROUND_CONTEXT)).entries;
-      const reason =
-        "reason" in outcome && typeof outcome.reason === "string" ? outcome.reason : undefined;
-      const detailValue = "detail" in outcome ? outcome.detail : undefined;
-      if (outcome.status === "done") {
-        const answer = entryText(entries.find((entry) => entry.id === outcome.answer));
-        const text = answer.trim().length > 0 ? answer : latestAssistantText(entries);
-        if (text.trim().length === 0) {
-          return {
-            text: "",
-            ...(usage === undefined ? {} : { usage }),
-            error: "The sub-agent finished without a final answer.",
-          };
-        }
-        return { text, ...(usage === undefined ? {} : { usage }) };
-      }
-      const detail = typeof detailValue === "string" ? `: ${detailValue}` : "";
-      return {
-        text: latestAssistantText(entries),
-        ...(usage === undefined ? {} : { usage }),
-        error: `The turn ended without an answer (${reason ?? outcome.status}${detail}).`,
-      };
+      return await this.resultOf(outcome);
     } catch (error) {
       return { text: "", error: errorMessage(error) };
     }
+  }
+
+  /**
+   * The previous process died mid-turn. Scheduling was off, so resume it and
+   * wait for the submission that was already admitted. A turn that never
+   * landed in durable starts again from the same prompt.
+   */
+  async resume(prompt: string): Promise<DelegateTurnResult> {
+    try {
+      const outcome = await withConversationIdentity(String(this.conversation.id), async () => {
+        const inspection = await this.harness.inspect(BACKGROUND_CONTEXT);
+        const liveSubmission = [...inspection.submissions]
+          .reverse()
+          .find((item) => item.status === "queued" || item.status === "placed");
+        if (liveSubmission === undefined && inspection.tasks.length === 0) return undefined;
+        this.harness.resume();
+        if (liveSubmission !== undefined) {
+          const handle = await this.harness.submission(liveSubmission.id, BACKGROUND_CONTEXT);
+          if (handle !== undefined) return handle.wait(BACKGROUND_CONTEXT);
+        }
+        await this.conversation.waitForIdle(BACKGROUND_CONTEXT);
+        return { status: "settled" as const };
+      });
+      if (outcome === undefined) return this.submit(prompt);
+      return await this.resultOf(outcome);
+    } catch (error) {
+      return { text: "", error: errorMessage(error) };
+    }
+  }
+
+  private async resultOf(outcome: {
+    status: string;
+    answer?: unknown;
+    reason?: unknown;
+    detail?: unknown;
+  }): Promise<DelegateTurnResult> {
+    const usage = usageTotals(await this.harness.usage(BACKGROUND_CONTEXT).catch(() => undefined));
+    const entries = (await this.conversation.context(BACKGROUND_CONTEXT)).entries;
+    if (outcome.status === "done" || outcome.status === "settled") {
+      const answer =
+        outcome.status === "done"
+          ? entryText(entries.find((entry) => entry.id === outcome.answer))
+          : "";
+      const text = answer.trim().length > 0 ? answer : latestAssistantText(entries);
+      if (text.trim().length === 0) {
+        return {
+          text: "",
+          ...(usage === undefined ? {} : { usage }),
+          error: "The sub-agent finished without a final answer.",
+        };
+      }
+      return { text, ...(usage === undefined ? {} : { usage }) };
+    }
+    const reason = typeof outcome.reason === "string" ? outcome.reason : undefined;
+    const detail = typeof outcome.detail === "string" ? `: ${outcome.detail}` : "";
+    return {
+      text: latestAssistantText(entries),
+      ...(usage === undefined ? {} : { usage }),
+      error: `The turn ended without an answer (${reason ?? outcome.status}${detail}).`,
+    };
   }
 
   abort(): void {

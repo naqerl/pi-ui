@@ -1,3 +1,10 @@
+## 1.7.2
+
+### Fixed
+
+- Billion-context tools post the conversation id the live turn is bound to. After a compaction head that id is `<durable id>@<head entry>`, and the tool was still sending the durable integer, so `compress` answered 409.
+- A restart resumes the main chat's unfinished turn, every sub-agent whose turn was in flight and still has a saved session, and every plan agent that still has unfinished durable work. A sub-agent with no saved session is still closed and chipped once. Idle plan sessions stay closed.
+
 ## 1.7.1
 
 ### Changed
