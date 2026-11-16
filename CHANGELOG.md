@@ -1,7 +1,8 @@
-## 1.7.5
+## 1.8.0
 
 ### Added
 
+- The runtime image ships `gh` 2.104.0. The tarball's SHA-256 is checked before the binary is installed. No token is baked in: `gh` authenticates with the `GH_TOKEN` environment variable. `GH_PROMPT_DISABLED`, `GH_PAGER=cat`, and `GH_NO_UPDATE_NOTIFIER` keep it from prompting or paging in the agent's bash.
 - `bash` hands a command that is still running after 120 seconds to the background job manager instead of waiting forever or killing it. The tool returns at once with the output so far and `job jN`; completion arrives as a job notice. `PI_BASH_HANDOFF_MS` overrides the window.
 - The plan agent gets `job_list`, `job_output` and `job_cancel`, but not `job_start`.
 - `MAX_LIVE_COMMANDS` (12) bounds foreground commands plus visible jobs, and `load()` adopts a hidden command whose process is still running after a restart.

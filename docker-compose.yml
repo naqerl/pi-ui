@@ -23,6 +23,11 @@ services:
       # half-second full GCs instead of collecting cheaply. Give it headroom below the
       # memory cap, so a spike collects instead of stalling the page.
       NODE_OPTIONS: "--max-old-space-size=1792"
+      # gh reads GH_TOKEN from the process environment when the operator sets it.
+      # These three keep the CLI from paging or prompting inside the agent's bash.
+      GH_PROMPT_DISABLED: "1"
+      GH_PAGER: cat
+      GH_NO_UPDATE_NOTIFIER: "1"
       PI_CWD: /workspace
       PI_CODING_AGENT_DIR: /home/pi/.pi/agent
       # The durable conversation lives in data/ inside the workspace mount.

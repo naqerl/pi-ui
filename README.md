@@ -2,7 +2,7 @@
 
 A minimal, single-conversation web UI for the [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) coding agent, with one durable conversation and no session management. It installs as a PWA and accepts text, titles, and URLs from the native share sheet on platforms that support Web Share Target.
 
-It ships as `ghcr.io/naqerl/pi-ui`. The container has no credentials baked in: your real pi agent directory is bind-mounted at runtime, so the UI uses your `auth.json` and the model catalog configured there. The conversation is stored in SQLite by `@earendil-works/pi-durable`; the workspace host directory holds pi's working tree together with that database and a small durable run marker, so a whole session survives container replacement and a process restart mid-run. Context compression runs in-process through `billion-context`; its fold state lives in a third host directory, `~/.local/share/billion-context`, which must also be writable and persistent. Those three host paths are the only mutable state; the image is otherwise stateless. A fourth, read-only mount supplies one file — the zeroshot hub bearer token at `/run/secrets/zeroshot-hub-token` — which the `mcp.json` `bearerToken` command reads. Nothing else from the hub's configuration directory enters the container. A fifth read-only mount holds a single file as well: an SSH private key, so the agent can reach other machines ([SSH to other hosts](#ssh-to-other-hosts)). A sixth mount is a writable GnuPG home, so `sops` can decrypt SOPS-encrypted files in place ([SOPS and GPG keys](#sops-and-gpg-keys)).
+It ships as `ghcr.io/naqerl/pi-ui`. The container has no credentials baked in: your real pi agent directory is bind-mounted at runtime, so the UI uses your `auth.json` and the model catalog configured there. The conversation is stored in SQLite by `@earendil-works/pi-durable`; the workspace host directory holds pi's working tree together with that database and a small durable run marker, so a whole session survives container replacement and a process restart mid-run. Context compression runs in-process through `billion-context`; its fold state lives in a third host directory, `~/.local/share/billion-context`, which must also be writable and persistent. Those three host paths are the only mutable state; the image is otherwise stateless. A fourth, read-only mount supplies one file — the zeroshot hub bearer token at `/run/secrets/zeroshot-hub-token` — which the `mcp.json` `bearerToken` command reads. Nothing else from the hub's configuration directory enters the container. A fifth read-only mount holds a single file as well: an SSH private key, so the agent can reach other machines ([SSH to other hosts](#ssh-to-other-hosts)). A sixth mount is a writable GnuPG home, so `sops` can decrypt SOPS-encrypted files in place ([SOPS and GPG keys](#sops-and-gpg-keys)). `gh` is in the image and authenticates with `GH_TOKEN` when that variable is set ([GitHub CLI](#github-cli)).
 
 ## Quick start (local)
 
@@ -27,6 +27,10 @@ docker run -d --name pi-ui --restart unless-stopped \
   -v "${ZEROSHOT_HUB_TOKEN_FILE:-$HOME/.config/zeroshot/hub/api-token}:/run/secrets/zeroshot-hub-token:ro" \
   -v "${SSH_KEY_FILE:-$HOME/.ssh/id_ed25519}:/home/pi/.ssh/id_ed25519:ro" \
   -v "${GNUPGHOME_DIR:-$HOME/.pi-ui/gnupg}:/home/pi/.gnupg" \
+  -e GH_PROMPT_DISABLED=1 \
+  -e GH_PAGER=cat \
+  -e GH_NO_UPDATE_NOTIFIER=1 \
+  -e GH_TOKEN \
   ghcr.io/naqerl/pi-ui:v1.4.1
 ```
 
@@ -70,6 +74,14 @@ Read-only means the container cannot rewrite, rotate, or copy the key out throug
 The mount keeps the host uid and mode. When the container uid matches the host uid (both 1000), OpenSSH enforces the mode and refuses a key readable by group or others, so the source must stay `0600`. When the uids differ, OpenSSH skips the mode check because the file belongs to another user.
 
 `known_hosts` and `config` are not mounted. Inside the container they live at `/home/pi/.ssh/`, which is part of the image unless you also mount `/home/pi`, so a fresh container starts with neither: an unknown host asks for confirmation, and a non-interactive session fails outright. Pass `-o StrictHostKeyChecking=accept-new` to record a host key on first use, `-o UserKnownHostsFile=/workspace/.ssh/known_hosts` to keep that file inside the workspace mount, and spell out `Host` aliases on the command line (`ssh -p 23 u490196@u490196.your-storagebox.de`) instead of relying on `~/.ssh/config`. The same goes for the login name: the container's user is `pi`, not the user you are on the host, so a host reachable as `ssh example.com` from the host answers `Permission denied (publickey)` here until you pass `-l <user>` or set a `Host * User <user>` default in the container's own config.
+
+### GitHub CLI
+
+The image ships `gh` 2.104.0. Bookworm does not package it, so the Dockerfile downloads GitHub's linux/amd64 tarball and checks its SHA-256 before installing, the same way it pins `sops`. No token is baked in.
+
+`gh` reads `GH_TOKEN` and uses it instead of `~/.config/gh`. A classic personal access token with the `repo`, `workflow`, and `read:org` scopes covers pull requests, Actions runs, and creating a repository. Leave the variable unset and `gh` stays installed and logged out. Git remotes that use `git@github.com` keep using the SSH key mount; `GH_TOKEN` is what `gh`'s own API calls use.
+
+The agent's bash has no terminal. The compose file sets `GH_PROMPT_DISABLED=1`, `GH_PAGER=cat`, and `GH_NO_UPDATE_NOTIFIER=1` so a long `gh` listing cannot sit in a pager or ask a question.
 
 ### SOPS and GPG keys
 
