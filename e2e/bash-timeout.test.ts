@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -19,6 +19,7 @@ interface RunResult {
   structuredOutput?: {
     output: string;
     truncated: boolean;
+    fullOutputPath?: string;
     exitCode: number | null;
     jobId?: string;
   };
@@ -33,7 +34,7 @@ interface FakeApi {
   diagnostic(value: { severity: string; code?: string; message: string }): void;
 }
 
-function fakeApi(cwd: string): FakeApi {
+function fakeApi(cwd: string, retainChars?: number): FakeApi {
   let text = "";
   return {
     env: { cwd },
@@ -41,7 +42,10 @@ function fakeApi(cwd: string): FakeApi {
       text += chunk;
     },
     retainedOutput() {
-      return { text, truncated: false };
+      if (retainChars === undefined) return { text, truncated: false };
+      return text.length > retainChars
+        ? { text: text.slice(-retainChars), truncated: true }
+        : { text, truncated: false };
     },
     diagnostic() {},
   };
@@ -51,9 +55,9 @@ function execute(
   tool: ToolRegistration,
   command: string,
   cwd: string,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; retainChars?: number } = {},
 ): Promise<{ result: RunResult; api: FakeApi }> {
-  const api = fakeApi(cwd);
+  const api = fakeApi(cwd, options.retainChars);
   const run = tool as unknown as {
     execute(
       args: { command: string },
@@ -127,6 +131,43 @@ test("a nonzero exit is an error result with its exit code", async (t) => {
   assert.equal(result.structuredOutput?.exitCode, 3);
   assert.equal(result.diagnostics?.[0]?.code, "exit_code");
   assert.match(result.structuredOutput?.output ?? "", /boom/);
+});
+
+test("a truncated fast-path result keeps the full log and returns its path", async (t) => {
+  const { dataDir, jobs } = await jobStore(t);
+  const tool = createTimedBashTool(jobs, { handoffMs: 5_000 });
+  const { result } = await execute(tool, "seq -f 'line-%04g' 1 1000", dataDir, {
+    retainChars: 200,
+  });
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredOutput?.exitCode, 0);
+  assert.equal(result.structuredOutput?.truncated, true);
+  const fullOutputPath = result.structuredOutput?.fullOutputPath;
+  assert.ok(fullOutputPath);
+  const full = await readFile(fullOutputPath, "utf8");
+  assert.match(full, /line-0001\n/);
+  assert.match(full, /line-1000\n/);
+  assert.equal(existsSync(fullOutputPath), true);
+  assert.deepEqual(jobs.list(), []);
+});
+
+test("cancelling a hidden command wakes waitForExit without a notice", async (t) => {
+  const { dataDir, jobs } = await jobStore(t);
+  const notices: string[] = [];
+  const quiet: string[] = [];
+  jobs.setNotifier((job) => notices.push(job.id));
+  jobs.setQuietNotifier((job) => quiet.push(job.id));
+  const hidden = jobs.begin({ command: "sleep 30", cwd: dataDir, origin: "bash" });
+  const pending = jobs.waitForExit(hidden.id, 5_000);
+  const started = Date.now();
+  const cancelled = jobs.cancel(hidden.id);
+  assert.equal(cancelled.status, "cancelled");
+  assert.deepEqual(await pending, { exited: true });
+  assert.ok(Date.now() - started < 1_000, "cancel wakes the foreground wait");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.deepEqual(notices, [], "cancel does not send the completion notice");
+  assert.deepEqual(quiet, [], "a hidden command has no cancellation notice");
+  assert.equal(jobs.get(hidden.id).status, "cancelled");
 });
 
 test("a command still running at the handoff becomes a visible bash job", async (t) => {

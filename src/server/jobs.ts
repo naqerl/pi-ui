@@ -294,12 +294,16 @@ export class JobManager {
     this.watchOrphans();
     // The command may have ended in the instant before the handoff. `finish()` skipped the
     // announcement while the record was hidden, so make it now instead of losing the notice.
-    if (job.status !== "running") this.announce(job);
+    // A cancelled command sends no completion message, even if the cancel raced the handoff.
+    if (job.status !== "running" && job.status !== "cancelled") this.announce(job);
     return { ...job };
   }
 
-  /** Forgets a hidden command and deletes its log, once its output is no longer needed. */
-  async discard(id: string): Promise<void> {
+  /**
+   * Forgets a hidden command once its output is no longer needed. The log is deleted unless
+   * `keepLog` is set, which a truncated result needs so `fullOutputPath` still works.
+   */
+  async discard(id: string, options: { keepLog?: boolean } = {}): Promise<void> {
     const job = this.jobs.get(id.trim());
     if (job === undefined) return;
     this.jobs.delete(job.id);
@@ -310,7 +314,9 @@ export class JobManager {
       this.killTimers.delete(job.id);
     }
     this.save();
-    await unlink(this.logPath(job.id)).catch(() => undefined);
+    if (options.keepLog !== true) {
+      await unlink(this.logPath(job.id)).catch(() => undefined);
+    }
   }
 
   /**
@@ -356,6 +362,9 @@ export class JobManager {
     job.status = "cancelled";
     job.endedAt = new Date().toISOString();
     this.save();
+    // A foreground bash call is waiting in waitForExit. Cancelling is an exit, so wake it
+    // now instead of leaving it to promote a cancelled command when the window expires.
+    this.resolveExitWaiters(job.id, true);
     if (pid !== null) {
       signalGroup(pid, "SIGTERM");
       const timer = setTimeout(() => {
@@ -367,6 +376,8 @@ export class JobManager {
       timer.unref();
       this.killTimers.set(job.id, timer);
     }
+    // A hidden command has no job row or completion notice yet; its caller returns the result.
+    if (job.visible === false) return { ...job };
     const record = { ...job };
     void this.appendLog(job.id, "\n[pi-ui] cancelled\n").then(() =>
       this.notify(record, this.quietNotifier),
@@ -445,13 +456,18 @@ export class JobManager {
     job.signal = signal;
     job.endedAt = new Date().toISOString();
     this.save();
-    const waiters = this.exitWaiters.get(job.id);
-    this.exitWaiters.delete(job.id);
-    for (const waiter of waiters ?? []) waiter(true);
+    this.resolveExitWaiters(job.id, true);
     // A hidden command inside its foreground window is not a job yet: its caller reads
     // the record and discards it. Announcing it would put a phantom row in the activity page.
     if (job.visible === false) return;
     this.announce(job);
+  }
+
+  /** Wakes the waiters once, whether the command exited or was cancelled. */
+  private resolveExitWaiters(id: string, exited: boolean): void {
+    const waiters = this.exitWaiters.get(id);
+    this.exitWaiters.delete(id);
+    for (const waiter of waiters ?? []) waiter(exited);
   }
 
   private announce(job: JobRecord): void {

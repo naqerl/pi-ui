@@ -164,14 +164,18 @@ export function createTimedBashTool(
         await inflight;
         await drain(true);
 
-        if (outcome.exited) {
-          const finished = jobs.get(job.id);
+        const finished = jobs.get(job.id);
+        // Cancelling a hidden command wakes waitForExit with `exited: true`. Also treat a
+        // command that ended while the final drain ran as finished, never as a handoff.
+        if (outcome.exited || finished.status !== "running") {
           const exitCode = finished.exitCode;
-          await jobs.discard(job.id);
           const retained = api.retainedOutput();
+          const fullOutputPath = jobs.logPath(job.id);
+          await jobs.discard(job.id, { keepLog: retained.truncated });
           const structuredOutput = {
             output: retained.text,
             truncated: retained.truncated,
+            ...(retained.truncated ? { fullOutputPath } : {}),
             exitCode,
           };
           if (exitCode === 0) return { structuredOutput };
@@ -183,9 +187,11 @@ export function createTimedBashTool(
                 severity: "error",
                 code: "exit_code",
                 message:
-                  exitCode === null
-                    ? `Command failed${finished.signal === null ? "" : ` (${finished.signal})`}`
-                    : `Command exited with code ${exitCode}`,
+                  finished.status === "cancelled"
+                    ? "Command was cancelled"
+                    : exitCode === null
+                      ? `Command failed${finished.signal === null ? "" : ` (${finished.signal})`}`
+                      : `Command exited with code ${exitCode}`,
               },
             ],
           };
@@ -204,6 +210,7 @@ export function createTimedBashTool(
           structuredOutput: {
             output: retained.text,
             truncated: retained.truncated,
+            ...(retained.truncated ? { fullOutputPath: jobs.logPath(promoted.id) } : {}),
             exitCode: null,
             jobId: promoted.id,
           },
