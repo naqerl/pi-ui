@@ -140,9 +140,10 @@ async function cleanup(manager: DelegateManager | undefined, dir: string): Promi
 
 test("acp_delegate returns while the sub-agent is still working", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-ui-delegate-"));
-  let box: Harness | undefined;
+  let manager: DelegateManager | undefined;
   try {
-    box = await harness(dir);
+    const box = await harness(dir);
+    manager = box.manager;
     const tools = createAcpDelegateTools(box.manager);
     assert.deepEqual(
       tools.map((tool) => tool.name),
@@ -167,15 +168,16 @@ test("acp_delegate returns while the sub-agent is still working", async () => {
     assert.equal(activeSubagents(box.manager.list()).length, 0);
     assert.equal(box.manager.get(run.id).lastOutcome, "completed");
   } finally {
-    await cleanup(box?.manager, dir);
+    await cleanup(manager, dir);
   }
 });
 
 test("continue resumes the same sub-agent and refuses a second prompt while it works", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-ui-delegate-"));
-  let box: Harness | undefined;
+  let manager: DelegateManager | undefined;
   try {
-    box = await harness(dir);
+    const box = await harness(dir);
+    manager = box.manager;
     const run = await box.manager.start({ prompt: "write the unit file" });
     await box.submitted(run.id);
     box.finish(run.id, { text: "wrote app.service" });
@@ -201,13 +203,13 @@ test("continue resumes the same sub-agent and refuses a second prompt while it w
     assert.equal(box.manager.get(run.id).status, "idle");
     assert.equal(activeSubagents(box.manager.list()).length, 0);
   } finally {
-    await cleanup(box?.manager, dir);
+    await cleanup(manager, dir);
   }
 });
 
 test("a restart chips an interrupted turn and continue can accept the saved session", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-ui-delegate-"));
-  let box: Harness | undefined;
+  let manager: DelegateManager | undefined;
   try {
     const id = "del_boot";
     await mkdir(join(dir, "delegates", id), { recursive: true });
@@ -229,7 +231,8 @@ test("a restart chips an interrupted turn and continue can accept the saved sess
         ],
       })}\n`,
     );
-    box = await harness(dir);
+    const box = await harness(dir);
+    manager = box.manager;
     await box.manager.load();
     assert.equal(box.manager.get(id).status, "idle");
     assert.equal(box.manager.get(id).lastOutcome, "failed");
@@ -244,13 +247,13 @@ test("a restart chips an interrupted turn and continue can accept the saved sess
     await waitFor(() => box.manager.get(id).status === "idle");
     assert.equal(box.manager.get(id).lastOutcome, "completed");
   } finally {
-    await cleanup(box?.manager, dir);
+    await cleanup(manager, dir);
   }
 });
 
 test("a restart without a saved session tells the chat to start a new sub-agent", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-ui-delegate-"));
-  let box: Harness | undefined;
+  let manager: DelegateManager | undefined;
   try {
     await mkdir(join(dir, "delegates"), { recursive: true });
     await writeFile(
@@ -270,21 +273,23 @@ test("a restart without a saved session tells the chat to start a new sub-agent"
         ],
       })}\n`,
     );
-    box = await harness(dir);
+    const box = await harness(dir);
+    manager = box.manager;
     await box.manager.load();
     await box.manager.flushBootNotices();
     assert.match(box.chips[0] ?? "", /Start a new one with acp_delegate/);
     await assert.rejects(() => box.manager.continue("del_old", "again"), /was closed/);
   } finally {
-    await cleanup(box?.manager, dir);
+    await cleanup(manager, dir);
   }
 });
 
 test("idle sessions past the cap are closed and the newest can still continue", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-ui-delegate-"));
-  let box: Harness | undefined;
+  let manager: DelegateManager | undefined;
   try {
-    box = await harness(dir);
+    const box = await harness(dir);
+    manager = box.manager;
     const ids: string[] = [];
     for (let index = 0; index < MAX_IDLE_DELEGATES + 1; index++) {
       const run = await box.manager.start({ prompt: `edit file ${index}` });
@@ -304,7 +309,7 @@ test("idle sessions past the cap are closed and the newest can still continue", 
     assert.equal(continued.id, newest);
     await waitFor(() => box.manager.get(newest).status === "running");
   } finally {
-    await cleanup(box?.manager, dir);
+    await cleanup(manager, dir);
   }
 });
 
