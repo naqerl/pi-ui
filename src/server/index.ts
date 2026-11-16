@@ -1099,6 +1099,13 @@ app.patch("/api/tasks/:id", async (c) => {
   try {
     const id = c.req.param("id");
     const ledger = await taskStore.update(id, patch);
+    if ("attachments" in patch) {
+      // A screenshot attached while the plan chat is open is in its context now,
+      // not only after the next session open.
+      void taskAgents.syncTaskAttachments(id).catch((error: unknown) => {
+        console.error(`[pi] could not sync the task images for ${id}`, error);
+      });
+    }
     if (ledger.tasks.find((task) => task.id === id)?.status === "done") {
       await taskAgents.stopRun(id).catch((error: unknown) => {
         console.error(`[pi] could not stop the task agent for ${id}`, error);

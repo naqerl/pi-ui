@@ -166,6 +166,19 @@ const MemoryDeltaEntry = defineEntry<{
 export const MEMORY_DELTA_ENTRY_KIND = MemoryDeltaEntry.kind;
 
 /**
+ * The task's attached images. It carries the model message so the plan agent sees
+ * the screenshots before its first response, but no transcript row: `buildTranscript`
+ * ignores kinds it does not render, so the operator never gets a fake bubble.
+ */
+const TaskAttachmentsEntry = defineEntry<{
+  taskId: string;
+  ids: string[];
+  createdAt: string;
+}>("ui.task-attachments");
+
+export const TASK_ATTACHMENTS_ENTRY_KIND = TaskAttachmentsEntry.kind;
+
+/**
  * The automated idle prompt. It carries a model message so it starts a turn, but
  * the chat renders it as a notice chip rather than a user bubble.
  */
