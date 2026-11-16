@@ -757,12 +757,12 @@ export async function appendInterruptionNote(
   });
   if (alreadyRecorded) return;
 
-  // A run that left no reply and was not stopped has nothing to report. Only promise a
-  // resume for a partial run that was not stopped, which is the case boot resumes.
+  // A run that left no reply and was not stopped has nothing to report. A partial run
+  // that was not stopped records the restart note; boot keeps the partial reply.
   const note = marker.stopRequested
     ? "The previous run was stopped before the server restarted. The last response may be partial."
     : marker.partialEntryId !== null
-      ? "The previous run was interrupted by a server restart. The last response is partial; pi is resuming the run."
+      ? "The previous run was interrupted by a server restart"
       : null;
   if (note === null) return;
 

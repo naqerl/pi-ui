@@ -103,8 +103,7 @@ describe("notice policy against one shared app", { serial: true }, () => {
     expect(details).toMatch(new RegExp(`last output[\\s\\S]*${marker}`));
   });
   const at = (second: number) => new Date(Date.UTC(2026, 9, 30, 9, 0, second)).toISOString();
-  const interruptedNote =
-    "The previous run was interrupted by a server restart. The last response is partial; pi is resuming the run.";
+  const interruptedNote = "The previous run was interrupted by a server restart";
   const interruptedSnapshot = {
     conversationId: "notices-interrupted-e2e",
     messages: [
@@ -132,7 +131,7 @@ describe("notice policy against one shared app", { serial: true }, () => {
     context: { tokens: 0, window: null, percent: null },
   };
 
-  test("an interrupted run keeps its partial reply and shows a warning-toned chip", async ({
+  test("an interrupted run keeps its partial reply and shows a non-interactive warning chip", async ({
     app,
     browser,
     screen,
@@ -161,8 +160,11 @@ describe("notice policy against one shared app", { serial: true }, () => {
       const style = getComputedStyle(node);
       const warning = getComputedStyle(probe);
       const computed = {
+        tag: node.tagName,
         classes: node.className,
         text: node.textContent ?? "",
+        title: node.getAttribute("title"),
+        hasButton: node.querySelector("button") !== null,
         warningIcon: node.querySelector('[data-icon="warning"]') !== null,
         background: style.backgroundColor,
         warningBackground: warning.backgroundColor,
@@ -175,6 +177,9 @@ describe("notice policy against one shared app", { serial: true }, () => {
       return computed;
     });
     expect(chip).not.toBeNull();
+    expect(chip?.tag).toBe("SPAN");
+    expect(chip?.title).toBeNull();
+    expect(chip?.hasButton).toBe(false);
     expect(chip?.warningIcon).toBe(true);
     expect(chip?.text ?? "").not.toContain("⚠");
     expect(chip?.background).toBe(chip?.warningBackground);
@@ -189,7 +194,7 @@ describe("notice policy against one shared app", { serial: true }, () => {
         ?.click();
       return null;
     });
-    await expect(screen.getByRole("dialog")).toBeVisible();
-    expect(await dialogText(browser)).toContain(interruptedNote);
+    // A click or tap on the informational notice opens nothing.
+    expect(await dialogText(browser)).toBeNull();
   });
 });

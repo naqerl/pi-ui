@@ -51,7 +51,32 @@ function noticeIcon(notice: ChatNotice) {
     : noticeIconName(notice.kind);
 }
 
-/** The shared chip surface for chat notices and tool-activity chips. */
+type ChipTone = "default" | "warning" | "destructive";
+
+/**
+ * The shared chip surface. Only interactive chips get hover, focus and transition
+ * affordances; a static chip keeps the same resting surface with nothing to press.
+ */
+function chipClassName(tone: ChipTone, interactive: boolean): string {
+  return cn(
+    "inline-flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-mono text-[11px] leading-5 shadow-sm backdrop-blur-md",
+    tone === "warning"
+      ? "border-status-warn/40 bg-status-warn/10 text-status-warn"
+      : tone === "destructive"
+        ? "border-destructive/40 bg-surface/90 text-destructive"
+        : "border-foreground/10 bg-surface/90 text-muted-foreground",
+    interactive &&
+      "transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
+    interactive &&
+      (tone === "warning"
+        ? "hover:border-status-warn/60 hover:text-status-warn"
+        : tone === "destructive"
+          ? "hover:border-foreground/25 hover:text-destructive"
+          : "hover:border-foreground/25 hover:text-foreground"),
+  );
+}
+
+/** The interactive chip surface for chat notices and tool-activity chips. */
 export function ChipButton({
   testId,
   kind,
@@ -71,7 +96,7 @@ export function ChipButton({
   dialog?: boolean;
   expanded?: boolean;
   controls?: string;
-  tone?: "default" | "warning" | "destructive";
+  tone?: ChipTone;
   children: ReactNode;
 }) {
   return (
@@ -84,14 +109,7 @@ export function ChipButton({
       aria-controls={controls}
       title={title}
       onClick={onClick}
-      className={cn(
-        "inline-flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-mono text-[11px] leading-5 shadow-sm backdrop-blur-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
-        tone === "warning"
-          ? "border-status-warn/40 bg-status-warn/10 text-status-warn hover:border-status-warn/60 hover:text-status-warn"
-          : tone === "destructive"
-            ? "border-destructive/40 bg-surface/90 text-destructive hover:border-foreground/25 hover:text-destructive"
-            : "border-foreground/10 bg-surface/90 text-muted-foreground hover:border-foreground/25 hover:text-foreground",
-      )}
+      className={chipClassName(tone, true)}
     >
       {children}
     </button>
@@ -116,44 +134,63 @@ export function NoticeLine({
   const timestamp = noticeTimestamp(message, notice);
   const time = noticeClock(message, notice);
   const label = noticeLabel(notice);
+  const tone: ChipTone =
+    notice.kind === "interrupted" ? "warning" : failed(notice) ? "destructive" : "default";
+  const chip = (
+    <>
+      <NoticeIcon name={noticeIcon(notice)} size={14} />
+      <span className="min-w-0 truncate" data-testid="chat-notice-summary">
+        {label}
+      </span>
+      {time !== "" && (
+        <time dateTime={timestamp} className="shrink-0 tabular-nums opacity-60">
+          {time}
+        </time>
+      )}
+    </>
+  );
   return (
     <div
       data-message-id={message.id}
       data-role={message.role}
       className="flex justify-center px-2 py-0.5"
     >
-      <ChipButton
-        testId="chat-notice"
-        kind={notice.kind}
-        title={label}
-        dialog
-        onClick={() => {
-          // A decision is about one task: opening its chip also selects that task
-          // behind the dialog, so closing the dialog shows the work it approved.
-          if (taskId !== undefined) link?.openTask(taskId);
-          setOpen(true);
-        }}
-        tone={
-          notice.kind === "interrupted" ? "warning" : failed(notice) ? "destructive" : "default"
-        }
-      >
-        <NoticeIcon name={noticeIcon(notice)} size={14} />
-        <span className="min-w-0 truncate" data-testid="chat-notice-summary">
-          {label}
+      {notice.kind === "interrupted" ? (
+        // The restart note is informational: it has no details to open, so it is not a
+        // button, carries no tooltip and ignores clicks and taps entirely.
+        <span
+          data-testid="chat-notice"
+          data-notice-kind={notice.kind}
+          className={chipClassName(tone, false)}
+        >
+          {chip}
         </span>
-        {time !== "" && (
-          <time dateTime={timestamp} className="shrink-0 tabular-nums opacity-60">
-            {time}
-          </time>
-        )}
-      </ChipButton>
-      {open && (
-        <NoticeDialog
-          message={message}
-          notice={notice}
-          onClose={() => setOpen(false)}
-          {...(onSteer === undefined ? {} : { onSteer })}
-        />
+      ) : (
+        <>
+          <ChipButton
+            testId="chat-notice"
+            kind={notice.kind}
+            title={label}
+            dialog
+            onClick={() => {
+              // A decision is about one task: opening its chip also selects that task
+              // behind the dialog, so closing the dialog shows the work it approved.
+              if (taskId !== undefined) link?.openTask(taskId);
+              setOpen(true);
+            }}
+            tone={tone}
+          >
+            {chip}
+          </ChipButton>
+          {open && (
+            <NoticeDialog
+              message={message}
+              notice={notice}
+              onClose={() => setOpen(false)}
+              {...(onSteer === undefined ? {} : { onSteer })}
+            />
+          )}
+        </>
       )}
     </div>
   );
