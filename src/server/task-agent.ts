@@ -27,7 +27,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { createCodingTools } from "@earendil-works/pi-durable/tools";
+import { createCodingTools, createReadTool } from "@earendil-works/pi-durable/tools";
 import { Type } from "typebox";
 import { parseProjectToken, projectsOf, sameProject } from "../shared/project.js";
 import {
@@ -36,7 +36,7 @@ import {
   taskQuestionAnswerPayload,
   taskQuestionAnswerSummary,
 } from "../shared/questions.js";
-import { PENDING_QUEUE_ORDER, QUEUE_ENTRY_KIND } from "../shared/queue.js";
+import { PENDING_QUEUE_ORDER, QUEUE_ENTRY_KIND, queuedNoticeIcon } from "../shared/queue.js";
 import { runErrorFromUnanswered } from "../shared/run-error.js";
 import { steerDropReason } from "../shared/steers.js";
 import { DEFAULT_NEW_TASK_TITLE, isActiveStatus, TASK_BODY_MAX_LENGTH } from "../shared/tasks.js";
@@ -54,7 +54,10 @@ import {
   type TaskLedger,
   type TaskQuestionSet,
 } from "../shared/types.js";
+import { createTimedBashTool } from "./bash-tool.js";
 import { withConversationIdentity } from "./billion-context.js";
+import { createJobTools } from "./job-tools.js";
+import type { JobManager } from "./jobs.js";
 import type { MediaStore } from "./media.js";
 import { buildSnapshot, composeInstructions, SnapshotCache } from "./memory/snapshot.js";
 import type { MemoryStore } from "./memory/store.js";
@@ -62,7 +65,7 @@ import { createMemoryTools } from "./memory/tools.js";
 import { PlanTurnNotifier, type PlanTurnPushSender } from "./plan-push.js";
 import { retrySettings } from "./retry.js";
 import { RunErrorNotifier, type RunErrorPushInput, type RunErrorPushSender } from "./run-push.js";
-import { buildTranscript, SESSION_CONTEXT } from "./session.js";
+import { buildTranscript, JOB_NOTICE_ENTRY_KIND, SESSION_CONTEXT } from "./session.js";
 import type { SseFrame } from "./sse.js";
 import { StreamHub } from "./stream-hub.js";
 import {
@@ -91,6 +94,9 @@ export const TASK_AGENT_TOOL_NAMES = [
   "propose_task",
   "ask_questions",
   "append_questions",
+  "job_list",
+  "job_output",
+  "job_cancel",
   ...TASK_AGENT_MEMORY_TOOL_NAMES,
 ] as const;
 export type TaskAgentToolName = (typeof TASK_AGENT_TOOL_NAMES)[number];
@@ -153,6 +159,8 @@ export interface TaskAgentSession {
   pendingQuestions?(): Promise<TaskQuestionSet | null>;
   /** Record the operator's answers, add a readable transcript row, and wake the tool. */
   answerQuestions?(setId: string, answers: unknown): Promise<TaskAgentChatSnapshot>;
+  /** Deliver a finished background job's notice to this plan conversation. */
+  submitJobNotice?(text: string): Promise<void>;
 }
 
 /** The memory tree and the chat snapshot cache; plan sessions keep their own cache. */
@@ -172,6 +180,8 @@ export interface TaskAgentManagerOptions {
   readonly baseInstructions: string;
   /** The memory tree and snapshot block injected into the plan prompt. */
   readonly memory?: TaskAgentMemory;
+  /** Background jobs shared with the chat, so a handed-off plan command reports back. */
+  readonly jobs?: JobManager;
   /** Tests inject a fake session instead of opening a durable harness. */
   readonly openSession?: (taskId: string, manager: TaskAgentManager) => Promise<TaskAgentSession>;
   /** Forward session frames onto the main /api/stream so the browser can reuse that EventSource. */
@@ -314,7 +324,7 @@ You are a planning agent for a single task in pi-ui (id: ${task.id}).
 Your job is to help the operator formulate the task and propose a solution — a concrete design for how it would be solved.
 
 Plan mode only:
-- You may use the read and bash tools to inspect the repository.
+- You may use the read and bash tools to inspect the repository. Every bash command gets 120 seconds in the foreground; one still running then continues as a background job named in the result, readable with job_output and stoppable with job_cancel. Its completion notice arrives as a queued message.
 - You must not edit, write, create or delete any workspace files, and you must not run commands that change the workspace. The memory_write tool is the one write you may make, and it only touches the memory store.
 - Memory is what previous turns learned: read it with memory_read, memory_grep and memory_find before planning from scratch, and record a durable decision with memory_write (long_term for a topic, daily for the journal).
 - Project guidance lives in the repository's AGENTS.md. This server has no separate skills loader, so treat AGENTS.md as the skills equivalent.
@@ -1155,6 +1165,51 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     };
   }
 
+  /** Delivers a finished job's notice as a queued message in this plan conversation. */
+  async submitJobNotice(text: string): Promise<void> {
+    if (this.closed) throw new TaskAgentError("Task agent has been closed", 409);
+    const startsRun = this.runState !== "running" && this.queued.size === 0;
+    const key = randomUUID();
+    const createdAt = new Date().toISOString();
+    const submission = await this.identity(() =>
+      this.conversation.submit(
+        {
+          type: "input",
+          content: text,
+          whenBusy: "followUp",
+          requestId: `queue:${key}`,
+          entry: {
+            kind: JOB_NOTICE_ENTRY_KIND,
+            data: { text, createdAt },
+          },
+        },
+        SESSION_CONTEXT,
+      ),
+    );
+    if (startsRun) {
+      this.stopRequested = false;
+      this.setRunState("running", null);
+    }
+    const id = String(submission.id);
+    const { placed } = await this.submittedMessage(submission, text, false, [], undefined, key);
+    if (!placed) {
+      this.queued.set(id, {
+        id,
+        text,
+        createdAt,
+        key,
+        notice: {
+          kind: JOB_NOTICE_ENTRY_KIND,
+          label: "Background job",
+          glyph: queuedNoticeIcon(JOB_NOTICE_ENTRY_KIND),
+        },
+      });
+    }
+    this.markQueueChanged();
+    this.broadcastQueue();
+    void this.monitorSubmission(submission, startsRun, placed ? undefined : id, undefined);
+  }
+
   async cancelQueued(id: string): Promise<boolean> {
     if (!this.queued.has(id)) return false;
     this.queued.delete(id);
@@ -1380,6 +1435,19 @@ export class TaskAgentManager {
     }
     const session = await this.ensure(taskId);
     return session.submit(patch.message, attachments);
+  }
+
+  /**
+   * Delivers a finished job's notice to a live plan session. It never opens a session:
+   * a notice for a closed plan pane becomes an activity row instead of a paid plan turn.
+   */
+  async submitJobNotice(taskId: string, text: string): Promise<boolean> {
+    const session = this.sessions.get(taskId);
+    if (session === undefined || session.closed || session.submitJobNotice === undefined) {
+      return false;
+    }
+    await session.submitJobNotice(text);
+    return true;
   }
 
   /** Send through the shared client core's main-chat-shaped endpoint. */
@@ -1612,10 +1680,24 @@ export class TaskAgentManager {
     await questions.load();
     const storage = await openNodeSqliteStorage(databasePath);
     const registry = createRegistry<ToolRegistration>();
-    const coding = (createCodingTools().tools ?? []).filter(
-      (tool) => tool.name === "read" || tool.name === "bash",
-    );
+    const coding =
+      this.options.jobs === undefined
+        ? (createCodingTools().tools ?? []).filter(
+            (tool) => tool.name === "read" || tool.name === "bash",
+          )
+        : [
+            createReadTool(),
+            createTimedBashTool(this.options.jobs, {
+              owner: { kind: "plan", taskId },
+            }),
+          ];
     registry.install(defineExtension({ name: "task-agent-coding-tools", tools: coding }));
+    if (this.options.jobs !== undefined) {
+      const jobTools = selectTaskAgentTools(createJobTools(this.options.jobs));
+      if (jobTools.length > 0) {
+        registry.install(defineExtension({ name: "task-agent-job-tools", tools: jobTools }));
+      }
+    }
     registry.install(
       defineExtension({
         name: "task-agent-edit-tool",

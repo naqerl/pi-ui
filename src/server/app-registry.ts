@@ -5,7 +5,13 @@ import {
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { createToolSearchExtension } from "@earendil-works/pi-durable/tool-search";
-import { createCodingTools } from "@earendil-works/pi-durable/tools";
+import {
+  createBashTool,
+  createEditTool,
+  createReadTool,
+  createWriteTool,
+} from "@earendil-works/pi-durable/tools";
+import { createTimedBashTool } from "./bash-tool.js";
 import { createBiliTools } from "./bili-tools.js";
 import type { BillionContextInline } from "./billion-context.js";
 import type { DashboardManager } from "./dashboard.js";
@@ -79,7 +85,12 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
   registry.install(
     defineExtension({
       name: "pi-ui-coding-tools",
-      tools: createCodingTools().tools ?? [],
+      tools: [
+        createReadTool(),
+        createWriteTool(),
+        createEditTool(),
+        options.jobs === undefined ? createBashTool() : createTimedBashTool(options.jobs),
+      ],
     }),
   );
   registry.install(

@@ -1,9 +1,15 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { closeSync, openSync } from "node:fs";
-import { mkdir, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { closeSync, existsSync, openSync } from "node:fs";
+import { mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export type JobStatus = "running" | "exited" | "failed" | "cancelled" | "lost";
+
+/** How the command entered the job list: scheduled directly, or handed off after a foreground wait. */
+export type JobOrigin = "job_start" | "bash";
+
+/** Where the completion notice is delivered. */
+export type JobOwner = { kind: "chat" } | { kind: "plan"; taskId: string };
 
 export interface JobRecord {
   id: string;
@@ -16,6 +22,12 @@ export interface JobRecord {
   signal: string | null;
   /** Whether the agent is told when the job ends. */
   notify: boolean;
+  /** The tool that spawned the command. */
+  origin: JobOrigin;
+  /** The conversation that receives its completion notice. */
+  owner: JobOwner;
+  /** Hidden while a `bash` call still owns the foreground window; absent/true is a normal job. */
+  visible: boolean;
   startedAt: string;
   endedAt: string | null;
 }
@@ -38,6 +50,8 @@ export class JobError extends Error {}
 
 /** Most jobs running at once. */
 export const MAX_RUNNING_JOBS = 8;
+/** Most commands running at once, including hidden foreground calls. */
+export const MAX_LIVE_COMMANDS = 12;
 /** Most characters one output read returns. */
 export const MAX_OUTPUT_CHARS = 20_000;
 /** Finished jobs kept in the list; older ones are forgotten (their logs stay on disk). */
@@ -93,6 +107,8 @@ export class JobManager {
   private quietNotifier: JobNotifier | undefined;
   private changeListener: (() => void) | undefined;
   private readonly pending: JobRecord[] = [];
+  /** Resolvers waiting on `waitForExit`, by job id. */
+  private readonly exitWaiters = new Map<string, Set<(exited: boolean) => void>>();
   private sequence = 0;
   private writes: Promise<void> = Promise.resolve();
   private orphanTimer: NodeJS.Timeout | undefined;
@@ -109,19 +125,66 @@ export class JobManager {
   async load(): Promise<void> {
     await mkdir(this.dir, { recursive: true });
     let saved: JobRecord[] = [];
+    let savedSequence = 0;
     try {
-      const parsed = JSON.parse(await readFile(this.indexPath, "utf8")) as { jobs?: JobRecord[] };
+      const parsed = JSON.parse(await readFile(this.indexPath, "utf8")) as {
+        jobs?: JobRecord[];
+        sequence?: unknown;
+      };
       saved = Array.isArray(parsed.jobs) ? parsed.jobs : [];
+      if (typeof parsed.sequence === "number" && Number.isSafeInteger(parsed.sequence)) {
+        savedSequence = Math.max(0, parsed.sequence);
+      }
     } catch {
       saved = [];
     }
-    for (const job of saved) {
-      if (typeof job?.id !== "string") continue;
-      this.jobs.set(job.id, job);
+    // A kept log outlives its record, so the id high-water mark comes from both the
+    // saved index and every `jN.log` on disk. Reusing an id would append to stale output.
+    this.sequence = Math.max(this.sequence, savedSequence);
+    try {
+      for (const name of await readdir(this.dir)) {
+        const match = /^j(\d+)\.log$/.exec(name);
+        const number = match === null ? Number.NaN : Number.parseInt(match[1] ?? "", 10);
+        if (Number.isSafeInteger(number)) this.sequence = Math.max(this.sequence, number);
+      }
+    } catch {
+      // The directory is recreated above; an unreadable one simply has no logs to scan.
+    }
+    let changed = false;
+    for (const raw of saved) {
+      if (typeof raw?.id !== "string") continue;
+      const job = normalizeJob(raw);
       const number = Number.parseInt(job.id.replace(/^j/, ""), 10);
       if (Number.isSafeInteger(number)) this.sequence = Math.max(this.sequence, number);
-      if (job.status === "running" && !alive(job.pid)) this.finish(job, "lost", null, null);
+      // A hidden record that is no longer running belongs to a crash that had already
+      // finished the command; its output was only ever meant for the foreground call.
+      if (job.visible === false && job.status !== "running") {
+        await unlink(this.logPath(job.id)).catch(() => undefined);
+        changed = true;
+        continue;
+      }
+      this.jobs.set(job.id, job);
+      if (job.status !== "running") continue;
+      if (!alive(job.pid)) {
+        if (job.visible === false) {
+          this.jobs.delete(job.id);
+          await unlink(this.logPath(job.id)).catch(() => undefined);
+          changed = true;
+        } else {
+          this.finish(job, "lost", null, null);
+        }
+        continue;
+      }
+      if (job.visible === false) {
+        // The foreground call that owned this command died with the old process. The
+        // command outlived it, so it becomes an ordinary job that reports its end.
+        job.visible = true;
+        job.notify = true;
+        job.origin = "bash";
+        changed = true;
+      }
     }
+    if (changed) this.save();
     this.watchOrphans();
   }
 
@@ -143,7 +206,12 @@ export class JobManager {
     this.changeListener = listener;
   }
 
+  /** Jobs the UI and the agent see. Hidden foreground commands stay out until promoted. */
   list(): JobRecord[] {
+    return this.all().filter((job) => job.visible !== false);
+  }
+
+  private all(): JobRecord[] {
     return [...this.jobs.values()].sort((a, b) => a.startedAt.localeCompare(b.startedAt));
   }
 
@@ -153,23 +221,52 @@ export class JobManager {
     return job;
   }
 
+  /** A normal `job_start`: spawn, then make the job visible at once. */
   start(options: { command: string; name?: string; notify?: boolean }): JobRecord {
-    const command = options.command.trim();
-    if (command.length === 0) throw new JobError("The command is empty.");
-    const running = this.list().filter((job) => job.status === "running").length;
+    const running = this.list().filter(
+      (job) => job.status === "running" && job.origin === "job_start",
+    ).length;
     if (running >= MAX_RUNNING_JOBS) {
       throw new JobError(
         `${running} jobs are already running; the limit is ${MAX_RUNNING_JOBS}. Cancel one or wait.`,
       );
     }
-    this.sequence += 1;
-    const id = `j${this.sequence}`;
+    const job = this.begin({ ...options, origin: "job_start" });
+    return this.promote(job.id, { notify: options.notify !== false });
+  }
+
+  /**
+   * Spawns a command in its own process group and log, but keeps the record hidden: this is
+   * the foreground half of a `bash` call, still owned by the tool waiting on it.
+   */
+  begin(options: {
+    command: string;
+    name?: string;
+    cwd?: string;
+    notify?: boolean;
+    owner?: JobOwner;
+    origin?: JobOrigin;
+  }): JobRecord {
+    const command = options.command.trim();
+    if (command.length === 0) throw new JobError("The command is empty.");
+    const live = this.all().filter((job) => job.status === "running").length;
+    if (live >= MAX_LIVE_COMMANDS) {
+      throw new JobError(`${live} commands are already running; cancel one or wait.`);
+    }
+    let id: string;
+    do {
+      this.sequence += 1;
+      id = `j${this.sequence}`;
+    } while (this.jobs.has(id) || existsSync(this.logPath(id)));
     const logPath = this.logPath(id);
-    const fd = openSync(logPath, "a");
+    const cwd = options.cwd ?? this.cwd;
+    // A new command never appends to an existing id's log, including one kept for
+    // a truncated fast result.
+    const fd = openSync(logPath, "w");
     let child: ChildProcess;
     try {
       child = spawn("bash", ["-lc", command], {
-        cwd: this.cwd,
+        cwd,
         detached: true,
         stdio: ["ignore", fd, fd],
         env: process.env,
@@ -181,12 +278,15 @@ export class JobManager {
       id,
       name: options.name?.trim() || command.split("\n")[0]?.slice(0, 80) || id,
       command,
-      cwd: this.cwd,
+      cwd,
       pid: child.pid ?? null,
       status: "running",
       exitCode: null,
       signal: null,
       notify: options.notify !== false,
+      origin: options.origin ?? "job_start",
+      owner: options.owner ?? { kind: "chat" },
+      visible: false,
       startedAt: new Date().toISOString(),
       endedAt: null,
     };
@@ -209,6 +309,73 @@ export class JobManager {
     return { ...job };
   }
 
+  /** Makes a hidden foreground command an ordinary job; it keeps its original start time. */
+  promote(id: string, options: { notify?: boolean } = {}): JobRecord {
+    const job = this.get(id);
+    const wasVisible = job.visible !== false;
+    job.visible = true;
+    job.notify = options.notify ?? true;
+    this.save();
+    if (job.status === "running") {
+      if (!wasVisible) this.watchOrphans();
+    } else if (!wasVisible) {
+      // The command finished in the instant between the foreground wait giving up and
+      // this promotion. Its end still belongs to the now-visible job.
+      this.publishFinished(job);
+    }
+    return { ...job };
+  }
+
+  /**
+   * Drops a foreground command whose output already went to the transcript. A truncated
+   * result keeps its log: `fullOutputPath` points there and must remain readable.
+   */
+  async discard(id: string, options: { keepLog?: boolean } = {}): Promise<void> {
+    const job = this.jobs.get(id);
+    if (job === undefined) return;
+    this.jobs.delete(id);
+    this.children.delete(id);
+    this.resolveExitWaiters(id, true);
+    if (options.keepLog !== true) await unlink(this.logPath(id)).catch(() => undefined);
+    this.save();
+  }
+
+  /**
+   * Resolves when the command ends, or `{ exited: false }` when the window or the caller's
+   * abort signal fires first. The command is never killed here.
+   */
+  waitForExit(
+    id: string,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<{ exited: true } | { exited: false }> {
+    const job = this.get(id);
+    if (job.status !== "running") return Promise.resolve({ exited: true });
+    if (signal?.aborted === true) return Promise.resolve({ exited: false });
+    return new Promise((resolve) => {
+      let done = false;
+      let timer: NodeJS.Timeout | undefined;
+      const waiter = (exited: boolean): void => {
+        if (done) return;
+        done = true;
+        if (timer !== undefined) clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        this.exitWaiters.get(id)?.delete(waiter);
+        resolve(exited ? { exited: true } : { exited: false });
+      };
+      const onAbort = (): void => waiter(false);
+      timer = setTimeout(() => waiter(false), Math.max(0, timeoutMs));
+      timer.unref?.();
+      signal?.addEventListener("abort", onAbort, { once: true });
+      let waiters = this.exitWaiters.get(id);
+      if (waiters === undefined) {
+        waiters = new Set();
+        this.exitWaiters.set(id, waiters);
+      }
+      waiters.add(waiter);
+    });
+  }
+
   /** Stops a running job and its children: SIGTERM to the group, SIGKILL if it is still up after 5 s. */
   cancel(id: string): JobRecord {
     const job = this.get(id);
@@ -217,6 +384,7 @@ export class JobManager {
     job.status = "cancelled";
     job.endedAt = new Date().toISOString();
     this.save();
+    this.resolveExitWaiters(job.id, true);
     if (pid !== null) {
       signalGroup(pid, "SIGTERM");
       const timer = setTimeout(() => {
@@ -268,7 +436,8 @@ export class JobManager {
     return { job: { ...job }, text: kept, from, next: size, size, truncated: from > 0 };
   }
 
-  private logPath(id: string): string {
+  /** Path of a job's combined stdout/stderr log. */
+  logPath(id: string): string {
     return join(this.dir, `${id}.log`);
   }
 
@@ -305,12 +474,26 @@ export class JobManager {
     job.signal = signal;
     job.endedAt = new Date().toISOString();
     this.save();
+    this.resolveExitWaiters(job.id, true);
+    if (job.visible === false) return;
+    this.publishFinished(job);
+  }
+
+  /** Sends the completion of a visible job to the agent, the quiet channel, or a waiting notifier. */
+  private publishFinished(job: JobRecord): void {
     if (!job.notify) {
       this.notify({ ...job }, this.quietNotifier);
       return;
     }
     if (this.notifier === undefined) this.pending.push({ ...job });
     else this.notify({ ...job });
+  }
+
+  private resolveExitWaiters(id: string, exited: boolean): void {
+    const waiters = this.exitWaiters.get(id);
+    if (waiters === undefined) return;
+    this.exitWaiters.delete(id);
+    for (const waiter of waiters) waiter(exited);
   }
 
   private notify(job: JobRecord, notifier = this.notifier): void {
@@ -323,6 +506,9 @@ export class JobManager {
 
   /** Jobs left running by an earlier server process end without an exit event; poll their pids. */
   private watchOrphans(): void {
+    // One interval covers every adopted job dynamically. Starting another on each
+    // promotion would overwrite the only handle that can clear them.
+    if (this.orphanTimer !== undefined) return;
     const orphans = () =>
       this.list().filter((job) => job.status === "running" && !this.children.has(job.id));
     if (orphans().length === 0) return;
@@ -338,7 +524,7 @@ export class JobManager {
   }
 
   private prune(): void {
-    const finished = this.list().filter((job) => job.status !== "running");
+    const finished = this.all().filter((job) => job.status !== "running");
     for (const job of finished.slice(0, Math.max(0, finished.length - MAX_KEPT_JOBS))) {
       this.jobs.delete(job.id);
     }
@@ -350,7 +536,7 @@ export class JobManager {
     } catch (error) {
       console.error("[pi] job change listener failed", error);
     }
-    const body = `${JSON.stringify({ jobs: this.list() }, null, 2)}\n`;
+    const body = `${JSON.stringify({ sequence: this.sequence, jobs: this.all() }, null, 2)}\n`;
     this.writes = writeIndex(this.indexPath, body);
   }
 
@@ -358,6 +544,20 @@ export class JobManager {
   flush(): Promise<void> {
     return this.writes;
   }
+}
+
+/** Fills fields written by older versions, which had no foreground phase or owner. */
+function normalizeJob(job: JobRecord): JobRecord {
+  const owner = job.owner;
+  return {
+    ...job,
+    origin: job.origin === "bash" ? "bash" : "job_start",
+    owner:
+      owner?.kind === "plan" && typeof owner.taskId === "string"
+        ? { kind: "plan", taskId: owner.taskId }
+        : { kind: "chat" },
+    visible: job.visible !== false,
+  };
 }
 
 function alive(pid: number | null): boolean {
@@ -441,7 +641,8 @@ export function describeJob(job: JobRecord, now = Date.now()): string {
           : job.status === "cancelled"
             ? `cancelled after ${duration}`
             : "lost (the server restarted and the exit code is unknown)";
-  return `${job.id} ${state}: ${job.name}`;
+  const owner = job.owner?.kind === "plan" ? ` (plan ${job.owner.taskId})` : "";
+  return `${job.id} ${state}: ${job.name}${owner}`;
 }
 
 /** What the agent reads when a job ends on its own. */

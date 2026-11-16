@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -358,6 +358,85 @@ test("the tools start, list, read and cancel jobs", async (t) => {
   await waitForGroup(pid, (live) => live.length === 0, `process group ${pid} to exit`);
   await jobs.flush();
   assert.match(await run("job_output", { id: "nope" }), /Unknown job/);
+});
+
+test("the job_start limit counts only jobs started by job_start", async (t) => {
+  const { dataDir, track } = await jobStore(t);
+  const jobs = track(new JobManager(dataDir, cwd));
+  await jobs.load();
+  const handedOff: string[] = [];
+  for (let index = 0; index < 8; index += 1) {
+    const job = jobs.begin({ command: "sleep 30", origin: "bash", notify: false });
+    handedOff.push(jobs.promote(job.id, { notify: false }).id);
+  }
+  const normal = jobs.start({ command: "true", notify: false });
+  await until(() => jobs.get(normal.id).status !== "running");
+  for (const id of handedOff) jobs.cancel(id);
+
+  const started: string[] = [];
+  for (let index = 0; index < 8; index += 1) {
+    started.push(jobs.start({ command: "sleep 30", notify: false }).id);
+  }
+  assert.throws(
+    () => jobs.start({ command: "sleep 30", notify: false }),
+    /8 jobs are already running; the limit is 8/,
+  );
+  for (const id of started) jobs.cancel(id);
+  await jobs.flush();
+});
+
+test("promotions share the one orphan watcher already running", async (t) => {
+  const { dataDir, track } = await jobStore(t);
+  const child = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+  child.unref();
+  try {
+    await mkdir(join(dataDir, "jobs"), { recursive: true });
+    await writeFile(
+      join(dataDir, "jobs", "jobs.json"),
+      JSON.stringify({
+        jobs: [
+          {
+            id: "j1",
+            name: "adopted",
+            command: "sleep 30",
+            cwd,
+            pid: child.pid ?? null,
+            status: "running",
+            exitCode: null,
+            signal: null,
+            notify: true,
+            origin: "bash",
+            owner: { kind: "chat" },
+            visible: true,
+            startedAt: new Date().toISOString(),
+            endedAt: null,
+          },
+        ],
+      }),
+    );
+    const jobs = track(new JobManager(dataDir, cwd));
+    await jobs.load();
+    const watcher = (jobs as unknown as { orphanTimer?: NodeJS.Timeout }).orphanTimer;
+    assert.ok(watcher, "loading an orphan starts its watcher");
+    for (let index = 0; index < 3; index += 1) {
+      const job = jobs.begin({ command: "true", notify: false });
+      jobs.promote(job.id, { notify: false });
+      await until(() => jobs.get(job.id).status !== "running");
+    }
+    assert.equal(
+      (jobs as unknown as { orphanTimer?: NodeJS.Timeout }).orphanTimer,
+      watcher,
+      "promoting another job must not replace the watcher",
+    );
+    jobs.cancel("j1");
+    await jobs.flush();
+  } finally {
+    try {
+      if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
+    } catch {
+      // Already gone.
+    }
+  }
 });
 
 test("tailLines keeps the last lines within the character cap", () => {
