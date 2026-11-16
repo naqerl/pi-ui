@@ -39,13 +39,18 @@ import {
   type TaskDecisionNoticeRecord,
   taskDecisionPrompt,
 } from "../shared/notices.js";
-import { QUEUE_ENTRY_KIND, queuedNoticeIcon, queueKeyFromEntryData } from "../shared/queue.js";
+import {
+  PENDING_QUEUE_ORDER,
+  QUEUE_ENTRY_KIND,
+  queuedNoticeIcon,
+  queueKeyFromEntryData,
+} from "../shared/queue.js";
 import {
   QUIET_AFTER_MS as DEFAULT_QUIET_AFTER_MS,
   type DurableRunFacts,
   reconcileRunState,
 } from "../shared/run-health.js";
-import { steerDropReason, steerFromInboxItem } from "../shared/steers.js";
+import { foldSteers, steerDropReason, steerFromInboxItem } from "../shared/steers.js";
 import {
   type ChatMessage,
   type ContextUsage,
@@ -659,10 +664,16 @@ export class ChatService {
   private readonly queued = new Map<string, QueuedRun>();
   /** Steers durable holds in its inbox for the next turn boundary, by submission id. */
   private readonly steers = new Map<string, QueuedMessage>();
+  /** Pending operator inputs a stop or a run end released, waiting to become the next turn. */
+  private readonly held = new Map<string, QueuedMessage>();
+  /** Ids in `held` that came from a steer rather than a queued follow-up. */
+  private readonly heldSteers = new Set<string>();
   /** Bumped on every queue/steer mutation, so a stale snapshot cannot undo it. */
   private queueRevision = 0;
   /** One event-driven wake for inputs a finished run left queued; see `drainQueuedInputs`. */
   private queueDrain: Promise<void> | undefined;
+  /** One coalesced send for inputs a stop or run end released; see `flushHeldInputs`. */
+  private heldFlush: Promise<void> | undefined;
   private marker: RunMarker | undefined;
   private markerWrites: Promise<void> = Promise.resolve();
   /** Coalesced state writes: many queue mutations in one tick become one marker write. */
@@ -1101,6 +1112,122 @@ export class ChatService {
     });
     this.queueDrain = run;
     return run;
+  }
+
+  /** Moves pending operator inputs out of the live lists so an abort cannot discard them. */
+  private holdPendingInputs(): void {
+    let moved = false;
+    for (const [id, queued] of [...this.queued]) {
+      const item = queued.item;
+      if (item.hidden === true || item.notice !== undefined || this.held.has(id)) continue;
+      this.queued.delete(id);
+      this.held.set(id, item);
+      moved = true;
+    }
+    for (const [id, steer] of [...this.steers]) {
+      if (steer.hidden === true || steer.notice !== undefined || this.held.has(id)) continue;
+      this.steers.delete(id);
+      this.held.set(id, steer);
+      this.heldSteers.add(id);
+      moved = true;
+    }
+    if (!moved) return;
+    this.markQueueChanged();
+    this.broadcastQueue();
+  }
+
+  /**
+   * Sends everything a stop or a run end held. Pending steers fold into one message and keep
+   * the position of the earliest steer among the queued follow-ups.
+   */
+  private flushHeldInputs(): Promise<void> {
+    if (this.closed || this.shuttingDown || this.held.size === 0) return Promise.resolve();
+    if (this.heldFlush !== undefined) return this.heldFlush;
+    const work = (async () => {
+      const held = [...this.held.values()].sort(
+        (left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt),
+      );
+      const steers = held.filter((item) => this.heldSteers.has(item.id));
+      const folded = foldSteers(steers);
+      const sequence: { item: QueuedMessage; steers: QueuedMessage[] }[] = [];
+      let placedFold = false;
+      for (const item of held) {
+        if (this.heldSteers.has(item.id)) {
+          if (!placedFold && folded !== undefined) {
+            sequence.push({ item: folded, steers });
+            placedFold = true;
+          }
+          continue;
+        }
+        sequence.push({ item, steers: [] });
+      }
+      if (!placedFold && folded !== undefined) sequence.push({ item: folded, steers });
+      this.held.clear();
+      this.heldSteers.clear();
+      for (const entry of sequence) {
+        const attachments = entry.item.attachments ?? [];
+        try {
+          await this.submit(entry.item.text, "queue", {
+            ...(attachments.length === 0 ? {} : { attachments }),
+          });
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          if (entry.steers.length > 0) {
+            for (const steer of entry.steers) this.failHeldSteer(steer, reason);
+          } else {
+            this.reportHeldQueueFailure(entry.item, reason);
+          }
+        }
+      }
+    })();
+    let run: Promise<void>;
+    run = work.finally(() => {
+      if (this.heldFlush === run) this.heldFlush = undefined;
+    });
+    this.heldFlush = run;
+    return run;
+  }
+
+  /** A held steer whose resubmission failed becomes a visible failed bubble again. */
+  private failHeldSteer(steer: QueuedMessage, reason: string): void {
+    this.steers.set(steer.id, steer);
+    this.markQueueChanged();
+    this.broadcastQueue();
+    this.dropSteer(steer.id, reason);
+  }
+
+  /** A queued follow-up whose resubmission failed stays visible with its text. */
+  private reportHeldQueueFailure(item: QueuedMessage, reason: string): void {
+    this.hub.broadcast({
+      event: "notice",
+      data: {
+        message: {
+          id: `m-held-${item.id}`,
+          role: "user",
+          text: item.text,
+          isError: true,
+          timestamp: item.createdAt,
+          order: PENDING_QUEUE_ORDER,
+        } satisfies ChatMessage,
+      },
+    });
+    console.error(`[pi] could not resend a held message: ${reason}`);
+  }
+
+  /** Holds one unplaced steer, or reports a machine notice as dropped like before. */
+  private holdSteer(steer: QueuedMessage, reason: string): boolean {
+    if (!this.steers.has(steer.id)) return false;
+    if (steer.hidden === true || steer.notice !== undefined) {
+      return this.dropSteer(steer.id, reason);
+    }
+    this.steers.delete(steer.id);
+    if (!this.held.has(steer.id)) {
+      this.held.set(steer.id, steer);
+      this.heldSteers.add(steer.id);
+    }
+    this.markQueueChanged();
+    this.broadcastQueue();
+    return true;
   }
 
   /** Keep the run marker on disk while the process winds down. */
@@ -1909,7 +2036,7 @@ export class ChatService {
   }
 
   async stop(): Promise<void> {
-    if (this.runState !== "running" && this.queued.size === 0) return;
+    if (this.runState !== "running" && this.queued.size === 0 && this.steers.size === 0) return;
     const wasRunning = this.runState === "running";
     // A stop from the UI is deliberate: its aborted turn must not ring the phone.
     if (wasRunning) this.runStopped = true;
@@ -1921,17 +2048,14 @@ export class ChatService {
       };
       await this.writeMarker(this.marker);
     }
+    // Release the pending inputs before the abort withdraws durable's inbox.
+    this.holdPendingInputs();
     if (wasRunning) this.taskActivity?.runFailed("interrupted", "stopped from the chat");
     try {
       await this.conversation.abort(SESSION_CONTEXT);
     } catch (error) {
       console.error("[pi] abort failed", error);
     } finally {
-      const clearedQueue = this.queued.size > 0;
-      this.queued.clear();
-      if (clearedQueue) this.markQueueChanged();
-      // Pending steers stay until their submissions settle, so each one can be reported as
-      // dropped with the reason instead of vanishing when the run stops.
       if (wasRunning) {
         this.setRunState("idle");
       } else {
@@ -1939,6 +2063,8 @@ export class ChatService {
         this.broadcastQueue();
       }
     }
+    // Only after the abort commits; otherwise withdrawQueuedInputs eats these submissions.
+    await this.flushHeldInputs();
   }
 
   private async restorePersistedQueue(): Promise<void> {
@@ -2168,6 +2294,7 @@ export class ChatService {
         timestamp: new Date().toISOString(),
         order: entryId ?? Number.MAX_SAFE_INTEGER,
         ...(steer ? { steer: true } : {}),
+        ...(steer ? { steerId: String(submission.id) } : {}),
         ...(steerKey === undefined ? {} : { steerKey }),
       },
       placed,
@@ -2198,16 +2325,22 @@ export class ChatService {
     } catch (error) {
       console.error("[pi] submission wait failed", error);
     } finally {
+      let heldSteer = false;
       if (this.steers.has(steerId)) {
+        const steer = this.steers.get(steerId) as QueuedMessage;
         if (final?.status === "unanswered") {
-          this.dropSteer(steerId, steerDropReason(final.reason, final.detail));
+          heldSteer = this.holdSteer(steer, steerDropReason(final.reason, final.detail));
         } else if (final?.type === "input" && final.status === "done") {
           await this.consumeSteerEntry(final.entry, steerId);
-          if (this.steers.has(steerId)) {
-            this.dropSteer(steerId, "The run ended before the steer was delivered.");
+          const remaining = this.steers.get(steerId);
+          if (remaining !== undefined) {
+            heldSteer = this.holdSteer(remaining, "The run ended before the steer was delivered.");
           }
         } else {
-          this.dropSteer(steerId, "The server lost track of the steer before it was delivered.");
+          heldSteer = this.holdSteer(
+            steer,
+            "The server lost track of the steer before it was delivered.",
+          );
         }
       }
       if (queuedId !== undefined && this.queued.delete(queuedId)) {
@@ -2220,6 +2353,9 @@ export class ChatService {
       if (queuedId !== undefined) void this.drainQueuedInputs();
       if (startsRun && this.queued.size === 0) this.setRunState("idle");
       else this.maybeClearMarker();
+      // Only a steer this settle actually held may flush here. A stop holds its own
+      // inputs before the abort and flushes after it commits.
+      if (heldSteer) await this.flushHeldInputs();
     }
   }
 

@@ -37,6 +37,7 @@ export function App() {
       stop={chat.stop}
       unsendSteer={chat.unsendSteer}
       cancelQueued={chat.cancelQueued}
+      deleteSteer={chat.deleteSteer}
       pendingSteers={chat.steers.filter((steer) => steer.dropped === undefined).length}
       applyTasks={chat.applyTasks}
       stats={{

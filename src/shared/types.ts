@@ -65,6 +65,8 @@ export interface ChatMessage {
   queueIds?: string[];
   /** Stable key shared by a pending steer and the transcript entry that consumed it. */
   steerKey?: string;
+  /** Submission id of a pending steer, so its bubble can be deleted from its own menu. */
+  steerId?: string;
   /** Why a pending steer never reached the transcript. */
   steerError?: string;
   /**

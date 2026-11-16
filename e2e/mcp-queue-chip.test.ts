@@ -514,7 +514,7 @@ test("two notice kinds stay separate chips", () => {
   assert.doesNotMatch(job, /MCP events/);
 });
 
-test("a human queued message keeps its bubble and cancel button", async () => {
+test("a human queued message keeps its bubble and owns its delete menu", async () => {
   const { chat } = queuedChat();
   const result = await chat.submit("typed while the run is busy", "queue");
   const item = result.queue[0];
@@ -527,7 +527,8 @@ test("a human queued message keeps its bubble and cancel button", async () => {
   assert.match(markup, /class="[^"]*\bbg-surface\b/);
   assert.match(markup, /class="[^"]*\bborder-dashed\b/);
   assert.match(markup, />queued</);
-  assert.match(markup, />cancel</);
+  assert.match(markup, /data-pending-menu="true"/);
+  assert.doesNotMatch(markup, /aria-label="cancel"/);
   assert.doesNotMatch(markup, /data-testid="queued-notice-chip"/);
   assert.doesNotMatch(markup, /\bopacity-60\b/);
 });

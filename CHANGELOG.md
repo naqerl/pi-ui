@@ -1,3 +1,14 @@
+## 1.8.1
+
+### Fixed
+
+- A pending message survives a stop. Pending steers fold into the one message the next turn receives, and queued follow-ups are re-sent behind them in typed order instead of turning into red "steer · dropped" bubbles.
+- A pending message can be deleted from its own menu: right-click on a desktop, long-press on a touch screen, then choose Delete steer or Delete queued message.
+
+### Changed
+
+- Stop now sends what was waiting as the next turn instead of clearing the programmatic queue immediately.
+
 ## 1.8.0
 
 ### Added

@@ -283,6 +283,7 @@ export function useTaskChat(taskId: string, closed: boolean) {
     send,
     stop,
     cancelQueued: chat.cancelQueued,
+    deleteSteer: chat.deleteSteer,
     unsendSteer: chat.unsendSteer,
     answerQuestions,
     dismissError,

@@ -1030,6 +1030,22 @@ export function useChat(options: UseChatOptions = {}) {
     [acceptQueueRevision, transport],
   );
 
+  /** Deletes one pending steer from its own bubble; deleting is final, not a take-back. */
+  const deleteSteer = useCallback(
+    async (id: string): Promise<boolean> => {
+      const data = await transport.unsendSteer(id);
+      if (data === null) {
+        await refreshState();
+        return false;
+      }
+      if (acceptQueueRevision(data.queueRevision)) {
+        setSteers((current) => rebuildSteersFromSnapshot(current, data.steers));
+      }
+      return true;
+    },
+    [refreshState, acceptQueueRevision, transport],
+  );
+
   /** Takes back the newest steer the run has not reached; null when there is none left to take. */
   const unsendSteer = useCallback(async (): Promise<QueuedMessage | null> => {
     let latest: PendingSteer | undefined;
@@ -1115,6 +1131,7 @@ export function useChat(options: UseChatOptions = {}) {
     applyTasks,
     send,
     cancelQueued,
+    deleteSteer,
     steerQueued,
     steers,
     unsendSteer,

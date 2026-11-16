@@ -7,6 +7,7 @@ import {
   contentText,
   droppedSteerMessage,
   dropSteer,
+  foldSteers,
   mergeLiveSteers,
   PENDING_STEER_ORDER,
   type PendingSteer,
@@ -41,6 +42,31 @@ test("a pending steer renders after the run's live work, marked pending", () => 
   assert.ok(message.order > Number.MAX_SAFE_INTEGER - 2);
   assert.deepEqual(message.attachments, [{ id: "abc.png", mimeType: "image/*" }]);
   assert.equal(pendingSteerMessage({ id: "8", text: "x", createdAt: "" }).attachments, undefined);
+});
+
+test("pending steers fold into one message with their texts, images and earliest time", () => {
+  const first = {
+    ...steer("1"),
+    text: "look at the tests",
+    createdAt: "2026-10-30T03:00:00.000Z",
+    attachments: ["one.png"],
+  };
+  const second = {
+    ...steer("2"),
+    text: "",
+    createdAt: "2026-10-30T03:01:00.000Z",
+    attachments: ["two.png"],
+  };
+  const folded = foldSteers([first, second]);
+  assert.deepEqual(folded, {
+    id: "1",
+    text: "look at the tests",
+    createdAt: "2026-10-30T03:00:00.000Z",
+    attachments: ["one.png", "two.png"],
+  });
+  assert.equal(foldSteers([first]), first);
+  assert.equal(foldSteers([]), undefined);
+  assert.equal(foldSteers([{ id: "3", text: "", createdAt: "" }]), undefined);
 });
 
 test("pending becomes consumed when the transcript entry with its key arrives", () => {

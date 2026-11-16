@@ -182,6 +182,7 @@ export function TaskAgentChat({
             <TranscriptRows
               groups={groups}
               onCancelQueued={chat.cancelQueued}
+              onDeleteSteer={chat.deleteSteer}
               onOpen={openActivity}
             />
           )}

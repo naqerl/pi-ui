@@ -60,6 +60,7 @@ import { cn } from "./lib/utils";
 import { mediaUrl, uploadMedia } from "./media-client";
 import { useMediaPicker } from "./media-picker";
 import { ChipButton, NoticeLine } from "./NoticeView";
+import { PendingMessageMenu } from "./PendingMessageMenu";
 import { PiMenu } from "./PiMenu";
 import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
 import { RunErrorHeader } from "./RunErrorHeader";
@@ -74,6 +75,7 @@ import {
 import { TaskLinkProvider } from "./task-link";
 import { groupTimeline, type TimelineGroup } from "./timeline-groups";
 import type { SendOutcome, TimelineItem } from "./use-chat";
+import { useContextMenu } from "./use-context-menu";
 import { usePager } from "./use-pager";
 import { useStickToBottom } from "./use-stick-to-bottom";
 import { WorkingIndicator } from "./WorkingIndicator";
@@ -103,6 +105,8 @@ interface ChatViewProps {
   unsendSteer?: () => Promise<QueuedMessage | null>;
   /** Withdraws a follow-up that is waiting for the current turn to end. */
   cancelQueued?: (id: string) => Promise<boolean>;
+  /** Withdraws one pending steer from its own menu; deleting is final. */
+  deleteSteer?: (steerId: string) => Promise<boolean>;
   /** How many steers are waiting for the run's next turn boundary. */
   pendingSteers?: number;
   applyTasks: (ledger: TaskLedger) => void;
@@ -418,10 +422,12 @@ export function MessageBubble({
   message,
   onSteer,
   onCancelQueued,
+  onDeleteSteer,
 }: {
   message: ChatMessage;
   onSteer?: (text: string) => void;
   onCancelQueued?: (id: string) => unknown;
+  onDeleteSteer?: (steerId: string) => Promise<boolean>;
 }) {
   if (message.kind === "session-reset") {
     return (
@@ -475,96 +481,141 @@ export function MessageBubble({
     );
   }
 
+  const pending =
+    (message.pendingSteer === true && message.steerError === undefined) ||
+    message.pendingQueue === true;
+  const props = {
+    message,
+    ...(onCancelQueued === undefined ? {} : { onCancelQueued }),
+    ...(onDeleteSteer === undefined ? {} : { onDeleteSteer }),
+  };
+  return pending ? <PendingMessageRow {...props} /> : <MessageRow {...props} />;
+}
+
+function PendingMessageRow({
+  message,
+  onCancelQueued,
+  onDeleteSteer,
+}: {
+  message: ChatMessage;
+  onCancelQueued?: (id: string) => unknown;
+  onDeleteSteer?: (steerId: string) => Promise<boolean>;
+}) {
+  const menu = useContextMenu();
+  return (
+    <>
+      <MessageRow message={message} menu={menu} />
+      {menu.point !== null && (
+        <PendingMessageMenu
+          point={menu.point}
+          {...(message.steerId === undefined ? {} : { steerId: message.steerId })}
+          {...(message.queueId === undefined ? {} : { queueId: message.queueId })}
+          {...(onDeleteSteer === undefined ? {} : { onDeleteSteer })}
+          {...(onCancelQueued === undefined ? {} : { onCancelQueued })}
+          onClose={menu.close}
+        />
+      )}
+    </>
+  );
+}
+
+function MessageRow({
+  message,
+  menu,
+}: {
+  message: ChatMessage;
+  menu?: ReturnType<typeof useContextMenu>;
+}) {
+  const menuTarget = menu !== undefined;
   const mine = message.role === "user";
   const framed = mine || message.isError === true || message.partial === true;
   return (
-    <div
-      data-message-id={message.id}
-      data-role={message.role}
-      data-pending-steer={message.pendingSteer ? "true" : undefined}
-      data-pending-queue={message.pendingQueue ? "true" : undefined}
-      data-pending-send={message.pendingSend ? "true" : undefined}
-      data-steer-error={message.steerError === undefined ? undefined : "true"}
-      className={cn(
-        "theme-radius w-fit min-w-0 max-w-[85%] bg-surface px-3 py-2 text-sm leading-relaxed [overflow-wrap:anywhere]",
-        mine ? "ml-auto" : "mr-auto",
-        framed && "border",
-        mine && "border-foreground/15",
-        (message.pendingSteer || message.pendingQueue || message.pendingSend) &&
-          "border-dashed opacity-70",
-        message.isError && "border-destructive text-destructive",
-        message.partial && "border-dashed",
-        message.partial && !message.isError && "border-muted-foreground/70",
-      )}
-    >
-      {message.pendingQueue && (
-        <div className="mb-1 flex items-center justify-between gap-3 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-          <span>queued</span>
-          {message.queueId !== undefined && onCancelQueued !== undefined && (
-            <button
-              type="button"
-              title="Remove this queued message"
-              className="shrink-0 font-mono text-[10px] normal-case tracking-normal text-foreground underline decoration-dotted underline-offset-2 hover:text-destructive"
-              onClick={() => {
-                haptic();
-                onCancelQueued(message.queueId as string);
-              }}
-            >
-              cancel
-            </button>
-          )}
-        </div>
-      )}
-      {message.steer && (
-        <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-          {message.pendingSteer
-            ? "steer · pending"
-            : message.steerError
-              ? "steer · dropped"
-              : "steer"}
-        </div>
-      )}
-      {message.steerError && (
-        <p className="mb-1 font-mono text-[11px] leading-4 text-destructive">
-          {message.steerError}
-        </p>
-      )}
-      {message.partial && (
-        <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-          partial
-        </div>
-      )}
-      {message.attachments !== undefined && message.attachments.length > 0 && (
-        <div
-          className="mb-1.5 flex flex-wrap justify-end gap-1.5"
-          data-testid="message-attachments"
-        >
-          {message.attachments.map((item) => (
-            <a
-              key={item.id}
-              href={mediaUrl(item.id)}
-              target="_blank"
-              rel="noreferrer"
-              className="block overflow-hidden rounded-sm border border-foreground/10"
-            >
-              <img
-                src={mediaUrl(item.id)}
-                alt="Attachment"
-                loading="lazy"
-                className="block max-h-48 max-w-full object-cover"
-              />
-            </a>
-          ))}
-        </div>
-      )}
-      {mine
-        ? message.text.length > 0 && (
-            <div className="whitespace-pre-wrap [overflow-wrap:anywhere]">{message.text}</div>
-          )
-        : message.text.length > 0 && <AssistantReply message={message} />}
-      <MessageParts parts={message.parts} />
-      <MessageTime timestamp={message.timestamp} />
-    </div>
+    <>
+      {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: a pending row is a labelled group while it owns the menu. */}
+      <div
+        data-message-id={message.id}
+        data-role={message.role}
+        data-pending-steer={message.pendingSteer ? "true" : undefined}
+        data-pending-queue={message.pendingQueue ? "true" : undefined}
+        data-pending-send={message.pendingSend ? "true" : undefined}
+        data-steer-error={message.steerError === undefined ? undefined : "true"}
+        data-pending-menu={menuTarget ? "true" : undefined}
+        role={menuTarget ? "group" : undefined}
+        tabIndex={menuTarget ? 0 : undefined}
+        aria-label={
+          menuTarget ? (message.pendingSteer ? "Pending steer" : "Queued message") : undefined
+        }
+        style={menuTarget ? { WebkitTouchCallout: "none" } : undefined}
+        {...(menu === undefined ? {} : menu.handlers)}
+        className={cn(
+          "theme-radius w-fit min-w-0 max-w-[85%] bg-surface px-3 py-2 text-sm leading-relaxed [overflow-wrap:anywhere]",
+          mine ? "ml-auto" : "mr-auto",
+          framed && "border",
+          mine && "border-foreground/15",
+          menuTarget && "select-none",
+          (message.pendingSteer || message.pendingQueue || message.pendingSend) &&
+            "border-dashed opacity-70",
+          message.isError && "border-destructive text-destructive",
+          message.partial && "border-dashed",
+          message.partial && !message.isError && "border-muted-foreground/70",
+        )}
+      >
+        {message.pendingQueue && (
+          <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+            queued
+          </div>
+        )}
+        {message.steer && (
+          <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+            {message.pendingSteer
+              ? "steer · pending"
+              : message.steerError
+                ? "steer · dropped"
+                : "steer"}
+          </div>
+        )}
+        {message.steerError && (
+          <p className="mb-1 font-mono text-[11px] leading-4 text-destructive">
+            {message.steerError}
+          </p>
+        )}
+        {message.partial && (
+          <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+            partial
+          </div>
+        )}
+        {message.attachments !== undefined && message.attachments.length > 0 && (
+          <div
+            className="mb-1.5 flex flex-wrap justify-end gap-1.5"
+            data-testid="message-attachments"
+          >
+            {message.attachments.map((item) => (
+              <a
+                key={item.id}
+                href={mediaUrl(item.id)}
+                target="_blank"
+                rel="noreferrer"
+                className="block overflow-hidden rounded-sm border border-foreground/10"
+              >
+                <img
+                  src={mediaUrl(item.id)}
+                  alt="Attachment"
+                  loading="lazy"
+                  className="block max-h-48 max-w-full object-cover"
+                />
+              </a>
+            ))}
+          </div>
+        )}
+        {mine
+          ? message.text.length > 0 && (
+              <div className="whitespace-pre-wrap [overflow-wrap:anywhere]">{message.text}</div>
+            )
+          : message.text.length > 0 && <AssistantReply message={message} />}
+        <MessageParts parts={message.parts} />
+        <MessageTime timestamp={message.timestamp} />
+      </div>
+    </>
   );
 }
 
@@ -1623,12 +1674,14 @@ export function TranscriptRows({
   groups,
   onSteer,
   onCancelQueued,
+  onDeleteSteer,
   onOpen,
   liveActivityGroupKey,
 }: {
   groups: TimelineGroup[];
   onSteer?: (text: string) => void;
   onCancelQueued?: (id: string) => unknown;
+  onDeleteSteer?: (steerId: string) => Promise<boolean>;
   onOpen?: (run: string, trigger: HTMLButtonElement) => void;
   liveActivityGroupKey?: string;
 }) {
@@ -1642,6 +1695,7 @@ export function TranscriptRows({
               message={group.message}
               {...(onSteer === undefined ? {} : { onSteer })}
               {...(onCancelQueued === undefined ? {} : { onCancelQueued })}
+              {...(onDeleteSteer === undefined ? {} : { onDeleteSteer })}
             />
           );
         }
@@ -1699,6 +1753,7 @@ export function ChatView({
   stop,
   unsendSteer,
   cancelQueued,
+  deleteSteer,
   pendingSteers = 0,
   applyTasks,
   stats,
@@ -2275,6 +2330,7 @@ export function ChatView({
                     groups={groups}
                     onSteer={steerNotice}
                     onCancelQueued={cancelQueued}
+                    onDeleteSteer={deleteSteer}
                     onOpen={openActivity}
                     liveActivityGroupKey={liveActivityGroupKey}
                   />

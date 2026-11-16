@@ -821,7 +821,7 @@ test("moving a queued follow-up to a steer does not resend one already placed", 
   assert.equal((await session.snapshot()).queue?.length, 0);
 });
 
-test("an undelivered plan steer leaves a dropped bubble instead of vanishing", async () => {
+test("an undelivered plan steer is resent as the next message instead of vanishing", async () => {
   const conversation = new FakeCancelConversation();
   const session = new DurableTaskAgentSession(
     "tasksteer",
@@ -840,14 +840,17 @@ test("an undelivered plan steer leaves a dropped bubble instead of vanishing", a
   assert.equal(steer.queued, false);
   assert.equal((await session.snapshot()).steers?.length, 1);
 
-  // A done submission whose entry never carried the steer must not delete it silently.
+  // A done submission whose entry never carried the steer becomes the next message.
   conversation.settle(2, { type: "input", status: "done", entry: 2 });
   await new Promise((resolve) => setTimeout(resolve, 20));
 
-  const dropped = frames.find((frame) => frame.event === "steer.dropped");
-  assert.ok(dropped);
-  assert.match((dropped.data as { reason: string }).reason, /run ended before/i);
+  assert.equal(
+    frames.some((frame) => frame.event === "steer.dropped"),
+    false,
+  );
   assert.equal((await session.snapshot()).steers?.length, 0);
+  assert.equal(conversation.submissionCount, 3);
+  assert.equal((await session.snapshot()).queue?.[0]?.text, "steer while busy");
 });
 
 test("a settled failure frames an error, clears on submit, and dismisses without a submit", async () => {

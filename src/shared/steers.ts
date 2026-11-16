@@ -4,6 +4,24 @@ import type { ChatMessage, QueuedMessage } from "./types.js";
 /** Pending steers sort after everything the run is still doing, oldest first. */
 export const PENDING_STEER_ORDER = Number.MAX_SAFE_INTEGER;
 
+/** Folds every pending steer into the one message the next turn receives, or undefined when there is nothing to send. */
+export function foldSteers(steers: readonly QueuedMessage[]): QueuedMessage | undefined {
+  if (steers.length === 0) return undefined;
+  const texts = steers.flatMap((steer) => (steer.text.length === 0 ? [] : [steer.text]));
+  const attachments = steers.flatMap((steer) => steer.attachments ?? []);
+  if (texts.length === 0 && attachments.length === 0) return undefined;
+  if (steers.length === 1) return steers[0];
+  const earliest = steers.reduce((oldest, steer) =>
+    Date.parse(steer.createdAt) < Date.parse(oldest.createdAt) ? steer : oldest,
+  );
+  return {
+    id: earliest.id,
+    text: texts.join("\n\n"),
+    createdAt: earliest.createdAt,
+    ...(attachments.length === 0 ? {} : { attachments }),
+  };
+}
+
 /** A steer held by the server, and the reason if it was dropped before it was placed. */
 export interface PendingSteer extends QueuedMessage {
   dropped?: string;
@@ -19,6 +37,7 @@ export function pendingSteerMessage(steer: QueuedMessage): ChatMessage {
     order: PENDING_STEER_ORDER,
     steer: true,
     pendingSteer: true,
+    steerId: steer.id,
     ...(steer.key === undefined ? {} : { steerKey: steer.key }),
     ...(steer.attachments === undefined || steer.attachments.length === 0
       ? {}
@@ -37,6 +56,7 @@ export function droppedSteerMessage(steer: QueuedMessage, reason: string): ChatM
     steer: true,
     isError: true,
     steerError: reason,
+    steerId: steer.id,
     ...(steer.key === undefined ? {} : { steerKey: steer.key }),
     ...(steer.attachments === undefined || steer.attachments.length === 0
       ? {}
