@@ -2567,7 +2567,8 @@ export class ChatService {
         });
         // A catch-up read may be in flight. Wait for it, then fold this row, so the
         // chip keeps the group's first id instead of being applied out of order.
-        await this.syncTranscript();
+        // A test double with no entries() scan still records the row on the projection.
+        if (typeof this.conversation.entries === "function") await this.syncTranscript();
         this.noteEntry(entry);
         const message = this.transcript.mcpChip(noticeId);
         if (message !== undefined) this.hub.broadcast({ event: "notice", data: { message } });
