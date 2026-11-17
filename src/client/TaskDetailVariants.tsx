@@ -19,6 +19,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "./components/ui/dropdown-menu";
+import { haptic } from "./haptics";
 import { CheckIcon, CloseIcon, MoreIcon, MoreVerticalIcon, PlusIcon, RefreshIcon } from "./icons";
 import { STACK_4, STACK_8 } from "./lib/spacing";
 import { cn } from "./lib/utils";
@@ -29,6 +30,7 @@ import type { ProjectSuggestion } from "./ProjectSuggestions";
 import { SECTION_BAR_ICON_BUTTON, SECTION_BAR_LABEL, SectionBar } from "./SectionBar";
 import { TaskAgentChat } from "./TaskAgentChat";
 import { TaskPlanningBadge } from "./TaskPlanningBadge";
+import { usePager } from "./use-pager";
 import type { TaskMedia } from "./use-task-media";
 
 function shortId(id: string): string {
@@ -1043,14 +1045,37 @@ function linkedTab(taskId: string): "plan" | "chat" {
   return link !== null && link.id === taskId && link.tab !== null ? "chat" : "plan";
 }
 
+const TAB_INDEX = { plan: 0, chat: 1 } as const;
+
 function MobileDetail({ model }: { model: TaskDetailModel }) {
   const [tab, setTab] = useState<"plan" | "chat">(() => linkedTab(model.task.id));
+  // The same pager that drives the app's pages, nested in the detail body. It
+  // owns the swipe-to-tab state machine; `tab` stays the label TabBar and the
+  // hash link read.
+  const tabs = usePager(2, TAB_INDEX[tab], { nested: true, keyboard: false });
+  const lastTab = useRef(tabs.page);
 
   useEffect(() => {
-    const sync = () => setTab(linkedTab(model.task.id));
+    setTab(tabs.page === TAB_INDEX.chat ? "chat" : "plan");
+  }, [tabs.page]);
+
+  useEffect(() => {
+    const sync = () => {
+      const next = linkedTab(model.task.id);
+      setTab(next);
+      tabs.setPage(TAB_INDEX[next]);
+    };
     window.addEventListener("hashchange", sync);
     return () => window.removeEventListener("hashchange", sync);
-  }, [model.task.id]);
+  }, [model.task.id, tabs.setPage]);
+
+  // A committed tab change is worth a tap of haptics; the first paint and a
+  // snap back to the current tab stay silent.
+  useEffect(() => {
+    if (lastTab.current === tabs.page) return;
+    lastTab.current = tabs.page;
+    haptic(10);
+  }, [tabs.page]);
 
   return (
     <article
@@ -1059,25 +1084,58 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
       aria-label={model.title}
       className="flex min-h-0 flex-1 flex-col overflow-hidden"
     >
-      <TitleCard model={model} tabs={<TabBar tab={tab} onTab={setTab} />} flush />
-      <div
-        className={cn(
-          "flex min-h-0 flex-1 flex-col",
-          tab === "plan" ? "overflow-y-auto" : "overflow-hidden",
-        )}
-      >
-        <div className={cn(STACK_8, "px-3 pt-3", tab !== "plan" && "hidden")}>
-          <PlanSections model={model} />
-        </div>
-        <div className={cn("flex min-h-0 flex-1 flex-col px-3", tab !== "chat" && "hidden")}>
-          <TaskAgentChat
-            key={model.task.id}
-            task={model.task}
-            projects={model.projects}
-            variant="pane"
-            composerTarget="dock"
-            active={tab === "chat"}
+      <TitleCard
+        model={model}
+        tabs={
+          <TabBar
+            tab={tab}
+            onTab={(next) => {
+              setTab(next);
+              tabs.setPage(TAB_INDEX[next]);
+            }}
           />
+        }
+        flush
+      />
+      <div
+        {...tabs.pagerProps}
+        className="flex min-h-0 flex-1 overflow-hidden"
+        data-testid="task-tab-track"
+      >
+        <div
+          className={cn(
+            "flex h-full w-full",
+            tabs.dragging
+              ? "transition-none"
+              : "transition-transform duration-300 ease-out motion-reduce:transition-none",
+          )}
+          style={{
+            transform: `translate3d(calc(${-tabs.page * 100}% + ${tabs.dragX}px), 0, 0)`,
+          }}
+        >
+          <section
+            className="h-full min-w-0 shrink-0 grow-0 basis-full overflow-y-auto overflow-x-hidden px-3 pt-3"
+            aria-label="Plan"
+            aria-hidden={tab !== "plan"}
+            inert={tab !== "plan" || undefined}
+          >
+            <PlanSections model={model} />
+          </section>
+          <section
+            className="flex h-full min-h-0 min-w-0 shrink-0 grow-0 basis-full flex-col px-3"
+            aria-label="Chat"
+            aria-hidden={tab !== "chat"}
+            inert={tab !== "chat" || undefined}
+          >
+            <TaskAgentChat
+              key={model.task.id}
+              task={model.task}
+              projects={model.projects}
+              variant="pane"
+              composerTarget="dock"
+              active={tab === "chat"}
+            />
+          </section>
         </div>
       </div>
     </article>
