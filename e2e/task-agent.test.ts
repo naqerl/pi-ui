@@ -186,7 +186,6 @@ test("a plan job notice never opens a session, and reaches a live one", async ()
   await manager.close();
 });
 
-
 test("the plan memory tools share the store the chat agent writes", async () => {
   const memoryStore = new MemoryStore(join(directory, "plan-write-memory"));
   await memoryStore.ensure();
@@ -492,7 +491,6 @@ test("a plan write refreshes the existing session without touching the chat cach
 
   await manager.close();
 });
-
 
 test("a long-term plan write invalidates the shared cache and reaches the main instructions", async () => {
   const memoryStore = new MemoryStore(join(directory, "plan-long-term-memory"));
