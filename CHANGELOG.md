@@ -1,3 +1,20 @@
+## 1.9.0
+
+### Added
+
+- `bash` has a 120-second foreground window (`PI_BASH_HANDOFF_MS`). A command still running at the limit continues as a background job and the call returns its retained output tail plus a notice naming the job. The job's completion arrives as a job notice. A fast command's record is dropped; when its retained output was truncated, its log stays at the advertised `fullOutputPath`.
+- `JobManager` has a foreground phase: `begin` spawns hidden, `promote` makes a job visible and notifies on completion, `discard` drops a fast command and its log, and `waitForExit` resolves on exit, timeout or abort. A hidden command still running at boot is promoted; one whose pid is gone is dropped. The job id high-water mark is persisted and recovered from log names, so a log kept for a truncated fast result is never reused.
+- The plan agent can read and stop handed-off commands with `job_output` and `job_cancel`. Its completion notices route to the plan conversation, or to an activity row when no plan session is live.
+
+### Changed
+
+- A Stop or an aborted turn hands a running `bash` command over instead of killing it. Stop stops the turn, not the work.
+- The `bash` tool schema no longer accepts `timeout`; one rule replaces it.
+- At most 12 live commands run at once, including hidden foreground calls. `job_start` keeps its separate limit of 8, which counts only `job_start` jobs.
+- The final foreground read stops at the log size seen at the handoff and returns only a bounded tail (with a capped newline-less remainder), so a continuously writing or newline-less command cannot hold the turn open or inflate memory. The complete log stays on disk for `fullOutputPath` and `job_output`.
+- A queued plan job notice carries the same kind, label and icon as the chat path, so a busy plan shows it as a notice chip and consecutive job notices merge.
+- `describeJob` names the owning plan task.
+
 ## 1.8.1
 
 ### Added

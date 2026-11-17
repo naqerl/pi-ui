@@ -425,6 +425,7 @@ const taskAgents = new TaskAgentManager({
   },
   baseInstructions: planBase,
   memory: { store: memory, snapshot: memorySnapshot },
+  jobs,
 });
 // Do not hold HTTP or the main chat behind sessions that were live at the last stop;
 // shutdown awaits this promise so an in-flight open cannot race the close.
@@ -487,7 +488,20 @@ jobs.onChange(() => {
   hub.broadcast({ event: "jobs", data: builtinJobs() });
 });
 jobs.setNotifier((job, tail) => {
-  void chat.submitJobNotice(jobNotice(job, tail)).catch((error: unknown) => {
+  const text = jobNotice(job, tail);
+  if (job.owner.kind === "plan") {
+    void taskAgents
+      .submitJobNotice(job.owner.taskId, text)
+      .then((delivered) => {
+        // A closed plan pane is not woken for a job result; the activity row remains.
+        if (!delivered) return chat.recordNotice(text);
+      })
+      .catch((error: unknown) => {
+        console.error(`[pi] background job ${job.id} plan notice failed`, error);
+      });
+    return;
+  }
+  void chat.submitJobNotice(text).catch((error: unknown) => {
     console.error(`[pi] background job ${job.id} message failed`, error);
   });
 });

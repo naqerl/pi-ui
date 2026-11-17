@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
+import { createTimedBashTool } from "../src/server/bash-tool.js";
 import { createDashboardTools } from "../src/server/dashboard-tools.js";
 import { createAcpDelegateTools } from "../src/server/delegate-tools.js";
 import { createDiagramTools } from "../src/server/diagram-tools.js";
@@ -93,7 +94,8 @@ function findSchemaViolations(toolName: string, schema: JsonSchema): string[] {
 function collectAgentTools(): ToolRegistration[] {
   const unused = {} as never;
   return [
-    ...(createCodingTools().tools ?? []),
+    ...(createCodingTools().tools ?? []).filter((tool) => tool.name !== "bash"),
+    createTimedBashTool(unused),
     ...createTaskTools(unused),
     ...createJobTools(unused),
     ...createAcpDelegateTools(unused),
