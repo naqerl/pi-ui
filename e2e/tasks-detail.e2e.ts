@@ -128,8 +128,9 @@ async function openSnapshot(
 /**
  * Elements on the tasks page whose content is wider than their own box. Only
  * the nodes that intentionally clip their own overflow are exempt: the
- * offscreen dashboard pager is excluded by scanning inside the tasks page, and
- * visually-hidden labels and the ellipsised run-error label never show it.
+ * offscreen dashboard pager is excluded by scanning inside the tasks page,
+ * visually-hidden labels and the ellipsised run-error label never show it, and
+ * a carousel viewport/track marks itself with data-overflow-clip.
  */
 async function horizontalOverflow(browser: Browser) {
   return browser.evaluate(() => {
@@ -142,9 +143,7 @@ async function horizontalOverflow(browser: Browser) {
         const clipped =
           node.closest(".sr-only") !== null ||
           node.closest('[data-testid="run-error-open"]') !== null ||
-          node.closest("[data-overflow-clip]") !== null ||
-          style.overflowX === "hidden" ||
-          style.overflowX === "clip";
+          node.hasAttribute("data-overflow-clip");
         return style.display !== "none" && style.visibility !== "hidden" && !clipped;
       })
       .filter((node) => node.scrollWidth > node.clientWidth)

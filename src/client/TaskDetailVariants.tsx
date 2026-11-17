@@ -1073,6 +1073,7 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
           {...pager.pagerProps}
           data-testid="task-tab-track"
           data-pager-lock=""
+          data-overflow-clip=""
           className={cn(
             "flex h-full w-full",
             pager.dragging
