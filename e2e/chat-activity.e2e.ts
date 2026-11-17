@@ -69,7 +69,14 @@ describe("activity surface against one shared app", { serial: true }, () => {
     await info.tap();
     await expect(screen.getByTestId("activity-dialog")).toBeVisible();
     await expect(screen.getByRole("heading", { name: "Activity", level: 1 })).toBeVisible();
-    await expect(screen.getByText("bash · 1.2s · ok", { exact: true })).toBeVisible();
+    await expect(screen.getByText("bash · ok", { exact: true })).toBeVisible();
+    expect(
+      await browser.evaluate(() =>
+        [...document.querySelectorAll<HTMLElement>('[data-testid="activity-duration"]')].map(
+          (row) => row.textContent,
+        ),
+      ),
+    ).toEqual(["1.2s", "1.0s"]);
 
     const during = await browser.evaluate(() => {
       const dialog = document.querySelector<HTMLDialogElement>('[data-testid="activity-dialog"]');
@@ -106,7 +113,7 @@ describe("activity surface against one shared app", { serial: true }, () => {
     });
     await app.open("/activity?run=activity-message-ask-0");
     await expect(screen.getByTestId("activity-dialog")).toBeVisible();
-    await expect(screen.getByText("bash · 1.2s · ok", { exact: true })).toBeVisible();
+    await expect(screen.getByText("bash · ok", { exact: true })).toBeVisible();
     expect(
       await browser.evaluate(
         () => document.querySelector('[data-testid="composer-dock"]') !== null,
