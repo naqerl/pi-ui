@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
-import { SnapshotCache } from "../src/server/memory/snapshot.js";
+import { SnapshotCache, SnapshotController } from "../src/server/memory/snapshot.js";
 import { MemoryStore } from "../src/server/memory/store.js";
 import { createMemoryTools } from "../src/server/memory/tools.js";
 import { RunMarkerStore } from "../src/server/run-marker.js";
@@ -375,6 +375,70 @@ test("a plan write refreshes the existing session without touching the chat cach
   await manager.close();
 });
 
+test("a long-term plan write invalidates the shared cache and reaches the main instructions", async () => {
+  const memoryStore = new MemoryStore(join(directory, "plan-long-term-memory"));
+  await memoryStore.ensure();
+  await memoryStore.atomicWrite(memoryStore.memoryFile, "# MEMORY\n\n- main rule\n");
+  const shared = new SnapshotCache();
+  const applied: string[] = [];
+  const mainMemory = new SnapshotController(
+    memoryStore,
+    "MAIN BASE",
+    async (next) => {
+      applied.push(next);
+    },
+    shared,
+  );
+  await mainMemory.refresh("first_turn");
+  assert.equal(applied.length, 1);
+  const before = memoryStore.checkpoint;
+
+  const fakes = new Map<string, FakeSession>();
+  const manager = new TaskAgentManager({
+    dataDir: directory,
+    cwd: directory,
+    models: {} as never,
+    model: undefined,
+    store,
+    publish: () => undefined,
+    baseInstructions: "BASE",
+    memory: { store: memoryStore, snapshot: shared },
+    openSession: async (taskId) => {
+      const session = new FakeSession(taskId);
+      fakes.set(taskId, session);
+      return session;
+    },
+  });
+  const task = (await store.create("Plan a long-term memory write", null)).tasks.find(
+    (item) => item.title === "Plan a long-term memory write",
+  );
+  assert.ok(task);
+  await manager.ensure(task.id);
+  const tools = new Map(manager.planMemoryTools(task.id).map((tool) => [tool.name, tool]));
+  const write = tools.get("memory_write");
+  assert.ok(write);
+  const marker = `plan-long-term-${Date.now()}`;
+  const result = await write.execute(
+    {
+      target: "long_term",
+      topic: "plan-long-term",
+      scope: "projects",
+      body: `# Plan long-term decision\n\n${marker}`,
+    } as never,
+    {} as never,
+    {} as never,
+  );
+  assert.equal(result.isError === true, false);
+  assert.equal(memoryStore.checkpoint, before + 1);
+  assert.equal(shared.built, false, "the shared snapshot must be invalidated");
+
+  // The main conversation gets the written topic body on its next turn, without a chip.
+  const next = await mainMemory.refresh();
+  assert.match(next, new RegExp(marker));
+  assert.match(applied.at(-1) ?? "", new RegExp(marker));
+  await manager.close();
+});
+
 test("the plan prompt carries the same snapshot block as the main chat", async () => {
   const memoryStore = new MemoryStore(join(directory, "plan-memory"));
   await memoryStore.ensure();
@@ -474,6 +538,11 @@ test("PI_PLAN_MEMORY=0 drops the snapshot and every memory tool", async () => {
     assert.ok(instructions);
     assert.doesNotMatch(instructions, /Memory snapshot/);
     assert.doesNotMatch(instructions, /hidden while off/);
+    assert.doesNotMatch(
+      instructions,
+      /memory_read|memory_grep|memory_find|memory_status|memory_write/,
+    );
+    assert.match(instructions, /Memory is disabled/);
   } finally {
     if (previous === undefined) delete process.env.PI_PLAN_MEMORY;
     else process.env.PI_PLAN_MEMORY = previous;

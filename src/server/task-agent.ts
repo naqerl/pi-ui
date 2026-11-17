@@ -412,12 +412,34 @@ export function taskAgentHarnessSettings(env: NodeJS.ProcessEnv = process.env): 
   };
 }
 
+export interface TaskAgentInstructionOptions {
+  /** False when PI_PLAN_MEMORY=0 or no memory store was supplied. */
+  readonly memoryEnabled?: boolean;
+}
+
 export function taskAgentInstructions(
   base: string,
   task: Pick<Task, "id" | "title" | "body" | "project">,
+  options: TaskAgentInstructionOptions = {},
 ): string {
   const project = task.project === undefined ? "none" : task.project;
   const body = task.body === undefined || task.body.length === 0 ? "(empty)" : task.body;
+  const memoryEnabled = options.memoryEnabled !== false;
+  const memoryPolicy = memoryEnabled
+    ? `- You must not edit, write, create or delete any workspace files, and you must not run commands that change the workspace. The memory_write tool is the one write you may make, and it only touches the memory store.
+
+Memory and skills:
+- The block injected above is the main chat's live memory, truncated: standing rules and map, today, and the open scratchpad. Search instead of guessing: memory_find ranks topics for a half-remembered subject, memory_grep searches literal or regex text across topics, MEMORY.md, SCRATCHPAD.md and recent dailies, memory_read opens one body, and memory_status shows the tree's shape.
+- Write to memory only when the operator states a durable instruction: a rule, preference or decision that will matter in later sessions. Use memory_write with target long_term for a topic (append into an existing topic when one fits, with mode append), daily for a dated note, or scratchpad for an open loop. Never write repository facts derivable from the code, the task body, a duplicate of what the snapshot already says, or anything speculative; the operator reads memory later as standing truth.
+- After a write, report the path you wrote (topics/<scope>/<slug>.md) and nothing more. Never claim to have recorded something you did not write.
+- Skills are listed above with absolute paths (for example /home/pi/.agents/skills/<name>/SKILL.md and project .agents/skills). Read a SKILL.md before following it. The main chat authors skills (skills-meta), so a skill may be newer than the list: ls or grep the skills directory rather than assuming the list is complete.
+- Project guidance lives in the repository's AGENTS.md.`
+    : `- You must not edit, write, create or delete any workspace files, and you must not run commands that change the workspace. No memory writer is available in this session.
+
+Skills:
+- Memory is disabled for this server, so no memory block was injected and no memory tools are installed. Do not claim to have read or written memory.
+- Skills are listed above with absolute paths (for example /home/pi/.agents/skills/<name>/SKILL.md and project .agents/skills). Read a SKILL.md before following it. The main chat authors skills (skills-meta), so a skill may be newer than the list: ls or grep the skills directory rather than assuming the list is complete.
+- Project guidance lives in the repository's AGENTS.md.`;
   return `${base}
 
 You are a planning agent for a single task in pi-ui (id: ${task.id}).
@@ -425,14 +447,7 @@ Your job is to help the operator formulate the task and propose a solution — a
 
 Plan mode only:
 - You may use the read and bash tools to inspect the repository.
-- You must not edit, write, create or delete any workspace files, and you must not run commands that change the workspace. The memory_write tool is the one write you may make, and it only touches the memory store.
-
-Memory and skills:
-- The block injected above is the main chat's live memory, truncated: standing rules and map, today, and the open scratchpad. Search instead of guessing: memory_find ranks topics for a half-remembered subject, memory_grep searches literal or regex text across topics, MEMORY.md, SCRATCHPAD.md and recent dailies, memory_read opens one body, and memory_status shows the tree's shape.
-- Write to memory only when the operator states a durable instruction: a rule, preference or decision that will matter in later sessions. Use memory_write with target long_term for a topic (append into an existing topic when one fits, with mode append), daily for a dated note, or scratchpad for an open loop. Never write repository facts derivable from the code, the task body, a duplicate of what the snapshot already says, or anything speculative; the operator reads memory later as standing truth.
-- After a write, report the path you wrote (topics/<scope>/<slug>.md) and nothing more. Never claim to have recorded something you did not write.
-- Skills are listed above with absolute paths (for example /home/pi/.agents/skills/<name>/SKILL.md and project .agents/skills). Read a SKILL.md before following it. The main chat authors skills (skills-meta), so a skill may be newer than the list: ls or grep the skills directory rather than assuming the list is complete.
-- Project guidance lives in the repository's AGENTS.md.
+${memoryPolicy}
 - You have additional tools, edit_task, propose_task, ask_questions and append_questions. edit_task updates this task's title, markdown body and/or project. Use it to capture the formulated task: a clear title, a markdown body with the problem and the proposed design (mermaid fences are allowed), and a project when one fits.
 - Use propose_task to hand a follow-up task to the operator for approval. A proposal is not a task: only a human approving it creates work, so do not treat it as started or done. Do not propose a duplicate of the task you are planning; propose only distinct follow-up work.
 - When a decision would be guessed in prose, call ask_questions with a structured set (single, multi or text) and wait for the operator's answers. Use append_questions to add to the same unanswered set while you are still composing it.
@@ -1998,7 +2013,9 @@ export class TaskAgentManager {
       },
       SESSION_CONTEXT,
     );
-    const instructions = taskAgentInstructions(await this.resolveMemoryBase(true), task);
+    const instructions = taskAgentInstructions(await this.resolveMemoryBase(true), task, {
+      memoryEnabled: this.planMemory() !== undefined,
+    });
     const savedId = await readConversationId(currentPath);
     let conversation: Conversation | undefined;
     if (savedId !== undefined) {
@@ -2049,26 +2066,38 @@ export class TaskAgentManager {
     return session;
   }
 
-  /** The plan keeps its own snapshot cache so the chat's stable prefix is untouched. */
+  /** The plan keeps its own snapshot cache for instructions while tools share the chat's cache. */
   private readonly planSnapshot = new SnapshotCache();
 
+  /** The memory tools use the shared cache, so a long-term write invalidates the chat's block. */
   private planMemory(): TaskAgentMemory | undefined {
+    if (process.env.PI_PLAN_MEMORY === "0") return undefined;
+    if (this.options.memory === undefined) return undefined;
+    return {
+      store: this.options.memory.store,
+      snapshot: this.options.memory.snapshot ?? this.planSnapshot,
+    };
+  }
+
+  /** Plan instructions keep their own cache so reading/writing them never disturbs the chat. */
+  private planResolutionMemory(): TaskAgentMemory | undefined {
     if (process.env.PI_PLAN_MEMORY === "0") return undefined;
     if (this.options.memory === undefined) return undefined;
     return { store: this.options.memory.store, snapshot: this.planSnapshot };
   }
 
   /**
-   * The plan registry's memory tools, with the same write path as chat. A plan
-   * write invalidates only the plan-local snapshot and then runs the existing
-   * instruction refresh, so the next turn sees the new block.
+   * The plan registry's memory tools, with the same write path as chat. A long-term
+   * write invalidates the shared cache and is carried into the main chat's next
+   * instructions; the plan session itself is refreshed from the files immediately.
    */
   planMemoryTools(taskId: string): ToolRegistration[] {
     const memory = this.planMemory();
     if (memory === undefined) return [];
     return selectTaskAgentMemoryTools(
       createMemoryTools(memory.store, memory.snapshot, {
-        onWrite: () => {
+        onWrite: (record) => {
+          this.options.memory?.snapshot?.notePlanWrite(record);
           this.planSnapshot.invalidate();
           return this.refreshInstructions(taskId);
         },
@@ -2081,7 +2110,7 @@ export class TaskAgentManager {
       return this.options.baseInstructions();
     }
     if (fresh) this.planSnapshot.invalidate();
-    return taskAgentMemoryBase(this.options.baseInstructions, this.planMemory(), {
+    return taskAgentMemoryBase(this.options.baseInstructions, this.planResolutionMemory(), {
       cwd: this.options.cwd,
       fresh,
     });
@@ -2095,7 +2124,11 @@ export class TaskAgentManager {
     if (task === undefined) return;
     try {
       const base = await this.resolveMemoryBase(fresh);
-      await session.applyInstructions(taskAgentInstructions(base, task));
+      await session.applyInstructions(
+        taskAgentInstructions(base, task, {
+          memoryEnabled: this.planMemory() !== undefined,
+        }),
+      );
     } catch (error) {
       console.error(`[task-agent] could not refresh instructions for ${taskId}`, error);
     }
