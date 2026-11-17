@@ -602,6 +602,18 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     await expect(screen.getByTestId("task-tab-chat")).toHaveAttribute("aria-selected", "true");
     await expect(screen.getByTestId("task-tab-plan")).toHaveAttribute("aria-selected", "false");
 
+    // A rightward swipe inside the tab surface belongs to the tabs: the app
+    // pager stays on tasks while the detail returns to Plan.
+    const tabBack = await swipe(browser, {
+      target: '[data-testid="task-tab-track"] [data-testid="task-agent-chat"]',
+      dx: 170,
+      pointerEcho: true,
+    });
+    expect(tabBack?.page).toBe("tasks");
+    expect(tabBack?.prevented).toBe(true);
+    await expect(screen.getByTestId("task-tab-plan")).toHaveAttribute("aria-selected", "true");
+    await expect(screen.getByTestId("task-tab-chat")).toHaveAttribute("aria-selected", "false");
+
     await openSnapshot(app, browser, payload, 1280, 800);
     await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
     await expect(screen.getByTestId("task-detail")).toHaveAttribute("data-layout", "desktop");
