@@ -11,11 +11,13 @@ import { RunMarkerStore } from "../src/server/run-marker.js";
 import type { SseFrame } from "../src/server/sse.js";
 import { StreamHub } from "../src/server/stream-hub.js";
 import {
+  createPlanPromptBuilder,
   createTaskEditTool,
   DurableTaskAgentSession,
   derivePlanningTaskIds,
   isTaskAgentToolName,
   openingTaskPatch,
+  planPromptFingerprint,
   selectTaskAgentMemoryTools,
   selectTaskAgentTools,
   TASK_AGENT_MEMORY_TOOL_NAMES,
@@ -88,6 +90,7 @@ test("task agents may only call bash, read, edit_task, propose_task, the questio
     "memory_find",
     "memory_grep",
     "memory_read",
+    "memory_status",
     "memory_write",
     "propose_task",
     "read",
@@ -96,6 +99,7 @@ test("task agents may only call bash, read, edit_task, propose_task, the questio
     "memory_find",
     "memory_grep",
     "memory_read",
+    "memory_status",
     "memory_write",
   ]);
   assert.deepEqual(
@@ -118,6 +122,7 @@ test("task agents may only call bash, read, edit_task, propose_task, the questio
     "task_edit",
     "write",
     "edit",
+    "memory_dream",
   ]) {
     assert.equal(TASK_AGENT_TOOL_NAMES.includes(forbidden as never), false);
     assert.equal(isTaskAgentToolName(forbidden), false);
@@ -127,7 +132,9 @@ test("task agents may only call bash, read, edit_task, propose_task, the questio
   assert.equal(isTaskAgentToolName("propose_task"), true);
   assert.equal(isTaskAgentToolName("task_edit"), false);
   assert.equal(isTaskAgentToolName("memory_read"), true);
+  assert.equal(isTaskAgentToolName("memory_status"), true);
   assert.equal(isTaskAgentToolName("memory_write"), true);
+  assert.equal(isTaskAgentToolName("memory_dream"), false);
 });
 
 test("a plan write lands in the same store the chat agent reads", async () => {
@@ -388,9 +395,119 @@ test("the plan prompt carries the same snapshot block as the main chat", async (
   });
   assert.match(prompt, new RegExp(marker));
   assert.ok(prompt.indexOf("BASE INSTRUCTIONS") < prompt.indexOf(marker));
-  assert.match(prompt, /memory_read.*memory_grep.*memory_find/s);
+  assert.match(prompt, /memory_find.*memory_grep.*memory_read.*memory_status/s);
+  assert.match(prompt, /Memory and skills/);
   assert.match(prompt, /memory_write/);
+  assert.doesNotMatch(prompt, /memory_dream/);
   assert.match(prompt, /AGENTS\.md/);
+});
+
+test("the plan prompt fingerprint follows skill and guidance changes", async () => {
+  const project = join(directory, "fingerprint-project");
+  const agentDir = join(directory, "fingerprint-agent");
+  const homeDir = join(directory, "fingerprint-home");
+  await mkdir(project, { recursive: true });
+  await mkdir(agentDir, { recursive: true });
+  await mkdir(homeDir, { recursive: true });
+  await writeFile(join(project, "AGENTS.md"), "# AGENTS.md\n\n- first rule\n", "utf8");
+
+  const baseline = await planPromptFingerprint(project, { agentDir, homeDir });
+  let builds = 0;
+  const builder = createPlanPromptBuilder({
+    cwd: project,
+    buildBase: async () => `BASE ${++builds}`,
+    memoryEnabled: false,
+    fingerprint: () => planPromptFingerprint(project, { agentDir, homeDir }),
+  });
+  assert.match(await builder(), /BASE 1/);
+  assert.match(await builder(), /BASE 1/);
+  assert.equal(builds, 1);
+
+  const skillDir = join(homeDir, ".agents", "skills", "demo");
+  await mkdir(skillDir, { recursive: true });
+  await writeFile(join(skillDir, "SKILL.md"), "# Demo\n\n- one line\n", "utf8");
+  const added = await planPromptFingerprint(project, { agentDir, homeDir });
+  assert.notEqual(added, baseline);
+  assert.match(await builder(), /BASE 2/);
+  assert.equal(builds, 2);
+
+  await writeFile(join(skillDir, "SKILL.md"), "# Demo\n\n- a changed, longer line\n", "utf8");
+  const edited = await planPromptFingerprint(project, { agentDir, homeDir });
+  assert.notEqual(edited, added);
+
+  await writeFile(join(project, "AGENTS.md"), "# AGENTS.md\n\n- a newer rule\n", "utf8");
+  const guidance = await planPromptFingerprint(project, { agentDir, homeDir });
+  assert.notEqual(guidance, edited);
+});
+
+test("PI_PLAN_MEMORY=0 drops the snapshot and every memory tool", async () => {
+  const memoryStore = new MemoryStore(join(directory, "plan-memory-off"));
+  await memoryStore.ensure();
+  await memoryStore.atomicWrite(memoryStore.memoryFile, "# MEMORY\n\n- hidden while off\n");
+  const fakes = new Map<string, FakeSession>();
+  const manager = new TaskAgentManager({
+    dataDir: directory,
+    cwd: directory,
+    models: {} as never,
+    model: undefined,
+    store,
+    publish: () => undefined,
+    baseInstructions: "BASE",
+    memory: { store: memoryStore, snapshot: new SnapshotCache() },
+    openSession: async (taskId) => {
+      const session = new FakeSession(taskId);
+      fakes.set(taskId, session);
+      return session;
+    },
+  });
+  const task = (await store.create("Plan without memory", null)).tasks.find(
+    (item) => item.title === "Plan without memory",
+  );
+  assert.ok(task);
+  const previous = process.env.PI_PLAN_MEMORY;
+  process.env.PI_PLAN_MEMORY = "0";
+  try {
+    assert.deepEqual(manager.planMemoryTools(task.id), []);
+    await manager.ensure(task.id);
+    await manager.refreshInstructions(task.id, true);
+    const instructions = fakes.get(task.id)?.instructions.at(-1);
+    assert.ok(instructions);
+    assert.doesNotMatch(instructions, /Memory snapshot/);
+    assert.doesNotMatch(instructions, /hidden while off/);
+  } finally {
+    if (previous === undefined) delete process.env.PI_PLAN_MEMORY;
+    else process.env.PI_PLAN_MEMORY = previous;
+    await manager.close();
+  }
+});
+
+test("the manager awaits a lazy base prompt on every refresh", async () => {
+  const fakes = new Map<string, FakeSession>();
+  let builds = 0;
+  const manager = new TaskAgentManager({
+    dataDir: directory,
+    cwd: directory,
+    models: {} as never,
+    model: undefined,
+    store,
+    publish: () => undefined,
+    baseInstructions: async () => `BASE ${++builds}`,
+    openSession: async (taskId) => {
+      const session = new FakeSession(taskId);
+      fakes.set(taskId, session);
+      return session;
+    },
+  });
+  const task = (await store.create("Lazy base prompt", null)).tasks.find(
+    (item) => item.title === "Lazy base prompt",
+  );
+  assert.ok(task);
+  await manager.ensure(task.id);
+  await manager.refreshInstructions(task.id, true);
+  assert.match(fakes.get(task.id)?.instructions.at(-1) ?? "", /BASE 1/);
+  await manager.refreshInstructions(task.id, true);
+  assert.match(fakes.get(task.id)?.instructions.at(-1) ?? "", /BASE 2/);
+  await manager.close();
 });
 
 test("a settled model failure becomes one dismissible run error", () => {

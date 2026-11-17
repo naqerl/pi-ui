@@ -64,7 +64,7 @@ import { retryBudgetMs } from "./retry.js";
 import { type DurableSessionOptions, openDurableSession, SESSION_CONTEXT } from "./session.js";
 import { StreamHub } from "./stream-hub.js";
 import { TaskActivityTracker } from "./task-activity.js";
-import { TaskAgentError, TaskAgentManager } from "./task-agent.js";
+import { createPlanPromptBuilder, TaskAgentError, TaskAgentManager } from "./task-agent.js";
 import type { TaskBridge } from "./task-tools.js";
 import { TaskError, TaskStore, taskDurationStats, taskReopenStats } from "./tasks.js";
 import { liveDataDirInTestError } from "./test-mode.js";
@@ -200,7 +200,11 @@ async function buildChatBaseInstructions(): Promise<string> {
 let baseInstructions = await buildChatBaseInstructions();
 let instructions = composeInstructions(baseInstructions, memoryBlock);
 let memoryCheckpoints: SnapshotController | undefined;
-const taskAgentPrompt = buildPiSystemPrompt(cwd, catalog.runtime, ["read", "bash"]);
+const planBase = createPlanPromptBuilder({
+  cwd,
+  buildBase: () => buildPiSystemPrompt(cwd, catalog.runtime, ["read", "bash"]),
+  memory: { store: memory, snapshot: memorySnapshot },
+});
 const boot = await openDurableSession({
   cwd,
   models: catalog.runtime as unknown as DurableSessionOptions["models"],
@@ -419,7 +423,7 @@ const taskAgents = new TaskAgentManager({
   onRunState: () => {
     hub.broadcast({ event: "tasks", data: taskView() });
   },
-  baseInstructions: await taskAgentPrompt,
+  baseInstructions: planBase,
   memory: { store: memory, snapshot: memorySnapshot },
 });
 // Do not hold HTTP or the main chat behind sessions that were live at the last stop;
