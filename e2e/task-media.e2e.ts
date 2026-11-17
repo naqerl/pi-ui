@@ -290,17 +290,27 @@ describe("task media against one shared app", { serial: true }, () => {
     }, id);
     expect(targetId).not.toBeNull();
 
-    for (let remaining = 2; remaining > 0; remaining--) {
-      // Always remove the highest remaining index: after the first removal the
-      // second attachment is index 0, so a hard-coded "remove-1" clicked nothing
-      // and the test waited out its timeout instead of emptying the list.
-      const index = remaining - 1;
-      await browser.evaluate((i) => {
-        document.querySelector<HTMLElement>(`[data-testid="task-attachment-remove-${i}"]`)?.click();
-        return true;
-      }, index);
-      await expect(browser.locator(openButtons)).toHaveCount(remaining - 1);
-    }
+    // Remove every remaining image, one render at a time. The buttons are keyed
+    // by 1-based index, so the first one always exists; querying by prefix and
+    // pausing between clicks keeps each click off a node React has just replaced.
+    await expect
+      .poll(
+        async () => {
+          const clicked = await browser.evaluate(() => {
+            const button = document.querySelector<HTMLElement>(
+              '[data-testid^="task-attachment-remove-"]',
+            );
+            if (button === null) return false;
+            button.click();
+            return true;
+          });
+          if (clicked) await new Promise((resolve) => setTimeout(resolve, 250));
+          return clicked;
+        },
+        { timeout: 20_000 },
+      )
+      .toBe(false);
+    await expect(browser.locator(openButtons)).toHaveCount(0);
     await expect(screen.getByTestId("task-attachments")).toHaveCount(0);
     await expect.poll(() => attachmentCount(browser, id), { timeout: 10_000 }).toBe(0);
 
