@@ -11,11 +11,13 @@ import { createMemoryTools } from "../src/server/memory/tools.js";
 import type { SseFrame } from "../src/server/sse.js";
 import { StreamHub } from "../src/server/stream-hub.js";
 import {
+  createPlanPromptBuilder,
   createTaskEditTool,
   DurableTaskAgentSession,
   derivePlanningTaskIds,
   isTaskAgentToolName,
   openingTaskPatch,
+  planPromptFingerprint,
   selectTaskAgentMemoryTools,
   selectTaskAgentTools,
   TASK_AGENT_MEMORY_TOOL_NAMES,
@@ -55,7 +57,7 @@ after(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
-test("task agents may only call bash, read, edit_task, propose_task, the question tools and memory", () => {
+test("task agents may only call bash, read, edit_task, propose_task, the question tools and read-only memory", () => {
   const coding = (createCodingTools().tools ?? []).map((tool) => ({ name: tool.name }));
   const memory = createMemoryTools({} as never).map((tool) => ({ name: tool.name }));
   const extras = [
@@ -80,6 +82,7 @@ test("task agents may only call bash, read, edit_task, propose_task, the questio
       .sort(),
     [...TASK_AGENT_TOOL_NAMES].sort(),
   );
+  assert.equal(TASK_AGENT_TOOL_NAMES.length, 10);
   assert.deepEqual([...TASK_AGENT_TOOL_NAMES].sort(), [
     "append_questions",
     "ask_questions",
@@ -88,7 +91,7 @@ test("task agents may only call bash, read, edit_task, propose_task, the questio
     "memory_find",
     "memory_grep",
     "memory_read",
-    "memory_write",
+    "memory_status",
     "propose_task",
     "read",
   ]);
@@ -96,7 +99,7 @@ test("task agents may only call bash, read, edit_task, propose_task, the questio
     "memory_find",
     "memory_grep",
     "memory_read",
-    "memory_write",
+    "memory_status",
   ]);
   assert.deepEqual(
     selectTaskAgentMemoryTools(memory)
@@ -105,17 +108,17 @@ test("task agents may only call bash, read, edit_task, propose_task, the questio
     [...TASK_AGENT_MEMORY_TOOL_NAMES].sort(),
   );
   assert.ok(TASK_AGENT_TOOL_NAMES.includes("propose_task"));
-  assert.equal(TASK_AGENT_TOOL_NAMES.includes("memory_write"), true);
-  assert.deepEqual(
-    selectTaskAgentTools([{ name: "memory_write" }]).map((tool) => tool.name),
-    ["memory_write"],
-  );
+  assert.equal(TASK_AGENT_TOOL_NAMES.includes("memory_write" as never), false);
+  assert.deepEqual(selectTaskAgentTools([{ name: "memory_write" }]), []);
+  assert.deepEqual(selectTaskAgentTools([{ name: "memory_dream" }]), []);
   for (const forbidden of [
     "task_done",
     "task_working",
     "task_release",
     "task_block",
     "task_edit",
+    "memory_write",
+    "memory_dream",
     "write",
     "edit",
   ]) {
@@ -127,21 +130,16 @@ test("task agents may only call bash, read, edit_task, propose_task, the questio
   assert.equal(isTaskAgentToolName("propose_task"), true);
   assert.equal(isTaskAgentToolName("task_edit"), false);
   assert.equal(isTaskAgentToolName("memory_read"), true);
-  assert.equal(isTaskAgentToolName("memory_write"), true);
+  assert.equal(isTaskAgentToolName("memory_status"), true);
 });
 
-test("a plan write lands in the same store the chat agent reads", async () => {
+test("the read-only plan memory tools read the same store the chat agent writes", async () => {
   const memoryStore = new MemoryStore(join(directory, "plan-write-memory"));
   await memoryStore.ensure();
-  const plan = new Map(
-    selectTaskAgentTools(createMemoryTools(memoryStore, new SnapshotCache())).map((tool) => [
-      tool.name,
-      tool,
-    ]),
-  );
-  const write = plan.get("memory_write");
-  assert.ok(write);
   const marker = `plan-memory-${Date.now()}`;
+  const chat = new Map(createMemoryTools(memoryStore).map((tool) => [tool.name, tool]));
+  const write = chat.get("memory_write");
+  assert.ok(write);
   const result = await write.execute(
     {
       target: "long_term",
@@ -154,9 +152,16 @@ test("a plan write lands in the same store the chat agent reads", async () => {
   );
   assert.equal(result.isError === true, false);
 
-  // The chat agent's own factory reads the same topic file the plan just wrote.
-  const chat = new Map(createMemoryTools(memoryStore).map((tool) => [tool.name, tool]));
-  const read = chat.get("memory_read");
+  // The plan registry shares the store but only carries the read-only tools.
+  const plan = new Map(
+    selectTaskAgentTools(createMemoryTools(memoryStore, new SnapshotCache())).map((tool) => [
+      tool.name,
+      tool,
+    ]),
+  );
+  assert.equal(plan.has("memory_write"), false);
+  assert.equal(plan.has("memory_dream"), false);
+  const read = plan.get("memory_read");
   assert.ok(read);
   const readResult = await read.execute(
     { path: "topics/projects/plan-decision.md" } as never,
@@ -166,6 +171,13 @@ test("a plan write lands in the same store the chat agent reads", async () => {
   const text = readResult.output?.find((part) => part.type === "text");
   assert.ok(text && text.type === "text");
   assert.match(text.text, new RegExp(marker));
+
+  const status = plan.get("memory_status");
+  assert.ok(status);
+  const statusResult = await status.execute({} as never, {} as never, {} as never);
+  const statusText = statusResult.output?.find((part) => part.type === "text");
+  assert.ok(statusText && statusText.type === "text");
+  assert.match(statusText.text, /topics: 1/);
 });
 
 test("building a fresh plan block leaves the chat snapshot cache alone", async () => {
@@ -266,12 +278,7 @@ test("a new plan session reads current memory and the project AGENTS.md", async 
   assert.match(before, new RegExp(projectMarker));
 
   const marker = "new note after boot";
-  const plan = new Map(
-    selectTaskAgentTools(createMemoryTools(memoryStore, cache)).map((tool) => [tool.name, tool]),
-  );
-  const write = plan.get("memory_write");
-  assert.ok(write);
-  await write.execute({ target: "scratchpad", body: marker } as never, {} as never, {} as never);
+  await memoryStore.appendScratchpad(marker);
 
   // A session that existed before the write still sees the old block until its
   // refresh runs; a session created afterwards reads the files as they are now.
@@ -290,7 +297,7 @@ test("a new plan session reads current memory and the project AGENTS.md", async 
   assert.match(taskAgentInstructions(after, task), new RegExp(marker));
 });
 
-test("the project AGENTS.md is the skills equivalent and optional", async () => {
+test("the current project AGENTS.md is optional and included", async () => {
   const project = join(directory, "plan-agents-only");
   await mkdir(project, { recursive: true });
   assert.equal(await taskAgentProjectInstructions(project), undefined);
@@ -309,10 +316,10 @@ test("the project AGENTS.md is the skills equivalent and optional", async () => 
   );
 });
 
-test("a plan write refreshes the existing session without touching the chat cache", async () => {
+test("a plan refresh rebuilds the existing session without touching the chat cache", async () => {
   const memoryStore = new MemoryStore(join(directory, "plan-refresh-memory"));
   await memoryStore.ensure();
-  const beforeMarker = `before-plan-write-${Date.now()}`;
+  const beforeMarker = `before-plan-refresh-${Date.now()}`;
   await memoryStore.atomicWrite(
     memoryStore.memoryFile,
     `# MEMORY\n\n- ${beforeMarker} is already known.\n`,
@@ -351,13 +358,18 @@ test("a plan write refreshes the existing session without touching the chat cach
   assert.ok(initial);
   assert.match(initial, new RegExp(beforeMarker));
 
-  const marker = `after-plan-write-${Date.now()}`;
-  const tools = new Map(manager.planMemoryTools(task.id).map((tool) => [tool.name, tool]));
-  const write = tools.get("memory_write");
-  assert.ok(write);
-  await write.execute({ target: "scratchpad", body: marker } as never, {} as never, {} as never);
+  const marker = `after-plan-refresh-${Date.now()}`;
+  await memoryStore.appendScratchpad(marker);
+  assert.deepEqual(
+    manager
+      .planMemoryTools(task.id)
+      .map((tool) => tool.name)
+      .sort(),
+    [...TASK_AGENT_MEMORY_TOOL_NAMES].sort(),
+  );
+  await manager.refreshInstructions(task.id, true);
 
-  // The same session was refreshed by the write, while the chat cache stayed put.
+  // The same session was refreshed, while the chat cache stayed put.
   assert.equal(session.instructions.length, 2);
   const refreshed = session.instructions.at(-1);
   assert.ok(refreshed);
@@ -388,9 +400,69 @@ test("the plan prompt carries the same snapshot block as the main chat", async (
   });
   assert.match(prompt, new RegExp(marker));
   assert.ok(prompt.indexOf("BASE INSTRUCTIONS") < prompt.indexOf(marker));
-  assert.match(prompt, /memory_read.*memory_grep.*memory_find/s);
-  assert.match(prompt, /memory_write/);
+  assert.match(prompt, /Memory snapshot \(first_turn\)/);
+  assert.match(prompt, /memory_find.*memory_grep.*memory_read.*memory_status/s);
+  assert.doesNotMatch(prompt, /memory_write|memory_dream/);
+  assert.match(prompt, /Memory and skills/);
+  assert.match(prompt, /read-only/i);
+  assert.match(prompt, /skills-meta/);
+  assert.match(prompt, /\/home\/pi\/\.agents\/skills/);
   assert.match(prompt, /AGENTS\.md/);
+});
+
+test("the plan prompt fingerprint rebuilds when a skill is added", async () => {
+  const home = join(directory, "plan-fingerprint-home");
+  const agent = join(directory, "plan-fingerprint-agent");
+  const project = join(directory, "plan-fingerprint-project");
+  await mkdir(join(home, ".agents", "skills"), { recursive: true });
+  await mkdir(agent, { recursive: true });
+  await mkdir(project, { recursive: true });
+  let builds = 0;
+  const builder = createPlanPromptBuilder({
+    cwd: project,
+    buildBase: async () => `BASE ${++builds}`,
+    memoryEnabled: false,
+    fingerprint: () => planPromptFingerprint(project, { homeDir: home, agentDir: agent }),
+  });
+
+  assert.match(await builder(), /BASE 1$/);
+  assert.match(await builder(), /BASE 1$/);
+  assert.equal(builds, 1);
+
+  const skillDir = join(home, ".agents", "skills", "inbox");
+  await mkdir(skillDir, { recursive: true });
+  await writeFile(
+    join(skillDir, "SKILL.md"),
+    "---\nname: inbox\ndescription: Handle the inbox.\n---\n\n# Inbox\n",
+    "utf8",
+  );
+
+  assert.match(await builder(), /BASE 2/);
+  assert.match(await builder(), /BASE 2/);
+  assert.equal(builds, 2);
+});
+
+test("the plan prompt builder picks up memory written after the first session", async () => {
+  const memoryStore = new MemoryStore(join(directory, "plan-builder-memory"));
+  await memoryStore.ensure();
+  const beforeMarker = `builder-before-${Date.now()}`;
+  const afterMarker = `builder-after-${Date.now()}`;
+  await memoryStore.atomicWrite(memoryStore.memoryFile, `# MEMORY\n\n- ${beforeMarker}\n`);
+  const builder = createPlanPromptBuilder({
+    cwd: directory,
+    buildBase: async () => "BASE INSTRUCTIONS",
+    memory: { store: memoryStore },
+    memoryEnabled: true,
+    fingerprint: async () => "stable",
+  });
+
+  const first = await builder();
+  assert.match(first, new RegExp(beforeMarker));
+  assert.doesNotMatch(first, new RegExp(afterMarker));
+
+  await memoryStore.appendScratchpad(afterMarker);
+  const second = await builder();
+  assert.match(second, new RegExp(afterMarker));
 });
 
 test("a settled model failure becomes one dismissible run error", () => {
