@@ -39,7 +39,7 @@ function shortId(id: string): string {
 
 const SCROLLBAR_GUTTER = "[scrollbar-gutter:stable]";
 const QUIET = "text-foreground/75";
-const DETAIL_CARD = "bg-surface theme-radius p-3";
+const DETAIL_CARD = "bg-surface theme-radius p-xl";
 
 export interface TaskDetailModel {
   task: Task;
@@ -107,7 +107,7 @@ export interface TaskDetailModel {
 
 function ErrorLine({ children }: { children: ReactNode }) {
   return (
-    <p role="alert" data-testid="task-error" className="px-1 text-xs leading-4 text-destructive">
+    <p role="alert" data-testid="task-error" className="px-sm text-xs leading-4 text-destructive">
       {children}
     </p>
   );
@@ -261,13 +261,13 @@ function ProjectPicker({
             type="button"
             data-testid="task-header-project"
             aria-label="Task project"
-            className="max-w-[40vw] truncate rounded-md px-1 text-xs leading-4 outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-foreground"
+            className="max-w-[40vw] truncate rounded-md px-sm text-xs leading-4 outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-foreground"
           >
             {label}
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-64 p-1" data-testid="task-project-menu">
-          <div className="px-1 pb-1">
+        <DropdownMenuContent align="start" className="w-64 p-sm" data-testid="task-project-menu">
+          <div className="px-sm pb-sm">
             <input
               ref={inputRef}
               type="text"
@@ -295,7 +295,7 @@ function ProjectPicker({
                   openMenu(false);
                 }
               }}
-              className="h-11 w-full rounded-md border border-border bg-background px-2 text-sm leading-5 text-foreground outline-none placeholder:text-foreground/50 focus-visible:ring-1 focus-visible:ring-foreground"
+              className="h-11 w-full rounded-md border border-border bg-background px-lg text-sm leading-5 text-foreground outline-none placeholder:text-foreground/50 focus-visible:ring-1 focus-visible:ring-foreground"
             />
           </div>
           <DropdownMenuItem
@@ -438,7 +438,7 @@ function BodyField({ model, fill }: { model: TaskDetailModel; fill?: boolean }) 
         )}
       >
         {task.body !== undefined && task.body.length > 0 ? (
-          <div className="pr-1">
+          <div className="pr-sm">
             <Markdown text={task.body} />
           </div>
         ) : (
@@ -457,13 +457,13 @@ function MetaBlock({ model }: { model: TaskDetailModel }) {
       {task.reopens !== undefined && task.reopens.length > 0 && (
         <section
           data-testid="task-reopen"
-          className={cn(STACK_4, "rounded-md border border-border bg-background px-3 py-2")}
+          className={cn(STACK_4, "rounded-md border border-border bg-background px-xl py-lg")}
         >
           <Badge
             variant="outline"
             data-testid={`task-detail-reopens-${task.id}`}
             title={`Reopened ${task.reopens.length} time${task.reopens.length === 1 ? "" : "s"}`}
-            className="h-5 w-fit gap-1 px-1.5 text-[10px] font-normal leading-4 text-foreground/75"
+            className="h-5 w-fit gap-sm px-md text-[10px] font-normal leading-4 text-foreground/75"
           >
             <RefreshIcon size={11} />
             {task.reopens.length}
@@ -499,7 +499,7 @@ function MetaBlock({ model }: { model: TaskDetailModel }) {
           data-testid="task-rationale"
           className={cn("min-w-0", model.wide && "max-h-40 overflow-y-auto")}
         >
-          <p className="whitespace-pre-wrap pr-1 text-sm leading-5 [overflow-wrap:anywhere]">
+          <p className="whitespace-pre-wrap pr-sm text-sm leading-5 [overflow-wrap:anywhere]">
             {task.rationale}
           </p>
         </div>
@@ -547,7 +547,7 @@ function RelationRow({
   return (
     <li
       className={cn(
-        "flex items-center gap-2 border-t border-border px-1 py-1 text-sm leading-5 first:border-t-0",
+        "flex items-center gap-lg border-t border-border px-sm py-sm text-sm leading-5 first:border-t-0",
         wide ? "min-h-8" : "min-h-11",
       )}
     >
@@ -584,7 +584,7 @@ function Attachments({ model }: { model: TaskDetailModel }) {
   const count = media.attachments.length + media.pending.length;
   if (count === 0) return null;
   return (
-    <section className="flex flex-wrap gap-2" data-testid="task-attachments">
+    <section className="flex flex-wrap gap-lg" data-testid="task-attachments">
       {media.attachments.map((id, index) => (
         <div key={id} className="relative shrink-0">
           <button
@@ -776,12 +776,15 @@ function MetaLine({ model }: { model: TaskDetailModel }) {
   return (
     <div
       data-testid="task-header-meta"
-      className={cn("flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs leading-4", QUIET)}
+      className={cn(
+        "flex min-w-0 flex-wrap items-center gap-x-lg gap-y-sm text-xs leading-4",
+        QUIET,
+      )}
     >
       <Badge
         data-testid="task-state"
         variant={model.state === "working" || model.state === "failed" ? "default" : "outline"}
-        className="h-5 px-1.5 text-[10px] font-normal leading-4"
+        className="h-5 px-md text-[10px] font-normal leading-4"
       >
         {model.badge}
       </Badge>
@@ -793,7 +796,7 @@ function MetaLine({ model }: { model: TaskDetailModel }) {
           variant="outline"
           data-testid={`task-detail-reopens-${model.task.id}`}
           title={`Reopened ${model.task.reopens?.length} time${model.task.reopens?.length === 1 ? "" : "s"}`}
-          className="h-5 gap-1 px-1.5 text-[10px] font-normal leading-4 text-foreground/75"
+          className="h-5 gap-sm px-md text-[10px] font-normal leading-4 text-foreground/75"
         >
           <RefreshIcon size={11} />
           {model.task.reopens?.length}
@@ -879,12 +882,12 @@ function TitleCard({
           )}
         </SectionBar>
         {(model.editingTitle || model.titleError !== null) && (
-          <div className="bg-surface theme-radius p-3">
+          <div className="bg-surface theme-radius p-xl">
             <TitleField model={model} />
           </div>
         )}
         {projectPanel && (
-          <div className="bg-surface theme-radius p-3" data-testid="task-project-panel">
+          <div className="bg-surface theme-radius p-xl" data-testid="task-project-panel">
             <ProjectPicker model={model} startOpen onClose={() => setProjectPanel(false)} />
           </div>
         )}
@@ -898,11 +901,11 @@ function TitleCard({
       className={cn(
         "flex flex-col bg-surface",
         flush ? "rounded-t-none rounded-b-[var(--radius)] overflow-hidden" : "theme-radius",
-        tabs || flush ? "overflow-hidden" : cn(STACK_8, "p-3"),
+        tabs || flush ? "overflow-hidden" : cn(STACK_8, "p-xl"),
       )}
     >
-      <div className={cn(STACK_8, (tabs || flush) && "p-3")}>
-        <div className="flex min-w-0 items-center gap-1">
+      <div className={cn(STACK_8, (tabs || flush) && "p-xl")}>
+        <div className="flex min-w-0 items-center gap-sm">
           <div className="min-w-0 flex-1">
             <MetaLine model={model} />
           </div>
@@ -944,14 +947,14 @@ function DecisionActions({ model }: { model: TaskDetailModel }) {
   return (
     <div
       data-testid="task-decision-actions"
-      className="mt-4 flex flex-wrap items-center justify-end gap-2"
+      className="mt-2xl flex flex-wrap items-center justify-end gap-lg"
     >
       {proposed && (
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          className="min-h-9 gap-1.5 rounded-md px-3"
+          className="min-h-9 gap-md rounded-md px-xl"
           aria-label={`Dismiss ${title} proposal`}
           onClick={onDismiss}
         >
@@ -962,7 +965,7 @@ function DecisionActions({ model }: { model: TaskDetailModel }) {
       <Button
         type="button"
         size="sm"
-        className="min-h-9 gap-1.5 rounded-md px-3"
+        className="min-h-9 gap-md rounded-md px-xl"
         aria-label={draft ? `Approve ${title} draft` : `Approve ${title} proposal`}
         onClick={onApprove}
       >
@@ -1025,7 +1028,7 @@ function TabBar({ tab, onTab }: { tab: "plan" | "chat"; onTab: (tab: "plan" | "c
           aria-selected={tab === item.id}
           data-testid={`task-tab-${item.id}`}
           className={cn(
-            "min-h-11 flex-1 border-b-2 px-3 text-sm font-medium leading-5",
+            "min-h-11 flex-1 border-b-2 px-xl text-sm font-medium leading-5",
             tab === item.id
               ? "border-foreground bg-background text-foreground"
               : cn("border-transparent", QUIET),
@@ -1116,7 +1119,7 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
           }}
         >
           <section
-            className="h-full min-w-0 shrink-0 grow-0 basis-full overflow-y-auto overflow-x-hidden px-3 pt-3"
+            className="h-full min-w-0 shrink-0 grow-0 basis-full overflow-y-auto overflow-x-hidden px-xl pt-xl"
             aria-label="Plan"
             aria-hidden={tab !== "plan"}
             inert={tab !== "plan" || undefined}
@@ -1124,7 +1127,7 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
             <PlanSections model={model} />
           </section>
           <section
-            className="flex h-full min-h-0 min-w-0 shrink-0 grow-0 basis-full flex-col px-3"
+            className="flex h-full min-h-0 min-w-0 shrink-0 grow-0 basis-full flex-col px-xl"
             aria-label="Chat"
             aria-hidden={tab !== "chat"}
             inert={tab !== "chat" || undefined}

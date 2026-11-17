@@ -177,11 +177,11 @@ export function TaskAgentChat({
         className={cn(
           // The gap above the first row belongs inside the scroller so it scrolls
           // away with the transcript; padding on the pane would leave a fixed band.
-          "flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pt-3 pb-3",
+          "flex min-h-0 flex-1 flex-col overflow-y-auto px-xl pt-xl pb-xl",
           "[scrollbar-gutter:stable]",
         )}
       >
-        <div ref={stick.contentRef} className="flex min-h-0 flex-col gap-3">
+        <div ref={stick.contentRef} className="flex min-h-0 flex-col gap-xl">
           {groups.length === 0 && chat.questions === null ? (
             <div className="flex min-h-0 flex-1 items-center justify-center">
               <EmptyCaption>

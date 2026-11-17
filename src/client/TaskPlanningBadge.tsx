@@ -9,7 +9,7 @@ export function TaskPlanningBadge({ testId, className }: { testId: string; class
       data-testid={testId}
       title="The plan agent is running"
       className={cn(
-        "border-border/70 px-1.5 text-[10px] font-normal leading-4 text-muted-foreground",
+        "border-border/70 px-md text-[10px] font-normal leading-4 text-muted-foreground",
         className,
       )}
     >

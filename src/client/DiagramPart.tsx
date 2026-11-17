@@ -28,9 +28,9 @@ function Card({ id, revision, children }: { id: string; revision: number; childr
       data-testid="diagram"
       data-diagram-id={id}
       data-revision={revision}
-      className="theme-radius my-1.5 w-full min-w-0 overflow-hidden border border-border/70 bg-background"
+      className="theme-radius my-md w-full min-w-0 overflow-hidden border border-border/70 bg-background"
     >
-      <div className="flex items-center justify-between gap-2 border-b border-border/60 px-2 py-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+      <div className="flex items-center justify-between gap-lg border-b border-border/60 px-lg py-sm font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
         <span>diagram</span>
         <span>rev {revision}</span>
       </div>
@@ -42,7 +42,7 @@ function Card({ id, revision, children }: { id: string; revision: number; childr
 /** A format this bundle cannot draw is shown as its source, never as a blank card. */
 function RawFallback({ diagram }: { diagram: DiagramFile }) {
   return (
-    <div data-testid="diagram-raw" className="space-y-1 p-2">
+    <div data-testid="diagram-raw" className="space-y-sm p-lg">
       <p className="font-mono text-[11px] leading-4 text-muted-foreground">
         format “{diagram.format}” is not supported here; showing the source
       </p>
@@ -118,7 +118,7 @@ export function DiagramPart({ id, revision }: DiagramRef) {
     <>
       <Card id={id} revision={revision}>
         {load.status === "loading" && (
-          <p className="p-2 font-mono text-[11px] leading-5 text-muted-foreground" role="status">
+          <p className="p-lg font-mono text-[11px] leading-5 text-muted-foreground" role="status">
             Drawing…
           </p>
         )}
@@ -126,7 +126,7 @@ export function DiagramPart({ id, revision }: DiagramRef) {
           <p
             role="alert"
             data-testid="diagram-error"
-            className="theme-radius m-2 border border-destructive/60 bg-background px-2 py-1.5 font-mono text-[11px] leading-4 text-destructive"
+            className="theme-radius m-lg border border-destructive/60 bg-background px-lg py-md font-mono text-[11px] leading-4 text-destructive"
           >
             {load.message}
           </p>
@@ -140,12 +140,12 @@ export function DiagramPart({ id, revision }: DiagramRef) {
                 aria-label="Open diagram full screen"
                 aria-haspopup="dialog"
                 onClick={() => setViewerOpen(true)}
-                className="block w-full min-w-0 overflow-hidden bg-background p-2 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-foreground/40"
+                className="block w-full min-w-0 overflow-hidden bg-background p-lg text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-foreground/40"
               >
                 <div className={DRAWING_CLASS}>{drawing}</div>
               </button>
             ) : (
-              <div className="p-2">
+              <div className="p-lg">
                 <div className={DRAWING_CLASS}>{drawing}</div>
               </div>
             )

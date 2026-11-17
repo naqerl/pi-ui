@@ -62,7 +62,7 @@ export function WorkingIndicator({
   activityTestId?: string;
 }) {
   return (
-    <div data-testid={testId} className="flex min-w-0 items-center gap-2">
+    <div data-testid={testId} className="flex min-w-0 items-center gap-lg">
       <BrailleSpinner running={running} />
       <span data-testid={activityTestId} className="truncate">
         {word ?? workingWord(thinking)}

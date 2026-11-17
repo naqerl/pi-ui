@@ -222,7 +222,7 @@ export function PiMenu() {
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={menuId}
-        className="grid h-9 w-9 -my-1 shrink-0 place-items-center text-foreground theme-radius hover:bg-foreground/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground"
+        className="grid h-9 w-9 -my-sm shrink-0 place-items-center text-foreground theme-radius hover:bg-foreground/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground"
         onClick={() => {
           setSection("menu");
           setOpen((current) => !current);
@@ -260,7 +260,7 @@ export function PiMenu() {
                 <button
                   type="button"
                   role="menuitem"
-                  className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-muted"
+                  className="flex w-full items-center justify-between gap-xl px-xl py-lg text-left text-sm hover:bg-muted"
                   onClick={() => setSection("theme")}
                 >
                   <span>Theme</span>
@@ -271,7 +271,7 @@ export function PiMenu() {
                 <button
                   type="button"
                   role="menuitem"
-                  className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-muted"
+                  className="flex w-full items-center justify-between gap-xl px-xl py-lg text-left text-sm hover:bg-muted"
                   onClick={() => setSection("model")}
                 >
                   <span>Model</span>
@@ -280,14 +280,14 @@ export function PiMenu() {
                   </span>
                 </button>
                 <PushSettings />
-                <div className="border-t border-border p-2">
+                <div className="border-t border-border p-lg">
                   <button
                     type="button"
                     role="menuitem"
                     aria-label="Reset session"
                     data-testid="reset-session"
                     disabled={resetState === "busy"}
-                    className="flex w-full flex-col items-start gap-0.5 px-2 py-1.5 text-left text-sm text-destructive hover:bg-destructive/10 disabled:opacity-60"
+                    className="flex w-full flex-col items-start gap-xs px-lg py-md text-left text-sm text-destructive hover:bg-destructive/10 disabled:opacity-60"
                     onClick={() => void resetSession()}
                   >
                     <span>Reset session</span>
@@ -296,7 +296,7 @@ export function PiMenu() {
                     </span>
                   </button>
                   {resetState === "error" && (
-                    <p role="alert" className="px-2 pt-1 font-mono text-[11px] text-destructive">
+                    <p role="alert" className="px-lg pt-sm font-mono text-[11px] text-destructive">
                       Could not reset the session.
                     </p>
                   )}
@@ -306,7 +306,7 @@ export function PiMenu() {
               <div>
                 <button
                   type="button"
-                  className="flex w-full items-center gap-2 border-b border-border px-3 py-2 text-left text-xs text-muted-foreground hover:text-foreground"
+                  className="flex w-full items-center gap-lg border-b border-border px-xl py-lg text-left text-xs text-muted-foreground hover:text-foreground"
                   onClick={() => setSection("menu")}
                 >
                   <ChevronLeftIcon size={14} />
@@ -314,7 +314,7 @@ export function PiMenu() {
                 </button>
                 <div className="max-h-64 overflow-y-auto">
                   {themes.length === 0 && (
-                    <p className="px-3 py-2 font-mono text-[11px] text-muted-foreground">
+                    <p className="px-xl py-lg font-mono text-[11px] text-muted-foreground">
                       No Omarchy themes found.
                     </p>
                   )}
@@ -326,7 +326,7 @@ export function PiMenu() {
                         type="button"
                         role="menuitemradio"
                         aria-checked={current}
-                        className="flex w-full items-center justify-between px-3 py-1.5 text-left text-sm hover:bg-muted"
+                        className="flex w-full items-center justify-between px-xl py-md text-left text-sm hover:bg-muted"
                         onClick={() => choose(theme)}
                       >
                         <span>{theme.name}</span>
@@ -340,7 +340,7 @@ export function PiMenu() {
               <div>
                 <button
                   type="button"
-                  className="flex w-full items-center gap-2 border-b border-border px-3 py-2 text-left text-xs text-muted-foreground hover:text-foreground"
+                  className="flex w-full items-center gap-lg border-b border-border px-xl py-lg text-left text-xs text-muted-foreground hover:text-foreground"
                   onClick={() => setSection("menu")}
                 >
                   <ChevronLeftIcon size={14} />
@@ -348,7 +348,7 @@ export function PiMenu() {
                 </button>
                 <div className="max-h-64 overflow-y-auto">
                   {modelsLoaded && models.length === 0 && (
-                    <p className="px-3 py-2 font-mono text-[11px] text-muted-foreground">
+                    <p className="px-xl py-lg font-mono text-[11px] text-muted-foreground">
                       No models available.
                     </p>
                   )}
@@ -359,7 +359,7 @@ export function PiMenu() {
                     return (
                       <div key={`${option.provider}/${option.id}`}>
                         {showProvider && (
-                          <p className="px-3 pt-2 pb-0.5 font-mono text-[11px] text-muted-foreground">
+                          <p className="px-xl pt-lg pb-xs font-mono text-[11px] text-muted-foreground">
                             {option.provider}
                           </p>
                         )}
@@ -367,7 +367,7 @@ export function PiMenu() {
                           type="button"
                           role="menuitemradio"
                           aria-checked={current}
-                          className="flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left text-sm hover:bg-muted"
+                          className="flex w-full items-center justify-between gap-xl px-xl py-md text-left text-sm hover:bg-muted"
                           onClick={() => chooseModel(option)}
                         >
                           <span className="min-w-0">

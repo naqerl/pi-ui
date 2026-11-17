@@ -32,10 +32,10 @@ export function RunErrorHeader({
         role="alert"
         data-testid="run-error-header"
         data-error-class={error.class}
-        className="pointer-events-none absolute inset-x-0 z-30 flex justify-center px-3"
+        className="pointer-events-none absolute inset-x-0 z-30 flex justify-center px-xl"
         style={{ top: "max(0.5rem, env(safe-area-inset-top))" }}
       >
-        <div className="theme-radius pointer-events-auto flex w-full max-w-[72ch] min-w-0 items-center gap-2 border border-destructive/40 bg-surface/95 py-1 pr-1 pl-3 font-mono text-[11px] leading-5 text-destructive shadow-sm backdrop-blur-md">
+        <div className="theme-radius pointer-events-auto flex w-full max-w-[72ch] min-w-0 items-center gap-lg border border-destructive/40 bg-surface/95 py-sm pr-sm pl-xl font-mono text-[11px] leading-5 text-destructive shadow-sm backdrop-blur-md">
           <span aria-hidden="true" className="shrink-0">
             ⚠
           </span>
@@ -56,7 +56,7 @@ export function RunErrorHeader({
             data-testid="run-error-dismiss"
             aria-label="Dismiss error"
             onClick={() => onDismiss(error.id)}
-            className="shrink-0 rounded-md px-2 py-0.5 text-sm text-destructive hover:bg-destructive/10"
+            className="shrink-0 rounded-md px-lg py-xs text-sm text-destructive hover:bg-destructive/10"
           >
             ✕
           </button>
@@ -77,13 +77,13 @@ export function RunErrorHeader({
           }}
           className="m-0 mt-auto flex max-h-[85vh] w-full max-w-full flex-col overflow-hidden rounded-t-xl border border-destructive/40 bg-surface p-0 text-foreground shadow-xl backdrop:bg-foreground/40 sm:m-auto sm:w-[min(40rem,calc(100vw-2rem))] sm:rounded-xl"
         >
-          <header className="flex items-start gap-3 border-b border-foreground/10 px-4 py-3">
+          <header className="flex items-start gap-xl border-b border-foreground/10 px-2xl py-xl">
             <div className="min-w-0 flex-1">
               <div className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
                 {error.class}
                 {dateTime !== "" && ` · ${dateTime}`}
               </div>
-              <h2 id={titleId} className="mt-0.5 font-mono text-sm [overflow-wrap:anywhere]">
+              <h2 id={titleId} className="mt-xs font-mono text-sm [overflow-wrap:anywhere]">
                 {error.message}
               </h2>
             </div>
@@ -92,12 +92,12 @@ export function RunErrorHeader({
               data-testid="run-error-dialog-close"
               aria-label="Close"
               onClick={() => setOpen(false)}
-              className="-mr-1 shrink-0 rounded-md px-2 py-1 font-mono text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+              className="-mr-sm shrink-0 rounded-md px-lg py-sm font-mono text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
             >
               ✕
             </button>
           </header>
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+          <div className="min-h-0 flex-1 overflow-y-auto px-2xl py-xl">
             <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-destructive">
               {error.detail ?? error.message}
             </pre>

@@ -68,7 +68,7 @@ export function ProjectSuggestions({
       role="listbox"
       aria-label="Projects"
       data-testid="project-suggestions"
-      className="fixed z-50 -translate-y-full overflow-hidden rounded-md border border-border bg-surface p-1 text-foreground shadow-md"
+      className="fixed z-50 -translate-y-full overflow-hidden rounded-md border border-border bg-surface p-sm text-foreground shadow-md"
       style={{ left: box.left, top: box.top, width: box.width }}
     >
       {items.map((item, index) => (
@@ -80,7 +80,7 @@ export function ProjectSuggestions({
           aria-selected={index === active}
           data-testid={`project-suggestion-${item.name}`}
           className={cn(
-            "flex min-h-9 cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm leading-5 [overflow-wrap:anywhere]",
+            "flex min-h-9 cursor-pointer items-center gap-lg rounded-sm px-lg py-md text-sm leading-5 [overflow-wrap:anywhere]",
             index === active && "bg-muted",
           )}
           // Keep focus (and the phone keyboard) in the composer while tapping a suggestion.

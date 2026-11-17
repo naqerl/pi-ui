@@ -41,5 +41,11 @@
         "organizeImports": "on"
       }
     }
-  }
+  },
+  "plugins": [
+    {
+      "path": "./biome-plugins/spacing.grit",
+      "includes": ["src/client/**"]
+    }
+  ]
 }

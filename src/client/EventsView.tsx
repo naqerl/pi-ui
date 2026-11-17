@@ -14,7 +14,7 @@ function SubscriptionRow({ subscription }: { subscription: McpSubscriptionView }
   const label = subscriptionLabel(subscription);
   return (
     <div
-      className="flex flex-wrap items-baseline gap-3 border-b border-border py-3 font-mono text-xs"
+      className="flex flex-wrap items-baseline gap-xl border-b border-border py-xl font-mono text-xs"
       data-state={health}
     >
       <span
@@ -67,7 +67,7 @@ export function EventsView({ events, ready }: { events: McpEventsState; ready: b
     <div className="flex h-full min-h-0 flex-col">
       <div className="float-page mx-auto">
         <header className="w-fit max-w-full theme-radius border border-border bg-surface">
-          <div className="flex items-center gap-3 px-3 py-1.5">
+          <div className="flex items-center gap-xl px-xl py-md">
             <PiMenu />
             <a
               href="/"
@@ -80,9 +80,9 @@ export function EventsView({ events, ready }: { events: McpEventsState; ready: b
       </div>
 
       <main className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-[72ch] px-4 py-6">
-          <h1 className="mb-2 text-sm font-medium">MCP subscriptions</h1>
-          <p className="mb-4 text-xs text-muted-foreground">
+        <div className="mx-auto w-full max-w-[72ch] px-2xl py-2xl">
+          <h1 className="mb-lg text-sm font-medium">MCP subscriptions</h1>
+          <p className="mb-2xl text-xs text-muted-foreground">
             {live.length === 0
               ? attention.length === 0
                 ? "No live subscriptions."
@@ -98,24 +98,24 @@ export function EventsView({ events, ready }: { events: McpEventsState; ready: b
             ))}
           </div>
 
-          <h2 className="mt-8 mb-2 text-sm font-medium">Updates</h2>
+          <h2 className="mt-2xl mb-lg text-sm font-medium">Updates</h2>
           {events.notice && (
-            <p className="mb-3 font-mono text-xs text-foreground" data-testid="mcp-event-notice">
+            <p className="mb-xl font-mono text-xs text-foreground" data-testid="mcp-event-notice">
               {events.notice}
             </p>
           )}
           {ready && events.events.length === 0 && (
             <p className="font-mono text-xs text-muted-foreground">No events yet.</p>
           )}
-          <div className="space-y-3">
+          <div className="space-y-xl">
             {[...events.events].reverse().map((event) => (
-              <article key={event.id} className="theme-radius border border-border px-3 py-2">
+              <article key={event.id} className="theme-radius border border-border px-xl py-lg">
                 <div className="font-mono text-[11px] text-muted-foreground">
                   {formatTime(event.timestamp)} · new event from {event.server}
                 </div>
-                <div className="mt-1 font-mono text-xs">{event.name}</div>
+                <div className="mt-sm font-mono text-xs">{event.name}</div>
                 {event.summary.length > 0 && (
-                  <pre className="mt-2 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-muted-foreground">
+                  <pre className="mt-lg whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-muted-foreground">
                     {event.summary}
                   </pre>
                 )}

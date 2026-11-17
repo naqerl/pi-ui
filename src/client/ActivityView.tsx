@@ -82,7 +82,7 @@ function Detail({ label, children, error }: { label: string; children: string; e
   const collapsed = short !== null && !expanded;
   return (
     <div>
-      <div className="mb-1 font-mono text-[11px] uppercase tracking-wide text-muted-foreground">
+      <div className="mb-sm font-mono text-[11px] uppercase tracking-wide text-muted-foreground">
         {label}
       </div>
       <pre
@@ -97,7 +97,7 @@ function Detail({ label, children, error }: { label: string; children: string; e
         <button
           type="button"
           onClick={() => setExpanded((value) => !value)}
-          className="mt-1 font-mono text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+          className="mt-sm font-mono text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
         >
           {expanded
             ? "Show less"
@@ -145,7 +145,7 @@ function JobActivityRow({
         data-testid="activity-job"
         data-notice-kind="job"
         className={cn(
-          "group flex w-full items-center gap-2 border-b border-border py-3 text-left font-mono text-xs hover:text-foreground",
+          "group flex w-full items-center gap-lg border-b border-border py-xl text-left font-mono text-xs hover:text-foreground",
           failed ? "text-destructive" : "text-muted-foreground",
         )}
       >
@@ -167,8 +167,8 @@ function JobActivityRow({
         )}
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="theme-radius space-y-3 border-b border-border bg-muted/40 px-3 py-3 pl-8 text-xs">
-          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-xs">
+        <div className="theme-radius space-y-xl border-b border-border bg-muted/40 px-xl py-xl pl-2xl text-xs">
+          <dl className="grid grid-cols-[auto_1fr] gap-x-xl gap-y-sm font-mono text-xs">
             <JobField label="Job" value={notice.id} />
             <JobField label="Name" value={notice.name} />
             <JobField label="Command" value={notice.command} />
@@ -232,7 +232,7 @@ function TextActivityRow({ activity }: { activity: Exclude<ActivityItem, { kind:
         data-testid="activity-row"
         data-activity-name={activity.kind === "tool" ? activity.name : activity.kind}
         className={cn(
-          "group flex w-full items-center gap-2 border-b border-border py-3 text-left font-mono text-xs hover:text-foreground",
+          "group flex w-full items-center gap-lg border-b border-border py-xl text-left font-mono text-xs hover:text-foreground",
           failed ? "text-destructive" : "text-muted-foreground",
         )}
       >
@@ -244,7 +244,7 @@ function TextActivityRow({ activity }: { activity: Exclude<ActivityItem, { kind:
         </span>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="theme-radius space-y-3 border-b border-border bg-muted/40 px-3 py-3 pl-8 text-xs">
+        <div className="theme-radius space-y-xl border-b border-border bg-muted/40 px-xl py-xl pl-2xl text-xs">
           {activity.kind === "tool" ? (
             <>
               <Detail label="arguments">{activity.arguments}</Detail>
@@ -326,7 +326,7 @@ export function ActivityView({
         dialog === undefined ? "h-full" : "flex-1",
       )}
     >
-      <header className="ink-line flex shrink-0 items-center gap-3 border-b px-3 py-1.5">
+      <header className="ink-line flex shrink-0 items-center gap-xl border-b px-xl py-md">
         {dialog === undefined ? (
           <>
             <PiMenu />
@@ -345,24 +345,27 @@ export function ActivityView({
               data-testid="activity-dialog-close"
               aria-label="Close"
               onClick={dialog.onClose}
-              className="-mr-1 shrink-0 rounded-md px-2 py-1 font-mono text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+              className="-mr-sm shrink-0 rounded-md px-lg py-sm font-mono text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
             >
               <CloseIcon size={16} />
             </button>
           </>
         )}
       </header>
-      <div className="shrink-0 px-4 pt-4">
+      <div className="shrink-0 px-2xl pt-2xl">
         <h1 id={dialog?.titleId} className="text-sm font-medium">
           Activity
         </h1>
-        <p className="mt-2 text-xs text-muted-foreground">
+        <p className="mt-lg text-xs text-muted-foreground">
           {run === null
             ? "Every tool call, thinking block and job result in this conversation, in order."
             : "Tool calls, thinking blocks and job results from this run."}
         </p>
       </div>
-      <div data-testid="activity-scroll" className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-4">
+      <div
+        data-testid="activity-scroll"
+        className="min-h-0 flex-1 overflow-y-auto px-2xl pt-2xl pb-2xl"
+      >
         {!ready && <p className="font-mono text-xs text-muted-foreground">Loading…</p>}
         {ready && shownActivities.length === 0 && (
           <p className="font-mono text-xs text-muted-foreground">
@@ -385,9 +388,7 @@ export function ActivityView({
   );
 
   if (dialog !== undefined) {
-    return (
-      <div className="flex min-h-0 flex-1 flex-col pb-[env(safe-area-inset-bottom)]">{card}</div>
-    );
+    return <div className="flex min-h-0 flex-1 flex-col safe-bottom">{card}</div>;
   }
   return <div className="activity-screen">{card}</div>;
 }

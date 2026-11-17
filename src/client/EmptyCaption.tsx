@@ -17,7 +17,7 @@ export function EmptyCaption({
     <p
       data-testid={testId}
       className={cn(
-        "glass-caption px-3 py-2 text-center text-muted-foreground",
+        "glass-caption px-xl py-lg text-center text-muted-foreground",
         mono ? "font-mono text-xs leading-5" : "text-sm leading-5",
         className,
       )}

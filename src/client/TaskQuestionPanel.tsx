@@ -43,7 +43,7 @@ function OptionRow({
   return (
     <label
       className={cn(
-        "flex items-start gap-2 py-1 text-sm leading-5 text-foreground",
+        "flex items-start gap-lg py-sm text-sm leading-5 text-foreground",
         disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer",
         "has-[:focus-visible]:outline has-[:focus-visible]:outline-1 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-foreground",
       )}
@@ -57,12 +57,12 @@ function OptionRow({
         aria-label={option.label}
         data-testid={`question-${question.id}-${option.value}`}
         onChange={onToggle}
-        className="mt-1 size-4 shrink-0 accent-foreground"
+        className="mt-sm size-4 shrink-0 accent-foreground"
       />
       <span className="min-w-0">
         <span className="block [overflow-wrap:anywhere]">{option.label}</span>
         {option.detail !== undefined && option.detail.length > 0 && (
-          <span className="mt-0.5 block text-xs leading-4 text-muted-foreground [overflow-wrap:anywhere]">
+          <span className="mt-xs block text-xs leading-4 text-muted-foreground [overflow-wrap:anywhere]">
             {option.detail}
           </span>
         )}
@@ -160,14 +160,14 @@ export function TaskQuestionPanel({
         void submit();
       }}
     >
-      <div className="flex flex-col gap-0.5 border-b border-border/70 bg-surface px-3 py-2.5">
+      <div className="flex flex-col gap-xs border-b border-border/70 bg-surface px-xl py-xl">
         <h3 className="text-sm font-medium leading-5">Questions</h3>
         <p className="text-xs leading-4 text-muted-foreground">
           Answer every question, then send the set back to the planning agent.
         </p>
       </div>
 
-      <div className="flex flex-col gap-3 px-3 pt-3">
+      <div className="flex flex-col gap-xl px-xl pt-xl">
         {set.questions.map((question) => {
           const draft = drafts[question.id] ?? { values: [], text: "" };
           const multi = question.kind === "multi";
@@ -176,7 +176,7 @@ export function TaskQuestionPanel({
             <fieldset
               key={question.id}
               data-testid={`task-question-${question.id}`}
-              className="flex min-w-0 flex-col gap-2 border-t border-border/70 pt-3 first:border-t-0 first:pt-0"
+              className="flex min-w-0 flex-col gap-lg border-t border-border/70 pt-xl first:border-t-0 first:pt-0"
             >
               <legend className="min-w-0 float-left w-full text-sm font-medium leading-5 [overflow-wrap:anywhere]">
                 {question.prompt}
@@ -189,10 +189,10 @@ export function TaskQuestionPanel({
                   value={draft.text}
                   onChange={(event) => updateText(question, event.target.value)}
                   placeholder="Type your answer"
-                  className="theme-radius w-full resize-y border border-border/70 bg-background px-2 py-1.5 text-sm leading-5 text-foreground outline-none focus-visible:ring-1 focus-visible:ring-foreground"
+                  className="theme-radius w-full resize-y border border-border/70 bg-background px-lg py-md text-sm leading-5 text-foreground outline-none focus-visible:ring-1 focus-visible:ring-foreground"
                 />
               ) : (
-                <div className="flex flex-col gap-0.5">
+                <div className="flex flex-col gap-xs">
                   {(question.options ?? []).map((option) => (
                     <OptionRow
                       key={option.value}
@@ -214,7 +214,7 @@ export function TaskQuestionPanel({
                   value={draft.text}
                   onChange={(event) => updateText(question, event.target.value)}
                   placeholder="Other (optional)"
-                  className="theme-radius w-full border border-border/70 bg-background px-2 py-1.5 text-sm leading-5 text-foreground outline-none focus-visible:ring-1 focus-visible:ring-foreground"
+                  className="theme-radius w-full border border-border/70 bg-background px-lg py-md text-sm leading-5 text-foreground outline-none focus-visible:ring-1 focus-visible:ring-foreground"
                 />
               )}
             </fieldset>
@@ -228,7 +228,7 @@ export function TaskQuestionPanel({
         )}
       </div>
 
-      <div className="mt-1 border-t border-border/70 bg-surface px-3 py-2">
+      <div className="mt-sm border-t border-border/70 bg-surface px-xl py-lg">
         <Button
           type="submit"
           data-testid="task-questions-send"
