@@ -291,10 +291,14 @@ describe("task media against one shared app", { serial: true }, () => {
     expect(targetId).not.toBeNull();
 
     for (let remaining = 2; remaining > 0; remaining--) {
-      await browser.evaluate(() => {
-        document.querySelector<HTMLElement>('[data-testid="task-attachment-remove-1"]')?.click();
+      // Always remove the highest remaining index: after the first removal the
+      // second attachment is index 0, so a hard-coded "remove-1" clicked nothing
+      // and the test waited out its timeout instead of emptying the list.
+      const index = remaining - 1;
+      await browser.evaluate((i) => {
+        document.querySelector<HTMLElement>(`[data-testid="task-attachment-remove-${i}"]`)?.click();
         return true;
-      });
+      }, index);
       await expect(browser.locator(openButtons)).toHaveCount(remaining - 1);
     }
     await expect(screen.getByTestId("task-attachments")).toHaveCount(0);
