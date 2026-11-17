@@ -22,7 +22,7 @@ const TAIL_ALIGN_BYTES = 64 * 1024;
 /** Most characters kept while waiting for a newline, so a huge line cannot grow memory. */
 const MAX_PENDING_CHARS = 64 * 1024;
 
-const TIMED_BASH_DESCRIPTION =
+export const TIMED_BASH_DESCRIPTION =
   "Every command gets 120 seconds. One still running then keeps running as a background job — you are told when it ends, so do not poll; cancel it with job_cancel.";
 
 const bashParameters = Type.Object({

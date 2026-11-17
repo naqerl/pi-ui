@@ -4,6 +4,7 @@ import {
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
+import { TIMED_BASH_DESCRIPTION } from "./bash-tool.js";
 import { DelegateError, type DelegateManager, MAX_CONCURRENT_DELEGATES } from "./delegates.js";
 
 function text(value: string, isError = false): ToolExecutionResult {
@@ -37,7 +38,7 @@ export function createAcpDelegateTools(manager: DelegateManager): ToolRegistrati
       name: "acp_delegate",
       description: `Hand local work that is not a zeroshot job (config, files, host commands) to a sub-agent and return immediately.
 
-The sub-agent cannot see this chat, so put every path, goal, and constraint in the prompt. It has read, bash, edit, and write.
+The sub-agent cannot see this chat, so put every path, goal, and constraint in the prompt. It has read, bash, edit, write, job_list, job_output, and job_cancel. ${TIMED_BASH_DESCRIPTION}
 
 The call returns a run id. The work continues after it, for as long as the turn takes. End your turn. A chip arrives when the turn finishes. Do not poll and do not wait. Extra prompts queue when ${MAX_CONCURRENT_DELEGATES} sub-agents are already running.
 

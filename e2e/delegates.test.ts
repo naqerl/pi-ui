@@ -16,6 +16,7 @@ import {
 import { createAcpDelegateTools } from "../src/server/delegate-tools.js";
 import {
   DELEGATE_RESTART_ERROR,
+  DELEGATE_TOOLS,
   DelegateManager,
   type DelegateSession,
   type DelegateTurnResult,
@@ -29,6 +30,8 @@ const models = {} as ModelRuntime;
 interface Harness {
   readonly manager: DelegateManager;
   readonly chips: string[];
+  /** Job notices delivered into an open sub-agent turn. */
+  readonly jobNotices: string[];
   finish(id: string, result: DelegateTurnResult): void;
   /** Resolves with the prompt once that run's current turn has started. */
   submitted(id: string): Promise<string>;
@@ -38,6 +41,7 @@ async function harness(dir: string): Promise<Harness> {
   const finishes = new Map<string, (result: DelegateTurnResult) => void>();
   const prompts = new Map<string, string>();
   const waiters = new Map<string, (prompt: string) => void>();
+  const jobNotices: string[] = [];
   const manager = new DelegateManager({
     dataDir: dir,
     cwd: dir,
@@ -62,6 +66,9 @@ async function harness(dir: string): Promise<Harness> {
             finishes.set(run.id, resolve);
           });
         },
+        async submitNotice(text: string) {
+          jobNotices.push(text);
+        },
         abort() {
           const resolve = finishes.get(run.id);
           if (resolve === undefined) {
@@ -83,6 +90,7 @@ async function harness(dir: string): Promise<Harness> {
   return {
     manager,
     chips,
+    jobNotices,
     finish(id, result) {
       const resolve = finishes.get(id);
       if (resolve === undefined) throw new Error(`sub-agent ${id} is not in a turn`);
@@ -167,6 +175,55 @@ test("acp_delegate returns while the sub-agent is still working", async () => {
     await waitFor(() => box.manager.get(run.id).status === "idle");
     assert.equal(activeSubagents(box.manager.list()).length, 0);
     assert.equal(box.manager.get(run.id).lastOutcome, "completed");
+  } finally {
+    await cleanup(manager, dir);
+  }
+});
+
+test("a delegate exposes the job tools and keeps a handed-off command cancellable", () => {
+  assert.deepEqual(
+    DELEGATE_TOOLS.filter((name) => name.startsWith("job_")),
+    ["job_list", "job_output", "job_cancel"],
+  );
+  assert.equal(DELEGATE_TOOLS.includes("bash"), true);
+  assert.equal(DELEGATE_TOOLS.includes("job_start" as never), false);
+});
+
+test("a job notice reaches an open turn without starting another", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-ui-delegate-"));
+  let manager: DelegateManager | undefined;
+  try {
+    const box = await harness(dir);
+    manager = box.manager;
+    const run = await box.manager.start({ prompt: "run the build" });
+    await box.submitted(run.id);
+
+    assert.equal(await box.manager.submitJobNotice(run.id, "job j1 finished"), true);
+    assert.deepEqual(box.jobNotices, ["job j1 finished"]);
+    assert.equal(box.manager.get(run.id).status, "running");
+    assert.equal(box.chips.length, 0, "a notice does not finish the turn");
+
+    box.finish(run.id, { text: "build done" });
+    await waitFor(() => box.manager.get(run.id).status === "idle");
+    assert.equal(box.chips.length, 1, "only the finished turn chips");
+  } finally {
+    await cleanup(manager, dir);
+  }
+});
+
+test("a job notice falls back to the parent when the run is not open", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-ui-delegate-"));
+  let manager: DelegateManager | undefined;
+  try {
+    const box = await harness(dir);
+    manager = box.manager;
+    const run = await box.manager.start({ prompt: "run the build" });
+    await box.submitted(run.id);
+    box.finish(run.id, { text: "build done" });
+    await waitFor(() => box.manager.get(run.id).status === "idle");
+    assert.equal(await box.manager.submitJobNotice(run.id, "late job"), false);
+    assert.deepEqual(box.jobNotices, []);
+    assert.equal(await box.manager.submitJobNotice("del_missing", "late job"), false);
   } finally {
     await cleanup(manager, dir);
   }

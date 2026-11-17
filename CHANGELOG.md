@@ -5,6 +5,7 @@
 - `bash` has a 120-second foreground window (`PI_BASH_HANDOFF_MS`). A command still running at the limit continues as a background job and the call returns its retained output tail plus a notice naming the job. The job's completion arrives as a job notice. A fast command's record is dropped; when its retained output was truncated, its log stays at the advertised `fullOutputPath`.
 - `JobManager` has a foreground phase: `begin` spawns hidden, `promote` makes a job visible and notifies on completion, `discard` drops a fast command and its log, and `waitForExit` resolves on exit, timeout or abort. A hidden command still running at boot is promoted; one whose pid is gone is dropped. The job id high-water mark is persisted and recovered from log names, so a log kept for a truncated fast result is never reused.
 - The plan agent can read and stop handed-off commands with `job_output` and `job_cancel`. Its completion notices route to the plan conversation, or to an activity row when no plan session is live.
+- A sub-agent's `bash` follows the same 120-second rule. Its jobs are listed and cancellable with `job_list`, `job_output` and `job_cancel`; a completion notice steers the open delegate turn and never starts another, while a job that outlives the turn becomes one activity row naming its id.
 
 ### Changed
 

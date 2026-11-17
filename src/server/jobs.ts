@@ -9,7 +9,10 @@ export type JobStatus = "running" | "exited" | "failed" | "cancelled" | "lost";
 export type JobOrigin = "job_start" | "bash";
 
 /** Where the completion notice is delivered. */
-export type JobOwner = { kind: "chat" } | { kind: "plan"; taskId: string };
+export type JobOwner =
+  | { kind: "chat" }
+  | { kind: "plan"; taskId: string }
+  | { kind: "delegate"; runId: string };
 
 export interface JobRecord {
   id: string;
@@ -555,7 +558,9 @@ function normalizeJob(job: JobRecord): JobRecord {
     owner:
       owner?.kind === "plan" && typeof owner.taskId === "string"
         ? { kind: "plan", taskId: owner.taskId }
-        : { kind: "chat" },
+        : owner?.kind === "delegate" && typeof owner.runId === "string"
+          ? { kind: "delegate", runId: owner.runId }
+          : { kind: "chat" },
     visible: job.visible !== false,
   };
 }
@@ -641,7 +646,12 @@ export function describeJob(job: JobRecord, now = Date.now()): string {
           : job.status === "cancelled"
             ? `cancelled after ${duration}`
             : "lost (the server restarted and the exit code is unknown)";
-  const owner = job.owner?.kind === "plan" ? ` (plan ${job.owner.taskId})` : "";
+  const owner =
+    job.owner?.kind === "plan"
+      ? ` (plan ${job.owner.taskId})`
+      : job.owner?.kind === "delegate"
+        ? ` (delegate ${job.owner.runId})`
+        : "";
   return `${job.id} ${state}: ${job.name}${owner}`;
 }
 

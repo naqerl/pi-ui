@@ -289,14 +289,20 @@ test("an already-aborted turn hands the command off instead of killing it", asyn
 
 test("a promoted job reports once to the route that owns it", async (t) => {
   const { jobs } = await store(t);
-  const routes: Record<"chat" | "plan", Array<{ id: string; text: string; taskId?: string }>> = {
+  const routes: Record<
+    "chat" | "plan" | "delegate",
+    Array<{ id: string; text: string; ownerId?: string }>
+  > = {
     chat: [],
     plan: [],
+    delegate: [],
   };
   jobs.setNotifier((job, tail) => {
     const text = jobNotice(job, tail);
     if (job.owner.kind === "plan") {
-      routes.plan.push({ id: job.id, text, taskId: job.owner.taskId });
+      routes.plan.push({ id: job.id, text, ownerId: job.owner.taskId });
+    } else if (job.owner.kind === "delegate") {
+      routes.delegate.push({ id: job.id, text, ownerId: job.owner.runId });
     } else {
       routes.chat.push({ id: job.id, text });
     }
@@ -304,19 +310,49 @@ test("a promoted job reports once to the route that owns it", async (t) => {
   const chatTool = createTimedBashTool(jobs, { handoffMs: 100 });
   const planOwner: JobOwner = { kind: "plan", taskId: "task-42" };
   const planTool = createTimedBashTool(jobs, { handoffMs: 100, owner: planOwner });
+  const delegateOwner: JobOwner = { kind: "delegate", runId: "del_42" };
+  const delegateTool = createTimedBashTool(jobs, { handoffMs: 100, owner: delegateOwner });
   const chatResult = await run(chatTool, "echo chat-tail; sleep 1", fakeApi());
   const planResult = await run(planTool, "echo plan-tail; sleep 1", fakeApi());
+  const delegateResult = await run(delegateTool, "echo delegate-tail; sleep 1", fakeApi());
   const chatId = (chatResult.structuredOutput as { jobId: string }).jobId;
   const planId = (planResult.structuredOutput as { jobId: string }).jobId;
-  await until(() => routes.chat.length === 1 && routes.plan.length === 1);
+  const delegateId = (delegateResult.structuredOutput as { jobId: string }).jobId;
+  await until(
+    () => routes.chat.length === 1 && routes.plan.length === 1 && routes.delegate.length === 1,
+  );
   await sleep(300);
   assert.equal(routes.chat.length, 1, "exactly one chat notice");
   assert.equal(routes.plan.length, 1, "exactly one plan notice");
+  assert.equal(routes.delegate.length, 1, "exactly one delegate notice");
   assert.equal(routes.chat[0]?.id, chatId);
   assert.equal(routes.plan[0]?.id, planId);
-  assert.equal(routes.plan[0]?.taskId, "task-42");
+  assert.equal(routes.delegate[0]?.id, delegateId);
+  assert.equal(routes.plan[0]?.ownerId, "task-42");
+  assert.equal(routes.delegate[0]?.ownerId, "del_42");
   assert.match(routes.chat[0]?.text ?? "", /chat-tail/);
   assert.match(routes.plan[0]?.text ?? "", /plan-tail/);
+  assert.match(routes.delegate[0]?.text ?? "", /delegate-tail/);
+});
+
+test("a delegate handoff names, lists and cancels the same job", async (t) => {
+  const { jobs } = await store(t);
+  const owner: JobOwner = { kind: "delegate", runId: "del_accept" };
+  const tool = createTimedBashTool(jobs, { handoffMs: 100, owner });
+  const result = await run(tool, "sleep 1", fakeApi());
+  const structured = result.structuredOutput as { jobId: string; exitCode: null };
+  assert.match(structured.jobId, /^j\d+$/);
+  assert.equal(structured.exitCode, null);
+  const job = jobs.get(structured.jobId);
+  assert.deepEqual(job.owner, owner);
+  assert.equal(job.origin, "bash");
+  assert.equal(job.visible, true);
+  assert.deepEqual(
+    jobs.list().map((item) => item.id),
+    [structured.jobId],
+  );
+  await cancelViaTool(jobs, structured.jobId);
+  assert.equal(jobs.get(structured.jobId).status, "cancelled");
 });
 
 test("load adopts a hidden live command and drops one whose pid is gone", async (t) => {

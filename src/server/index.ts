@@ -178,6 +178,7 @@ const delegates = new DelegateManager({
   cwd,
   models: catalog.runtime,
   model: catalog.model,
+  jobs,
 });
 await delegates.load();
 const memory = new MemoryStore(resolve(dataDir, "memory"));
@@ -489,6 +490,18 @@ jobs.onChange(() => {
 });
 jobs.setNotifier((job, tail) => {
   const text = jobNotice(job, tail);
+  if (job.owner.kind === "delegate") {
+    void delegates
+      .submitJobNotice(job.owner.runId, text)
+      .then((delivered) => {
+        // A run that already ended is not woken for a job result; the activity row remains.
+        if (!delivered) return chat.recordNotice(text);
+      })
+      .catch((error: unknown) => {
+        console.error(`[pi] background job ${job.id} delegate notice failed`, error);
+      });
+    return;
+  }
   if (job.owner.kind === "plan") {
     void taskAgents
       .submitJobNotice(job.owner.taskId, text)
