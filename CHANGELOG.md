@@ -17,6 +17,7 @@
 - `describeJob` names the owning plan task.
 - A long-term memory write made in a plan chat invalidates the shared snapshot and reaches the main chat's next instructions, without a memory chip and without starting a turn.
 - Pending plan questions are cleared as soon as a task leaves planning, not only when it is marked done.
+- The e2e overflow guard only exempts elements that mark themselves with `data-overflow-clip`; an unmarked surface can no longer hide horizontal overflow by clipping it.
 
 ## 1.8.1
 

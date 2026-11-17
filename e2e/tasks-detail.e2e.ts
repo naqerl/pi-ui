@@ -112,27 +112,16 @@ async function openSnapshot(
 }
 
 /**
- * Elements on the tasks page whose content is wider than their own box. The
- * offscreen dashboard pager is excluded by scanning inside the tasks page, and
- * visually-hidden labels and the ellipsised run-error label never show it.
- * A node that clips its own overflow, or that sits inside an in-page ancestor
- * that clips horizontally, cannot surface overflow beyond that clip either: the
- * two-slot task tab track is intentionally twice its viewport. The page root is
- * still checked because the scan stops before it.
+ * Elements on the tasks page whose content is wider than their own box. Only
+ * the nodes that intentionally clip their own overflow are exempt: the
+ * offscreen dashboard pager is excluded by scanning inside the tasks page,
+ * visually-hidden labels and the ellipsised run-error label never show it, and
+ * a carousel viewport/track marks itself with data-overflow-clip.
  */
 async function horizontalOverflow(browser: Browser) {
   return browser.evaluate(() => {
     const page = document.querySelector<HTMLElement>('[data-testid="tasks-page"]');
     if (page === null) return [null];
-    const clipsHorizontally = (node: Element) => {
-      let current: Element | null = node;
-      while (current !== null && current !== page) {
-        const { overflowX } = getComputedStyle(current);
-        if (overflowX === "hidden" || overflowX === "clip") return true;
-        current = current.parentElement;
-      }
-      return false;
-    };
     const nodes = [document.documentElement, document.body, page, ...page.querySelectorAll("*")];
     return nodes
       .filter((node) => {
@@ -140,7 +129,7 @@ async function horizontalOverflow(browser: Browser) {
         const clipped =
           node.closest(".sr-only") !== null ||
           node.closest('[data-testid="run-error-open"]') !== null ||
-          clipsHorizontally(node);
+          node.hasAttribute("data-overflow-clip");
         return style.display !== "none" && style.visibility !== "hidden" && !clipped;
       })
       .filter((node) => node.scrollWidth > node.clientWidth)

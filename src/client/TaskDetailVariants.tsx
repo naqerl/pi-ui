@@ -1101,6 +1101,7 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
         {...tabs.pagerProps}
         className="flex min-h-0 flex-1 overflow-hidden"
         data-testid="task-tab-track"
+        data-overflow-clip=""
       >
         <div
           className={cn(
@@ -1109,6 +1110,7 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
               ? "transition-none"
               : "transition-transform duration-300 ease-out motion-reduce:transition-none",
           )}
+          data-overflow-clip=""
           style={{
             transform: `translate3d(calc(${-tabs.page * 100}% + ${tabs.dragX}px), 0, 0)`,
           }}
