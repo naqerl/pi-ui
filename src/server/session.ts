@@ -747,6 +747,9 @@ function messageAfter(message: Record<string, unknown>, startedAt: number): bool
   return typeof message.timestamp === "number" && message.timestamp > startedAt;
 }
 
+/** The note stored for a partial run that boot is resuming. */
+export const INTERRUPTED_RUN_RESTART_NOTE = "The previous run was interrupted by a server restart";
+
 export async function appendInterruptionNote(
   conversation: Conversation,
   marker: RunMarker,
@@ -758,12 +761,12 @@ export async function appendInterruptionNote(
   });
   if (alreadyRecorded) return;
 
-  // A run that left no reply and was not stopped has nothing to report. Only promise a
-  // resume for a partial run that was not stopped, which is the case boot resumes.
+  // A run that left no reply and was not stopped has nothing to report. A partial
+  // run that was not stopped gets a note, because boot resumes that run.
   const note = marker.stopRequested
     ? "The previous run was stopped before the server restarted. The last response may be partial."
     : marker.partialEntryId !== null
-      ? "The previous run was interrupted by a server restart. The last response is partial; pi is resuming the run."
+      ? INTERRUPTED_RUN_RESTART_NOTE
       : null;
   if (note === null) return;
 
