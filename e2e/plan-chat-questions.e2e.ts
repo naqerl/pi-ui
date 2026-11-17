@@ -545,7 +545,8 @@ test("typing in Other replaces and disables that question's choices", {
 
 test("leaving planning clears the pending questions", {
   timeout: 120_000,
-}, async ({ browser }) => {
+}, async ({ app, browser }) => {
+  await app.open("/?page=tasks");
   const title = `Plan questions leave ${Date.now()}`;
   const taskId = await browser.evaluate(async (nextTitle) => {
     const response = await fetch("/api/tasks", {
