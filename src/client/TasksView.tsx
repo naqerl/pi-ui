@@ -891,7 +891,7 @@ function TasksViewImpl({
       <div
         className={
           wide
-            ? "tasks-split grid h-full min-h-0 w-full grid-cols-[minmax(260px,320px)_minmax(280px,1fr)_minmax(300px,400px)] grid-rows-[auto_minmax(0,1fr)] gap-2xl px-2xl"
+            ? "tasks-split grid h-full min-h-0 w-full grid-cols-[minmax(260px,320px)_minmax(280px,1fr)_minmax(300px,400px)] grid-rows-[auto_minmax(0,1fr)] gap-x-2xl gap-y-lg px-2xl"
             : cn(
                 "mx-auto flex h-full min-h-0 w-full max-w-[72ch] flex-col",
                 openTask === undefined ? "gap-2xl px-2xl" : "overflow-hidden",

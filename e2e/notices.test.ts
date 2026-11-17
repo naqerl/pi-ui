@@ -142,7 +142,7 @@ function chipMarkup(notice: ChatNotice): string {
   return renderToStaticMarkup(createElement(NoticeLine, { message, notice }));
 }
 
-test("job and MCP chips carry the blurred glass surface", () => {
+test("job and MCP chips carry the carded surface", () => {
   const failedJob = parseNotice(jobNotice(job({ status: "failed", exitCode: 2 }), ""));
   assert.ok(failedJob?.kind === "job");
   const mcp = parseNotice(
@@ -161,7 +161,7 @@ test("job and MCP chips carry the blurred glass surface", () => {
 
   for (const notice of [failedJob, mcp]) {
     const markup = chipMarkup(notice);
-    assert.match(markup, /class="[^"]*\bbackdrop-blur-md\b/);
+    assert.doesNotMatch(markup, /class="[^"]*\bbackdrop-blur-md\b/);
     assert.match(markup, /class="[^"]*\bbg-surface\/90\b/);
     assert.match(markup, /class="[^"]*\bshadow-sm\b/);
     assert.match(markup, /data-testid="chat-notice"/);
@@ -178,7 +178,7 @@ test("a failed job chip keeps its destructive styling", () => {
   assert.match(markup, /class="[^"]*\bborder-destructive\/40\b/);
   assert.match(markup, /class="[^"]*\btext-destructive\b/);
   assert.match(markup, /class="[^"]*\bhover:text-destructive\b/);
-  assert.match(markup, /class="[^"]*\bbackdrop-blur-md\b/);
+  assert.doesNotMatch(markup, /class="[^"]*\bbackdrop-blur-md\b/);
   assert.match(markup, /data-icon="job"/);
   assert.doesNotMatch(markup, /⚙/);
 });
@@ -225,7 +225,7 @@ test("an interrupted run becomes one warning chip after the partial reply", () =
   assert.match(markup, /data-notice-kind="interrupted"/);
   assert.match(markup, /data-icon="warning"/);
   assert.doesNotMatch(markup, /⚠/);
-  assert.match(markup, /class="[^"]*\bbackdrop-blur-md\b/);
+  assert.doesNotMatch(markup, /class="[^"]*\bbackdrop-blur-md\b/);
   assert.match(markup, /class="[^"]*\bborder-status-warn\/40\b/);
   assert.match(markup, /class="[^"]*\bbg-status-warn\/10\b/);
   assert.match(markup, /class="[^"]*\btext-status-warn\b/);
@@ -261,7 +261,7 @@ test("a memory write becomes a persistent chip with an undo steer", async () => 
   );
   assert.match(markup, /data-notice-kind="memory"/);
   assert.match(markup, new RegExp(`memory · ${path.replaceAll(".", "\\.")}`));
-  assert.match(markup, /class="[^"]*\bbackdrop-blur-md\b/);
+  assert.doesNotMatch(markup, /class="[^"]*\bbackdrop-blur-md\b/);
   assert.match(markup, /class="[^"]*\bbg-surface\/90\b/);
 
   assert.equal(
