@@ -1,5 +1,5 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { DEFAULT_NEW_TASK_TITLE } from "../shared/tasks";
+import { DEFAULT_NEW_TASK_TITLE, isActiveStatus } from "../shared/tasks";
 import type { ChatMessage, MessageMode, Task } from "../shared/types";
 import { ActivityDialog, Composer, TranscriptRows } from "./ChatView";
 import type { TimelineItem } from "./chat-timeline";
@@ -12,10 +12,12 @@ import {
   type TaskDockSession,
   useRegisterTaskDock,
   useRegisterTaskRunError,
+  useRegisterTaskSurfaceStatus,
 } from "./task-dock-composer";
 import { groupTimeline } from "./timeline-groups";
 import { useStickToBottom } from "./use-stick-to-bottom";
 import { useTaskChat } from "./use-task-chat";
+import { taskStatusWord } from "./working-state";
 
 export function TaskAgentChat({
   task,
@@ -123,6 +125,16 @@ export function TaskAgentChat({
 
   useRegisterTaskDock(session);
 
+  // The status belongs to the mounted plan surface, and its quiet flag comes from the
+  // same frame clock that drives the transcript. The ledger only says whether to plan.
+  const surfaceStatus = useMemo(() => {
+    const live =
+      task.planning === true && (isActiveStatus(task.status) || task.status === "planning");
+    const word = taskStatusWord(task.id, live);
+    return word === null ? null : { taskId: task.id, word, quiet: chat.quiet };
+  }, [task.id, task.planning, task.status, chat.quiet]);
+  useRegisterTaskSurfaceStatus(surfaceStatus);
+
   // The plan pane has no header of its own: the one app-level host owns run errors.
   const runErrorSurface = useMemo(
     () => ({ taskId: task.id, error: chat.runError, dismiss: chat.dismissError }),
@@ -181,6 +193,8 @@ export function TaskAgentChat({
           ) : (
             <TranscriptRows
               groups={groups}
+              timeline={timeline}
+              running={chat.running && !chat.quiet}
               onCancelQueued={chat.cancelQueued}
               onOpen={openActivity}
             />

@@ -42,3 +42,41 @@ export function groupTimeline(timeline: TimelineItem[]): TimelineGroup[] {
   flush();
   return groups;
 }
+
+/** The newest real user turn; a pending steer or queue bubble does not start one. */
+export function lastUserMessageOrder(timeline: TimelineItem[]): number {
+  let order = Number.NEGATIVE_INFINITY;
+  for (const item of timeline) {
+    if (
+      item.kind === "message" &&
+      item.message.role === "user" &&
+      !item.message.pendingSteer &&
+      !item.message.pendingQueue &&
+      !item.message.pendingSend
+    ) {
+      order = Math.max(order, item.message.order);
+    }
+  }
+  return order;
+}
+
+/**
+ * The one live activity group for a transcript: the last activity run after the newest
+ * user turn. Both the main and plan surfaces derive it here, so a row cannot be live on
+ * one page and frozen on the other.
+ */
+export function liveActivityGroupKey(
+  timeline: TimelineItem[],
+  groups: TimelineGroup[],
+  running: boolean,
+): string | undefined {
+  if (!running) return undefined;
+  const lastUserOrder = lastUserMessageOrder(timeline);
+  for (let index = groups.length - 1; index >= 0; index--) {
+    const group = groups[index];
+    if (group.kind === "activity" && group.items[0].order > lastUserOrder) {
+      return group.key;
+    }
+  }
+  return undefined;
+}

@@ -16,36 +16,39 @@ import {
   rebuildSteersFromSnapshot,
 } from "../shared/steers";
 import { carryWorkingTraces } from "../shared/task-status";
-import type {
-  ActivityItem,
-  ChatMessage,
-  ContextUsage,
-  DelegateRunView,
-  DiagramRef,
-  McpEventsState,
-  McpStatus,
-  MessageMode,
-  ModelOption,
-  QueuedMessage,
-  RunError,
-  RunState,
-  Snapshot,
-  StreamActivity,
-  StreamDraftSync,
-  StreamMessageDone,
-  StreamNotice,
-  StreamRunState,
-  StreamSessionReset,
-  StreamSteerDropped,
-  StreamTextDelta,
-  StreamTheme,
-  StreamToolEnd,
-  StreamToolStart,
-  SubmitMessageResponse,
-  TaskLedger,
-  ToolActivity,
-  TranscriptHistory,
-  UsageSummary,
+import {
+  type ActivityItem,
+  type ChatMessage,
+  type ContextUsage,
+  type DelegateRunView,
+  type DiagramRef,
+  isTaskChatFrame,
+  type McpEventsState,
+  type McpStatus,
+  type MessageMode,
+  type ModelOption,
+  type QueuedMessage,
+  type RunError,
+  type RunState,
+  type Snapshot,
+  type StreamActivity,
+  type StreamDraftSync,
+  type StreamMessageDone,
+  type StreamNotice,
+  type StreamQuestions,
+  type StreamRunState,
+  type StreamSessionReset,
+  type StreamSteerDropped,
+  type StreamTextDelta,
+  type StreamTheme,
+  type StreamToolEnd,
+  type StreamToolStart,
+  type SubmitMessageResponse,
+  type TaskChatFrame,
+  type TaskLedger,
+  type ToolActivity,
+  type TranscriptHistory,
+  type UsageSummary,
 } from "../shared/types";
 import { mergeWindow } from "../shared/window";
 import {
@@ -57,7 +60,7 @@ import {
 } from "./chat-timeline";
 import { setDashboard } from "./dashboard-store";
 import { frameBatch, reduceDraft, refreshBatch } from "./stream-batch";
-import { publishTaskChatEvent } from "./task-chat-events";
+import { publishTaskChatEvent, publishTaskChatLiveness } from "./task-chat-events";
 import { isThinking } from "./working-state";
 
 export type { TimelineItem } from "./chat-timeline";
@@ -323,6 +326,13 @@ export interface UseChatOptions {
   transport?: ChatTransport;
   /** Observe each snapshot; the plan chat reads its pending question set from here. */
   onSnapshot?: (snapshot: Snapshot) => void;
+  /** A pushed question set; the plan chat replaces its pending panel without a snapshot. */
+  onQuestions?: (questions: StreamQuestions["questions"]) => void;
+  /**
+   * Forward liveness to the plan shim. Only the main stream sets this: a plan chat
+   * re-emitting a heartbeat would make its own strip look alive after the relay died.
+   */
+  publishLiveness?: boolean;
 }
 
 export function useChat(options: UseChatOptions = {}) {
@@ -330,6 +340,10 @@ export function useChat(options: UseChatOptions = {}) {
   const transport = options.transport ?? MAIN_CHAT_TRANSPORT;
   const onSnapshotRef = useRef(options.onSnapshot);
   onSnapshotRef.current = options.onSnapshot;
+  const onQuestionsRef = useRef(options.onQuestions);
+  onQuestionsRef.current = options.onQuestions;
+  const publishLivenessRef = useRef(options.publishLiveness !== false);
+  publishLivenessRef.current = options.publishLiveness !== false;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [liveTools, setLiveTools] = useState<ToolActivity[]>([]);
@@ -353,6 +367,14 @@ export function useChat(options: UseChatOptions = {}) {
   );
 
   const [runState, setRunState] = useState<RunState>("idle");
+  /** The retry budget is the server's: it reports it on every liveness frame. */
+  const quietAfter = useRef(150_000);
+  const activityAt = useRef(Date.now());
+  const [quiet, setQuiet] = useState(false);
+  const markActivity = useCallback(() => {
+    activityAt.current = Date.now();
+    setQuiet(false);
+  }, []);
   const [runError, setRunError] = useState<RunError | null>(null);
   /** Transport loss is shown by the same header, but never used to guess idle. */
   const [connectionError, setConnectionError] = useState<RunError | null>(null);
@@ -661,8 +683,15 @@ export function useChat(options: UseChatOptions = {}) {
 
     // The server writes this on every heartbeat and on a new stream. Receiving
     // one is proof it is alive, so an old transport error cannot claim offline.
-    source.addEventListener("liveness", () => {
+    source.addEventListener("liveness", (event) => {
+      const data = parseEvent<{ at?: string; quietAfterMs?: number }>(
+        event as MessageEvent<string>,
+      );
+      if (typeof data?.quietAfterMs === "number" && data.quietAfterMs > 0) {
+        quietAfter.current = data.quietAfterMs;
+      }
       setConnectionError(null);
+      if (publishLivenessRef.current) publishTaskChatLiveness(data ?? {});
     });
 
     source.addEventListener("delegates", (event) => {
@@ -689,12 +718,15 @@ export function useChat(options: UseChatOptions = {}) {
 
     source.addEventListener("draft.sync", (event) => {
       const data = parseEvent<StreamDraftSync>(event as MessageEvent<string>);
-      if (data) applyDraft(data);
+      if (!data) return;
+      markActivity();
+      applyDraft(data);
     });
 
     source.addEventListener("session.reset", (event) => {
       const data = parseEvent<StreamSessionReset>(event as MessageEvent<string>);
       if (!data || !Number.isFinite(data.order)) return;
+      markActivity();
       const at = typeof data.resetAt === "string" ? data.resetAt : new Date().toISOString();
       resetAt.current = at;
       resetOrder.current = data.order;
@@ -735,12 +767,15 @@ export function useChat(options: UseChatOptions = {}) {
     });
 
     source.addEventListener("task.chat", (event) => {
-      const data = parseEvent<{ taskId: string; event: string; data: unknown }>(
-        event as MessageEvent<string>,
-      );
-      if (data && typeof data.taskId === "string" && typeof data.event === "string") {
-        publishTaskChatEvent(data);
-      }
+      const data = parseEvent<TaskChatFrame>(event as MessageEvent<string>);
+      if (isTaskChatFrame(data)) publishTaskChatEvent(data);
+    });
+
+    source.addEventListener("questions", (event) => {
+      const data = parseEvent<StreamQuestions>(event as MessageEvent<string>);
+      if (data === null || !("questions" in data)) return;
+      markActivity();
+      onQuestionsRef.current?.(data.questions ?? null);
     });
 
     source.addEventListener("diagram", (event) => {
@@ -767,6 +802,7 @@ export function useChat(options: UseChatOptions = {}) {
     source.addEventListener("run.state", (event) => {
       const data = parseEvent<StreamRunState>(event as MessageEvent<string>);
       if (!data) return;
+      markActivity();
       setRunState(data.state);
       setRunError(data.runError ?? null);
       if (acceptQueueRevision(data.queueRevision)) {
@@ -787,6 +823,7 @@ export function useChat(options: UseChatOptions = {}) {
     source.addEventListener("steer.dropped", (event) => {
       const data = parseEvent<StreamSteerDropped>(event as MessageEvent<string>);
       if (!data) return;
+      markActivity();
       const order = nextDroppedOrder();
       setSteers((current) => dropSteer(current, data.id, data.reason, order));
     });
@@ -796,6 +833,7 @@ export function useChat(options: UseChatOptions = {}) {
       if (!data) return;
       const revision = acceptDeltaRevision(draftRevision.current, data.revision);
       if (revision === null) return;
+      markActivity();
       draftRevision.current = revision;
       draftBatch.push({ kind: "text", delta: data });
     });
@@ -805,12 +843,14 @@ export function useChat(options: UseChatOptions = {}) {
       if (!data) return;
       const revision = acceptDeltaRevision(draftRevision.current, data.revision);
       if (revision === null) return;
+      markActivity();
       draftRevision.current = revision;
       draftBatch.push({ kind: "thinking", delta: data });
     });
 
     source.addEventListener("message.done", (event) => {
       const data = parseEvent<StreamMessageDone>(event as MessageEvent<string>);
+      markActivity();
       if (data?.message) {
         const { messages, activity: jobActivity } = separateJobResults([data.message]);
         const message = messages[0];
@@ -834,6 +874,7 @@ export function useChat(options: UseChatOptions = {}) {
     source.addEventListener("notice", (event) => {
       const data = parseEvent<StreamNotice>(event as MessageEvent<string>);
       if (!data) return;
+      markActivity();
       const { messages, activity: jobActivity } = separateJobResults([data.message]);
       const message = messages[0];
       if (message !== undefined) {
@@ -849,12 +890,14 @@ export function useChat(options: UseChatOptions = {}) {
     source.addEventListener("activity", (event) => {
       const data = parseEvent<StreamActivity>(event as MessageEvent<string>);
       if (data?.activity.kind !== "job") return;
+      markActivity();
       setActivity((current) => addJobActivity(current, [data.activity]));
     });
 
     source.addEventListener("tool.start", (event) => {
       const data = parseEvent<StreamToolStart>(event as MessageEvent<string>);
       if (!data) return;
+      markActivity();
       const tool: ToolActivity = {
         kind: "tool",
         id: `live-${data.toolCallId}`,
@@ -876,6 +919,7 @@ export function useChat(options: UseChatOptions = {}) {
     source.addEventListener("tool.end", (event) => {
       const data = parseEvent<StreamToolEnd>(event as MessageEvent<string>);
       if (!data) return;
+      markActivity();
       const liveId = `live-${data.toolCallId}`;
       setLiveTools((current) =>
         current.map((item) => (item.id === liveId ? { ...data.activity, pending: false } : item)),
@@ -916,9 +960,25 @@ export function useChat(options: UseChatOptions = {}) {
     applyTasks,
     draftBatch,
     nextDroppedOrder,
+    markActivity,
     refreshState,
     transport,
   ]);
+
+  // A run whose frames stop is still running, but its clock must stop too. This is the
+  // same retry budget the server uses to declare a run unhealthy; no second timer on a row.
+  useEffect(() => {
+    if (runState !== "running") {
+      setQuiet(false);
+      return;
+    }
+    activityAt.current = Date.now();
+    setQuiet(false);
+    const timer = window.setInterval(() => {
+      setQuiet(Date.now() - activityAt.current >= quietAfter.current);
+    }, 1_000);
+    return () => window.clearInterval(timer);
+  }, [runState]);
 
   // A snapshot, SSE message, queue update or older page can confirm a pending send at any
   // time. Retire the optimistic copy then, not only when its own fetch response arrives.
@@ -1124,6 +1184,7 @@ export function useChat(options: UseChatOptions = {}) {
     delegates,
     jobs,
     running: runState === "running",
+    quiet,
     thinking: runState === "running" && isThinking(draftThinking, draftText),
     interrupted: runState === "interrupted",
     queue,

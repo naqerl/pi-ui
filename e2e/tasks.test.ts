@@ -19,6 +19,7 @@ import {
   TaskRow,
   TaskTimes,
 } from "../src/client/TasksView.js";
+import { gestureOwner, scrollerCanPan, swipeCanAttribute } from "../src/client/use-pager.js";
 import type { PushNotification } from "../src/server/push.js";
 import { createTaskTools, type TaskBridge } from "../src/server/task-tools.js";
 import { TaskStore, type TaskStoreOptions, taskReopenStats } from "../src/server/tasks.js";
@@ -1263,4 +1264,35 @@ test("reopen stats count tasks and this week's reopens per project", () => {
       { project: null, reopenedTasks: 1, reopens: 1, reopensThisWeek: 0 },
     ],
   });
+});
+
+test("the tab swipe edge rule yields to the page pager only at a tab edge", () => {
+  // Plan is the first tab, Chat the last: right on Plan and left on Chat belong
+  // to the page pager, while the middle direction belongs to the tab track.
+  assert.equal(swipeCanAttribute(0, 2), "next");
+  assert.equal(swipeCanAttribute(1, 2), "prev");
+  assert.equal(swipeCanAttribute(0, 1), "");
+});
+
+test("a horizontal scroller keeps the gesture only while it can still pan", () => {
+  const box = (scrollLeft: number) => ({ scrollLeft, clientWidth: 400, scrollWidth: 1000 });
+  // The 1.6.95 regression: either edge used to swallow the gesture in both directions.
+  assert.equal(scrollerCanPan(box(0), false, 1), true);
+  assert.equal(scrollerCanPan(box(600), false, 1), false);
+  assert.equal(scrollerCanPan(box(0), false, -1), false);
+  assert.equal(scrollerCanPan(box(1), false, -1), true);
+  // A custom pan surface marked with data-hscroll keeps the gesture at its edge.
+  assert.equal(scrollerCanPan(box(600), true, 1), true);
+});
+
+test("the gesture owner is the scroller, then the nested surface, then the pager", () => {
+  const surface = { canPrev: false, canNext: true };
+  const leftEdge = { scrollLeft: 0, clientWidth: 400, scrollWidth: 1000, hscroll: false };
+  assert.equal(gestureOwner({ scroller: leftEdge, surface, direction: 1 }), "scroller");
+  assert.equal(
+    gestureOwner({ scroller: { ...leftEdge, scrollLeft: 600 }, surface, direction: 1 }),
+    "surface",
+  );
+  assert.equal(gestureOwner({ scroller: null, surface, direction: 1 }), "surface");
+  assert.equal(gestureOwner({ scroller: null, surface, direction: -1 }), "pager");
 });

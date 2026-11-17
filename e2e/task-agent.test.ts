@@ -699,10 +699,6 @@ class FakeSession implements TaskAgentSession {
     this.closed = true;
     this.run = "idle";
   }
-
-  replayFrames() {
-    return [];
-  }
 }
 
 type FakeSettlement = {

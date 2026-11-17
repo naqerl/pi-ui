@@ -19,7 +19,7 @@ import {
   TASK_ATTACHMENTS_MAX,
   TASK_BODY_MAX_LENGTH,
 } from "../shared/tasks.js";
-import type { TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
+import type { TaskChatFrame, TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
 import {
   ChatService,
@@ -60,10 +60,11 @@ import {
   subscribePush,
   unsubscribePush,
 } from "./push.js";
+import { retryBudgetMs } from "./retry.js";
 import { type DurableSessionOptions, openDurableSession, SESSION_CONTEXT } from "./session.js";
 import { StreamHub } from "./stream-hub.js";
 import { TaskActivityTracker } from "./task-activity.js";
-import { TaskAgentError, TaskAgentManager, type TaskAgentSession } from "./task-agent.js";
+import { TaskAgentError, TaskAgentManager } from "./task-agent.js";
 import type { TaskBridge } from "./task-tools.js";
 import { TaskError, TaskStore, taskDurationStats, taskReopenStats } from "./tasks.js";
 import { liveDataDirInTestError } from "./test-mode.js";
@@ -110,6 +111,11 @@ const taskActivity = new TaskActivityTracker(
 );
 await taskActivity.load();
 taskActivity.observeLedger(taskStore.ledger().tasks);
+/** The heartbeat carries the retry budget, so a client freezes animation on the same clock. */
+function livenessFrame(): { at: string; quietAfterMs: number } {
+  return { at: new Date().toISOString(), quietAfterMs: retryBudgetMs() };
+}
+
 /** Filled once the task-agent manager exists; before that no plan run can be live. */
 let planningTaskIds = (): string[] => [];
 /** The ledger as clients see it: tasks plus what the runs measured and planned for them. */
@@ -407,7 +413,8 @@ const taskAgents = new TaskAgentManager({
     taskBridge.publish(ledger);
   },
   relay: (taskId, frame) => {
-    hub.broadcast({ event: "task.chat", data: { taskId, event: frame.event, data: frame.data } });
+    const wrapped: TaskChatFrame = { taskId, event: frame.event, data: frame.data };
+    hub.broadcast({ event: "task.chat", data: wrapped });
   },
   onRunState: () => {
     hub.broadcast({ event: "tasks", data: taskView() });
@@ -1271,62 +1278,6 @@ app.post("/api/tasks/:id/chat/error/dismiss", async (c) => {
   }
 });
 
-app.get("/api/tasks/:id/chat/stream", (c) => {
-  c.header("X-Accel-Buffering", "no");
-  const id = c.req.param("id");
-  return streamSSE(c, async (stream) => {
-    let tail = Promise.resolve();
-    const enqueue = (write: () => Promise<unknown>): Promise<void> => {
-      const run = tail.then(write).then(() => undefined);
-      tail = run.then(
-        () => undefined,
-        () => undefined,
-      );
-      return run;
-    };
-    const client = {
-      send: (frame: { event: string; data: unknown }) =>
-        enqueue(() => stream.writeSSE({ event: frame.event, data: JSON.stringify(frame.data) })),
-    };
-    let session: TaskAgentSession;
-    try {
-      session = await taskAgents.ensure(id);
-    } catch (error) {
-      const message = error instanceof TaskAgentError ? error.message : "Unknown task";
-      await stream.writeSSE({ event: "error", data: JSON.stringify({ error: message }) });
-      return;
-    }
-    session.hub.add(client);
-    const heartbeat = setInterval(() => {
-      void enqueue(async () => {
-        await stream.write(": heartbeat\n\n");
-        await stream.writeSSE({
-          event: "liveness",
-          data: JSON.stringify({ at: new Date().toISOString() }),
-        });
-      });
-    }, 20_000);
-    const closed = new Promise<void>((resolveClosed) => {
-      stream.onAbort(resolveClosed);
-      if (c.req.raw.signal.aborted) {
-        resolveClosed();
-      } else {
-        c.req.raw.signal.addEventListener("abort", () => resolveClosed(), { once: true });
-      }
-    });
-    try {
-      await client.send({ event: "liveness", data: { at: new Date().toISOString() } });
-      for (const frame of session.replayFrames()) {
-        await client.send(frame);
-      }
-      await closed;
-    } finally {
-      clearInterval(heartbeat);
-      session.hub.remove(client);
-    }
-  });
-});
-
 app.post("/api/message", async (c) => {
   let body: unknown;
   try {
@@ -1512,7 +1463,7 @@ app.get("/api/stream", (c) => {
         await stream.write(": heartbeat\n\n");
         await stream.writeSSE({
           event: "liveness",
-          data: JSON.stringify({ at: new Date().toISOString() }),
+          data: JSON.stringify(livenessFrame()),
         });
       });
     }, 20_000);
@@ -1535,7 +1486,7 @@ app.get("/api/stream", (c) => {
       } catch (error) {
         console.error("[pi] theme snapshot failed", error);
       }
-      await client.send({ event: "liveness", data: { at: new Date().toISOString() } });
+      await client.send({ event: "liveness", data: livenessFrame() });
       await client.send({ event: "run.state", data: chat.getRunStatus() });
       await client.send({ event: "tasks", data: taskView() });
       await client.send({ event: "dashboard", data: dashboard.state() });
