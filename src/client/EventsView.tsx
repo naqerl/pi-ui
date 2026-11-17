@@ -126,7 +126,7 @@ export function EventsView({
 
           {config !== undefined && (
             <div
-              className="theme-radius mb-4 border border-border bg-surface px-3 py-2 font-mono text-xs"
+              className="theme-radius mb-2xl border border-border bg-surface px-xl py-lg font-mono text-xs"
               data-testid="subscription-config"
             >
               {config.error !== undefined ? (
@@ -139,7 +139,7 @@ export function EventsView({
                 </span>
               )}
               {config.writeError !== undefined && (
-                <span className="ml-2 text-status-warn">{config.writeError}</span>
+                <span className="ml-lg text-status-warn">{config.writeError}</span>
               )}
             </div>
           )}
@@ -149,7 +149,7 @@ export function EventsView({
               <SubscriptionRow key={subscription.id} subscription={subscription} />
             ))}
           </div>
-          <p className="theme-radius mt-2 border border-border bg-surface px-3 py-2 text-xs text-muted-foreground">
+          <p className="theme-radius mt-lg border border-border bg-surface px-xl py-lg text-xs text-muted-foreground">
             Deleting a stream removes its line from subscriptions.json; it does not come back after
             a restart.
           </p>
