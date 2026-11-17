@@ -3298,13 +3298,17 @@ export class ChatService {
       this.absorbMessage(partial);
     }
 
+    const previousTools = new Map(this.activeTools);
     this.activeTools.clear();
     for (const slot of snapshot.tools) {
       if (isTerminalSlot(slot)) continue;
+      const previous = previousTools.get(slot.callId);
+      // A view reconnect repeats the same running call. Its start is the one already shown,
+      // not the moment this snapshot was applied, or the row's timer would reset to zero.
       this.activeTools.set(slot.callId, {
         name: slot.name,
-        args: {},
-        timestamp: new Date().toISOString(),
+        args: previous?.args ?? {},
+        timestamp: previous?.timestamp ?? new Date().toISOString(),
       });
     }
     this.toolsRevision += 1;
