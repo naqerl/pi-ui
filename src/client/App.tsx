@@ -56,7 +56,7 @@ export function App() {
   );
 
   if (path === "/events") {
-    view = <EventsView events={chat.mcpEvents} ready={chat.ready} />;
+    view = <EventsView events={chat.mcpEvents} ready={chat.ready} status={chat.mcp} />;
   }
 
   return (

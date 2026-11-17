@@ -106,6 +106,14 @@ test("mcp reload reconnects changed servers, adds and drops servers, and keeps t
       changed: 1,
       unchanged: 0,
       errors: [],
+      subscriptions: {
+        declared: 0,
+        opened: 0,
+        stopped: 0,
+        pending: 0,
+        errors: [],
+        stoppedIds: [],
+      },
     });
     const afterChange = await runtime.shim.callTool("stub__echo", { text: "two" });
     assert.equal(afterChange.content[0]?.type, "text");

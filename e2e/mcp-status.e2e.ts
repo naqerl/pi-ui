@@ -20,6 +20,12 @@ interface State {
   mcpEvents?: {
     subscriptions: Array<{ id: string; name: string; status: string; cursor: string | null }>;
   };
+  mcp?: {
+    subscriptionConfig?: {
+      present: boolean;
+      entries: Array<{ server: string; name: string; state: string }>;
+    };
+  };
   activity?: Array<{ name?: string; output?: string }>;
 }
 
@@ -69,7 +75,10 @@ async function waitForHealth(
     .toBe("ok");
 }
 
-async function startEventDropApp(mode: "event-drop" | "event-cut" = "event-drop") {
+async function startEventDropApp(
+  mode: "event-drop" | "event-cut" = "event-drop",
+  declarations: Array<{ server: string; name: string; arguments?: Record<string, unknown> }> = [],
+) {
   const dir = mkdtempSync(join(tmpdir(), "pi-ui-status-e2e-"));
   const statePath = join(dir, "fixture.log");
   const agentDir = join(dir, "agent");
@@ -113,6 +122,18 @@ async function startEventDropApp(mode: "event-drop" | "event-cut" = "event-drop"
       2,
     ),
   );
+  if (declarations.length > 0) {
+    writeFileSync(
+      join(agentDir, "subscriptions.json"),
+      JSON.stringify({
+        version: 1,
+        subscriptions: declarations.map((entry) => ({
+          ...entry,
+          arguments: entry.arguments ?? {},
+        })),
+      }),
+    );
+  }
   const backend = spawn(process.execPath, ["--import", "tsx", backendEntry], {
     cwd: root,
     env: {
@@ -233,6 +254,56 @@ test("a cut stream resumes at its last cursor without a status notice", {
       .filter((text) => text.startsWith(MCP_STATUS_HEAD));
     expect(statuses).toEqual([]);
     expect(lines(spawned.statePath)).not.toContain("stream:drop-stream:drop:0");
+  } finally {
+    await spawned.stop();
+  }
+});
+
+test("the events page names declarations that are waiting or missing their server", {
+  timeout: 240_000,
+}, async ({ app, browser }) => {
+  const spawned = await startEventDropApp("event-drop", [{ server: "ghost", name: "hub" }]);
+  try {
+    await app.open(`${spawned.url}/events`);
+    await expect
+      .poll(
+        async () => {
+          const state = await readState(spawned.url);
+          return state.mcp?.subscriptionConfig;
+        },
+        { timeout: 60_000 },
+      )
+      .toEqual(
+        expect.objectContaining({
+          present: true,
+          entries: [
+            expect.objectContaining({
+              server: "ghost",
+              name: "hub",
+              state: "missing-server",
+            }),
+          ],
+        }),
+      );
+    const bodyText = () => browser.evaluate(() => document.body.textContent);
+    await expect
+      .poll(bodyText, { timeout: 30_000 })
+      .toContain("Declared in subscriptions.json: 1 (0 live, 1 waiting)");
+    await expect.poll(bodyText, { timeout: 30_000 }).toContain("server not configured");
+
+    // A declaration-only row has no cache row and no feed row, but deleting
+    // its line is still a successful delete, not a 404.
+    const deleted = await fetch(
+      new URL(`/api/mcp/subscriptions/${encodeURIComponent("ghost/hub")}`, spawned.url),
+      { method: "DELETE" },
+    );
+    expect(deleted.ok).toBe(true);
+    expect(await deleted.json()).toMatchObject({ ok: true, declaredAfter: false });
+    await expect
+      .poll(async () => (await readState(spawned.url)).mcp?.subscriptionConfig?.entries ?? [], {
+        timeout: 30_000,
+      })
+      .toEqual([]);
   } finally {
     await spawned.stop();
   }

@@ -290,6 +290,21 @@ export interface McpServerStatus {
 export interface McpStatus {
   servers: McpServerStatus[];
   unavailable: string[];
+  /** Membership read from `${PI_CODING_AGENT_DIR}/subscriptions.json`. */
+  subscriptionConfig?: {
+    path: string;
+    present: boolean;
+    error?: string;
+    writeError?: string;
+    entries: Array<{
+      stableId: string;
+      server: string;
+      name: string;
+      arguments: Record<string, unknown>;
+      title?: string;
+      state: "live" | "pending" | "missing-server";
+    }>;
+  };
 }
 
 /** The health of one event stream, independent of the adapter's `status` spelling. */

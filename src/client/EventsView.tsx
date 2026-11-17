@@ -1,6 +1,6 @@
 import { subscriptionHealth, subscriptionLabel } from "../shared/dashboard";
 import { formatTime } from "../shared/time";
-import type { McpEventsState, McpSubscriptionView } from "../shared/types";
+import type { McpEventsState, McpStatus, McpSubscriptionView } from "../shared/types";
 import { PiMenu } from "./PiMenu";
 
 function SubscriptionRow({ subscription }: { subscription: McpSubscriptionView }) {
@@ -16,6 +16,8 @@ function SubscriptionRow({ subscription }: { subscription: McpSubscriptionView }
     <div
       className="flex flex-wrap items-baseline gap-xl border-b border-border py-xl font-mono text-xs"
       data-state={health}
+      data-subscription-id={subscription.id}
+      {...(subscription.id.startsWith("config:") ? { "data-testid": "subscription-declared" } : {})}
     >
       <span
         className={
@@ -55,13 +57,43 @@ function SubscriptionRow({ subscription }: { subscription: McpSubscriptionView }
   );
 }
 
-export function EventsView({ events, ready }: { events: McpEventsState; ready: boolean }) {
+export function EventsView({
+  events,
+  ready,
+  status,
+}: {
+  events: McpEventsState;
+  ready: boolean;
+  status?: McpStatus;
+}) {
   const health = events.subscriptions.map((subscription) => subscriptionHealth(subscription));
   const live = events.subscriptions.filter((_subscription, index) => health[index] === "active");
   const attention = events.subscriptions.filter((_subscription, index) => {
     const state = health[index];
     return state === "stalled" || state === "recovering" || state === "dead";
   });
+  const config = status?.subscriptionConfig;
+  const declared = config?.entries ?? [];
+  const declaredLive = declared.filter((entry) => entry.state === "live").length;
+  const declaredWaiting = declared.length - declaredLive;
+  // A declaration that is not live must not look healthy: give it the same
+  // recovering row the feed paints, with the reason the operator can act on.
+  const feedStableIds = new Set(events.subscriptions.map((subscription) => subscription.stableId));
+  const synthetic: McpSubscriptionView[] = declared
+    .filter((entry) => entry.state !== "live" && !feedStableIds.has(entry.stableId))
+    .map((entry) => ({
+      id: `config:${entry.stableId}`,
+      stableId: entry.stableId,
+      server: entry.server,
+      name: entry.name,
+      ...(entry.title === undefined ? {} : { title: entry.title }),
+      status: "pending",
+      state: "recovering",
+      arguments: entry.arguments,
+      cursor: null,
+      lastError: entry.state === "missing-server" ? "server not configured" : "waiting to open",
+    }));
+  const rows = [...events.subscriptions, ...synthetic];
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -92,11 +124,35 @@ export function EventsView({ events, ready }: { events: McpEventsState; ready: b
 
           {!ready && <p className="font-mono text-xs text-muted-foreground">Loading…</p>}
 
+          {config !== undefined && (
+            <div
+              className="theme-radius mb-4 border border-border bg-surface px-3 py-2 font-mono text-xs"
+              data-testid="subscription-config"
+            >
+              {config.error !== undefined ? (
+                <span className="text-status-warn">{config.error}</span>
+              ) : (
+                <span className="text-muted-foreground">
+                  {config.present
+                    ? `Declared in subscriptions.json: ${declared.length} (${declaredLive} live, ${declaredWaiting} waiting)`
+                    : "No subscriptions.json; no event streams declared."}
+                </span>
+              )}
+              {config.writeError !== undefined && (
+                <span className="ml-2 text-status-warn">{config.writeError}</span>
+              )}
+            </div>
+          )}
+
           <div>
-            {events.subscriptions.map((subscription) => (
+            {rows.map((subscription) => (
               <SubscriptionRow key={subscription.id} subscription={subscription} />
             ))}
           </div>
+          <p className="theme-radius mt-2 border border-border bg-surface px-3 py-2 text-xs text-muted-foreground">
+            Deleting a stream removes its line from subscriptions.json; it does not come back after
+            a restart.
+          </p>
 
           <h2 className="mt-2xl mb-lg text-sm font-medium">Updates</h2>
           {events.notice && (

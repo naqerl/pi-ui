@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
@@ -7,6 +7,13 @@ import { ChatService } from "../src/server/chat-service.js";
 import { DurableExtensionShim } from "../src/server/durable-extensions.js";
 import { McpEventFeed } from "../src/server/mcp-events.js";
 import { startMcpRuntime } from "../src/server/mcp-runtime.js";
+import {
+  readSubscriptionConfig,
+  removeSubscriptionConfigEntry,
+  subscriptionConfigPath,
+  upsertSubscriptionConfigEntry,
+  writeSubscriptionConfig,
+} from "../src/server/mcp-subscription-config.js";
 import {
   deriveStableId,
   hasPosition,
@@ -460,6 +467,7 @@ test("cancelling by stableId after a restore stops the stream and survives a res
     subscription({ server: "stub", name: "stub-hub", cursor: "hub:500", status: "active" }),
   );
   await registry.close();
+  await declareSubscriptions([{ server: "stub", name: "stub-hub", arguments: {} }]);
 
   const runtime = await startMcpRuntime({ dataDir });
   const restored = runtime.restoredSubscriptions[0];
@@ -467,11 +475,16 @@ test("cancelling by stableId after a restore stops the stream and survives a res
   assert.ok(stableId);
   assert.equal(stableId, deriveStableId("stub", "stub-hub", {}));
   try {
-    const cancelled = await runtime.cancelSubscription(stableId);
+    const cancelled = await runtime.cancelSubscription(stableId, undefined, {
+      removeDeclaration: true,
+    });
     assert.equal(cancelled?.status, "cancelled");
     assert.equal(cancelled?.enabled, false);
     // Repeating the cancellation is harmless.
-    assert.equal((await runtime.cancelSubscription(stableId))?.status, "cancelled");
+    assert.equal(
+      (await runtime.cancelSubscription(stableId, undefined, { removeDeclaration: true }))?.status,
+      "cancelled",
+    );
     const saved = await runtime.subscriptionRegistry?.read();
     const record = saved?.find((entry) => entry.stableId === stableId);
     assert.equal(record?.status, "cancelled");
@@ -1239,6 +1252,7 @@ test("cancelling again after a resubscribe stops every live adapter id", async (
     subscription({ server: "stub", name: "stub-hub", cursor: "hub:500", status: "active" }),
   );
   await registry.close();
+  await declareSubscriptions([{ server: "stub", name: "stub-hub", arguments: {} }]);
 
   const runtime = await startMcpRuntime({ dataDir });
   const feed = new McpEventFeed(runtime.subscriptionRegistry);
@@ -1248,7 +1262,9 @@ test("cancelling again after a resubscribe stops every live adapter id", async (
   const first = feed.findByStableId(stableId);
   assert.ok(first);
   const cancel = async () => {
-    await runtime.cancelSubscription(stableId, feed.adapterIdsForStableId(stableId));
+    await runtime.cancelSubscription(stableId, feed.adapterIdsForStableId(stableId), {
+      removeDeclaration: true,
+    });
     feed.cancel(stableId);
   };
 
@@ -1319,6 +1335,18 @@ async function withAgentConfig(
   });
 }
 
+/** Membership now lives in the agent dir, next to mcp.json. */
+async function declareSubscriptions(
+  entries: Array<Pick<McpSubscriptionRecord, "server" | "name" | "arguments" | "title">>,
+): Promise<void> {
+  const agentDir = process.env.PI_CODING_AGENT_DIR;
+  assert.ok(agentDir);
+  await writeFile(
+    join(agentDir, "subscriptions.json"),
+    JSON.stringify({ version: 1, subscriptions: entries }, null, 2),
+  );
+}
+
 test("restores a persisted active subscription from its acknowledged cursor", async (t) => {
   const dataDir = await tempDir(t);
   await withAgentConfig(t, {
@@ -1332,6 +1360,7 @@ test("restores a persisted active subscription from its acknowledged cursor", as
     subscription({ server: "stub", name: "stub-hub", cursor: "hub:500", status: "active" }),
   );
   await registry.close();
+  await declareSubscriptions([{ server: "stub", name: "stub-hub", arguments: {} }]);
 
   const lines: string[] = [];
   const log = console.log;
@@ -1364,6 +1393,7 @@ test("keeps an entry whose server was unavailable at boot", async (t) => {
     subscription({ server: "offline", name: "jobs", cursor: "hub:12", status: "reconnecting" }),
   );
   await registry.close();
+  await declareSubscriptions([{ server: "offline", name: "jobs", arguments: {} }]);
 
   const runtime = await startMcpRuntime({ dataDir });
   try {
@@ -1587,6 +1617,7 @@ test("restores a zero cursor from now and keeps a real cursor", async (t) => {
     ["hub:361", "hub:361"],
   ] as const) {
     const dataDir = await tempDir(t);
+    await rm(join(process.env.PI_CODING_AGENT_DIR ?? "", "subscriptions.json"), { force: true });
     const runtime = await startMcpRuntime({ dataDir });
     const lines: string[] = [];
     const log = console.log;
@@ -1602,6 +1633,7 @@ test("restores a zero cursor from now and keeps a real cursor", async (t) => {
       await runtime.subscriptionRegistry?.record(
         subscription({ server: "stub", name: "stub-hub", cursor: stored, status: "active" }),
       );
+      await declareSubscriptions([{ server: "stub", name: "stub-hub", arguments: {} }]);
       console.log = (line: unknown) => lines.push(String(line));
       await runtime.restoreSubscriptions();
       const subscribe = calls.find((call) => call.action === "subscribe");
@@ -1657,6 +1689,7 @@ test("a restore stores the cursor the server answered with", async (t) => {
     await runtime.subscriptionRegistry?.record(
       subscription({ server: "stub", name: "stub-hub", cursor: "hub:0", status: "active" }),
     );
+    await declareSubscriptions([{ server: "stub", name: "stub-hub", arguments: {} }]);
     await runtime.restoreSubscriptions();
     assert.equal(runtime.restoredSubscriptions[0]?.cursor, "hub:777");
     const [saved] = (await runtime.subscriptionRegistry?.read()) ?? [];
@@ -1921,4 +1954,856 @@ test("a live protocol reconnect refreshes generation before the renumbered event
     runtime.setObserver(undefined);
     await runtime.close();
   }
+});
+
+/** Poll until a predicate observes the asynchronous declaration write. */
+async function waitFor(check: () => boolean | Promise<boolean>, label: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+test("a missing subscriptions.json is no declarations rather than an error", async (t) => {
+  const agentDir = await tempDir(t);
+  const config = await readSubscriptionConfig(agentDir);
+  assert.equal(config.present, false);
+  assert.deepEqual(config.entries, []);
+  assert.equal(config.error, undefined);
+  assert.equal(config.path, subscriptionConfigPath(agentDir));
+});
+
+test("a present empty subscriptions.json is the whole list", async (t) => {
+  const agentDir = await tempDir(t);
+  await writeFile(
+    join(agentDir, "subscriptions.json"),
+    JSON.stringify({ version: 1, subscriptions: [] }),
+  );
+  const config = await readSubscriptionConfig(agentDir);
+  assert.equal(config.present, true);
+  assert.deepEqual(config.entries, []);
+});
+
+test("config reads drop duplicates, invalid entries and unknown keys", async (t) => {
+  const agentDir = await tempDir(t);
+  await writeFile(
+    join(agentDir, "subscriptions.json"),
+    JSON.stringify({
+      version: 1,
+      subscriptions: [
+        {
+          server: "zeroshot",
+          name: "hub",
+          arguments: {},
+          cursor: "hub:99",
+          enabled: false,
+          title: "Zeroshot hub",
+        },
+        { server: "zeroshot", name: "hub", arguments: {}, title: "Duplicate" },
+        { server: "", name: "empty" },
+        { server: "tracer", name: "alert" },
+        "not an object",
+      ],
+    }),
+  );
+  const lines: string[] = [];
+  const warn = console.warn;
+  console.warn = (line: unknown) => lines.push(String(line));
+  const config = await readSubscriptionConfig(agentDir);
+  console.warn = warn;
+  assert.deepEqual(config.entries, [
+    { server: "zeroshot", name: "hub", arguments: {}, title: "Zeroshot hub" },
+    { server: "tracer", name: "alert", arguments: {} },
+  ]);
+  assert.equal(
+    lines.filter((line) => line.includes("duplicate declaration")).length,
+    1,
+    "the duplicate is logged once",
+  );
+  assert.ok(lines.some((line) => line.includes("entry 2 is invalid")));
+  assert.ok(lines.some((line) => line.includes("entry 4 is invalid")));
+});
+
+test("an unknown version is an error, not an empty list", async (t) => {
+  const agentDir = await tempDir(t);
+  await writeFile(
+    join(agentDir, "subscriptions.json"),
+    JSON.stringify({ version: 99, subscriptions: [] }),
+  );
+  const config = await readSubscriptionConfig(agentDir);
+  assert.equal(config.present, true);
+  assert.match(config.error ?? "", /unsupported version 99/);
+});
+
+test("an unreadable subscriptions.json reports its error and no entries", async (t) => {
+  const agentDir = await tempDir(t);
+  await mkdir(subscriptionConfigPath(agentDir));
+  const config = await readSubscriptionConfig(agentDir);
+  assert.equal(config.present, true);
+  assert.match(config.error ?? "", /could not be read/);
+  assert.deepEqual(config.entries, []);
+});
+
+test("config writes preserve unknown top-level keys and write membership only", async (t) => {
+  const agentDir = await tempDir(t);
+  const path = subscriptionConfigPath(agentDir);
+  await writeFile(
+    path,
+    JSON.stringify({
+      version: 1,
+      operatorNote: "keep me",
+      subscriptions: [],
+    }),
+  );
+  await writeSubscriptionConfig(agentDir, [
+    { server: "zeroshot", name: "hub", arguments: {}, title: "Zeroshot hub" },
+    { server: "tracer", name: "alert", arguments: { severity: "critical" } },
+  ]);
+  const document = JSON.parse(await readFile(path, "utf8")) as {
+    version: number;
+    operatorNote?: string;
+    subscriptions: Array<Record<string, unknown>>;
+  };
+  assert.equal(document.version, 1);
+  assert.equal(document.operatorNote, "keep me");
+  assert.deepEqual(document.subscriptions, [
+    { server: "zeroshot", name: "hub", arguments: {}, title: "Zeroshot hub" },
+    { server: "tracer", name: "alert", arguments: { severity: "critical" } },
+  ]);
+  assert.equal(
+    document.subscriptions.some((entry) => "cursor" in entry),
+    false,
+  );
+  assert.equal(
+    document.subscriptions.some((entry) => "enabled" in entry),
+    false,
+  );
+});
+
+test("a malformed file is never overwritten and reports a write error", async (t) => {
+  const agentDir = await tempDir(t);
+  const path = subscriptionConfigPath(agentDir);
+  await writeFile(path, "{ not json");
+  await writeSubscriptionConfig(agentDir, [{ server: "hub", name: "hub", arguments: {} }]);
+  assert.equal(await readFile(path, "utf8"), "{ not json");
+  const config = await readSubscriptionConfig(agentDir);
+  assert.match(config.error ?? "", /could not be parsed/);
+});
+
+test("an unchanged declaration list does not churn the file", async (t) => {
+  const agentDir = await tempDir(t);
+  const path = subscriptionConfigPath(agentDir);
+  await writeSubscriptionConfig(agentDir, [{ server: "hub", name: "hub", arguments: {} }]);
+  const before = await stat(path);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await writeSubscriptionConfig(agentDir, [{ server: "hub", name: "hub", arguments: {} }]);
+  const after = await stat(path);
+  assert.equal(after.mtimeMs, before.mtimeMs);
+});
+
+test("upsert and remove intents re-read from disk and skip no-op writes", async (t) => {
+  const agentDir = await tempDir(t);
+  const path = subscriptionConfigPath(agentDir);
+  await writeFile(path, JSON.stringify({ version: 1, other: { keep: true }, subscriptions: [] }));
+  assert.equal(
+    await upsertSubscriptionConfigEntry(agentDir, {
+      server: "hub",
+      name: "hub",
+      arguments: {},
+      title: "Hub",
+    }),
+    true,
+  );
+  assert.equal(
+    await upsertSubscriptionConfigEntry(agentDir, {
+      server: "hub",
+      name: "hub",
+      arguments: {},
+      title: "Hub",
+    }),
+    false,
+    "the same line is already there",
+  );
+  const document = JSON.parse(await readFile(path, "utf8")) as {
+    other: { keep: boolean };
+    subscriptions: unknown[];
+  };
+  assert.deepEqual(document.other, { keep: true });
+  assert.deepEqual(document.subscriptions, [
+    { server: "hub", name: "hub", arguments: {}, title: "Hub" },
+  ]);
+  assert.equal(
+    await removeSubscriptionConfigEntry(agentDir, deriveStableId("hub", "hub", {})),
+    true,
+  );
+  assert.equal(
+    await removeSubscriptionConfigEntry(agentDir, deriveStableId("hub", "hub", {})),
+    false,
+  );
+  const final = JSON.parse(await readFile(path, "utf8")) as { subscriptions: unknown[] };
+  assert.deepEqual(final.subscriptions, []);
+});
+
+/** Drive the runtime's observer exactly as the shim's tool wrapper would. */
+function notifyToolResult(
+  runtime: Awaited<ReturnType<typeof startMcpRuntime>>,
+  notice: unknown,
+): void {
+  const shim = runtime.shim as unknown as { observer?: (value: unknown) => unknown };
+  assert.ok(shim.observer, "the runtime must install the intent observer");
+  shim.observer(notice);
+}
+
+function subscribeNotice(
+  id: string,
+  overrides: {
+    server?: string;
+    name?: string;
+    arguments?: Record<string, unknown>;
+    title?: string;
+    status?: string;
+    isError?: boolean;
+  } = {},
+) {
+  return {
+    customType: "mcp-events-tool",
+    details: {
+      args: {
+        action: "subscribe",
+        server: overrides.server ?? "hub",
+        name: overrides.name ?? "hub",
+        arguments: overrides.arguments ?? {},
+      },
+      result: overrides.isError
+        ? { error: "no such stream" }
+        : {
+            subscription: {
+              id,
+              server: overrides.server ?? "hub",
+              name: overrides.name ?? "hub",
+              arguments: overrides.arguments ?? {},
+              status: overrides.status ?? "active",
+              ...(overrides.title === undefined ? {} : { title: overrides.title }),
+            },
+          },
+      ...(overrides.isError === true ? { isError: true } : {}),
+    },
+  };
+}
+
+test("a successful agent subscribe appends a declaration and a failed one writes nothing", async (t) => {
+  const agentDir = await tempDir(t);
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  t.after(() => {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+  });
+  await writeFile(join(agentDir, "mcp.json"), JSON.stringify({ mcpServers: {} }));
+  const runtime = await startMcpRuntime({ dataDir: await tempDir(t) });
+  t.after(async () => runtime.close());
+  runtime.setObserver(() => undefined);
+
+  notifyToolResult(runtime, subscribeNotice("s1", { title: "Hub" }));
+  await waitFor(
+    async () => (await readSubscriptionConfig(agentDir)).entries.length === 1,
+    "the subscribe declaration",
+  );
+  assert.deepEqual((await readSubscriptionConfig(agentDir)).entries, [
+    { server: "hub", name: "hub", arguments: {}, title: "Hub" },
+  ]);
+
+  notifyToolResult(
+    runtime,
+    subscribeNotice("s2", { server: "hub", name: "missing", isError: true }),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 75));
+  assert.equal((await readSubscriptionConfig(agentDir)).entries.length, 1);
+});
+
+test("a known unsubscribe removes the line and an unknown id leaves it", async (t) => {
+  const agentDir = await tempDir(t);
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  t.after(() => {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+  });
+  await writeFile(join(agentDir, "mcp.json"), JSON.stringify({ mcpServers: {} }));
+  await writeSubscriptionConfig(agentDir, [{ server: "hub", name: "hub", arguments: {} }]);
+  const runtime = await startMcpRuntime({ dataDir: await tempDir(t) });
+  t.after(async () => runtime.close());
+  runtime.setObserver(() => undefined);
+
+  notifyToolResult(runtime, subscribeNotice("s1"));
+  await waitFor(
+    async () => (await readSubscriptionConfig(agentDir)).entries.length === 1,
+    "the declaration",
+  );
+  notifyToolResult(runtime, {
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "unsubscribe", subscription_id: "ghost" },
+      result: { stopped: true },
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 75));
+  assert.equal((await readSubscriptionConfig(agentDir)).entries.length, 1);
+
+  notifyToolResult(runtime, {
+    customType: "mcp-events-tool",
+    details: { args: { action: "unsubscribe", subscription_id: "s1" }, result: { stopped: true } },
+  });
+  await waitFor(
+    async () => (await readSubscriptionConfig(agentDir)).entries.length === 0,
+    "the unsubscribe removal",
+  );
+  assert.deepEqual((await readSubscriptionConfig(agentDir)).entries, []);
+});
+
+test("a stopped=false unsubscribe is not a declaration removal", async (t) => {
+  const agentDir = await tempDir(t);
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  t.after(() => {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+  });
+  await writeFile(join(agentDir, "mcp.json"), JSON.stringify({ mcpServers: {} }));
+  await writeSubscriptionConfig(agentDir, [{ server: "hub", name: "hub", arguments: {} }]);
+  const runtime = await startMcpRuntime({ dataDir: await tempDir(t) });
+  t.after(async () => runtime.close());
+  runtime.setObserver(() => undefined);
+  notifyToolResult(runtime, subscribeNotice("s1"));
+  await waitFor(
+    async () => (await readSubscriptionConfig(agentDir)).entries.length === 1,
+    "the declaration",
+  );
+  notifyToolResult(runtime, {
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "unsubscribe", subscription_id: "s1" },
+      result: { stopped: false },
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 75));
+  assert.equal((await readSubscriptionConfig(agentDir)).entries.length, 1);
+});
+
+test("restore uses a declaration plus the cached cursor without a config write", async (t) => {
+  const dataDir = await tempDir(t);
+  await withAgentConfig(t, {
+    mcpServers: {
+      stub: { command: process.execPath, args: [resolve("e2e/stub-mcp.mjs")] },
+    },
+    web: { command: process.execPath, disabled: true },
+  });
+  const agentDir = process.env.PI_CODING_AGENT_DIR;
+  assert.ok(agentDir);
+  await declareSubscriptions([
+    { server: "stub", name: "stub-hub", arguments: {}, title: "Stub hub" },
+  ]);
+  const registry = new McpSubscriptionRegistry(dataDir);
+  await registry.record(
+    subscription({ server: "stub", name: "stub-hub", cursor: "hub:500", status: "active" }),
+  );
+  await registry.close();
+
+  const runtime = await startMcpRuntime({ dataDir });
+  try {
+    const restored = runtime.restoredSubscriptions[0];
+    assert.equal(restored?.cursor, "hub:500");
+    assert.equal(restored?.title, "Stub hub");
+    const state = runtime.status.subscriptionConfig;
+    assert.equal(state?.present, true);
+    assert.deepEqual(
+      state?.entries.map((entry) => [entry.stableId, entry.title, entry.state]),
+      [[deriveStableId("stub", "stub-hub", {}), "Stub hub", "live"]],
+    );
+    // Restore must not add a cursor, health or enabled flag to the declaration file.
+    const document = JSON.parse(await readFile(join(agentDir, "subscriptions.json"), "utf8")) as {
+      subscriptions: Array<Record<string, unknown>>;
+    };
+    assert.deepEqual(document.subscriptions, [
+      { server: "stub", name: "stub-hub", arguments: {}, title: "Stub hub" },
+    ]);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a declaration without a cache subscribes from null and reports no gap", async (t) => {
+  await withAgentConfig(t, {
+    mcpServers: {
+      stub: { command: process.execPath, args: [resolve("e2e/stub-mcp.mjs")] },
+    },
+    web: { command: process.execPath, disabled: true },
+  });
+  const dataDir = await tempDir(t);
+  await declareSubscriptions([{ server: "stub", name: "stub-hub", arguments: {} }]);
+  const lines: string[] = [];
+  const log = console.log;
+  console.log = (line: unknown) => lines.push(String(line));
+  const runtime = await startMcpRuntime({ dataDir });
+  try {
+    assert.equal(runtime.restoredSubscriptions.length, 1);
+    assert.equal(runtime.restoredSubscriptions[0]?.cursor, null);
+    assert.equal(
+      lines.some((line) => line.includes("events were missed")),
+      false,
+      "a brand-new declaration has no backlog to call a gap",
+    );
+  } finally {
+    await runtime.close();
+    console.log = log;
+  }
+});
+
+test("reload target=subscriptions stops an undeclared stream and prunes its cache", async (t) => {
+  await withAgentConfig(t, {
+    mcpServers: {
+      stub: { command: process.execPath, args: [resolve("e2e/stub-mcp.mjs")] },
+    },
+    web: { command: process.execPath, disabled: true },
+  });
+  const dataDir = await tempDir(t);
+  await declareSubscriptions([{ server: "stub", name: "stub-hub", arguments: {} }]);
+  const registry = new McpSubscriptionRegistry(dataDir);
+  await registry.record(
+    subscription({ server: "stub", name: "stub-hub", cursor: "hub:500", status: "active" }),
+  );
+  await registry.close();
+  const runtime = await startMcpRuntime({ dataDir });
+  const feed = new McpEventFeed(runtime.subscriptionRegistry);
+  await feed.hydrate();
+  runtime.setObserver((notice) => feed.ingest(notice));
+  runtime.setLiveIdLookup((stableId) => feed.adapterIdsForStableId(stableId));
+  runtime.setLiveIdCancel((stableId) => feed.cancel(stableId));
+  let broadcasts = 0;
+  runtime.setSubscriptionConfigListener(() => {
+    broadcasts += 1;
+  });
+  const stableId = deriveStableId("stub", "stub-hub", {});
+  try {
+    assert.equal(runtime.restoredSubscriptions.length, 1);
+    assert.equal(feed.findByStableId(stableId)?.status, "active");
+    await writeSubscriptionConfig(process.env.PI_CODING_AGENT_DIR ?? "", []);
+    const result = await runtime.reload("subscriptions");
+    assert.equal(result.ok, true);
+    assert.equal(result.subscriptions?.declared, 0);
+    assert.equal(result.subscriptions?.stopped, 1);
+    assert.deepEqual(result.subscriptions?.stoppedIds, [stableId]);
+    assert.equal(
+      feed.findByStableId(stableId)?.status,
+      "cancelled",
+      "the feed row must not stay live after the declaration is gone",
+    );
+    assert.equal(broadcasts, 1, "the reload broadcasts the new declaration state");
+    assert.deepEqual(runtime.restoredSubscriptions, []);
+    assert.deepEqual(await runtime.subscriptionRegistry?.read(), []);
+  } finally {
+    runtime.setObserver(undefined);
+    await runtime.close();
+  }
+});
+
+test("a malformed config keeps live streams and surfaces the error", async (t) => {
+  await withAgentConfig(t, {
+    mcpServers: {
+      stub: { command: process.execPath, args: [resolve("e2e/stub-mcp.mjs")] },
+    },
+    web: { command: process.execPath, disabled: true },
+  });
+  const dataDir = await tempDir(t);
+  await declareSubscriptions([{ server: "stub", name: "stub-hub", arguments: {} }]);
+  const agentDir = process.env.PI_CODING_AGENT_DIR;
+  assert.ok(agentDir);
+  const runtime = await startMcpRuntime({ dataDir });
+  try {
+    const before = runtime.restoredSubscriptions.length;
+    assert.equal(before, 1);
+    await writeFile(join(agentDir, "subscriptions.json"), "{ broken");
+    const result = await runtime.reload("subscriptions");
+    assert.equal(result.ok, false);
+    assert.match(result.errors[0] ?? "", /could not be parsed/);
+    assert.equal(runtime.restoredSubscriptions.length, before, "the live stream is kept");
+    assert.match(runtime.status.subscriptionConfig?.error ?? "", /could not be parsed/);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a declaration for an unconfigured server is missing-server", async (t) => {
+  await withAgentConfig(t, {
+    mcpServers: {
+      stub: { command: process.execPath, args: [resolve("e2e/stub-mcp.mjs")] },
+    },
+    web: { command: process.execPath, disabled: true },
+  });
+  const dataDir = await tempDir(t);
+  await declareSubscriptions([{ server: "ghost", name: "hub", arguments: {} }]);
+  const runtime = await startMcpRuntime({ dataDir });
+  try {
+    assert.deepEqual(runtime.restoredSubscriptions, []);
+    assert.deepEqual(runtime.status.subscriptionConfig?.entries, [
+      {
+        stableId: "ghost/hub",
+        server: "ghost",
+        name: "hub",
+        arguments: {},
+        state: "missing-server",
+      },
+    ]);
+    const result = await runtime.reload("subscriptions");
+    assert.equal(result.subscriptions?.declared, 1);
+    assert.equal(result.subscriptions?.pending, 0);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("hand-writing a declaration and reloading opens it", async (t) => {
+  await withAgentConfig(t, {
+    mcpServers: {
+      stub: { command: process.execPath, args: [resolve("e2e/stub-mcp.mjs")] },
+    },
+    web: { command: process.execPath, disabled: true },
+  });
+  const dataDir = await tempDir(t);
+  const runtime = await startMcpRuntime({ dataDir });
+  try {
+    assert.equal(runtime.restoredSubscriptions.length, 0);
+    await declareSubscriptions([{ server: "stub", name: "stub-hub", arguments: {} }]);
+    const result = await runtime.reload("subscriptions");
+    assert.equal(result.ok, true);
+    assert.equal(result.subscriptions?.declared, 1);
+    assert.equal(result.subscriptions?.opened, 1);
+    const restored = runtime.restoredSubscriptions[0];
+    assert.equal(restored?.server, "stub");
+    assert.equal(restored?.name, "stub-hub");
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a missing declaration file restores nothing and prunes the cache", async (t) => {
+  await withAgentConfig(t, {
+    mcpServers: {
+      stub: { command: process.execPath, args: [resolve("e2e/stub-mcp.mjs")] },
+    },
+    web: { command: process.execPath, disabled: true },
+  });
+  const dataDir = await tempDir(t);
+  const registry = new McpSubscriptionRegistry(dataDir);
+  await registry.record(
+    subscription({ server: "stub", name: "stub-hub", cursor: "hub:500", status: "active" }),
+  );
+  await registry.close();
+  const lines: string[] = [];
+  const log = console.log;
+  console.log = (line: unknown) => lines.push(String(line));
+  const runtime = await startMcpRuntime({ dataDir });
+  try {
+    assert.deepEqual(runtime.restoredSubscriptions, []);
+    assert.deepEqual(await runtime.subscriptionRegistry?.read(), []);
+    assert.ok(lines.includes("mcp: no subscriptions.json; no event streams declared"));
+  } finally {
+    await runtime.close();
+    console.log = log;
+  }
+});
+
+test("a failed unsubscribe never removes the declaration", async (t) => {
+  const agentDir = await tempDir(t);
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  t.after(() => {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+  });
+  await writeFile(join(agentDir, "mcp.json"), JSON.stringify({ mcpServers: {} }));
+  await writeSubscriptionConfig(agentDir, [{ server: "hub", name: "hub", arguments: {} }]);
+  const runtime = await startMcpRuntime({ dataDir: await tempDir(t) });
+  t.after(async () => runtime.close());
+  runtime.setObserver(() => undefined);
+  notifyToolResult(runtime, subscribeNotice("s1"));
+  await waitFor(
+    async () => (await readSubscriptionConfig(agentDir)).entries.length === 1,
+    "the declaration",
+  );
+
+  notifyToolResult(runtime, {
+    customType: "mcp-events-tool",
+    details: {
+      args: { action: "unsubscribe", subscription_id: "s1" },
+      result: { error: "transport closed" },
+      isError: true,
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 75));
+  assert.deepEqual((await readSubscriptionConfig(agentDir)).entries, [
+    { server: "hub", name: "hub", arguments: {} },
+  ]);
+});
+
+test("a terminal stream status makes a declaration pending, not live", async (t) => {
+  await withAgentConfig(t, {
+    mcpServers: {
+      stub: { command: process.execPath, args: [resolve("e2e/stub-mcp.mjs")] },
+    },
+    web: { command: process.execPath, disabled: true },
+  });
+  const dataDir = await tempDir(t);
+  await declareSubscriptions([{ server: "stub", name: "stub-hub", arguments: {} }]);
+  const runtime = await startMcpRuntime({ dataDir });
+  const feed = new McpEventFeed(runtime.subscriptionRegistry);
+  await feed.hydrate();
+  runtime.setObserver((notice) => feed.ingest(notice));
+  runtime.setLiveStateLookup((stableId) => {
+    const row = feed.findByStableId(stableId);
+    if (row === undefined) return false;
+    if (row.state === "dead" || row.state === "stalled" || row.state === "cancelled") return false;
+    return row.status === "opening" || row.status === "active" || row.status === "reconnecting";
+  });
+  const stableId = deriveStableId("stub", "stub-hub", {});
+  try {
+    assert.equal(runtime.status.subscriptionConfig?.entries[0]?.state, "live");
+    const row = feed.findByStableId(stableId);
+    assert.ok(row);
+    feed.ingest({
+      customType: "mcp-events-status",
+      details: {
+        subscriptions: [
+          {
+            id: row.id,
+            server: "stub",
+            name: "stub-hub",
+            status: "failed",
+          },
+        ],
+      },
+    });
+    assert.equal(feed.findByStableId(stableId)?.status, "failed");
+    assert.equal(runtime.status.subscriptionConfig?.entries[0]?.state, "pending");
+  } finally {
+    runtime.setObserver(undefined);
+    runtime.setLiveStateLookup(undefined);
+    await runtime.close();
+  }
+});
+
+test("a pending new declaration retries without probing", async (t) => {
+  await withAgentConfig(t, {
+    mcpServers: {
+      offline: { command: "/nonexistent/pi-ui-mcp-server" },
+    },
+    web: { command: process.execPath, disabled: true },
+  });
+  const dataDir = await tempDir(t);
+  await declareSubscriptions([{ server: "offline", name: "stub-hub", arguments: {} }]);
+  const runtime = await startMcpRuntime({ dataDir });
+  try {
+    assert.equal(runtime.restoredSubscriptions.length, 0);
+    let probes = 0;
+    const internals = runtime as unknown as {
+      probeRestore(record: McpSubscriptionRecord): Promise<unknown>;
+    };
+    const original = internals.probeRestore.bind(runtime);
+    internals.probeRestore = async (record) => {
+      probes += 1;
+      return original(record);
+    };
+    const agentDir = process.env.PI_CODING_AGENT_DIR;
+    assert.ok(agentDir);
+    await writeFile(
+      join(agentDir, "mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          offline: { command: process.execPath, args: [resolve("e2e/stub-mcp.mjs")] },
+          web: { command: process.execPath, disabled: true },
+        },
+      }),
+    );
+    const result = await runtime.reload("mcp");
+    assert.equal(result.ok, true);
+    assert.equal(result.subscriptions?.opened, 1);
+    assert.equal(probes, 0, "a declaration that never had a cache row is never probed");
+    assert.equal(runtime.restoredSubscriptions[0]?.name, "stub-hub");
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("reopenSubscription never writes or duplicates the declaration", async (t) => {
+  await withAgentConfig(t, {
+    mcpServers: {
+      stub: { command: process.execPath, args: [resolve("e2e/stub-mcp.mjs")] },
+    },
+    web: { command: process.execPath, disabled: true },
+  });
+  const dataDir = await tempDir(t);
+  const declaration = { server: "stub", name: "stub-hub", arguments: {} };
+  await declareSubscriptions([declaration]);
+  const agentDir = process.env.PI_CODING_AGENT_DIR;
+  assert.ok(agentDir);
+  const runtime = await startMcpRuntime({ dataDir });
+  try {
+    const restored = runtime.restoredSubscriptions[0];
+    assert.ok(restored);
+    const before = await readFile(join(agentDir, "subscriptions.json"), "utf8");
+    await runtime.reopenSubscription(restored, restored.cursor);
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    assert.equal(await readFile(join(agentDir, "subscriptions.json"), "utf8"), before);
+    assert.deepEqual((await readSubscriptionConfig(agentDir)).entries, [declaration]);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a NotFound restore drop leaves the declaration for a later retry", async (t) => {
+  await withAgentConfig(t, {
+    mcpServers: {
+      restore: { command: process.execPath, args: [resolve("e2e/restore-mcp.mjs")] },
+    },
+    web: { command: process.execPath, disabled: true },
+  });
+  const dataDir = await tempDir(t);
+  const declaration = { server: "restore", name: "gone-stream", arguments: {} };
+  await declareSubscriptions([declaration]);
+  const agentDir = process.env.PI_CODING_AGENT_DIR;
+  assert.ok(agentDir);
+  const registry = new McpSubscriptionRegistry(dataDir);
+  await registry.record(
+    subscription({
+      server: "restore",
+      name: "gone-stream",
+      cursor: "old:9",
+      status: "active",
+    }),
+  );
+  await registry.close();
+  const runtime = await startMcpRuntime({ dataDir });
+  try {
+    assert.equal(runtime.restoredSubscriptions.length, 0);
+    assert.equal(runtime.isSubscriptionDropped("restore/gone-stream"), true);
+    assert.deepEqual((await readSubscriptionConfig(agentDir)).entries, [declaration]);
+    // A reload clears the drop for a declared stable id and retries it; the
+    // server rejects it again, and the declaration is still the only thing
+    // that removes the line.
+    await runtime.reload("subscriptions");
+    assert.equal(runtime.restoredSubscriptions.length, 0);
+    assert.deepEqual((await readSubscriptionConfig(agentDir)).entries, [declaration]);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("an agent re-subscribe keeps an operator's existing title", async (t) => {
+  const agentDir = await tempDir(t);
+  const path = subscriptionConfigPath(agentDir);
+  await writeSubscriptionConfig(agentDir, [
+    { server: "zeroshot", name: "hub", arguments: {}, title: "Zeroshot hub" },
+  ]);
+  assert.equal(
+    await upsertSubscriptionConfigEntry(agentDir, {
+      server: "zeroshot",
+      name: "hub",
+      arguments: {},
+    }),
+    false,
+    "the membership is unchanged",
+  );
+  assert.deepEqual((await readSubscriptionConfig(agentDir)).entries, [
+    { server: "zeroshot", name: "hub", arguments: {}, title: "Zeroshot hub" },
+  ]);
+  const document = JSON.parse(await readFile(path, "utf8")) as {
+    subscriptions: Array<Record<string, unknown>>;
+  };
+  assert.equal(document.subscriptions[0]?.title, "Zeroshot hub");
+});
+
+test("a repaired config clears a stale write error on reload", async (t) => {
+  await withAgentConfig(t, { mcpServers: {} });
+  const agentDir = process.env.PI_CODING_AGENT_DIR;
+  assert.ok(agentDir);
+  const path = join(agentDir, "subscriptions.json");
+  await writeFile(path, "{ broken");
+  const runtime = await startMcpRuntime({ dataDir: await tempDir(t) });
+  t.after(async () => runtime.close());
+  runtime.setObserver(() => undefined);
+
+  notifyToolResult(runtime, subscribeNotice("s1"));
+  await waitFor(
+    () => runtime.status.subscriptionConfig?.writeError !== undefined,
+    "the failed intent write to surface",
+  );
+  assert.match(runtime.status.subscriptionConfig?.error ?? "", /could not be parsed/);
+  assert.match(runtime.status.subscriptionConfig?.writeError ?? "", /could not be parsed/);
+
+  // The operator repairs the file; a reload reads it and retires the refusal.
+  await writeFile(path, JSON.stringify({ version: 1, subscriptions: [] }));
+  const result = await runtime.reload("subscriptions");
+  assert.equal(result.ok, true);
+  assert.equal(runtime.status.subscriptionConfig?.error, undefined);
+  assert.equal(runtime.status.subscriptionConfig?.writeError, undefined);
+});
+
+test("the agent subscribe path preserves a titled declaration", async (t) => {
+  await withAgentConfig(t, { mcpServers: {} });
+  const agentDir = process.env.PI_CODING_AGENT_DIR;
+  assert.ok(agentDir);
+  await writeSubscriptionConfig(agentDir, [
+    { server: "zeroshot", name: "hub", arguments: {}, title: "Zeroshot hub" },
+  ]);
+  const runtime = await startMcpRuntime({ dataDir: await tempDir(t) });
+  t.after(async () => runtime.close());
+  let observed: unknown;
+  runtime.setObserver((notice) => {
+    observed = notice;
+  });
+
+  notifyToolResult(runtime, subscribeNotice("s1", { server: "zeroshot", name: "hub" }));
+  await waitFor(
+    async () => runtime.status.subscriptionConfig?.entries[0]?.title === "Zeroshot hub",
+    "the re-subscribe to keep the title",
+  );
+  assert.deepEqual((await readSubscriptionConfig(agentDir)).entries, [
+    { server: "zeroshot", name: "hub", arguments: {}, title: "Zeroshot hub" },
+  ]);
+  const subscription = (
+    observed as { details?: { result?: { subscription?: { title?: string } } } } | undefined
+  )?.details?.result?.subscription;
+  assert.equal(subscription?.title, "Zeroshot hub", "the feed notice carries the title too");
+});
+
+test("a declaration with an unpaired surrogate is skipped instead of throwing", async (t) => {
+  const agentDir = await tempDir(t);
+  const loneSurrogate = String.fromCharCode(0xd800);
+  await writeFile(
+    subscriptionConfigPath(agentDir),
+    JSON.stringify({
+      version: 1,
+      subscriptions: [
+        { server: loneSurrogate, name: "hub", arguments: {} },
+        { server: "zeroshot", name: "hub", arguments: {} },
+      ],
+    }),
+  );
+  const lines: string[] = [];
+  const warn = console.warn;
+  console.warn = (line: unknown) => lines.push(String(line));
+  let config: Awaited<ReturnType<typeof readSubscriptionConfig>>;
+  try {
+    config = await readSubscriptionConfig(agentDir);
+  } finally {
+    console.warn = warn;
+  }
+  assert.deepEqual(config.entries, [{ server: "zeroshot", name: "hub", arguments: {} }]);
+  assert.equal(config.error, undefined);
+  assert.ok(lines.some((line) => line.includes("entry 0 is invalid")));
+  // The same malformed component can reach the identity helper from an
+  // adapter result; it must stay total rather than throwing a URIError.
+  assert.doesNotThrow(() => deriveStableId(loneSurrogate, "hub", {}));
 });

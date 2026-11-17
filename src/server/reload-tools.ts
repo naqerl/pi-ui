@@ -5,7 +5,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 
-export const RELOAD_TARGETS = ["mcp", "prompt", "models", "all"] as const;
+export const RELOAD_TARGETS = ["mcp", "subscriptions", "prompt", "models", "all"] as const;
 export type ReloadTarget = (typeof RELOAD_TARGETS)[number];
 
 export interface ReloadTargetOutcome {
@@ -23,12 +23,13 @@ export interface ReloadSummary {
 
 export interface ReloadHooks {
   readonly mcp: () => Promise<ReloadTargetOutcome>;
+  readonly subscriptions?: () => Promise<ReloadTargetOutcome>;
   readonly prompt?: () => Promise<ReloadTargetOutcome>;
   readonly models?: () => Promise<ReloadTargetOutcome>;
 }
 
 const TARGET_ORDER = ["mcp", "prompt", "models"] as const;
-type IndividualTarget = (typeof TARGET_ORDER)[number];
+type IndividualTarget = "mcp" | "subscriptions" | "prompt" | "models";
 
 function targetOutcome(target: IndividualTarget, hooks: ReloadHooks): Promise<ReloadTargetOutcome> {
   const run = hooks[target];
@@ -75,18 +76,19 @@ export function createReloadTool(hooks: ReloadHooks): ToolRegistration {
   return defineTool({
     name: "reload",
     description:
-      "Re-read the files that define this running session and apply them without restarting the process. target=mcp re-reads mcp.json and reconnects only changed servers (adds new ones, drops removed ones, leaves unchanged connections alone, and keeps the old connection if a reconnect fails); target=prompt rebuilds this session's instructions, including the current memory snapshot, for the next turn without touching other sessions; target=models re-reads the model catalog so a newly added model appears; all runs those three in order and reports each one separately even if another fails. Concurrent calls return busy. The tool only reads config files; it never writes them or restarts anything.",
+      "Re-read the files that define this running session and apply them without restarting the process. target=mcp re-reads mcp.json and subscriptions.json: it reconnects only changed servers (adds new ones, drops removed ones, leaves unchanged connections alone, and keeps the old connection if a reconnect fails), then stops streams whose line left subscriptions.json, prunes their cursor cache and opens newly declared lines; target=subscriptions re-reads only subscriptions.json and applies the same membership diff without touching servers; target=prompt rebuilds this session's instructions, including the current memory snapshot, for the next turn without touching other sessions; target=models re-reads the model catalog so a newly added model appears; all runs those three stages in order and reports each one separately even if another fails. Concurrent calls return busy. The tool only reads config files; it never writes them or restarts anything.",
     parameters: Type.Object({
       target: Type.Optional(
         Type.Union(
           [
             Type.Literal("mcp"),
+            Type.Literal("subscriptions"),
             Type.Literal("prompt"),
             Type.Literal("models"),
             Type.Literal("all"),
           ],
           {
-            description: "What to re-read: mcp, prompt, models or all. Default all.",
+            description: "What to re-read: mcp, subscriptions, prompt, models or all. Default all.",
           },
         ),
       ),

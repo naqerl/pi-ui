@@ -26,6 +26,16 @@ import {
 import { checkEventNotifications } from "./mcp-event-check.js";
 import { type ExtensionNotice, polledEventCursor, RESTORE_GRACE_MS } from "./mcp-events.js";
 import {
+  type DeclaredSubscription,
+  readSubscriptionConfig,
+  removeSubscriptionConfigEntry,
+  type SubscriptionConfig,
+  subscriptionConfigPath,
+  subscriptionConfigWriteError,
+  upsertSubscriptionConfigEntry,
+} from "./mcp-subscription-config.js";
+import {
+  deriveStableId,
   hasPosition,
   type McpSubscriptionRecord,
   McpSubscriptionRegistry,
@@ -450,6 +460,93 @@ function webAccessServer(agentDir: string): HostManagedMcpServer | undefined {
   } catch {
     return undefined;
   }
+}
+
+const LIVE_ADAPTER_STATUS = new Set(["opening", "active", "reconnecting"]);
+
+function isLiveAdapterStatus(value: unknown): boolean {
+  return typeof value === "string" && LIVE_ADAPTER_STATUS.has(value);
+}
+
+/** The membership line an agent subscribe declares, without any cursor/health. */
+function declarationFrom(
+  subscription: Record<string, unknown>,
+  args: Record<string, unknown>,
+): DeclaredSubscription | undefined {
+  const server =
+    typeof subscription.server === "string"
+      ? subscription.server
+      : typeof args.server === "string"
+        ? args.server
+        : undefined;
+  const name =
+    typeof subscription.name === "string"
+      ? subscription.name
+      : typeof args.name === "string"
+        ? args.name
+        : undefined;
+  if (server === undefined || name === undefined) return undefined;
+  const subscriptionArgs = isRecord(subscription.arguments)
+    ? subscription.arguments
+    : isRecord(args.arguments)
+      ? args.arguments
+      : {};
+  const title =
+    typeof subscription.title === "string" && subscription.title.trim().length > 0
+      ? subscription.title
+      : typeof args.title === "string" && args.title.trim().length > 0
+        ? args.title
+        : undefined;
+  return {
+    server,
+    name,
+    arguments: subscriptionArgs,
+    ...(title === undefined ? {} : { title }),
+  };
+}
+
+/** Carry a declaration's title into the subscribe notice the feed shows. */
+function withDeclaredTitle(
+  notice: ExtensionNotice,
+  declarations: readonly DeclaredSubscription[] = [],
+): ExtensionNotice {
+  if (notice.customType !== "mcp-events-tool" || !isRecord(notice.details)) return notice;
+  const details = notice.details;
+  const args = isRecord(details.args) ? details.args : undefined;
+  const result = isRecord(details.result) ? details.result : undefined;
+  const subscription =
+    result !== undefined && isRecord(result.subscription) ? result.subscription : undefined;
+  if (args?.action !== "subscribe" || subscription === undefined) return notice;
+  if (typeof subscription.title === "string" && subscription.title.trim().length > 0) return notice;
+  const title =
+    typeof args.title === "string" && args.title.trim().length > 0
+      ? args.title
+      : declarationTitle(subscription, declarations);
+  if (title === undefined) return notice;
+  return {
+    ...notice,
+    details: {
+      ...details,
+      result: { ...result, subscription: { ...subscription, title } },
+    },
+  };
+}
+
+function declarationTitle(
+  subscription: Record<string, unknown>,
+  declarations: readonly DeclaredSubscription[],
+): string | undefined {
+  if (typeof subscription.server !== "string" || typeof subscription.name !== "string") {
+    return undefined;
+  }
+  const stableId = deriveStableId(
+    subscription.server,
+    subscription.name,
+    isRecord(subscription.arguments) ? subscription.arguments : {},
+  );
+  return declarations.find(
+    (entry) => deriveStableId(entry.server, entry.name, entry.arguments) === stableId,
+  )?.title;
 }
 
 /** Compare config entries by value, not by the order their keys were written in. */
@@ -1366,6 +1463,16 @@ class McpServerChannel {
  * registry. There is no extension loader: the shim has exactly the surface
  * these two packages need.
  */
+export interface McpSubscriptionsReloadResult {
+  readonly declared: number;
+  readonly opened: number;
+  readonly stopped: number;
+  readonly pending: number;
+  readonly errors: readonly string[];
+  /** Stable ids whose live stream was stopped by this reconciliation. */
+  readonly stoppedIds: readonly string[];
+}
+
 export interface McpReloadResult {
   readonly ok: boolean;
   readonly added: number;
@@ -1373,6 +1480,7 @@ export interface McpReloadResult {
   readonly changed: number;
   readonly unchanged: number;
   readonly errors: readonly string[];
+  readonly subscriptions?: McpSubscriptionsReloadResult;
 }
 
 export class McpRuntime {
@@ -1396,6 +1504,24 @@ export class McpRuntime {
   private readonly pendingRestore = new Map<string, McpSubscriptionRecord>();
   /** Restored entries the server rejected; never retried by this process. */
   private readonly dropped = new Set<string>();
+  /** Adapter id → stable id, filled from agent subscribe/list results. */
+  private readonly adapterStableIds = new Map<string, string>();
+  /** Declared stable ids that currently have a live adapter stream. */
+  private readonly declaredLive = new Set<string>();
+  /** Brand-new declarations must skip the probe on every retry until they open. */
+  private readonly skipProbeRestores = new Set<string>();
+  /** Unknown unsubscribe ids already logged, so a retry does not spam. */
+  private readonly warnedUnknownUnsubscribe = new Set<string>();
+  /** Last read of subscriptions.json, for the synchronous status snapshot. */
+  private subscriptionConfig: SubscriptionConfig | undefined;
+  /** Resolve a stable id to every adapter id that has represented it. */
+  private liveIdLookup: ((stableId: string) => readonly string[]) | undefined;
+  /** Ask the feed whether this declared identity is still live. */
+  private liveStateLookup: ((stableId: string) => boolean) | undefined;
+  /** Keep the feed in step when a reload stops an undeclared stream. */
+  private liveIdCancelled: ((stableId: string) => void) | undefined;
+  /** Called after a declaration write or reload so the server can broadcast. */
+  private subscriptionConfigListener: (() => void) | undefined;
   private readonly restoring = new Set<string>();
   /** Stable ids that already announced the backlog they did not replay. */
   private readonly restoreGaps = new Set<string>();
@@ -1851,6 +1977,43 @@ export class McpRuntime {
     return {
       servers,
       unavailable: servers.filter((server) => !server.available).map((server) => server.name),
+      subscriptionConfig: this.subscriptionConfigStatus(),
+    };
+  }
+
+  private isDeclaredLive(stableId: string): boolean {
+    if (this.liveStateLookup !== undefined) return this.liveStateLookup(stableId);
+    return this.declaredLive.has(stableId);
+  }
+
+  private subscriptionConfigStatus(): McpStatus["subscriptionConfig"] {
+    const path = this.subscriptionConfig?.path ?? subscriptionConfigPath();
+    const configured = new Set(this.currentNames);
+    const entries = (this.subscriptionConfig?.entries ?? []).map((entry) => {
+      const stableId = deriveStableId(entry.server, entry.name, entry.arguments);
+      const state = configured.has(entry.server)
+        ? this.isDeclaredLive(stableId)
+          ? ("live" as const)
+          : ("pending" as const)
+        : ("missing-server" as const);
+      return {
+        stableId,
+        server: entry.server,
+        name: entry.name,
+        arguments: entry.arguments,
+        ...(entry.title === undefined ? {} : { title: entry.title }),
+        state,
+      };
+    });
+    const writeError = subscriptionConfigWriteError(path);
+    return {
+      path,
+      present: this.subscriptionConfig?.present ?? false,
+      ...(this.subscriptionConfig?.error === undefined
+        ? {}
+        : { error: this.subscriptionConfig.error }),
+      ...(writeError === undefined ? {} : { writeError }),
+      entries,
     };
   }
 
@@ -1888,7 +2051,17 @@ export class McpRuntime {
   /** Observes MCP event batches and mcp_events tool results. Never includes secrets. */
   setObserver(observer: Parameters<DurableExtensionShim["setObserver"]>[0]): void {
     this.observer = observer;
-    this.shim.setObserver(observer);
+    this.shim.setObserver(
+      observer === undefined
+        ? undefined
+        : (notice) => {
+            // The shim's registerTool wrapper sees only model/tool calls. Restore
+            // and watchdog subscribes use callTool() and never reach this path.
+            const enriched = withDeclaredTitle(notice, this.subscriptionConfig?.entries ?? []);
+            void this.noteToolResult(enriched);
+            return observer(enriched);
+          },
+    );
     if (observer === undefined) return;
     // Restore runs before the feed exists. Replay its subscribe results now so
     // /api/state has the real subscription ids and stored cursors immediately.
@@ -1901,27 +2074,173 @@ export class McpRuntime {
     }
   }
 
+  /** Broadcast after a declaration write, once the feed exists. */
+  setSubscriptionConfigListener(listener: (() => void) | undefined): void {
+    this.subscriptionConfigListener = listener;
+  }
+
+  /** Let a reload resolve a declaration to every live adapter id for it. */
+  setLiveIdLookup(lookup: ((stableId: string) => readonly string[]) | undefined): void {
+    this.liveIdLookup = lookup;
+  }
+
+  /** Ask the feed whether a declared identity is still live, not merely restored. */
+  setLiveStateLookup(lookup: ((stableId: string) => boolean) | undefined): void {
+    this.liveStateLookup = lookup;
+  }
+
+  /** Cancel the feed row when a reload stops a stream that lost its declaration. */
+  setLiveIdCancel(cancel: ((stableId: string) => void) | undefined): void {
+    this.liveIdCancelled = cancel;
+  }
+
   /**
-   * Subscribe again to every persisted active/reconnecting entry. A recent
+   * Turn an agent tool result into a declaration intent. A successful subscribe
+   * appends a line; a successful unsubscribe removes it. Restore/watchdog calls
+   * bypass the tool wrapper entirely, so they can never edit the file.
+   */
+  private async noteToolResult(notice: ExtensionNotice): Promise<void> {
+    if (notice.customType !== "mcp-events-tool") return;
+    const details = isRecord(notice.details) ? notice.details : undefined;
+    const args = details !== undefined && isRecord(details.args) ? details.args : undefined;
+    const result = details !== undefined && isRecord(details.result) ? details.result : undefined;
+    if (args === undefined) return;
+    if (args.action === "list") {
+      if (!Array.isArray(result?.subscriptions)) return;
+      for (const item of result.subscriptions) this.rememberAdapterSubscription(item);
+      return;
+    }
+    if (args.action === "subscribe") {
+      if (details?.isError === true || result?.isError === true) return;
+      const subscription = isRecord(result?.subscription) ? result.subscription : undefined;
+      if (subscription === undefined) return;
+      this.rememberAdapterSubscription(subscription);
+      if (typeof subscription.id !== "string") return;
+      if (!isLiveAdapterStatus(subscription.status)) return;
+      const entry = declarationFrom(subscription, args);
+      if (entry === undefined) return;
+      const stableId = deriveStableId(entry.server, entry.name, entry.arguments);
+      this.declaredLive.add(stableId);
+      this.adapterStableIds.set(subscription.id, stableId);
+      await this.writeDeclaration(() => upsertSubscriptionConfigEntry(undefined, entry));
+      return;
+    }
+    if (args.action !== "unsubscribe") return;
+    if (details?.isError === true || result?.isError === true) return;
+    if (result !== undefined && result.stopped === false) return;
+    const id =
+      typeof args.subscription_id === "string"
+        ? args.subscription_id
+        : typeof result?.subscription_id === "string"
+          ? result.subscription_id
+          : undefined;
+    if (id === undefined) return;
+    this.rememberAdapterSubscription(result?.subscription);
+    const stableId = this.adapterStableIds.get(id);
+    if (stableId === undefined) {
+      if (!this.warnedUnknownUnsubscribe.has(id)) {
+        this.warnedUnknownUnsubscribe.add(id);
+        console.warn(`mcp: unsubscribe for unknown adapter id ${id}; subscriptions.json unchanged`);
+      }
+      return;
+    }
+    this.adapterStableIds.delete(id);
+    this.declaredLive.delete(stableId);
+    await this.writeDeclaration(() => removeSubscriptionConfigEntry(undefined, stableId));
+  }
+
+  private rememberAdapterSubscription(value: unknown): void {
+    if (!isRecord(value) || typeof value.id !== "string") return;
+    const server = typeof value.server === "string" ? value.server : undefined;
+    const name = typeof value.name === "string" ? value.name : undefined;
+    if (server === undefined || name === undefined) return;
+    const stableId =
+      typeof value.stableId === "string" && value.stableId.length > 0
+        ? value.stableId
+        : deriveStableId(server, name, isRecord(value.arguments) ? value.arguments : {});
+    this.adapterStableIds.set(value.id, stableId);
+  }
+
+  private async writeDeclaration(write: () => Promise<boolean>): Promise<void> {
+    await write();
+    await this.refreshSubscriptionConfig();
+    this.subscriptionConfigListener?.();
+  }
+
+  private async refreshSubscriptionConfig(): Promise<SubscriptionConfig> {
+    const config = await readSubscriptionConfig();
+    this.subscriptionConfig = config;
+    return config;
+  }
+
+  /**
+   * Subscribe to every stream declared in subscriptions.json. A recent cached
    * cursor resumes where pi stopped; a backlog older than the restore grace
-   * window starts in now and is reported as one gap. pi-mcp-events resolves
-   * its own subscription id; the mapping is kept so a cursor advance still
-   * targets the persisted entry. Failures stay in `pendingRestore` and are
-   * retried when the server answers.
+   * window starts in now and is reported as one gap. A brand-new declaration
+   * has no cached position, so it subscribes from null without a probe: there
+   * is no history to call a "gap". Failures stay pending and are retried when
+   * the server answers.
    */
   async restoreSubscriptions(): Promise<RestoredMcpSubscription[]> {
-    if (this.subscriptionStore === undefined) return [];
-    const records = await this.subscriptionStore.read();
-    const already = new Set([...this.restored.values()].map((record) => recordKey(record)));
-    for (const record of records) {
-      if (!subscriptionEnabled(record.status) || record.enabled === false) continue;
-      if (record.status !== "active" && record.status !== "reconnecting") continue;
+    const config = await this.refreshSubscriptionConfig();
+    if (config.error !== undefined) {
+      console.warn(`mcp: ${config.error}; live event streams kept`);
+      return this.restoredSubscriptions;
+    }
+    if (!config.present) {
+      console.log("mcp: no subscriptions.json; no event streams declared");
+    }
+    const declarations = config.entries;
+    const declared = new Set(
+      declarations.map((entry) => deriveStableId(entry.server, entry.name, entry.arguments)),
+    );
+    for (const stableId of declared) this.dropped.delete(stableId);
+    // The cache holds exactly the cursors of declared streams.
+    await this.subscriptionStore?.prune(declared);
+    const already = new Set([...this.restored.values()].map((record) => recordStableId(record)));
+    for (const [key, record] of this.pendingRestore) {
+      if (!declared.has(recordStableId(record))) {
+        this.pendingRestore.delete(key);
+        this.skipProbeRestores.delete(key);
+      }
+    }
+    const pending: Array<{ record: McpSubscriptionRecord; skipProbe: boolean }> = [];
+    for (const entry of declarations) {
+      const stableId = deriveStableId(entry.server, entry.name, entry.arguments);
+      if (already.has(stableId)) {
+        this.declaredLive.add(stableId);
+        for (const [key, record] of this.pendingRestore) {
+          if (recordStableId(record) === stableId) {
+            this.pendingRestore.delete(key);
+            this.skipProbeRestores.delete(key);
+          }
+        }
+        continue;
+      }
+      const cached = this.subscriptionStore?.findByStableId(stableId);
+      const record: McpSubscriptionRecord = {
+        server: entry.server,
+        name: entry.name,
+        stableId,
+        arguments: entry.arguments,
+        ...(entry.title === undefined ? {} : { title: entry.title }),
+        cursor: cached?.cursor ?? null,
+        deliveredEventIds: cached?.deliveredEventIds ?? [],
+        // The gap text names when the last event was seen; keep that history.
+        ...(cached?.lastEventAt === undefined ? {} : { lastEventAt: cached.lastEventAt }),
+        status: "active",
+        updatedAt: new Date().toISOString(),
+      };
       const key = recordKey(record);
-      if (already.has(key) || this.isSubscriptionDropped(recordStableId(record))) continue;
+      // A declaration with no cached cursor has no history to probe. Keep that
+      // intent across failed retries so a later open cannot invent a gap.
+      if (cached === undefined) this.skipProbeRestores.add(key);
+      else this.skipProbeRestores.delete(key);
       this.pendingRestore.set(key, record);
+      pending.push({ record, skipProbe: this.skipProbeRestores.has(key) });
     }
     await Promise.all(
-      [...this.pendingRestore.values()].map((record) => this.restoreSubscription(record)),
+      pending.map(({ record, skipProbe }) => this.restoreSubscription(record, skipProbe)),
     );
     return this.restoredSubscriptions;
   }
@@ -1940,6 +2259,7 @@ export class McpRuntime {
   async cancelSubscription(
     stableId: string,
     liveIds?: string | readonly string[],
+    options: { readonly removeDeclaration?: boolean } = {},
   ): Promise<McpSubscriptionRecord | null> {
     const ids = new Set<string>();
     if (typeof liveIds === "string") {
@@ -1951,7 +2271,10 @@ export class McpRuntime {
       if (recordStableId(record) === stableId) ids.add(id);
     }
     for (const [key, record] of this.pendingRestore) {
-      if (recordStableId(record) === stableId) this.pendingRestore.delete(key);
+      if (recordStableId(record) === stableId) {
+        this.pendingRestore.delete(key);
+        this.skipProbeRestores.delete(key);
+      }
     }
     for (const id of ids) {
       try {
@@ -1964,7 +2287,14 @@ export class McpRuntime {
       }
       this.restored.delete(id);
     }
+    this.declaredLive.delete(stableId);
+    for (const [id, mapped] of this.adapterStableIds) {
+      if (mapped === stableId) this.adapterStableIds.delete(id);
+    }
     const cancelled = await this.subscriptionStore?.cancel(stableId);
+    if (options.removeDeclaration === true) {
+      await this.writeDeclaration(() => removeSubscriptionConfigEntry(undefined, stableId));
+    }
     return cancelled ?? null;
   }
 
@@ -2044,7 +2374,9 @@ export class McpRuntime {
     const stableId = recordStableId(record);
     this.dropped.add(key);
     this.dropped.add(stableId);
+    this.declaredLive.delete(stableId);
     this.pendingRestore.delete(key);
+    this.skipProbeRestores.delete(key);
     await this.subscriptionStore?.cancel(stableId).catch(() => {});
     console.warn(`mcp: dropped restored subscription ${record.server}/${record.name}: ${reason}`);
   }
@@ -2085,14 +2417,21 @@ export class McpRuntime {
     });
   }
 
-  private async restoreSubscription(record: McpSubscriptionRecord): Promise<boolean> {
+  private async restoreSubscription(
+    record: McpSubscriptionRecord,
+    skipProbe = false,
+  ): Promise<boolean> {
     const key = recordKey(record);
     const stableId = recordStableId(record);
     if (this.isSubscriptionDropped(stableId) || this.restoring.has(key)) return false;
     this.restoring.add(key);
     try {
-      const probe = await this.probeRestore(record);
-      if (probe.missing) {
+      // A brand-new declaration has no cached position: there is no history to
+      // probe, and probing would invent a "N events were missed" gap. The
+      // pending retry path keeps this intent until the stream actually opens.
+      const probe =
+        skipProbe || this.skipProbeRestores.has(key) ? undefined : await this.probeRestore(record);
+      if (probe?.missing === true) {
         await this.dropRestoredSubscription(
           record,
           key,
@@ -2103,9 +2442,9 @@ export class McpRuntime {
       // A paged catalog is the restore-after-paging path: a real stored
       // position is the stream's resume point. A zero cursor is never handed
       // to the transport, even on that fallback.
-      const stale = probe.stale && probe.catalogPaged !== true;
+      const stale = probe?.stale === true && probe.catalogPaged !== true;
       const cursor =
-        probe.catalogPaged === true && hasPosition(record.cursor)
+        probe?.catalogPaged === true && hasPosition(record.cursor)
           ? record.cursor
           : stale
             ? null
@@ -2158,13 +2497,16 @@ export class McpRuntime {
         updatedAt: new Date().toISOString(),
       };
       this.restored.set(subscription.id, restored);
+      this.declaredLive.add(stableId);
+      this.adapterStableIds.set(subscription.id, stableId);
       this.pendingRestore.delete(key);
+      this.skipProbeRestores.delete(key);
       console.log(
         `mcp: restored subscription ${record.server}/${record.name} at ${subscription.cursor ?? "null"}`,
       );
       // Record the skipped window only after the new cursor is live, so a
       // failed restore cannot claim a gap it did not actually start from.
-      if (stale && probe.backlog !== undefined) this.noteRestoreGap(record, probe.backlog);
+      if (stale && probe?.backlog !== undefined) this.noteRestoreGap(record, probe.backlog);
       this.deliverNotice({
         customType: "mcp-events-tool",
         details: {
@@ -2180,6 +2522,7 @@ export class McpRuntime {
             subscription: {
               ...subscription,
               stableId,
+              ...(record.title === undefined ? {} : { title: record.title }),
               ...(generation === undefined ? {} : { generation }),
               deliveredEventIds: record.deliveredEventIds ?? [],
             },
@@ -2219,9 +2562,9 @@ export class McpRuntime {
    * callers are coalesced; the agent-facing tool reports a concurrent call as
    * busy before it gets here.
    */
-  reload(): Promise<McpReloadResult> {
+  reload(target: "mcp" | "subscriptions" = "mcp"): Promise<McpReloadResult> {
     if (this.reloading !== undefined) return this.reloading;
-    const run = this.runReload().finally(() => {
+    const run = this.runReload(target).finally(() => {
       if (this.reloading === run) this.reloading = undefined;
     });
     this.reloading = run;
@@ -2248,7 +2591,7 @@ export class McpRuntime {
     );
   }
 
-  private async runReload(): Promise<McpReloadResult> {
+  private async runReload(target: "mcp" | "subscriptions"): Promise<McpReloadResult> {
     if (this.closed) {
       return {
         ok: false,
@@ -2259,16 +2602,32 @@ export class McpRuntime {
         errors: ["MCP runtime is closed"],
       };
     }
+    if (target === "subscriptions") {
+      const subscriptions = await this.reconcileDeclarations();
+      return {
+        ok: subscriptions.errors.length === 0,
+        added: 0,
+        removed: 0,
+        changed: 0,
+        unchanged: 0,
+        errors: [...subscriptions.errors],
+        subscriptions,
+      };
+    }
 
     const next = await readServers();
     if (next.configError !== undefined) {
+      // target=mcp reads both files even when mcp.json itself is unusable;
+      // declarations can still be added or removed by hand.
+      const subscriptions = await this.reconcileDeclarations();
       return {
         ok: false,
         added: 0,
         removed: 0,
         changed: 0,
         unchanged: 0,
-        errors: [next.configError],
+        errors: [next.configError, ...subscriptions.errors],
+        subscriptions,
       };
     }
     const errors: string[] = [];
@@ -2302,6 +2661,19 @@ export class McpRuntime {
         if (this.failedServers[index]?.name === name) this.failedServers.splice(index, 1);
       }
       await this.closeServerProtocol(name);
+      // A removed server's declaration stays in subscriptions.json: pass
+      // removeDeclaration: false so it is retried if the server comes back.
+      const stableIds = new Set<string>();
+      for (const record of this.restored.values()) {
+        if (record.server === name) stableIds.add(recordStableId(record));
+      }
+      for (const record of this.pendingRestore.values()) {
+        if (record.server === name) stableIds.add(recordStableId(record));
+      }
+      for (const stableId of stableIds) {
+        await this.cancelSubscription(stableId, this.liveIdLookup?.(stableId));
+        this.liveIdCancelled?.(stableId);
+      }
       if (channel !== undefined) await channel.close();
       this.shim.removeTools(tools);
     }
@@ -2368,6 +2740,8 @@ export class McpRuntime {
     ) {
       this.shim.install(this.registry);
     }
+    const subscriptions = await this.reconcileDeclarations();
+    errors.push(...subscriptions.errors);
     return {
       ok: errors.length === 0,
       added: added.length,
@@ -2375,6 +2749,91 @@ export class McpRuntime {
       changed: changed.length,
       unchanged: unchanged.length,
       errors,
+      subscriptions,
+    };
+  }
+
+  /**
+   * Re-read subscriptions.json: stop live streams that lost their declaration,
+   * prune the cursor cache, and open newly declared streams. The file is the
+   * whole list; there is no second reconciliation model.
+   */
+  private async reconcileDeclarations(): Promise<McpSubscriptionsReloadResult> {
+    const previous = this.subscriptionConfig?.entries ?? [];
+    const config = await this.refreshSubscriptionConfig();
+    if (config.error !== undefined) {
+      console.warn(`mcp: ${config.error}; live event streams kept`);
+      this.subscriptionConfigListener?.();
+      return {
+        declared: previous.length,
+        opened: 0,
+        stopped: 0,
+        pending: previous.length,
+        errors: [config.error],
+        stoppedIds: [],
+      };
+    }
+    const declarations = config.entries;
+    const declared = new Set(
+      declarations.map((entry) => deriveStableId(entry.server, entry.name, entry.arguments)),
+    );
+    const candidates = new Set<string>();
+    for (const entry of previous) {
+      candidates.add(deriveStableId(entry.server, entry.name, entry.arguments));
+    }
+    for (const stableId of this.declaredLive) candidates.add(stableId);
+    for (const record of this.restored.values()) candidates.add(recordStableId(record));
+    let stopped = 0;
+    const stoppedIds: string[] = [];
+    for (const stableId of candidates) {
+      if (declared.has(stableId)) continue;
+      stoppedIds.push(stableId);
+      const ids = new Set<string>(this.liveIdLookup?.(stableId) ?? []);
+      for (const [id, record] of this.restored) {
+        if (recordStableId(record) === stableId) ids.add(id);
+      }
+      for (const id of ids) {
+        try {
+          await this.shim.callTool("mcp_events", {
+            action: "unsubscribe",
+            subscription_id: id,
+          });
+        } catch (error) {
+          console.warn(`mcp: could not stop undeclared subscription ${stableId}`, error);
+        }
+        this.restored.delete(id);
+        this.adapterStableIds.delete(id);
+        stopped += 1;
+      }
+      this.declaredLive.delete(stableId);
+      for (const [key, record] of this.pendingRestore) {
+        if (recordStableId(record) === stableId) {
+          this.pendingRestore.delete(key);
+          this.skipProbeRestores.delete(key);
+        }
+      }
+      // The runtime stopped the adapter stream; the feed row must not keep
+      // showing it live until the next snapshot.
+      this.liveIdCancelled?.(stableId);
+    }
+    const liveBefore = new Set([...this.restored.values()].map(recordStableId));
+    await this.subscriptionStore?.prune(declared);
+    await this.restoreSubscriptions();
+    const liveAfter = new Set([...this.restored.values()].map(recordStableId));
+    const opened = [...liveAfter].filter((stableId) => !liveBefore.has(stableId)).length;
+    const configured = new Set(this.currentNames);
+    const pending = declarations.filter((entry) => {
+      const stableId = deriveStableId(entry.server, entry.name, entry.arguments);
+      return configured.has(entry.server) && !this.isDeclaredLive(stableId);
+    }).length;
+    this.subscriptionConfigListener?.();
+    return {
+      declared: declarations.length,
+      opened,
+      stopped,
+      pending,
+      errors: [],
+      stoppedIds,
     };
   }
 

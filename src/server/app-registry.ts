@@ -148,7 +148,7 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
 
   const reloadTool = createReloadTool({
     mcp: async () => {
-      const result = await mcp.reload();
+      const result = await mcp.reload("mcp");
       return {
         ok: result.ok,
         details: {
@@ -156,7 +156,16 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
           removed: result.removed,
           changed: result.changed,
           unchanged: result.unchanged,
+          ...(result.subscriptions === undefined ? {} : { subscriptions: result.subscriptions }),
         },
+        errors: [...result.errors],
+      };
+    },
+    subscriptions: async () => {
+      const result = await mcp.reload("subscriptions");
+      return {
+        ok: result.ok,
+        details: { ...(result.subscriptions ?? {}) },
         errors: [...result.errors],
       };
     },

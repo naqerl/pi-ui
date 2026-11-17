@@ -22,6 +22,8 @@ export type McpSubscriptionRecordStatus =
 export interface McpSubscriptionRecord {
   readonly server: string;
   readonly name: string;
+  /** Optional human title carried from subscriptions.json. */
+  readonly title?: string;
   /** Never changes for the same server, stream name and arguments document. */
   readonly stableId?: string;
   /** Server event-numbering generation captured at the last subscribe. */
@@ -106,6 +108,23 @@ export function sortKeyArguments(args: Record<string, unknown> | undefined): str
   }
 }
 
+/** Encode a component even when a hand-edited string has a lone surrogate. */
+function encodeStableComponent(value: string): string {
+  try {
+    return encodeURIComponent(value);
+  } catch {
+    // A lone UTF-16 surrogate is not a valid URI component. Keep the identity
+    // deterministic for callers that still hold such a string; config parsing
+    // rejects it as an invalid declaration before this path.
+    return encodeURIComponent(
+      value.replace(
+        /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
+        "\uFFFD",
+      ),
+    );
+  }
+}
+
 /**
  * A subscription's identity in pi-ui. It survives restarts and argument order,
  * while the adapter id (`mcp-extension-<uuid>-<n>`) does not. The common
@@ -116,7 +135,7 @@ export function deriveStableId(
   name: string,
   args: Record<string, unknown> | undefined,
 ): string {
-  const base = `${encodeURIComponent(server)}/${encodeURIComponent(name)}`;
+  const base = `${encodeStableComponent(server)}/${encodeStableComponent(name)}`;
   const canonical = sortKeyArguments(args);
   if (canonical === "{}") return base;
   const digest = createHash("sha256").update(canonical).digest("base64url").slice(0, 16);
@@ -188,6 +207,9 @@ function normalizeRecord(value: unknown): McpSubscriptionRecord | null {
   return {
     server: value.server,
     name: value.name,
+    ...(typeof value.title === "string" && value.title.trim().length > 0
+      ? { title: value.title }
+      : {}),
     stableId,
     ...(typeof value.generation === "string" && value.generation.length > 0
       ? { generation: value.generation }
@@ -585,6 +607,24 @@ export class McpSubscriptionRegistry {
   /** Alternate name for `cancel`, kept for callers that think in identity. */
   cancelByStableId(stableId: string): Promise<McpSubscriptionRecord | null> {
     return this.cancel(stableId);
+  }
+
+  /**
+   * Drop cache rows whose stable id is not declared in subscriptions.json.
+   * The data dir then holds exactly the cursors of declared streams.
+   */
+  async prune(stableIds: ReadonlySet<string> | readonly string[]): Promise<number> {
+    await this.load();
+    const keep = stableIds instanceof Set ? stableIds : new Set(stableIds);
+    let removed = 0;
+    for (const [key, record] of this.records) {
+      if (keep.has(recordStableId(record))) continue;
+      this.records.delete(key);
+      this.dirty = true;
+      removed += 1;
+    }
+    if (removed > 0) await this.flush();
+    return removed;
   }
 
   /** Force the dirty registry to disk now, bypassing the throttle. */
