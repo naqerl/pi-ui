@@ -15,6 +15,7 @@
 - The final foreground read stops at the log size seen at the handoff and returns only a bounded tail (with a capped newline-less remainder), so a continuously writing or newline-less command cannot hold the turn open or inflate memory. The complete log stays on disk for `fullOutputPath` and `job_output`.
 - A queued plan job notice carries the same kind, label and icon as the chat path, so a busy plan shows it as a notice chip and consecutive job notices merge.
 - `describeJob` names the owning plan task.
+- A long-term memory write made in a plan chat invalidates the shared snapshot and reaches the main chat's next instructions, without a memory chip and without starting a turn.
 
 ## 1.8.1
 

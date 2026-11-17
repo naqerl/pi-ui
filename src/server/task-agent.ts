@@ -88,14 +88,14 @@ import { diffToolSlots, type ToolSlotFrame } from "./tool-frames.js";
 
 /**
  * The only tools a task planning agent may call: inspect the repo, edit its task,
- * ask the operator, propose distinct follow-up work for approval, and read memory.
- * Plan mode never mutates the memory store.
+ * ask the operator, propose distinct follow-up work for approval, and use memory.
  */
 export const TASK_AGENT_MEMORY_TOOL_NAMES = [
   "memory_read",
   "memory_grep",
   "memory_find",
   "memory_status",
+  "memory_write",
 ] as const;
 export const TASK_AGENT_TOOL_NAMES = [
   "bash",
@@ -114,10 +114,11 @@ export type TaskAgentToolName = (typeof TASK_AGENT_TOOL_NAMES)[number];
 const TASK_AGENT_TOOL_SET = new Set<string>(TASK_AGENT_TOOL_NAMES);
 const TASK_AGENT_MEMORY_TOOL_SET = new Set<string>(TASK_AGENT_MEMORY_TOOL_NAMES);
 /**
- * Plan mode is read-only even if the allow-list is widened by mistake. The memory
- * factory is shared with the main chat, so its writers are rejected here too.
+ * The memory factory is shared with the main chat. Plan mode may write memory
+ * (carried into the main chat by SnapshotCache.notePlanWrite), but dreaming stays
+ * forbidden because it is not a plan action.
  */
-const TASK_AGENT_FORBIDDEN_TOOL_SET = new Set<string>(["memory_write", "memory_dream"]);
+const TASK_AGENT_FORBIDDEN_TOOL_SET = new Set<string>(["memory_dream"]);
 
 export class TaskAgentError extends Error {
   constructor(
@@ -233,12 +234,113 @@ export function selectTaskAgentTools<T extends { name: string }>(tools: readonly
   );
 }
 
-/** Keep only the read-only memory tools the plan agent is allowed to call. */
+/** Keep only the memory tools the plan agent is allowed to call. */
 export function selectTaskAgentMemoryTools<T extends { name: string }>(tools: readonly T[]): T[] {
   return tools.filter(
     (tool) =>
       TASK_AGENT_MEMORY_TOOL_SET.has(tool.name) && !TASK_AGENT_FORBIDDEN_TOOL_SET.has(tool.name),
   );
+}
+
+export interface PlanPromptFingerprintOptions {
+  /** Override the home directory in tests. */
+  readonly homeDir?: string;
+  /** Override the coding agent directory in tests. */
+  readonly agentDir?: string;
+}
+
+async function fingerprintPath(path: string): Promise<string> {
+  try {
+    const info = await stat(path);
+    return `${path}\u0000${info.mtimeMs}\u0000${info.size}`;
+  } catch {
+    return `${path}\u0000missing`;
+  }
+}
+
+/** Include the directories and markdown skill files below one skills root. */
+async function collectSkillTree(root: string, paths: Set<string>): Promise<void> {
+  paths.add(root);
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => undefined);
+  if (entries === undefined) return;
+  entries.sort((left, right) => left.name.localeCompare(right.name));
+  for (const entry of entries) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) {
+      await collectSkillTree(path, paths);
+    } else if (entry.isFile() && entry.name.endsWith(".md")) {
+      paths.add(path);
+    }
+  }
+}
+
+/**
+ * The plan prompt is rebuilt only when the skills or guidance files it lists have
+ * changed. mtimeMs plus size is enough to notice an edit or a newly added skill;
+ * a missing path is part of the signature, so creating one also rebuilds.
+ */
+export async function planPromptFingerprint(
+  cwd: string,
+  options: PlanPromptFingerprintOptions = {},
+): Promise<string> {
+  const home = options.homeDir ?? homedir();
+  const agentDir = options.agentDir ?? getAgentDir();
+  const paths = new Set<string>();
+  const skillRoots = [
+    join(home, ".agents", "skills"),
+    join(agentDir, "skills"),
+    join(cwd, ".agents", "skills"),
+    join(cwd, ".pi", "skills"),
+  ];
+  await Promise.all(skillRoots.map((root) => collectSkillTree(root, paths)));
+  for (const file of loadProjectContextFiles({ cwd, agentDir })) paths.add(file.path);
+  for (const file of [
+    join(cwd, "AGENTS.md"),
+    join(cwd, "AGENTS.override.md"),
+    join(cwd, "CLAUDE.md"),
+    join(agentDir, "AGENTS.md"),
+  ]) {
+    paths.add(file);
+  }
+  const signatures = await Promise.all([...paths].sort().map((path) => fingerprintPath(path)));
+  return signatures.join("\n");
+}
+
+export interface PlanPromptBuilderOptions {
+  readonly cwd: string;
+  /** Re-runs DefaultResourceLoader and returns the coding-agent system prompt. */
+  readonly buildBase: () => Promise<string>;
+  readonly memory?: TaskAgentMemory;
+  /** Set false for PI_PLAN_MEMORY=0; defaults to the environment. */
+  readonly memoryEnabled?: boolean;
+  /** Override the file fingerprint in tests. */
+  readonly fingerprint?: () => Promise<string>;
+}
+
+/**
+ * One lazy plan-prompt builder shared by every plan session. The expensive
+ * coding-agent prompt is memoized on a file fingerprint, while the memory block
+ * is composed fresh so a plan never opens with the previous boot's snapshot.
+ */
+export function createPlanPromptBuilder(options: PlanPromptBuilderOptions): () => Promise<string> {
+  let cached: { key: string; base: Promise<string> } | undefined;
+  const fingerprint = options.fingerprint ?? (() => planPromptFingerprint(options.cwd));
+  return async () => {
+    const key = await fingerprint();
+    if (cached === undefined || cached.key !== key) {
+      const base = options.buildBase();
+      cached = { key, base };
+      base.catch(() => {
+        if (cached?.base === base) cached = undefined;
+      });
+    }
+    const base = await cached.base;
+    const memoryEnabled = options.memoryEnabled ?? process.env.PI_PLAN_MEMORY !== "0";
+    return taskAgentMemoryBase(base, memoryEnabled ? options.memory : undefined, {
+      cwd: options.cwd,
+      fresh: true,
+    });
+  };
 }
 
 export interface PlanPromptFingerprintOptions {
@@ -381,11 +483,12 @@ export async function taskAgentProjectInstructions(cwd: string): Promise<string 
  * invalidates the chat's shared snapshot cache.
  */
 export async function taskAgentMemoryBase(
-  base: string,
+  base: string | (() => Promise<string>),
   memory: TaskAgentMemory | undefined,
   options: TaskAgentMemoryBaseOptions = {},
 ): Promise<string> {
-  let prompt = options.cwd === undefined ? base : withoutEmbeddedProjectContext(base);
+  const resolved = typeof base === "function" ? await base() : base;
+  let prompt = options.cwd === undefined ? resolved : withoutEmbeddedProjectContext(resolved);
   if (memory !== undefined) {
     const cache = memory.snapshot ?? new SnapshotCache();
     const block =
@@ -438,26 +541,41 @@ export function taskAgentHarnessSettings(env: NodeJS.ProcessEnv = process.env): 
   };
 }
 
+export interface TaskAgentInstructionOptions {
+  /** False when PI_PLAN_MEMORY=0 or no memory store was supplied. */
+  readonly memoryEnabled?: boolean;
+}
+
 export function taskAgentInstructions(
   base: string,
   task: Pick<Task, "id" | "title" | "body" | "project">,
+  options: TaskAgentInstructionOptions = {},
 ): string {
   const project = task.project === undefined ? "none" : task.project;
   const body = task.body === undefined || task.body.length === 0 ? "(empty)" : task.body;
+  const memoryEnabled = options.memoryEnabled !== false;
+  const memoryPolicy = memoryEnabled
+    ? `- You must not edit, write, create or delete any workspace files, and you must not run commands that change the workspace. The memory_write tool is the one write you may make, and it only touches the memory store.
+
+Memory and skills:
+- The block injected above is the main chat's live memory snapshot: standing rules and map, today, and the open scratchpad. It is truncated, so use memory_find for ranked topic search, memory_grep for literal or regex text across topics, MEMORY.md, SCRATCHPAD.md and recent dailies, memory_read for one body, and memory_status for the tree's size and shape.
+- Write to memory only when the operator states a durable instruction: a rule, preference or decision that will matter in later sessions. Use memory_write with target long_term for a topic (append into an existing topic when one fits, with mode append), daily for a dated note, or scratchpad for an open loop. Never write repository facts derivable from the code, the task body, a duplicate of what the snapshot already says, or anything speculative; the operator reads memory later as standing truth.
+- After a write, report the path you wrote (topics/<scope>/<slug>.md) and nothing more. Never claim to have recorded something you did not write.
+- Skills are listed in the prompt above with absolute paths such as /home/pi/.agents/skills/<name>/SKILL.md and the project's /path/to/repo/.agents/skills/<name>/SKILL.md. Read a skill's SKILL.md before following it. The main chat authors skills (skills-meta), so a skill can be newer than that list: when the work looks skill-shaped, ls or grep the skills directories instead of assuming the list is complete.
+- Project guidance lives in the repository's AGENTS.md.`
+    : `- You must not edit, write, create or delete any workspace files, and you must not run commands that change the workspace. No memory writer is available in this session.
+
+Skills:
+- Memory is disabled for this server, so no memory block was injected and no memory tools are installed. Do not claim to have read or written memory.
+- Skills are listed in the prompt above with absolute paths such as /home/pi/.agents/skills/<name>/SKILL.md and the project's /path/to/repo/.agents/skills/<name>/SKILL.md. Read a skill's SKILL.md before following it. The main chat authors skills (skills-meta), so a skill can be newer than that list: when the work looks skill-shaped, ls or grep the skills directories instead of assuming the list is complete.
+- Project guidance lives in the repository's AGENTS.md.`;
   return `${base}
 
 You are a planning agent for a single task in pi-ui (id: ${task.id}).
 Your job is to help the operator formulate the task and propose a solution — a concrete design for how it would be solved.
 
 Plan mode only:
-- You may use the read and bash tools to inspect the repository. Every bash command gets 120 seconds in the foreground; one still running then continues as a background job named in the result, readable with job_output and stoppable with job_cancel. Its completion notice arrives as a queued message.
-- You must not edit, write, create or delete any workspace files, and you must not run commands that change the workspace.
-- Memory is read-only here: you cannot write, append or record anything, and you must not claim that you did.
-
-Memory and skills:
-- The block injected above is the main chat's live memory snapshot: standing rules and map, today, and the open scratchpad. It is truncated, so use memory_find for ranked topic search, memory_grep for literal or regex text across topics, MEMORY.md, SCRATCHPAD.md and recent dailies, memory_read for one body, and memory_status for the tree's size and shape.
-- Skills are listed in the prompt above with absolute paths such as /home/pi/.agents/skills/<name>/SKILL.md and the project's /path/to/repo/.agents/skills/<name>/SKILL.md. Read a skill's SKILL.md before following it. The main chat authors skills (skills-meta), so a skill can be newer than that list: when the work looks skill-shaped, ls or grep the skills directories instead of assuming the list is complete.
-- Project guidance lives in the repository's AGENTS.md.
+${memoryPolicy}
 - You have additional tools, edit_task, propose_task, ask_questions and append_questions. edit_task updates this task's title, markdown body and/or project. Use it to capture the formulated task: a clear title, a markdown body with the problem and the proposed design (mermaid fences are allowed), and a project when one fits.
 - Use propose_task to hand a follow-up task to the operator for approval. A proposal is not a task: only a human approving it creates work, so do not treat it as started or done. Do not propose a duplicate of the task you are planning; propose only distinct follow-up work.
 - When a decision would be guessed in prose, call ask_questions with a structured set (single, multi or text) and wait for the operator's answers. Use append_questions to add to the same unanswered set while you are still composing it.
@@ -2095,7 +2213,9 @@ export class TaskAgentManager {
       },
       SESSION_CONTEXT,
     );
-    const instructions = taskAgentInstructions(await this.resolveMemoryBase(true), task);
+    const instructions = taskAgentInstructions(await this.resolveMemoryBase(true), task, {
+      memoryEnabled: this.planMemory() !== undefined,
+    });
     const savedId = await readConversationId(currentPath);
     let conversation: Conversation | undefined;
     if (savedId !== undefined) {
@@ -2146,19 +2266,43 @@ export class TaskAgentManager {
     return session;
   }
 
-  /** The plan keeps its own snapshot cache so the chat's stable prefix is untouched. */
+  /** The plan keeps its own snapshot cache for instructions while tools share the chat's cache. */
   private readonly planSnapshot = new SnapshotCache();
 
+  /** The memory tools use the shared cache, so a long-term write invalidates the chat's block. */
   private planMemory(): TaskAgentMemory | undefined {
+    if (process.env.PI_PLAN_MEMORY === "0") return undefined;
+    if (this.options.memory === undefined) return undefined;
+    return {
+      store: this.options.memory.store,
+      snapshot: this.options.memory.snapshot ?? this.planSnapshot,
+    };
+  }
+
+  /** Plan instructions keep their own cache so reading/writing them never disturbs the chat. */
+  private planResolutionMemory(): TaskAgentMemory | undefined {
+    if (process.env.PI_PLAN_MEMORY === "0") return undefined;
     if (this.options.memory === undefined) return undefined;
     return { store: this.options.memory.store, snapshot: this.planSnapshot };
   }
 
-  /** The plan registry's read-only memory tools. Plan mode never mutates the store. */
-  planMemoryTools(_taskId?: string): ToolRegistration[] {
+  /**
+   * The plan registry's memory tools, with the same write path as chat. A long-term
+   * write invalidates the shared cache and is carried into the main chat's next
+   * instructions; the plan session itself is refreshed from the files immediately.
+   */
+  planMemoryTools(taskId: string): ToolRegistration[] {
     const memory = this.planMemory();
     if (memory === undefined) return [];
-    return selectTaskAgentMemoryTools(createMemoryTools(memory.store, memory.snapshot));
+    return selectTaskAgentMemoryTools(
+      createMemoryTools(memory.store, memory.snapshot, {
+        onWrite: (record) => {
+          this.options.memory?.snapshot?.notePlanWrite(record);
+          this.planSnapshot.invalidate();
+          return this.refreshInstructions(taskId);
+        },
+      }),
+    );
   }
 
   private async resolveMemoryBase(fresh: boolean): Promise<string> {
@@ -2166,7 +2310,7 @@ export class TaskAgentManager {
       return this.options.baseInstructions();
     }
     if (fresh) this.planSnapshot.invalidate();
-    return taskAgentMemoryBase(this.options.baseInstructions, this.planMemory(), {
+    return taskAgentMemoryBase(this.options.baseInstructions, this.planResolutionMemory(), {
       cwd: this.options.cwd,
       fresh,
     });
@@ -2180,7 +2324,11 @@ export class TaskAgentManager {
     if (task === undefined) return;
     try {
       const base = await this.resolveMemoryBase(fresh);
-      await session.applyInstructions(taskAgentInstructions(base, task));
+      await session.applyInstructions(
+        taskAgentInstructions(base, task, {
+          memoryEnabled: this.planMemory() !== undefined,
+        }),
+      );
     } catch (error) {
       console.error(`[task-agent] could not refresh instructions for ${taskId}`, error);
     }

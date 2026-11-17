@@ -89,9 +89,33 @@ export class SnapshotCache {
   private text: string | undefined;
   private day: string | undefined;
   private checkpoint = -1;
+  /** Long-term topics written from a plan chat, waiting for the main chat's next turn. */
+  private readonly planWrites = new Map<string, string>();
 
   get built(): boolean {
     return this.text !== undefined;
+  }
+
+  /**
+   * Remember the body of a long-term plan write. The snapshot itself only carries
+   * the memory map, so the main conversation needs the body as a one-turn delta.
+   */
+  notePlanWrite(record: { readonly path: string; readonly text: string }): void {
+    if (!record.path.startsWith("topics/")) return;
+    const text = record.text.trim();
+    if (text.length === 0) return;
+    if (!this.planWrites.has(record.path) && this.planWrites.size >= 8) {
+      const oldest = this.planWrites.keys().next().value;
+      if (oldest !== undefined) this.planWrites.delete(oldest);
+    }
+    this.planWrites.set(record.path, text);
+  }
+
+  /** Take the plan writes for one instruction rebuild, so they do not repeat forever. */
+  takePlanWrites(): string[] {
+    const writes = [...this.planWrites.values()];
+    this.planWrites.clear();
+    return writes;
   }
 
   async get(store: MemoryStore, reason: SnapshotReason = "first_turn"): Promise<string> {
@@ -118,11 +142,10 @@ export function composeInstructions(base: string, block: string): string {
 
 /**
  * Rebuilds the injected block at a checkpoint but keeps the live instructions
- * stable. Only a first turn, a day rollover and a compaction reconfigure the
- * conversation; a long-term topic write updates the cache for the next forced
- * rebuild and shows the operator one memory chip. The model learns nothing
- * beyond its tool result until that rollover or compaction. Daily and
- * scratchpad writes leave the prefix untouched.
+ * stable. Only a first turn, a day rollover, a compaction and a pending plan-chat
+ * write reconfigure the conversation; an ordinary long-term topic write updates the
+ * cache for the next forced rebuild and is announced as a tail delta instead. Daily
+ * and scratchpad writes leave the prefix untouched.
  */
 export class SnapshotController {
   private lastInstructions: string | undefined;
@@ -159,14 +182,22 @@ export class SnapshotController {
           ? "long_term_write"
           : "first_turn");
     const block = await this.cache.get(this.store, chosen);
-    const next = composeInstructions(this.base, block);
+    const planWrites = this.cache.takePlanWrites();
+    const next =
+      planWrites.length === 0
+        ? composeInstructions(this.base, block)
+        : composeInstructions(
+            composeInstructions(this.base, block),
+            `## Memory written from the plan chat\n${planWrites.join("\n\n")}`,
+          );
+    const fromPlan = planWrites.length > 0;
     const forced = chosen === "day_rollover" || chosen === "compaction";
     // Observe every rebuild so a later first_turn does not mistake the pending
-    // topic write for an unconfigured conversation. Reconfigure only when the
-    // prompt is already being rewritten anyway.
+    // topic write for an unconfigured conversation. A plan-chat write is applied
+    // on the next turn because it has no main-chat chip or tail delta carrying it.
     if (
-      chosen !== "long_term_write" &&
-      (forced || !this.configured || next !== this.lastInstructions)
+      (fromPlan || chosen !== "long_term_write") &&
+      (fromPlan || forced || !this.configured || next !== this.lastInstructions)
     ) {
       await this.apply(next);
       this.configured = true;
