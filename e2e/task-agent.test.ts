@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
+import { createJobTools } from "../src/server/job-tools.js";
 import { SnapshotCache } from "../src/server/memory/snapshot.js";
 import { MemoryStore } from "../src/server/memory/store.js";
 import { createMemoryTools } from "../src/server/memory/tools.js";
 import { RunMarkerStore } from "../src/server/run-marker.js";
+import { JOB_NOTICE_ENTRY_KIND } from "../src/server/session.js";
 import type { SseFrame } from "../src/server/sse.js";
 import { StreamHub } from "../src/server/stream-hub.js";
 import {
@@ -32,6 +34,7 @@ import {
 } from "../src/server/task-agent.js";
 import { createProposeTaskTool, createTaskTools } from "../src/server/task-tools.js";
 import { TaskStore } from "../src/server/tasks.js";
+import { mergeQueuedNotices } from "../src/shared/queue.js";
 import { runErrorFromUnanswered, runErrorMatchesDismissal } from "../src/shared/run-error.js";
 import { DEFAULT_NEW_TASK_TITLE } from "../src/shared/tasks.js";
 import type { ChatMessage, RunState, StreamRunState, TaskLedger } from "../src/shared/types.js";
@@ -60,9 +63,11 @@ after(async () => {
 test("task agents may only call bash, read, edit_task, propose_task, the question tools and read-only memory", () => {
   const coding = (createCodingTools().tools ?? []).map((tool) => ({ name: tool.name }));
   const memory = createMemoryTools({} as never).map((tool) => ({ name: tool.name }));
+  const jobTools = createJobTools({} as never).map((tool) => ({ name: tool.name }));
   const extras = [
     ...coding,
     ...memory,
+    ...jobTools,
     { name: "edit_task" },
     { name: "propose_task" },
     { name: "ask_questions" },
@@ -82,12 +87,15 @@ test("task agents may only call bash, read, edit_task, propose_task, the questio
       .sort(),
     [...TASK_AGENT_TOOL_NAMES].sort(),
   );
-  assert.equal(TASK_AGENT_TOOL_NAMES.length, 10);
+  assert.equal(TASK_AGENT_TOOL_NAMES.length, 13);
   assert.deepEqual([...TASK_AGENT_TOOL_NAMES].sort(), [
     "append_questions",
     "ask_questions",
     "bash",
     "edit_task",
+    "job_cancel",
+    "job_list",
+    "job_output",
     "memory_find",
     "memory_grep",
     "memory_read",
@@ -131,6 +139,45 @@ test("task agents may only call bash, read, edit_task, propose_task, the questio
   assert.equal(isTaskAgentToolName("task_edit"), false);
   assert.equal(isTaskAgentToolName("memory_read"), true);
   assert.equal(isTaskAgentToolName("memory_status"), true);
+});
+
+test("a plan job notice never opens a session, and reaches a live one", async () => {
+  let opened = 0;
+  const sessions = new Map<string, FakeSession>();
+  const manager = new TaskAgentManager({
+    dataDir: directory,
+    cwd: directory,
+    models: {} as never,
+    model: undefined,
+    store,
+    publish: () => undefined,
+    baseInstructions: "base",
+    openSession: async (taskId) => {
+      opened += 1;
+      const session = new FakeSession(taskId);
+      sessions.set(taskId, session);
+      return session;
+    },
+  });
+  const task = (await store.create("Job notice routing", null)).tasks.find(
+    (item) => item.title === "Job notice routing",
+  );
+  assert.ok(task);
+
+  assert.equal(await manager.submitJobNotice(task.id, "closed pane"), false);
+  assert.equal(opened, 0, "a closed pane is not opened to deliver a notice");
+
+  await manager.ensure(task.id);
+  const session = sessions.get(task.id);
+  assert.ok(session);
+  assert.equal(opened, 1);
+  assert.equal(await manager.submitJobNotice(task.id, "live pane"), true);
+  assert.deepEqual(session.jobNotices, ["live pane"]);
+
+  await manager.remove(task.id);
+  assert.equal(await manager.submitJobNotice(task.id, "closed again"), false);
+  await store.remove(task.id);
+  await manager.close();
 });
 
 test("the read-only plan memory tools read the same store the chat agent writes", async () => {
@@ -727,6 +774,7 @@ class FakeSession implements TaskAgentSession {
   submitted: string[] = [];
   attachments: string[][] = [];
   instructions: string[] = [];
+  jobNotices: string[] = [];
   readonly hub = new StreamHub();
   run: RunState = "idle";
 
@@ -762,6 +810,10 @@ class FakeSession implements TaskAgentSession {
     this.attachments.push(attachments);
     this.run = "running";
     return this.snapshot();
+  }
+
+  async submitJobNotice(text: string) {
+    this.jobNotices.push(text);
   }
 
   async stop() {
@@ -875,6 +927,35 @@ test("cancelling a queued follow-up does not end the live plan run", async () =>
 
   // The earlier submission still owns the live run, so its status must stay running.
   assert.equal(session.running(), true);
+});
+
+test("a busy plan keeps job notices as chips and merges consecutive ones", async () => {
+  const conversation = new FakeCancelConversation();
+  const session = new DurableTaskAgentSession(
+    "taskjobnotices",
+    { abortSubmission: async () => "aborted" } as never,
+    conversation as never,
+  );
+
+  await session.send("start the run");
+  await session.submitJobNotice("job one finished");
+  await session.submitJobNotice("job two finished");
+  const queue = (await session.snapshot()).queue ?? [];
+  assert.equal(queue.length, 2);
+  for (const item of queue) {
+    assert.deepEqual(item.notice, {
+      kind: JOB_NOTICE_ENTRY_KIND,
+      label: "Background job",
+      glyph: "job",
+    });
+  }
+  const groups = mergeQueuedNotices(queue);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0]?.count, 2);
+
+  conversation.settle(2, { type: "input", status: "done", entry: 2 });
+  conversation.settle(3, { type: "input", status: "done", entry: 3 });
+  await new Promise((resolve) => setTimeout(resolve, 20));
 });
 
 test("moving a queued follow-up to a steer does not resend one already placed", async () => {

@@ -9,6 +9,7 @@ import {
   AssistantEntry,
   type Conversation,
   type ConversationId,
+  ConversationIdle,
   createRegistry,
   defineExtension,
   type EntryRecord,
@@ -21,15 +22,29 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import type { DelegateRunStatus, DelegateRunView, DelegateTokenUsage } from "../shared/types.js";
+import { createTimedBashTool, TIMED_BASH_DESCRIPTION } from "./bash-tool.js";
 import { withConversationIdentity } from "./billion-context.js";
+import { createJobTools } from "./job-tools.js";
+import type { JobManager } from "./jobs.js";
 import { buildPiSystemPrompt } from "./pi.js";
 import { retrySettings } from "./retry.js";
+import { JOB_NOTICE_ENTRY_KIND } from "./session.js";
 
-const DELEGATE_TOOLS = ["read", "bash", "edit", "write"] as const;
+/** Every sub-agent gets the coding tools plus the job tools a handed-off command needs. */
+export const DELEGATE_TOOLS = [
+  "read",
+  "bash",
+  "edit",
+  "write",
+  "job_list",
+  "job_output",
+  "job_cancel",
+] as const;
 
 const DELEGATE_PROMPT = `You are a pi-ui sub-agent doing local work the parent chat handed you: config, files, and host commands.
 You do not see the parent conversation. Everything you need is in the user message.
-Use read, bash, edit, and write. Do not ask the operator a question.
+Use read, bash, edit, write, job_list, job_output, and job_cancel. Do not ask the operator a question.
+${TIMED_BASH_DESCRIPTION}
 When you are done, write a short report as your final message: what you changed, what you ran, and anything still blocked.`;
 
 /** Told to the chat when a turn was in flight and the process restarted. */
@@ -55,6 +70,11 @@ export interface DelegateTurnResult {
 export interface DelegateSession {
   submit(prompt: string): Promise<DelegateTurnResult>;
   /**
+   * Deliver a finished background job's notice into an open turn without starting
+   * another one. A closed or idle conversation refuses it.
+   */
+  submitNotice?(text: string): Promise<void>;
+  /**
    * Continue a turn the previous process left in flight. When durable has
    * nothing left to run, start `prompt` as a new turn.
    */
@@ -68,6 +88,10 @@ export interface DelegateManagerOptions {
   readonly cwd: string;
   readonly models: ModelRuntime;
   readonly model: Model<Api> | undefined;
+  /** Background jobs shared with the chat, so a handed-off delegate command reports back. */
+  readonly jobs?: JobManager;
+  /** Override the bash foreground window. Defaults to PI_BASH_HANDOFF_MS, then 120 s. */
+  readonly handoffMs?: number;
   /** Tests inject this. Production opens a sqlite harness per sub-agent. */
   readonly openSession?: (run: { id: string; cwd: string }) => Promise<DelegateSession>;
 }
@@ -398,6 +422,26 @@ export class DelegateManager {
     return this.viewOf(run);
   }
 
+  /**
+   * Deliver a finished job's notice to a live sub-agent turn. It never opens or
+   * resumes a session and never starts a turn; a closed run falls back to the
+   * parent chat's activity row.
+   */
+  async submitJobNotice(id: string, text: string): Promise<boolean> {
+    const run = this.runs.get(id.trim());
+    if (run === undefined || run.closed === true || !run.turnOpen) return false;
+    const session = this.sessions.get(run.id);
+    if (session === undefined || session.submitNotice === undefined) return false;
+    try {
+      await session.submitNotice(text);
+      return true;
+    } catch (error) {
+      if (error instanceof ConversationIdle) return false;
+      console.error(`[delegate] ${run.id} job notice failed`, error);
+      return false;
+    }
+  }
+
   /** Stop the current turn. The session stays, so a later continue still works. */
   cancel(id: string): DelegateRunView {
     const run = this.run(id);
@@ -692,7 +736,27 @@ export class DelegateManager {
     const storage = await openNodeSqliteStorage(databasePath);
     const registry = createRegistry<ToolRegistration>();
     const enabled = new Set<string>(DELEGATE_TOOLS);
-    const coding = (createCodingTools().tools ?? []).filter((tool) => enabled.has(tool.name));
+    const coding: ToolRegistration[] = (createCodingTools().tools ?? []).filter(
+      (tool) => enabled.has(tool.name) && tool.name !== "bash",
+    );
+    if (this.options.jobs !== undefined) {
+      coding.push(
+        createTimedBashTool(this.options.jobs, {
+          owner: { kind: "delegate", runId: run.id },
+          ...(this.options.handoffMs === undefined ? {} : { handoffMs: this.options.handoffMs }),
+        }),
+      );
+      const jobTools = createJobTools(this.options.jobs).filter((tool) => enabled.has(tool.name));
+      if (jobTools.length > 0) {
+        registry.install(defineExtension({ name: "delegate-job-tools", tools: jobTools }));
+      }
+    } else {
+      coding.push(
+        ...(createCodingTools().tools ?? []).filter(
+          (tool) => tool.name === "bash" && enabled.has(tool.name),
+        ),
+      );
+    }
     registry.install(defineExtension({ name: "delegate-coding-tools", tools: coding }));
     const harness = await HarnessImpl.open(
       storage,
@@ -980,6 +1044,29 @@ class DurableDelegateSession implements DelegateSession {
       ...(usage === undefined ? {} : { usage }),
       error: `The turn ended without an answer (${reason ?? outcome.status}${detail}).`,
     };
+  }
+
+  /**
+   * A job notice rides the current run as a steer. `whenIdle: "reject"` makes sure
+   * a completion that races the end of a turn cannot start another one.
+   */
+  async submitNotice(text: string): Promise<void> {
+    const createdAt = new Date().toISOString();
+    await withConversationIdentity(String(this.conversation.id), async () => {
+      await this.conversation.submit(
+        {
+          type: "input",
+          content: text,
+          whenBusy: "steer",
+          whenIdle: "reject",
+          entry: {
+            kind: JOB_NOTICE_ENTRY_KIND,
+            data: { text, createdAt },
+          },
+        },
+        BACKGROUND_CONTEXT,
+      );
+    });
   }
 
   abort(): void {
