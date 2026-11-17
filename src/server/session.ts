@@ -154,9 +154,10 @@ const MemoryWriteEntry = defineEntry<{
 export const MEMORY_WRITE_ENTRY_KIND = MemoryWriteEntry.kind;
 
 /**
- * The compact tail notice for long-term topic writes. It carries the model
- * message so the agent reads it next turn, without rewriting the system prompt.
+ * Legacy compact tail notice for long-term topic writes. It carried a model
+ * message in older transcripts; new writes only show the per-write memory chip.
  */
+// legacy: read-only, existing transcripts only
 const MemoryDeltaEntry = defineEntry<{
   text: string;
   topics: Array<{ path: string; title: string; chars: number; updated: string }>;
@@ -1098,6 +1099,7 @@ export class TranscriptBuilder {
       });
       return;
     }
+    // legacy: read-only, existing transcripts only
     if (kind === MemoryDeltaEntry.kind) {
       if (!isRecord(entry.data) || typeof entry.data.text !== "string") return;
       const topics = Array.isArray(entry.data.topics)

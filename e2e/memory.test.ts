@@ -21,7 +21,6 @@ import {
   todayIso,
 } from "../src/server/memory/store.js";
 import { createMemoryTools, type MemoryWriteRecord } from "../src/server/memory/tools.js";
-import { memoryDeltaPrompt, parseNotice } from "../src/shared/notices.js";
 
 async function freshStore(t: { after: (fn: () => Promise<void>) => void }): Promise<MemoryStore> {
   const root = await mkdtemp(join(tmpdir(), "pi-memory-"));
@@ -564,7 +563,11 @@ test("a snapshot controller keeps instructions stable on a long-term write", asy
   const third = await controller.refresh();
   assert.notEqual(third, first);
   assert.match(third, /long_term_write/);
-  assert.equal(applied.length, 1, "a long-term write is announced, not applied");
+  assert.equal(
+    applied.length,
+    1,
+    "a long-term write rebuilds the cache but not the live instructions",
+  );
   assert.ok(third.startsWith("BASE INSTRUCTIONS\n\n"));
 
   // The cache still saw the write, so the next forced rebuild carries it.
@@ -592,32 +595,6 @@ test("a day rollover still reconfigures with the fresh block", async (t) => {
   assert.notEqual(next, first);
   assert.match(next, /day_rollover/);
   assert.equal(applied.length, 2);
-});
-
-test("the memory delta names every topic, its size and its date once", () => {
-  const prompt = memoryDeltaPrompt([
-    {
-      path: "topics/projects/widget-cache.md",
-      title: "Widget cache",
-      chars: 2954,
-      updated: "2026-11-05",
-    },
-    {
-      path: "topics/forge/pi-ui.md",
-      title: "pi-ui handoff",
-      chars: 42,
-      updated: "2026-11-05",
-    },
-  ]);
-  assert.equal((prompt.match(/Memory updated:/g) ?? []).length, 1);
-  assert.match(prompt, /topics\/projects\/widget-cache\.md/);
-  assert.match(prompt, /Widget cache \(2954 chars, updated 2026-11-05\)/);
-  assert.match(prompt, /topics\/forge\/pi-ui\.md/);
-  assert.match(prompt, /pi-ui handoff \(42 chars, updated 2026-11-05\)/);
-  assert.match(prompt, /memory_read/);
-  const notice = parseNotice(prompt);
-  assert.equal(notice?.kind, "memory-delta");
-  assert.equal(notice?.kind === "memory-delta" ? notice.topics.length : 0, 2);
 });
 
 test("a successful memory_write reports its path and written text", async (t) => {

@@ -379,6 +379,7 @@ function MemoryDetails({
   );
 }
 
+// legacy: read-only, existing transcripts only
 function MemoryDeltaDetailsView({ notice }: { notice: MemoryDeltaDetails }) {
   return (
     <>

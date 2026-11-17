@@ -61,6 +61,7 @@ export interface MemoryNoticeDetails {
 }
 
 /** One long-term topic changed by a memory_write. */
+// legacy: read-only, existing transcripts only
 export interface MemoryDeltaTopic {
   /** Memory-relative path, such as topics/projects/widget.md. */
   path: string;
@@ -74,6 +75,7 @@ export interface MemoryDeltaTopic {
 }
 
 /** The compact tail notice for long-term writes made during a turn. */
+// legacy: read-only, existing transcripts only
 export interface MemoryDeltaDetails {
   kind: "memory-delta";
   topics: MemoryDeltaTopic[];
@@ -614,22 +616,10 @@ export function memoryNoticeSummary(path: string): string {
 }
 
 /** The one-line summary a memory-delta chip shows. */
+// legacy: read-only, existing transcripts only
 export function memoryDeltaSummary(topics: readonly MemoryDeltaTopic[]): string {
   if (topics.length === 1) return `memory updated · ${topics[0]?.path ?? ""}`;
   return `memory updated · ${topics.length} topics`;
-}
-
-/**
- * The compact tail notice for a topic write. It names every changed topic, its
- * new size and date, and points at memory_read; one line keeps the tail cheap.
- */
-export function memoryDeltaPrompt(topics: readonly MemoryDeltaTopic[]): string {
-  const entries = topics.map(
-    (topic) =>
-      `\`${topic.path}\` — ${topic.title} (${topic.chars} chars, updated ${topic.updated})`,
-  );
-  const pronoun = topics.length === 1 ? "it" : "them";
-  return `Memory updated: ${entries.join("; ")} — read ${pronoun} with memory_read before relying on ${pronoun}.`;
 }
 
 export function operatorNoticeSummary(title: string): string {
@@ -650,35 +640,6 @@ export function taskDecisionSummary(
   return record.decision === "approved"
     ? `proposal ${record.proposalId} approved as ${record.taskId} · ${record.taskTitle}`
     : `proposal ${record.proposalId} declined · ${record.taskTitle}`;
-}
-
-function parseMemoryDelta(body: string): MemoryDeltaDetails | null {
-  const text = body.trim();
-  const head =
-    /^Memory updated: ([\s\S]+?) — read (?:it|them) with memory_read before relying on (?:it|them)\.$/.exec(
-      text,
-    );
-  if (head === null) return null;
-  const topics: MemoryDeltaTopic[] = [];
-  for (const match of (head[1] ?? "").matchAll(
-    /`([^`]+)` — (.+?) \((\d+) chars, updated (\d{4}-\d{2}-\d{2})\)/g,
-  )) {
-    const path = match[1];
-    const title = match[2];
-    const chars = Number(match[3]);
-    const updated = match[4];
-    if (
-      path === undefined ||
-      title === undefined ||
-      !Number.isSafeInteger(chars) ||
-      updated === undefined
-    ) {
-      continue;
-    }
-    topics.push({ path, title, chars, updated });
-  }
-  if (topics.length === 0) return null;
-  return { kind: "memory-delta", topics, summary: memoryDeltaSummary(topics) };
 }
 
 function parseTaskDecision(body: string): TaskDecisionNoticeDetails | null {
@@ -728,7 +689,6 @@ export function parseNotice(message: string): ChatNotice | null {
   if (message.startsWith("[acp_delegate ")) return parseDelegate(message.split("\n"));
   if (message.startsWith(MCP_EVENTS_HEAD)) return parseMcp(message, false);
   if (message.startsWith(MCP_STATUS_HEAD)) return parseMcp(message, true);
-  if (message.startsWith("Memory updated: ")) return parseMemoryDelta(message);
   if (message.startsWith("Task proposal ")) return parseTaskDecision(message);
   if (
     message.startsWith("You have been idle for ") ||

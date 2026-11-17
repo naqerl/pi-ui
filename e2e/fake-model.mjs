@@ -73,6 +73,8 @@ function updateNotice(body) {
 }
 
 function responseFor(prompt, body = {}) {
+  // Only a memory-delta prompt starts this way; newer builds must never submit one.
+  if (prompt.startsWith("Memory updated:")) return "memory delta nudge";
   if (prompt.includes("REPEAT_FIRST_INSTRUCTION")) {
     const messages = Array.isArray(body.messages) ? body.messages : [];
     const users = messages
