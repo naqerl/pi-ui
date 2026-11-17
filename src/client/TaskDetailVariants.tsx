@@ -29,6 +29,7 @@ import type { ProjectSuggestion } from "./ProjectSuggestions";
 import { SECTION_BAR_ICON_BUTTON, SECTION_BAR_LABEL, SectionBar } from "./SectionBar";
 import { TaskAgentChat } from "./TaskAgentChat";
 import { TaskPlanningBadge } from "./TaskPlanningBadge";
+import { usePager } from "./use-pager";
 import type { TaskMedia } from "./use-task-media";
 
 function shortId(id: string): string {
@@ -1044,13 +1045,16 @@ function linkedTab(taskId: string): "plan" | "chat" {
 }
 
 function MobileDetail({ model }: { model: TaskDetailModel }) {
-  const [tab, setTab] = useState<"plan" | "chat">(() => linkedTab(model.task.id));
+  // The tabs share the pager's edge-aware scroller hand-off: a wide body block
+  // keeps the gesture while it can still scroll, then the tab changes.
+  const pager = usePager(2, linkedTab(model.task.id) === "chat" ? 1 : 0, { keyboard: false });
+  const tab = pager.page === 1 ? "chat" : "plan";
 
   useEffect(() => {
-    const sync = () => setTab(linkedTab(model.task.id));
+    const sync = () => pager.setPage(linkedTab(model.task.id) === "chat" ? 1 : 0);
     window.addEventListener("hashchange", sync);
     return () => window.removeEventListener("hashchange", sync);
-  }, [model.task.id]);
+  }, [model.task.id, pager.setPage]);
 
   return (
     <article
@@ -1059,25 +1063,51 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
       aria-label={model.title}
       className="flex min-h-0 flex-1 flex-col overflow-hidden"
     >
-      <TitleCard model={model} tabs={<TabBar tab={tab} onTab={setTab} />} flush />
-      <div
-        className={cn(
-          "flex min-h-0 flex-1 flex-col",
-          tab === "plan" ? "overflow-y-auto" : "overflow-hidden",
-        )}
-      >
-        <div className={cn(STACK_8, "px-3 pt-3", tab !== "plan" && "hidden")}>
-          <PlanSections model={model} />
-        </div>
-        <div className={cn("flex min-h-0 flex-1 flex-col px-3", tab !== "chat" && "hidden")}>
-          <TaskAgentChat
-            key={model.task.id}
-            task={model.task}
-            projects={model.projects}
-            variant="pane"
-            composerTarget="dock"
-            active={tab === "chat"}
-          />
+      <TitleCard
+        model={model}
+        tabs={<TabBar tab={tab} onTab={(next) => pager.setPage(next === "chat" ? 1 : 0)} />}
+        flush
+      />
+      <div className="min-h-0 flex-1 overflow-hidden" data-overflow-clip="">
+        <div
+          {...pager.pagerProps}
+          data-testid="task-tab-track"
+          data-pager-lock=""
+          className={cn(
+            "flex h-full w-full",
+            pager.dragging
+              ? "transition-none"
+              : "transition-transform duration-300 ease-out motion-reduce:transition-none",
+          )}
+          style={{
+            transform: `translate3d(calc(${-pager.page * 100}% + ${pager.dragX}px), 0, 0)`,
+          }}
+        >
+          <section
+            aria-label="Plan"
+            aria-hidden={tab !== "plan" && !pager.dragging}
+            inert={tab !== "plan" && !pager.dragging ? true : undefined}
+            className="flex h-full min-w-0 shrink-0 grow-0 basis-full flex-col overflow-y-auto"
+          >
+            <div className={cn(STACK_8, "px-3 pt-3")}>
+              <PlanSections model={model} />
+            </div>
+          </section>
+          <section
+            aria-label="Chat"
+            aria-hidden={tab !== "chat" && !pager.dragging}
+            inert={tab !== "chat" && !pager.dragging ? true : undefined}
+            className="flex h-full min-w-0 shrink-0 grow-0 basis-full flex-col overflow-hidden px-3"
+          >
+            <TaskAgentChat
+              key={model.task.id}
+              task={model.task}
+              projects={model.projects}
+              variant="pane"
+              composerTarget="dock"
+              active={tab === "chat"}
+            />
+          </section>
         </div>
       </div>
     </article>

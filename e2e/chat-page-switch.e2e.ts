@@ -1,5 +1,6 @@
 import { type Browser, beforeEach, describe as describeGroup, test } from "@e2e-dev/web";
 import { expect, type Screen } from "e2e";
+import { enableTouch, swipe } from "./touch";
 
 const at = (second: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, second)).toISOString();
 
@@ -72,14 +73,7 @@ async function openThread(
       value: async () => undefined,
     });
   });
-  if (device.hasTouch) {
-    // The web engine has no context-level hasTouch option; expose the capability the
-    // phone case asks for so touch-only UI code sees a touch device.
-    await browser.addInitScript(() => {
-      Object.defineProperty(navigator, "maxTouchPoints", { configurable: true, value: 5 });
-      Object.defineProperty(window, "ontouchstart", { configurable: true, value: null });
-    });
-  }
+  if (device.hasTouch) await enableTouch(browser);
   await browser.route("**/api/state**", async (route) => {
     await route.fulfill({ json: JSON.parse(JSON.stringify(fixture)) });
   });
@@ -228,4 +222,37 @@ describeGroup("page switch scroll restore against one shared app", { serial: tru
       ).toBeLessThanOrEqual(1);
     });
   }
+
+  test("phone: a touch swipe pages chat to tasks and back despite the pointer echo", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    const phone = devices.find((device) => device.hasTouch);
+    if (phone === undefined) throw new Error("missing phone device");
+    await openThread(app, browser, screen, phone);
+    await expect(screen.getByTestId("pager")).toHaveAttribute("data-page", "chat");
+
+    const forward = await swipe(browser, {
+      target: '[data-testid="pager"]',
+      dx: -170,
+      pointerEcho: true,
+    });
+    expect(forward).not.toBeNull();
+    expect(forward?.pageBefore).toBe("chat");
+    expect(forward?.page).toBe("tasks");
+    expect(forward?.prevented).toBe(true);
+    await expect(screen.getByTestId("pager")).toHaveAttribute("data-page", "tasks");
+
+    const back = await swipe(browser, {
+      target: '[data-testid="tasks-page"]',
+      dx: 170,
+      pointerEcho: true,
+    });
+    expect(back).not.toBeNull();
+    expect(back?.pageBefore).toBe("tasks");
+    expect(back?.page).toBe("chat");
+    expect(back?.prevented).toBe(true);
+    await expect(screen.getByTestId("pager")).toHaveAttribute("data-page", "chat");
+  });
 });

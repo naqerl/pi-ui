@@ -1,5 +1,6 @@
 import { type Browser, describe, test } from "@e2e-dev/web";
 import { expect } from "e2e";
+import { enableTouch, swipe } from "./touch";
 
 const at = (second: number) => new Date(Date.UTC(2026, 0, 1, 12, 0, second)).toISOString();
 
@@ -19,6 +20,19 @@ const longRationale = [
     (_, index) => `Paragraph ${index + 1} keeps the rationale long enough to overflow.`,
   ),
 ].join("\n\n");
+
+/** A plan body whose markdown table is wider than the phone's plan card. */
+const wideTableBody = [
+  "# Ship plan",
+  "",
+  "| Account | Region | Machine | Public address | Private address | State | Spend | Created |",
+  "| --- | --- | --- | --- | --- | --- | --- | --- |",
+  ...Array.from(
+    { length: 3 },
+    (_, row) =>
+      `| account-${row}-operations | region-eu-central-1-zone-a | machine-type-large-${row} | 203.0.113.${row} | 10.0.0.${row} | running-state-${row} | 1234.56-eur-monthly | 2026-01-0${row + 1}T00:00:00Z |`,
+  ),
+].join("\n");
 
 const snapshot = {
   conversationId: "task-detail-e2e",
@@ -127,7 +141,10 @@ async function horizontalOverflow(browser: Browser) {
         const style = getComputedStyle(node);
         const clipped =
           node.closest(".sr-only") !== null ||
-          node.closest('[data-testid="run-error-open"]') !== null;
+          node.closest('[data-testid="run-error-open"]') !== null ||
+          node.closest("[data-overflow-clip]") !== null ||
+          style.overflowX === "hidden" ||
+          style.overflowX === "clip";
         return style.display !== "none" && style.visibility !== "hidden" && !clipped;
       })
       .filter((node) => node.scrollWidth > node.clientWidth)
@@ -513,5 +530,103 @@ describe("task detail against a mocked state route", { serial: true }, () => {
       await browser.evaluate(() => (window as unknown as { copied?: string }).copied ?? null),
     ).toBe(code);
     await expect(screen.getByTestId("task-body-input")).toHaveCount(0);
+  });
+
+  test("a phone plan table keeps its swipe until the edge, then the tab changes", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    const payload = JSON.parse(JSON.stringify(snapshot));
+    payload.tasks.tasks[0].body = wideTableBody;
+    const table = '[data-testid="task-body"] table';
+    const tableBody = '[data-testid="task-body"] .overflow-x-auto';
+
+    await enableTouch(browser);
+    await openSnapshot(app, browser, payload, 390, 844);
+    await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
+    await expect(screen.getByTestId("task-tab-track")).toBeVisible();
+    await expect(screen.getByTestId("task-tab-plan")).toHaveAttribute("aria-selected", "true");
+    await expect
+      .poll(() =>
+        browser.evaluate((selector) => {
+          const node = document.querySelector<HTMLElement>(selector);
+          return node !== null && node.scrollWidth > node.clientWidth + 2;
+        }, tableBody),
+      )
+      .toBe(true);
+
+    const middle = await browser.evaluate((selector) => {
+      const node = document.querySelector<HTMLElement>(selector);
+      if (node === null) return null;
+      node.closest<HTMLElement>('[data-testid="task-body"]')?.scrollIntoView({ block: "center" });
+      const max = node.scrollWidth - node.clientWidth;
+      node.scrollLeft = Math.floor(max / 2);
+      return { scrollLeft: node.scrollLeft, max };
+    }, tableBody);
+    expect(middle?.scrollLeft ?? 0).toBeGreaterThan(0);
+    expect(middle?.scrollLeft ?? 0).toBeLessThan(middle?.max ?? 0);
+
+    const scrolling = await swipe(browser, {
+      target: table,
+      horizontal: tableBody,
+      visible: true,
+      dx: -170,
+      pointerEcho: true,
+    });
+    expect(scrolling?.page).toBe("tasks");
+    expect(scrolling?.prevented).toBe(false);
+    expect(scrolling?.horizontal ?? 0).toBeGreaterThan(middle?.scrollLeft ?? 0);
+    await expect(screen.getByTestId("task-tab-plan")).toHaveAttribute("aria-selected", "true");
+    await expect(screen.getByTestId("task-tab-chat")).toHaveAttribute("aria-selected", "false");
+
+    const edge = await browser.evaluate((selector) => {
+      const node = document.querySelector<HTMLElement>(selector);
+      if (node === null) return null;
+      node.closest<HTMLElement>('[data-testid="task-body"]')?.scrollIntoView({ block: "center" });
+      node.scrollLeft = node.scrollWidth;
+      return { scrollLeft: node.scrollLeft, max: node.scrollWidth - node.clientWidth };
+    }, tableBody);
+    expect(edge?.scrollLeft ?? 0).toBe(edge?.max ?? -1);
+
+    const atEdge = await swipe(browser, {
+      target: table,
+      horizontal: tableBody,
+      visible: true,
+      dx: -170,
+      pointerEcho: true,
+    });
+    expect(atEdge?.page).toBe("tasks");
+    expect(atEdge?.prevented).toBe(true);
+    expect(atEdge?.horizontal).toBe(edge?.scrollLeft);
+    await expect(screen.getByTestId("task-tab-chat")).toHaveAttribute("aria-selected", "true");
+    await expect(screen.getByTestId("task-tab-plan")).toHaveAttribute("aria-selected", "false");
+
+    await openSnapshot(app, browser, payload, 1280, 800);
+    await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
+    await expect(screen.getByTestId("task-detail")).toHaveAttribute("data-layout", "desktop");
+    await expect(screen.getByTestId("task-tab-track")).toHaveCount(0);
+    await expect(screen.getByTestId("task-tab-plan")).toHaveCount(0);
+    await expect(screen.getByTestId("task-tab-chat")).toHaveCount(0);
+    const desktopMiddle = await browser.evaluate((selector) => {
+      const node = document.querySelector<HTMLElement>(selector);
+      if (node === null) return null;
+      node.closest<HTMLElement>('[data-testid="task-body"]')?.scrollIntoView({ block: "center" });
+      const max = node.scrollWidth - node.clientWidth;
+      node.scrollLeft = Math.floor(max / 2);
+      return { scrollLeft: node.scrollLeft, max };
+    }, tableBody);
+    expect(desktopMiddle?.max ?? 0).toBeGreaterThan(2);
+    const desktop = await swipe(browser, {
+      target: table,
+      horizontal: tableBody,
+      visible: true,
+      dx: -170,
+      pointerEcho: true,
+    });
+    expect(desktop?.page).toBe("tasks");
+    expect(desktop?.prevented).toBe(false);
+    expect(desktop?.horizontal ?? 0).toBeGreaterThan(desktopMiddle?.scrollLeft ?? 0);
+    await expect(screen.getByTestId("task-tab-track")).toHaveCount(0);
   });
 });

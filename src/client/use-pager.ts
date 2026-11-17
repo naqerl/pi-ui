@@ -74,8 +74,17 @@ function lockedByChild(node: HTMLElement): boolean {
   return node.querySelector("[data-pager-lock]") !== null;
 }
 
+interface PagerOptions {
+  /**
+   * Whether Alt+Arrow and Alt+digit page from the window. A nested pager turns
+   * this off so the app pager keeps the only keyboard shortcut.
+   */
+  keyboard?: boolean;
+}
+
 /** Stats, chat, and tasks share one horizontal pager. Touch swipes; a trackpad scrolls sideways. */
-export function usePager(count: number, initial = 0) {
+export function usePager(count: number, initial = 0, options: PagerOptions = {}) {
+  const keyboard = options.keyboard ?? true;
   const start = Math.max(0, Math.min(count - 1, initial));
   const [page, setPageState] = useState(start);
   const [dragX, setDragX] = useState(0);
@@ -101,6 +110,7 @@ export function usePager(count: number, initial = 0) {
   );
 
   useEffect(() => {
+    if (!keyboard) return;
     const onKey = (event: KeyboardEvent) => {
       // IME candidate keys are text, not shortcuts.
       if (event.isComposing) return;
@@ -123,7 +133,7 @@ export function usePager(count: number, initial = 0) {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [count, setPage]);
+  }, [count, setPage, keyboard]);
 
   useEffect(() => {
     const node = pagerRef.current;
@@ -255,6 +265,9 @@ export function usePager(count: number, initial = 0) {
     if (node === null) return;
     let lockedUntil = 0;
     const onWheel = (event: WheelEvent) => {
+      // A nested gesture surface (such as the task-detail tabs) owns the
+      // sideways movement inside its own bounds.
+      if (lockedByChild(node)) return;
       if (Math.abs(event.deltaX) < 24) return;
       if (Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
       // A horizontal trackpad gesture over a wide block scrolls the block
