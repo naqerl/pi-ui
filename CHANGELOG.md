@@ -1,3 +1,9 @@
+## 1.9.1
+
+### Fixed
+
+- The composer dock fades the plan switch, status word and action slot when the chat, create-task and plan-chat surfaces change. The animation was announced in 1.8.0 but its code never reached `main`; it is here now. Only those nodes animate, the dock and composer heights stay fixed, and reduced motion swaps immediately.
+
 ## 1.9.0
 
 ### Added

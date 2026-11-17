@@ -24,6 +24,138 @@ const DOCK_HEIGHT = 90;
 const COMPOSER_HEIGHT = 48;
 const TOP_LINE_HEIGHT = 41;
 
+/** The opacity leg of a dock swap must be the full 160 ms, not a colour duration. */
+function expectDockTransition(
+  node: { transitionProperty: string | null; transitionDuration: string | null } | null,
+) {
+  expect(node).not.toBeNull();
+  const properties = (node?.transitionProperty ?? "").split(",").map((part) => part.trim());
+  const durations = (node?.transitionDuration ?? "").split(",").map((part) => part.trim());
+  const opacity = properties.indexOf("opacity");
+  expect(opacity).toBeGreaterThanOrEqual(0);
+  expect(durations[opacity]).toBe("0.16s");
+}
+
+interface DockSwapVisual {
+  open: string | null;
+  inert: boolean;
+  ariaHidden: string | null;
+  pointerEvents: string;
+  transitionProperty: string;
+  transitionDuration: string;
+  animationName: string;
+  className: string;
+  text: string;
+}
+
+interface DockTaskSample {
+  dockHeight: number | null;
+  composerHeight: number | null;
+  lineHeight: number | null;
+  liveRegions: number;
+  status: DockSwapVisual | null;
+  actions: Record<string, DockSwapVisual | null>;
+  planSwitch: DockSwapVisual | null;
+}
+
+type DockTaskTrigger = { kind: "open"; id: string } | { kind: "close" } | { kind: "read" };
+
+/** Clicks one dock trigger and reads the swap at the first frame where both variants overlap. */
+function sampleTaskDockTransition(
+  browser: Browser,
+  trigger: DockTaskTrigger,
+): Promise<DockTaskSample> {
+  return browser.evaluate((trigger) => {
+    const { kind } = trigger;
+    const id = trigger.kind === "open" ? trigger.id : "";
+    const visual = (node: HTMLElement | null) => {
+      if (node === null) return null;
+      const style = getComputedStyle(node);
+      return {
+        open: node.getAttribute("data-open"),
+        inert: node.hasAttribute("inert"),
+        ariaHidden: node.getAttribute("aria-hidden"),
+        pointerEvents: style.pointerEvents,
+        transitionProperty: style.transitionProperty,
+        transitionDuration: style.transitionDuration,
+        animationName: style.animationName,
+        className: node.className,
+        text: (node.textContent ?? "").trim(),
+      };
+    };
+    const lane = (testId: string) => {
+      const button = document.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+      return visual(button?.closest<HTMLElement>(".dock-swap") ?? null);
+    };
+    const laneByLabel = (label: string) => {
+      const button = document.querySelector<HTMLElement>(`button[aria-label="${label}"]`);
+      return visual(button?.closest<HTMLElement>(".dock-swap") ?? null);
+    };
+    // The task send loses its test id the moment the dock leaves the task surface,
+    // while its leaving wrapper is still mounted; find that exit by its label.
+    const taskSend = () => lane("task-agent-send") ?? laneByLabel("Send");
+    const statusNode = () => {
+      const live = document.querySelector<HTMLElement>(
+        '[data-testid="working-status"] [aria-live="polite"]',
+      );
+      const child = live?.firstElementChild;
+      return child instanceof HTMLElement ? child : null;
+    };
+    const read = () => {
+      const dock = document.querySelector<HTMLElement>('[data-testid="composer-dock"]');
+      const body = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
+      const line = document.querySelector<HTMLElement>(".ink-line");
+      return {
+        dockHeight: dock?.getBoundingClientRect().height ?? null,
+        composerHeight: body?.getBoundingClientRect().height ?? null,
+        lineHeight: line?.getBoundingClientRect().height ?? null,
+        liveRegions: document.querySelectorAll(
+          '[data-testid="working-status"] [aria-live="polite"]',
+        ).length,
+        status: visual(statusNode()),
+        actions: {
+          addTask: lane("add-task"),
+          taskSend: taskSend(),
+          taskSteer: lane("task-agent-steer"),
+        },
+        planSwitch: visual(document.querySelector<HTMLElement>('[data-testid="plan-task-toggle"]')),
+      };
+    };
+
+    if (kind === "open") {
+      const card = document.querySelector<HTMLElement>(`[data-testid="task-${id}"]`);
+      card?.querySelector<HTMLElement>("[data-task-card]")?.click();
+    } else if (kind === "close") {
+      document.querySelector<HTMLButtonElement>('[data-testid="task-detail-back"]')?.click();
+    } else {
+      return new Promise<ReturnType<typeof read>>((resolve) => {
+        requestAnimationFrame(() => resolve(read()));
+      });
+    }
+
+    return new Promise<ReturnType<typeof read>>((resolve) => {
+      const start = performance.now();
+      const tick = () => {
+        const addTask = lane("add-task");
+        const send = taskSend();
+        const status = visual(statusNode());
+        const ready =
+          kind === "open"
+            ? send?.open === "true" && addTask?.open === "false"
+            : addTask?.open === "true" &&
+              send?.open === "false" &&
+              (status === null || status.open === "false");
+        if (ready || performance.now() - start > 120) {
+          resolve(read());
+          return;
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+  }, trigger) as Promise<DockTaskSample>;
+}
+
 test("the plan switch sits on the dock's top line with a visible label", {
   timeout: 120_000,
 }, async ({ app, browser, screen }) => {
@@ -155,6 +287,355 @@ test("the plan switch sits on the dock's top line with a visible label", {
   const wide = await readGeometry();
   checkGeometry(wide);
   await expect(screen.getByTestId("composer-plus")).toBeVisible();
+
+  // A page switch only changes identities: sample both the leaving and the
+  // arriving switch while they are fading. The dock, top line and composer
+  // must keep the exact heights they had before the switch.
+  await browser.setViewport({ width: 390, height: 844 });
+  await browser.emulateMedia({ reducedMotion: "no-preference" });
+  const switchAndSample = (id: "chat" | "tasks", waitForLeaving: boolean) =>
+    browser.evaluate(
+      ({ pageId, leaving }) => {
+        const read = () => {
+          const dock = document.querySelector<HTMLElement>('[data-testid="composer-dock"]');
+          const body = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
+          const line = document.querySelector<HTMLElement>(".ink-line");
+          const planSwitch = document.querySelector<HTMLElement>(
+            '[data-testid="plan-task-toggle"]',
+          );
+          return {
+            dockHeight: dock?.getBoundingClientRect().height ?? null,
+            composerHeight: body?.getBoundingClientRect().height ?? null,
+            lineHeight: line?.getBoundingClientRect().height ?? null,
+            planSwitch:
+              planSwitch === null
+                ? null
+                : {
+                    open: planSwitch.getAttribute("data-open"),
+                    inert: planSwitch.hasAttribute("inert"),
+                    ariaHidden: planSwitch.getAttribute("aria-hidden"),
+                    transitionProperty: getComputedStyle(planSwitch).transitionProperty,
+                    transitionDuration: getComputedStyle(planSwitch).transitionDuration,
+                  },
+          };
+        };
+        document.querySelector<HTMLButtonElement>(`[data-testid="page-dot-${pageId}"]`)?.click();
+        return new Promise<ReturnType<typeof read>>((resolve) => {
+          const start = performance.now();
+          const tick = () => {
+            const planSwitch = document.querySelector<HTMLElement>(
+              '[data-testid="plan-task-toggle"]',
+            );
+            const ready =
+              planSwitch !== null &&
+              planSwitch.getAttribute("data-open") === (leaving ? "false" : "true");
+            if (ready || performance.now() - start > 120) {
+              resolve(read());
+              return;
+            }
+            requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        });
+      },
+      { pageId: id, leaving: waitForLeaving },
+    );
+
+  const leavingSample = await switchAndSample("chat", true);
+  expect(leavingSample.dockHeight).toBe(DOCK_HEIGHT);
+  expect(leavingSample.composerHeight).toBe(COMPOSER_HEIGHT);
+  expect(leavingSample.lineHeight).toBe(TOP_LINE_HEIGHT);
+  expect(leavingSample.planSwitch).not.toBeNull();
+  expect(leavingSample.planSwitch?.open).toBe("false");
+  expect(leavingSample.planSwitch?.inert).toBe(true);
+  expect(leavingSample.planSwitch?.ariaHidden).toBe("true");
+  expect(leavingSample.planSwitch?.transitionProperty).toContain("opacity");
+  expectDockTransition(leavingSample.planSwitch);
+  await expect(screen.getByTestId("plan-task-toggle")).toHaveCount(0);
+
+  const arrivingSample = await switchAndSample("tasks", false);
+  expect(arrivingSample.dockHeight).toBe(DOCK_HEIGHT);
+  expect(arrivingSample.composerHeight).toBe(COMPOSER_HEIGHT);
+  expect(arrivingSample.lineHeight).toBe(TOP_LINE_HEIGHT);
+  expect(arrivingSample.planSwitch).toEqual({
+    open: "true",
+    inert: false,
+    ariaHidden: null,
+    transitionProperty: expect.stringContaining("opacity"),
+    transitionDuration: expect.any(String),
+  });
+  expectDockTransition(arrivingSample.planSwitch);
+  await expect(toggle).toBeVisible();
+  await expect(toggle).toHaveAttribute("data-open", "true");
+  // The same persistent Composer kept the draft and the focus across the swap.
+  await expect(composer).toHaveValue("keep this draft");
+  await expect.poll(focusedInput).toBe("New task");
+});
+
+test("create and plan-chat fade the action and status without moving the dock", {
+  timeout: 180_000,
+}, async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await browser.emulateMedia({ reducedMotion: "no-preference" });
+  await app.open("/?page=tasks");
+  const title = `Dock swap ${Date.now()}`;
+  await createOpenTask(screen, title);
+  await openTaskChatTab(screen);
+  await expect(screen.getByTestId("task-agent-chat")).toBeVisible();
+  const taskId = await browser.evaluate(async (needle) => {
+    const ledger = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
+      tasks: Array<{ id: string; title: string }>;
+    };
+    return ledger.tasks.find((task) => task.title === needle)?.id ?? null;
+  }, title);
+  expect(taskId).not.toBeNull();
+  if (taskId === null) return;
+
+  try {
+    await screen.getByTestId("task-detail-back").tap();
+    await expect(screen.getByTestId("plan-task-toggle")).toBeVisible();
+    await expect(screen.getByTestId("add-task")).toBeVisible();
+
+    // create -> plan-chat: the add-task control leaves while the task send arrives.
+    const opened = await sampleTaskDockTransition(browser, { kind: "open", id: taskId });
+    expect(opened.dockHeight).toBe(DOCK_HEIGHT);
+    expect(opened.composerHeight).toBe(COMPOSER_HEIGHT);
+    expect(opened.lineHeight).toBe(TOP_LINE_HEIGHT);
+    expect(opened.liveRegions).toBe(1);
+    expect(opened.actions.addTask).toMatchObject({
+      open: "false",
+      inert: true,
+      ariaHidden: "true",
+      pointerEvents: "none",
+    });
+    expectDockTransition(opened.actions.addTask);
+    expect(opened.actions.taskSend).toMatchObject({
+      open: "true",
+      inert: false,
+      ariaHidden: null,
+    });
+    expectDockTransition(opened.actions.taskSend);
+
+    // The status word enters as its own keyed child, never as a second live region.
+    await expect
+      .poll(async () => (await sampleTaskDockTransition(browser, { kind: "read" })).status?.text)
+      .toBe("idle");
+    const enteredScenario = await sampleTaskDockTransition(browser, { kind: "read" });
+    expect(enteredScenario.liveRegions).toBe(1);
+    expect(enteredScenario.status).toMatchObject({
+      open: "true",
+      inert: false,
+      ariaHidden: null,
+    });
+    expect(enteredScenario.status?.animationName).toContain("dock-text-in");
+    expectDockTransition(enteredScenario.status);
+
+    // plan-chat -> create: the task send leaves, and the held status word exits.
+    const closed = await sampleTaskDockTransition(browser, { kind: "close" });
+    expect(closed.dockHeight).toBe(DOCK_HEIGHT);
+    expect(closed.composerHeight).toBe(COMPOSER_HEIGHT);
+    expect(closed.lineHeight).toBe(TOP_LINE_HEIGHT);
+    expect(closed.liveRegions).toBe(1);
+    expect(closed.actions.addTask).toMatchObject({
+      open: "true",
+      inert: false,
+      ariaHidden: null,
+    });
+    expectDockTransition(closed.actions.addTask);
+    expect(closed.actions.taskSend).toMatchObject({
+      open: "false",
+      inert: true,
+      ariaHidden: "true",
+      pointerEvents: "none",
+    });
+    expectDockTransition(closed.actions.taskSend);
+    expect(closed.status).toMatchObject({
+      open: "false",
+      inert: true,
+      ariaHidden: "true",
+      pointerEvents: "none",
+      text: "idle",
+    });
+    expectDockTransition(closed.status);
+    await expect(screen.getByTestId("task-agent-send")).toHaveCount(0);
+    await expect(screen.getByTestId("plan-task-toggle")).toBeVisible();
+    await expect(screen.getByTestId("add-task")).toBeVisible();
+  } finally {
+    await removeTasks(browser, [title]);
+  }
+});
+
+test("a collapse owns the swap and reduced motion drops the leaving nodes", {
+  timeout: 180_000,
+}, async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await browser.emulateMedia({ reducedMotion: "no-preference" });
+  await app.open("/?page=tasks");
+
+  // stats is a collapsed surface. Expanding into tasks must not start a second
+  // animation on the nodes the 220 ms composer expansion already carries.
+  await screen.getByTestId("page-dot-stats").tap();
+  await expect
+    .poll(() =>
+      browser.evaluate(
+        () => document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
+      ),
+    )
+    .toBe("stats");
+  const statsToTasks = await browser.evaluate(() => {
+    const read = () => {
+      const planSwitch = document.querySelector<HTMLElement>('[data-testid="plan-task-toggle"]');
+      const body = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
+      return {
+        planSwitch:
+          planSwitch === null
+            ? null
+            : {
+                className: planSwitch.className,
+                animationName: getComputedStyle(planSwitch).animationName,
+              },
+        collapsed: body?.getAttribute("data-collapsed") ?? null,
+      };
+    };
+    document.querySelector<HTMLButtonElement>('[data-testid="page-dot-tasks"]')?.click();
+    return new Promise<ReturnType<typeof read>>((resolve) => {
+      const start = performance.now();
+      const tick = () => {
+        const planSwitch = document.querySelector('[data-testid="plan-task-toggle"]');
+        if (planSwitch !== null || performance.now() - start > 120) {
+          requestAnimationFrame(() => resolve(read()));
+          return;
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+  });
+  expect(statsToTasks.planSwitch).not.toBeNull();
+  expect(statsToTasks.planSwitch?.className).not.toContain("dock-swap");
+  expect(statsToTasks.planSwitch?.className).not.toContain("dock-text-in");
+  expect(statsToTasks.planSwitch?.animationName).toBe("none");
+  expect(statsToTasks.collapsed).toBe("false");
+
+  // The same holds when a done task's collapsed detail closes back to create.
+  const title = `Done dock ${Date.now()}`;
+  const doneId = await browser.evaluate(async (needle) => {
+    const response = await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: needle }),
+    });
+    const ledger = (await response.json()) as { tasks: Array<{ id: string; title: string }> };
+    const task = ledger.tasks.find((item) => item.title === needle);
+    if (task === undefined) return "";
+    await fetch(`/api/tasks/${encodeURIComponent(task.id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        status: "done",
+        completion: { evidence: "e2e/plan-chat.e2e.ts done dock" },
+      }),
+    });
+    return task.id;
+  }, title);
+  expect(doneId).not.toBe("");
+  if (doneId === "") return;
+
+  try {
+    await app.open("/?page=tasks");
+    await expect(screen.getByTestId(`task-${doneId}`)).toBeVisible();
+    await browser.evaluate(
+      ({ id }) => {
+        const card = document.querySelector<HTMLElement>(`[data-testid="task-${id}"]`);
+        card?.querySelector<HTMLElement>("[data-task-card]")?.click();
+        return null;
+      },
+      { id: doneId },
+    );
+    await expect(screen.getByTestId("composer-body")).toHaveAttribute("data-collapsed", "true");
+    await expect(screen.getByTestId("plan-task-toggle")).toHaveCount(0);
+
+    const doneToCreate = await browser.evaluate(() => {
+      const read = () => {
+        const planSwitch = document.querySelector<HTMLElement>('[data-testid="plan-task-toggle"]');
+        const body = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
+        return {
+          planSwitch:
+            planSwitch === null
+              ? null
+              : {
+                  className: planSwitch.className,
+                  animationName: getComputedStyle(planSwitch).animationName,
+                },
+          collapsed: body?.getAttribute("data-collapsed") ?? null,
+        };
+      };
+      document.querySelector<HTMLButtonElement>('[data-testid="task-detail-back"]')?.click();
+      return new Promise<ReturnType<typeof read>>((resolve) => {
+        const start = performance.now();
+        const tick = () => {
+          const planSwitch = document.querySelector('[data-testid="plan-task-toggle"]');
+          if (planSwitch !== null || performance.now() - start > 120) {
+            requestAnimationFrame(() => resolve(read()));
+            return;
+          }
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      });
+    });
+    expect(doneToCreate.planSwitch).not.toBeNull();
+    expect(doneToCreate.planSwitch?.className).not.toContain("dock-swap");
+    expect(doneToCreate.planSwitch?.className).not.toContain("dock-text-in");
+    expect(doneToCreate.planSwitch?.animationName).toBe("none");
+    expect(doneToCreate.collapsed).toBe("false");
+  } finally {
+    await removeTasks(browser, [title]);
+  }
+
+  // Reduced motion is an immediate unmount, not a zero-length fade.
+  await browser.emulateMedia({ reducedMotion: "reduce" });
+  await app.open("/?page=tasks");
+  await expect(screen.getByTestId("plan-task-toggle")).toBeVisible();
+  const reducedAway = await browser.evaluate(() => {
+    const read = () => ({
+      planSwitch: document.querySelectorAll('[data-testid="plan-task-toggle"]').length,
+      addTask: document.querySelectorAll('[data-testid="add-task"]').length,
+    });
+    document.querySelector<HTMLButtonElement>('[data-testid="page-dot-chat"]')?.click();
+    return new Promise<ReturnType<typeof read>>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve(read())));
+    });
+  });
+  expect(reducedAway).toEqual({ planSwitch: 0, addTask: 0 });
+
+  const reducedBack = await browser.evaluate(() => {
+    const read = () => {
+      const planSwitch = document.querySelector<HTMLElement>('[data-testid="plan-task-toggle"]');
+      return {
+        planSwitchClass: planSwitch === null ? null : planSwitch.className,
+        animationName: planSwitch === null ? null : getComputedStyle(planSwitch).animationName,
+        transitionDuration:
+          planSwitch === null ? null : getComputedStyle(planSwitch).transitionDuration,
+      };
+    };
+    document.querySelector<HTMLButtonElement>('[data-testid="page-dot-tasks"]')?.click();
+    return new Promise<ReturnType<typeof read>>((resolve) => {
+      const start = performance.now();
+      const tick = () => {
+        const planSwitch = document.querySelector('[data-testid="plan-task-toggle"]');
+        if (planSwitch !== null || performance.now() - start > 120) {
+          requestAnimationFrame(() => resolve(read()));
+          return;
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+  });
+  expect(reducedBack.planSwitchClass).not.toBeNull();
+  expect(reducedBack.animationName).toBe("none");
+  expect(reducedBack.transitionDuration).toBe("0s");
 });
 
 test("a plan run that dies without an answer shows a dismissible error", {
