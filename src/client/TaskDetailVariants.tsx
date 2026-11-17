@@ -29,6 +29,8 @@ import type { ProjectSuggestion } from "./ProjectSuggestions";
 import { SECTION_BAR_ICON_BUTTON, SECTION_BAR_LABEL, SectionBar } from "./SectionBar";
 import { TaskAgentChat } from "./TaskAgentChat";
 import { TaskPlanningBadge } from "./TaskPlanningBadge";
+import { TaskQuestionPanel } from "./TaskQuestionPanel";
+import { answerTaskQuestions, dismissTaskQuestions } from "./task-client";
 import type { TaskMedia } from "./use-task-media";
 
 function shortId(id: string): string {
@@ -974,6 +976,22 @@ function DecisionActions({ model }: { model: TaskDetailModel }) {
 function PlanSections({ model }: { model: TaskDetailModel }) {
   const hasAttachments = model.media.attachments.length + model.media.pending.length > 0;
   const leftoverMeta = hasLeftoverMeta(model);
+  const questions = model.task.questions;
+  const answerQuestions = async (
+    setId: string,
+    answers: Parameters<typeof answerTaskQuestions>[2],
+  ) => {
+    const outcome = await answerTaskQuestions(model.task.id, setId, answers);
+    if (!outcome.ok) return false;
+    model.onLedger?.(outcome.ledger);
+    return true;
+  };
+  const dismissQuestions = async (setId: string) => {
+    const outcome = await dismissTaskQuestions(model.task.id, setId);
+    if (!outcome.ok) return false;
+    model.onLedger?.(outcome.ledger);
+    return true;
+  };
   return (
     <div
       className={cn(STACK_8, "min-h-0", model.wide ? "min-h-0 flex-1 overflow-hidden" : undefined)}
@@ -998,6 +1016,14 @@ function PlanSections({ model }: { model: TaskDetailModel }) {
         {model.media.error !== null && <ErrorLine>{model.media.error}</ErrorLine>}
         {model.notice !== null && <ErrorLine>{model.notice}</ErrorLine>}
       </div>
+      {questions !== undefined && questions !== null && (
+        <TaskQuestionPanel
+          key={questions.id}
+          set={questions}
+          onAnswer={answerQuestions}
+          onDismiss={dismissQuestions}
+        />
+      )}
       <section
         data-testid="task-plan-card"
         className={cn(DETAIL_CARD, "flex min-h-0 flex-col", model.wide && "min-h-0 flex-1")}
@@ -1077,6 +1103,7 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
             variant="pane"
             composerTarget="dock"
             active={tab === "chat"}
+            onShowPlan={() => setTab("plan")}
           />
         </div>
       </div>

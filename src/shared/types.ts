@@ -502,6 +502,8 @@ export interface Task {
   releaseReason?: string;
   /** True on a client view while this task's plan agent has a live run. Derived, never stored. */
   planning?: boolean;
+  /** Pending plan-agent questions on a client view, or null. Derived, never stored. */
+  questions?: TaskQuestionSet | null;
   /** When the task was closed, or null while it is open. */
   completedAt: string | null;
   /** The report recorded when the task was closed, or null while it is open. */

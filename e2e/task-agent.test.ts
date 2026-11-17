@@ -628,7 +628,7 @@ test("the first message on a placeholder task sets the title and strips @project
   assert.equal(follow.message, "Also consider this");
 });
 
-test("visible task chat rows omit notice and keep ordinary messages", () => {
+test("visible task chat rows keep system notices and omit user ones", () => {
   const rows: ChatMessage[] = [
     { id: "u", role: "user", text: "hello", timestamp: "", order: 1 },
     {
@@ -640,10 +640,18 @@ test("visible task chat rows omit notice and keep ordinary messages", () => {
       notice: { kind: "job" },
     } as ChatMessage,
     { id: "a", role: "assistant", text: "plan", timestamp: "", order: 3 },
+    {
+      id: "q",
+      role: "system",
+      text: "Answers sent",
+      timestamp: "",
+      order: 4,
+      notice: { kind: "questions", setId: "s", count: 1, text: "", summary: "Answers sent" },
+    } as ChatMessage,
   ];
   assert.deepEqual(
     visibleTaskAgentMessages(rows).map((item) => item.id),
-    ["u", "a"],
+    ["u", "a", "q"],
   );
 });
 

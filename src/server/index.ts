@@ -19,7 +19,7 @@ import {
   TASK_ATTACHMENTS_MAX,
   TASK_BODY_MAX_LENGTH,
 } from "../shared/tasks.js";
-import type { TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
+import type { TaskCompletion, TaskLedger, TaskQuestionSet, TaskStatus } from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
 import {
   ChatService,
@@ -112,6 +112,8 @@ await taskActivity.load();
 taskActivity.observeLedger(taskStore.ledger().tasks);
 /** Filled once the task-agent manager exists; before that no plan run can be live. */
 let planningTaskIds = (): string[] => [];
+/** Filled with the manager; before that no plan-agent question set can be pending. */
+let pendingQuestionsFor = (_taskId: string): TaskQuestionSet | null => null;
 /** The ledger as clients see it: tasks plus what the runs measured and planned for them. */
 function taskView(ledger: TaskLedger = taskStore.ledger()): TaskLedger {
   const planning = planningTaskIds();
@@ -122,6 +124,7 @@ function taskView(ledger: TaskLedger = taskStore.ledger()): TaskLedger {
     tasks: ledger.tasks.map((task) => ({
       ...task,
       planning: live.has(task.id) && (isActiveStatus(task.status) || task.status === "planning"),
+      questions: pendingQuestionsFor(task.id),
     })),
     activity: taskActivity.view(),
     reopenStats: taskReopenStats(ledger.tasks),
@@ -412,10 +415,14 @@ const taskAgents = new TaskAgentManager({
   onRunState: () => {
     hub.broadcast({ event: "tasks", data: taskView() });
   },
+  onQuestions: () => {
+    hub.broadcast({ event: "tasks", data: taskView() });
+  },
   baseInstructions: await taskAgentPrompt,
   memory: { store: memory, snapshot: memorySnapshot },
 });
 planningTaskIds = () => taskAgents.planningTaskIds();
+pendingQuestionsFor = (taskId) => taskAgents.pendingQuestions(taskId);
 function builtinJobs() {
   return jobs.list().map((job) => ({
     id: job.id,
@@ -1214,6 +1221,13 @@ app.get("/api/tasks/:id/questions", async (c) => {
   }
 });
 
+function questionSetId(body: unknown): string {
+  if (typeof body !== "object" || body === null) return "";
+  if ("setId" in body && typeof body.setId === "string") return body.setId;
+  if ("id" in body && typeof body.id === "string") return body.id;
+  return "";
+}
+
 async function answerTaskQuestions(c: Context) {
   let body: unknown;
   try {
@@ -1222,18 +1236,31 @@ async function answerTaskQuestions(c: Context) {
     return c.text("Expected a JSON body", 400);
   }
   if (typeof body !== "object" || body === null) return c.text("Expected a JSON body", 400);
-  const setId =
-    "setId" in body && typeof body.setId === "string"
-      ? body.setId
-      : "id" in body && typeof body.id === "string"
-        ? body.id
-        : "";
+  const setId = questionSetId(body);
   if (setId.length === 0) return c.text("setId is required", 400);
   if (!("answers" in body) || !Array.isArray(body.answers)) {
     return c.text("answers must be a list", 400);
   }
   try {
-    return c.json(await taskAgents.answerQuestions(c.req.param("id") ?? "", setId, body.answers));
+    await taskAgents.answerQuestions(c.req.param("id") ?? "", setId, body.answers);
+    return c.json({ ledger: taskView() });
+  } catch (error) {
+    return taskAgentFailure(c, error);
+  }
+}
+
+async function dismissTaskQuestions(c: Context) {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.text("Expected a JSON body", 400);
+  }
+  const setId = questionSetId(body);
+  if (setId.length === 0) return c.text("setId is required", 400);
+  try {
+    await taskAgents.dismissQuestions(c.req.param("id") ?? "", setId);
+    return c.json({ ledger: taskView() });
   } catch (error) {
     return taskAgentFailure(c, error);
   }
@@ -1241,6 +1268,7 @@ async function answerTaskQuestions(c: Context) {
 
 app.post("/api/tasks/:id/questions/answer", (c) => answerTaskQuestions(c));
 app.post("/api/tasks/:id/questions", (c) => answerTaskQuestions(c));
+app.post("/api/tasks/:id/questions/dismiss", (c) => dismissTaskQuestions(c));
 
 app.post("/api/tasks/:id/chat/stop", async (c) => {
   try {

@@ -79,15 +79,19 @@ function OptionRow({
 export function TaskQuestionPanel({
   set,
   onAnswer,
+  onDismiss,
 }: {
   set: TaskQuestionSet;
   onAnswer: (setId: string, answers: TaskQuestionAnswer[]) => Promise<boolean>;
+  /** Let the agent decide the set itself; the pending panel then goes away. */
+  onDismiss?: (setId: string) => Promise<boolean>;
 }) {
   const [state, setState] = useState(() => ({
     setId: set.id,
     drafts: blankDrafts(set.questions),
   }));
   const [busy, setBusy] = useState(false);
+  const [dismissing, setDismissing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -148,6 +152,15 @@ export function TaskQuestionPanel({
     const ok = await onAnswer(set.id, answers);
     setBusy(false);
     if (!ok) setError("Could not send the answers. Try again.");
+  };
+
+  const dismiss = async () => {
+    if (busy || dismissing || onDismiss === undefined) return;
+    setDismissing(true);
+    setError(null);
+    const ok = await onDismiss(set.id);
+    setDismissing(false);
+    if (!ok) setError("Could not dismiss the questions. Try again.");
   };
 
   return (
@@ -228,12 +241,24 @@ export function TaskQuestionPanel({
         )}
       </div>
 
-      <div className="mt-1 border-t border-border/70 bg-surface px-3 py-2">
+      <div className="mt-1 flex flex-wrap items-center justify-end gap-2 border-t border-border/70 bg-surface px-3 py-2">
+        {onDismiss !== undefined && (
+          <Button
+            type="button"
+            variant="ghost"
+            data-testid="task-questions-dismiss"
+            disabled={busy || dismissing}
+            className="w-full sm:w-auto"
+            onClick={() => void dismiss()}
+          >
+            {dismissing ? "Dismissing…" : "Dismiss — decide yourself"}
+          </Button>
+        )}
         <Button
           type="submit"
           data-testid="task-questions-send"
-          disabled={busy || !ready}
-          className="w-full sm:w-auto sm:self-end"
+          disabled={busy || dismissing || !ready}
+          className="w-full sm:w-auto"
         >
           {busy ? "Sending…" : "Send answers"}
         </Button>
