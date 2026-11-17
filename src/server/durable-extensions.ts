@@ -160,7 +160,13 @@ export class DurableExtensionShim implements DurableExtensionApi {
         if (tool.name === "mcp_events") {
           let notice: ExtensionNotice = {
             customType: "mcp-events-tool",
-            details: { args, result: result.details ?? null },
+            details: {
+              args,
+              result: result.details ?? null,
+              // Kept so the runtime can tell a failed tool call from a
+              // successful one without the adapter's details shape.
+              ...(result.isError === true ? { isError: true } : {}),
+            },
           };
           if (this.noticeEnricher !== undefined) {
             try {

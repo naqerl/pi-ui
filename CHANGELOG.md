@@ -1,3 +1,11 @@
+## Unreleased
+
+### Changed
+
+- MCP event-stream membership moved from `DATA_DIR/mcp-subscriptions.json` to `${PI_CODING_AGENT_DIR:-~/.pi/agent}/subscriptions.json`, next to `mcp.json`. A successful `mcp_events subscribe` appends a line; a successful unsubscribe or Events-page `DELETE` removes it; boot and `reload` only read it. Lines hold `server`, `name`, `arguments` and an optional `title` — never a cursor, health or `enabled`. Writes are serialized, re-read the file, preserve unknown top-level keys and never overwrite a file that does not parse.
+- The data-dir registry is now a cursor/health cache keyed by stable id, pruned to declared streams. **With no `subscriptions.json`, no streams are restored**: a fresh data dir starts empty until the agent subscribes or the operator writes a line. A declaration is a declaration, not `enabled` state; deleting the line is the off switch.
+- `reload` gained `target=subscriptions`; `target=mcp` now re-reads both files, stops undeclared live streams and opens newly declared ones. `/api/state.mcp.subscriptionConfig` and the Events page report declarations that are live, pending or missing their server.
+
 ## 1.9.1
 
 ### Fixed

@@ -332,6 +332,22 @@ const events = new McpEventFeed(boot.mcp.subscriptionRegistry, {
   startedAt: boot.mcp.startedAt,
 });
 await events.hydrate();
+boot.mcp.setLiveIdLookup((stableId) => events.adapterIdsForStableId(stableId));
+boot.mcp.setLiveIdCancel((stableId) => {
+  events.cancel(stableId);
+});
+boot.mcp.setLiveStateLookup((stableId) => {
+  // Match the Events page's health rule: opening/reconnecting are recovering,
+  // not live, and a dead row must stop counting as declared-live immediately.
+  const row = events.findByStableId(stableId);
+  if (row === undefined) return false;
+  return row.state === "active";
+});
+boot.mcp.setSubscriptionConfigListener(() => {
+  // A declaration write or a reload is membership news for every open tab.
+  hub.broadcast({ event: "mcp.status", data: boot.mcp.status });
+  hub.broadcast({ event: "mcp.events", data: events.state });
+});
 chat.setEventFeed(events);
 chat.setTaskActivity(taskActivity);
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -832,16 +848,25 @@ app.delete("/api/mcp/subscriptions/*", async (c) => {
   if (stableId.length === 0) return c.text("stableId is required", 400);
   const live = events.findByStableId(stableId);
   const liveIds = events.adapterIdsForStableId(stableId);
-  const cancelled = await boot.mcp.cancelSubscription(stableId, liveIds);
+  // A pending or missing-server declaration has no cache row and no feed row;
+  // deleting its line still succeeded even though nothing was cancelled.
+  const declaredBefore =
+    boot.mcp.status.subscriptionConfig?.entries.some((entry) => entry.stableId === stableId) ??
+    false;
+  const cancelled = await boot.mcp.cancelSubscription(stableId, liveIds, {
+    removeDeclaration: true,
+  });
   events.cancel(stableId);
-  if (cancelled === null && live === undefined) {
+  if (cancelled === null && live === undefined && !declaredBefore) {
     return c.text("Unknown subscription", 404);
   }
+  hub.broadcast({ event: "mcp.status", data: boot.mcp.status });
   hub.broadcast({ event: "mcp.events", data: events.state });
   return c.json({
     ok: true,
     stableId,
     cancelled: true,
+    declaredAfter: false,
     id: events.findByStableId(stableId)?.id ?? null,
   });
 });

@@ -6,17 +6,62 @@ and the MCP widgets on the stats page. The feed reads the real cursor from
 `event.data.cursor` first and falls back to `event.cursor`, because the hub sends
 `"cursor": null` on the envelope and puts the position in the payload.
 
-## Restart behaviour
+## Declarations and restart behaviour
 
-`DATA_DIR/mcp-subscriptions.json` is the durable registry. It is one JSON
-document with `version: 1` and one entry per `(server, name, sortKey(arguments))`.
-An entry holds the adapter `id`, the durable `stableId`, the server
-`generation`, `cursor`, `status`, `enabled`, the last 1,000
-`deliveredEventIds`, and `updatedAt`. The `stableId` is derived from the
+Which event streams this process opens is configuration, not runtime state. It
+lives in `${PI_CODING_AGENT_DIR:-~/.pi/agent}/subscriptions.json`, next to
+`mcp.json`:
+
+```json
+{
+  "version": 1,
+  "subscriptions": [
+    { "server": "zeroshot", "name": "hub", "arguments": {}, "title": "Zeroshot hub" },
+    { "server": "tracer", "name": "alert", "arguments": { "severity": "critical" } }
+  ]
+}
+```
+
+The file is the single source of truth for membership, and **pi-ui writes it**.
+A successful agent `mcp_events subscribe` appends a line; a successful
+`mcp_events unsubscribe` or an Events-page `DELETE` removes it. Boot and
+`reload` only read it. A line is a declaration, never state: it holds `server`,
+`name`, `arguments` (default `{}`) and an optional `title`, and pi-ui never
+writes a cursor, status, health flag or `enabled` into it. Deleting the line is
+the off switch. Restore and watchdog re-opens use the extension's internal
+`callTool()` path, so they cannot add, remove or duplicate a line.
+
+Write operations are one serialized intent queue. Each operation re-reads the
+file from disk, mutates only `subscriptions`, preserves `version` and any
+unknown top-level keys, compares the serialized result and skips the write when
+nothing changed. Writes use a temporary file in the same directory and rename
+it into place. A file that does not parse is **never overwritten**;
+reconciliation aborts, live streams are kept, and the error is surfaced in
+`/api/state` and on the Events page. A failed write is logged once and shown as
+`subscriptionConfig.writeError` while the live stream keeps working. The agent
+directory is assumed to have exactly one pi-ui owner; a second writer would
+last-write-win rather than lock.
+
+**With no file, no streams are restored.** A fresh data dir or a new container
+starts with no event streams until the agent subscribes or the operator writes
+a line; the boot log says
+`mcp: no subscriptions.json; no event streams declared`. A missing file has no
+declarations, so it also prunes the whole cursor cache; nothing is restored
+until a line is written. A present file, even
+`{"version":1,"subscriptions":[]}`, is the whole list. An unknown `version` is
+an error, not an empty list. There is no seeding and no separate ownership
+guard.
+
+`DATA_DIR/mcp-subscriptions.json` is now a **cache keyed by `stableId`**, not
+the membership list. It keeps the adapter `id`, the server `generation`,
+`cursor`, `status`/`state`, the last 1,000 `deliveredEventIds`, health fields
+and `updatedAt` for declared streams only. The `stableId` is derived from the
 server, stream name and sorted arguments, so it survives a restart and does
 not depend on argument order: the common no-arguments form is `zeroshot/hub`,
 and arguments add a short canonical digest. The adapter `id` still changes
-when the process subscribes again.
+when the process subscribes again. Reconciliation prunes cache rows whose
+stable id is not declared, so the data dir holds exactly the cursors of the
+declared streams.
 
 The hub cursor is a per-daemon counter, so a hub restart starts at `hub:1`
 again. A subscribe therefore captures a `generation`: the hub's
@@ -36,25 +81,27 @@ A 1.6.7 registry has none of the new fields. Loading it derives the stable id,
 sets the adapter id to null, derives `enabled` from the status, and writes the
 upgraded document once. Writes go to a temporary file in the same directory and
 are renamed into place, at most once per second; shutdown forces a final flush.
-A missing file, a corrupt file or an unknown version is logged once and
-treated as an empty registry, never as a boot failure.
+A missing cache file, a corrupt cache file or an unknown registry version is
+logged once and treated as an empty cache, never as a boot failure.
 
-Once the MCP adapter is ready, and before the first turn, every entry whose
-status is `active` or `reconnecting` is subscribed again through the
-extension's own subscribe path with its stored cursor. Before opening a stream,
-pi-ui asks the server whether that cursor still belongs to a live subscription
-with an `events/poll` probe; a server that does not implement the probe is
-checked through `events/list`. A `NotFound` (`-32023`) or unknown stream marks
-the row `cancelled`, persists it, logs `mcp: dropped restored subscription …`,
-and never retries it in this process. If the cursor probe would replay a
-backlog whose first event predates this process by more than a 15-minute grace
-window, the restore subscribes with `cursor: null` and records one gap
-(`from`, `missedSince` from `lastEventAt`, and `at`) instead of replaying it.
-The gap reaches chat as a single “N events were missed while pi was not
-running” status chip. A recent backlog — the ordinary “pi restarted a moment
-ago” case — still replays from its stored cursor. The paged-catalog fallback
-also keeps its recovered cursor, because that is a position rather than a
-backlog.
+Once the MCP adapter is ready, and before the first turn, every declaration is
+subscribed again through the extension's own subscribe path. Its cursor comes
+from the cache by `stableId`, or `null` when the declaration is new. A new
+declaration skips the probe entirely: there is no stored position, so there is
+no history to call a gap. For a cached cursor, pi-ui asks the server whether it
+still belongs to a live subscription with an `events/poll` probe; a server that
+does not implement the probe is checked through `events/list`. A `NotFound`
+(`-32023`) or unknown stream marks the cache row `cancelled`, logs
+`mcp: dropped restored subscription …`, and never retries it in this process —
+but the declaration stays in `subscriptions.json` and is retried after a
+reload or restart. If the cursor probe would replay a backlog whose first event
+predates this process by more than a 15-minute grace window, the restore
+subscribes with `cursor: null` and records one gap (`from`, `missedSince` from
+`lastEventAt`, and `at`) instead of replaying it. The gap reaches chat as a
+single “N events were missed while pi was not running” status chip. A recent
+backlog — the ordinary “pi restarted a moment ago” case — still replays from
+its stored cursor. The paged-catalog fallback also keeps its recovered cursor,
+because that is a position rather than a backlog.
 
 The same grace is applied per event to every batch that arrives on a stream,
 not only to what the cursor probe predicts. An adapter that reconnects can hand
@@ -92,11 +139,26 @@ stable id, but remembers every adapter id that ever represented it. The events
 page and the MCP widgets use a title when one exists; a stream with arguments
 falls back to its stable id, while a no-argument stream shows its name.
 `DELETE /api/mcp/subscriptions/<stableId>` stops every live adapter
-stream for that identity, marks the durable entry `cancelled` with
-`enabled: false`, and is idempotent. A late status notice for the cancelled
-adapter id cannot turn the entry back on; a genuinely new subscribe gets a new
-adapter id and replaces it. A cancelled entry is not subscribed again on the
-next boot.
+stream for that identity, marks the cache entry `cancelled` with
+`enabled: false`, removes its line from `subscriptions.json`, and is
+idempotent; its response carries `declaredAfter: false`. A late status notice
+for the cancelled adapter id cannot turn the entry back on; a genuinely new
+subscribe gets a new adapter id and appends a new line. Streams stopped by
+reconciliation because their server disappeared, or dropped as `NotFound`, pass
+`removeDeclaration: false`, so a forgotten declaration stays in the file and is
+retried later instead of being silently erased.
+
+`reload target=mcp` re-reads `mcp.json` and `subscriptions.json`;
+`reload target=subscriptions` re-reads only the declarations. After either
+read, pi-ui stops live streams whose line is gone, prunes their cache rows and
+opens newly declared streams. Its result carries a `subscriptions` block with
+`declared`, `opened`, `stopped`, `pending`, `errors` and `stoppedIds`; the last
+one lets the event feed cancel rows for streams whose line disappeared.
+`/api/state` exposes
+`mcp.subscriptionConfig` (`path`, `present`, `error`/`writeError`, and entries
+marked `live`, `pending` or `missing-server`), and the Events page shows one
+`Declared in subscriptions.json: N (X live, Y waiting)` line plus a warning
+row for every pending or missing-server declaration.
 
 ## Stream health
 

@@ -93,6 +93,22 @@ async function startRestoreApp(
     join(dataDir, "mcp-subscriptions.json"),
     JSON.stringify({ version: 1, subscriptions }, null, 2),
   );
+  // Membership is declared in the agent dir; the data dir holds only cursors.
+  writeFileSync(
+    join(agentDir, "subscriptions.json"),
+    JSON.stringify(
+      {
+        version: 1,
+        subscriptions: subscriptions.map(({ server, name, arguments: args }) => ({
+          server,
+          name,
+          arguments: args,
+        })),
+      },
+      null,
+      2,
+    ),
+  );
   writeFileSync(
     join(agentDir, "mcp.json"),
     JSON.stringify(
@@ -178,6 +194,85 @@ function mcpNotices(state: Snapshot) {
       ids: (notice?.events ?? []).map((event) => event.id ?? ""),
     };
   });
+}
+
+interface DeclarationApp {
+  readonly url: string;
+  readonly stop: () => Promise<void>;
+}
+
+/** Spawn the real backend at fixed agent/data dirs, without touching the agent dir. */
+async function startDeclarationApp(agentDir: string, dataDir: string): Promise<DeclarationApp> {
+  writeFileSync(
+    join(agentDir, "mcp.json"),
+    JSON.stringify(
+      {
+        mcpServers: {
+          restore: {
+            command: process.execPath,
+            args: [restoreStub],
+            env: { RESTORE_MCP_LOG: join(dataDir, "declaration-calls.log") },
+          },
+          web: { command: process.execPath, disabled: true },
+        },
+      },
+      null,
+      2,
+    ),
+  );
+  const port = await freePort();
+  const child = spawn(process.execPath, ["--import", "tsx", backendEntry], {
+    cwd: root,
+    env: {
+      ...process.env,
+      PORT: String(port),
+      PI_E2E_LIVE: "0",
+      PI_E2E_DATA_DIR: dataDir,
+      PI_E2E_AGENT_DIR: agentDir,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let log = "";
+  const append = (chunk: Buffer) => {
+    log = `${log}${chunk.toString()}`.slice(-50_000);
+  };
+  child.stdout?.on("data", append);
+  child.stderr?.on("data", append);
+  const url = `http://127.0.0.1:${port}`;
+  await waitForHealth(url, child, () => log);
+  return {
+    url,
+    stop: async () => {
+      if (child.exitCode !== null) return;
+      const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+      child.kill("SIGTERM");
+      await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 5_000))]);
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    },
+  };
+}
+
+async function sendToolCalls(
+  baseUrl: string,
+  calls: Array<Record<string, unknown>>,
+): Promise<void> {
+  const response = await fetch(new URL("/api/message", baseUrl), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: `TOOLCALLS ${JSON.stringify(calls)}`, mode: "queue" }),
+  });
+  expect(response.ok).toBe(true);
+}
+
+function declarations(agentDir: string): Array<{ server: string; name: string }> {
+  try {
+    const document = JSON.parse(readFileSync(join(agentDir, "subscriptions.json"), "utf8")) as {
+      subscriptions?: Array<{ server: string; name: string }>;
+    };
+    return document.subscriptions ?? [];
+  } catch {
+    return [];
+  }
 }
 
 describe("durable restore against one shared browser", { serial: true }, () => {
@@ -355,6 +450,93 @@ describe("durable restore against one shared browser", { serial: true }, () => {
     } finally {
       await spawned.stop();
       rmSync(spawned.dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("a declared stream comes back on a fresh data dir and DELETE removes its line", async ({
+    app,
+  }) => {
+    const agentDir = mkdtempSync(join(tmpdir(), "pi-ui-declaration-agent-"));
+    const firstData = mkdtempSync(join(tmpdir(), "pi-ui-declaration-data-"));
+    const first = await startDeclarationApp(agentDir, firstData);
+    try {
+      await app.open(`${first.url}/`);
+      await sendToolCalls(first.url, [{ name: "tool_search", arguments: { query: "mcp_events" } }]);
+      await expect
+        .poll(
+          async () => {
+            const state = await readState(first.url);
+            return (state.activity ?? []).some(
+              (item) =>
+                item.kind === "tool" &&
+                item.name === "tool_search" &&
+                (item.output ?? "").includes("mcp_events"),
+            );
+          },
+          { timeout: 60_000 },
+        )
+        .toBe(true);
+      await sendToolCalls(first.url, [
+        {
+          name: "mcp_events",
+          arguments: { action: "subscribe", server: "restore", name: "live-stream" },
+        },
+      ]);
+      await expect
+        .poll(() => declarations(agentDir), { timeout: 60_000 })
+        .toEqual([{ server: "restore", name: "live-stream", arguments: {} }]);
+    } finally {
+      await first.stop();
+    }
+
+    // A different, empty data dir still opens the declared stream: membership
+    // is configuration, not the runtime registry.
+    const freshData = mkdtempSync(join(tmpdir(), "pi-ui-declaration-fresh-"));
+    const second = await startDeclarationApp(agentDir, freshData);
+    try {
+      await app.open(`${second.url}/`);
+      await expect
+        .poll(
+          async () => {
+            const state = await readState(second.url);
+            const row = state.mcpEvents?.subscriptions.find((item) => item.name === "live-stream");
+            return row?.status;
+          },
+          { timeout: 60_000 },
+        )
+        .toBe("active");
+
+      const response = await fetch(
+        new URL(`/api/mcp/subscriptions/${encodeURIComponent("restore/live-stream")}`, second.url),
+        { method: "DELETE" },
+      );
+      expect(response.ok).toBe(true);
+      expect(await response.json()).toMatchObject({ declaredAfter: false });
+      await expect.poll(() => declarations(agentDir), { timeout: 30_000 }).toEqual([]);
+    } finally {
+      await second.stop();
+    }
+
+    const thirdData = mkdtempSync(join(tmpdir(), "pi-ui-declaration-third-"));
+    const third = await startDeclarationApp(agentDir, thirdData);
+    try {
+      await app.open(`${third.url}/`);
+      await expect
+        .poll(
+          async () => {
+            const state = await readState(third.url);
+            return (state.mcpEvents?.subscriptions ?? []).some(
+              (item) => item.name === "live-stream",
+            );
+          },
+          { timeout: 30_000 },
+        )
+        .toBe(false);
+    } finally {
+      await third.stop();
+      for (const dir of [agentDir, firstData, freshData, thirdData]) {
+        rmSync(dir, { recursive: true, force: true });
+      }
     }
   });
 });
