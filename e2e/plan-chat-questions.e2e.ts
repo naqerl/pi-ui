@@ -380,7 +380,55 @@ test("dismiss clears the set, nudges the agent, and a replayed answer is refused
     ]),
   ).toBe(409);
 
-  await removeTasks(browser, [title]);
+  // Approving a planning draft is another planning -> non-planning transition.
+  const planTitle = `Plan questions approval ${Date.now()}`;
+  const planTaskId = await browser.evaluate(async (nextTitle) => {
+    const response = await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: nextTitle, plan: true }),
+    });
+    const ledger = (await response.json()) as {
+      tasks: Array<{ id: string; title: string }>;
+    };
+    return ledger.tasks.find((task) => task.title === nextTitle)?.id ?? null;
+  }, planTitle);
+  expect(planTaskId).not.toBeNull();
+  if (planTaskId === null) return;
+
+  expect(
+    await postPlanMessage(
+      browser,
+      planTaskId,
+      `TOOLCALLS ${JSON.stringify([
+        { name: "append_questions", arguments: { questions: OTHER_QUESTIONS } },
+      ])}`,
+    ),
+  ).toBe(202);
+  const hasQuestions = () =>
+    browser.evaluate(async (id) => {
+      const ledger = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
+        tasks: Array<{ id: string; questions?: { id: string } | null }>;
+      };
+      return Boolean(ledger.tasks.find((task) => task.id === id)?.questions);
+    }, planTaskId);
+  await expect.poll(hasQuestions, { timeout: 60_000 }).toBe(true);
+  expect(
+    await browser.evaluate(
+      async (id) =>
+        (
+          await fetch(`/api/tasks/${encodeURIComponent(id)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ status: "open" }),
+          })
+        ).status,
+      planTaskId,
+    ),
+  ).toBe(200);
+  await expect.poll(hasQuestions, { timeout: 30_000 }).toBe(false);
+
+  await removeTasks(browser, [title, planTitle]);
 });
 
 test("the plan chat renders the same activity surface as the chat page", {
