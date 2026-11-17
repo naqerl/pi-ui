@@ -108,8 +108,21 @@ export class TaskQuestionsStore {
   private loading: Promise<void> | undefined;
   private lock: Promise<unknown> = Promise.resolve();
   private readonly waiters = new Map<string, Set<(result: QuestionAnswerResult) => void>>();
+  private readonly changeListeners = new Set<() => void>();
 
   constructor(private readonly path: string) {}
+
+  /** The pending set changed (asked or answered), so a live plan frame can publish it. */
+  subscribe(listener: () => void): () => void {
+    this.changeListeners.add(listener);
+    return () => {
+      this.changeListeners.delete(listener);
+    };
+  }
+
+  private notifyChanged(): void {
+    for (const listener of this.changeListeners) listener();
+  }
 
   load(): Promise<void> {
     this.loading ??= this.read();
@@ -181,7 +194,7 @@ export class TaskQuestionsStore {
     questions: readonly TaskQuestion[],
     askedBy?: string,
   ): Promise<{ set: TaskQuestionSet; added: number }> {
-    return this.mutate(() => {
+    const result = await this.mutate(() => {
       const current = this.state.pending;
       if (current !== null && askedBy !== undefined && current.askedBy === askedBy) {
         const replay = questions.every((question) =>
@@ -210,6 +223,8 @@ export class TaskQuestionsStore {
       this.state.pending = set;
       return { set: clone(set), added: questions.length };
     });
+    if (result.added > 0) this.notifyChanged();
+    return result;
   }
 
   async waitForAnswers(setId: string, signal?: AbortSignal): Promise<QuestionAnswerResult> {
@@ -241,7 +256,7 @@ export class TaskQuestionsStore {
 
   /** Record answers, clear the pending set, and keep a bounded history for replay. */
   async answer(setId: string, answers: unknown): Promise<QuestionAnswerResult> {
-    return this.mutate(() => {
+    const result = await this.mutate(() => {
       const pending = this.state.pending;
       if (pending === null || pending.id !== setId) {
         throw new TaskError("This question set is no longer waiting for answers", 409);
@@ -263,6 +278,8 @@ export class TaskQuestionsStore {
       }
       return this.result(record);
     });
+    this.notifyChanged();
+    return result;
   }
 
   /** Wake the tool that is waiting on this set, after its transcript row is committed. */

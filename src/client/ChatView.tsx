@@ -72,7 +72,12 @@ import {
   type TaskSurfaceStatus,
 } from "./task-dock-composer";
 import { TaskLinkProvider } from "./task-link";
-import { groupTimeline, type TimelineGroup } from "./timeline-groups";
+import {
+  groupTimeline,
+  lastUserMessageOrder,
+  liveActivityGroupKey,
+  type TimelineGroup,
+} from "./timeline-groups";
 import type { SendOutcome, TimelineItem } from "./use-chat";
 import { usePager } from "./use-pager";
 import { useStickToBottom } from "./use-stick-to-bottom";
@@ -82,6 +87,8 @@ import { workingWord } from "./working-state";
 interface ChatViewProps {
   timeline: TimelineItem[];
   running: boolean;
+  /** No frame from the live run within the retry budget; the status stays but stops moving. */
+  quiet?: boolean;
   thinking: boolean;
   interrupted: boolean;
   /** The server's last unacknowledged run failure, rendered as a thin header. */
@@ -1621,17 +1628,23 @@ function EarlierMessages({
  */
 export function TranscriptRows({
   groups,
+  timeline,
+  running = false,
   onSteer,
   onCancelQueued,
   onOpen,
-  liveActivityGroupKey,
 }: {
   groups: TimelineGroup[];
+  timeline: TimelineItem[];
+  running?: boolean;
   onSteer?: (text: string) => void;
   onCancelQueued?: (id: string) => unknown;
   onOpen?: (run: string, trigger: HTMLButtonElement) => void;
-  liveActivityGroupKey?: string;
 }) {
+  const liveKey = useMemo(
+    () => liveActivityGroupKey(timeline, groups, running),
+    [timeline, groups, running],
+  );
   return (
     <>
       {groups.map((group, index) => {
@@ -1655,7 +1668,7 @@ export function TranscriptRows({
             key={group.key}
             groupKey={group.key}
             items={group.items}
-            live={group.key === liveActivityGroupKey}
+            live={group.key === liveKey}
             usage={usage}
             onOpen={onOpen ?? (() => undefined)}
           />
@@ -1665,26 +1678,10 @@ export function TranscriptRows({
   );
 }
 
-function lastUserMessageOrder(timeline: TimelineItem[]): number {
-  let order = Number.NEGATIVE_INFINITY;
-  for (const item of timeline) {
-    // A steer or follow-up the run has not reached does not start a turn of its own.
-    if (
-      item.kind === "message" &&
-      item.message.role === "user" &&
-      !item.message.pendingSteer &&
-      !item.message.pendingQueue &&
-      !item.message.pendingSend
-    ) {
-      order = Math.max(order, item.message.order);
-    }
-  }
-  return order;
-}
-
 export function ChatView({
   timeline,
   running,
+  quiet = false,
   thinking,
   interrupted,
   runError,
@@ -1757,6 +1754,7 @@ export function ChatView({
   const chatStatusWord = running ? workingWord(thinking) : ready ? "idle" : "connecting";
   const statusWord = tasksPage ? (taskSurfaceStatus?.word ?? null) : chatStatusWord;
   const statusRunning = tasksPage ? statusWord === "planning" : running;
+  const statusQuiet = tasksPage ? taskSurfaceStatus?.quiet === true : quiet;
   // One header, fed by the active surface: the open task's plan run on the tasks
   // page when it has one, the main conversation everywhere else (and as the
   // fallback, so a chat failure stays visible while a task is open).
@@ -1955,18 +1953,6 @@ export function ChatView({
       revealTop(target, TRANSCRIPT_END_GAP);
     });
   }, [revealAfter, timeline, revealTop]);
-
-  const liveActivityGroupKey = useMemo(() => {
-    if (!running) return undefined;
-    const lastUserOrder = lastUserMessageOrder(timeline);
-    for (let index = groups.length - 1; index >= 0; index--) {
-      const group = groups[index];
-      if (group.kind === "activity" && group.items[0].order > lastUserOrder) {
-        return group.key;
-      }
-    }
-    return undefined;
-  }, [groups, running, timeline]);
 
   const handleSend = async (text: string, mode: MessageMode = "queue", attachments?: string[]) => {
     // `send` paints the optimistic bubble before its first await; scroll it into view now.
@@ -2273,10 +2259,11 @@ export function ChatView({
                   )}
                   <TranscriptRows
                     groups={groups}
+                    timeline={timeline}
+                    running={running && !quiet}
                     onSteer={steerNotice}
                     onCancelQueued={cancelQueued}
                     onOpen={openActivity}
-                    liveActivityGroupKey={liveActivityGroupKey}
                   />
                 </div>
               </main>
@@ -2348,7 +2335,7 @@ export function ChatView({
               {statusWord !== null && (
                 <div aria-live="polite" className="min-w-0 truncate">
                   {statusRunning ? (
-                    <WorkingIndicator running word={statusWord} />
+                    <WorkingIndicator running={!statusQuiet} word={statusWord} />
                   ) : (
                     // Idle is a server statement. Before the first snapshot the answer
                     // is not known yet, so do not paint a guess that can be wrong.
