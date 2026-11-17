@@ -1671,6 +1671,8 @@ export class TaskAgentManager {
   private readonly sessions = new Map<string, TaskAgentSession>();
   /** When each open session was last asked for, so the sweep can tell idle from in use. */
   private readonly lastUsed = new Map<string, number>();
+  /** Per-task question stores, so a task leaving planning can drop its pending set. */
+  private readonly planQuestions = new Map<string, TaskQuestionsStore>();
   private sweeper: ReturnType<typeof setInterval> | undefined;
   private readonly opening = new Map<string, Promise<TaskAgentSession>>();
   private closed = false;
@@ -1868,6 +1870,12 @@ export class TaskAgentManager {
     return session.answerQuestions(setId, answers);
   }
 
+  /** Drop any pending plan question set when the task leaves planning, without waking the agent. */
+  async clearQuestions(taskId: string): Promise<void> {
+    const store = this.planQuestions.get(taskId);
+    if (store !== undefined) await store.clearPending();
+  }
+
   async remove(taskId: string): Promise<void> {
     const pending = this.opening.get(taskId);
     if (pending !== undefined) {
@@ -1886,6 +1894,7 @@ export class TaskAgentManager {
     const session = this.sessions.get(taskId);
     this.sessions.delete(taskId);
     this.lastUsed.delete(taskId);
+    this.planQuestions.delete(taskId);
     if (session !== undefined) await session.close();
     await rm(this.taskDir(taskId), { recursive: true, force: true });
   }
@@ -1897,6 +1906,7 @@ export class TaskAgentManager {
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
     this.lastUsed.clear();
+    this.planQuestions.clear();
     // A deploy is not a stop: leave every live plan turn for the next boot to resume.
     await Promise.all(
       sessions.map((session) =>
@@ -2033,6 +2043,7 @@ export class TaskAgentManager {
     const markerStore = new RunMarkerStore(dir, "run.json");
     const questions = new TaskQuestionsStore(join(dir, "questions.json"));
     await questions.load();
+    this.planQuestions.set(taskId, questions);
     const storage = await openNodeSqliteStorage(databasePath);
     const registry = createRegistry<ToolRegistration>();
     const coding =

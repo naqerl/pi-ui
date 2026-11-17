@@ -282,6 +282,17 @@ export class TaskQuestionsStore {
     return result;
   }
 
+  /** Drop a pending set without recording an answer, for a task that stopped planning. */
+  async clearPending(): Promise<boolean> {
+    const hadPending = await this.mutate(() => {
+      const pending = this.state.pending !== null;
+      this.state.pending = null;
+      return pending;
+    });
+    if (hadPending) this.notifyChanged();
+    return hadPending;
+  }
+
   /** Wake the tool that is waiting on this set, after its transcript row is committed. */
   resolve(setId: string, result: QuestionAnswerResult): void {
     const listeners = this.waiters.get(setId);
