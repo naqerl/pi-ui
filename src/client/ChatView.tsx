@@ -2531,18 +2531,18 @@ export function ChatView({
                 pressed={planDraft}
                 onToggle={togglePlanDraft}
               />
-              <BackgroundJobsCounts
-                jobs={jobs}
-                delegates={delegates ?? []}
-                onOpen={setJobsSheet}
-                visible={chatPage}
-              />
               <DockStatusWord
                 word={statusWord}
                 running={statusRunning}
                 quiet={statusQuiet}
                 surface={dockSurface}
                 swap={dockSwap}
+              />
+              <BackgroundJobsCounts
+                jobs={jobs}
+                delegates={delegates ?? []}
+                onOpen={setJobsSheet}
+                visible={chatPage}
               />
             </div>
             <div
