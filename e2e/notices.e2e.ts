@@ -41,6 +41,20 @@ const jobNotice = (browser: Page) =>
   browser.evaluate(
     () => document.querySelector('[data-testid="chat-notice"][data-notice-kind="job"]') !== null,
   );
+
+type ChatState = {
+  run?: string;
+  messages?: Array<{
+    text?: string;
+    notice?: { kind?: string; path?: string };
+  }>;
+};
+
+const chatState = (browser: Page) =>
+  browser.evaluate(
+    async () => (await (await fetch("/api/state", { cache: "no-store" })).json()) as ChatState,
+  );
+
 describe("notice policy against one shared app", { serial: true }, () => {
   beforeEach(async ({ browser }) => {
     await browser.unrouteAll();
@@ -101,6 +115,53 @@ describe("notice policy against one shared app", { serial: true }, () => {
     expect(details).toMatch(/Exit code\s*4/);
     expect(details).toMatch(new RegExp(`Command\\s*sleep 1; echo ${marker}; exit 4`));
     expect(details).toMatch(new RegExp(`last output[\\s\\S]*${marker}`));
+  });
+
+  test("a memory write shows one memory chip and starts no follow-up turn", async ({
+    app,
+    browser,
+  }) => {
+    await browser.setViewport({ width: 390, height: 844 });
+    await app.open("/");
+    const path = `topics/projects/notice-memory-${Date.now()}.md`;
+    const body = "# Notice memory\n\na memory write must not start a follow-up turn.";
+    const status = await browser.evaluate(
+      async ({ path, body }: { path: string; body: string }) => {
+        const toolCalls = [
+          { name: "memory_write", arguments: { target: "long_term", topic: path, body } },
+        ];
+        const response = await fetch("/api/message", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text: `TOOLCALLS ${JSON.stringify(toolCalls)}` }),
+        });
+        return response.status;
+      },
+      { path, body },
+    );
+    expect(status).toBe(202);
+
+    await expect
+      .poll(
+        async () =>
+          (await notices(browser)).filter(
+            (notice) => notice.kind === "memory" && notice.summary.includes(path),
+          ).length,
+        { timeout: 60_000 },
+      )
+      .toBe(1);
+    await expect
+      .poll(async () => (await chatState(browser)).run ?? "", { timeout: 60_000 })
+      .toBe("idle");
+
+    // The delta prompt is the only thing that makes the fake model answer with this text.
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    const state: ChatState = await chatState(browser);
+    expect(state.run).toBe("idle");
+    const messages = state.messages ?? [];
+    expect(messages.filter((message) => message.notice?.kind === "memory")).toHaveLength(1);
+    expect(messages.filter((message) => message.notice?.kind === "memory-delta")).toHaveLength(0);
+    expect(messages.some((message) => message.text?.includes("memory delta nudge"))).toBe(false);
   });
   const at = (second: number) => new Date(Date.UTC(2026, 9, 30, 9, 0, second)).toISOString();
   const interruptedNote =

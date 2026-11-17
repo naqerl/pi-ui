@@ -31,8 +31,6 @@ import {
   MCP_EVENTS_HEAD,
   MCP_EVENTS_TRAILER,
   MCP_STATUS_HEAD,
-  type MemoryDeltaTopic,
-  memoryDeltaPrompt,
   type OperatorNoticeRecord,
   parseMcpEventPayload,
   parseNotice,
@@ -111,6 +109,7 @@ import {
   JOB_NOTICE_ENTRY_KIND,
   latestSessionReset,
   MCP_NOTICE_ENTRY_KIND,
+  // legacy: read-only, existing transcripts only
   MEMORY_DELTA_ENTRY_KIND,
   recordDurableRepairNotice,
   SESSION_CONTEXT,
@@ -561,20 +560,6 @@ function entryWithQueueKey(entry: InputEntry, key: string | undefined): InputEnt
   return { kind: entry.kind, data: { ...data, queueKey: key } as InputEntry["data"] };
 }
 
-/** The topic details a long-term memory write contributes to the tail delta. */
-function memoryDeltaTopic(record: MemoryWriteRecord): MemoryDeltaTopic | undefined {
-  if (!record.path.startsWith("topics/")) return undefined;
-  const heading = /^#{1,3} (.+)$/m.exec(record.text)?.[1]?.trim();
-  const title =
-    record.title?.trim() || heading || record.path.split("/").at(-1)?.replace(/\.md$/, "");
-  return {
-    path: record.path,
-    title: title === undefined || title.length === 0 ? "Untitled" : title,
-    chars: record.chars ?? record.text.length,
-    updated: record.updated ?? new Date().toISOString().slice(0, 10),
-  };
-}
-
 /** The short chip text for a queued application entry. */
 function entryNoticeLabel(kind: string, label?: string): string {
   if (label !== undefined && label.trim().length > 0) return label.trim();
@@ -616,11 +601,6 @@ export class ChatService {
   private lastMcpNoticeText: string | null = null;
   /** Proposal ids whose decision already reached the conversation. */
   private readonly taskDecisions = new Set<string>();
-  /** Long-term topics written during this turn, keyed by path so the tail delta is one line. */
-  private readonly memoryDeltas = new Map<string, MemoryDeltaTopic>();
-  /** Stable id for the pending delta batch, so a retry never appends a second notice. */
-  private memoryDeltaId: string | undefined;
-  private flushingMemoryDelta = false;
   private readonly activeTools = new Map<string, ActiveTool>();
   private stream: ConversationWatch | undefined;
   private closed = false;
@@ -713,7 +693,6 @@ export class ChatService {
   private readonly clientMessages = new Map<string, ChatMessage>();
   private readonly decisionProposals = new Set<string>();
   private readonly promptedDecisions = new Set<string>();
-  private readonly memoryDeltaIds = new Set<string>();
   private readonly mediaRef = (data: string, mimeType: string) => this.media.refFor(data, mimeType);
 
   constructor(
@@ -1334,7 +1313,6 @@ export class ChatService {
     }
     this.noteUsage(entry);
     this.noteDecision(entry);
-    this.noteMemoryDelta(entry);
     this.noteReset(entry);
     const key = clientKeyFromEntry(entry);
     if (key !== undefined) {
@@ -1371,11 +1349,6 @@ export class ChatService {
         this.promptedDecisions.add(proposalId);
     }
     if (entry.kind === TASK_DECISION_PROMPT_ENTRY_KIND) this.promptedDecisions.add(proposalId);
-  }
-
-  private noteMemoryDelta(entry: EntryRecord): void {
-    if (entry.kind !== MEMORY_DELTA_ENTRY_KIND || !isRecord(entry.data)) return;
-    if (typeof entry.data.deltaId === "string") this.memoryDeltaIds.add(entry.data.deltaId);
   }
 
   private noteReset(entry: EntryRecord): void {
@@ -2670,58 +2643,14 @@ export class ChatService {
   }
 
   /**
-   * Shows a memory write as a persistent chat chip and remembers a long-term
-   * topic write for the one tail delta this turn publishes. The chip never
-   * changes the model context; the delta does, so it is coalesced by path.
+   * Shows a memory write as a persistent chat chip. It never changes the model
+   * context: the tool result is the model's confirmation, and a long-term write
+   * still rebuilds the snapshot for the next day rollover / compaction.
    */
   async recordMemoryWrite(record: MemoryWriteRecord): Promise<void> {
-    const topic = memoryDeltaTopic(record);
-    if (topic !== undefined) {
-      this.memoryDeltas.set(topic.path, topic);
-      this.memoryDeltaId ??= randomUUID();
-    }
     const message = await appendMemoryWriteNotice(this.conversation, record);
     if (message === undefined) return;
     this.hub.broadcast({ event: "notice", data: { message } satisfies StreamNotice });
-  }
-
-  /**
-   * Publishes the long-term writes collected during this turn as one compact
-   * notice at the tail through the normal queue path. The entry carries a
-   * stable batch id, so an ambiguous or retried submit is a no-op once the
-   * entry exists. Pending writes are cleared only after that confirmation.
-   */
-  async flushMemoryDelta(): Promise<void> {
-    if (this.flushingMemoryDelta || this.memoryDeltas.size === 0) return;
-    this.flushingMemoryDelta = true;
-    const deltaId = this.memoryDeltaId ?? randomUUID();
-    this.memoryDeltaId = deltaId;
-    const topics = [...this.memoryDeltas.values()];
-    const text = memoryDeltaPrompt(topics);
-    const createdAt = new Date().toISOString();
-    try {
-      await this.syncTranscript();
-      const recorded = this.memoryDeltaIds.has(deltaId);
-      if (!recorded) {
-        await this.submit(text, "queue", {
-          entry: {
-            kind: MEMORY_DELTA_ENTRY_KIND,
-            label: "Memory updated",
-            data: { deltaId, text, topics, createdAt },
-          },
-        });
-      }
-      for (const topic of topics) {
-        if (this.memoryDeltas.get(topic.path) === topic) this.memoryDeltas.delete(topic.path);
-      }
-      if (this.memoryDeltas.size === 0) this.memoryDeltaId = undefined;
-      else this.memoryDeltaId = randomUUID();
-    } catch (error) {
-      // Keep the same id and topics so a retry can recognise an ambiguous append.
-      console.error("[pi] could not publish the memory delta", error);
-    } finally {
-      this.flushingMemoryDelta = false;
-    }
   }
 
   /** Shows a notify_operator call as a persistent chat chip without placing a user message. */
@@ -3139,8 +3068,7 @@ export class ChatService {
 
       case "run_end":
         this.setRunState("idle");
-        // Both read the store. Awaiting them here holds the watch drain for the whole turn's tail.
-        void this.flushMemoryDelta();
+        // Reads the store. Awaiting it here holds the watch drain for the whole turn's tail.
         void this.drainQueuedInputs();
         return;
 
@@ -3169,6 +3097,7 @@ export class ChatService {
           event.entry.kind === QUEUE_ENTRY_KIND ||
           event.entry.kind === MCP_NOTICE_ENTRY_KIND ||
           event.entry.kind === DELEGATE_NOTICE_ENTRY_KIND ||
+          // legacy: read-only, existing transcripts only
           event.entry.kind === MEMORY_DELTA_ENTRY_KIND ||
           event.entry.kind === TASK_DECISION_ENTRY_KIND ||
           event.entry.kind === IDLE_NUDGE_ENTRY_KIND

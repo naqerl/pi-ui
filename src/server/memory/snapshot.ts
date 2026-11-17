@@ -120,8 +120,9 @@ export function composeInstructions(base: string, block: string): string {
  * Rebuilds the injected block at a checkpoint but keeps the live instructions
  * stable. Only a first turn, a day rollover and a compaction reconfigure the
  * conversation; a long-term topic write updates the cache for the next forced
- * rebuild and is announced as a tail delta instead. Daily and scratchpad writes
- * leave the prefix untouched.
+ * rebuild and shows the operator one memory chip. The model learns nothing
+ * beyond its tool result until that rollover or compaction. Daily and
+ * scratchpad writes leave the prefix untouched.
  */
 export class SnapshotController {
   private lastInstructions: string | undefined;
