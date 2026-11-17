@@ -124,6 +124,7 @@ import {
 import type { SseFrame } from "./sse.js";
 import type { StreamHub } from "./stream-hub.js";
 import type { TaskActivityTracker } from "./task-activity.js";
+import { diffToolSlots, isTerminalSlot, type ToolSlotEndResult } from "./tool-frames.js";
 import { type WindowRequest, windowTranscript } from "./transcript-window.js";
 
 type IdleTaskSource = () => readonly IdleTask[] | readonly string[];
@@ -148,21 +149,7 @@ type ViewSnapshot = {
   inbox: readonly unknown[];
 };
 
-type ViewToolEndResult = {
-  output?: string;
-  details?: unknown;
-  isError?: boolean;
-  durationMs?: number;
-};
-
-/** A repaired slot uses `interrupted`, which is terminal even though durable's ToolSlot type omits it. */
-function isInterruptedSlot(slot: Pick<ToolSlot, "status"> | undefined): boolean {
-  return (slot?.status as string | undefined) === "interrupted";
-}
-
-function isTerminalSlot(slot: Pick<ToolSlot, "status">): boolean {
-  return slot.status === "done" || isInterruptedSlot(slot);
-}
+type ViewToolEndResult = ToolSlotEndResult;
 
 type ViewEvent =
   | ViewSnapshot
@@ -3015,122 +3002,26 @@ export class ChatService {
     view: ConversationView,
     previousLive: LiveState | undefined,
   ): Promise<void> {
-    const previous = new Map((previousLive?.tools ?? []).map((slot) => [slot.callId, slot]));
-    const current = new Map(
-      ((view.docs["pi.live"] as LiveState | undefined)?.tools ?? []).map((slot) => [
-        slot.callId,
-        slot,
-      ]),
-    );
-    const argumentsByCall = this.toolArguments(view.entries);
-    for (const slot of current.values()) {
-      const before = previous.get(slot.callId);
-      const args = argumentsByCall.get(slot.callId)?.arguments ?? {};
-      if (isInterruptedSlot(slot)) {
-        if (before !== undefined && !isTerminalSlot(before)) {
-          const entry = this.entryById(view.entries, slot.entry);
-          const result = this.toolResultFromSlot(slot);
-          await this.handleEvent({
-            type: "tool_execution_end",
-            toolCallId: slot.callId,
-            toolName: slot.name,
-            args,
-            ...(entry === undefined ? {} : { entry }),
-            ...(result === undefined ? {} : { result }),
-          });
-        }
-        continue;
-      }
-      if (slot.status === "running" && before?.status !== "running") {
+    const live = view.docs["pi.live"] as LiveState | undefined;
+    for (const frame of diffToolSlots(view.entries, previousLive, live)) {
+      if (frame.type === "start") {
         await this.handleEvent({
           type: "tool_execution_start",
-          toolCallId: slot.callId,
-          toolName: slot.name,
-          args,
+          toolCallId: frame.toolCallId,
+          toolName: frame.toolName,
+          args: frame.args,
         });
+        continue;
       }
-      if (slot.status === "done" && before?.status !== "done") {
-        // A call that went pending (or appeared and finished) between two view revisions
-        // never got its start event; send one so the client has a chip to update.
-        if (before?.status !== "running") {
-          await this.handleEvent({
-            type: "tool_execution_start",
-            toolCallId: slot.callId,
-            toolName: slot.name,
-            args,
-          });
-        }
-        const entry = this.entryById(view.entries, slot.entry);
-        const result = this.toolResultFromSlot(slot);
-        await this.handleEvent({
-          type: "tool_execution_end",
-          toolCallId: slot.callId,
-          toolName: slot.name,
-          args,
-          ...(entry === undefined ? {} : { entry }),
-          ...(result === undefined ? {} : { result }),
-        });
-      }
-    }
-    for (const before of previous.values()) {
-      if (before.status === "done" || current.has(before.callId)) continue;
-      const entry = this.findToolResultEntry(view.entries, before.callId);
-      const result = this.toolResultFromSlot(before);
       await this.handleEvent({
         type: "tool_execution_end",
-        toolCallId: before.callId,
-        toolName: before.name,
-        args: argumentsByCall.get(before.callId)?.arguments ?? {},
-        ...(entry === undefined ? {} : { entry }),
-        ...(result === undefined ? {} : { result }),
+        toolCallId: frame.toolCallId,
+        toolName: frame.toolName,
+        args: frame.args,
+        ...(frame.entry === undefined ? {} : { entry: frame.entry }),
+        ...(frame.result === undefined ? {} : { result: frame.result }),
       });
     }
-  }
-
-  /** What a done tool slot still has when its result entry is missing (faulted, orphaned, or folded away). */
-  private toolResultFromSlot(slot: ToolSlot): ViewToolEndResult | undefined {
-    if (slot.output === undefined && slot.details === undefined) return undefined;
-    return {
-      ...(slot.output === undefined ? {} : { output: slot.output }),
-      ...(slot.details === undefined ? {} : { details: slot.details }),
-      isError: (slot.diagnostics?.length ?? 0) > 0,
-    };
-  }
-
-  private toolArguments(
-    entries: readonly EntryRecord[],
-  ): Map<string, { name: string; arguments: unknown }> {
-    const calls = new Map<string, { name: string; arguments: unknown }>();
-    for (const entry of entries) {
-      if (!AssistantEntry.is(entry)) continue;
-      const content = entry.model?.[0]?.content;
-      if (!Array.isArray(content)) continue;
-      for (const block of content) {
-        if (!isRecord(block) || block.type !== "toolCall" || typeof block.id !== "string") continue;
-        calls.set(block.id, {
-          name: typeof block.name === "string" ? block.name : "tool",
-          arguments: block.arguments,
-        });
-      }
-    }
-    return calls;
-  }
-
-  private entryById(
-    entries: readonly EntryRecord[],
-    id: EntryRecord["id"] | undefined,
-  ): EntryRecord | undefined {
-    return id === undefined ? undefined : entries.find((entry) => entry.id === id);
-  }
-
-  private findToolResultEntry(
-    entries: readonly EntryRecord[],
-    toolCallId: string,
-  ): EntryRecord | undefined {
-    return entries.find((entry) => {
-      const message = entry.model?.[0];
-      return message !== undefined && "toolCallId" in message && message.toolCallId === toolCallId;
-    });
   }
 
   /** A queued bubble retires when its entry is placed, after the placed message is published. */

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type {
   ActivityItem,
   ContextUsage,
@@ -11,6 +11,7 @@ import type {
   TaskQuestionSet,
   UsageSummary,
 } from "../shared/types";
+import { subscribeTaskChatEvents, subscribeTaskChatLiveness } from "./task-chat-events";
 import type { ChatTransport, QueueMutation, TransportSendResult } from "./use-chat";
 import { useChat } from "./use-chat";
 
@@ -70,6 +71,80 @@ function inertStream(): EventSource {
     removeEventListener: () => undefined,
     close: () => undefined,
   } as unknown as EventSource;
+}
+
+/**
+ * The plan pane's stream is a shim over the one main EventSource. It subscribes to the
+ * relayed `task.chat` frames for this task and re-emits them under their inner event names,
+ * so `useChat` reduces a plan run with the same code as the main conversation. Subscribe
+ * first, snapshot second: `useChat` opens the stream before its first `readSnapshot`.
+ */
+function createTaskStream(taskId: string): EventSource {
+  let closed = false;
+  const listeners = new Map<
+    string,
+    Map<EventListenerOrEventListenerObject, (event: Event) => void>
+  >();
+  const dispatch = (type: string, data: unknown) => {
+    const event = { type, data: JSON.stringify(data) } as MessageEvent<string>;
+    for (const listener of listeners.get(type)?.values() ?? []) listener(event);
+  };
+  const shim = {
+    CONNECTING: 0,
+    OPEN: 1,
+    CLOSED: 2,
+    readyState: 0,
+    url: "/api/stream",
+    withCredentials: false,
+    onopen: null,
+    onerror: null,
+    onmessage: null,
+    addEventListener(type: string, listener: EventListenerOrEventListenerObject | null) {
+      if (listener === null) return;
+      const registered =
+        listeners.get(type) ??
+        new Map<EventListenerOrEventListenerObject, (event: Event) => void>();
+      registered.set(listener, (event) => {
+        if (typeof listener === "function") listener(event);
+        else listener.handleEvent(event);
+      });
+      listeners.set(type, registered);
+    },
+    removeEventListener(type: string, listener: EventListenerOrEventListenerObject | null) {
+      if (listener === null) return;
+      listeners.get(type)?.delete(listener);
+    },
+    dispatchEvent: () => true,
+    close() {
+      if (closed) return;
+      closed = true;
+      stopFrames();
+      stopLiveness();
+      (shim as { readyState: number }).readyState = 2;
+    },
+  } as unknown as EventSource;
+  const stopFrames = subscribeTaskChatEvents((frame) => {
+    if (!closed) dispatch(frame.event, frame.data);
+  }, taskId);
+  // The heartbeat subscription replays the newest frame immediately; hold it until
+  // `useChat` has registered its listener on the opening microtask.
+  let opening = true;
+  let firstLiveness: unknown;
+  const stopLiveness = subscribeTaskChatLiveness((data) => {
+    if (opening) {
+      firstLiveness = data;
+      return;
+    }
+    if (!closed) dispatch("liveness", data);
+  });
+  queueMicrotask(() => {
+    if (closed) return;
+    opening = false;
+    (shim as { readyState: number }).readyState = 1;
+    shim.onopen?.call(shim, new Event("open"));
+    if (firstLiveness !== undefined) dispatch("liveness", firstLiveness);
+  });
+  return shim;
 }
 
 function createTaskTransport(
@@ -189,7 +264,7 @@ function createTaskTransport(
       }).catch(() => undefined);
     },
     openStream() {
-      return fixture ? inertStream() : new EventSource(`${base}/stream`);
+      return fixture ? inertStream() : createTaskStream(taskId);
     },
   };
 }
@@ -198,22 +273,19 @@ export function useTaskChat(taskId: string, closed: boolean) {
   const [questions, setQuestions] = useState<TaskQuestionSet | null>(null);
   const [error, setError] = useState<string | null>(null);
   const answeredSets = useRef(new Set<string>());
+  const applyQuestions = useCallback((next: TaskQuestionSet | null) => {
+    setQuestions(next !== null && answeredSets.current.has(next.id) ? null : next);
+  }, []);
   const transport = useMemo(
-    () =>
-      createTaskTransport(taskId, (next) => {
-        setQuestions(next !== null && answeredSets.current.has(next.id) ? null : next);
-      }),
-    [taskId],
+    () => createTaskTransport(taskId, applyQuestions),
+    [taskId, applyQuestions],
   );
-  const chat = useChat({ transport });
-  const { refresh, running, dismissRunError } = chat;
-
-  // The plan agent can ask a question mid-run without a transcript row, so poll while it works.
-  useEffect(() => {
-    if (!running || closed) return;
-    const timer = setInterval(() => void refresh(), 1_000);
-    return () => clearInterval(timer);
-  }, [closed, refresh, running]);
+  const chat = useChat({
+    transport,
+    onQuestions: applyQuestions,
+    publishLiveness: false,
+  });
+  const { refresh, dismissRunError } = chat;
 
   const send = useCallback(
     async (text: string, attachments: string[] = [], mode: MessageMode = "queue") => {
@@ -274,6 +346,7 @@ export function useTaskChat(taskId: string, closed: boolean) {
   return {
     timeline: chat.timeline,
     running: chat.running,
+    quiet: chat.quiet,
     thinking: chat.thinking,
     interrupted: chat.interrupted,
     ready: chat.ready,

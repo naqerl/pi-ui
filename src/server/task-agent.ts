@@ -48,6 +48,7 @@ import {
   type RunError,
   type RunState,
   STEER_ENTRY_KIND,
+  type StreamQuestions,
   type StreamRunState,
   type SubmitMessageResponse,
   type Task,
@@ -59,11 +60,12 @@ import type { MediaStore } from "./media.js";
 import { buildSnapshot, composeInstructions, SnapshotCache } from "./memory/snapshot.js";
 import type { MemoryStore } from "./memory/store.js";
 import { createMemoryTools } from "./memory/tools.js";
+import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
 import { PlanTurnNotifier, type PlanTurnPushSender } from "./plan-push.js";
 import { retrySettings } from "./retry.js";
 import { type RunMarker, RunMarkerStore } from "./run-marker.js";
 import { RunErrorNotifier, type RunErrorPushInput, type RunErrorPushSender } from "./run-push.js";
-import { buildTranscript, SESSION_CONTEXT } from "./session.js";
+import { buildTranscript, SESSION_CONTEXT, toolActivityFromEntry } from "./session.js";
 import type { SseFrame } from "./sse.js";
 import { StreamHub } from "./stream-hub.js";
 import {
@@ -73,6 +75,7 @@ import {
 } from "./task-questions.js";
 import { createProposeTaskTool } from "./task-tools.js";
 import { TaskError, type TaskStore } from "./tasks.js";
+import { diffToolSlots, type ToolSlotFrame } from "./tool-frames.js";
 
 /**
  * The only tools a task planning agent may call: inspect the repo, edit its task,
@@ -150,7 +153,6 @@ export interface TaskAgentSession {
   /** Persist the live turn and close the harness without aborting it. */
   shutdown?(): Promise<void>;
   close(): Promise<void>;
-  replayFrames(): SseFrame[];
   applyInstructions?(instructions: string): Promise<void>;
   /** The pending set for the answer panel, or null when nothing waits. */
   pendingQuestions?(): Promise<TaskQuestionSet | null>;
@@ -626,6 +628,7 @@ export class DurableTaskAgentSession implements TaskAgentSession {
   private markerWrites: Promise<void> = Promise.resolve();
   /** True while shutting down, so an idle state cannot clear the marker being flushed. */
   private shuttingDown = false;
+  private readonly stopQuestionChanges: (() => void) | undefined;
 
   constructor(
     readonly taskId: string,
@@ -638,7 +641,23 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     private readonly onTurnFinished?: (taskId: string) => void | Promise<void>,
     private readonly onRunError?: (input: RunErrorPushInput) => void | Promise<void>,
     private readonly markerStore?: RunMarkerStore,
-  ) {}
+  ) {
+    this.stopQuestionChanges = questions?.subscribe(() => {
+      void this.publishQuestions();
+    });
+  }
+
+  /** The pending set is durable state, not a tool result: publish it as soon as it changes. */
+  private async publishQuestions(): Promise<void> {
+    if (this.closed || this.questions === undefined) return;
+    try {
+      const questions = await this.questions.pending();
+      if (this.closed) return;
+      this.emit({ event: "questions", data: { questions } satisfies StreamQuestions });
+    } catch (error) {
+      console.error(`[task-agent] could not publish questions for ${this.taskId}`, error);
+    }
+  }
 
   private readonly mediaRef = (data: string, mimeType: string) =>
     this.media?.refFor(data, mimeType);
@@ -650,17 +669,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
 
   running(): boolean {
     return this.runState === "running";
-  }
-
-  replayFrames(): SseFrame[] {
-    const revision = this.bumpDraft();
-    return [
-      {
-        event: "draft.sync",
-        data: { text: this.currentText, thinking: this.currentThinking, revision },
-      },
-      { event: "run.state", data: this.runStatus() },
-    ];
   }
 
   private runStatus(): StreamRunState {
@@ -845,8 +853,19 @@ export class DurableTaskAgentSession implements TaskAgentSession {
       this.setRunState(running ? "running" : "idle");
     }
 
+    for (const frame of diffToolSlots(view.entries, previousLive, live)) {
+      this.emitToolFrame(frame);
+    }
+
     if (newEntries.length > 0) {
       const built = buildTranscript(newEntries, this.mediaRef);
+      // A job result belongs on the activity surface even while the run is live; durable
+      // committed it already, so the row matches the one a later snapshot will build.
+      for (const activity of built.activity) {
+        if (activity.kind === "job") {
+          this.emit({ event: "activity", data: { activity } });
+        }
+      }
       // A placed steer leaves the pending list in the same update as its transcript row.
       // Otherwise a snapshot read before this entry still lists it, and the client would
       // rebuild the pending bubble beside the delivered row.
@@ -865,6 +884,51 @@ export class DurableTaskAgentSession implements TaskAgentSession {
       });
       if (consumedSteer) this.broadcastQueue();
     }
+  }
+
+  /** Emit the same tool frames the main chat publishes, using the committed result row when present. */
+  private emitToolFrame(frame: ToolSlotFrame): void {
+    if (frame.type === "start") {
+      this.emit({
+        event: "tool.start",
+        data: {
+          toolCallId: frame.toolCallId,
+          name: frame.toolName,
+          arguments: frame.args,
+          timestamp: new Date().toISOString(),
+        },
+      });
+      return;
+    }
+    const committed =
+      frame.entry === undefined ? undefined : toolActivityFromEntry(frame.entry, frame.args);
+    const result = frame.result;
+    // This is the same fallback `ChatService.toolActivity` uses when no committed row exists.
+    const activity = committed ?? {
+      kind: "tool" as const,
+      id: `local-${frame.toolCallId}`,
+      toolCallId: frame.toolCallId,
+      name: frame.toolName,
+      arguments: formatToolArguments(frame.args),
+      output: result?.output === undefined ? "The tool did not finish." : formatToolResult(result),
+      details: formatToolDetails(result?.details),
+      isError: result?.isError ?? true,
+      durationMs: result?.durationMs,
+      timestamp: new Date().toISOString(),
+      order: Number.MAX_SAFE_INTEGER,
+    };
+    this.emit({
+      event: "tool.end",
+      data: {
+        toolCallId: frame.toolCallId,
+        name: activity.name,
+        isError: activity.isError,
+        output: activity.output,
+        durationMs: activity.durationMs,
+        timestamp: activity.timestamp,
+        activity,
+      },
+    });
   }
 
   /** Takes a tracked steer off the queue when its transcript entry carries the same key. */
@@ -1350,6 +1414,7 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     this.closed = true;
     this.stopRequested = true;
     this.shuttingDown = true;
+    this.stopQuestionChanges?.();
     void this.watch?.stop();
     this.watch = undefined;
     await this.clearMarker();

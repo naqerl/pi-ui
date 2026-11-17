@@ -23,6 +23,7 @@ export function App() {
     <ChatView
       timeline={chat.timeline}
       running={chat.running}
+      quiet={chat.quiet}
       thinking={chat.thinking}
       interrupted={chat.interrupted}
       runError={chat.runError}

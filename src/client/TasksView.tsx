@@ -49,11 +49,9 @@ import { TaskPlanningBadge } from "./TaskPlanningBadge";
 import { removeTask, type TaskOutcome, updateTask } from "./task-client";
 import { FIXTURE_PLAN_ID, mergeFixtureTasks } from "./task-detail-fixture";
 import { useTaskDetailFixture } from "./task-detail-query";
-import { useRegisterTaskSurfaceStatus } from "./task-dock-composer";
 import { TaskLinkProvider } from "./task-link";
 import { useTaskMedia } from "./use-task-media";
 import { useWide, WIDE_QUERY } from "./use-wide";
-import { taskStatusWord } from "./working-state";
 
 export { useWide, WIDE_QUERY };
 
@@ -476,18 +474,6 @@ function TasksViewImpl({
       : tasks.find((task) => task.id === openTaskId);
   const reopenTask =
     reopenTaskId === null ? undefined : tasks.find((task) => task.id === reopenTaskId);
-  // The tasks page owns its status: the open task's plan run, or nothing when no task is open.
-  const openTaskStatus = useMemo(() => {
-    if (openTask === undefined) return null;
-    const word = taskStatusWord(
-      openTask.id,
-      planning.has(openTask.id) &&
-        (isActiveStatus(openTask.status) || openTask.status === "planning"),
-    );
-    return word === null ? null : { taskId: openTask.id, word };
-  }, [openTask, planning]);
-  useRegisterTaskSurfaceStatus(openTaskStatus);
-
   // A narrow detail is a history entry of its own, so the OS back gesture closes
   // it. Replacing an open detail keeps one entry, not a stack of them.
   const openDetail = useCallback(

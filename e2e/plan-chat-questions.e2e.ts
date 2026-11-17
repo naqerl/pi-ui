@@ -547,8 +547,9 @@ test("the plan chat renders the same activity surface as the chat page", {
   timeout: 300_000,
 }, async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 1280, height: 900 });
+  // The tool sleeps so the run stays live long enough to sample its clock.
   const prompt = `TOOLCALLS ${JSON.stringify([
-    { name: "bash", arguments: { command: "printf plan-activity" } },
+    { name: "bash", arguments: { command: "sleep 4; printf plan-activity" } },
   ])}`;
 
   await app.open("/");
@@ -581,6 +582,11 @@ test("the plan chat renders the same activity surface as the chat page", {
   expect(await postPlanMessage(browser, taskId, prompt)).toBe(202);
   const transcript = screen.getByTestId("task-agent-transcript");
   await expect(transcript.getByTestId("run-info")).toBeVisible({ timeout: 60_000 });
+  // A plan run is live data: its duration counts up instead of freezing until the next frame.
+  const liveSummary = transcript.getByTestId("run-info-summary");
+  const before = await liveSummary.textContent();
+  await new Promise((resolve) => setTimeout(resolve, 1_200));
+  expect(await liveSummary.textContent()).not.toBe(before);
   await expect(screen.getByTestId("working-status")).toHaveText("idle", { timeout: 60_000 });
   await expect(screen.getByTestId("task-agent-status")).toHaveCount(0);
   const plan = await readActivitySurface(browser, '[data-testid="task-agent-transcript"]');

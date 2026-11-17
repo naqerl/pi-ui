@@ -1,3 +1,9 @@
+## 1.8.1
+
+### Added
+
+- Swiping the mobile task detail body moves between Plan and Chat, following the finger and snapping like a page turn. A wide table or code block still pans itself while it can move; at the tab edges the gesture chains to the page pager, so right on Plan still leaves the detail.
+
 ## 1.8.0
 
 ### Added
