@@ -69,9 +69,17 @@ function defersToScroller(element: HTMLElement, direction: 1 | -1): boolean {
   return element.scrollLeft > 0;
 }
 
-/** An active grid gesture (drag or resize) owns the pointer; the pager stays out. */
-function lockedByChild(node: HTMLElement): boolean {
-  return node.querySelector("[data-pager-lock]") !== null;
+/**
+ * An active nested gesture (a dashboard drag or resize, or the task-detail tab
+ * surface) owns the pointer. The lock belongs to the event's own path, not to
+ * every gesture under the pager: an offscreen tab surface must not lock a page
+ * swipe after the reader has moved to another page. A nested pager's own root
+ * lock is its parent's concern, so only descendants count.
+ */
+function lockedByTarget(target: EventTarget | null, root: HTMLElement): boolean {
+  if (!(target instanceof Element)) return false;
+  const lock = target.closest("[data-pager-lock]");
+  return lock !== null && lock !== root && root.contains(lock);
 }
 
 interface PagerOptions {
@@ -160,7 +168,7 @@ export function usePager(count: number, initial = 0, options: PagerOptions = {})
       gesture.current = null;
       setDragging(false);
       setDragX(0);
-      if (lockedByChild(node)) {
+      if (lockedByTarget(event.target, node)) {
         tracking = false;
         return;
       }
@@ -183,7 +191,7 @@ export function usePager(count: number, initial = 0, options: PagerOptions = {})
       if (touch === undefined) return;
       // A dashboard drag or resize has taken this gesture. Suppress the native
       // pan, but do not page.
-      if (lockedByChild(node)) {
+      if (lockedByTarget(event.target, node)) {
         if (event.cancelable) event.preventDefault();
         tracking = false;
         setDragging(false);
@@ -267,7 +275,7 @@ export function usePager(count: number, initial = 0, options: PagerOptions = {})
     const onWheel = (event: WheelEvent) => {
       // A nested gesture surface (such as the task-detail tabs) owns the
       // sideways movement inside its own bounds.
-      if (lockedByChild(node)) return;
+      if (lockedByTarget(event.target, node)) return;
       if (Math.abs(event.deltaX) < 24) return;
       if (Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
       // A horizontal trackpad gesture over a wide block scrolls the block
@@ -288,7 +296,7 @@ export function usePager(count: number, initial = 0, options: PagerOptions = {})
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.pointerType !== "touch" || event.button !== 0) return;
     if (performance.now() < ignorePointerUntil.current) return;
-    if (lockedByChild(event.currentTarget)) return;
+    if (lockedByTarget(event.target, event.currentTarget)) return;
     gesture.current = {
       id: event.pointerId,
       x: event.clientX,
@@ -304,7 +312,7 @@ export function usePager(count: number, initial = 0, options: PagerOptions = {})
   const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const current = gesture.current;
     if (current === null || event.pointerId !== current.id) return;
-    if (lockedByChild(event.currentTarget)) {
+    if (lockedByTarget(event.target, event.currentTarget)) {
       gesture.current = null;
       setDragging(false);
       setDragX(0);
@@ -343,7 +351,7 @@ export function usePager(count: number, initial = 0, options: PagerOptions = {})
     const current = gesture.current;
     if (current === null || event.pointerId !== current.id) return;
     gesture.current = null;
-    if (lockedByChild(event.currentTarget)) {
+    if (lockedByTarget(event.target, event.currentTarget)) {
       setDragging(false);
       setDragX(0);
       return;

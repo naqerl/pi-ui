@@ -255,4 +255,37 @@ describeGroup("page switch scroll restore against one shared app", { serial: tru
     expect(back?.prevented).toBe(true);
     await expect(screen.getByTestId("pager")).toHaveAttribute("data-page", "chat");
   });
+
+  test("phone: an open task detail does not lock the page pager on chat", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    const phone = devices.find((device) => device.hasTouch);
+    if (phone === undefined) throw new Error("missing phone device");
+    await openThread(app, browser, screen, phone);
+
+    await switchTo(browser, screen, "tasks");
+    await screen.getByRole("button", { name: "Open Live task" }).tap();
+    await expect(screen.getByTestId("task-tab-track")).toBeVisible();
+
+    // Move to Chat while the detail stays mounted on the offscreen tasks page.
+    await switchTo(browser, screen, "chat");
+    expect(
+      await browser.evaluate(
+        () => document.querySelector('[data-testid="task-tab-track"]') !== null,
+      ),
+    ).toBe(true);
+
+    const back = await swipe(browser, {
+      target: '[data-testid="pager"]',
+      dx: -170,
+      pointerEcho: true,
+    });
+    expect(back?.pageBefore).toBe("chat");
+    expect(back?.page).toBe("tasks");
+    expect(back?.prevented).toBe(true);
+    await expect(screen.getByTestId("pager")).toHaveAttribute("data-page", "tasks");
+    await expect(screen.getByTestId("task-tab-track")).toBeVisible();
+  });
 });
