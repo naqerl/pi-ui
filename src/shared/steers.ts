@@ -7,6 +7,8 @@ export const PENDING_STEER_ORDER = Number.MAX_SAFE_INTEGER;
 /** A steer held by the server, and the reason if it was dropped before it was placed. */
 export interface PendingSteer extends QueuedMessage {
   dropped?: string;
+  /** The order frozen when the drop was reported, so the failed bubble keeps its place. */
+  droppedOrder?: number;
 }
 
 /** The chat bubble for a steer the run has not reached yet. */
@@ -27,13 +29,13 @@ export function pendingSteerMessage(steer: QueuedMessage): ChatMessage {
 }
 
 /** The failed bubble a dropped steer leaves behind, carrying the reason it never arrived. */
-export function droppedSteerMessage(steer: QueuedMessage, reason: string): ChatMessage {
+export function droppedSteerMessage(steer: PendingSteer, reason: string): ChatMessage {
   return {
     id: `steer-dropped-${steer.id}`,
     role: "user",
     text: steer.text,
     timestamp: steer.createdAt,
-    order: PENDING_STEER_ORDER,
+    order: steer.droppedOrder ?? PENDING_STEER_ORDER,
     steer: true,
     isError: true,
     steerError: reason,
@@ -61,9 +63,16 @@ export function dropSteer(
   steers: readonly PendingSteer[],
   id: string,
   reason: string,
+  order?: number,
 ): PendingSteer[] {
   return steers.map((steer) =>
-    steer.id === id && steer.dropped === undefined ? { ...steer, dropped: reason } : steer,
+    steer.id === id && steer.dropped === undefined
+      ? {
+          ...steer,
+          dropped: reason,
+          ...(order === undefined ? {} : { droppedOrder: order }),
+        }
+      : steer,
   );
 }
 
@@ -83,7 +92,13 @@ export function mergeLiveSteers(
   const held = new Map(current.map((steer) => [steer.id, steer]));
   const merged = next.map((steer): PendingSteer => {
     const previous = held.get(steer.id);
-    return previous?.dropped === undefined ? steer : { ...steer, dropped: previous.dropped };
+    return previous?.dropped === undefined
+      ? steer
+      : {
+          ...steer,
+          dropped: previous.dropped,
+          ...(previous.droppedOrder === undefined ? {} : { droppedOrder: previous.droppedOrder }),
+        };
   });
   const present = new Set(next.map((steer) => steer.id));
   for (const steer of current) {
