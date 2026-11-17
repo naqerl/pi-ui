@@ -190,7 +190,7 @@ const CHAT_EXTRA_INSTRUCTIONS = `Tasks are a shared todo ledger on the tasks pag
 
 Draw a diagram into the chat with draw_diagram (Mermaid source) and revise it later with replace_diagram and the id from the first result. If a diagram fails to parse, fix it in place with edit_diagram and the id it already has instead of redrawing the whole body. The drawing is part of your reply; do not repeat its source in your text.
 
-Long-running shell commands (builds, test suites, servers) can run in the background with job_start; list them with job_list, read their output with job_output, and stop one with job_cancel. When a job ends on its own you receive a message with its exit status and last output, so you do not need to poll.
+Long-running shell commands (builds, test suites, servers) can run in the background with job_start; list them with job_list, read their output with job_output (like read, by job id and 1-indexed line offset), and stop one with job_cancel. When a job ends on its own you receive a message with its exit status and last output, so you do not need to poll.
 
 For local work that is not a zeroshot job (config, files, host commands), hand it to a sub-agent with acp_delegate. Put the whole brief in the prompt; the sub-agent cannot see this chat. The call returns a run id and the work continues after it. End your turn. A chip arrives when that turn finishes. To give the same sub-agent a follow-up, call acp_delegate_continue with that run id. Do not start a second sub-agent to continue the first, and do not poll or wait. acp_delegate_cancel stops the current turn and leaves the session in place.
 

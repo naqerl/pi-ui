@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import type { ToolExecutionResult, ToolRegistration } from "@earendil-works/pi-durable";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import { createReadTool } from "@earendil-works/pi-durable/tools";
 import { createJobTools } from "../src/server/job-tools.js";
 import { JobManager, type JobRecord, jobNotice, tailLines } from "../src/server/jobs.js";
 
@@ -59,6 +62,31 @@ function nextNotice(jobs: JobManager): Promise<{ job: JobRecord; tail: string }>
   return new Promise((resolve) => {
     jobs.setNotifier((job, tail) => resolve({ job, tail }));
   });
+}
+
+function jobToolMap(jobs: JobManager): Map<string, ToolRegistration> {
+  return new Map(createJobTools(jobs).map((tool) => [tool.name, tool]));
+}
+
+async function runJobTool(
+  tools: Map<string, ToolRegistration>,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<ToolExecutionResult> {
+  const tool = tools.get(name);
+  assert.ok(tool);
+  const api = { env: new NodeExecutionEnv({ cwd }) };
+  return tool.execute(args as never, api as never, {} as never);
+}
+
+function resultText(result: ToolExecutionResult): string {
+  return (result.output ?? [])
+    .flatMap((item) => (item.type === "text" ? [item.text] : []))
+    .join("\n");
+}
+
+function diagnosticText(result: ToolExecutionResult): string {
+  return (result.diagnostics ?? []).map((diagnostic) => diagnostic.message).join("\n");
 }
 
 const GROUP_WAIT_MS = 20_000;
@@ -286,6 +314,7 @@ test("a job running when the server stopped is reported lost once its pid is gon
   const dir = await mkdtemp(join(tmpdir(), "pi-jobs-lost-"));
   try {
     await mkdir(join(dir, "jobs"));
+    await writeFile(join(dir, "jobs", "j7.log"), "restored\n");
     await writeFile(
       join(dir, "jobs", "jobs.json"),
       JSON.stringify({
@@ -309,6 +338,14 @@ test("a job running when the server stopped is reported lost once its pid is gon
     const jobs = new JobManager(dir, cwd);
     await jobs.load();
     assert.equal(jobs.get("j7").status, "lost");
+    assert.equal(
+      resultText(
+        await runJobTool(jobToolMap(jobs), "job_output", {
+          id: "j7",
+        }),
+      ),
+      "restored\n",
+    );
     const notice = nextNotice(jobs);
     const { job } = await notice;
     assert.equal(job.id, "j7");
@@ -326,18 +363,10 @@ test("the tools start, list, read and cancel jobs", async (t) => {
   const jobs = track(new JobManager(dataDir, cwd));
   await jobs.load();
   jobs.setNotifier(() => {});
-  const tools = new Map(createJobTools(jobs).map((tool) => [tool.name, tool]));
+  const tools = jobToolMap(jobs);
   assert.deepEqual([...tools.keys()], ["job_start", "job_list", "job_output", "job_cancel"]);
-  const run = async (name: string, args: Record<string, unknown>) => {
-    const tool = tools.get(name);
-    assert.ok(tool);
-    const result = await (
-      tool as unknown as {
-        execute(args: unknown, context: unknown): Promise<{ output: { text: string }[] }>;
-      }
-    ).execute(args, {});
-    return result.output[0]?.text ?? "";
-  };
+  const run = async (name: string, args: Record<string, unknown>) =>
+    resultText(await runJobTool(tools, name, args));
   const started = await run("job_start", { command: "echo hi; sleep 30", name: "napper" });
   const id = /Started (j\d+)/.exec(started)?.[1] ?? "";
   assert.ok(id.length > 0);
@@ -358,6 +387,109 @@ test("the tools start, list, read and cancel jobs", async (t) => {
   await waitForGroup(pid, (live) => live.length === 0, `process group ${pid} to exit`);
   await jobs.flush();
   assert.match(await run("job_output", { id: "nope" }), /Unknown job/);
+});
+
+test("job_output reads lines like read and reports empty, unknown and past-end jobs", async (t) => {
+  const { dataDir, track } = await jobStore(t);
+  const jobs = track(new JobManager(dataDir, cwd));
+  await jobs.load();
+  const tools = jobToolMap(jobs);
+  const notice = nextNotice(jobs);
+  const job = jobs.start({ command: "printf 'a\\nb\\nc\\nd\\ne\\n'", name: "lines" });
+  await notice;
+
+  const api = { env: new NodeExecutionEnv({ cwd }) };
+  const viaJob = await runJobTool(tools, "job_output", { id: job.id, offset: 2, limit: 2 });
+  const viaRead = await createReadTool().execute(
+    { path: jobs.logPath(job.id), offset: 2, limit: 2 } as never,
+    api as never,
+    {} as never,
+  );
+  assert.equal(resultText(viaJob), "b\nc");
+  assert.equal(resultText(viaJob), resultText(viaRead));
+  assert.equal(viaJob.structuredOutput, viaRead.structuredOutput);
+
+  const emptyJob = jobs.start({ command: "true", notify: false });
+  await until(() => jobs.get(emptyJob.id).status !== "running");
+  const empty = await runJobTool(tools, "job_output", { id: emptyJob.id });
+  assert.notEqual(empty.isError, true);
+  assert.equal(resultText(empty), `Job ${emptyJob.id} has no output yet.`);
+
+  const unknown = await runJobTool(tools, "job_output", { id: "nope" });
+  assert.equal(unknown.isError, true);
+  assert.match(resultText(unknown), /Unknown job nope/);
+
+  const beyond = await runJobTool(tools, "job_output", { id: emptyJob.id, offset: 999 });
+  assert.equal(beyond.isError, true);
+  assert.match(
+    resultText(beyond),
+    new RegExp(`Job ${emptyJob.id}: Offset 999 is beyond end of file \\(1 lines total\\)`),
+  );
+  await jobs.flush();
+});
+
+test("job_output pages a long log with the read continuation diagnostic", async (t) => {
+  const { dataDir, track } = await jobStore(t);
+  const jobs = track(new JobManager(dataDir, cwd));
+  await jobs.load();
+  const job = jobs.start({ command: "seq 1 5000", notify: false });
+  await until(() => jobs.get(job.id).status !== "running", 30_000, `job ${job.id} to finish`);
+  const tools = jobToolMap(jobs);
+
+  const pages: string[] = [];
+  let offset: number | undefined;
+  for (let page = 0; page < 10; page += 1) {
+    const result = await runJobTool(tools, "job_output", {
+      id: job.id,
+      ...(offset === undefined ? {} : { offset }),
+    });
+    pages.push(resultText(result));
+    if (page === 0) {
+      assert.match(pages[0] ?? "", /^1\n2\n/);
+      assert.doesNotMatch(pages[0] ?? "", /\n2001\n/);
+      assert.match(diagnosticText(result), /Use offset=\d+ to continue/);
+    }
+    const next = /Use offset=(\d+) to continue/.exec(diagnosticText(result));
+    if (next === null) break;
+    offset = Number(next[1]);
+  }
+
+  assert.ok(pages.length >= 3, "the log takes more than one read page");
+  assert.match(pages.at(-1) ?? "", /5000\n$/);
+  const joined = pages.reduce((all, page, index) => (index === 0 ? page : `${all}\n${page}`), "");
+  assert.equal(joined, await readFile(jobs.logPath(job.id), "utf8"));
+});
+
+test("job_output reads a growing log, then the same log after exit", async (t) => {
+  const { dataDir, track } = await jobStore(t);
+  const jobs = track(new JobManager(dataDir, cwd));
+  const marker = join(dataDir, "continue");
+  await jobs.load();
+  const notice = nextNotice(jobs);
+  const job = jobs.start({
+    command: `printf 'one\\n'; while [ ! -f '${marker}' ]; do sleep 0.05; done; printf 'two\\n'`,
+    notify: true,
+  });
+  const tools = jobToolMap(jobs);
+
+  let early = "";
+  await until(
+    async () => {
+      early = resultText(await runJobTool(tools, "job_output", { id: job.id }));
+      return /one/.test(early);
+    },
+    10_000,
+    `job ${job.id} to print its first line`,
+  );
+  assert.equal(jobs.get(job.id).status, "running");
+  assert.doesNotMatch(early, /two/);
+
+  await writeFile(marker, "continue\n");
+  await notice;
+  const final = resultText(await runJobTool(tools, "job_output", { id: job.id }));
+  assert.match(final, /one/);
+  assert.match(final, /two/);
+  await jobs.flush();
 });
 
 test("the job_start limit counts only jobs started by job_start", async (t) => {

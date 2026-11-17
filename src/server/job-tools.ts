@@ -3,6 +3,7 @@ import {
   type ToolExecutionResult,
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
+import { createReadTool } from "@earendil-works/pi-durable/tools";
 import { Type } from "typebox";
 import { describeJob, JobError, type JobManager } from "./jobs.js";
 
@@ -15,6 +16,18 @@ function failure(error: unknown): ToolExecutionResult {
     error instanceof JobError ? error.message : `Job tool failed: ${String(error)}`,
     true,
   );
+}
+
+/** The read tool's text semantics, with a job id in place of a path. */
+const read = createReadTool();
+
+function noOutput(value: string): ToolExecutionResult {
+  return { output: [{ type: "text", text: value }], structuredOutput: "" };
+}
+
+function isMissingLog(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "ENOENT" || code === "not_found";
 }
 
 /** Tools for long shell commands that should not hold up the turn. Not deferred. */
@@ -57,28 +70,44 @@ export function createJobTools(jobs: JobManager): ToolRegistration[] {
       },
     }),
     defineTool({
+      ...read,
+      // The read tool's repair, if any, expects a path; job_output takes an id.
+      prepareArguments: undefined,
       name: "job_output",
       description:
-        "Read a background job's combined stdout and stderr. By default returns the last 100 lines; pass tail for more or fewer lines, or offset (a byte position, e.g. the `next` value from an earlier read) to page forward from there. At most 20000 characters per read.",
+        "Read a background job's log — everything the command wrote to stdout and stderr — exactly like the read tool, but by job id instead of a path. `offset` is a 1-indexed line, `limit` caps the lines returned, and the text truncates at 2000 lines or 50 KB with the offset that continues. The log grows while the job runs and stays after it ends; output survives a server restart. Use job_list for status and exit code.",
       parameters: Type.Object({
         id: Type.String({ description: "Job id from job_start or job_list." }),
-        tail: Type.Optional(Type.Number({ description: "Lines from the end. Default 100." })),
         offset: Type.Optional(
-          Type.Number({ description: "Byte offset to read forward from instead of the tail." }),
+          Type.Number({ description: "Line number to start reading from (1-indexed)." }),
         ),
+        limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read." })),
       }),
-      async execute(args) {
+      async execute(args, api, context) {
+        const { id, offset, limit } = args;
+        let path: string;
         try {
-          const read = await jobs.output(args.id, {
-            ...(args.offset === undefined ? {} : { offset: args.offset }),
-            ...(args.tail === undefined ? {} : { tail: args.tail }),
-          });
-          const header = `${describeJob(read.job)}\nbytes ${read.from}-${read.next} of ${read.size}${
-            read.truncated ? " (more exists; page with offset)" : ""
-          } next=${read.next}`;
-          return text(`${header}\n${read.text.length > 0 ? read.text : "(no output)"}`);
+          path = jobs.logPath(id);
         } catch (error) {
           return failure(error);
+        }
+        try {
+          const result = await read.execute(
+            {
+              path,
+              ...(offset === undefined ? {} : { offset }),
+              ...(limit === undefined ? {} : { limit }),
+            },
+            api,
+            context,
+          );
+          return (result.output ?? []).length === 0
+            ? { ...result, ...noOutput(`Job ${id} has no output yet.`) }
+            : result;
+        } catch (error) {
+          if (isMissingLog(error)) return noOutput(`Job ${id} has no output yet.`);
+          const message = error instanceof Error ? error.message : String(error);
+          return text(`Job ${id}: ${message}`, true);
         }
       },
     }),

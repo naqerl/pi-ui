@@ -162,7 +162,7 @@ export class JobManager {
       // A hidden record that is no longer running belongs to a crash that had already
       // finished the command; its output was only ever meant for the foreground call.
       if (job.visible === false && job.status !== "running") {
-        await unlink(this.logPath(job.id)).catch(() => undefined);
+        await unlink(this.pathFor(job.id)).catch(() => undefined);
         changed = true;
         continue;
       }
@@ -171,7 +171,7 @@ export class JobManager {
       if (!alive(job.pid)) {
         if (job.visible === false) {
           this.jobs.delete(job.id);
-          await unlink(this.logPath(job.id)).catch(() => undefined);
+          await unlink(this.pathFor(job.id)).catch(() => undefined);
           changed = true;
         } else {
           this.finish(job, "lost", null, null);
@@ -260,8 +260,8 @@ export class JobManager {
     do {
       this.sequence += 1;
       id = `j${this.sequence}`;
-    } while (this.jobs.has(id) || existsSync(this.logPath(id)));
-    const logPath = this.logPath(id);
+    } while (this.jobs.has(id) || existsSync(this.pathFor(id)));
+    const logPath = this.pathFor(id);
     const cwd = options.cwd ?? this.cwd;
     // A new command never appends to an existing id's log, including one kept for
     // a truncated fast result.
@@ -339,7 +339,7 @@ export class JobManager {
     this.jobs.delete(id);
     this.children.delete(id);
     this.resolveExitWaiters(id, true);
-    if (options.keepLog !== true) await unlink(this.logPath(id)).catch(() => undefined);
+    if (options.keepLog !== true) await unlink(this.pathFor(job.id)).catch(() => undefined);
     this.save();
   }
 
@@ -412,7 +412,7 @@ export class JobManager {
    */
   async output(id: string, options: { offset?: number; tail?: number } = {}): Promise<JobOutput> {
     const job = this.get(id);
-    const path = this.logPath(job.id);
+    const path = this.pathFor(job.id);
     let size = 0;
     try {
       size = (await stat(path)).size;
@@ -439,14 +439,19 @@ export class JobManager {
     return { job: { ...job }, text: kept, from, next: size, size, truncated: from > 0 };
   }
 
-  /** Path of a job's combined stdout/stderr log. */
+  /** The log file for a job. Validates the id against the record, so a model argument cannot escape DATA_DIR/jobs. */
   logPath(id: string): string {
+    const job = this.get(id);
+    return this.pathFor(job.id);
+  }
+
+  private pathFor(id: string): string {
     return join(this.dir, `${id}.log`);
   }
 
   private async appendLog(id: string, text: string): Promise<void> {
     try {
-      const handle = await open(this.logPath(id), "a");
+      const handle = await open(this.pathFor(id), "a");
       await handle.write(text);
       await handle.close();
     } catch {
