@@ -266,6 +266,17 @@ export class TaskQuestionsStore {
     return result;
   }
 
+  /** Drop a pending set without recording an answer, for a task that closed. */
+  async clearPending(): Promise<boolean> {
+    const result = await this.mutate(() => {
+      const hadPending = this.state.pending !== null;
+      this.state.pending = null;
+      return hadPending;
+    });
+    if (result) this.notifyChange();
+    return result;
+  }
+
   /** Clear the pending set because the operator asked the agent to decide it itself. */
   async dismiss(setId: string): Promise<TaskQuestionSet> {
     const result = await this.mutate(() => {

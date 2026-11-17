@@ -285,13 +285,15 @@ export function derivePlanningTaskIds(
 }
 
 /**
- * Visible chat rows: user and assistant text, plus system notes. A machine notice is
- * shown only when it is a system row, so the plan chat renders answer/dismiss chips
- * without turning user notices into bubbles. Never tool-call lists.
+ * Visible chat rows: user and assistant text, plus system notes. The only machine notice
+ * a plan transcript renders is the question answer/dismiss chip; other notices stay out
+ * so the plan chat keeps its old review surface. Never tool-call lists.
  */
 export function visibleTaskAgentMessages(messages: readonly ChatMessage[]): ChatMessage[] {
   return messages.filter((message) => {
-    if (message.notice !== undefined && message.role !== "system") return false;
+    if (message.notice !== undefined) {
+      return message.role === "system" && message.notice.kind === "questions";
+    }
     return message.role === "user" || message.role === "assistant" || message.role === "system";
   });
 }
@@ -488,7 +490,7 @@ export function createTaskQuestionTools(options: {
     defineTool({
       name: "ask_questions",
       description:
-        "Register a structured question set for the operator and return immediately. Investigate first and ask only genuinely unobvious scope-level questions; at most 3, each with 2–4 concrete options and your recommended option named in the detail. Never wait for answers: keep working or end the turn, and the answers arrive as a notice.",
+        "Register a structured question set for the operator and return immediately. Investigate first and decide naming, file layout, data shape, library choice, defaults and anything the repo or task body already answers yourself; ask only genuinely unobvious scope-level questions. At most 3, each with 2–4 concrete options and your recommended option named in the detail. Never wait for answers: keep working or end the turn, and the answers arrive as a notice.",
       parameters: questionsSchema,
       replay: "safe",
       async execute(args, api) {
@@ -518,7 +520,7 @@ export function createTaskQuestionTools(options: {
     defineTool({
       name: "append_questions",
       description:
-        "Add questions to the same unanswered set before the operator answers. Duplicate ids are refused. Same rules as ask_questions: investigate first, ask only genuinely unobvious scope-level questions, at most 3 in the set, and never wait.",
+        "Add questions to the same unanswered set before the operator answers. Duplicate ids are refused. Same rules as ask_questions: investigate first, decide naming, file layout, data shape, library choice, defaults and anything the repo or task body already answers yourself, ask only genuinely unobvious scope-level questions, cap the set at 3, and never wait.",
       parameters: questionsSchema,
       replay: "safe",
       async execute(args, api) {
@@ -821,7 +823,7 @@ export class DurableTaskAgentSession implements TaskAgentSession {
           content: data.text,
           whenBusy: "followUp",
           requestId: key,
-          entry: { kind: TASK_QUESTION_PROMPT_ENTRY_KIND, data },
+          entry: { kind: TASK_QUESTION_PROMPT_ENTRY_KIND, data: { ...data, queueKey: key } },
         },
         SESSION_CONTEXT,
       ),
@@ -1559,7 +1561,15 @@ export class TaskAgentManager {
     await session.stop();
   }
 
+  private questionTaskStatus(taskId: string): Task["status"] {
+    const task = this.options.store.ledger().tasks.find((item) => item.id === taskId);
+    if (task === undefined) throw new TaskAgentError("Unknown task", 404);
+    if (task.status === "done") throw new TaskAgentError("Task is done", 409);
+    return task.status;
+  }
+
   async answerQuestions(taskId: string, setId: string, answers: unknown): Promise<void> {
+    this.questionTaskStatus(taskId);
     const session = await this.ensure(taskId);
     if (session.answerQuestions === undefined) {
       throw new TaskAgentError("Questions are not available for this task", 409);
@@ -1568,11 +1578,18 @@ export class TaskAgentManager {
   }
 
   async dismissQuestions(taskId: string, setId: string): Promise<void> {
+    this.questionTaskStatus(taskId);
     const session = await this.ensure(taskId);
     if (session.dismissQuestions === undefined) {
       throw new TaskAgentError("Questions are not available for this task", 409);
     }
     await session.dismissQuestions(setId);
+  }
+
+  /** Drop any pending set when the task closes, without waking the agent. */
+  async clearQuestions(taskId: string): Promise<void> {
+    const store = this.questionStores.get(taskId);
+    if (store !== undefined) await store.clearPending();
   }
 
   async remove(taskId: string): Promise<void> {

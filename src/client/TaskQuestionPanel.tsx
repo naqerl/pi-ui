@@ -167,7 +167,7 @@ export function TaskQuestionPanel({
     <form
       data-testid="task-questions-panel"
       data-set-id={set.id}
-      className="theme-radius flex w-full shrink-0 flex-col border border-border/70 bg-surface text-sm text-foreground"
+      className="theme-radius flex max-h-[min(60dvh,34rem)] w-full shrink-0 flex-col overflow-hidden border border-border/70 bg-surface text-sm text-foreground"
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
@@ -180,7 +180,7 @@ export function TaskQuestionPanel({
         </p>
       </div>
 
-      <div className="flex flex-col gap-3 px-3 pt-3">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain px-3 pt-3 pb-3">
         {set.questions.map((question) => {
           const draft = drafts[question.id] ?? { values: [], text: "" };
           const multi = question.kind === "multi";

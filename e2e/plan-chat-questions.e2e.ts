@@ -332,6 +332,54 @@ test("dismiss clears the set, nudges the agent, and a replayed answer is refused
     )
     .toBe(1);
 
+  // Closing the task clears the next pending set, hides the panel, and refuses answers.
+  expect(
+    await postPlanMessage(
+      browser,
+      taskId,
+      `TOOLCALLS ${JSON.stringify([
+        { name: "append_questions", arguments: { questions: OTHER_QUESTIONS } },
+      ])}`,
+    ),
+  ).toBe(202);
+  await expect(panel).toHaveCount(1, { timeout: 30_000 });
+  const doneSetId = await browser.evaluate(
+    () =>
+      document.querySelector<HTMLElement>('[data-testid="task-questions-panel"]')?.dataset.setId ??
+      null,
+  );
+  expect(doneSetId).not.toBeNull();
+  if (doneSetId === null) return;
+
+  expect(
+    await browser.evaluate(
+      async (id) =>
+        (
+          await fetch(`/api/tasks/${encodeURIComponent(id)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ status: "done" }),
+          })
+        ).status,
+      taskId,
+    ),
+  ).toBe(200);
+  await expect(panel).toHaveCount(0, { timeout: 30_000 });
+  expect(
+    await browser.evaluate(async (id) => {
+      const ledger = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
+        tasks: Array<{ id: string; questions?: { id: string } | null }>;
+      };
+      return ledger.tasks.find((task) => task.id === id)?.questions ?? null;
+    }, taskId),
+  ).toBeNull();
+  expect(
+    await answerQuestions(browser, taskId, doneSetId, [
+      { id: "transport", values: ["http"], text: "" },
+      { id: "storage", values: ["disk"], text: "" },
+    ]),
+  ).toBe(409);
+
   await removeTasks(browser, [title]);
 });
 

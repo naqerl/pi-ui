@@ -230,6 +230,8 @@ export type TaskQuestionPromptData = {
   text: string;
   answers: TaskQuestionPromptAnswer[];
   createdAt: string;
+  /** Shared with the pending chip, so the placed notice replaces it instead of doubling it. */
+  queueKey?: string;
   dismissed?: boolean;
 };
 

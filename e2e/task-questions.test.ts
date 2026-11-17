@@ -3,9 +3,19 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
-import { createTaskQuestionTools } from "../src/server/task-agent.js";
+import type { EntryRecord } from "@earendil-works/pi-durable";
+import { buildChatTimeline } from "../src/client/chat-timeline.js";
+import { buildTranscript, TASK_QUESTION_PROMPT_ENTRY_KIND } from "../src/server/session.js";
+import {
+  createTaskQuestionTools,
+  DurableTaskAgentSession,
+  TaskAgentError,
+  TaskAgentManager,
+} from "../src/server/task-agent.js";
 import { TaskQuestionsStore } from "../src/server/task-questions.js";
-import type { TaskQuestion } from "../src/shared/types.js";
+import { TaskStore } from "../src/server/tasks.js";
+import { pendingQueuedMessage } from "../src/shared/queue.js";
+import type { QueuedMessage, TaskQuestion } from "../src/shared/types.js";
 
 let directory = "";
 let path = "";
@@ -85,6 +95,16 @@ test("ask_questions rejects an unknown kind, a choice without options, and a dup
   assert.equal(duplicate.isError, true);
   assert.match(duplicate.text, /Duplicate question id/i);
   assert.equal(await pending(), null);
+});
+
+test("both question tools carry the investigate, decide, cap and never-wait rules", () => {
+  for (const name of ["ask_questions", "append_questions"]) {
+    const description = tool(name).description ?? "";
+    assert.match(description, /investigate first/i);
+    assert.match(description, /decide/i);
+    assert.match(description, /3/);
+    assert.match(description, /never wait/i);
+  }
 });
 
 test("append_questions merges into the same persisted pending set", async () => {
@@ -245,4 +265,133 @@ test("answers are validated against the waiting questions", async () => {
     /does not match/i,
   );
   assert.ok(await pending());
+});
+
+test("a queued answer nudge keeps one questions chip when its notice is placed", async () => {
+  class CaptureConversation {
+    drafts: Array<{
+      content: string;
+      whenBusy?: string;
+      requestId?: string;
+      entry?: { kind: string; data?: Record<string, unknown> };
+    }> = [];
+
+    async submit(draft: (typeof this.drafts)[number]) {
+      this.drafts.push(draft);
+      return {
+        id: this.drafts.length,
+        status: async () => ({ type: "input", status: "queued" }),
+        wait: async () => new Promise(() => undefined),
+      };
+    }
+
+    async context() {
+      return { entries: [], docs: {} };
+    }
+  }
+
+  const conversation = new CaptureConversation();
+  const session = new DurableTaskAgentSession("task-1", {} as never, conversation as never, store);
+  const added = await store.add("task-1", [
+    { id: "layout", prompt: "Which layout?", kind: "text" },
+  ]);
+  await session.answerQuestions(added.set.id, [{ id: "layout", values: [], text: "Split layout" }]);
+
+  const draft = conversation.drafts[0];
+  assert.ok(draft);
+  assert.equal(draft.whenBusy, "followUp");
+  assert.equal(draft.requestId, `questions:${added.set.id}`);
+  assert.equal(draft.entry?.kind, TASK_QUESTION_PROMPT_ENTRY_KIND);
+  assert.equal(draft.entry?.data?.queueKey, draft.requestId);
+
+  const placed = buildTranscript([
+    {
+      id: 7,
+      conversationId: 1,
+      kind: draft.entry?.kind,
+      data: draft.entry?.data,
+    } as unknown as EntryRecord,
+  ]).messages[0];
+  assert.ok(placed);
+  assert.equal(placed.id, `m-${draft.requestId}`);
+  assert.equal(placed.notice?.kind, "questions");
+
+  const queued: QueuedMessage = {
+    id: "1",
+    key: draft.requestId,
+    text: draft.content,
+    createdAt: new Date().toISOString(),
+    notice: { kind: "questions", label: "Answers sent", glyph: "questions" },
+  };
+  assert.equal(pendingQueuedMessage(queued).id, placed.id);
+
+  const timeline = buildChatTimeline({
+    messages: [placed],
+    activity: [],
+    liveTools: [],
+    draftText: "",
+    draftThinking: "",
+    draftThinkingAt: null,
+    steers: [],
+    queue: [queued],
+    optimistic: [],
+  });
+  assert.equal(
+    timeline.filter((item) => item.kind === "message" && item.message.notice?.kind === "questions")
+      .length,
+    1,
+  );
+});
+
+test("a done task refuses answers and dismissals, and clearPending drops the set", async () => {
+  const doneDir = await mkdtemp(join(tmpdir(), "pi-ui-task-questions-done-"));
+  try {
+    const tasks = new TaskStore(join(doneDir, "tasks.json"));
+    await tasks.load();
+    const task = (await tasks.create("Closed question task", null)).tasks.find(
+      (item) => item.title === "Closed question task",
+    );
+    assert.ok(task);
+    await tasks.update(task.id, { status: "done" });
+
+    const manager = new TaskAgentManager({
+      dataDir: doneDir,
+      cwd: doneDir,
+      models: {} as never,
+      model: undefined,
+      store: tasks,
+      publish: () => undefined,
+      baseInstructions: "BASE",
+      openSession: async (taskId) =>
+        ({
+          taskId,
+          closed: false,
+          running: () => false,
+          close: async () => undefined,
+        }) as never,
+    });
+    try {
+      await assert.rejects(
+        manager.answerQuestions(task.id, "set-1", []),
+        (error: unknown) => error instanceof TaskAgentError && error.status === 409,
+      );
+      await assert.rejects(
+        manager.dismissQuestions(task.id, "set-1"),
+        (error: unknown) => error instanceof TaskAgentError && error.status === 409,
+      );
+
+      await manager.ensure(task.id);
+      const pendingStore = new TaskQuestionsStore(join(manager.taskDir(task.id), "questions.json"));
+      await pendingStore.load();
+      await pendingStore.add(task.id, [{ id: "layout", prompt: "Which layout?", kind: "text" }]);
+      await manager.clearQuestions(task.id);
+      const reread = new TaskQuestionsStore(join(manager.taskDir(task.id), "questions.json"));
+      await reread.load();
+      assert.equal(await reread.pending(), null);
+    } finally {
+      await manager.close();
+    }
+  } finally {
+    await rm(doneDir, { recursive: true, force: true });
+  }
 });

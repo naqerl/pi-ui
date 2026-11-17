@@ -628,7 +628,7 @@ test("the first message on a placeholder task sets the title and strips @project
   assert.equal(follow.message, "Also consider this");
 });
 
-test("visible task chat rows keep system notices and omit user ones", () => {
+test("visible task chat rows keep only the question chip among machine notices", () => {
   const rows: ChatMessage[] = [
     { id: "u", role: "user", text: "hello", timestamp: "", order: 1 },
     {
@@ -641,11 +641,19 @@ test("visible task chat rows keep system notices and omit user ones", () => {
     } as ChatMessage,
     { id: "a", role: "assistant", text: "plan", timestamp: "", order: 3 },
     {
+      id: "j",
+      role: "system",
+      text: "job",
+      timestamp: "",
+      order: 4,
+      notice: { kind: "job" },
+    } as ChatMessage,
+    {
       id: "q",
       role: "system",
       text: "Answers sent",
       timestamp: "",
-      order: 4,
+      order: 5,
       notice: { kind: "questions", setId: "s", count: 1, text: "", summary: "Answers sent" },
     } as ChatMessage,
   ];
@@ -687,7 +695,6 @@ class FakeSession implements TaskAgentSession {
       activity: [],
       run: this.run,
       draft: { text: "", thinking: "", revision: 0 },
-      questions: null,
     };
   }
 

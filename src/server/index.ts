@@ -124,7 +124,7 @@ function taskView(ledger: TaskLedger = taskStore.ledger()): TaskLedger {
     tasks: ledger.tasks.map((task) => ({
       ...task,
       planning: live.has(task.id) && (isActiveStatus(task.status) || task.status === "planning"),
-      questions: pendingQuestionsFor(task.id),
+      questions: task.status === "done" ? null : pendingQuestionsFor(task.id),
     })),
     activity: taskActivity.view(),
     reopenStats: taskReopenStats(ledger.tasks),
@@ -1107,6 +1107,9 @@ app.patch("/api/tasks/:id", async (c) => {
     const id = c.req.param("id");
     const ledger = await taskStore.update(id, patch);
     if (ledger.tasks.find((task) => task.id === id)?.status === "done") {
+      await taskAgents.clearQuestions(id).catch((error: unknown) => {
+        console.error(`[pi] could not clear the questions for ${id}`, error);
+      });
       await taskAgents.stopRun(id).catch((error: unknown) => {
         console.error(`[pi] could not stop the task agent for ${id}`, error);
       });
