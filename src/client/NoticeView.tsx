@@ -85,7 +85,7 @@ export function ChipButton({
       title={title}
       onClick={onClick}
       className={cn(
-        "inline-flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-mono text-[11px] leading-5 shadow-sm backdrop-blur-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
+        "inline-flex min-w-0 max-w-[92%] items-center gap-md rounded-full border px-xl py-xs font-mono text-[11px] leading-5 shadow-sm backdrop-blur-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
         tone === "warning"
           ? "border-status-warn/40 bg-status-warn/10 text-status-warn hover:border-status-warn/60 hover:text-status-warn"
           : tone === "destructive"
@@ -120,7 +120,7 @@ export function NoticeLine({
     <div
       data-message-id={message.id}
       data-role={message.role}
-      className="flex justify-center px-2 py-0.5"
+      className="flex justify-center px-lg py-xs"
     >
       <ChipButton
         testId="chat-notice"
@@ -196,8 +196,8 @@ function NoticeDialog({
       }}
       className="m-0 mt-auto w-full max-w-full overflow-hidden rounded-t-xl border border-foreground/15 bg-surface p-0 text-foreground shadow-xl backdrop:bg-black/50 sm:m-auto sm:w-[min(40rem,calc(100vw-2rem))] sm:rounded-xl"
     >
-      <div className="flex max-h-[85dvh] flex-col pb-[env(safe-area-inset-bottom)]">
-        <header className="flex items-start gap-3 border-b border-foreground/10 px-4 py-3">
+      <div className="flex max-h-[85dvh] flex-col safe-bottom">
+        <header className="flex items-start gap-xl border-b border-foreground/10 px-2xl py-xl">
           <div className="min-w-0 flex-1">
             <div className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
               {notice.kind === "job"
@@ -227,7 +227,7 @@ function NoticeDialog({
                                 : "Run interrupted"}
               {dateTime !== "" && ` · ${dateTime}`}
             </div>
-            <h2 id={titleId} className="mt-0.5 font-mono text-sm [overflow-wrap:anywhere]">
+            <h2 id={titleId} className="mt-xs font-mono text-sm [overflow-wrap:anywhere]">
               {label}
             </h2>
           </div>
@@ -236,12 +236,12 @@ function NoticeDialog({
             data-testid="notice-dialog-close"
             aria-label="Close"
             onClick={onClose}
-            className="-mr-1 shrink-0 rounded-md px-2 py-1 font-mono text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+            className="-mr-sm shrink-0 rounded-md px-lg py-sm font-mono text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
           >
             <CloseIcon size={16} />
           </button>
         </header>
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 text-sm">
+        <div className="min-h-0 flex-1 overflow-y-auto px-2xl py-xl text-sm">
           {notice.kind === "job" ? (
             <JobDetails notice={notice} />
           ) : notice.kind === "delegate" ? (
@@ -269,7 +269,7 @@ function NoticeDialog({
 
 function DelegateDetails({ notice }: { notice: DelegateNoticeDetails }) {
   return (
-    <div className="space-y-3 text-sm">
+    <div className="space-y-xl text-sm">
       <p className="[overflow-wrap:anywhere]">
         {notice.status}
         {notice.duration === null ? "" : ` · ${notice.duration}`}
@@ -284,7 +284,7 @@ function DelegateDetails({ notice }: { notice: DelegateNoticeDetails }) {
         </p>
       )}
       {notice.error !== null && <p className="text-destructive">{notice.error}</p>}
-      <div className="flex flex-wrap gap-3 font-mono text-xs">
+      <div className="flex flex-wrap gap-xl font-mono text-xs">
         <a
           className="underline underline-offset-2"
           href={`/api/delegates/${encodeURIComponent(notice.runId)}/result`}
@@ -330,7 +330,7 @@ function OperatorDetails({ notice }: { notice: OperatorNoticeDetails }) {
   return (
     <>
       <p className="[overflow-wrap:anywhere]">{notice.body}</p>
-      <div className="mt-3">
+      <div className="mt-xl">
         <Fields rows={[["Reason", notice.reason]]} />
       </div>
     </>
@@ -371,7 +371,7 @@ function MemoryDetails({
         data-testid="memory-undo"
         disabled={onSteer === undefined}
         onClick={() => onSteer?.(memoryUndoPrompt(notice.path))}
-        className="mt-4 theme-radius border border-foreground/20 bg-surface px-3 py-1.5 font-mono text-[11px] text-foreground disabled:opacity-40"
+        className="mt-2xl theme-radius border border-foreground/20 bg-surface px-xl py-md font-mono text-[11px] text-foreground disabled:opacity-40"
       >
         Undo
       </button>
@@ -384,7 +384,7 @@ function MemoryDeltaDetailsView({ notice }: { notice: MemoryDeltaDetails }) {
   return (
     <>
       {notice.topics.map((topic) => (
-        <section key={topic.path} className="mb-3 last:mb-0">
+        <section key={topic.path} className="mb-xl last:mb-0">
           <Fields
             rows={[
               ["Path", topic.path],
@@ -395,7 +395,7 @@ function MemoryDeltaDetailsView({ notice }: { notice: MemoryDeltaDetails }) {
           />
         </section>
       ))}
-      <p className="mt-3 text-muted-foreground">
+      <p className="mt-xl text-muted-foreground">
         Read a topic with <code>memory_read</code> before relying on it.
       </p>
     </>
@@ -404,7 +404,7 @@ function MemoryDeltaDetailsView({ notice }: { notice: MemoryDeltaDetails }) {
 
 function Fields({ rows }: { rows: [string, ReactNode][] }) {
   return (
-    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-xs">
+    <dl className="grid grid-cols-[auto_1fr] gap-x-xl gap-y-sm font-mono text-xs">
       {rows.map(([label, value]) => (
         <div key={label} className="contents">
           <dt className="text-muted-foreground">{label}</dt>
@@ -417,11 +417,11 @@ function Fields({ rows }: { rows: [string, ReactNode][] }) {
 
 function Block({ label, children }: { label: string; children: string }) {
   return (
-    <section className="mt-3">
-      <h3 className="mb-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+    <section className="mt-xl">
+      <h3 className="mb-sm font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
         {label}
       </h3>
-      <pre className="max-h-[40dvh] overflow-auto rounded-md border border-foreground/10 bg-background/60 p-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]">
+      <pre className="max-h-[40dvh] overflow-auto rounded-md border border-foreground/10 bg-background/60 p-lg font-mono text-[11px] leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]">
         {children}
       </pre>
     </section>
@@ -481,7 +481,7 @@ function McpDetails({ notice }: { notice: McpNoticeDetails }) {
         <section
           // biome-ignore lint/suspicious/noArrayIndexKey: a notice never changes once recorded.
           key={`${event.id ?? "event"}-${index}`}
-          className="mt-4 border-t border-foreground/10 pt-3"
+          className="mt-2xl border-t border-foreground/10 pt-xl"
         >
           <Fields
             rows={[
@@ -502,7 +502,7 @@ function McpDetails({ notice }: { notice: McpNoticeDetails }) {
         <section
           // biome-ignore lint/suspicious/noArrayIndexKey: a notice never changes once recorded.
           key={`${status.server}-${status.name}-${index}`}
-          className="mt-4 border-t border-foreground/10 pt-3"
+          className="mt-2xl border-t border-foreground/10 pt-xl"
         >
           <Fields
             rows={[

@@ -20,7 +20,7 @@ import {
 import { CloseIcon, MinusIcon } from "./icons";
 
 const TOOLBAR_BUTTON =
-  "theme-radius min-h-8 border border-foreground/15 bg-background px-2.5 py-1 font-mono text-[11px] leading-4 text-foreground hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40 disabled:opacity-40";
+  "theme-radius min-h-8 border border-foreground/15 bg-background px-xl py-sm font-mono text-[11px] leading-4 text-foreground hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40 disabled:opacity-40";
 
 interface Point {
   x: number;
@@ -324,13 +324,13 @@ export function DiagramViewer({ id, revision, source, svg, onClose }: DiagramVie
       className="m-auto h-[calc(100dvh-1.5rem)] w-[calc(100vw-1.5rem)] max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-xl border border-foreground/15 bg-surface p-0 text-foreground shadow-xl backdrop:bg-black/40 sm:h-[calc(100dvh-3rem)] sm:w-[calc(100vw-3rem)] sm:max-w-[calc(100vw-3rem)]"
     >
       <div className="flex h-full min-h-0 flex-col">
-        <header className="ink-line flex shrink-0 flex-col gap-2 border-b px-3 py-2">
-          <div className="flex items-center gap-2">
+        <header className="ink-line flex shrink-0 flex-col gap-lg border-b px-xl py-lg">
+          <div className="flex items-center gap-lg">
             <div className="min-w-0 flex-1">
               <div className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
                 diagram · rev {revision}
               </div>
-              <h2 id={titleId} className="mt-0.5 text-sm font-medium">
+              <h2 id={titleId} className="mt-xs text-sm font-medium">
                 Diagram
               </h2>
             </div>
@@ -339,12 +339,12 @@ export function DiagramViewer({ id, revision, source, svg, onClose }: DiagramVie
               data-testid="diagram-viewer-close"
               aria-label="Close"
               onClick={onClose}
-              className="-mr-1 shrink-0 rounded-md px-2 py-1 font-mono text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+              className="-mr-sm shrink-0 rounded-md px-lg py-sm font-mono text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
             >
               <CloseIcon size={16} />
             </button>
           </div>
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-md">
             <button
               type="button"
               aria-label="Fit diagram"
@@ -391,7 +391,7 @@ export function DiagramViewer({ id, revision, source, svg, onClose }: DiagramVie
             </button>
             <output
               aria-live="polite"
-              className="theme-radius ml-auto border border-foreground/10 bg-background px-2 py-1 font-mono text-[11px] leading-4 tabular-nums text-muted-foreground"
+              className="theme-radius ml-auto border border-foreground/10 bg-background px-lg py-sm font-mono text-[11px] leading-4 tabular-nums text-muted-foreground"
             >
               {Math.round(view.zoom * 100)}%
             </output>

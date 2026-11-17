@@ -678,7 +678,7 @@ function WidgetSparkline({
                   const key = String(name);
                   const item = series.find((entry) => entry.id === key || entry.label === key);
                   return (
-                    <div className="flex w-full items-center justify-between gap-3">
+                    <div className="flex w-full items-center justify-between gap-xl">
                       <span className="text-muted-foreground">{item?.label ?? key}</span>
                       <span className="font-mono font-medium tabular-nums text-foreground">
                         {formatChartValue(value, chart.y?.format, chart.y?.currency ?? "€")}
@@ -925,7 +925,7 @@ function WidgetSparkline({
       </ChartContainer>
       {pinnedRow === undefined ? null : (
         <div
-          className="theme-radius mt-1 border border-border/70 bg-surface px-2 py-1 text-[10px] leading-4 whitespace-pre-line"
+          className="theme-radius mt-sm border border-border/70 bg-surface px-lg py-sm text-[10px] leading-4 whitespace-pre-line"
           data-testid="chart-pin-caption"
         >
           {captionText}
@@ -940,14 +940,14 @@ function WidgetSparkline({
 
 function Empty({ id, text }: { id: string; text: string | undefined }) {
   return (
-    <p className="py-2 text-muted-foreground" data-testid={`stat-${id}-empty`}>
+    <p className="py-lg text-muted-foreground" data-testid={`stat-${id}-empty`}>
       {text ?? "nothing to show"}
     </p>
   );
 }
 
 function rowClass(): string {
-  return "flex min-w-0 flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5 py-2";
+  return "flex min-w-0 flex-wrap items-baseline justify-between gap-x-2xl gap-y-xs py-lg";
 }
 
 function ViewBody({ id, view, chart }: { id: string; view: WidgetView; chart?: SparklineChart }) {
@@ -967,10 +967,10 @@ function ViewBody({ id, view, chart }: { id: string; view: WidgetView; chart?: S
                   <span
                     className={
                       view.trend === "up"
-                        ? "inline-flex items-center gap-1 text-status-ok"
+                        ? "inline-flex items-center gap-sm text-status-ok"
                         : view.trend === "down"
-                          ? "inline-flex items-center gap-1 text-status-bad"
-                          : "inline-flex items-center gap-1 text-muted-foreground"
+                          ? "inline-flex items-center gap-sm text-status-bad"
+                          : "inline-flex items-center gap-sm text-muted-foreground"
                     }
                     data-testid={`stat-${id}-delta`}
                   >
@@ -988,7 +988,7 @@ function ViewBody({ id, view, chart }: { id: string; view: WidgetView; chart?: S
             </div>
           </dl>
           {view.progress === undefined ? null : (
-            <div className="flex justify-end pb-2">
+            <div className="flex justify-end pb-lg">
               <span
                 className="block h-1 w-32 max-w-full bg-foreground/15"
                 aria-hidden="true"
@@ -1034,7 +1034,7 @@ function ViewBody({ id, view, chart }: { id: string; view: WidgetView; chart?: S
               data-state={item.state}
               {...(item.key === undefined ? {} : { "data-testid": `stat-${item.key}` })}
             >
-              <span className="flex min-w-0 items-baseline gap-2 [overflow-wrap:anywhere]">
+              <span className="flex min-w-0 items-baseline gap-lg [overflow-wrap:anywhere]">
                 <span
                   className={`inline-block size-2 shrink-0 rounded-full ${DOT[item.state]}`}
                   role="img"
@@ -1054,14 +1054,14 @@ function ViewBody({ id, view, chart }: { id: string; view: WidgetView; chart?: S
     case "table":
       if (view.rows.length === 0) return <Empty id={id} text={view.empty} />;
       return (
-        <div className="max-w-full overflow-x-auto py-1">
+        <div className="max-w-full overflow-x-auto py-sm">
           <table className="w-full border-collapse text-left">
             <thead>
               <tr>
                 {view.columns.map((column) => (
                   <th
                     key={column}
-                    className="whitespace-nowrap border-b border-border/70 py-1 pr-3 font-normal text-muted-foreground"
+                    className="whitespace-nowrap border-b border-border/70 py-sm pr-xl font-normal text-muted-foreground"
                   >
                     {column}
                   </th>
@@ -1074,7 +1074,7 @@ function ViewBody({ id, view, chart }: { id: string; view: WidgetView; chart?: S
                 <tr key={rowIndex}>
                   {row.map((cell, cellIndex) => (
                     // biome-ignore lint/suspicious/noArrayIndexKey: cells follow the columns
-                    <td key={cellIndex} className="py-1.5 pr-3 align-top [overflow-wrap:anywhere]">
+                    <td key={cellIndex} className="py-md pr-xl align-top [overflow-wrap:anywhere]">
                       {cell}
                     </td>
                   ))}
@@ -1086,8 +1086,8 @@ function ViewBody({ id, view, chart }: { id: string; view: WidgetView; chart?: S
       );
     case "sparkline":
       return (
-        <div className="py-2">
-          <div className="flex items-baseline justify-between gap-4">
+        <div className="py-lg">
+          <div className="flex items-baseline justify-between gap-2xl">
             <span className="text-muted-foreground">{view.label ?? ""}</span>
             <span data-testid={`stat-${id}`}>{view.value ?? ""}</span>
           </div>
@@ -1096,7 +1096,7 @@ function ViewBody({ id, view, chart }: { id: string; view: WidgetView; chart?: S
       );
     case "markdown":
       return (
-        <div className="py-1 font-sans text-sm">
+        <div className="py-sm font-sans text-sm">
           <Markdown text={view.text} />
         </div>
       );
@@ -1145,7 +1145,7 @@ function WidgetCard({
       aria-label={widget.title}
       data-testid={`widget-${widget.id}`}
       data-kind={widget.kind}
-      className="theme-radius relative flex h-full min-w-0 touch-pan-y flex-col border border-border/70 bg-surface px-3 py-2 font-mono text-xs"
+      className="theme-radius relative flex h-full min-w-0 touch-pan-y flex-col border border-border/70 bg-surface px-xl py-lg font-mono text-xs"
       onPointerDown={(event) => {
         if (event.pointerType !== "touch") return;
         cancelPress();
@@ -1172,12 +1172,12 @@ function WidgetCard({
         setMenu(true);
       }}
     >
-      <div className="flex items-start justify-between gap-2 pb-1">
-        <div className="flex min-w-0 items-start gap-1">
+      <div className="flex items-start justify-between gap-lg pb-sm">
+        <div className="flex min-w-0 items-start gap-sm">
           {/* The grip owns the drag gesture, so a press scale would fight it. */}
           <button
             type="button"
-            className="dashboard-drag-handle theme-radius -my-0.5 shrink-0 cursor-grab touch-none px-1 text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+            className="dashboard-drag-handle theme-radius -my-xs shrink-0 cursor-grab touch-none px-sm text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
             aria-label={`Move ${widget.title}`}
             title="Drag to move; you can also hold the card"
             data-testid="dashboard-drag-handle"
@@ -1197,10 +1197,10 @@ function WidgetCard({
             {widget.title}
           </h2>
         </div>
-        <span className="flex shrink-0 items-center gap-1">
+        <span className="flex shrink-0 items-center gap-sm">
           {error === undefined ? null : (
             <span
-              className="theme-radius border border-status-bad/50 px-1 text-[10px] text-status-bad"
+              className="theme-radius border border-status-bad/50 px-sm text-[10px] text-status-bad"
               title={error}
               data-testid={`widget-${widget.id}-error`}
             >
@@ -1209,7 +1209,7 @@ function WidgetCard({
           )}
           <button
             type="button"
-            className="theme-radius -my-1 px-1.5 text-muted-foreground hover:bg-foreground/10"
+            className="theme-radius -my-sm px-md text-muted-foreground hover:bg-foreground/10"
             aria-label={`${widget.title} menu`}
             aria-haspopup="menu"
             aria-expanded={menu}
@@ -1223,7 +1223,7 @@ function WidgetCard({
         {view !== undefined ? (
           <ViewBody id={widget.id} view={view} chart={widget.chart} />
         ) : (
-          <p className="py-2 text-muted-foreground [overflow-wrap:anywhere]">
+          <p className="py-lg text-muted-foreground [overflow-wrap:anywhere]">
             {error ??
               (widget.source.type === "static" ? "waiting for data" : "waiting for the first poll")}
           </p>
@@ -1232,12 +1232,12 @@ function WidgetCard({
       {menu ? (
         <div
           role="menu"
-          className="theme-radius absolute top-7 right-2 z-10 border border-border bg-surface py-1 shadow-lg"
+          className="theme-radius absolute top-7 right-2 z-10 border border-border bg-surface py-sm shadow-lg"
         >
           <button
             type="button"
             role="menuitem"
-            className="block w-full px-3 py-1.5 text-left text-destructive hover:bg-foreground/10"
+            className="block w-full px-xl py-md text-left text-destructive hover:bg-foreground/10"
             onClick={() => {
               setMenu(false);
               onRemove(widget.id);
@@ -1462,7 +1462,7 @@ function SectionGrid({
 
   if (!desktop) {
     return (
-      <div className="grid grid-cols-1 gap-4" data-testid={`dashboard-stack-${index}`}>
+      <div className="grid grid-cols-1 gap-2xl" data-testid={`dashboard-stack-${index}`}>
         {cards}
       </div>
     );
@@ -2252,7 +2252,7 @@ export function StatsView({
       data-testid="stats-page"
     >
       <div
-        className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-4"
+        className="mx-auto flex w-full max-w-5xl flex-col gap-2xl px-2xl"
         style={{ paddingTop: 16, paddingBottom: footerClearance + 16 }}
       >
         {!ready || dashboard === null ? (
@@ -2261,7 +2261,7 @@ export function StatsView({
         {viewLayout?.sections.map((section, index) => (
           <div
             key={sectionKey(index)}
-            className="dashboard-section relative flex flex-col gap-2"
+            className="dashboard-section relative flex flex-col gap-lg"
             data-testid="dashboard-section"
             data-section-index={index}
           >

@@ -133,9 +133,10 @@ export function BackgroundJobsCounts({
       data-testid="bg-jobs-line"
       data-open={state.open ? "true" : "false"}
       data-surface={visible ? "chat" : "away"}
-      // The outer box starts at the plus button's box; the inset puts the text
-      // ink on the plus icon's ink, so the edge reads aligned on both sizes.
-      className="bg-jobs-counts -ml-3 inline-flex min-w-0 shrink-0 items-baseline gap-1.5 pl-[11px]"
+      // The outer box starts just left of the plus button's box; the inset puts
+      // the text ink on the plus icon's ink, so the edge reads aligned on both
+      // sizes.
+      className="bg-jobs-counts -ml-xl inline-flex min-w-0 shrink-0 items-baseline gap-md pl-xl"
     >
       {rendered.jobs > 0 && chip("jobs", rendered.jobs, "job")}
       {rendered.jobs > 0 && rendered.subagents > 0 && (
@@ -240,7 +241,7 @@ export function BackgroundJobsSheet({
         className="max-h-[80dvh] overflow-hidden rounded-t-xl border border-foreground/15 text-foreground shadow-xl"
       >
         <Sheet.Header>
-          <header className="grid shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 border-b border-border px-3 py-2">
+          <header className="grid shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-xl border-b border-border px-xl py-lg">
             <span aria-hidden="true" />
             <h2 id={titleId} className="whitespace-nowrap text-sm font-medium">
               {title}
@@ -250,7 +251,7 @@ export function BackgroundJobsSheet({
               data-testid="bg-jobs-sheet-close"
               aria-label="Close"
               onClick={onClose}
-              className="-mr-1 justify-self-end rounded-md px-2 py-1 font-mono text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+              className="-mr-sm justify-self-end rounded-md px-lg py-sm font-mono text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
             >
               <CloseIcon size={16} />
             </button>
@@ -261,9 +262,9 @@ export function BackgroundJobsSheet({
           data-kind={kind}
           disableDrag
           className="min-h-0 flex-1"
-          scrollClassName="px-3 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]"
+          scrollClassName="px-xl py-xl pb-xl safe-bottom"
         >
-          <div data-testid="bg-jobs-sheet-list" className="flex flex-col gap-1.5">
+          <div data-testid="bg-jobs-sheet-list" className="flex flex-col gap-md">
             {kind === "jobs"
               ? liveJobs.map((job) => (
                   <button
@@ -275,9 +276,9 @@ export function BackgroundJobsSheet({
                       haptic();
                       onOpenItem("jobs", job.id);
                     }}
-                    className="theme-radius w-full border border-border/70 bg-background/80 px-3 py-2 text-left transition-colors hover:bg-muted"
+                    className="theme-radius w-full border border-border/70 bg-background/80 px-xl py-lg text-left transition-colors hover:bg-muted"
                   >
-                    <div className="flex min-w-0 items-center gap-2">
+                    <div className="flex min-w-0 items-center gap-lg">
                       <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
                         {job.name}
                       </span>
@@ -288,7 +289,7 @@ export function BackgroundJobsSheet({
                         {elapsed(job.startedAt, now)}
                       </span>
                     </div>
-                    <div className="mt-0.5 font-mono text-[11px] text-muted-foreground">
+                    <div className="mt-xs font-mono text-[11px] text-muted-foreground">
                       started{" "}
                       <time dateTime={job.startedAt} title={formatDateTime(job.startedAt)}>
                         {formatTime(job.startedAt)}
@@ -301,9 +302,9 @@ export function BackgroundJobsSheet({
                     key={run.id}
                     data-testid="bg-jobs-sheet-subagent"
                     data-id={run.id}
-                    className="theme-radius w-full border border-border/70 bg-background/80 px-3 py-2 text-left"
+                    className="theme-radius w-full border border-border/70 bg-background/80 px-xl py-lg text-left"
                   >
-                    <div className="flex min-w-0 items-center gap-2">
+                    <div className="flex min-w-0 items-center gap-lg">
                       <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
                         {run.taskFirstLine}
                       </span>
@@ -314,7 +315,7 @@ export function BackgroundJobsSheet({
                         {elapsed(run.startedAt ?? run.queuedAt, now)}
                       </span>
                     </div>
-                    <div className="mt-0.5 font-mono text-[11px] text-muted-foreground">
+                    <div className="mt-xs font-mono text-[11px] text-muted-foreground">
                       {run.status} · started{" "}
                       <time
                         dateTime={run.startedAt ?? run.queuedAt}

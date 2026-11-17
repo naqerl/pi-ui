@@ -206,8 +206,8 @@ function Heading({
   return (
     <h2
       className={cn(
-        "flex min-h-7 items-center gap-2 rounded-md py-1",
-        dark ? "bg-surface px-3" : "px-1",
+        "flex min-h-7 items-center gap-lg rounded-md py-sm",
+        dark ? "bg-surface px-xl" : "px-sm",
       )}
     >
       <span className={cn("min-w-0 flex-1 truncate", STATS_SECTION_TITLE)}>{children}</span>
@@ -247,8 +247,8 @@ function Section({
       >
         <CollapsibleTrigger
           className={cn(
-            "flex min-h-7 w-full items-center gap-2 rounded-md py-1 text-left",
-            dark ? "bg-surface px-3" : "px-1 hover:bg-muted",
+            "flex min-h-7 w-full items-center gap-lg rounded-md py-sm text-left",
+            dark ? "bg-surface px-xl" : "px-sm hover:bg-muted",
           )}
         >
           <span className={cn("min-w-0 flex-1 truncate", STATS_SECTION_TITLE)}>{title}</span>
@@ -259,7 +259,7 @@ function Section({
             </span>
           )}
         </CollapsibleTrigger>
-        <CollapsibleContent className={`${TASK_STACK} pt-2`}>{children}</CollapsibleContent>
+        <CollapsibleContent className={`${TASK_STACK} pt-lg`}>{children}</CollapsibleContent>
       </Collapsible>
     );
   }
@@ -268,7 +268,7 @@ function Section({
       <Heading count={count} dark={dark}>
         {title}
       </Heading>
-      <div className={`${TASK_STACK} pt-2`}>{children}</div>
+      <div className={`${TASK_STACK} pt-lg`}>{children}</div>
     </section>
   );
 }
@@ -287,7 +287,7 @@ function ErrorText({
       id={id}
       role="alert"
       data-testid="task-error"
-      className={cn("px-1 text-xs leading-4 text-destructive", className)}
+      className={cn("px-sm text-xs leading-4 text-destructive", className)}
     >
       {children}
     </p>
@@ -762,7 +762,7 @@ function TasksViewImpl({
               dark
             >
               {items.length === 0 ? (
-                <p className="px-1 text-sm leading-5 text-muted-foreground">
+                <p className="px-sm text-sm leading-5 text-muted-foreground">
                   Nothing done yet today.
                 </p>
               ) : (
@@ -786,9 +786,9 @@ function TasksViewImpl({
           )}
         </section>
       )}
-      {!ready && <p className="px-1 text-sm text-muted-foreground">Loading…</p>}
+      {!ready && <p className="px-sm text-sm text-muted-foreground">Loading…</p>}
       {ready && tasks.length === 0 && (
-        <div className="flex min-h-0 flex-1 items-center justify-center px-2">
+        <div className="flex min-h-0 flex-1 items-center justify-center px-lg">
           <EmptyCaption>No tasks yet.</EmptyCaption>
         </div>
       )}
@@ -891,10 +891,10 @@ function TasksViewImpl({
       <div
         className={
           wide
-            ? "tasks-split grid h-full min-h-0 w-full grid-cols-[minmax(260px,320px)_minmax(280px,1fr)_minmax(300px,400px)] grid-rows-[auto_minmax(0,1fr)] gap-4 px-4"
+            ? "tasks-split grid h-full min-h-0 w-full grid-cols-[minmax(260px,320px)_minmax(280px,1fr)_minmax(300px,400px)] grid-rows-[auto_minmax(0,1fr)] gap-2xl px-2xl"
             : cn(
                 "mx-auto flex h-full min-h-0 w-full max-w-[72ch] flex-col",
-                openTask === undefined ? "gap-4 px-4" : "overflow-hidden",
+                openTask === undefined ? "gap-2xl px-2xl" : "overflow-hidden",
               )
         }
         style={{
@@ -936,7 +936,7 @@ function TasksViewImpl({
               <div
                 data-col="main"
                 data-testid="task-detail-empty"
-                className="col-span-2 row-span-2 flex h-full min-h-0 min-w-0 flex-1 items-center justify-center px-4"
+                className="col-span-2 row-span-2 flex h-full min-h-0 min-w-0 flex-1 items-center justify-center px-2xl"
               >
                 <EmptyCaption>Select a task to see its details.</EmptyCaption>
               </div>
@@ -1014,8 +1014,8 @@ function Group({
     >
       <CollapsibleTrigger
         className={cn(
-          "flex min-h-7 w-full items-center gap-2 rounded-md py-1 text-left",
-          dark ? "bg-surface px-3" : "px-1 hover:bg-muted",
+          "flex min-h-7 w-full items-center gap-lg rounded-md py-sm text-left",
+          dark ? "bg-surface px-xl" : "px-sm hover:bg-muted",
         )}
       >
         <span className={cn("min-w-0 flex-1 whitespace-normal", STATS_SECTION_TITLE)}>{label}</span>
@@ -1033,7 +1033,7 @@ function Group({
           </>
         )}
       </CollapsibleTrigger>
-      <CollapsibleContent className={`${TASK_STACK} pt-2`}>{children}</CollapsibleContent>
+      <CollapsibleContent className={`${TASK_STACK} pt-lg`}>{children}</CollapsibleContent>
     </Collapsible>
   );
 }
@@ -1108,7 +1108,7 @@ function ReopenBadge({ task, testId }: { task: Task; testId?: string }) {
       variant="outline"
       data-testid={testId ?? `task-reopens-${task.id}`}
       title={`Reopened ${count} time${count === 1 ? "" : "s"}`}
-      className="h-4 gap-1 px-1.5 text-[10px] font-normal leading-4 text-muted-foreground"
+      className="h-4 gap-sm px-md text-[10px] font-normal leading-4 text-muted-foreground"
     >
       <RefreshIcon size={11} />
       {count}
@@ -1122,7 +1122,7 @@ function StaleMarker({ id }: { id: string }) {
     <Badge
       variant="outline"
       data-testid={`task-stale-${id}`}
-      className="h-4 px-1.5 text-[10px] font-normal leading-4 text-muted-foreground"
+      className="h-4 px-md text-[10px] font-normal leading-4 text-muted-foreground"
     >
       stale
     </Badge>
@@ -1290,7 +1290,7 @@ export function TaskRow({
         aria-label={`Open ${plainInline(task.title)}`}
         aria-describedby={describedBy.length > 0 ? describedBy.join(" ") : undefined}
         className={cn(
-          "flex min-h-11 w-full cursor-pointer select-none flex-col justify-center gap-1 overflow-hidden rounded-md bg-surface px-3 py-2 text-left hover:bg-muted",
+          "flex min-h-11 w-full cursor-pointer select-none flex-col justify-center gap-sm overflow-hidden rounded-md bg-surface px-xl py-lg text-left hover:bg-muted",
           failedCreate && "cursor-default hover:bg-surface",
           backlog && "bg-surface/60 text-muted-foreground saturate-0",
           selected && "bg-muted hover:bg-muted",
@@ -1395,19 +1395,19 @@ export function TaskRow({
         </TaskCardMeta>
       </div>
       {notice !== null && (
-        <ErrorText id={`task-error-${task.id}`} className="mt-1">
+        <ErrorText id={`task-error-${task.id}`} className="mt-sm">
           {notice}
         </ErrorText>
       )}
       {createFailure !== null && (
-        <div className="mt-1 flex items-start justify-between gap-2 rounded-md bg-surface px-3 py-2">
+        <div className="mt-sm flex items-start justify-between gap-lg rounded-md bg-surface px-xl py-lg">
           <ErrorText id={`task-error-${task.id}`} className="min-w-0 flex-1 px-0">
             {createFailure.error}
           </ErrorText>
           <Button
             variant="ghost"
             size="sm"
-            className="h-7 shrink-0 gap-1.5 rounded-md px-2"
+            className="h-7 shrink-0 gap-md rounded-md px-lg"
             data-testid={`task-create-retry-${task.id}`}
             aria-label={`Retry ${plainInline(task.title)}`}
             disabled={createFailure.retrying}
@@ -1422,7 +1422,7 @@ export function TaskRow({
         </div>
       )}
       {children.length > 0 && (
-        <ul className="mt-2 flex flex-col gap-2">
+        <ul className="mt-lg flex flex-col gap-lg">
           {children.map((child) => (
             <TaskRow
               key={child.id}
@@ -1479,7 +1479,7 @@ function ProposedTask({
         aria-current={selected ? "true" : undefined}
         aria-label={`Open ${draft ? "draft" : "proposal"} ${plainInline(task.title)}`}
         className={cn(
-          "flex min-h-11 w-full cursor-pointer select-none flex-col gap-2 overflow-hidden rounded-md bg-surface px-3 py-2 text-left hover:bg-muted",
+          "flex min-h-11 w-full cursor-pointer select-none flex-col gap-lg overflow-hidden rounded-md bg-surface px-xl py-lg text-left hover:bg-muted",
           selected && "bg-muted hover:bg-muted",
         )}
         onClick={onOpen}
@@ -1503,7 +1503,7 @@ function ProposedTask({
         </TaskCardMeta>
       </div>
       {notice !== null && (
-        <div className="mt-1">
+        <div className="mt-sm">
           <ErrorText>{notice}</ErrorText>
         </div>
       )}
@@ -1528,7 +1528,7 @@ function TaskCardMeta({
     <span
       data-testid="task-card-meta"
       className={cn(
-        "flex min-w-0 max-w-full flex-nowrap items-center gap-x-2 overflow-hidden whitespace-nowrap text-xs leading-4 text-muted-foreground",
+        "flex min-w-0 max-w-full flex-nowrap items-center gap-x-lg overflow-hidden whitespace-nowrap text-xs leading-4 text-muted-foreground",
         !planning && "max-[480px]:flex-wrap max-[480px]:whitespace-normal",
       )}
     >
@@ -1562,7 +1562,7 @@ export function TaskCardTimes({ task }: { task: Task }) {
     <span
       data-testid="task-card-times"
       title={title}
-      className="inline-flex min-w-0 shrink items-center gap-x-2 whitespace-nowrap text-xs leading-4 text-muted-foreground"
+      className="inline-flex min-w-0 shrink items-center gap-x-lg whitespace-nowrap text-xs leading-4 text-muted-foreground"
     >
       <time dateTime={task.createdAt} title={createdFull} className="min-w-0 truncate">
         Created {created}
@@ -1586,7 +1586,7 @@ export function TaskTimes({ task }: { task: Task }) {
   return (
     <span
       data-testid="task-times"
-      className="flex flex-wrap items-center gap-x-3 text-xs leading-4 text-muted-foreground"
+      className="flex flex-wrap items-center gap-x-xl text-xs leading-4 text-muted-foreground"
     >
       <time dateTime={task.createdAt} title={created}>
         Created {created}
@@ -1936,22 +1936,22 @@ function TaskMenu({
   const left = Math.max(8, Math.min(point.x, window.innerWidth - 248));
   const top = Math.max(8, Math.min(point.y, window.innerHeight - 200));
   const item =
-    "flex min-h-8 w-full items-center rounded-sm px-2 text-left text-sm leading-5 hover:bg-muted";
+    "flex min-h-8 w-full items-center rounded-sm px-lg text-left text-sm leading-5 hover:bg-muted";
 
   return (
     <div
       id="task-menu"
       data-testid="task-menu"
       role="menu"
-      className="fixed z-40 w-60 rounded-md border border-border bg-surface p-1 text-foreground shadow-md"
+      className="fixed z-40 w-60 rounded-md border border-border bg-surface p-sm text-foreground shadow-md"
       style={{ left, top }}
     >
       {notice !== null && (
-        <div className="px-1 py-1">
+        <div className="px-sm py-sm">
           <ErrorText>{notice}</ErrorText>
         </div>
       )}
-      {notice !== null && <div className="-mx-1 my-1 h-px bg-border" />}
+      {notice !== null && <div className="-mx-sm my-sm h-px bg-border" />}
       {!done && (
         <button
           type="button"
@@ -2037,7 +2037,7 @@ function ReopenPrompt({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-background/60 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/60 p-2xl backdrop-blur-sm"
       onPointerDown={(event) => {
         if (event.target === event.currentTarget) onCancel();
       }}
@@ -2049,7 +2049,7 @@ function ReopenPrompt({
         data-testid="task-reopen-prompt"
         className="w-full max-w-md bg-surface shadow-md"
       >
-        <CardHeader className="flex flex-col gap-1">
+        <CardHeader className="flex flex-col gap-sm">
           <h2 id={`reopen-title-${task.id}`} className="text-base font-semibold leading-6">
             Reopen {plainInline(task.title)}
           </h2>
@@ -2057,7 +2057,7 @@ function ReopenPrompt({
             Say what is still wrong. The old completion stays in the history.
           </p>
         </CardHeader>
-        <CardContent className="flex flex-col gap-2">
+        <CardContent className="flex flex-col gap-lg">
           <label htmlFor={`reopen-reason-${task.id}`} className="text-sm font-medium leading-5">
             Reason
           </label>
@@ -2080,14 +2080,14 @@ function ReopenPrompt({
                 void submit();
               }
             }}
-            className="min-h-20 w-full resize-y rounded-md border border-border bg-background px-2 py-1.5 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-foreground"
+            className="min-h-20 w-full resize-y rounded-md border border-border bg-background px-lg py-md text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-foreground"
           />
           <span className="self-end text-xs leading-4 text-muted-foreground tabular-nums">
             {trimmed.length}/{TASK_REOPEN_REASON_MAX_LENGTH}
           </span>
           {error !== null && <ErrorText>{error}</ErrorText>}
         </CardContent>
-        <CardFooter className="flex items-center justify-end gap-2">
+        <CardFooter className="flex items-center justify-end gap-lg">
           <Button
             type="button"
             variant="outline"

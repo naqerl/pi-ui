@@ -158,12 +158,12 @@ const ChartTooltipContent = React.forwardRef<
       <div
         ref={ref}
         className={cn(
-          "grid min-w-[8rem] items-start gap-1.5 rounded-lg border border-border/50 bg-background px-2.5 py-1.5 text-xs shadow-xl",
+          "grid min-w-[8rem] items-start gap-md rounded-lg border border-border/50 bg-background px-xl py-md text-xs shadow-xl",
           className,
         )}
       >
         {!nestLabel ? tooltipLabel : null}
-        <div className="grid gap-1.5">
+        <div className="grid gap-md">
           {payload
             .filter((item) => item.type !== "none")
             .map((item, index) => {
@@ -175,7 +175,7 @@ const ChartTooltipContent = React.forwardRef<
                 <div
                   key={item.dataKey}
                   className={cn(
-                    "flex w-full flex-wrap items-stretch gap-2 [&>svg]:h-2.5 [&>svg]:w-2.5 [&>svg]:text-muted-foreground",
+                    "flex w-full flex-wrap items-stretch gap-lg [&>svg]:h-2.5 [&>svg]:w-2.5 [&>svg]:text-muted-foreground",
                     indicator === "dot" && "items-center",
                   )}
                 >
@@ -195,7 +195,7 @@ const ChartTooltipContent = React.forwardRef<
                                 "w-1": indicator === "line",
                                 "w-0 border-[1.5px] border-dashed bg-transparent":
                                   indicator === "dashed",
-                                "my-0.5": nestLabel && indicator === "dashed",
+                                "my-xs": nestLabel && indicator === "dashed",
                               },
                             )}
                             style={
@@ -213,7 +213,7 @@ const ChartTooltipContent = React.forwardRef<
                           nestLabel ? "items-end" : "items-center",
                         )}
                       >
-                        <div className="grid gap-1.5">
+                        <div className="grid gap-md">
                           {nestLabel ? tooltipLabel : null}
                           <span className="text-muted-foreground">
                             {itemConfig?.label || item.name}
@@ -257,8 +257,8 @@ const ChartLegendContent = React.forwardRef<
     <div
       ref={ref}
       className={cn(
-        "flex items-center justify-center gap-4",
-        verticalAlign === "top" ? "pb-3" : "pt-3",
+        "flex items-center justify-center gap-2xl",
+        verticalAlign === "top" ? "pb-xl" : "pt-xl",
         className,
       )}
     >
@@ -272,7 +272,7 @@ const ChartLegendContent = React.forwardRef<
             <div
               key={item.value}
               className={cn(
-                "flex items-center gap-1.5 [&>svg]:h-3 [&>svg]:w-3 [&>svg]:text-muted-foreground",
+                "flex items-center gap-md [&>svg]:h-3 [&>svg]:w-3 [&>svg]:text-muted-foreground",
               )}
             >
               {itemConfig?.icon && !hideIcon ? (

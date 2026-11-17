@@ -7,10 +7,10 @@ function DiagramError({ message, source }: { message: string; source: string }) 
     <div
       role="alert"
       data-testid="diagram-error"
-      className="theme-radius border border-destructive/60 bg-background px-2 py-1.5 font-mono text-[11px] leading-4 text-destructive"
+      className="theme-radius border border-destructive/60 bg-background px-lg py-md font-mono text-[11px] leading-4 text-destructive"
     >
       <p className="whitespace-pre-wrap [overflow-wrap:anywhere]">{message}</p>
-      <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap border-t border-destructive/30 pt-1.5 text-muted-foreground [overflow-wrap:anywhere]">
+      <pre className="mt-md max-h-40 overflow-auto whitespace-pre-wrap border-t border-destructive/30 pt-md text-muted-foreground [overflow-wrap:anywhere]">
         {source}
       </pre>
     </div>
@@ -46,7 +46,7 @@ export function MarkdownDiagram({ source }: { source: string }) {
   return (
     <div
       data-testid="markdown-diagram"
-      className="theme-radius overflow-hidden border border-border bg-background p-2"
+      className="theme-radius overflow-hidden border border-border bg-background p-lg"
     >
       <DiagramSvg source={source} />
     </div>

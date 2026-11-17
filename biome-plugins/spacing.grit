@@ -1,0 +1,20 @@
+language js
+
+or {
+  JsStringLiteralExpression() as $literal where {
+    $literal <: r"(?:^|.*[^a-z-])-?(?:p|px|py|pt|pb|pl|pr|m|mx|my|mt|mb|ml|mr|gap|gap-x|gap-y|space-x|space-y)-(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]+|px|\[[^\]]*\]|[(][^)]*[)])(?:$|[\s$'`\"]).*",
+    register_diagnostic(span=$literal, message="Spacing must use one of the six tokens: xs, sm, md, lg, xl, 2xl (0 and auto stay legal).")
+  },
+  JsTemplateChunkElement() as $literal where {
+    $literal <: r"(?:^|.*[^a-z-])-?(?:p|px|py|pt|pb|pl|pr|m|mx|my|mt|mb|ml|mr|gap|gap-x|gap-y|space-x|space-y)-(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]+|px|\[[^\]]*\]|[(][^)]*[)])(?:$|[\s$'`\"]).*",
+    register_diagnostic(span=$literal, message="Spacing must use one of the six tokens: xs, sm, md, lg, xl, 2xl (0 and auto stay legal).")
+  },
+  JsxAttribute() as $attribute where {
+    $attribute <: r".*=\s*[\"']-?(?:p|px|py|pt|pb|pl|pr|m|mx|my|mt|mb|ml|mr|gap|gap-x|gap-y|space-x|space-y)-(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]+|px|\[[^\]]*\]|[(][^)]*[)])(?:$|[\s$'`\"]).*",
+    register_diagnostic(span=$attribute, message="Spacing must use one of the six tokens: xs, sm, md, lg, xl, 2xl (0 and auto stay legal).")
+  },
+  JsxAttribute() as $attribute where {
+    $attribute <: r".*=\s*[\"'][^\"']*[^a-z-]-?(?:p|px|py|pt|pb|pl|pr|m|mx|my|mt|mb|ml|mr|gap|gap-x|gap-y|space-x|space-y)-(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]+|px|\[[^\]]*\]|[(][^)]*[)])(?:$|[\s$'`\"]).*",
+    register_diagnostic(span=$attribute, message="Spacing must use one of the six tokens: xs, sm, md, lg, xl, 2xl (0 and auto stay legal).")
+  }
+}

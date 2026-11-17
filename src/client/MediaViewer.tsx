@@ -47,7 +47,7 @@ export function MediaViewer({
       }}
       className="m-0 h-dvh max-h-dvh w-screen max-w-screen overflow-hidden bg-black/85 p-0 text-white backdrop:bg-black/60"
     >
-      <div className="relative flex h-full min-h-0 items-center justify-center p-3 sm:p-6">
+      <div className="relative flex h-full min-h-0 items-center justify-center p-xl sm:p-2xl">
         <h2 id={titleId} className="sr-only">
           {alt}
         </h2>

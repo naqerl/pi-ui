@@ -26,12 +26,12 @@ function isDiagramFence(lang: string | undefined): boolean {
 }
 
 const headingClasses: Record<number, string> = {
-  1: "mt-4 mb-1 text-base font-semibold tracking-tight first:mt-0",
-  2: "mt-3 mb-1 text-sm font-semibold tracking-tight first:mt-0",
-  3: "mt-3 mb-1 text-sm font-medium first:mt-0",
-  4: "mt-2 mb-1 text-sm font-medium first:mt-0",
-  5: "mt-2 mb-1 text-xs font-semibold first:mt-0",
-  6: "mt-2 mb-1 text-xs font-medium first:mt-0",
+  1: "mt-2xl mb-sm text-base font-semibold tracking-tight first:mt-0",
+  2: "mt-xl mb-sm text-sm font-semibold tracking-tight first:mt-0",
+  3: "mt-xl mb-sm text-sm font-medium first:mt-0",
+  4: "mt-lg mb-sm text-sm font-medium first:mt-0",
+  5: "mt-lg mb-sm text-xs font-semibold first:mt-0",
+  6: "mt-lg mb-sm text-xs font-medium first:mt-0",
 };
 
 const alignClasses: Record<NonNullable<Tokens.Table["align"][number]>, string> = {
@@ -171,7 +171,7 @@ function blockToken(token: Token, key: string): ReactNode {
       return (
         <blockquote
           key={key}
-          className="border-l-2 border-foreground/30 pl-3 text-muted-foreground"
+          className="border-l-2 border-foreground/30 pl-xl text-muted-foreground"
         >
           {blocks(node.tokens, key)}
         </blockquote>
@@ -185,12 +185,12 @@ function blockToken(token: Token, key: string): ReactNode {
           key={key}
           className={
             node.ordered
-              ? "my-1 list-decimal space-y-1 pl-5 marker:text-muted-foreground"
-              : "my-1 list-disc space-y-1 pl-5 marker:text-muted-foreground"
+              ? "my-sm list-decimal space-y-sm pl-2xl marker:text-muted-foreground"
+              : "my-sm list-disc space-y-sm pl-2xl marker:text-muted-foreground"
           }
         >
           {node.items.map((item, index) => (
-            <li key={`${key}-item-${index}`} className="min-w-0 pl-1">
+            <li key={`${key}-item-${index}`} className="min-w-0 pl-sm">
               {listItem(item, `${key}-item-${index}`)}
             </li>
           ))}
@@ -207,7 +207,7 @@ function blockToken(token: Token, key: string): ReactNode {
                 {node.header.map((cell, index) => (
                   <th
                     key={`${key}-h-${index}`}
-                    className={`max-w-[24rem] border border-border px-2 py-1 font-semibold break-words ${alignClass(cell.align)}`}
+                    className={`max-w-[24rem] border border-border px-lg py-sm font-semibold break-words ${alignClass(cell.align)}`}
                   >
                     {inline(cell.tokens, `${key}-h-${index}`)}
                   </th>
@@ -220,7 +220,7 @@ function blockToken(token: Token, key: string): ReactNode {
                   {row.map((cell, cellIndex) => (
                     <td
                       key={`${key}-r-${rowIndex}-c-${cellIndex}`}
-                      className={`max-w-[24rem] border border-border px-2 py-1 align-top break-words ${alignClass(cell.align)}`}
+                      className={`max-w-[24rem] border border-border px-lg py-sm align-top break-words ${alignClass(cell.align)}`}
                     >
                       {inline(cell.tokens, `${key}-r-${rowIndex}-c-${cellIndex}`)}
                     </td>
@@ -233,7 +233,7 @@ function blockToken(token: Token, key: string): ReactNode {
       );
     }
     case "hr":
-      return <hr key={key} className="my-3 border-border" />;
+      return <hr key={key} className="my-xl border-border" />;
     case "html":
       if (token.text.trim().length === 0) return null;
       return (
@@ -266,7 +266,7 @@ function listItem(item: Tokens.ListItem, key: string): ReactNode {
           checked={item.checked === true}
           readOnly
           aria-label={item.checked === true ? "completed task" : "incomplete task"}
-          className="mr-2 align-middle accent-foreground"
+          className="mr-lg align-middle accent-foreground"
         />
       )}
       {item.tokens.map((token, index) =>
@@ -333,7 +333,7 @@ function CodeBlock({ text, lang }: { text: string; lang?: string }) {
     return (
       <Suspense
         fallback={
-          <pre className="max-w-full overflow-x-auto whitespace-pre border border-border bg-muted px-3 py-2.5 font-mono text-xs leading-relaxed [overflow-wrap:normal]">
+          <pre className="max-w-full overflow-x-auto whitespace-pre border border-border bg-muted px-xl py-xl font-mono text-xs leading-relaxed [overflow-wrap:normal]">
             <code className="font-mono">{text}</code>
           </pre>
         }
@@ -357,8 +357,8 @@ function TextCodeBlock({ text }: { text: string }) {
   }, [state]);
 
   return (
-    <div className="group relative min-w-0 max-w-full">
-      <pre className="max-w-full overflow-x-auto whitespace-pre border border-border bg-muted px-3 py-2.5 pr-14 font-mono text-xs leading-relaxed [overflow-wrap:normal]">
+    <div className="group flex min-w-0 max-w-full items-start gap-md">
+      <pre className="min-w-0 max-w-full flex-1 overflow-x-auto whitespace-pre border border-border bg-muted px-xl py-xl font-mono text-xs leading-relaxed [overflow-wrap:normal]">
         <code className="font-mono">{text}</code>
       </pre>
       <button
@@ -367,7 +367,7 @@ function TextCodeBlock({ text }: { text: string }) {
         onClick={() => {
           void copyText(text).then((ok) => setState(ok ? "copied" : "failed"));
         }}
-        className={`theme-radius absolute top-1 right-1 border border-border bg-surface px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-opacity hover:text-foreground ${
+        className={`theme-radius shrink-0 border border-border bg-surface px-md py-xs font-mono text-[10px] text-muted-foreground transition-opacity hover:text-foreground ${
           feedback || !hoverCapable
             ? "opacity-90"
             : "opacity-0 group-hover:opacity-90 focus-visible:opacity-100"
@@ -403,7 +403,7 @@ function normalize(text: string): string {
 }
 
 const codeSpanClass =
-  "bg-foreground/[0.06] px-1 py-px font-mono text-[0.85em] [overflow-wrap:anywhere] [box-decoration-break:clone] [-webkit-box-decoration-break:clone]";
+  "bg-foreground/[0.06] px-sm py-xs font-mono text-[0.85em] [overflow-wrap:anywhere] [box-decoration-break:clone] [-webkit-box-decoration-break:clone]";
 
 const TASK_PREVIEW_DELAY_MS = 150;
 const TASK_STATUS: Record<Task["status"], string> = {
@@ -510,13 +510,13 @@ function TaskCodeChip({ task, openTask }: { task: Task; openTask: (id: string) =
               role="tooltip"
               id={previewId}
               data-testid="task-chip-preview"
-              className="theme-radius fixed z-50 border border-border bg-surface/95 p-2.5 text-left shadow-lg backdrop-blur-md"
+              className="theme-radius fixed z-50 border border-border bg-surface/95 p-xl text-left shadow-lg backdrop-blur-md"
               style={position}
             >
-              <div className="flex min-w-0 items-center gap-1.5">
+              <div className="flex min-w-0 items-center gap-md">
                 <span
                   title={task.id}
-                  className="theme-radius shrink-0 border border-border px-1.5 py-px font-mono text-[10px] leading-4 text-muted-foreground"
+                  className="theme-radius shrink-0 border border-border px-md py-xs font-mono text-[10px] leading-4 text-muted-foreground"
                 >
                   {task.id.slice(0, 4)}
                 </span>
@@ -524,17 +524,17 @@ function TaskCodeChip({ task, openTask }: { task: Task; openTask: (id: string) =
                   {TASK_STATUS[task.status]}
                 </span>
               </div>
-              <div className="mt-1 min-w-0 text-sm font-medium leading-5 text-foreground [overflow-wrap:anywhere]">
+              <div className="mt-sm min-w-0 text-sm font-medium leading-5 text-foreground [overflow-wrap:anywhere]">
                 <InlineMarkdown text={task.title} />
               </div>
-              <div className="mt-1 flex min-w-0 items-baseline gap-2 text-[11px] leading-4">
+              <div className="mt-sm flex min-w-0 items-baseline gap-lg text-[11px] leading-4">
                 <span className="shrink-0 text-muted-foreground">Project</span>
                 <span className="min-w-0 truncate text-foreground">
                   {task.project ?? "No project"}
                 </span>
               </div>
               {line === null ? null : (
-                <p className="mt-1.5 border-t border-border/70 pt-1.5 text-xs leading-4 text-muted-foreground [overflow-wrap:anywhere]">
+                <p className="mt-md border-t border-border/70 pt-md text-xs leading-4 text-muted-foreground [overflow-wrap:anywhere]">
                   {line}
                 </p>
               )}
@@ -563,7 +563,7 @@ export function Markdown({ text }: { text: string }) {
   // overflow-wrap:anywhere lets long hashes, URLs and inline code break inside a bubble;
   // code blocks and tables opt back out and scroll sideways instead.
   return (
-    <div className="min-w-0 max-w-full space-y-2 [overflow-wrap:anywhere]">
+    <div className="min-w-0 max-w-full space-y-lg [overflow-wrap:anywhere]">
       {blocks(tokens, "md")}
     </div>
   );

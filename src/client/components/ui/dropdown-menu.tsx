@@ -30,7 +30,7 @@ function DropdownMenuContent({
         data-slot="dropdown-menu-content"
         sideOffset={sideOffset}
         className={cn(
-          "z-50 min-w-44 overflow-hidden rounded-md border border-border bg-surface p-1 text-foreground shadow-md",
+          "z-50 min-w-44 overflow-hidden rounded-md border border-border bg-surface p-sm text-foreground shadow-md",
           className,
         )}
         {...props}
@@ -41,21 +41,17 @@ function DropdownMenuContent({
 
 function DropdownMenuItem({
   className,
-  inset,
   variant = "default",
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Item> & {
-  inset?: boolean;
   variant?: "default" | "destructive";
 }) {
   return (
     <DropdownMenuPrimitive.Item
       data-slot="dropdown-menu-item"
-      data-inset={inset ? "true" : undefined}
       data-variant={variant}
       className={cn(
-        "flex min-h-11 cursor-default items-center rounded-sm px-3 text-sm leading-5 outline-none select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[highlighted]:bg-muted data-[variant=destructive]:text-destructive data-[variant=destructive]:data-[highlighted]:bg-destructive/10",
-        inset && "pl-8",
+        "flex min-h-11 cursor-default items-center rounded-sm px-xl text-sm leading-5 outline-none select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[highlighted]:bg-muted data-[variant=destructive]:text-destructive data-[variant=destructive]:data-[highlighted]:bg-destructive/10",
         className,
       )}
       {...props}
@@ -70,7 +66,7 @@ function DropdownMenuSeparator({
   return (
     <DropdownMenuPrimitive.Separator
       data-slot="dropdown-menu-separator"
-      className={cn("-mx-1 my-1 h-px bg-border", className)}
+      className={cn("-mx-sm my-sm h-px bg-border", className)}
       {...props}
     />
   );

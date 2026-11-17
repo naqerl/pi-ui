@@ -211,7 +211,7 @@ function MessageTime({ timestamp }: { timestamp: string }) {
   const time = formatTime(timestamp);
   if (time === "") return null;
   return (
-    <div className="-mb-0.5 mt-1 text-right font-mono text-[10px] leading-none text-muted-foreground tabular-nums">
+    <div className="-mb-xs mt-sm text-right font-mono text-[10px] leading-none text-muted-foreground tabular-nums">
       <time dateTime={timestamp} title={formatDateTime(timestamp)}>
         {time}
       </time>
@@ -258,7 +258,7 @@ function VersionUpdateCard({ message }: { message: ChatMessage }) {
           haptic();
           setOpen(true);
         }}
-        className="theme-radius mx-auto w-fit min-w-0 max-w-[92%] cursor-pointer bg-accent px-3 py-1 text-center font-mono text-[11px] leading-5 text-background transition-opacity [overflow-wrap:anywhere] hover:opacity-90"
+        className="theme-radius mx-auto w-fit min-w-0 max-w-[92%] cursor-pointer bg-accent px-xl py-sm text-center font-mono text-[11px] leading-5 text-background transition-opacity [overflow-wrap:anywhere] hover:opacity-90"
       >
         {message.text}
       </button>
@@ -277,7 +277,7 @@ function VersionUpdateCard({ message }: { message: ChatMessage }) {
           }}
           className="m-auto flex max-h-[85vh] w-[min(46rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-foreground/15 bg-surface p-0 text-foreground shadow-xl backdrop:bg-black/50"
         >
-          <div className="flex items-center justify-between gap-2 border-b border-foreground/10 px-3 py-2">
+          <div className="flex items-center justify-between gap-lg border-b border-foreground/10 px-xl py-lg">
             <h2
               id={titleId}
               className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground"
@@ -290,7 +290,7 @@ function VersionUpdateCard({ message }: { message: ChatMessage }) {
           </div>
           <div
             data-testid="version-update-changelog"
-            className="min-h-0 flex-1 overflow-y-auto px-3 py-2 text-sm leading-relaxed"
+            className="min-h-0 flex-1 overflow-y-auto px-xl py-lg text-sm leading-relaxed"
           >
             {changes.trim() === "" ? (
               <p className="text-muted-foreground">CHANGELOG.md has no entry for this version.</p>
@@ -314,21 +314,21 @@ function QuestionAnswersCard({ message }: { message: ChatMessage }) {
       data-role={message.role}
       data-testid="task-question-answers"
       data-set-id={block.setId}
-      className="theme-radius w-full max-w-[92%] self-center border border-border/70 bg-surface p-3 text-sm leading-relaxed text-foreground"
+      className="theme-radius w-full max-w-[92%] self-center border border-border/70 bg-surface p-xl text-sm leading-relaxed text-foreground"
     >
-      <div className="mb-2 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+      <div className="mb-lg font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
         Operator answers
       </div>
-      <ul className="flex flex-col gap-2">
+      <ul className="flex flex-col gap-lg">
         {block.answers.map((answer) => (
           <li key={answer.id} data-question-id={answer.id} className="min-w-0">
             <p className="min-w-0 [overflow-wrap:anywhere]">{answer.prompt}</p>
             {answer.labels.length > 0 && (
-              <div className="mt-1 flex flex-wrap gap-1.5">
+              <div className="mt-sm flex flex-wrap gap-md">
                 {answer.labels.map((label) => (
                   <span
                     key={label}
-                    className="theme-radius border border-border/70 bg-background px-2 py-0.5 font-mono text-[11px] leading-5 text-foreground"
+                    className="theme-radius border border-border/70 bg-background px-lg py-xs font-mono text-[11px] leading-5 text-foreground"
                   >
                     {label}
                   </span>
@@ -336,7 +336,7 @@ function QuestionAnswersCard({ message }: { message: ChatMessage }) {
               </div>
             )}
             {answer.text.length > 0 && (
-              <p className="mt-1 whitespace-pre-wrap border-l-2 border-border/70 pl-2 text-muted-foreground [overflow-wrap:anywhere]">
+              <p className="mt-sm whitespace-pre-wrap border-l-2 border-border/70 pl-lg text-muted-foreground [overflow-wrap:anywhere]">
                 {answer.text}
               </p>
             )}
@@ -363,7 +363,7 @@ function AssistantReply({ message }: { message: ChatMessage }) {
 function MessageParts({ parts }: { parts: ChatMessage["parts"] }) {
   if (parts === undefined || parts.length === 0) return null;
   return (
-    <div data-testid="message-parts" className="mt-1.5 flex min-w-0 flex-col gap-1.5">
+    <div data-testid="message-parts" className="mt-md flex min-w-0 flex-col gap-md">
       {parts.map((part) =>
         part.kind === "diagram" ? (
           <DiagramPart
@@ -401,9 +401,9 @@ function QueuedNoticeChip({
       data-role={message.role}
       data-pending-queue="true"
       data-testid="queued-notice-chip"
-      className="flex justify-center px-2 py-0.5"
+      className="flex justify-center px-lg py-xs"
     >
-      <div className="inline-flex min-w-0 max-w-[92%] items-center gap-1.5 rounded-full border border-foreground/10 bg-background/40 px-2.5 py-0.5 font-mono text-[11px] leading-5 text-foreground/80 backdrop-blur-md">
+      <div className="inline-flex min-w-0 max-w-[92%] items-center gap-md rounded-full border border-foreground/10 bg-background/40 px-xl py-xs font-mono text-[11px] leading-5 text-foreground/80 backdrop-blur-md">
         <NoticeIcon name={icon} size={14} />
         <span className="min-w-0 truncate">{notice.label}</span>
         <span className="shrink-0 tabular-nums">{count} queued</span>
@@ -439,7 +439,7 @@ export function MessageBubble({
         data-role={message.role}
         data-kind="session-reset"
         data-testid="session-reset"
-        className="theme-radius mx-auto w-fit min-w-0 max-w-[92%] border border-foreground/10 bg-surface/90 px-3 py-1 text-center font-mono text-[11px] leading-5 text-muted-foreground backdrop-blur-md [overflow-wrap:anywhere]"
+        className="theme-radius mx-auto w-fit min-w-0 max-w-[92%] border border-foreground/10 bg-surface/90 px-xl py-sm text-center font-mono text-[11px] leading-5 text-muted-foreground backdrop-blur-md [overflow-wrap:anywhere]"
       >
         {message.text}
       </div>
@@ -467,7 +467,7 @@ export function MessageBubble({
           data-message-id={message.id}
           data-role={message.role}
           data-testid="durable-repair"
-          className="theme-radius mx-auto w-fit min-w-0 max-w-[92%] border border-foreground/10 bg-surface/90 px-3 py-1 text-center font-mono text-[11px] leading-5 text-muted-foreground backdrop-blur-md [overflow-wrap:anywhere]"
+          className="theme-radius mx-auto w-fit min-w-0 max-w-[92%] border border-foreground/10 bg-surface/90 px-xl py-sm text-center font-mono text-[11px] leading-5 text-muted-foreground backdrop-blur-md [overflow-wrap:anywhere]"
         >
           {message.text}
         </div>
@@ -477,7 +477,7 @@ export function MessageBubble({
       return <VersionUpdateCard message={message} />;
     }
     return (
-      <div className="flex items-center justify-center gap-1.5 px-2 py-1 text-center font-mono text-[11px] text-muted-foreground">
+      <div className="flex items-center justify-center gap-md px-lg py-sm text-center font-mono text-[11px] text-muted-foreground">
         <NoticeIcon name="warning" size={14} />
         {message.text}
       </div>
@@ -495,7 +495,7 @@ export function MessageBubble({
       data-pending-send={message.pendingSend ? "true" : undefined}
       data-steer-error={message.steerError === undefined ? undefined : "true"}
       className={cn(
-        "theme-radius w-fit min-w-0 max-w-[85%] bg-surface px-3 py-2 text-sm leading-relaxed [overflow-wrap:anywhere]",
+        "theme-radius w-fit min-w-0 max-w-[85%] bg-surface px-xl py-lg text-sm leading-relaxed [overflow-wrap:anywhere]",
         mine ? "ml-auto" : "mr-auto",
         framed && "border",
         mine && "border-foreground/15",
@@ -507,7 +507,7 @@ export function MessageBubble({
       )}
     >
       {message.pendingQueue && (
-        <div className="mb-1 flex items-center justify-between gap-3 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+        <div className="mb-sm flex items-center justify-between gap-xl font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
           <span>queued</span>
           {message.queueId !== undefined && onCancelQueued !== undefined && (
             <button
@@ -525,7 +525,7 @@ export function MessageBubble({
         </div>
       )}
       {message.steer && (
-        <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+        <div className="mb-sm font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
           {message.pendingSteer
             ? "steer · pending"
             : message.steerError
@@ -534,20 +534,17 @@ export function MessageBubble({
         </div>
       )}
       {message.steerError && (
-        <p className="mb-1 font-mono text-[11px] leading-4 text-destructive">
+        <p className="mb-sm font-mono text-[11px] leading-4 text-destructive">
           {message.steerError}
         </p>
       )}
       {message.partial && (
-        <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+        <div className="mb-sm font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
           partial
         </div>
       )}
       {message.attachments !== undefined && message.attachments.length > 0 && (
-        <div
-          className="mb-1.5 flex flex-wrap justify-end gap-1.5"
-          data-testid="message-attachments"
-        >
+        <div className="mb-md flex flex-wrap justify-end gap-md" data-testid="message-attachments">
           {message.attachments.map((item) => (
             <a
               key={item.id}
@@ -642,7 +639,7 @@ function MemoryActivityChip({ items }: { items: ActivityItem[] }) {
   const view = useMemo(() => memoryChipView(items), [items]);
   if (view === null) return null;
   return (
-    <div data-testid="memory-chip" className="flex min-w-0 max-w-full flex-col items-start gap-1">
+    <div data-testid="memory-chip" className="flex min-w-0 max-w-full flex-col items-start gap-sm">
       <ChipButton
         testId="memory-search-chip"
         kind="memory-search"
@@ -663,10 +660,10 @@ function MemoryActivityChip({ items }: { items: ActivityItem[] }) {
         <div
           id={detailsId}
           data-testid="memory-search-details"
-          className="theme-radius w-fit max-w-full border border-foreground/10 bg-surface/90 px-3 py-2 font-mono text-[11px] leading-5 text-muted-foreground shadow-sm backdrop-blur-md"
+          className="theme-radius w-fit max-w-full border border-foreground/10 bg-surface/90 px-xl py-lg font-mono text-[11px] leading-5 text-muted-foreground shadow-sm backdrop-blur-md"
         >
           {view.paths.length > 0 && (
-            <ul className="m-0 flex list-none flex-col gap-1 p-0">
+            <ul className="m-0 flex list-none flex-col gap-sm p-0">
               {view.paths.map((match) => (
                 <li
                   key={match.path}
@@ -674,7 +671,7 @@ function MemoryActivityChip({ items }: { items: ActivityItem[] }) {
                   className="min-w-0 [overflow-wrap:anywhere]"
                 >
                   <span className="text-foreground">{match.path}</span>
-                  <span aria-hidden="true" className="mx-1 opacity-50">
+                  <span aria-hidden="true" className="mx-sm opacity-50">
                     ·
                   </span>
                   <span>{match.line}</span>
@@ -683,7 +680,7 @@ function MemoryActivityChip({ items }: { items: ActivityItem[] }) {
             </ul>
           )}
           {view.paths.length === 0 && view.reads.length > 0 && (
-            <ul className="m-0 flex list-none flex-col gap-1 p-0">
+            <ul className="m-0 flex list-none flex-col gap-sm p-0">
               {view.reads.map((read) => (
                 <li
                   key={read.path}
@@ -691,7 +688,7 @@ function MemoryActivityChip({ items }: { items: ActivityItem[] }) {
                   className="min-w-0 [overflow-wrap:anywhere]"
                 >
                   <span className="text-foreground">{read.path}</span>
-                  <span className="mx-1 opacity-50">·</span>
+                  <span className="mx-sm opacity-50">·</span>
                   <span>
                     lines {read.from}–{read.to}
                   </span>
@@ -741,16 +738,16 @@ function ActivityGroup({
         aria-haspopup="dialog"
         data-testid="run-info"
         aria-label={`Run activity: ${parts.join(", ")}`}
-        className="theme-radius flex min-h-9 w-fit min-w-0 max-w-full items-start gap-2 border border-border/70 bg-surface px-2.5 py-2 text-left font-mono text-xs leading-5 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40 sm:min-h-0 sm:py-1.5"
+        className="theme-radius flex min-h-9 w-fit min-w-0 max-w-full items-start gap-lg border border-border/70 bg-surface px-xl py-lg text-left font-mono text-xs leading-5 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40 sm:min-h-0 sm:py-md"
       >
         {/* The 12px text's cap-height centre sits 1.5px below the SVG box centre. */}
         <ChevronIcon size={14} className="shrink-0 translate-y-[1.5px]" />
         {/* Each piece stays whole and the line wraps between pieces on a narrow screen. */}
-        <span data-testid="run-info-summary" className="flex min-w-0 flex-wrap gap-x-1.5">
+        <span data-testid="run-info-summary" className="flex min-w-0 flex-wrap gap-x-md">
           {parts.map((part, index) => (
             <span key={part} className="whitespace-nowrap">
               {index > 0 && (
-                <span aria-hidden="true" className="mr-1.5 text-muted-foreground/60">
+                <span aria-hidden="true" className="mr-md text-muted-foreground/60">
                   ·
                 </span>
               )}
@@ -764,7 +761,7 @@ function ActivityGroup({
   return (
     <div
       data-testid="activity-group"
-      className="flex min-w-0 max-w-full flex-col items-start gap-1"
+      className="flex min-w-0 max-w-full flex-col items-start gap-sm"
     >
       {runInfo}
       <MemoryActivityChip items={memory} />
@@ -804,7 +801,7 @@ function PlanTaskSwitch({
       tabIndex={presence.open ? 0 : -1}
       title="Plan task"
       className={cn(
-        "inline-flex shrink-0 cursor-pointer items-center gap-2 self-center rounded-none border-0 bg-transparent p-0 font-mono text-[11px] leading-4 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
+        "inline-flex shrink-0 cursor-pointer items-center gap-lg self-center rounded-none border-0 bg-transparent p-0 font-mono text-[11px] leading-4 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
         swap && "dock-swap dock-text-in motion-reduce:transition-none",
       )}
       onPointerDown={(event) => {
@@ -1128,7 +1125,7 @@ function AttachmentStrip({
     <ul
       aria-label="Attachments"
       data-testid="composer-attachments"
-      className="flex gap-2 overflow-x-auto px-2.5 pt-2.5 pb-0.5"
+      className="flex gap-lg overflow-x-auto px-xl pt-xl pb-xs"
     >
       {items.map((item, index) => (
         <li
@@ -1147,7 +1144,7 @@ function AttachmentStrip({
             )}
           />
           {item.status === "error" && (
-            <span className="absolute inset-x-0 bottom-0 truncate bg-destructive px-1 font-mono text-[9px] leading-4 text-white">
+            <span className="absolute inset-x-0 bottom-0 truncate bg-destructive px-sm font-mono text-[9px] leading-4 text-white">
               {item.error}
             </span>
           )}
@@ -1512,13 +1509,13 @@ export function Composer({
           id="composer-error"
           role="alert"
           data-testid="composer-error"
-          className="px-3 pt-1.5 font-mono text-[11px] leading-4 text-destructive"
+          className="px-xl pt-md font-mono text-[11px] leading-4 text-destructive"
         >
           {error}
         </p>
       )}
       <AttachmentStrip items={attachments.items} onRemove={removeAttachment} />
-      <div ref={rowRef} className="flex w-full items-end gap-1 p-1.5">
+      <div ref={rowRef} className="flex w-full items-end gap-sm p-md">
         {picker.input}
         <div className="flex h-9 w-9 shrink-0 items-stretch">
           <Button
@@ -1643,7 +1640,7 @@ export function Composer({
                 event.preventDefault();
               }}
             >
-              <span className="flex flex-col items-center justify-center gap-0.5">
+              <span className="flex flex-col items-center justify-center gap-xs">
                 <SendIcon />
                 {backlog && (
                   <span
@@ -1750,7 +1747,7 @@ function EarlierMessages({
       ref={row}
       data-testid="earlier-messages"
       data-stick-skip=""
-      className="py-1 text-center font-mono text-[11px] text-muted-foreground"
+      className="py-sm text-center font-mono text-[11px] text-muted-foreground"
     >
       {loading ? "Loading earlier messages…" : "Earlier messages"}
     </div>
@@ -2326,7 +2323,7 @@ export function ChatView({
       {interrupted && (
         <div
           role="status"
-          className="flex shrink-0 items-center justify-center gap-1.5 border-b border-border bg-muted py-1.5 text-center font-mono text-[11px] text-foreground"
+          className="flex shrink-0 items-center justify-center gap-md border-b border-border bg-muted py-md text-center font-mono text-[11px] text-foreground"
         >
           <NoticeIcon name="warning" size={14} />
           run interrupted — the last response may be partial
@@ -2375,7 +2372,7 @@ export function ChatView({
                 <div
                   ref={stick.contentRef}
                   data-testid="chat-content"
-                  className="mx-auto flex w-full max-w-[72ch] flex-col gap-4 px-4"
+                  className="mx-auto flex w-full max-w-[72ch] flex-col gap-2xl px-2xl"
                   style={{
                     paddingTop: TRANSCRIPT_END_GAP,
                     paddingBottom: TRANSCRIPT_END_GAP,
@@ -2384,7 +2381,7 @@ export function ChatView({
                   {!ready && (
                     <p
                       data-testid="chat-loading"
-                      className="theme-radius w-fit self-center border border-border bg-surface/90 px-3 py-1.5 font-mono text-xs text-muted-foreground shadow-sm backdrop-blur-md"
+                      className="theme-radius w-fit self-center border border-border bg-surface/90 px-xl py-md font-mono text-xs text-muted-foreground shadow-sm backdrop-blur-md"
                     >
                       Loading…
                     </p>
@@ -2430,7 +2427,7 @@ export function ChatView({
           </div>
         </div>
         {ready && groups.length === 0 && pager.page === CHAT_PAGE && (
-          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center px-4">
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center px-2xl">
             <EmptyCaption mono>Send a message to start.</EmptyCaption>
           </div>
         )}
@@ -2442,7 +2439,7 @@ export function ChatView({
             <button
               type="button"
               data-testid="latest-button"
-              className="pointer-events-auto inline-flex items-center gap-1.5 bg-foreground px-2 py-1 font-mono text-[11px] text-background"
+              className="pointer-events-auto inline-flex items-center gap-md bg-foreground px-lg py-sm font-mono text-[11px] text-background"
               onClick={stick.scrollToBottom}
             >
               <ArrowDownIcon size={14} />
@@ -2458,11 +2455,11 @@ export function ChatView({
         className="float-footer relative z-20 theme-radius"
       >
         <div data-testid="composer-slide">
-          <div className="ink-line flex items-center gap-3 border-b py-1.5 pr-1.5 pl-[18px]">
+          <div className="ink-line flex items-center gap-xl border-b py-md pr-md pl-2xl">
             <div
               data-testid="working-status"
               data-open={statusRunning ? "true" : "false"}
-              className="flex min-w-0 flex-1 items-baseline gap-2 font-mono text-[11px] leading-4 text-muted-foreground"
+              className="flex min-w-0 flex-1 items-baseline gap-lg font-mono text-[11px] leading-4 text-muted-foreground"
             >
               <PlanTaskSwitch
                 present={showPlanToggle}

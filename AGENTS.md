@@ -14,6 +14,13 @@ component unless the control owns its own pointer gesture; in that case add
 `data-no-press` and a comment explaining why. Reduced motion must always be
 honoured.
 
+## Spacing
+
+Every padding/margin/gap uses one of six tokens: `xs`, `sm`, `md`, `lg`, `xl`,
+`2xl`; `0` and `auto` stay legal. The scale and its rationale are in
+`docs/spacing.md`. `biome-plugins/spacing.grit` fails the build on anything
+else, so a seventh step is a design decision that has to start in that doc.
+
 ## Tool schemas
 
 Tool parameter schemas must serialise to the provider-safe subset: `Type.Tuple`, `Type.Intersect`
