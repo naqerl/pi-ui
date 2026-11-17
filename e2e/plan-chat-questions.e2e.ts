@@ -543,6 +543,62 @@ test("typing in Other replaces and disables that question's choices", {
   await removeTasks(browser, [title]);
 });
 
+test("leaving planning clears the pending questions", {
+  timeout: 120_000,
+}, async ({ browser }) => {
+  const title = `Plan questions leave ${Date.now()}`;
+  const taskId = await browser.evaluate(async (nextTitle) => {
+    const response = await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: nextTitle, plan: true }),
+    });
+    const ledger = (await response.json()) as {
+      tasks: Array<{ id: string; title: string }>;
+    };
+    return ledger.tasks.find((task) => task.title === nextTitle)?.id ?? null;
+  }, title);
+  expect(taskId).not.toBeNull();
+  if (taskId === null) return;
+
+  expect(
+    await postPlanMessage(
+      browser,
+      taskId,
+      `TOOLCALLS ${JSON.stringify([
+        { name: "append_questions", arguments: { questions: OTHER_QUESTIONS } },
+      ])}`,
+    ),
+  ).toBe(202);
+  const hasQuestions = () =>
+    browser.evaluate(async (id) => {
+      const response = await fetch(`/api/tasks/${encodeURIComponent(id)}/questions`, {
+        cache: "no-store",
+      });
+      const body = (await response.json()) as { questions?: unknown };
+      return Boolean(body.questions);
+    }, taskId);
+  await expect.poll(hasQuestions, { timeout: 60_000 }).toBe(true);
+
+  // Leaving planning is what the operator sees when the draft becomes open work.
+  expect(
+    await browser.evaluate(
+      async (id) =>
+        (
+          await fetch(`/api/tasks/${encodeURIComponent(id)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ status: "open" }),
+          })
+        ).status,
+      taskId,
+    ),
+  ).toBe(200);
+  await expect.poll(hasQuestions, { timeout: 30_000 }).toBe(false);
+
+  await removeTasks(browser, [title]);
+});
+
 test("the plan chat renders the same activity surface as the chat page", {
   timeout: 300_000,
 }, async ({ app, browser, screen }) => {

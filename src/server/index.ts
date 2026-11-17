@@ -1142,8 +1142,15 @@ app.patch("/api/tasks/:id", async (c) => {
   }
   try {
     const id = c.req.param("id");
+    const before = taskStore.ledger().tasks.find((task) => task.id === id);
     const ledger = await taskStore.update(id, patch);
-    if (ledger.tasks.find((task) => task.id === id)?.status === "done") {
+    const after = ledger.tasks.find((task) => task.id === id);
+    if (before?.status === "planning" && after?.status !== "planning") {
+      await taskAgents.clearQuestions(id).catch((error: unknown) => {
+        console.error(`[pi] could not clear the questions for ${id}`, error);
+      });
+    }
+    if (after?.status === "done") {
       await taskAgents.stopRun(id).catch((error: unknown) => {
         console.error(`[pi] could not stop the task agent for ${id}`, error);
       });
