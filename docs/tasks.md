@@ -25,9 +25,12 @@ session, separate from the main chat:
 - The first message in the embedded chat can include an `@project` token (with
   the same autocomplete as before). That token is stripped from the text; if the
   title is still the placeholder, the first line becomes the title.
-- Sessions persist under `DATA_DIR/task-agents/<taskId>/` and resume after a
-  server restart. Marking a task done stops a running turn but keeps the
-  transcript (the composer is hidden until the task is reopened). Deleting a
+- Sessions persist under `DATA_DIR/task-agents/<taskId>/`. Every plan turn that
+  was live when the server stopped is resumed automatically at boot, including
+  runs on open and working tasks; a turn stopped before the restart stays
+  stopped. Tasks and session directories with no run marker are opened lazily
+  when their chat is viewed. Marking a task done stops a running turn but keeps
+  the transcript (the composer is hidden until the task is reopened). Deleting a
   task stops the agent and removes its session files.
 
 The task body is ordinary markdown. Fenced `mermaid` (or `pele`) blocks use the

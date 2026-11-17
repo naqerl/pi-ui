@@ -426,6 +426,12 @@ const taskAgents = new TaskAgentManager({
   baseInstructions: planBase,
   memory: { store: memory, snapshot: memorySnapshot },
 });
+// Do not hold HTTP or the main chat behind sessions that were live at the last stop;
+// shutdown awaits this promise so an in-flight open cannot race the close.
+const restoring = taskAgents.restore().catch((error: unknown) => {
+  console.error("[task-agent] could not restore live plan turns", error);
+  return [] as string[];
+});
 planningTaskIds = () => taskAgents.planningTaskIds();
 function builtinJobs() {
   return jobs.list().map((job) => ({
@@ -1613,8 +1619,6 @@ app.get("/sw.js", async (c) => {
 
 app.use("/*", serveStatic({ root: clientDir }));
 
-await taskAgents.resumeInterrupted();
-
 const server = serve({ fetch: app.fetch, port }, (info) => {
   console.log(`pi-ui listening on http://localhost:${info.port}`);
   console.log(`working directory: ${cwd}`);
@@ -1686,6 +1690,7 @@ async function shutdown(): Promise<void> {
   dashboard.dispose();
   try {
     await dashboard.flush();
+    await restoring;
     await taskAgents.close();
     await taskStore.close();
     await chat.close();

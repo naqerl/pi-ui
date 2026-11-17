@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
+import type { Dirent } from "node:fs";
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import {
   getAgentDir,
@@ -64,6 +64,7 @@ import { createMemoryTools } from "./memory/tools.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
 import { PlanTurnNotifier, type PlanTurnPushSender } from "./plan-push.js";
 import { retrySettings } from "./retry.js";
+import { type RunMarker, RunMarkerStore } from "./run-marker.js";
 import { RunErrorNotifier, type RunErrorPushInput, type RunErrorPushSender } from "./run-push.js";
 import { buildTranscript, SESSION_CONTEXT, toolActivityFromEntry } from "./session.js";
 import type { SseFrame } from "./sse.js";
@@ -155,6 +156,8 @@ export interface TaskAgentSession {
   unsendSteer?(id: string): Promise<QueuedMessage | null>;
   dismissError?(id?: string): Promise<TaskAgentChatSnapshot>;
   stop(): Promise<void>;
+  /** Persist the live turn and close the harness without aborting it. */
+  shutdown?(): Promise<void>;
   close(): Promise<void>;
   applyInstructions?(instructions: string): Promise<void>;
   /** The pending set for the answer panel, or null when nothing waits. */
@@ -656,31 +659,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-/** True when a plan session's sqlite still has a task or submission to run. */
-function planWorkPending(databasePath: string): boolean {
-  let db: DatabaseSync;
-  try {
-    db = new DatabaseSync(databasePath, { readOnly: true, timeout: 1_000 });
-  } catch {
-    return false;
-  }
-  const pending = (sql: string): boolean => {
-    try {
-      return db.prepare(sql).get() !== undefined;
-    } catch {
-      return false;
-    }
-  };
-  try {
-    return (
-      pending("SELECT 1 FROM tasks WHERE status != 'terminal' LIMIT 1") ||
-      pending("SELECT 1 FROM submissions WHERE status IN ('queued', 'placed') LIMIT 1")
-    );
-  } finally {
-    db.close();
-  }
-}
-
 function assistantText(message: AssistantMessage | undefined): string {
   if (message === undefined) return "";
   const content = (message as { content?: unknown }).content;
@@ -764,6 +742,12 @@ export class DurableTaskAgentSession implements TaskAgentSession {
   private readonly steers = new Map<string, QueuedMessage>();
   /** Bumped on every queue/steer mutation; the client's monotonic guard reads this. */
   private queueRevision = 0;
+  /** The durable hint that this task had a live turn, kept beside pi.sqlite3. */
+  private marker: RunMarker | undefined;
+  private markerTimer: ReturnType<typeof setTimeout> | undefined;
+  private markerWrites: Promise<void> = Promise.resolve();
+  /** True while shutting down, so an idle state cannot clear the marker being flushed. */
+  private shuttingDown = false;
   private readonly stopQuestionChanges: (() => void) | undefined;
 
   constructor(
@@ -776,6 +760,7 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     private readonly media?: MediaStore,
     private readonly onTurnFinished?: (taskId: string) => void | Promise<void>,
     private readonly onRunError?: (input: RunErrorPushInput) => void | Promise<void>,
+    private readonly markerStore?: RunMarkerStore,
   ) {
     this.stopQuestionChanges = questions?.subscribe(() => {
       void this.publishQuestions();
@@ -822,11 +807,15 @@ export class DurableTaskAgentSession implements TaskAgentSession {
   }
 
   private setRunState(state: RunState, error: RunError | null = this.runError): void {
-    if (this.runState === state && this.runError === error) return;
+    if (this.runState === state && this.runError === error) {
+      this.maybeClearMarker();
+      return;
+    }
     this.runState = state;
     this.runError = error;
     this.emit({ event: "run.state", data: this.runStatus() });
     this.onRunState?.(this.taskId);
+    this.maybeClearMarker();
   }
 
   private publishDraft(): void {
@@ -909,6 +898,13 @@ export class DurableTaskAgentSession implements TaskAgentSession {
   }
 
   async start(): Promise<void> {
+    if (this.markerStore !== undefined) {
+      try {
+        this.marker = await this.markerStore.read();
+      } catch (error) {
+        console.error(`[task-agent] could not read the run marker for ${this.taskId}`, error);
+      }
+    }
     const stream = await this.conversation.watch(SESSION_CONTEXT, { min: 50, max: 200 });
     this.watch = stream;
     this.resetView(stream.value);
@@ -920,11 +916,16 @@ export class DurableTaskAgentSession implements TaskAgentSession {
         console.error(`[task-agent] view handling failed for ${this.taskId}`, error);
       }
     });
-    this.identity(() => this.harness.resume());
-    const inspection = await this.harness.inspect(SESSION_CONTEXT);
-    if (inspection.tasks.length > 0 || inspection.submissions.length > 0) {
-      this.setRunState("running");
+    // A stop requested before the process died is settled by the boot restore; never
+    // let opening the task chat quietly continue it.
+    if (this.marker?.stopRequested !== true) {
+      this.identity(() => this.harness.resume());
+      const inspection = await this.harness.inspect(SESSION_CONTEXT);
+      if (inspection.tasks.length > 0 || inspection.submissions.length > 0) {
+        this.setRunState("running");
+      }
     }
+    this.maybeClearMarker();
   }
 
   private resetView(view: ConversationView): void {
@@ -1077,6 +1078,75 @@ export class DurableTaskAgentSession implements TaskAgentSession {
   /** Bump before an await can interleave a snapshot read with a queue mutation. */
   private markQueueChanged(): void {
     this.queueRevision += 1;
+    void this.persistMarkerState();
+    this.maybeClearMarker();
+  }
+
+  /** Keep the durable hint in step with the pending queue without a write per mutation. */
+  private async persistMarkerState(flush = false): Promise<void> {
+    const marker = this.marker;
+    if (marker === undefined) return;
+    this.marker = {
+      ...marker,
+      queue: this.queueItems(),
+      updatedAt: new Date().toISOString(),
+    };
+    if (flush) {
+      await this.flushMarkerState();
+      return;
+    }
+    this.scheduleMarkerWrite();
+  }
+
+  private scheduleMarkerWrite(): void {
+    if (this.markerTimer !== undefined) return;
+    this.markerTimer = setTimeout(() => {
+      this.markerTimer = undefined;
+      const marker = this.marker;
+      if (marker !== undefined) void this.writeMarker(marker);
+    }, 0);
+    this.markerTimer.unref?.();
+  }
+
+  private async flushMarkerState(): Promise<void> {
+    if (this.markerTimer !== undefined) {
+      clearTimeout(this.markerTimer);
+      this.markerTimer = undefined;
+    }
+    const marker = this.marker;
+    if (marker !== undefined) await this.writeMarker(marker);
+    else await this.markerWrites;
+  }
+
+  private async writeMarker(marker: RunMarker): Promise<void> {
+    if (this.markerStore === undefined) return;
+    this.markerWrites = this.markerWrites
+      .then(() => this.markerStore?.write(marker))
+      .catch((error: unknown) => {
+        console.error(`[task-agent] could not persist the run marker for ${this.taskId}`, error);
+      });
+    await this.markerWrites;
+  }
+
+  private async clearMarker(): Promise<void> {
+    this.marker = undefined;
+    if (this.markerTimer !== undefined) {
+      clearTimeout(this.markerTimer);
+      this.markerTimer = undefined;
+    }
+    if (this.markerStore === undefined) return;
+    this.markerWrites = this.markerWrites
+      .then(() => this.markerStore?.clear())
+      .catch((error: unknown) => {
+        console.error(`[task-agent] could not clear the run marker for ${this.taskId}`, error);
+      });
+    await this.markerWrites;
+  }
+
+  private maybeClearMarker(): void {
+    if (this.closed || this.shuttingDown) return;
+    if (this.runState !== "idle" || this.queued.size > 0 || this.steers.size > 0) return;
+    void this.clearMarker();
   }
 
   private broadcastQueue(): void {
@@ -1268,27 +1338,50 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     const startsRun = this.runState !== "running" && this.queued.size === 0;
     const key = queueKey ?? randomUUID();
     const createdAt = new Date().toISOString();
+    if (startsRun) {
+      this.stopRequested = false;
+      this.marker = {
+        version: 1,
+        userMessage: text,
+        startedAt: createdAt,
+        mode,
+        stopRequested: false,
+        idempotencyKey: randomUUID(),
+        queue: this.queueItems(),
+        partialEntryId: null,
+        updatedAt: new Date().toISOString(),
+      };
+      // The hint must be on disk before durable admits the turn: a process that dies
+      // after the submission is placed must still leave enough behind to resume it.
+      await this.flushMarkerState();
+      this.setRunState("running", null);
+    }
+    let submission: Submission;
     // Model requests go through billion-context; they must carry this
     // conversation's id, not the main chat's, or the turn can hang or
     // attach itself to the parent session.
-    const submission = await this.identity(() =>
-      this.conversation.submit(
-        {
-          type: "input",
-          content,
-          whenBusy: steer ? "steer" : "followUp",
-          requestId: `queue:${key}`,
-          entry: {
-            kind: steer ? STEER_ENTRY_KIND : QUEUE_ENTRY_KIND,
-            data: { key, createdAt },
+    try {
+      submission = await this.identity(() =>
+        this.conversation.submit(
+          {
+            type: "input",
+            content,
+            whenBusy: steer ? "steer" : "followUp",
+            requestId: `queue:${key}`,
+            entry: {
+              kind: steer ? STEER_ENTRY_KIND : QUEUE_ENTRY_KIND,
+              data: { key, createdAt },
+            },
           },
-        },
-        SESSION_CONTEXT,
-      ),
-    );
-    if (startsRun) {
-      this.stopRequested = false;
-      this.setRunState("running", null);
+          SESSION_CONTEXT,
+        ),
+      );
+    } catch (error) {
+      if (startsRun) {
+        await this.clearMarker();
+        this.setRunState("idle", null);
+      }
+      throw error;
     }
     const id = String(submission.id);
     const { message, placed } = await this.submittedMessage(
@@ -1416,6 +1509,14 @@ export class DurableTaskAgentSession implements TaskAgentSession {
   async stop(): Promise<void> {
     if (this.closed || this.runState !== "running") return;
     this.stopRequested = true;
+    if (this.marker !== undefined) {
+      this.marker = {
+        ...this.marker,
+        stopRequested: true,
+        updatedAt: new Date().toISOString(),
+      };
+      await this.persistMarkerState(true);
+    }
     try {
       await this.identity(() => this.conversation.abort(SESSION_CONTEXT));
     } catch (error) {
@@ -1427,26 +1528,42 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     }
   }
 
+  /** Delete or replace: abort the turn and forget the marker before the directory goes. */
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
     this.stopRequested = true;
+    this.shuttingDown = true;
     this.stopQuestionChanges?.();
     void this.watch?.stop();
     this.watch = undefined;
-    const shutdown = async () => {
-      try {
-        if (this.runState === "running") {
-          await this.identity(() => this.conversation.abort(SESSION_CONTEXT));
-        }
-      } catch {
-        // Closing anyway.
+    await this.clearMarker();
+    try {
+      if (this.runState === "running") {
+        await this.identity(() => this.conversation.abort(SESSION_CONTEXT));
       }
-      await this.harness.close(SESSION_CONTEXT);
-    };
+    } catch {
+      // Closing anyway.
+    }
+    await this.closeHarness();
+  }
+
+  /** Process shutdown: keep the live turn and its marker for the next boot. */
+  async shutdown(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    this.stopRequested = true;
+    this.shuttingDown = true;
+    void this.watch?.stop();
+    this.watch = undefined;
+    await this.flushMarkerState();
+    await this.closeHarness();
+  }
+
+  private async closeHarness(): Promise<void> {
     try {
       await Promise.race([
-        shutdown(),
+        this.harness.close(SESSION_CONTEXT),
         new Promise<void>((_, reject) => {
           const timer = setTimeout(() => reject(new Error("close timed out")), 3_000);
           timer.unref?.();
@@ -1690,7 +1807,12 @@ export class TaskAgentManager {
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
     this.lastUsed.clear();
-    await Promise.all(sessions.map((session) => session.close()));
+    // A deploy is not a stop: leave every live plan turn for the next boot to resume.
+    await Promise.all(
+      sessions.map((session) =>
+        session.shutdown === undefined ? session.close() : session.shutdown(),
+      ),
+    );
   }
 
   /**
@@ -1732,30 +1854,55 @@ export class TaskAgentManager {
   }
 
   /**
-   * Open every plan agent the previous process left with unfinished durable
-   * work, so its harness resumes that turn. Idle plans stay closed.
+   * Open every plan turn the previous process left live. The marker only selects
+   * candidates; pi-durable decides whether there is work left to resume. Idle plans
+   * and tasks deleted or finished while the process was down stay closed.
    */
-  async resumeInterrupted(): Promise<string[]> {
-    let names: string[];
+  async restore(): Promise<string[]> {
+    let entries: Dirent[];
     try {
-      names = await readdir(this.root);
+      entries = await readdir(this.root, { withFileTypes: true });
     } catch (error) {
       if (isRecord(error) && error.code === "ENOENT") return [];
       throw error;
     }
     const resumed: string[] = [];
-    for (const taskId of names) {
+    for (const entry of entries) {
       if (this.closed) break;
-      if (!planWorkPending(join(this.taskDir(taskId), "pi.sqlite3"))) continue;
+      if (!entry.isDirectory()) continue;
+      const taskId = entry.name;
+      const markerStore = new RunMarkerStore(this.taskDir(taskId), "run.json");
+      let marker: RunMarker | undefined;
+      try {
+        marker = await markerStore.read();
+      } catch (error) {
+        console.error(`[task-agent] could not read the run marker for ${taskId}`, error);
+        continue;
+      }
+      if (marker === undefined) continue;
+      const task = this.options.store.ledger().tasks.find((item) => item.id === taskId);
+      if (task === undefined || task.status === "done" || marker.stopRequested) {
+        try {
+          await markerStore.clear();
+        } catch (error) {
+          console.error(`[task-agent] could not clear the stale run marker for ${taskId}`, error);
+        }
+        continue;
+      }
       try {
         await this.ensure(taskId);
         resumed.push(taskId);
-        console.log(`[task-agent] restarted plan agent ${taskId}`);
+        console.log(`[task-agent] resuming plan turn for ${taskId}`);
       } catch (error) {
-        console.error(`[task-agent] could not restart plan agent ${taskId}`, error);
+        console.error(`[task-agent] could not resume plan for ${taskId}`, error);
       }
     }
     return resumed;
+  }
+
+  /** Kept for callers from before the marker-based restore. */
+  resumeInterrupted(): Promise<string[]> {
+    return this.restore();
   }
 
   private clock(): number {
@@ -1793,6 +1940,7 @@ export class TaskAgentManager {
     await mkdir(dir, { recursive: true });
     const databasePath = join(dir, "pi.sqlite3");
     const currentPath = join(dir, "current.json");
+    const markerStore = new RunMarkerStore(dir, "run.json");
     const questions = new TaskQuestionsStore(join(dir, "questions.json"));
     await questions.load();
     const storage = await openNodeSqliteStorage(databasePath);
@@ -1905,6 +2053,7 @@ export class TaskAgentManager {
       async (input) => {
         await this.runErrorNotifier.deliver(input);
       },
+      markerStore,
     );
     await session.start();
     return session;

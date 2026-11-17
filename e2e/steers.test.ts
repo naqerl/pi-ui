@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { buildChatTimeline, lastSettledOrder } from "../src/client/chat-timeline.js";
+import { OPTIMISTIC_ACTIVITY_ORDER } from "../src/shared/activity-optimistic.js";
 import {
   cancelSteer,
   consumeSteer,
@@ -17,7 +19,7 @@ import {
   steerFromInboxItem,
   steerKeyFromEntryData,
 } from "../src/shared/steers.js";
-import type { ChatMessage } from "../src/shared/types.js";
+import type { ActivityItem, ChatMessage } from "../src/shared/types.js";
 
 const steer = (id: string, key = `key-${id}`): PendingSteer => ({
   id,
@@ -67,6 +69,7 @@ test("pending becomes dropped with a visible reason, and stays failed across liv
   assert.equal(failed.isError, true);
   assert.equal(failed.pendingSteer, undefined);
   assert.equal(failed.steerError, reason);
+  assert.equal(failed.order, PENDING_STEER_ORDER);
 
   // A run-state update no longer lists it; the failed bubble must not disappear.
   const live = mergeLiveSteers(dropped, []);
@@ -76,6 +79,95 @@ test("pending becomes dropped with a visible reason, and stays failed across liv
   const reloaded = rebuildSteersFromSnapshot(live, []);
   assert.equal(reloaded.length, 1);
   assert.equal(reloaded[0]?.dropped, reason);
+});
+
+test("a dropped steer freezes just past the last settled row and stays there", () => {
+  const reason = "The run stopped before the steer was delivered.";
+  const messages: ChatMessage[] = [
+    { id: "m-1", role: "user", text: "before", timestamp: "", order: 10_000 },
+    { id: "m-2", role: "assistant", text: "reply", timestamp: "", order: 20_000 },
+  ];
+  const activity: ActivityItem[] = [
+    {
+      kind: "tool",
+      id: "t-1",
+      name: "read",
+      arguments: "{}",
+      isError: false,
+      timestamp: "",
+      order: 25_000,
+    },
+    // A successful task tool stays here until its entry lands; it must not anchor a drop.
+    {
+      kind: "tool",
+      id: "optimistic-task",
+      name: "task_working",
+      arguments: '{"id":"task-7"}',
+      isError: false,
+      timestamp: "",
+      order: OPTIMISTIC_ACTIVITY_ORDER,
+      optimistic: true,
+      taskId: "task-7",
+      toolCallId: "call-1",
+    },
+    {
+      kind: "thinking",
+      id: "thinking-live",
+      name: "thinking",
+      text: "still working",
+      timestamp: "",
+      order: Number.MAX_SAFE_INTEGER - 5,
+      pending: true,
+    },
+  ];
+  const settled = lastSettledOrder(messages, activity);
+  assert.equal(settled, 25_000);
+  assert.ok(settled < OPTIMISTIC_ACTIVITY_ORDER);
+
+  // Two drops in the same update share the frozen order; stable sort keeps their sequence.
+  const firstDrop = dropSteer([steer("1"), steer("2")], "1", reason, settled + 1);
+  const dropped = dropSteer(firstDrop, "2", reason, settled + 1);
+  const failed = dropped.map((item) => droppedSteerMessage(item, reason));
+  assert.equal(failed[0]?.order, settled + 1);
+  assert.equal(failed[1]?.order, settled + 1);
+  assert.ok((failed[0]?.order ?? 0) < PENDING_STEER_ORDER);
+  // A live update replaces the pending copy but must not unfreeze its failed order.
+  assert.deepEqual(
+    mergeLiveSteers(dropped, [steer("1"), steer("2")]).map((item) => item.droppedOrder),
+    [settled + 1, settled + 1],
+  );
+
+  const later: ChatMessage = {
+    id: "m-3",
+    role: "assistant",
+    text: "later reply",
+    timestamp: "",
+    order: 30_000,
+  };
+  const timeline = buildChatTimeline({
+    messages: [...messages, later],
+    activity,
+    liveTools: [],
+    draftText: "",
+    draftThinking: "",
+    draftThinkingAt: null,
+    steers: dropped,
+    queue: [],
+    optimistic: [],
+  });
+  assert.deepEqual(
+    timeline.map((item) => (item.kind === "message" ? item.message.id : item.activity.id)),
+    [
+      "m-1",
+      "m-2",
+      "t-1",
+      "steer-dropped-1",
+      "steer-dropped-2",
+      "m-3",
+      "thinking-live",
+      "optimistic-task",
+    ],
+  );
 });
 
 test("a cancelled pending steer leaves no residue", () => {

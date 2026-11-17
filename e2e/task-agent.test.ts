@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { SnapshotCache } from "../src/server/memory/snapshot.js";
 import { MemoryStore } from "../src/server/memory/store.js";
 import { createMemoryTools } from "../src/server/memory/tools.js";
+import { RunMarkerStore } from "../src/server/run-marker.js";
 import type { SseFrame } from "../src/server/sse.js";
 import { StreamHub } from "../src/server/stream-hub.js";
 import {
@@ -722,6 +722,8 @@ test("visible task chat rows omit notice and keep ordinary messages", () => {
 class FakeSession implements TaskAgentSession {
   closed = false;
   stopped = 0;
+  shutdowns = 0;
+  closes = 0;
   submitted: string[] = [];
   attachments: string[][] = [];
   instructions: string[] = [];
@@ -767,7 +769,14 @@ class FakeSession implements TaskAgentSession {
     this.run = "idle";
   }
 
+  async shutdown() {
+    this.shutdowns += 1;
+    this.closed = true;
+    this.run = "idle";
+  }
+
   async close() {
+    this.closes += 1;
     this.closed = true;
     this.run = "idle";
   }
@@ -1173,30 +1182,63 @@ test("the manager forwards image attachments to the task agent session", async (
   await manager.close();
 });
 
-test("a restart reopens a plan agent that still has durable work", async () => {
+test("a restart restores only plan turns whose marker was live", async () => {
   const dataDir = join(directory, "plan-restart");
-  const created = (await store.create("Resume the unfinished plan", null)).tasks.find(
-    (item) => item.title === "Resume the unfinished plan",
-  );
-  const idle = (await store.create("Leave the idle plan closed", null)).tasks.find(
-    (item) => item.title === "Leave the idle plan closed",
-  );
-  assert.ok(created);
-  assert.ok(idle);
-  const runningDir = join(dataDir, "task-agents", created.id);
-  const idleDir = join(dataDir, "task-agents", idle.id);
-  await mkdir(runningDir, { recursive: true });
-  await mkdir(idleDir, { recursive: true });
-  const runningDb = new DatabaseSync(join(runningDir, "pi.sqlite3"));
-  runningDb.exec(
-    "CREATE TABLE tasks (id INTEGER PRIMARY KEY, status TEXT NOT NULL); INSERT INTO tasks (status) VALUES ('running');",
-  );
-  runningDb.close();
-  const idleDb = new DatabaseSync(join(idleDir, "pi.sqlite3"));
-  idleDb.exec(
-    "CREATE TABLE tasks (id INTEGER PRIMARY KEY, status TEXT NOT NULL); INSERT INTO tasks (status) VALUES ('terminal');",
-  );
-  idleDb.close();
+  const tasksRoot = join(dataDir, "task-agents");
+  const titles = {
+    live: "Resume the live plan",
+    other: "Resume the other live plan",
+    stopped: "Leave the stopped plan idle",
+    done: "Leave the finished plan idle",
+    unmarked: "Leave the markerless plan closed",
+    broken: "Skip the plan whose harness fails",
+    corrupt: "Skip the plan with a corrupt marker",
+    deleted: "Forget the plan whose task is gone",
+  };
+  const found = new Map<string, string>();
+  for (const title of Object.values(titles)) {
+    const task = (await store.create(title, null)).tasks.find((item) => item.title === title);
+    assert.ok(task);
+    found.set(title, task.id);
+  }
+  const id = (title: string): string => {
+    const value = found.get(title);
+    assert.ok(value);
+    return value;
+  };
+  const dir = (taskId: string) => join(tasksRoot, taskId);
+  const writeMarker = async (
+    taskId: string,
+    overrides: { stopRequested?: boolean } = {},
+  ): Promise<RunMarkerStore> => {
+    const taskDir = dir(taskId);
+    await mkdir(taskDir, { recursive: true });
+    const markerStore = new RunMarkerStore(taskDir, "run.json");
+    await markerStore.write({
+      version: 1,
+      userMessage: "keep planning",
+      startedAt: new Date().toISOString(),
+      mode: "queue",
+      stopRequested: overrides.stopRequested ?? false,
+      idempotencyKey: `key-${taskId}`,
+      queue: [],
+      partialEntryId: null,
+      updatedAt: new Date().toISOString(),
+    });
+    return markerStore;
+  };
+
+  await writeMarker(id(titles.live));
+  await writeMarker(id(titles.other));
+  const stopped = await writeMarker(id(titles.stopped), { stopRequested: true });
+  const done = await writeMarker(id(titles.done));
+  await store.update(id(titles.done), { status: "done" });
+  await mkdir(dir(id(titles.unmarked)), { recursive: true });
+  await writeMarker(id(titles.broken));
+  const corruptDir = dir(id(titles.corrupt));
+  await mkdir(corruptDir, { recursive: true });
+  await writeFile(join(corruptDir, "run.json"), "{not a marker");
+  const deleted = await writeMarker("deleted-task");
 
   const opened: string[] = [];
   const manager = new TaskAgentManager({
@@ -1208,6 +1250,7 @@ test("a restart reopens a plan agent that still has durable work", async () => {
     publish: () => undefined,
     baseInstructions: "BASE",
     openSession: async (taskId) => {
+      if (taskId === id(titles.broken)) throw new Error("harness unavailable");
       opened.push(taskId);
       const session = new FakeSession(taskId);
       session.run = "running";
@@ -1215,9 +1258,61 @@ test("a restart reopens a plan agent that still has durable work", async () => {
     },
   });
   try {
-    assert.deepEqual(await manager.resumeInterrupted(), [created.id]);
-    assert.deepEqual(opened, [created.id]);
+    const resumed = await manager.restore();
+    assert.deepEqual(resumed.sort(), [id(titles.live), id(titles.other)].sort());
+    assert.deepEqual(opened.sort(), [id(titles.live), id(titles.other)].sort());
+    assert.equal(opened.includes(id(titles.stopped)), false);
+    assert.equal(opened.includes(id(titles.done)), false);
+    assert.equal(opened.includes(id(titles.unmarked)), false);
+    assert.equal(opened.includes("deleted-task"), false);
+    assert.equal(await stopped.read(), undefined);
+    assert.equal(await done.read(), undefined);
+    assert.equal(await deleted.read(), undefined);
   } finally {
     await manager.close();
   }
+});
+
+test("manager shutdown keeps a live plan turn while remove still closes it", async () => {
+  const dataDir = join(directory, "plan-shutdown");
+  const first = (await store.create("Keep this plan through shutdown", null)).tasks.find(
+    (item) => item.title === "Keep this plan through shutdown",
+  );
+  const second = (await store.create("Remove this plan session", null)).tasks.find(
+    (item) => item.title === "Remove this plan session",
+  );
+  assert.ok(first);
+  assert.ok(second);
+
+  const fakes = new Map<string, FakeSession>();
+  const manager = new TaskAgentManager({
+    dataDir,
+    cwd: directory,
+    models: {} as never,
+    model: undefined,
+    store,
+    publish: () => undefined,
+    baseInstructions: "BASE",
+    openSession: async (taskId) => {
+      const session = new FakeSession(taskId);
+      fakes.set(taskId, session);
+      return session;
+    },
+  });
+
+  await manager.ensure(first.id);
+  await manager.ensure(second.id);
+  const kept = fakes.get(first.id);
+  const removed = fakes.get(second.id);
+  assert.ok(kept);
+  assert.ok(removed);
+  kept.run = "running";
+
+  await manager.remove(second.id);
+  assert.equal(removed.closes, 1);
+  assert.equal(removed.shutdowns, 0);
+
+  await manager.close();
+  assert.equal(kept.shutdowns, 1);
+  assert.equal(kept.closes, 0);
 });
