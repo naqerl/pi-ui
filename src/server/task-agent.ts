@@ -17,6 +17,7 @@ import {
   createRegistry,
   defineExtension,
   defineTool,
+  type EntryDraft,
   type EntryRecord,
   type Harness,
   Harness as HarnessImpl,
@@ -73,6 +74,7 @@ import {
   buildTranscript,
   JOB_NOTICE_ENTRY_KIND,
   SESSION_CONTEXT,
+  TASK_ATTACHMENTS_ENTRY_KIND,
   toolActivityFromEntry,
 } from "./session.js";
 import type { SseFrame } from "./sse.js";
@@ -156,6 +158,8 @@ export interface TaskAgentSession {
   running(): boolean;
   snapshot(): Promise<TaskAgentChatSnapshot>;
   submit(text: string, attachments?: string[]): Promise<TaskAgentChatSnapshot>;
+  /** Put the task's images in an already-open plan conversation. */
+  syncTaskAttachments?(task: Task): Promise<void>;
   /** The main-chat-shaped send answer, used by the shared client core. */
   send?(
     text: string,
@@ -443,16 +447,180 @@ export function taskAgentHarnessSettings(env: NodeJS.ProcessEnv = process.env): 
 export interface TaskAgentInstructionOptions {
   /** False when PI_PLAN_MEMORY=0 or no memory store was supplied. */
   readonly memoryEnabled?: boolean;
+  /** How many images the task carries, for the prompt header and the look-first rule. */
+  readonly attachmentCount?: number;
+  /** False when the plan model cannot take image blocks. */
+  readonly imagesInContext?: boolean;
+}
+
+function taskAttachmentsPrompt(
+  task: Pick<Task, "id" | "title">,
+  count: number,
+  imageInput: boolean,
+): string {
+  const images = count === 1 ? "image" : "images";
+  if (!imageInput) {
+    return `Task ${task.id} "${task.title}" has ${count} attached ${images}. This plan model cannot view images, so they are not in your context. Ask the operator to describe what they show or put the important details in the task body before planning from them.`;
+  }
+  return `Task ${task.id} "${task.title}" has ${count} attached ${images}. These are the task's own attachments and are part of your context. Look at what they actually show — layout, states, visible text and what looks wrong — before you ask the operator anything.`;
+}
+
+/** A write whose entry is not yet committed to the transcript. */
+interface PendingAttachmentWrite {
+  readonly submission: Submission;
+  readonly ids: string[];
+  /** Whether this write carries image blocks (a text fallback does not). */
+  readonly images: boolean;
+}
+
+/** Serialize the read-diff-write per conversation, so concurrent PATCHes cannot duplicate. */
+const attachmentSyncQueues = new WeakMap<Conversation, Promise<void>>();
+/** Writes admitted while the conversation is busy, until durable places or drops them. */
+const pendingAttachmentWrites = new WeakMap<Conversation, PendingAttachmentWrite[]>();
+
+async function withAttachmentSync<T>(
+  conversation: Conversation,
+  run: () => Promise<T>,
+): Promise<T> {
+  const previous = attachmentSyncQueues.get(conversation) ?? Promise.resolve();
+  let release: () => void = () => {};
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  attachmentSyncQueues.set(
+    conversation,
+    previous.then(
+      () => current,
+      () => current,
+    ),
+  );
+  await previous.catch(() => undefined);
+  try {
+    return await run();
+  } finally {
+    release();
+  }
+}
+
+/** Keep only writes durable still holds queued; a done or dropped write is in context or gone. */
+async function livePendingAttachmentWrites(
+  conversation: Conversation,
+): Promise<PendingAttachmentWrite[]> {
+  const pending = pendingAttachmentWrites.get(conversation) ?? [];
+  const live: PendingAttachmentWrite[] = [];
+  for (const write of pending) {
+    try {
+      const record = await write.submission.status(SESSION_CONTEXT);
+      if (record.status === "queued") live.push(write);
+    } catch {
+      // A fake submission, or one whose conversation closed, cannot be inspected.
+      // Keep its ids: appending a duplicate image block is worse than skipping one.
+      live.push(write);
+    }
+  }
+  if (live.length === 0) pendingAttachmentWrites.delete(conversation);
+  else pendingAttachmentWrites.set(conversation, live);
+  return live;
+}
+
+/**
+ * Put the task's images into a plan conversation as a model-facing entry. Only the
+ * added ids get image blocks; the entry's data keeps the full current set so the
+ * next open, or a later PATCH, can diff without a state file. A text-only model
+ * gets a truthful text note instead of image blocks it would reject.
+ */
+export async function syncTaskAttachments(
+  conversation: Conversation,
+  task: Pick<Task, "id" | "title" | "attachments">,
+  media: MediaStore,
+  imageInput = true,
+): Promise<void> {
+  await withAttachmentSync(conversation, async () => {
+    const pending = await livePendingAttachmentWrites(conversation);
+    const context = await conversation.context(SESSION_CONTEXT);
+    let previous: string[] | undefined;
+    for (const entry of context.entries) {
+      if (entry.kind !== TASK_ATTACHMENTS_ENTRY_KIND) continue;
+      if (!isRecord(entry.data) || !Array.isArray(entry.data.ids)) continue;
+      previous = entry.data.ids.filter((id): id is string => typeof id === "string");
+    }
+    const ids = task.attachments ?? [];
+    const known = new Set(previous);
+    for (const write of pending) {
+      if (write.images) for (const id of write.ids) known.add(id);
+    }
+    const added = ids.filter((id) => !known.has(id));
+    const lastPlanned = pending.at(-1)?.ids ?? previous;
+    const unchanged =
+      lastPlanned !== undefined &&
+      lastPlanned.length === ids.length &&
+      lastPlanned.every((id, index) => id === ids[index]);
+    if (unchanged || (lastPlanned === undefined && ids.length === 0)) return;
+    const createdAt = new Date().toISOString();
+    const blocks: Array<
+      { type: "image"; data: string; mimeType: string } | { type: "text"; text: string }
+    > = [];
+    if (imageInput) {
+      for (const id of added) {
+        try {
+          blocks.push(...(await media.images([id])));
+        } catch {
+          // One bad id must not suppress every image, as in task_view.
+          blocks.push({ type: "text", text: `image ${id} is missing` });
+        }
+      }
+    }
+    const hasImages = blocks.some((block) => block.type === "image");
+    const entry: EntryDraft = {
+      kind: TASK_ATTACHMENTS_ENTRY_KIND,
+      data: { taskId: task.id, ids, createdAt },
+      ...(added.length === 0
+        ? {}
+        : {
+            model: [
+              {
+                role: "user" as const,
+                content: [
+                  {
+                    type: "text" as const,
+                    text: taskAttachmentsPrompt(task, ids.length, imageInput),
+                  },
+                  ...blocks,
+                ],
+                timestamp: Date.parse(createdAt),
+              },
+            ],
+          }),
+    };
+    const submission = await conversation.submit({ type: "write", entry }, SESSION_CONTEXT);
+    const writes = pendingAttachmentWrites.get(conversation) ?? [];
+    writes.push({ submission, ids: [...ids], images: hasImages });
+    pendingAttachmentWrites.set(conversation, writes);
+  });
 }
 
 export function taskAgentInstructions(
   base: string,
-  task: Pick<Task, "id" | "title" | "body" | "project">,
+  task: Pick<Task, "id" | "title" | "body" | "project"> & {
+    attachments?: readonly string[];
+  },
   options: TaskAgentInstructionOptions = {},
 ): string {
   const project = task.project === undefined ? "none" : task.project;
   const body = task.body === undefined || task.body.length === 0 ? "(empty)" : task.body;
   const memoryEnabled = options.memoryEnabled !== false;
+  const attachmentCount = options.attachmentCount ?? task.attachments?.length ?? 0;
+  const imagesInContext = options.imagesInContext !== false;
+  const attachments =
+    attachmentCount === 0
+      ? ""
+      : imagesInContext
+        ? `- attachments: ${attachmentCount} image${attachmentCount === 1 ? "" : "s"} (in your context)\n`
+        : `- attachments: ${attachmentCount} image${attachmentCount === 1 ? "" : "s"} (this plan model cannot view images; ask the operator to describe them)\n`;
+  const look =
+    imagesInContext && attachmentCount > 0
+      ? "- **Look before you ask — investigate first.** Images attached to this task are already in your context as the opening user message; describe what you actually see (layout, states, visible text, what looks wrong) before you ask the operator anything. Never ask a question an attached image or the repository already answers: read the code first (`read`, `bash`), then ask only what is genuinely undecidable. If an image is unreadable, say which one and what it should show.\n"
+      : "";
   const memoryPolicy = memoryEnabled
     ? `- You must not edit, write, create or delete any workspace files, and you must not run commands that change the workspace. The memory_write tool is the one write you may make, and it only touches the memory store.
 
@@ -475,7 +643,8 @@ Your job is to help the operator formulate the task and propose a solution — a
 
 Plan mode only:
 ${memoryPolicy}
-- You have additional tools, edit_task, propose_task, ask_questions and append_questions. edit_task updates this task's title, markdown body and/or project. Use it to capture the formulated task: a clear title, a markdown body with the problem and the proposed design (mermaid fences are allowed), and a project when one fits.
+- You may use the read and bash tools to inspect the repository.
+${look}- You have additional tools, edit_task, propose_task, ask_questions and append_questions. edit_task updates this task's title, markdown body and/or project. Use it to capture the formulated task: a clear title, a markdown body with the problem and the proposed design (mermaid fences are allowed), and a project when one fits.
 - Use propose_task to hand a follow-up task to the operator for approval. A proposal is not a task: only a human approving it creates work, so do not treat it as started or done. Do not propose a duplicate of the task you are planning; propose only distinct follow-up work.
 - When a decision would be guessed in prose, call ask_questions with a structured set (single, multi or text) and wait for the operator's answers. Use append_questions to add to the same unanswered set while you are still composing it.
 - Do not change the task's status. The operator owns that.
@@ -485,7 +654,7 @@ Current task:
 - id: ${task.id}
 - title: ${task.title}
 - project: ${project}
-- body:
+${attachments}- body:
 ${body}`;
 }
 
@@ -793,6 +962,7 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     private readonly onTurnFinished?: (taskId: string) => void | Promise<void>,
     private readonly onRunError?: (input: RunErrorPushInput) => void | Promise<void>,
     private readonly markerStore?: RunMarkerStore,
+    private readonly imagesSupported = true,
   ) {
     this.stopQuestionChanges = questions?.subscribe(() => {
       void this.publishQuestions();
@@ -920,6 +1090,11 @@ export class DurableTaskAgentSession implements TaskAgentSession {
   async applyInstructions(instructions: string): Promise<void> {
     if (this.closed) return;
     await this.conversation.configure({ instructions }, SESSION_CONTEXT);
+  }
+
+  async syncTaskAttachments(task: Task): Promise<void> {
+    if (this.closed || this.media === undefined) return;
+    await syncTaskAttachments(this.conversation, task, this.media, this.imagesSupported);
   }
 
   private identity<T>(run: () => T): T {
@@ -1858,6 +2033,33 @@ export class TaskAgentManager {
     await session.stop();
   }
 
+  /**
+   * Seed an already-open plan conversation with images attached to its task.
+   * A closed session needs no work: the next open diffs the attachments itself.
+   */
+  async syncTaskAttachments(taskId: string): Promise<void> {
+    if (this.options.media === undefined) return;
+    const opening = this.opening.get(taskId);
+    if (opening !== undefined) {
+      try {
+        await opening;
+      } catch {
+        return;
+      }
+    }
+    const session = this.sessions.get(taskId);
+    if (session === undefined || session.closed || session.syncTaskAttachments === undefined)
+      return;
+    const task = this.options.store.ledger().tasks.find((item) => item.id === taskId);
+    if (task === undefined) return;
+    try {
+      await session.syncTaskAttachments(task);
+      await this.refreshInstructions(taskId);
+    } catch (error) {
+      console.error(`[task-agent] could not sync attachments for ${taskId}`, error);
+    }
+  }
+
   async answerQuestions(
     taskId: string,
     setId: string,
@@ -2123,8 +2325,11 @@ export class TaskAgentManager {
       },
       SESSION_CONTEXT,
     );
+    const imagesInContext = this.planAcceptsImages();
     const instructions = taskAgentInstructions(await this.resolveMemoryBase(true), task, {
       memoryEnabled: this.planMemory() !== undefined,
+      attachmentCount: task.attachments?.length ?? 0,
+      imagesInContext,
     });
     const savedId = await readConversationId(currentPath);
     let conversation: Conversation | undefined;
@@ -2156,6 +2361,13 @@ export class TaskAgentManager {
         SESSION_CONTEXT,
       );
     }
+    if (this.options.media !== undefined) {
+      try {
+        await syncTaskAttachments(conversation, task, this.options.media, imagesInContext);
+      } catch (error) {
+        console.error(`[task-agent] could not seed attachments for ${taskId}`, error);
+      }
+    }
     const session = new DurableTaskAgentSession(
       taskId,
       harness,
@@ -2171,6 +2383,7 @@ export class TaskAgentManager {
         await this.runErrorNotifier.deliver(input);
       },
       markerStore,
+      imagesInContext,
     );
     await session.start();
     return session;
@@ -2226,6 +2439,12 @@ export class TaskAgentManager {
     });
   }
 
+  /** Whether the plan model can take image blocks; a text-only model gets a text note. */
+  private planAcceptsImages(): boolean {
+    const input = this.options.model?.input;
+    return Array.isArray(input) && input.includes("image");
+  }
+
   /** Rebuild a live plan session's instructions from the current task and files. */
   async refreshInstructions(taskId: string, fresh = false): Promise<void> {
     const session = this.sessions.get(taskId);
@@ -2237,6 +2456,8 @@ export class TaskAgentManager {
       await session.applyInstructions(
         taskAgentInstructions(base, task, {
           memoryEnabled: this.planMemory() !== undefined,
+          attachmentCount: task.attachments?.length ?? 0,
+          imagesInContext: this.planAcceptsImages(),
         }),
       );
     } catch (error) {
