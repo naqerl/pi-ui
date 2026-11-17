@@ -1,3 +1,13 @@
+## 1.9.2
+
+### Changed
+
+- Padding, margin and gap utilities in `src/client` use one six-step spacing scale: `xs`, `sm`, `md`, `lg`, `xl` and `2xl`. `0` and `auto` stay legal. A Biome GritQL plugin fails the build on any other numeric spacing step; the scale and mapping are in `docs/spacing.md`.
+
+### Fixed
+
+- `job_output` reads a job by id through the read tool, like every other file read: the agent no longer has to know where a job writes its log. `job_cancel` and `job_list` keep their shapes, and a job id that is not a live or retained job answers with the same not-found shape as before.
+
 ## 1.9.1
 
 ### Fixed
@@ -15,7 +25,6 @@
 
 ### Changed
 
-- Padding, margin and gap utilities in `src/client` use one six-step spacing scale: `xs`, `sm`, `md`, `lg`, `xl` and `2xl`. `0` and `auto` stay legal. A Biome GritQL plugin fails the build on any other numeric spacing step; the scale and mapping are in `docs/spacing.md`.
 - A Stop or an aborted turn hands a running `bash` command over instead of killing it. Stop stops the turn, not the work.
 - The `bash` tool schema no longer accepts `timeout`; one rule replaces it.
 - At most 12 live commands run at once, including hidden foreground calls. `job_start` keeps its separate limit of 8, which counts only `job_start` jobs.
