@@ -817,9 +817,9 @@ export function createTaskQuestionTools(options: {
         try {
           const parsed = parseTaskQuestions(args.questions);
           if (!parsed.ok) return questionFailure(new Error(parsed.error));
-          const askedBy = typeof api.taskId === "string" ? api.taskId : undefined;
-          const replayed =
-            askedBy === undefined ? null : await options.questions.answeredBy(askedBy);
+          // A tool task id is numeric; the call id is the stable string a replay reuses.
+          const askedBy = api.callId;
+          const replayed = await options.questions.answeredBy(askedBy);
           if (replayed !== null) return answerToolResult(replayed);
           const { set } = await options.questions.add(options.taskId, parsed.questions, askedBy);
           const count = set.questions.length;
@@ -847,8 +847,7 @@ export function createTaskQuestionTools(options: {
         try {
           const parsed = parseTaskQuestions(args.questions);
           if (!parsed.ok) return questionFailure(new Error(parsed.error));
-          const askedBy = typeof api.taskId === "string" ? api.taskId : undefined;
-          const added = await options.questions.add(options.taskId, parsed.questions, askedBy);
+          const added = await options.questions.add(options.taskId, parsed.questions, api.callId);
           const pending = await options.questions.pending();
           const count = pending?.questions.length ?? added.set.questions.length;
           return {

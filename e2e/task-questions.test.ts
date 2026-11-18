@@ -20,8 +20,9 @@ function tool(name: string) {
   return found;
 }
 
-async function call(name: string, questions: unknown, taskId = "tool-1") {
-  return tool(name).execute({ questions } as never, { taskId } as never, context);
+async function call(name: string, questions: unknown, callId = "call-1") {
+  // The real harness gives every tool task a numeric id and every invocation a string call id.
+  return tool(name).execute({ questions } as never, { taskId: 42, callId } as never, context);
 }
 
 function text(result: Awaited<ReturnType<typeof call>>) {
@@ -194,6 +195,20 @@ test("ask_questions returns immediately and leaves the set pending for the Plan 
   assert.match(replay.text, /Answered 3 questions/);
   assert.match(replay.text, /Split/);
   assert.equal(await pending(), null);
+
+  // A new call is not a replay: it may ask a different set in the same task.
+  const fresh = text(
+    await call(
+      "ask_questions",
+      [{ id: "later", prompt: "Anything else?", kind: "text" }],
+      "tool-later",
+    ),
+  );
+  assert.match(fresh.text, /Registered 1 question/);
+  assert.deepEqual(
+    (await pending())?.questions.map((question) => question.id),
+    ["later"],
+  );
 });
 
 test("a pending set is capped and refuses questions over the limit", async () => {
