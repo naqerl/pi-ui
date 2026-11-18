@@ -1119,7 +1119,7 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
           }}
         >
           <section
-            className="h-full min-w-0 shrink-0 grow-0 basis-full overflow-y-auto overflow-x-hidden px-xl pt-xl"
+            className="h-full min-w-0 shrink-0 grow-0 basis-full overflow-y-auto overflow-x-hidden px-xl pt-lg"
             aria-label="Plan"
             aria-hidden={tab !== "plan"}
             inert={tab !== "plan" || undefined}

@@ -1175,6 +1175,13 @@ app.patch("/api/tasks/:id", async (c) => {
         console.error(`[pi] could not clear the questions for ${id}`, error);
       });
     }
+    if ("attachments" in patch) {
+      // A screenshot attached while the plan chat is open is in its context now,
+      // not only after the next session open.
+      void taskAgents.syncTaskAttachments(id).catch((error: unknown) => {
+        console.error(`[pi] could not sync the task images for ${id}`, error);
+      });
+    }
     if (after?.status === "done") {
       await taskAgents.stopRun(id).catch((error: unknown) => {
         console.error(`[pi] could not stop the task agent for ${id}`, error);

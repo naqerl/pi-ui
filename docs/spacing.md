@@ -60,8 +60,10 @@ removed instead:
 - `src/client/ActivityView.tsx` nested disclosure rows use `px-xl py-xl pl-2xl`.
   `pl-*` stays after `px-*` so `tailwind-merge` keeps the indent.
 - `src/client/ChatView.tsx` status row uses `pl-2xl` for the plus icon's ink.
-- `src/client/BackgroundJobs.tsx` moves the jobs chip with `-ml-xl` and
-  `pl-xl`, so the text ink still lines up with the composer plus button.
+- `src/client/BackgroundJobs.tsx` used to move the jobs chip with `-ml-xl` and
+  `pl-xl` so its ink lined up with the composer plus button. The counts now sit
+  after the status word, so the reservation is gone and the chip is a plain
+  flex sibling with `gap-md`.
 
 ## Device insets
 

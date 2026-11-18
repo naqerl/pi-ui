@@ -1,4 +1,5 @@
 import {
+  Fragment,
   lazy,
   memo,
   type ReactNode,
@@ -35,7 +36,7 @@ import type {
   TokenSpend,
   ToolActivity,
 } from "../shared/types";
-import { groupSummaryParts } from "./activity-format";
+import { groupStartMs, groupSummaryParts } from "./activity-format";
 import {
   BackgroundJobsCounts,
   type BackgroundJobsKind,
@@ -146,6 +147,8 @@ const CHAT_PAGE = 1;
 const TASKS_PAGE = 2;
 // The pager slides for 300ms; the composer body's height settles sooner.
 const PAGE_SETTLE_MS = 320;
+// A fast snapshot should never flash a loading card; a slow one gets an honest placeholder.
+const TRANSCRIPT_LOADING_DELAY_MS = 180;
 
 function pageFromLocation(): number {
   // A task-plan push opens the tasks page and the detail itself; the hash route
@@ -205,6 +208,45 @@ function activityRunFromLocation(): string | null | undefined {
   const path = window.location.pathname.replace(/\/+$/, "");
   if (path !== "/activity") return undefined;
   return new URLSearchParams(window.location.search).get("run");
+}
+
+/** True only after `active` has stayed on for `delayMs`, so a quick load never flashes. */
+function useDelayedFlag(active: boolean, delayMs: number): boolean {
+  const [shown, setShown] = useState(false);
+
+  useEffect(() => {
+    if (!active) {
+      setShown(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setShown(true), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [active, delayMs]);
+
+  return active && shown;
+}
+
+/**
+ * The transcript's placeholder while the first snapshot is in flight. It fills the reading
+ * area so hydration replaces it in place instead of letting the composer move, and it is
+ * only mounted when the transcript has no live rows of its own.
+ */
+function TranscriptLoadingCard() {
+  return (
+    <div
+      data-testid="chat-loading"
+      role="status"
+      aria-live="polite"
+      className="theme-radius flex min-h-40 flex-1 flex-col justify-center gap-xl border border-border bg-surface/90 px-2xl py-2xl shadow-sm backdrop-blur-md"
+    >
+      <span className="font-mono text-xs text-muted-foreground">Loading…</span>
+      <div aria-hidden="true" className="flex flex-col gap-lg">
+        <span className="h-2.5 w-2/3 animate-pulse rounded-sm bg-muted motion-reduce:animate-none" />
+        <span className="h-2.5 w-5/6 animate-pulse rounded-sm bg-muted [animation-delay:120ms] motion-reduce:animate-none" />
+        <span className="h-2.5 w-1/2 animate-pulse rounded-sm bg-muted [animation-delay:240ms] motion-reduce:animate-none" />
+      </div>
+    </div>
+  );
 }
 
 function MessageTime({ timestamp }: { timestamp: string }) {
@@ -439,7 +481,7 @@ export function MessageBubble({
         data-role={message.role}
         data-kind="session-reset"
         data-testid="session-reset"
-        className="theme-radius mx-auto w-fit min-w-0 max-w-[92%] border border-foreground/10 bg-surface/90 px-xl py-sm text-center font-mono text-[11px] leading-5 text-muted-foreground backdrop-blur-md [overflow-wrap:anywhere]"
+        className="theme-radius mx-auto w-fit min-w-0 max-w-[92%] border border-foreground/10 bg-surface/90 px-xl py-sm text-center font-mono text-[11px] leading-5 text-muted-foreground [overflow-wrap:anywhere]"
       >
         {message.text}
       </div>
@@ -467,7 +509,7 @@ export function MessageBubble({
           data-message-id={message.id}
           data-role={message.role}
           data-testid="durable-repair"
-          className="theme-radius mx-auto w-fit min-w-0 max-w-[92%] border border-foreground/10 bg-surface/90 px-xl py-sm text-center font-mono text-[11px] leading-5 text-muted-foreground backdrop-blur-md [overflow-wrap:anywhere]"
+          className="theme-radius mx-auto w-fit min-w-0 max-w-[92%] border border-foreground/10 bg-surface/90 px-xl py-sm text-center font-mono text-[11px] leading-5 text-muted-foreground [overflow-wrap:anywhere]"
         >
           {message.text}
         </div>
@@ -495,7 +537,7 @@ export function MessageBubble({
       data-pending-send={message.pendingSend ? "true" : undefined}
       data-steer-error={message.steerError === undefined ? undefined : "true"}
       className={cn(
-        "theme-radius w-fit min-w-0 max-w-[85%] bg-surface px-xl py-lg text-sm leading-relaxed [overflow-wrap:anywhere]",
+        "theme-radius isolate w-fit min-w-0 max-w-[85%] bg-surface px-xl py-lg text-sm leading-relaxed [overflow-wrap:anywhere]",
         mine ? "ml-auto" : "mr-auto",
         framed && "border",
         mine && "border-foreground/15",
@@ -660,7 +702,7 @@ function MemoryActivityChip({ items }: { items: ActivityItem[] }) {
         <div
           id={detailsId}
           data-testid="memory-search-details"
-          className="theme-radius w-fit max-w-full border border-foreground/10 bg-surface/90 px-xl py-lg font-mono text-[11px] leading-5 text-muted-foreground shadow-sm backdrop-blur-md"
+          className="theme-radius w-fit max-w-full border border-foreground/10 bg-surface/90 px-xl py-lg font-mono text-[11px] leading-5 text-muted-foreground shadow-sm"
         >
           {view.paths.length > 0 && (
             <ul className="m-0 flex list-none flex-col gap-sm p-0">
@@ -716,6 +758,14 @@ function ActivityGroup({
   onOpen: (groupKey: string, trigger: HTMLButtonElement) => void;
 }) {
   const [now, setNow] = useState(Date.now);
+  // A row can be replaced by the result of the same call with a later timestamp. Keep the
+  // earliest start this group has shown, so the live duration never steps back when it is.
+  const anchoredStart = useRef<number | null>(null);
+  const derivedStart = groupStartMs(items);
+  if (derivedStart !== undefined) {
+    anchoredStart.current =
+      anchoredStart.current === null ? derivedStart : Math.min(anchoredStart.current, derivedStart);
+  }
   const memory = items.filter(
     (item): item is ToolActivity => item.kind === "tool" && item.memory !== undefined,
   );
@@ -729,7 +779,7 @@ function ActivityGroup({
     return () => window.clearInterval(timer);
   }, [live]);
 
-  const parts = groupSummaryParts(items, live, now, usage);
+  const parts = groupSummaryParts(items, live, now, usage, anchoredStart.current ?? undefined);
   const runInfo =
     other.length === 0 ? null : (
       <button
@@ -738,33 +788,39 @@ function ActivityGroup({
         aria-haspopup="dialog"
         data-testid="run-info"
         aria-label={`Run activity: ${parts.join(", ")}`}
-        className="theme-radius flex min-h-9 w-fit min-w-0 max-w-full items-start gap-lg border border-border/70 bg-surface px-xl py-lg text-left font-mono text-xs leading-5 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40 sm:min-h-0 sm:py-md"
+        className={cn(
+          "theme-radius inline-flex w-fit min-w-0 max-w-full self-start flex-wrap items-center gap-lg border border-border/70 bg-surface px-xl py-md text-left font-mono text-xs leading-5 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
+          "min-h-11 sm:min-h-0",
+        )}
       >
-        {/* The 12px text's cap-height centre sits 1.5px below the SVG box centre. */}
-        <ChevronIcon size={14} className="shrink-0 translate-y-[1.5px]" />
+        <ChevronIcon size={14} className="shrink-0" />
         {/* Each piece stays whole and the line wraps between pieces on a narrow screen. */}
-        <span data-testid="run-info-summary" className="flex min-w-0 flex-wrap gap-x-md">
+        <span data-testid="run-info-summary" className="min-w-0">
           {parts.map((part, index) => (
-            <span key={part} className="whitespace-nowrap">
-              {index > 0 && (
-                <span aria-hidden="true" className="mr-md text-muted-foreground/60">
-                  ·
-                </span>
-              )}
-              {part}
-            </span>
+            <Fragment key={part}>
+              {index > 0 && " "}
+              <span className="whitespace-nowrap">
+                {index > 0 && (
+                  <span aria-hidden="true" className="mr-md text-muted-foreground/60">
+                    ·
+                  </span>
+                )}
+                {part}
+              </span>
+            </Fragment>
           ))}
         </span>
       </button>
     );
-  if (memory.length === 0 || memoryView === null) return runInfo;
+  const memoryVisible = memory.length > 0 && memoryView !== null;
+  if (runInfo === null && !memoryVisible) return null;
   return (
     <div
       data-testid="activity-group"
-      className="flex min-w-0 max-w-full flex-col items-start gap-sm"
+      className="isolate flex min-w-0 max-w-full flex-col items-start gap-sm"
     >
       {runInfo}
-      <MemoryActivityChip items={memory} />
+      {memoryVisible && <MemoryActivityChip items={memory} />}
     </div>
   );
 }
@@ -2023,6 +2079,9 @@ export function ChatView({
       }),
     [timeline],
   );
+  // Hydration owns an empty, idle transcript; a live turn (with or without rows) takes priority.
+  const hydrating = !ready && !running && groups.length === 0;
+  const showTranscriptLoading = useDelayedFlag(hydrating, TRANSCRIPT_LOADING_DELAY_MS);
   const footerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -2372,13 +2431,17 @@ export function ChatView({
                 <div
                   ref={stick.contentRef}
                   data-testid="chat-content"
-                  className="mx-auto flex w-full max-w-[72ch] flex-col gap-2xl px-2xl"
+                  data-hydrating={hydrating ? "true" : undefined}
+                  className={cn(
+                    "mx-auto flex w-full max-w-[72ch] flex-col gap-2xl px-2xl",
+                    hydrating && "min-h-full",
+                  )}
                   style={{
                     paddingTop: TRANSCRIPT_END_GAP,
                     paddingBottom: TRANSCRIPT_END_GAP,
                   }}
                 >
-                  {!ready && (
+                  {!ready && !showTranscriptLoading && (
                     <p
                       data-testid="chat-loading"
                       className="theme-radius w-fit self-center border border-border bg-surface/90 px-xl py-md font-mono text-xs text-muted-foreground shadow-sm backdrop-blur-md"
@@ -2386,6 +2449,7 @@ export function ChatView({
                       Loading…
                     </p>
                   )}
+                  {showTranscriptLoading && <TranscriptLoadingCard />}
                   {history?.hasEarlier === true && (
                     <EarlierMessages
                       history={history}
@@ -2467,18 +2531,18 @@ export function ChatView({
                 pressed={planDraft}
                 onToggle={togglePlanDraft}
               />
-              <BackgroundJobsCounts
-                jobs={jobs}
-                delegates={delegates ?? []}
-                onOpen={setJobsSheet}
-                visible={chatPage}
-              />
               <DockStatusWord
                 word={statusWord}
                 running={statusRunning}
                 quiet={statusQuiet}
                 surface={dockSurface}
                 swap={dockSwap}
+              />
+              <BackgroundJobsCounts
+                jobs={jobs}
+                delegates={delegates ?? []}
+                onOpen={setJobsSheet}
+                visible={chatPage}
               />
             </div>
             <div

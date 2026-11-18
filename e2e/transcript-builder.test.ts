@@ -7,7 +7,11 @@ import {
   ToolResultEntry,
   UserEntry,
 } from "@earendil-works/pi-durable";
-import { buildTranscript, TranscriptBuilder } from "../src/server/session.js";
+import {
+  buildTranscript,
+  INTERRUPTED_RUN_RESTART_NOTE,
+  TranscriptBuilder,
+} from "../src/server/session.js";
 
 const diagramId = "abcdefghij";
 
@@ -111,7 +115,7 @@ function conversation(): EntryRecord[] {
       data: {
         markerKey: "run-1",
         partialEntryId: 17,
-        note: "The previous run was interrupted by a server restart.",
+        note: INTERRUPTED_RUN_RESTART_NOTE,
         stopped: false,
         createdAt: "2026-01-01T00:00:04.000Z",
       },
