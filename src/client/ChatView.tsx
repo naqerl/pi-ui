@@ -347,49 +347,6 @@ function VersionUpdateCard({ message }: { message: ChatMessage }) {
   );
 }
 
-/** The operator's choices for a task-agent question set, rendered as readable rows. */
-function QuestionAnswersCard({ message }: { message: ChatMessage }) {
-  const block = message.questionAnswers;
-  if (block === undefined) return null;
-  return (
-    <div
-      data-message-id={message.id}
-      data-role={message.role}
-      data-testid="task-question-answers"
-      data-set-id={block.setId}
-      className="theme-radius w-full max-w-[92%] self-center border border-border/70 bg-surface p-xl text-sm leading-relaxed text-foreground"
-    >
-      <div className="mb-lg font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-        Operator answers
-      </div>
-      <ul className="flex flex-col gap-lg">
-        {block.answers.map((answer) => (
-          <li key={answer.id} data-question-id={answer.id} className="min-w-0">
-            <p className="min-w-0 [overflow-wrap:anywhere]">{answer.prompt}</p>
-            {answer.labels.length > 0 && (
-              <div className="mt-sm flex flex-wrap gap-md">
-                {answer.labels.map((label) => (
-                  <span
-                    key={label}
-                    className="theme-radius border border-border/70 bg-background px-lg py-xs font-mono text-[11px] leading-5 text-foreground"
-                  >
-                    {label}
-                  </span>
-                ))}
-              </div>
-            )}
-            {answer.text.length > 0 && (
-              <p className="mt-sm whitespace-pre-wrap border-l-2 border-border/70 pl-lg text-muted-foreground [overflow-wrap:anywhere]">
-                {answer.text}
-              </p>
-            )}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 /** An assistant reply: its full Markdown, rendered the same way at any length. */
 function AssistantReply({ message }: { message: ChatMessage }) {
   return (
@@ -501,9 +458,6 @@ export function MessageBubble({
     return <NoticeLine message={message} notice={message.notice} onSteer={onSteer} />;
   }
   if (message.role === "system") {
-    if (message.questionAnswers !== undefined) {
-      return <QuestionAnswersCard message={message} />;
-    }
     if (message.repair !== undefined) {
       return (
         <div
