@@ -70,7 +70,6 @@ import type { OperatorBridge } from "./operator-tools.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
 import { retrySettings } from "./retry.js";
 import { type RunMarker, RunMarkerStore } from "./run-marker.js";
-import { TaskQuestionAnswerEntry } from "./task-questions.js";
 import type { TaskBridge } from "./task-tools.js";
 import { pendingVersionNotice, writeLastSeenVersion } from "./version-notice.js";
 
@@ -1073,28 +1072,6 @@ export class TranscriptBuilder {
         timestamp: entryTimestamp(entry.data),
         order: entry.id * 10_000,
         notice,
-      });
-      return;
-    }
-    if (kind === TaskQuestionAnswerEntry.kind) {
-      if (
-        !isRecord(entry.data) ||
-        typeof entry.data.setId !== "string" ||
-        typeof entry.data.text !== "string" ||
-        !Array.isArray(entry.data.answers)
-      ) {
-        return;
-      }
-      this.emit({
-        id: `m-${entry.id}`,
-        role: "system",
-        text: entry.data.text,
-        timestamp: entryTimestamp(entry.data),
-        order: entry.id * 10_000,
-        questionAnswers: {
-          setId: entry.data.setId,
-          answers: readAnsweredItems(entry.data.answers),
-        },
       });
       return;
     }

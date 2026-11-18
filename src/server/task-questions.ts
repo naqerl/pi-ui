@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { defineEntry } from "@earendil-works/pi-durable";
 import {
   parseTaskQuestionAnswers,
   parseTaskQuestions,
@@ -12,14 +11,13 @@ import type {
   AnsweredQuestionItem,
   TaskQuestion,
   TaskQuestionAnswerRecord,
-  TaskQuestionKind,
   TaskQuestionSet,
 } from "../shared/types.js";
 import { TaskError } from "./tasks.js";
 
 const MAX_ANSWERED_HISTORY = 20;
 /** The most questions one pending set may hold. */
-export const MAX_PENDING_QUESTIONS = 8;
+export const MAX_PENDING_QUESTIONS = 5;
 
 interface StoredQuestions {
   pending: TaskQuestionSet | null;
@@ -266,6 +264,17 @@ export class TaskQuestionsStore {
     return result;
   }
 
+  /** Drop a pending set without recording an answer, for a task that stopped planning. */
+  async clearPending(): Promise<boolean> {
+    const hadPending = await this.mutate(() => {
+      const pending = this.state.pending !== null;
+      this.state.pending = null;
+      return pending;
+    });
+    if (hadPending) this.notifyChange();
+    return hadPending;
+  }
+
   /** Clear the pending set because the operator asked the agent to decide it itself. */
   async dismiss(setId: string): Promise<TaskQuestionSet> {
     const result = await this.mutate(() => {
@@ -280,25 +289,3 @@ export class TaskQuestionsStore {
     return result;
   }
 }
-
-type QuestionAnswerEntryItem = {
-  id: string;
-  prompt: string;
-  kind: TaskQuestionKind;
-  values: string[];
-  labels: string[];
-  text: string;
-};
-
-export type TaskQuestionAnswerEntryData = {
-  setId: string;
-  taskId: string;
-  text: string;
-  answers: QuestionAnswerEntryItem[];
-  createdAt: string;
-};
-
-/** The operator's choices, rendered in the planning transcript as a card (and never as JSON). */
-export const TaskQuestionAnswerEntry = defineEntry<TaskQuestionAnswerEntryData>(
-  "ui.task-question-answers",
-);

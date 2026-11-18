@@ -197,26 +197,26 @@ test("ask_questions returns immediately and leaves the set pending for the Plan 
 });
 
 test("a pending set is capped and refuses questions over the limit", async () => {
-  const eight: TaskQuestion[] = Array.from({ length: 8 }, (_, index) => ({
+  const five: TaskQuestion[] = Array.from({ length: 5 }, (_, index) => ({
     id: `q${index}`,
     prompt: `Question ${index}?`,
     kind: "text" as const,
   }));
-  const accepted = text(await call("ask_questions", eight));
+  const accepted = text(await call("ask_questions", five));
   assert.equal(accepted.isError, false);
-  assert.equal((await pending())?.questions.length, 8);
+  assert.equal((await pending())?.questions.length, 5);
 
   const over = text(
-    await call("append_questions", [{ id: "q8", prompt: "One too many?", kind: "text" }]),
+    await call("append_questions", [{ id: "q5", prompt: "One too many?", kind: "text" }]),
   );
   assert.equal(over.isError, true);
-  assert.match(over.text, /at most 8 questions/i);
-  assert.equal((await pending())?.questions.length, 8);
+  assert.match(over.text, /at most 5 questions/i);
+  assert.equal((await pending())?.questions.length, 5);
 
   const tooMany = text(
     await call(
       "ask_questions",
-      Array.from({ length: 9 }, (_, index) => ({
+      Array.from({ length: 6 }, (_, index) => ({
         id: `n${index}`,
         prompt: `Question ${index}?`,
         kind: "text",
@@ -224,7 +224,20 @@ test("a pending set is capped and refuses questions over the limit", async () =>
     ),
   );
   assert.equal(tooMany.isError, true);
-  assert.match(tooMany.text, /at most 8 questions/i);
+  assert.match(tooMany.text, /at most 5 questions/i);
+});
+
+test("clearPending drops a saved set when the task leaves planning", async () => {
+  await call("ask_questions", [{ id: "layout", prompt: "Which layout?", kind: "text" }]);
+  assert.ok(await pending());
+
+  assert.equal(await store.clearPending(), true);
+  assert.equal(await pending(), null);
+
+  const reloaded = new TaskQuestionsStore(path);
+  await reloaded.load();
+  assert.equal(await reloaded.pending(), null);
+  assert.equal(await store.clearPending(), false);
 });
 
 test("free text answers a choice question and overrides its choices", async () => {

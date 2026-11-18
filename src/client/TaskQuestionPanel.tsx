@@ -222,11 +222,11 @@ export function TaskQuestionPanel({
               {question.kind !== "text" && (
                 <input
                   type="text"
-                  aria-label={`${question.prompt} free text`}
+                  aria-label={`${question.prompt} — your own answer overrides the choices`}
                   data-testid={`question-${question.id}-other`}
                   value={draft.text}
                   onChange={(event) => updateText(question, event.target.value)}
-                  placeholder="Your answer (optional)"
+                  placeholder="Your own answer — overrides the choices"
                   className="theme-radius w-full border border-border/70 bg-background px-lg py-md text-sm leading-5 text-foreground outline-none focus-visible:ring-1 focus-visible:ring-foreground"
                 />
               )}

@@ -654,7 +654,7 @@ ${look}- You have additional tools, edit_task, propose_task, ask_questions and a
   irreversible trade-off, two requirements that contradict each other, or access you cannot see.
   Never ask "should I proceed", "is this ok", "any preferences", or anything already written in the
   task body.
-- At most 3 questions in one set, each with 2–4 concrete options, one line of detail, and your
+- At most 2 questions in one set, each with 2–4 concrete options, one line of detail, and your
   recommended option named in the detail text.
 - ask_questions returns immediately — never wait for answers. Keep working on everything they do not
   block, or end the turn with a short status. The answers arrive as a notice; apply them, then
@@ -810,7 +810,7 @@ export function createTaskQuestionTools(options: {
     defineTool({
       name: "ask_questions",
       description:
-        "Register a structured question set for the operator and return immediately. Investigate first and ask only genuinely unobvious scope-level questions; at most 3, each with 2–4 concrete options and your recommended option named in the detail. Never wait for answers: keep working or end the turn, and the answers arrive as a notice.",
+        "Register a structured question set for the operator and return immediately. Investigate first and ask only genuinely unobvious scope-level questions; at most 2, each with 2–4 concrete options and your recommended option named in the detail. Never wait for answers: keep working or end the turn, and the answers arrive as a notice.",
       parameters: questionsSchema,
       replay: "safe",
       async execute(args, api) {
@@ -840,7 +840,7 @@ export function createTaskQuestionTools(options: {
     defineTool({
       name: "append_questions",
       description:
-        "Add questions to the same unanswered set before the operator answers. Duplicate ids are refused. Same rules as ask_questions: investigate first, ask only genuinely unobvious scope-level questions, at most 3 in the set, and never wait.",
+        "Add questions to the same unanswered set before the operator answers. Duplicate ids are refused. Same rules as ask_questions: investigate first, ask only genuinely unobvious scope-level questions, at most 2 in the set, and never wait.",
       parameters: questionsSchema,
       replay: "safe",
       async execute(args, api) {
@@ -2145,6 +2145,12 @@ export class TaskAgentManager {
       throw new TaskAgentError("Questions are not available for this task", 409);
     }
     await session.dismissQuestions(setId);
+  }
+
+  /** Drop any pending plan question set when the task leaves planning, without waking the agent. */
+  async clearQuestions(taskId: string): Promise<void> {
+    const store = this.questionStores.get(taskId);
+    if (store !== undefined) await store.clearPending();
   }
 
   async remove(taskId: string): Promise<void> {

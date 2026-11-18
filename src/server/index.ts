@@ -1193,6 +1193,9 @@ app.patch("/api/tasks/:id", async (c) => {
       });
     }
     if (after?.status === "done") {
+      await taskAgents.clearQuestions(id).catch((error: unknown) => {
+        console.error(`[pi] could not clear the questions for ${id}`, error);
+      });
       await taskAgents.stopRun(id).catch((error: unknown) => {
         console.error(`[pi] could not stop the task agent for ${id}`, error);
       });
@@ -1206,6 +1209,9 @@ app.patch("/api/tasks/:id", async (c) => {
 app.delete("/api/tasks/:id", async (c) => {
   try {
     const id = c.req.param("id");
+    await taskAgents.clearQuestions(id).catch((error: unknown) => {
+      console.error(`[pi] could not clear the questions for ${id}`, error);
+    });
     const ledger = await taskStore.remove(id);
     // Close the planning session in the background so deleting a task
     // stays a ledger write, even if the harness is still shutting down.
