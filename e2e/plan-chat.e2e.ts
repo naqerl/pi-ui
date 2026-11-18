@@ -56,6 +56,18 @@ function expectSweepEnter(
   expect(node?.animationDelay).toBe(delay);
 }
 
+/** Outside a sweep the settled dock swap keeps its full 160 ms opacity leg. */
+function expectDockTransition(
+  node: Pick<DockSwapVisual, "transitionProperty" | "transitionDuration"> | null,
+) {
+  expect(node).not.toBeNull();
+  const properties = (node?.transitionProperty ?? "").split(",").map((part) => part.trim());
+  const durations = (node?.transitionDuration ?? "").split(",").map((part) => part.trim());
+  const opacity = properties.indexOf("opacity");
+  expect(opacity).toBeGreaterThanOrEqual(0);
+  expect(durations[opacity]).toBe("0.16s");
+}
+
 interface DockSwapVisual {
   open: string | null;
   phase: string | null;
@@ -228,6 +240,102 @@ function sampleTaskDockTransition(
       }, 10);
     });
   }, trigger) as Promise<DockTaskSample>;
+}
+
+type SettledStatusSample = {
+  open: string | null;
+  phase: string | null;
+  text: string;
+  transitionProperty: string;
+  transitionDuration: string;
+  textIn: boolean;
+  childAnimationName: string | null;
+};
+
+type SettledStatusTrigger = { kind: "send" } | { kind: "stop"; id: string };
+
+type SettledStatusResult = {
+  samples: SettledStatusSample[];
+  final: SettledStatusSample;
+};
+
+/**
+ * Records a settled word swap from before the trigger. A sweep suppresses the
+ * keyed child's 160 ms fade, but the next word change on the same surface must
+ * still mount with `dock-text-in`; a rAF started after the click can miss it.
+ */
+function sampleSettledStatusSwap(
+  browser: Browser,
+  trigger: SettledStatusTrigger,
+): Promise<SettledStatusResult> {
+  return browser.evaluate(async (trigger) => {
+    const statusNode = document.querySelector<HTMLElement>(
+      '[data-testid="working-status"] [aria-live="polite"]',
+    );
+    if (statusNode === null) throw new Error("the dock status is missing");
+    const status = statusNode;
+    const read = (): SettledStatusSample => {
+      const style = getComputedStyle(status);
+      const child = status.firstElementChild as HTMLElement | null;
+      return {
+        open: status.getAttribute("data-open"),
+        phase: status.getAttribute("data-dock-phase"),
+        text: (status.textContent ?? "").trim(),
+        transitionProperty: style.transitionProperty,
+        transitionDuration: style.transitionDuration,
+        textIn: child?.classList.contains("dock-text-in") ?? false,
+        childAnimationName: child === null ? null : getComputedStyle(child).animationName,
+      };
+    };
+    const samples: SettledStatusSample[] = [];
+    const record = () => {
+      samples.push(read());
+    };
+    const observer = new MutationObserver(record);
+    observer.observe(status, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class", "data-open", "data-dock-phase"],
+      childList: true,
+      characterData: true,
+    });
+
+    if (trigger.kind === "send") {
+      document.querySelector<HTMLButtonElement>('[data-testid="task-agent-send"]')?.click();
+    } else {
+      const response = await fetch(`/api/tasks/${encodeURIComponent(trigger.id)}/chat/stop`, {
+        method: "POST",
+      });
+      if (!response.ok) throw new Error(`stop failed: ${response.status}`);
+    }
+
+    return new Promise<{
+      samples: SettledStatusSample[];
+      final: SettledStatusSample;
+    }>((resolve) => {
+      const start = performance.now();
+      const finish = () => {
+        record();
+        observer.disconnect();
+        resolve({ samples, final: read() });
+      };
+      const timer = window.setInterval(() => {
+        // The word can appear one render before the run flips to its running
+        // branch, so wait for the keyed child's fade. The observer keeps the
+        // frame even if the animation is already over.
+        const hit = samples.find((sample) => sample.textIn && sample.phase === null);
+        if (hit !== undefined) {
+          window.clearInterval(timer);
+          finish();
+          return;
+        }
+        if (performance.now() - start > 2000) {
+          window.clearInterval(timer);
+          finish();
+        }
+      }, 10);
+    });
+  }, trigger) as unknown as Promise<SettledStatusResult>;
 }
 
 test("the plan switch sits on the dock's top line with a visible label", {
@@ -1253,6 +1361,9 @@ test("the plan chat renders its run status only in the composer dock", {
   timeout: 180_000,
 }, async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 390, height: 844 });
+  // The page switch into the plan chat is a sweep, so the settled word swaps
+  // below run with motion enabled rather than the runner's reduced-motion default.
+  await browser.emulateMedia({ reducedMotion: "no-preference" });
   await app.open("/?page=tasks");
   const title = `Plan status once ${Date.now()}`;
   await createOpenTask(screen, title);
@@ -1270,6 +1381,15 @@ test("the plan chat renders its run status only in the composer dock", {
 
   const dock = screen.getByTestId("working-status");
   await expect(dock).toHaveText("idle", { timeout: 60_000 });
+  // Let the page switch into the plan chat finish before starting the run: the
+  // settled word swap below must not be folded into the sweep's enter leg.
+  await expect
+    .poll(async () =>
+      browser.evaluate(
+        () => document.querySelectorAll('[data-testid="composer-dock"] [data-dock-phase]').length,
+      ),
+    )
+    .toBe(0);
   const phoneIdle = await readPlanStatus(browser);
   expect(phoneIdle).toMatchObject({
     paneCount: 0,
@@ -1283,7 +1403,15 @@ test("the plan chat renders its run status only in the composer dock", {
   // A run started from the plan composer keeps the dock as its only status.
   const input = screen.getByTestId("task-agent-input");
   await input.fill("SLOW keep the plan run open");
-  await screen.getByTestId("task-agent-send").tap();
+  const started = await sampleSettledStatusSwap(browser, { kind: "send" });
+  expect(started.final).toMatchObject({ phase: null });
+  expectDockTransition(started.final);
+  // The sweep suppressed the word's fade while it entered; this later idle ->
+  // running remount on the same surface must restore the settled 160 ms fade.
+  expect(started.samples.some((sample) => sample.textIn)).toBe(true);
+  expect(started.samples.find((sample) => sample.textIn)?.childAnimationName).toContain(
+    "dock-text-in",
+  );
   await expect(dock).toHaveAttribute("data-open", "true", { timeout: 30_000 });
   await expect(screen.getByTestId("header-activity")).toHaveText("planning", {
     timeout: 30_000,
@@ -1300,7 +1428,10 @@ test("the plan chat renders its run status only in the composer dock", {
   expect(phoneLive.transcriptScrollTop).toBe(phoneIdle.transcriptScrollTop);
   await app.screenshot("plan-chat-live");
 
-  expect(await stopPlan(browser, taskId)).toBe(200);
+  const stopped = await sampleSettledStatusSwap(browser, { kind: "stop", id: taskId });
+  expect(stopped.final).toMatchObject({ phase: null });
+  expectDockTransition(stopped.final);
+  expect(stopped.samples.some((sample) => sample.textIn)).toBe(true);
   await expect(dock).toHaveAttribute("data-open", "false", { timeout: 30_000 });
   await expect(dock).toHaveText("idle", { timeout: 30_000 });
   const phoneStopped = await readPlanStatus(browser);

@@ -804,8 +804,10 @@ function dockPhaseAttr(phase: DockPhase): "exit" | "enter" | undefined {
 /**
  * A node that took part in a sweep has already been painted by its outer
  * animation. Applying the settled text animation afterwards would fade it a
- * second time, so suppress it until the node's identity changes again (a remount
- * or a new surface key) outside a sweep.
+ * second time, so suppress it until the keyed child's identity changes again
+ * outside a sweep. `identity` must describe that child, not just its surface:
+ * the status word swaps between a running and an idle element on the same
+ * surface, and each of those remounts owns the settled 160 ms fade.
  */
 function useDockTextIn(swap: boolean, identity: unknown): boolean {
   const previous = useRef(identity);
@@ -923,7 +925,13 @@ function DockStatusWord({
   );
   if (word !== null) last.current = { word, running, surface };
   const shown = word === null ? last.current : { word, running, surface };
-  const textIn = useDockTextIn(swap, shown?.surface ?? null);
+  // The keyed child changes branch (and remounts) when the run starts or stops,
+  // even though the surface key stays the same.
+  const textIdentity =
+    shown === null
+      ? null
+      : `${shown.surface}:${shown.running ? "running" : "word"}:${presence.mounted}`;
+  const textIn = useDockTextIn(swap, textIdentity);
   // A phased exit is leaving even though the frozen view still reports open.
   const leaving = !presence.open || phase === "exit";
   const textClass = textIn && "dock-text-in";
