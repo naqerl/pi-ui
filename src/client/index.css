@@ -284,29 +284,17 @@
       visibility 220ms ease;
   }
 
-  /* The job/sub-agent counts ride inside the status row. Only their own opacity
-     and transform animates: the row keeps its height, so the composer and the
-     transcript never move when work starts, finishes, or the reader pages. The
-     node itself is removed after the exit, so another surface has no counter. */
-  .bg-jobs-counts {
-    animation: bg-jobs-counts-in 180ms ease-out;
-    transform-origin: left bottom;
-    transition:
-      opacity 160ms ease,
-      transform 160ms ease;
+  /* The sweep order: leftmost node first, 12 ms apart. */
+  .dock-order-1 {
+    --dock-i: 1;
   }
 
-  .bg-jobs-counts[data-open="false"] {
-    opacity: 0;
-    transform: translateY(6px);
-    pointer-events: none;
+  .dock-order-2 {
+    --dock-i: 2;
   }
 
-  @keyframes bg-jobs-counts-in {
-    from {
-      opacity: 0;
-      transform: translateY(6px);
-    }
+  .dock-order-3 {
+    --dock-i: 3;
   }
 
   /* Only the nodes whose identity changes fade. The dock, its top line and the
@@ -319,7 +307,7 @@
 
   .dock-swap[data-open="false"] {
     opacity: 0;
-    transform: translateY(2px);
+    transform: translateX(-3px);
     pointer-events: none;
   }
 
@@ -353,6 +341,66 @@
     visibility: hidden;
   }
 
+  /* Sweep out: 90 ms per node, staggered left→right. */
+  .dock-swap[data-dock-phase="exit"][data-open="true"] {
+    opacity: 0;
+    transform: translateX(-3px);
+    transition-duration: 90ms;
+    transition-delay: calc(var(--dock-i, 0) * 12ms);
+    pointer-events: none;
+  }
+
+  /* Sweep in: the node mounts at its FINAL x and fades from 0. `both` keeps it
+     invisible during its own delay, so late nodes never flash at 0 ms. */
+  @keyframes dock-scan-in {
+    from {
+      opacity: 0;
+    }
+  }
+
+  .dock-swap[data-dock-phase="enter"][data-open="true"] {
+    animation: dock-scan-in 110ms ease-out both;
+    animation-delay: calc(var(--dock-i, 0) * 12ms);
+  }
+
+  /* The outer node owns the sweep; the keyed status child must not double-fade. */
+  .dock-swap[data-dock-phase] .dock-text-in {
+    animation: none;
+  }
+
+  /* The job/sub-agent counts ride inside the status row. Only their own opacity
+     and transform animates: the row keeps its height, so the composer and the
+     transcript never move when work starts, finishes, or the reader pages. The
+     node itself is removed after the exit, so another surface has no counter.
+     Declared after the generic dock rules so its settled exit keeps the vertical
+     drift; the sweep rules are more specific and still own the phase. */
+  .bg-jobs-counts {
+    animation: bg-jobs-counts-in 180ms ease-out;
+    transform-origin: left bottom;
+    transition:
+      opacity 160ms ease,
+      transform 160ms ease;
+  }
+
+  /* Once a counts node has entered with the sweep, the base mount animation must
+     never win again when data-dock-phase disappears at settle. */
+  .bg-jobs-counts[data-swept="true"] {
+    animation: none;
+  }
+
+  .bg-jobs-counts[data-open="false"] {
+    opacity: 0;
+    transform: translateY(6px);
+    pointer-events: none;
+  }
+
+  @keyframes bg-jobs-counts-in {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .float-footer,
     .composer-body,
@@ -373,6 +421,11 @@
 
     .dock-text-in {
       animation: none;
+    }
+
+    .dock-swap[data-dock-phase] {
+      animation: none;
+      transition: none;
     }
   }
 
@@ -435,9 +488,21 @@
   /* The plan switch is a button whose own opacity/transform exit is the dock
      swap. Keep the press feedback, but give the fade its 160 ms duration; the
      generic rule above would otherwise shorten opacity to its colour timing. */
-  button.dock-swap:not(:disabled):not([aria-disabled="true"]):not([data-no-press]) {
+  button.dock-swap:not([data-dock-phase]):not(:disabled):not([aria-disabled="true"]):not(
+    [data-no-press]
+  ) {
     transition-property: transform, background-color, color, border-color, opacity;
     transition-duration: 160ms, 120ms, 120ms, 120ms, 160ms;
+    transition-timing-function: ease-out;
+  }
+
+  /* A phased button keeps the global press feedback; only its opacity timing
+     follows the 90 ms exit instead of the generic colour timing. */
+  button.dock-swap[data-dock-phase]:not(:disabled):not([aria-disabled="true"]):not(
+    [data-no-press]
+  ) {
+    transition-property: transform, background-color, color, border-color, opacity;
+    transition-duration: 90ms, 120ms, 120ms, 120ms, 90ms;
     transition-timing-function: ease-out;
   }
 }

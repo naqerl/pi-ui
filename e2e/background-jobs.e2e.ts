@@ -175,6 +175,79 @@ test("a background job count opens a live sheet and returns focus to the compose
   expect(gap).not.toBeNull();
   expect(gap ?? 99).toBeLessThan(2);
 
+  // A page switch must not give the counters a second entrance at settle: the
+  // sweep animation owns the mount, and removing data-dock-phase leaves opacity
+  // at 1 with no running animation.
+  await browser.emulateMedia({ reducedMotion: "no-preference" });
+  await browser.evaluate(
+    () =>
+      new Promise<boolean>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))),
+      ),
+  );
+  await screen.getByTestId("page-dot-tasks").tap();
+  await expect
+    .poll(() =>
+      browser.evaluate(
+        () => document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
+      ),
+    )
+    .toBe("tasks");
+  await settleDock(browser);
+  expect(await hasCounts(browser)).toBe(false);
+  const sweep = await browser.evaluate(() => {
+    const samples: Array<{
+      phase: string | null;
+      animationName: string;
+      opacity: number;
+      transform: string;
+    }> = [];
+    document.querySelector<HTMLButtonElement>('[data-testid="page-dot-chat"]')?.click();
+    return new Promise<typeof samples>((resolve) => {
+      const start = performance.now();
+      let sawEnter = false;
+      let settledAt: number | null = null;
+      const tick = () => {
+        const node = document.querySelector<HTMLElement>('[data-testid="bg-jobs-line"]');
+        if (node !== null) {
+          const style = getComputedStyle(node);
+          const phase = node.getAttribute("data-dock-phase");
+          samples.push({
+            phase,
+            animationName: style.animationName,
+            opacity: Number(style.opacity),
+            transform: style.transform,
+          });
+          if (phase === "enter") sawEnter = true;
+          if (sawEnter && phase === null && settledAt === null) settledAt = performance.now();
+        }
+        const now = performance.now();
+        if ((settledAt !== null && now - settledAt > 320) || now - start > 2500) {
+          resolve(samples);
+          return;
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+  });
+  const enteringCounts = sweep.filter((sample) => sample.phase === "enter");
+  expect(enteringCounts.length).toBeGreaterThan(0);
+  for (const sample of enteringCounts) expect(sample.animationName).toContain("dock-scan-in");
+  const settledCounts = sweep.filter((sample) => sample.phase === null);
+  expect(settledCounts.length).toBeGreaterThan(0);
+  for (const sample of settledCounts) {
+    expect(sample.animationName).toBe("none");
+    expect(sample.opacity).toBe(1);
+  }
+  await browser.emulateMedia({ reducedMotion: "reduce" });
+  await browser.evaluate(
+    () =>
+      new Promise<boolean>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))),
+      ),
+  );
+
   // The same baseline holds when the live working indicator paints the row.
   await sendText(browser, "SLOW keep working");
   await expect(screen.getByTestId("header-activity")).toBeVisible();
