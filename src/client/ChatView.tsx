@@ -81,8 +81,9 @@ import {
   type TimelineGroup,
 } from "./timeline-groups";
 import type { SendOutcome, TimelineItem } from "./use-chat";
+import { type DockPhase, useDockScan } from "./use-dock-scan";
 import { usePager } from "./use-pager";
-import { usePresence } from "./use-presence";
+import { type PresenceState, usePresence, useReducedMotion } from "./use-presence";
 import { useStickToBottom } from "./use-stick-to-bottom";
 import { WorkingIndicator } from "./WorkingIndicator";
 import { workingWord } from "./working-state";
@@ -787,32 +788,85 @@ const BACKLOG_LONG_PRESS_MS = 500;
 /** Matches `.bg-jobs-counts`: the one duration every dock swap uses. */
 const DOCK_EXIT_MS = 160;
 
+/** The old nodes must disappear in the swap frame, not linger through the enter. */
+function dockPhaseExitMs(phase: DockPhase): number {
+  return phase === "enter" ? 0 : DOCK_EXIT_MS;
+}
+
+function dockOrderClass(order: number): string | undefined {
+  return order === 0 ? undefined : `dock-order-${order}`;
+}
+
+function dockPhaseAttr(phase: DockPhase): "exit" | "enter" | undefined {
+  return phase === "settled" ? undefined : phase;
+}
+
+/**
+ * A node that took part in a sweep has already been painted by its outer
+ * animation. Applying the settled text animation afterwards would fade it a
+ * second time, so suppress it until the keyed child's identity changes again
+ * outside a sweep. `identity` must describe that child, not just its surface:
+ * the status word swaps between a running and an idle element on the same
+ * surface, and each of those remounts owns the settled 160 ms fade.
+ */
+function useDockTextIn(swap: boolean, identity: unknown): boolean {
+  const previous = useRef(identity);
+  const fresh = useRef(swap);
+  if (previous.current !== identity) {
+    previous.current = identity;
+    fresh.current = swap;
+  }
+  if (!swap) fresh.current = false;
+  return swap && fresh.current;
+}
+
+/** The enter leg mounts the incoming view in the swap frame, not in an effect. */
+function dockScanPresence(
+  presence: PresenceState,
+  phase: DockPhase,
+  present: boolean,
+): PresenceState {
+  return phase === "enter" ? { mounted: present, open: present } : presence;
+}
+
 function PlanTaskSwitch({
   present,
+  phase,
+  order,
   swap,
   pressed,
   onToggle,
 }: {
   present: boolean;
+  phase: DockPhase;
+  order: number;
   swap: boolean;
   pressed: boolean;
   onToggle: () => void;
 }) {
-  const presence = usePresence(present, swap ? DOCK_EXIT_MS : 0);
+  const presence = dockScanPresence(usePresence(present, dockPhaseExitMs(phase)), phase, present);
+  const textIn = useDockTextIn(swap, presence.mounted);
+  // The exit keeps data-open for the sweep, but the leaving control is already
+  // gone from the accessibility tree and cannot take focus or a pointer.
+  const interactive = presence.open && phase !== "exit";
   if (!presence.mounted) return null;
   return (
     <button
       type="button"
       data-testid="plan-task-toggle"
       data-open={presence.open ? "true" : "false"}
+      data-dock-phase={dockPhaseAttr(phase)}
       aria-pressed={pressed}
-      aria-hidden={presence.open ? undefined : true}
-      inert={presence.open ? undefined : true}
-      tabIndex={presence.open ? 0 : -1}
+      aria-hidden={interactive ? undefined : true}
+      inert={interactive ? undefined : true}
+      tabIndex={interactive ? 0 : -1}
       title="Plan task"
       className={cn(
         "inline-flex shrink-0 cursor-pointer items-center gap-lg self-center rounded-none border-0 bg-transparent p-0 font-mono text-[11px] leading-4 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
-        swap && "dock-swap dock-text-in motion-reduce:transition-none",
+        "dock-swap motion-reduce:transition-none",
+        dockOrderClass(order),
+        textIn && "dock-text-in",
+        !interactive && "pointer-events-none",
       )}
       onPointerDown={(event) => {
         // Keep the composer focused so a phone's keyboard stays open.
@@ -851,6 +905,8 @@ function DockStatusWord({
   running,
   quiet = false,
   surface,
+  phase,
+  order,
   swap,
 }: {
   word: string | null;
@@ -858,19 +914,42 @@ function DockStatusWord({
   /** The plan run has sent no frame within the retry budget: keep the word, stop the clock. */
   quiet?: boolean;
   surface: string;
+  phase: DockPhase;
+  order: number;
   swap: boolean;
 }) {
-  const presence = usePresence(word !== null, swap ? DOCK_EXIT_MS : 0);
+  const present = word !== null;
+  const presence = dockScanPresence(usePresence(present, dockPhaseExitMs(phase)), phase, present);
   const last = useRef<{ word: string; running: boolean; surface: string } | null>(
     word === null ? null : { word, running, surface },
   );
   if (word !== null) last.current = { word, running, surface };
   const shown = word === null ? last.current : { word, running, surface };
-  const leaving = !presence.open;
-  const swapClass = swap && "dock-swap dock-text-in";
+  // The keyed child changes branch (and remounts) when the run starts or stops,
+  // even though the surface key stays the same.
+  const textIdentity =
+    shown === null
+      ? null
+      : `${shown.surface}:${shown.running ? "running" : "word"}:${presence.mounted}`;
+  const textIn = useDockTextIn(swap, textIdentity);
+  // A phased exit is leaving even though the frozen view still reports open.
+  const leaving = !presence.open || phase === "exit";
+  const textClass = textIn && "dock-text-in";
 
   return (
-    <div aria-live="polite" className="min-w-0 truncate">
+    <div
+      aria-live="polite"
+      data-open={presence.open ? "true" : "false"}
+      data-dock-phase={dockPhaseAttr(phase)}
+      aria-hidden={leaving ? true : undefined}
+      inert={leaving ? true : undefined}
+      tabIndex={leaving ? -1 : undefined}
+      className={cn(
+        "dock-swap min-w-0 truncate motion-reduce:transition-none",
+        dockOrderClass(order),
+        leaving && "pointer-events-none",
+      )}
+    >
       {presence.mounted &&
         shown !== null &&
         (shown.running ? (
@@ -880,7 +959,7 @@ function DockStatusWord({
             aria-hidden={leaving ? true : undefined}
             inert={leaving ? true : undefined}
             tabIndex={leaving ? -1 : undefined}
-            className={cn("flex min-w-0", swapClass)}
+            className={cn("flex min-w-0", textClass)}
           >
             <WorkingIndicator running={!quiet} word={shown.word} />
           </div>
@@ -891,7 +970,7 @@ function DockStatusWord({
             aria-hidden={leaving ? true : undefined}
             inert={leaving ? true : undefined}
             tabIndex={leaving ? -1 : undefined}
-            className={cn("block min-w-0 truncate", swapClass)}
+            className={cn("block min-w-0 truncate", textClass)}
           >
             {shown.word}
           </span>
@@ -903,46 +982,38 @@ function DockStatusWord({
 /** One grid cell, two children: the arriving and the leaving action share a box. */
 function DockAction({
   present,
+  phase,
+  order,
   swap,
   children,
 }: {
   present: boolean;
+  phase: DockPhase;
+  order: number;
   swap: boolean;
   children: ReactNode;
 }) {
-  const presence = usePresence(present, swap ? DOCK_EXIT_MS : 0);
+  const presence = dockScanPresence(usePresence(present, dockPhaseExitMs(phase)), phase, present);
+  const textIn = useDockTextIn(swap, presence.mounted);
+  const interactive = presence.open && phase !== "exit";
   if (!presence.mounted) return null;
   return (
     <div
       data-open={presence.open ? "true" : "false"}
-      aria-hidden={presence.open ? undefined : true}
-      inert={presence.open ? undefined : true}
-      tabIndex={presence.open ? undefined : -1}
+      data-dock-phase={dockPhaseAttr(phase)}
+      aria-hidden={interactive ? undefined : true}
+      inert={interactive ? undefined : true}
+      tabIndex={interactive ? undefined : -1}
       className={cn(
-        "h-9 w-full",
-        swap && "dock-swap dock-text-in",
-        !presence.open && "pointer-events-none",
+        "dock-swap h-9 w-full motion-reduce:transition-none",
+        dockOrderClass(order),
+        textIn && "dock-text-in",
+        !interactive && "pointer-events-none",
       )}
     >
       {children}
     </div>
   );
-}
-
-/**
- * A collapse owns the movement on both ends, so the per-node swaps stay quiet
- * for that crossing. Clearing only on the next surface change matters: a
- * passive effect would let a later pre-paint render start a second animation
- * while the 220 ms composer expansion is still running.
- */
-function useDockSwap(hidden: boolean, surface: string): boolean {
-  const [state, setState] = useState({ surface, hidden, suppressed: hidden });
-  const changed = state.surface !== surface || state.hidden !== hidden;
-  if (changed) {
-    setState({ surface, hidden, suppressed: hidden || state.hidden });
-  }
-  const suppressed = changed ? hidden || state.hidden : state.suppressed;
-  return !hidden && !suppressed;
 }
 /** Space above the first message and below the last, on every viewport. */
 const TRANSCRIPT_END_GAP = 16;
@@ -1193,6 +1264,7 @@ export function Composer({
   clearDraft,
   planDraft = false,
   dockSwap = true,
+  dockPhase = "settled",
 }: {
   tasksPage: boolean;
   /** When set, @project suggestions work even if this is not the create-task composer. */
@@ -1223,8 +1295,10 @@ export function Composer({
   draftKey?: string;
   /** The status line's plan-draft toggle was left on for this session. */
   planDraft?: boolean;
-  /** A collapsed dock owns the movement, so its action slot must not fade twice. */
+  /** The settled text animation still applies to a lane changing outside a sweep. */
   dockSwap?: boolean;
+  /** The top-line sweep phase; the action lanes share the cell's third slot. */
+  dockPhase?: DockPhase;
   /** A successful Retry consumes the exact draft that was restored for its failed row. */
   clearDraft?: {
     key: string;
@@ -1631,7 +1705,7 @@ export function Composer({
           }}
         />
         <div className="dock-stack h-9 w-9 shrink-0 items-stretch">
-          <DockAction present={tasksPage} swap={dockSwap}>
+          <DockAction present={tasksPage} phase={dockPhase} order={3} swap={dockSwap}>
             <Button
               type="submit"
               variant="ghost"
@@ -1665,6 +1739,8 @@ export function Composer({
           </DockAction>
           <DockAction
             present={!tasksPage && running && !hasText && attachments.items.length === 0}
+            phase={dockPhase}
+            order={3}
             swap={dockSwap}
           >
             <Button
@@ -1684,6 +1760,8 @@ export function Composer({
           </DockAction>
           <DockAction
             present={!tasksPage && running && (hasText || attachments.items.length > 0)}
+            phase={dockPhase}
+            order={3}
             swap={dockSwap}
           >
             <Button
@@ -1699,7 +1777,7 @@ export function Composer({
               <SendIcon />
             </Button>
           </DockAction>
-          <DockAction present={!tasksPage && !running} swap={dockSwap}>
+          <DockAction present={!tasksPage && !running} phase={dockPhase} order={3} swap={dockSwap}>
             <Button
               type="submit"
               variant="ghost"
@@ -1871,6 +1949,7 @@ export function ChatView({
   const [activityJobId, setActivityJobId] = useState<string | null>(null);
   const activityTriggerRef = useRef<HTMLButtonElement | null>(null);
   const tasksPage = pager.page === TASKS_PAGE;
+  const chatPage = pager.page === CHAT_PAGE;
   // An error belongs to the page it was raised on.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on page change only
   useEffect(() => setComposerError(null), [pager.page]);
@@ -1891,16 +1970,29 @@ export function ChatView({
   const dockToTask = wantTaskDock && taskDock !== null;
   const hideTasksComposer = statsPage || (tasksPage && composerMode === "collapsed");
   const showPlanToggle = tasksPage && !wantTaskDock && !hideTasksComposer;
-  // Collapsed is not a surface: its 220 ms height/opacity owns that change, so
-  // the individual swaps stay out of the way on either side of it.
   const dockSurface = tasksPage ? (wantTaskDock ? "dock" : "create") : "chat";
-  const dockSwap = useDockSwap(hideTasksComposer, dockSurface);
   // Each surface speaks for itself: the open task's plan run on the tasks page,
   // the main conversation's run everywhere else. No task open means an empty slot.
   const chatStatusWord = running ? workingWord(thinking) : ready ? "idle" : "connecting";
   const statusWord = tasksPage ? (taskSurfaceStatus?.word ?? null) : chatStatusWord;
   const statusRunning = tasksPage ? statusWord === "planning" : running;
   const statusQuiet = tasksPage ? taskSurfaceStatus?.quiet === true : quiet;
+  // The top line sweeps as one unit: freeze the old identities, swap while every
+  // node is transparent, then enter from the final x. The composer stays live.
+  const reducedMotion = useReducedMotion();
+  const dockScan = useDockScan(
+    {
+      surface: dockSurface,
+      plan: showPlanToggle,
+      word: statusWord,
+      running: statusRunning,
+      quiet: statusQuiet,
+      jobs: chatPage,
+      hidden: hideTasksComposer,
+    },
+    !reducedMotion,
+  );
+  const dockSwap = dockScan.phase === "settled" && !reducedMotion;
   // One header, fed by the active surface: the open task's plan run on the tasks
   // page when it has one, the main conversation everywhere else (and as the
   // fallback, so a chat failure stays visible while a task is open).
@@ -2052,7 +2144,6 @@ export function ChatView({
   // A page switch is a navigation, not a content change. Hold the reader's position on
   // the way out and put it back before paint, so an off-screen dock resize cannot shift
   // the transcript. The first mount and a drag that snaps back stay untouched.
-  const chatPage = pager.page === CHAT_PAGE;
   const wasChatPage = useRef(chatPage);
   useLayoutEffect(() => {
     if (wasChatPage.current === chatPage) return;
@@ -2480,23 +2571,29 @@ export function ChatView({
               className="flex min-w-0 flex-1 items-baseline gap-lg font-mono text-[11px] leading-4 text-muted-foreground"
             >
               <PlanTaskSwitch
-                present={showPlanToggle}
+                present={dockScan.view.plan}
+                phase={dockScan.phase}
+                order={0}
                 swap={dockSwap}
                 pressed={planDraft}
                 onToggle={togglePlanDraft}
               />
               <DockStatusWord
-                word={statusWord}
-                running={statusRunning}
-                quiet={statusQuiet}
-                surface={dockSurface}
+                word={dockScan.view.word}
+                running={dockScan.view.running}
+                quiet={dockScan.view.quiet}
+                surface={dockScan.view.surface}
+                phase={dockScan.phase}
+                order={1}
                 swap={dockSwap}
               />
               <BackgroundJobsCounts
                 jobs={jobs}
                 delegates={delegates ?? []}
                 onOpen={setJobsSheet}
-                visible={chatPage}
+                visible={dockScan.view.jobs}
+                phase={dockScan.phase}
+                order={2}
               />
             </div>
             <div
@@ -2539,6 +2636,7 @@ export function ChatView({
           >
             <Composer
               dockSwap={dockSwap}
+              dockPhase={dockScan.phase}
               draftKey={
                 wantTaskDock
                   ? taskDock !== null
