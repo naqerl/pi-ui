@@ -1165,7 +1165,10 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
               variant="pane"
               composerTarget="dock"
               active={tab === "chat"}
-              onShowPlan={() => setTab("plan")}
+              onShowPlan={() => {
+                setTab("plan");
+                tabs.setPage(TAB_INDEX.plan);
+              }}
             />
           </section>
         </div>

@@ -149,7 +149,21 @@ test("questions live on the Plan tab and answering nudges the agent with a notic
     { timeout: 60_000 },
   );
   await expect(screen.getByTestId("working-status")).toHaveText("idle", { timeout: 60_000 });
-  await openTaskPlanTab(screen);
+
+  // The Chat tab's waiting control must move the pager, not just relabel the tab.
+  const waiting = screen.getByTestId("task-questions-waiting");
+  await expect(waiting).toBeVisible();
+  await waiting.tap();
+  await expect(panel).toBeVisible({ timeout: 30_000 });
+  await expect
+    .poll(
+      async () => {
+        const box = await panel.boundingBox();
+        return box !== null && box.x >= 0 && box.x + box.width <= 390;
+      },
+      { timeout: 5_000 },
+    )
+    .toBe(true);
 
   await screen.getByTestId("question-layout-split").tap();
   await screen.getByTestId("question-parts-sidebar").tap();
