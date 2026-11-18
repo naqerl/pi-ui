@@ -10,6 +10,7 @@ import {
   type MemoryNoticeDetails,
   memoryUndoPrompt,
   type OperatorNoticeDetails,
+  type QuestionNoticeDetails,
   type TaskDecisionNoticeDetails,
 } from "../shared/notices";
 import { noticeIconName } from "../shared/queue";
@@ -242,11 +243,13 @@ function NoticeDialog({
                             : "Idle nudge"
                           : notice.kind === "decision"
                             ? "Proposal decision"
-                            : notice.kind === "operator"
-                              ? "Operator request"
-                              : notice.stopped
-                                ? "Run stopped"
-                                : "Run interrupted"}
+                            : notice.kind === "questions"
+                              ? "Question answers"
+                              : notice.kind === "operator"
+                                ? "Operator request"
+                                : notice.stopped
+                                  ? "Run stopped"
+                                  : "Run interrupted"}
               {dateTime !== "" && ` · ${dateTime}`}
             </div>
             <h2 id={titleId} className="mt-xs font-mono text-sm [overflow-wrap:anywhere]">
@@ -278,6 +281,8 @@ function NoticeDialog({
             <IdleDetails notice={notice} />
           ) : notice.kind === "decision" ? (
             <TaskDecisionDetails notice={notice} />
+          ) : notice.kind === "questions" ? (
+            <QuestionDetails notice={notice} />
           ) : notice.kind === "operator" ? (
             <OperatorDetails notice={notice} />
           ) : (
@@ -370,6 +375,52 @@ function TaskDecisionDetails({ notice }: { notice: TaskDecisionNoticeDetails }) 
           ["Title", notice.taskTitle],
         ]}
       />
+      <Block label="Prompt sent to the agent">{notice.text}</Block>
+    </>
+  );
+}
+
+function QuestionDetails({ notice }: { notice: QuestionNoticeDetails }) {
+  return (
+    <>
+      <Fields
+        rows={[
+          ["Answers", String(notice.count)],
+          ["Set", notice.setId],
+        ]}
+      />
+      {notice.answers.length === 0 ? (
+        <p className="mt-md text-muted-foreground">
+          {notice.dismissed === true
+            ? "The questions were dismissed, so the agent will decide itself."
+            : "The answers were sent to the agent."}
+        </p>
+      ) : (
+        <ul className="mt-md flex flex-col gap-md">
+          {notice.answers.map((answer) => (
+            <li key={answer.id} data-question-id={answer.id} className="min-w-0">
+              <p className="min-w-0 [overflow-wrap:anywhere]">{answer.prompt}</p>
+              {answer.labels.length > 0 && (
+                <div className="mt-xs flex flex-wrap gap-xs">
+                  {answer.labels.map((label) => (
+                    <span
+                      key={label}
+                      className="theme-radius border border-border/70 bg-background px-sm py-xs font-mono text-[11px] leading-5 text-foreground"
+                    >
+                      {label}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {answer.text.length > 0 && (
+                <p className="mt-xs whitespace-pre-wrap border-l-2 border-border/70 pl-sm text-muted-foreground [overflow-wrap:anywhere]">
+                  {answer.text}
+                </p>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
       <Block label="Prompt sent to the agent">{notice.text}</Block>
     </>
   );

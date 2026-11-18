@@ -1151,6 +1151,31 @@ export function stateBadge(state: TaskState, trace: TaskTrace | undefined): stri
   }
 }
 
+/** The compact row badge that says the plan agent is waiting for the operator's answers. */
+function TaskQuestionsBadge({
+  taskId,
+  count,
+  className,
+}: {
+  taskId: string;
+  count: number;
+  className?: string;
+}) {
+  return (
+    <Badge
+      variant="outline"
+      data-testid={`task-questions-${taskId}`}
+      title={`${count} question${count === 1 ? "" : "s"} waiting for answers`}
+      className={cn(
+        "border-status-warn/40 px-sm text-[10px] font-normal leading-4 text-status-warn",
+        className,
+      )}
+    >
+      Questions {count}
+    </Badge>
+  );
+}
+
 /** The one muted line under a row's title, or "" for none. */
 function rowNote(
   task: Task,
@@ -1250,6 +1275,7 @@ export function TaskRow({
   const badge = history || (done && depth > 0) ? null : stateBadge(current, trace);
   const planningLive =
     planning.has(task.id) && (isActiveStatus(task.status) || task.status === "planning");
+  const questions = task.questions ?? null;
   const stale = current === "working" && isStaleWorking(task, activity);
   const note = rowNote(task, tasks, current, trace, activity?.traces ?? {}, index);
   const project = showProject && depth === 0 ? task.project : undefined;
@@ -1374,7 +1400,7 @@ export function TaskRow({
             {note}
           </span>
         )}
-        <TaskCardMeta task={task} project={project} planning={planningLive}>
+        <TaskCardMeta task={task} project={project} planning={planningLive || questions !== null}>
           {badge !== null && (
             <Badge
               data-testid={`task-badge-${task.id}`}
@@ -1389,6 +1415,13 @@ export function TaskRow({
           )}
           {planningLive && (
             <TaskPlanningBadge testId={`task-planning-${task.id}`} className="h-4" />
+          )}
+          {questions !== null && (
+            <TaskQuestionsBadge
+              taskId={task.id}
+              count={questions.questions.length}
+              className="h-4"
+            />
           )}
           {stale && <StaleMarker id={task.id} />}
           <ReopenBadge task={task} />
@@ -1496,10 +1529,21 @@ function ProposedTask({
         >
           <InlineMarkdown text={task.title} />
         </span>
-        <TaskCardMeta task={task} project={showProject ? task.project : undefined}>
+        <TaskCardMeta
+          task={task}
+          project={showProject ? task.project : undefined}
+          planning={task.questions != null}
+        >
           <Badge variant="outline" data-testid="task-decision-tag">
             {draft ? "Draft" : "Needs you"}
           </Badge>
+          {task.questions != null && (
+            <TaskQuestionsBadge
+              taskId={task.id}
+              count={task.questions.questions.length}
+              className="h-4"
+            />
+          )}
         </TaskCardMeta>
       </div>
       {notice !== null && (

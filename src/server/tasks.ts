@@ -282,6 +282,8 @@ export interface TaskStoreOptions {
   readonly coalesceMs?: number;
   /** Alias for callers that describe the wait as a plain window. */
   readonly windowMs?: number;
+  /** Why this task cannot be approved or sent to a worker, or null when it can. */
+  readonly workingBlocker?: (taskId: string) => string | null;
 }
 
 type PendingTaskKind = "proposal" | "done" | "approved" | "declined";
@@ -321,6 +323,7 @@ export class TaskStore {
   private readonly notifyTask: TaskNotifier;
   private readonly recordTaskNotice: TaskNoticeRecorder | undefined;
   private readonly pushWindowMs: number;
+  private readonly workingBlocker: ((taskId: string) => string | null) | undefined;
   private queuedCommits = 0;
   private pendingChanges = new Map<string, PendingTaskChange>();
   private flushTimer: NodeJS.Timeout | undefined;
@@ -338,6 +341,7 @@ export class TaskStore {
       options.coalesceMs ??
       options.windowMs ??
       TASK_PUSH_WINDOW_MS;
+    this.workingBlocker = options.workingBlocker;
   }
 
   ledger(): TaskLedger {
@@ -641,6 +645,14 @@ export class TaskStore {
         }
         if (patch.status === "proposed" && current.status !== "proposed") {
           throw new TaskError("Only a proposal can be moved to proposed", 409);
+        }
+        const blocking =
+          patch.status === "working" ||
+          (patch.status === "open" &&
+            (current.status === "planning" || current.status === "proposed"));
+        if (blocking) {
+          const blocker = this.workingBlocker?.(id) ?? null;
+          if (blocker !== null) throw new TaskError(blocker, 409);
         }
         if (patch.status === "done" && current.status === "proposed") {
           throw new TaskError("Task is not open; a proposal must be approved first", 409);

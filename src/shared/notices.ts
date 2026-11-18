@@ -6,6 +6,7 @@
  */
 
 import { toIsoTimestamp } from "./time.js";
+import type { AnsweredQuestionItem } from "./types.js";
 
 export interface JobNoticeDetails {
   kind: "job";
@@ -142,6 +143,20 @@ export interface DelegateNoticeDetails {
   summary: string;
 }
 
+/** The operator's answers to one plan-agent question set, shown as a chip and dialog. */
+export interface QuestionNoticeDetails {
+  kind: "questions";
+  setId: string;
+  count: number;
+  /** The prompt the agent received, also shown when the chip is opened. */
+  text: string;
+  summary: string;
+  /** Every answer, in question order, for the dialog body. */
+  answers: AnsweredQuestionItem[];
+  /** True when the operator dismissed the set instead of answering it. */
+  dismissed?: boolean;
+}
+
 /** The restart note recorded for an interrupted run. */
 export interface InterruptedNoticeDetails {
   kind: "interrupted";
@@ -161,7 +176,8 @@ export type ChatNotice =
   | MemoryDeltaDetails
   | IdleNoticeDetails
   | OperatorNoticeDetails
-  | TaskDecisionNoticeDetails;
+  | TaskDecisionNoticeDetails
+  | QuestionNoticeDetails;
 
 const JOB_HEAD = /^\[background job (\S+) finished\] (\S+) (.+?): (.*)$/;
 const DELEGATE_HEAD =

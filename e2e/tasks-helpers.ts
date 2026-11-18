@@ -146,3 +146,10 @@ export async function openTaskChatTab(screen: TaskScreen) {
   if ((await tab.count()) === 0) return;
   if (await tab.isVisible()) await tab.tap();
 }
+
+/** Switch the mobile detail to the Plan tab. No-op when the tab is already selected or hidden. */
+export async function openTaskPlanTab(screen: TaskScreen) {
+  const tab = screen.getByTestId("task-tab-plan");
+  if ((await tab.count()) === 0) return;
+  if (await tab.isVisible()) await tab.tap();
+}

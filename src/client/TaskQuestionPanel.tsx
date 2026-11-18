@@ -17,12 +17,12 @@ function mergedDrafts(current: Drafts, questions: readonly TaskQuestion[]): Draf
   );
 }
 
-/** Free text wins over the choices for a question that offers an Other field. */
+/** Free text is available on every choice question and wins over the choices. */
 function otherAnswers(
   question: TaskQuestion,
   draft: Pick<TaskQuestionAnswer, "values" | "text">,
 ): boolean {
-  return question.kind !== "text" && question.allowOther === true && draft.text.trim().length > 0;
+  return question.kind !== "text" && draft.text.trim().length > 0;
 }
 
 function OptionRow({
@@ -79,15 +79,19 @@ function OptionRow({
 export function TaskQuestionPanel({
   set,
   onAnswer,
+  onDismiss,
 }: {
   set: TaskQuestionSet;
   onAnswer: (setId: string, answers: TaskQuestionAnswer[]) => Promise<boolean>;
+  /** Let the agent decide the set itself; the pending panel then goes away. */
+  onDismiss?: (setId: string) => Promise<boolean>;
 }) {
   const [state, setState] = useState(() => ({
     setId: set.id,
     drafts: blankDrafts(set.questions),
   }));
   const [busy, setBusy] = useState(false);
+  const [dismissing, setDismissing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -150,6 +154,15 @@ export function TaskQuestionPanel({
     if (!ok) setError("Could not send the answers. Try again.");
   };
 
+  const dismiss = async () => {
+    if (busy || dismissing || onDismiss === undefined) return;
+    setDismissing(true);
+    setError(null);
+    const ok = await onDismiss(set.id);
+    setDismissing(false);
+    if (!ok) setError("Could not dismiss the questions. Try again.");
+  };
+
   return (
     <form
       data-testid="task-questions-panel"
@@ -206,14 +219,14 @@ export function TaskQuestionPanel({
                   ))}
                 </div>
               )}
-              {question.kind !== "text" && question.allowOther === true && (
+              {question.kind !== "text" && (
                 <input
                   type="text"
                   aria-label={`${question.prompt} free text`}
                   data-testid={`question-${question.id}-other`}
                   value={draft.text}
                   onChange={(event) => updateText(question, event.target.value)}
-                  placeholder="Other (optional)"
+                  placeholder="Your answer (optional)"
                   className="theme-radius w-full border border-border/70 bg-background px-lg py-md text-sm leading-5 text-foreground outline-none focus-visible:ring-1 focus-visible:ring-foreground"
                 />
               )}
@@ -228,12 +241,24 @@ export function TaskQuestionPanel({
         )}
       </div>
 
-      <div className="mt-sm border-t border-border/70 bg-surface px-xl py-lg">
+      <div className="mt-sm flex flex-wrap items-center justify-end gap-md border-t border-border/70 bg-surface px-xl py-lg">
+        {onDismiss !== undefined && (
+          <Button
+            type="button"
+            variant="ghost"
+            data-testid="task-questions-dismiss"
+            disabled={busy || dismissing}
+            className="w-full sm:w-auto"
+            onClick={() => void dismiss()}
+          >
+            {dismissing ? "Dismissing…" : "Dismiss — decide yourself"}
+          </Button>
+        )}
         <Button
           type="submit"
           data-testid="task-questions-send"
-          disabled={busy || !ready}
-          className="w-full sm:w-auto sm:self-end"
+          disabled={busy || dismissing || !ready}
+          className="w-full sm:w-auto"
         >
           {busy ? "Sending…" : "Send answers"}
         </Button>
