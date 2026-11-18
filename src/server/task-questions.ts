@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { defineEntry } from "@earendil-works/pi-durable";
 import {
   parseTaskQuestionAnswers,
   parseTaskQuestions,
@@ -18,6 +19,30 @@ import { TaskError } from "./tasks.js";
 const MAX_ANSWERED_HISTORY = 20;
 /** The most questions one pending set may hold. */
 export const MAX_PENDING_QUESTIONS = 5;
+
+type TaskQuestionAnswerEntryItem = {
+  id: string;
+  prompt: string;
+  kind: "single" | "multi" | "text";
+  values: string[];
+  labels: string[];
+  text: string;
+  readonly [key: string]: string | string[];
+};
+
+/** The durable answer rows written before questions moved to the Plan tab. */
+export type TaskQuestionAnswerEntryData = {
+  setId: string;
+  taskId: string;
+  text: string;
+  answers: TaskQuestionAnswerEntryItem[];
+  createdAt: string;
+};
+
+/** Legacy answer entries stay readable so transcripts recorded before the Plan-tab move survive. */
+export const TaskQuestionAnswerEntry = defineEntry<TaskQuestionAnswerEntryData>(
+  "ui.task-question-answers",
+);
 
 interface StoredQuestions {
   pending: TaskQuestionSet | null;

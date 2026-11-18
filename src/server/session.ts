@@ -70,6 +70,7 @@ import type { OperatorBridge } from "./operator-tools.js";
 import { formatToolArguments, formatToolDetails, formatToolResult } from "./pi.js";
 import { retrySettings } from "./retry.js";
 import { type RunMarker, RunMarkerStore } from "./run-marker.js";
+import { TaskQuestionAnswerEntry } from "./task-questions.js";
 import type { TaskBridge } from "./task-tools.js";
 import { pendingVersionNotice, writeLastSeenVersion } from "./version-notice.js";
 
@@ -1064,6 +1065,35 @@ export class TranscriptBuilder {
           : `Answers sent · ${count} question${count === 1 ? "" : "s"}`,
         answers,
         ...(dismissed ? { dismissed: true } : {}),
+      };
+      this.emit({
+        id: entryMessageId(entry),
+        role: "system",
+        text: entry.data.text,
+        timestamp: entryTimestamp(entry.data),
+        order: entry.id * 10_000,
+        notice,
+      });
+      return;
+    }
+    if (kind === TaskQuestionAnswerEntry.kind) {
+      if (
+        !isRecord(entry.data) ||
+        typeof entry.data.setId !== "string" ||
+        typeof entry.data.text !== "string" ||
+        !Array.isArray(entry.data.answers)
+      ) {
+        return;
+      }
+      const answers = readAnsweredItems(entry.data.answers);
+      const count = answers.length;
+      const notice: QuestionNoticeDetails = {
+        kind: "questions",
+        setId: entry.data.setId,
+        count,
+        text: entry.data.text,
+        summary: `Answers recorded · ${count} question${count === 1 ? "" : "s"}`,
+        answers,
       };
       this.emit({
         id: entryMessageId(entry),
