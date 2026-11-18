@@ -1023,7 +1023,11 @@ function PlanSections({ model }: { model: TaskDetailModel }) {
       </div>
       <section
         data-testid="task-plan-card"
-        className={cn(DETAIL_CARD, "flex min-h-0 flex-col gap-lg", model.wide && "min-h-0 flex-1")}
+        className={cn(
+          DETAIL_CARD,
+          "flex min-h-0 flex-col gap-lg",
+          model.wide && cn("min-h-0 flex-1 overflow-y-auto", SCROLLBAR_GUTTER),
+        )}
       >
         {questions !== undefined && questions !== null && (
           <TaskQuestionPanel

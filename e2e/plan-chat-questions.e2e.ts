@@ -188,6 +188,57 @@ test("questions live on the Plan tab and answering nudges the agent with a notic
   await removeTasks(browser, [title]);
 });
 
+test("a full question set scrolls into reach in the desktop Plan card", {
+  timeout: 300_000,
+}, async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 720 });
+  await app.open("/?page=tasks");
+  const title = `Plan questions desktop scroll ${Date.now()}`;
+  await createOpenTask(screen, title, { project: "pi-ui" });
+  const taskId = await taskIdFor(browser, title);
+
+  expect(
+    await postPlanMessage(
+      browser,
+      taskId,
+      `TOOLCALLS ${JSON.stringify([
+        { name: "append_questions", arguments: { questions: FIRST_QUESTIONS } },
+      ])}`,
+    ),
+  ).toBe(202);
+
+  const panel = screen.getByTestId("task-questions-panel");
+  const lastQuestion = screen.getByTestId("task-question-theme");
+  const dismiss = screen.getByTestId("task-questions-dismiss");
+  await expect(panel).toBeVisible({ timeout: 30_000 });
+
+  // Scroll the Plan card with the wheel exactly as a pointer user would.
+  const panelBox = await panel.boundingBox();
+  if (panelBox === null) throw new Error("question panel has no box");
+  await browser.mouse.move(
+    panelBox.x + Math.min(48, panelBox.width / 2),
+    Math.min(panelBox.y + 100, 700),
+  );
+  for (let step = 0; step < 8; step += 1) {
+    const box = await dismiss.boundingBox();
+    if (box !== null && box.y >= 0 && box.y + box.height <= 720) break;
+    await browser.mouse.wheel(0, 600);
+  }
+
+  const inViewport = async (testId: string) => {
+    const box = await screen.getByTestId(testId).boundingBox();
+    return box !== null && box.y >= 0 && box.y + box.height <= 720;
+  };
+  await expect.poll(() => inViewport("task-question-theme"), { timeout: 5_000 }).toBe(true);
+  await expect.poll(() => inViewport("task-questions-send"), { timeout: 5_000 }).toBe(true);
+  await expect.poll(() => inViewport("task-questions-dismiss"), { timeout: 5_000 }).toBe(true);
+  await expect(lastQuestion).toBeVisible();
+
+  await dismiss.tap();
+  await expect(panel).toHaveCount(0, { timeout: 30_000 });
+  await removeTasks(browser, [title]);
+});
+
 test("free text is always offered and replaces that question's choices", {
   timeout: 300_000,
 }, async ({ app, browser, screen }) => {
