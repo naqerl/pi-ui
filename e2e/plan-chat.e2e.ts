@@ -24,9 +24,41 @@ const DOCK_HEIGHT = 90;
 const COMPOSER_HEIGHT = 48;
 const TOP_LINE_HEIGHT = 41;
 
-/** The opacity leg of a dock swap must be the full 160 ms, not a colour duration. */
+/** During a sweep the exit leg is 90 ms, delayed by the node's slot. */
+function expectSweepExit(
+  node: Pick<
+    DockSwapVisual,
+    "phase" | "transitionProperty" | "transitionDuration" | "transitionDelay"
+  > | null,
+  delay: string,
+) {
+  expect(node).not.toBeNull();
+  expect(node?.phase).toBe("exit");
+  expect(node?.transitionProperty).toContain("opacity");
+  const properties = node?.transitionProperty.split(/,\s*/) ?? [];
+  const durations = node?.transitionDuration.split(/,\s*/) ?? [];
+  expect(durations[properties.indexOf("opacity")] ?? durations[0]).toBe("0.09s");
+  expect(node?.transitionDelay).toBe(delay);
+}
+
+/** The enter leg mounts at the final x and fades in from 0 over 110 ms. */
+function expectSweepEnter(
+  node: Pick<
+    DockSwapVisual,
+    "phase" | "animationName" | "animationDuration" | "animationDelay"
+  > | null,
+  delay: string,
+) {
+  expect(node).not.toBeNull();
+  expect(node?.phase).toBe("enter");
+  expect(node?.animationName).toContain("dock-scan-in");
+  expect(node?.animationDuration).toBe("0.11s");
+  expect(node?.animationDelay).toBe(delay);
+}
+
+/** Outside a sweep the settled dock swap keeps its full 160 ms opacity leg. */
 function expectDockTransition(
-  node: { transitionProperty: string | null; transitionDuration: string | null } | null,
+  node: Pick<DockSwapVisual, "transitionProperty" | "transitionDuration"> | null,
 ) {
   expect(node).not.toBeNull();
   const properties = (node?.transitionProperty ?? "").split(",").map((part) => part.trim());
@@ -38,12 +70,16 @@ function expectDockTransition(
 
 interface DockSwapVisual {
   open: string | null;
+  phase: string | null;
   inert: boolean;
   ariaHidden: string | null;
   pointerEvents: string;
   transitionProperty: string;
   transitionDuration: string;
+  transitionDelay: string;
   animationName: string;
+  animationDuration: string;
+  animationDelay: string;
   className: string;
   text: string;
 }
@@ -58,9 +94,17 @@ interface DockTaskSample {
   planSwitch: DockSwapVisual | null;
 }
 
-type DockTaskTrigger = { kind: "open"; id: string } | { kind: "close" } | { kind: "read" };
+type DockTaskTrigger =
+  | { kind: "open"; id: string; phase?: "exit" | "enter" }
+  | { kind: "close"; phase?: "exit" | "enter" }
+  | {
+      kind: "read";
+      phase?: "exit" | "enter";
+      statusReady?: boolean;
+      planReady?: boolean;
+    };
 
-/** Clicks one dock trigger and reads the swap at the first frame where both variants overlap. */
+/** Records dock mutations before the trigger so a stalled frame cannot skip a phase. */
 function sampleTaskDockTransition(
   browser: Browser,
   trigger: DockTaskTrigger,
@@ -73,12 +117,16 @@ function sampleTaskDockTransition(
       const style = getComputedStyle(node);
       return {
         open: node.getAttribute("data-open"),
+        phase: node.getAttribute("data-dock-phase"),
         inert: node.hasAttribute("inert"),
         ariaHidden: node.getAttribute("aria-hidden"),
         pointerEvents: style.pointerEvents,
         transitionProperty: style.transitionProperty,
         transitionDuration: style.transitionDuration,
+        transitionDelay: style.transitionDelay,
         animationName: style.animationName,
+        animationDuration: style.animationDuration,
+        animationDelay: style.animationDelay,
         className: node.className,
         text: (node.textContent ?? "").trim(),
       };
@@ -94,13 +142,8 @@ function sampleTaskDockTransition(
     // The task send loses its test id the moment the dock leaves the task surface,
     // while its leaving wrapper is still mounted; find that exit by its label.
     const taskSend = () => lane("task-agent-send") ?? laneByLabel("Send");
-    const statusNode = () => {
-      const live = document.querySelector<HTMLElement>(
-        '[data-testid="working-status"] [aria-live="polite"]',
-      );
-      const child = live?.firstElementChild;
-      return child instanceof HTMLElement ? child : null;
-    };
+    const statusNode = () =>
+      document.querySelector<HTMLElement>('[data-testid="working-status"] [aria-live="polite"]');
     const read = () => {
       const dock = document.querySelector<HTMLElement>('[data-testid="composer-dock"]');
       const body = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
@@ -121,39 +164,178 @@ function sampleTaskDockTransition(
         planSwitch: visual(document.querySelector<HTMLElement>('[data-testid="plan-task-toggle"]')),
       };
     };
+    type Sample = ReturnType<typeof read>;
+    type Recorder = { samples: Sample[]; stop: () => void };
+    const holder = window as Window & { __dockScanRecorder?: Recorder };
+    const hasPhase = (sample: Sample, phase: "exit" | "enter") =>
+      sample.status?.phase === phase ||
+      sample.planSwitch?.phase === phase ||
+      Object.values(sample.actions).some((action) => action?.phase === phase);
+    const matches = (sample: Sample, phase: "exit" | "enter") => {
+      if (!hasPhase(sample, phase)) return false;
+      if (trigger.kind === "open") {
+        return sample.actions.taskSend?.open === "true" && sample.actions.addTask?.open === "false";
+      }
+      if (trigger.kind === "close") {
+        return sample.actions.addTask?.open === "true" && sample.actions.taskSend?.open === "false";
+      }
+      if (phase === "enter" && trigger.statusReady === true) {
+        const planReady = trigger.planReady !== true || sample.planSwitch?.open === "true";
+        return planReady && (sample.status === null || sample.status.open === "true");
+      }
+      if (phase === "enter") return sample.planSwitch?.open === "true";
+      return true;
+    };
+    const startRecorder = () => {
+      holder.__dockScanRecorder?.stop();
+      const samples: Sample[] = [];
+      const observer = new MutationObserver(() => {
+        const sample = read();
+        if (hasPhase(sample, "exit") || hasPhase(sample, "enter")) samples.push(sample);
+      });
+      observer.observe(document.body, {
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["data-dock-phase", "data-open", "inert", "aria-hidden"],
+        childList: true,
+      });
+      const recorder = { samples, stop: () => observer.disconnect() };
+      holder.__dockScanRecorder = recorder;
+      return recorder;
+    };
 
+    const expected = trigger.phase ?? (kind === "read" ? null : "exit");
+    if (expected === null) {
+      return new Promise<Sample>((resolve) => {
+        requestAnimationFrame(() => resolve(read()));
+      });
+    }
+
+    const recorder =
+      trigger.kind === "read" ? (holder.__dockScanRecorder ?? startRecorder()) : startRecorder();
     if (kind === "open") {
       const card = document.querySelector<HTMLElement>(`[data-testid="task-${id}"]`);
       card?.querySelector<HTMLElement>("[data-task-card]")?.click();
     } else if (kind === "close") {
       document.querySelector<HTMLButtonElement>('[data-testid="task-detail-back"]')?.click();
-    } else {
-      return new Promise<ReturnType<typeof read>>((resolve) => {
-        requestAnimationFrame(() => resolve(read()));
-      });
     }
 
-    return new Promise<ReturnType<typeof read>>((resolve) => {
+    return new Promise<Sample>((resolve) => {
       const start = performance.now();
-      const tick = () => {
-        const addTask = lane("add-task");
-        const send = taskSend();
-        const status = visual(statusNode());
-        const ready =
-          kind === "open"
-            ? send?.open === "true" && addTask?.open === "false"
-            : addTask?.open === "true" &&
-              send?.open === "false" &&
-              (status === null || status.open === "false");
-        if (ready || performance.now() - start > 120) {
-          resolve(read());
-          return;
+      const check = () => {
+        const hit = recorder.samples.find((sample) => matches(sample, expected));
+        if (hit !== undefined) {
+          resolve(hit);
+          return true;
         }
-        requestAnimationFrame(tick);
+        if (performance.now() - start > 1500) {
+          resolve(read());
+          return true;
+        }
+        return false;
       };
-      requestAnimationFrame(tick);
+      if (check()) return;
+      const timer = window.setInterval(() => {
+        if (check()) window.clearInterval(timer);
+      }, 10);
     });
   }, trigger) as Promise<DockTaskSample>;
+}
+
+type SettledStatusSample = {
+  open: string | null;
+  phase: string | null;
+  text: string;
+  transitionProperty: string;
+  transitionDuration: string;
+  textIn: boolean;
+  childAnimationName: string | null;
+};
+
+type SettledStatusTrigger = { kind: "send" } | { kind: "stop"; id: string };
+
+type SettledStatusResult = {
+  samples: SettledStatusSample[];
+  final: SettledStatusSample;
+};
+
+/**
+ * Records a settled word swap from before the trigger. A sweep suppresses the
+ * keyed child's 160 ms fade, but the next word change on the same surface must
+ * still mount with `dock-text-in`; a rAF started after the click can miss it.
+ */
+function sampleSettledStatusSwap(
+  browser: Browser,
+  trigger: SettledStatusTrigger,
+): Promise<SettledStatusResult> {
+  return browser.evaluate(async (trigger) => {
+    const statusNode = document.querySelector<HTMLElement>(
+      '[data-testid="working-status"] [aria-live="polite"]',
+    );
+    if (statusNode === null) throw new Error("the dock status is missing");
+    const status = statusNode;
+    const read = (): SettledStatusSample => {
+      const style = getComputedStyle(status);
+      const child = status.firstElementChild as HTMLElement | null;
+      return {
+        open: status.getAttribute("data-open"),
+        phase: status.getAttribute("data-dock-phase"),
+        text: (status.textContent ?? "").trim(),
+        transitionProperty: style.transitionProperty,
+        transitionDuration: style.transitionDuration,
+        textIn: child?.classList.contains("dock-text-in") ?? false,
+        childAnimationName: child === null ? null : getComputedStyle(child).animationName,
+      };
+    };
+    const samples: SettledStatusSample[] = [];
+    const record = () => {
+      samples.push(read());
+    };
+    const observer = new MutationObserver(record);
+    observer.observe(status, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class", "data-open", "data-dock-phase"],
+      childList: true,
+      characterData: true,
+    });
+
+    if (trigger.kind === "send") {
+      document.querySelector<HTMLButtonElement>('[data-testid="task-agent-send"]')?.click();
+    } else {
+      const response = await fetch(`/api/tasks/${encodeURIComponent(trigger.id)}/chat/stop`, {
+        method: "POST",
+      });
+      if (!response.ok) throw new Error(`stop failed: ${response.status}`);
+    }
+
+    return new Promise<{
+      samples: SettledStatusSample[];
+      final: SettledStatusSample;
+    }>((resolve) => {
+      const start = performance.now();
+      const finish = () => {
+        record();
+        observer.disconnect();
+        resolve({ samples, final: read() });
+      };
+      const timer = window.setInterval(() => {
+        // The word can appear one render before the run flips to its running
+        // branch, so wait for the keyed child's fade. The observer keeps the
+        // frame even if the animation is already over.
+        const hit = samples.find((sample) => sample.textIn && sample.phase === null);
+        if (hit !== undefined) {
+          window.clearInterval(timer);
+          finish();
+          return;
+        }
+        if (performance.now() - start > 2000) {
+          window.clearInterval(timer);
+          finish();
+        }
+      }, 10);
+    });
+  }, trigger) as unknown as Promise<SettledStatusResult>;
 }
 
 test("the plan switch sits on the dock's top line with a visible label", {
@@ -293,9 +475,17 @@ test("the plan switch sits on the dock's top line with a visible label", {
   // must keep the exact heights they had before the switch.
   await browser.setViewport({ width: 390, height: 844 });
   await browser.emulateMedia({ reducedMotion: "no-preference" });
-  const switchAndSample = (id: "chat" | "tasks", waitForLeaving: boolean) =>
+  // The media query change drives a React state update; let it commit before the
+  // switch, otherwise the scan still sees the reduce-mode snap.
+  await browser.evaluate(
+    () =>
+      new Promise<boolean>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))),
+      ),
+  );
+  const switchAndSample = (id: "chat" | "tasks", phase: "exit" | "enter") =>
     browser.evaluate(
-      ({ pageId, leaving }) => {
+      ({ pageId, expected }) => {
         const read = () => {
           const dock = document.querySelector<HTMLElement>('[data-testid="composer-dock"]');
           const body = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
@@ -303,19 +493,26 @@ test("the plan switch sits on the dock's top line with a visible label", {
           const planSwitch = document.querySelector<HTMLElement>(
             '[data-testid="plan-task-toggle"]',
           );
+          const style = planSwitch === null ? null : getComputedStyle(planSwitch);
           return {
             dockHeight: dock?.getBoundingClientRect().height ?? null,
             composerHeight: body?.getBoundingClientRect().height ?? null,
             lineHeight: line?.getBoundingClientRect().height ?? null,
             planSwitch:
-              planSwitch === null
+              planSwitch === null || style === null
                 ? null
                 : {
                     open: planSwitch.getAttribute("data-open"),
+                    phase: planSwitch.getAttribute("data-dock-phase"),
                     inert: planSwitch.hasAttribute("inert"),
                     ariaHidden: planSwitch.getAttribute("aria-hidden"),
-                    transitionProperty: getComputedStyle(planSwitch).transitionProperty,
-                    transitionDuration: getComputedStyle(planSwitch).transitionDuration,
+                    pointerEvents: style.pointerEvents,
+                    transitionProperty: style.transitionProperty,
+                    transitionDuration: style.transitionDuration,
+                    transitionDelay: style.transitionDelay,
+                    animationName: style.animationName,
+                    animationDuration: style.animationDuration,
+                    animationDelay: style.animationDelay,
                   },
           };
         };
@@ -326,10 +523,8 @@ test("the plan switch sits on the dock's top line with a visible label", {
             const planSwitch = document.querySelector<HTMLElement>(
               '[data-testid="plan-task-toggle"]',
             );
-            const ready =
-              planSwitch !== null &&
-              planSwitch.getAttribute("data-open") === (leaving ? "false" : "true");
-            if (ready || performance.now() - start > 120) {
+            const ready = planSwitch?.getAttribute("data-dock-phase") === expected;
+            if (ready || performance.now() - start > 400) {
               resolve(read());
               return;
             }
@@ -338,33 +533,34 @@ test("the plan switch sits on the dock's top line with a visible label", {
           requestAnimationFrame(tick);
         });
       },
-      { pageId: id, leaving: waitForLeaving },
+      { pageId: id, expected: phase },
     );
 
-  const leavingSample = await switchAndSample("chat", true);
+  const leavingSample = await switchAndSample("chat", "exit");
   expect(leavingSample.dockHeight).toBe(DOCK_HEIGHT);
   expect(leavingSample.composerHeight).toBe(COMPOSER_HEIGHT);
   expect(leavingSample.lineHeight).toBe(TOP_LINE_HEIGHT);
-  expect(leavingSample.planSwitch).not.toBeNull();
-  expect(leavingSample.planSwitch?.open).toBe("false");
-  expect(leavingSample.planSwitch?.inert).toBe(true);
-  expect(leavingSample.planSwitch?.ariaHidden).toBe("true");
-  expect(leavingSample.planSwitch?.transitionProperty).toContain("opacity");
-  expectDockTransition(leavingSample.planSwitch);
-  await expect(screen.getByTestId("plan-task-toggle")).toHaveCount(0);
+  expect(leavingSample.planSwitch).toMatchObject({
+    open: "true",
+    phase: "exit",
+    inert: true,
+    ariaHidden: "true",
+    pointerEvents: "none",
+  });
+  expectSweepExit(leavingSample.planSwitch, "0s");
+  await expect.poll(async () => screen.getByTestId("plan-task-toggle").count()).toBe(0);
 
-  const arrivingSample = await switchAndSample("tasks", false);
+  const arrivingSample = await switchAndSample("tasks", "enter");
   expect(arrivingSample.dockHeight).toBe(DOCK_HEIGHT);
   expect(arrivingSample.composerHeight).toBe(COMPOSER_HEIGHT);
   expect(arrivingSample.lineHeight).toBe(TOP_LINE_HEIGHT);
-  expect(arrivingSample.planSwitch).toEqual({
+  expect(arrivingSample.planSwitch).toMatchObject({
     open: "true",
+    phase: "enter",
     inert: false,
     ariaHidden: null,
-    transitionProperty: expect.stringContaining("opacity"),
-    transitionDuration: expect.any(String),
   });
-  expectDockTransition(arrivingSample.planSwitch);
+  expectSweepEnter(arrivingSample.planSwitch, "0s");
   await expect(toggle).toBeVisible();
   await expect(toggle).toHaveAttribute("data-open", "true");
   // The same persistent Composer kept the draft and the focus across the swap.
@@ -372,7 +568,194 @@ test("the plan switch sits on the dock's top line with a visible label", {
   await expect.poll(focusedInput).toBe("New task");
 });
 
-test("create and plan-chat fade the action and status without moving the dock", {
+test("a page switch never moves a visible top-line node", {
+  timeout: 180_000,
+}, async ({ app, browser }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await browser.emulateMedia({ reducedMotion: "no-preference" });
+  await app.open("/?page=chat");
+
+  // Sampling eagerly (rather than once per paint) observes the swap frame
+  // before the 12 ms stagger lets the arriving nodes become visible.
+  const scan = await browser.evaluate(() => {
+    const keyOf = (node: HTMLElement) => {
+      if (node.matches('[data-testid="plan-task-toggle"]')) return "plan";
+      if (node.matches('[aria-live="polite"]')) return "status";
+      if (node.classList.contains("bg-jobs-counts")) return "jobs";
+      return null;
+    };
+    const samples: Array<{
+      key: string;
+      left: number;
+      previousLeft: number;
+      visualLeft: number;
+      width: number;
+      opacity: number;
+      phase: string | null;
+      open: string | null;
+      transform: string;
+      text: string;
+    }> = [];
+    const enterDelays: Record<string, string> = {};
+    const phases = new Set<string>();
+    const seen = new Map<string, number>();
+    const start = performance.now();
+    let finished = false;
+    const sample = () => {
+      const line = document.querySelector<HTMLElement>(".ink-line");
+      if (line === null) return;
+      for (const node of line.querySelectorAll<HTMLElement>(".dock-swap")) {
+        const key = keyOf(node);
+        if (key === null) continue;
+        // offsetLeft is layout, not the 3px transform drift the exit owns.
+        const left = node.offsetLeft;
+        const style = getComputedStyle(node);
+        const phase = node.getAttribute("data-dock-phase");
+        if (phase !== null) phases.add(phase);
+        if (phase === "enter") enterDelays[key] = style.animationDelay;
+        const previousLeft = seen.get(key);
+        if (previousLeft !== undefined) {
+          samples.push({
+            key,
+            left,
+            previousLeft,
+            visualLeft: node.getBoundingClientRect().left,
+            width: node.offsetWidth,
+            opacity: Number(style.opacity),
+            phase,
+            open: node.getAttribute("data-open"),
+            transform: style.transform,
+            text: (node.textContent ?? "").trim(),
+          });
+        }
+        seen.set(key, left);
+      }
+    };
+    document.querySelector<HTMLButtonElement>('[data-testid="page-dot-tasks"]')?.click();
+    return new Promise<{
+      samples: typeof samples;
+      enterDelays: typeof enterDelays;
+      phases: string[];
+    }>((resolve) => {
+      // The observer runs in the commit's microtask checkpoint, before paint and
+      // before the 12 ms stagger advances the arriving opacity.
+      const observer = new MutationObserver(sample);
+      observer.observe(document.body, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ["data-dock-phase", "data-open", "class"],
+      });
+      const tick = () => {
+        sample();
+        if (performance.now() - start < 1200) {
+          setTimeout(tick, 1);
+          return;
+        }
+        finished = true;
+        observer.disconnect();
+        resolve({ samples, enterDelays, phases: [...phases] });
+      };
+      setTimeout(tick, 1);
+      window.addEventListener(
+        "pagehide",
+        () => {
+          if (!finished) observer.disconnect();
+        },
+        { once: true },
+      );
+    });
+  });
+
+  // A correct swap either moves nothing or moves only a fully transparent node.
+  // It must still run both halves of the sweep within the sampled window.
+  expect(scan.phases).toEqual(expect.arrayContaining(["exit", "enter"]));
+  const moved = scan.samples.filter(
+    (sample) => sample.width > 0 && Math.abs(sample.left - sample.previousLeft) > 0.5,
+  );
+  for (const frame of moved) expect(frame.opacity, JSON.stringify(frame)).toBe(0);
+  // The enter leg is opacity-only: every arriving node stays at its final
+  // visual x from the first frame, when its opacity is still zero.
+  const enterLefts = new Map<string, number>();
+  for (const frame of scan.samples) {
+    if (frame.phase !== "enter" || frame.open !== "true" || frame.width === 0) continue;
+    expect(frame.transform, JSON.stringify(frame)).toMatch(/^(none|matrix\(1, 0, 0, 1, 0, 0\))$/);
+    const first = enterLefts.get(frame.key);
+    if (first === undefined) enterLefts.set(frame.key, frame.visualLeft);
+    else expect(Math.abs(frame.visualLeft - first), JSON.stringify(frame)).toBeLessThanOrEqual(0.5);
+  }
+  expect(enterLefts.size).toBeGreaterThan(0);
+  // The plan switch is slot 0; a status word that is actually entering is slot 1.
+  expect(scan.enterDelays.plan).toBe("0s");
+  if (scan.enterDelays.status !== undefined) {
+    expect(["0s", "0.012s"]).toContain(scan.enterDelays.status);
+  }
+});
+
+test("a second page switch during the enter leg still settles on the latest surface", {
+  timeout: 60_000,
+}, async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await browser.emulateMedia({ reducedMotion: "no-preference" });
+  await app.open("/?page=chat");
+
+  // Leaving in the first exit and returning during the first enter repeats the
+  // phase value "exit"; the swap timer must still be armed for the new leg.
+  // Wait at least 180 ms, then switch as soon as the enter leg is on screen.
+  const enteredLeg = await browser.evaluate(
+    () =>
+      new Promise<string | null>((resolve) => {
+        document.querySelector<HTMLButtonElement>('[data-testid="page-dot-tasks"]')?.click();
+        const start = performance.now();
+        const tick = () => {
+          const toggle = document.querySelector<HTMLElement>('[data-testid="plan-task-toggle"]');
+          const phase = toggle?.getAttribute("data-dock-phase") ?? null;
+          const elapsed = performance.now() - start;
+          if (phase === "enter" && elapsed >= 180) {
+            document.querySelector<HTMLButtonElement>('[data-testid="page-dot-chat"]')?.click();
+            resolve(phase);
+            return;
+          }
+          if (elapsed > 2000) {
+            resolve(null);
+            return;
+          }
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      }),
+  );
+  expect(enteredLeg).toBe("enter");
+
+  await expect
+    .poll(async () =>
+      browser.evaluate(
+        () => document.querySelectorAll('[data-testid="composer-dock"] [data-dock-phase]').length,
+      ),
+    )
+    .toBe(0);
+  await expect(screen.getByTestId("plan-task-toggle")).toHaveCount(0);
+  await expect
+    .poll(async () =>
+      browser.evaluate(
+        () =>
+          document
+            .querySelector('[data-testid="working-status"] [aria-live="polite"]')
+            ?.textContent?.trim() ?? "",
+      ),
+    )
+    .toBe("idle");
+  expect(
+    await browser.evaluate(
+      () => document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
+    ),
+  ).toBe("chat");
+  expect(
+    await browser.evaluate(() => document.querySelectorAll('[aria-live="polite"]').length),
+  ).toBe(1);
+});
+
+test("create and plan-chat sweep the action and status without moving the dock", {
   timeout: 180_000,
 }, async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 390, height: 844 });
@@ -408,27 +791,30 @@ test("create and plan-chat fade the action and status without moving the dock", 
       ariaHidden: "true",
       pointerEvents: "none",
     });
-    expectDockTransition(opened.actions.addTask);
     expect(opened.actions.taskSend).toMatchObject({
       open: "true",
-      inert: false,
-      ariaHidden: null,
+      phase: "exit",
+      inert: true,
+      ariaHidden: "true",
+      pointerEvents: "none",
     });
-    expectDockTransition(opened.actions.taskSend);
+    expectSweepExit(opened.actions.taskSend, "0.036s");
 
     // The status word enters as its own keyed child, never as a second live region.
-    await expect
-      .poll(async () => (await sampleTaskDockTransition(browser, { kind: "read" })).status?.text)
-      .toBe("idle");
-    const enteredScenario = await sampleTaskDockTransition(browser, { kind: "read" });
+    const enteredScenario = await sampleTaskDockTransition(browser, {
+      kind: "read",
+      phase: "enter",
+      statusReady: true,
+    });
     expect(enteredScenario.liveRegions).toBe(1);
     expect(enteredScenario.status).toMatchObject({
       open: "true",
+      phase: "enter",
       inert: false,
       ariaHidden: null,
+      text: "idle",
     });
-    expect(enteredScenario.status?.animationName).toContain("dock-text-in");
-    expectDockTransition(enteredScenario.status);
+    expectSweepEnter(enteredScenario.status, "0.012s");
 
     // plan-chat -> create: the task send leaves, and the held status word exits.
     const closed = await sampleTaskDockTransition(browser, { kind: "close" });
@@ -438,25 +824,37 @@ test("create and plan-chat fade the action and status without moving the dock", 
     expect(closed.liveRegions).toBe(1);
     expect(closed.actions.addTask).toMatchObject({
       open: "true",
-      inert: false,
-      ariaHidden: null,
+      phase: "exit",
+      inert: true,
+      ariaHidden: "true",
+      pointerEvents: "none",
     });
-    expectDockTransition(closed.actions.addTask);
+    expectSweepExit(closed.actions.addTask, "0.036s");
     expect(closed.actions.taskSend).toMatchObject({
       open: "false",
       inert: true,
       ariaHidden: "true",
       pointerEvents: "none",
     });
-    expectDockTransition(closed.actions.taskSend);
     expect(closed.status).toMatchObject({
-      open: "false",
+      open: "true",
+      phase: "exit",
       inert: true,
       ariaHidden: "true",
       pointerEvents: "none",
       text: "idle",
     });
-    expectDockTransition(closed.status);
+    expectSweepExit(closed.status, "0.012s");
+
+    const enteredBack = await sampleTaskDockTransition(browser, {
+      kind: "read",
+      phase: "enter",
+      planReady: true,
+    });
+    expect(enteredBack.actions.addTask).toMatchObject({ open: "true", phase: "enter" });
+    expectSweepEnter(enteredBack.actions.addTask, "0.036s");
+    expect(enteredBack.planSwitch).toMatchObject({ open: "true", phase: "enter" });
+    expectSweepEnter(enteredBack.planSwitch, "0s");
     await expect(screen.getByTestId("task-agent-send")).toHaveCount(0);
     await expect(screen.getByTestId("plan-task-toggle")).toBeVisible();
     await expect(screen.getByTestId("add-task")).toBeVisible();
@@ -465,45 +863,57 @@ test("create and plan-chat fade the action and status without moving the dock", 
   }
 });
 
-test("a collapse owns the swap and reduced motion drops the leaving nodes", {
+test("stats transitions sweep the top line and reduced motion drops the leaving nodes", {
   timeout: 180_000,
 }, async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 390, height: 844 });
   await browser.emulateMedia({ reducedMotion: "no-preference" });
   await app.open("/?page=tasks");
 
-  // stats is a collapsed surface. Expanding into tasks must not start a second
-  // animation on the nodes the 220 ms composer expansion already carries.
-  await screen.getByTestId("page-dot-stats").tap();
-  await expect
-    .poll(() =>
-      browser.evaluate(
-        () => document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
-      ),
-    )
-    .toBe("stats");
-  const statsToTasks = await browser.evaluate(() => {
-    const read = () => {
-      const planSwitch = document.querySelector<HTMLElement>('[data-testid="plan-task-toggle"]');
-      const body = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
+  const readGeometry = () => ({
+    dockHeight:
+      document.querySelector<HTMLElement>('[data-testid="composer-dock"]')?.getBoundingClientRect()
+        .height ?? null,
+    composerHeight:
+      document.querySelector<HTMLElement>('[data-testid="composer-body"]')?.getBoundingClientRect()
+        .height ?? null,
+    lineHeight:
+      document.querySelector<HTMLElement>(".ink-line")?.getBoundingClientRect().height ?? null,
+  });
+  const tasksBaseline = await browser.evaluate(readGeometry);
+  expect(tasksBaseline.dockHeight).toBe(DOCK_HEIGHT);
+  expect(tasksBaseline.composerHeight).toBe(COMPOSER_HEIGHT);
+  expect(tasksBaseline.lineHeight).toBe(TOP_LINE_HEIGHT);
+
+  // tasks -> stats: the plan switch sweeps out before stats' status word arrives.
+  const tasksToStats = await browser.evaluate(() => {
+    const planVisual = () => {
+      const node = document.querySelector<HTMLElement>('[data-testid="plan-task-toggle"]');
+      if (node === null) return null;
+      const style = getComputedStyle(node);
       return {
-        planSwitch:
-          planSwitch === null
-            ? null
-            : {
-                className: planSwitch.className,
-                animationName: getComputedStyle(planSwitch).animationName,
-              },
-        collapsed: body?.getAttribute("data-collapsed") ?? null,
+        open: node.getAttribute("data-open"),
+        phase: node.getAttribute("data-dock-phase"),
+        inert: node.hasAttribute("inert"),
+        ariaHidden: node.getAttribute("aria-hidden"),
+        pointerEvents: style.pointerEvents,
+        transitionProperty: style.transitionProperty,
+        transitionDuration: style.transitionDuration,
+        transitionDelay: style.transitionDelay,
+        animationName: style.animationName,
+        animationDuration: style.animationDuration,
+        animationDelay: style.animationDelay,
+        className: node.className,
+        text: (node.textContent ?? "").trim(),
       };
     };
-    document.querySelector<HTMLButtonElement>('[data-testid="page-dot-tasks"]')?.click();
-    return new Promise<ReturnType<typeof read>>((resolve) => {
+    document.querySelector<HTMLButtonElement>('[data-testid="page-dot-stats"]')?.click();
+    return new Promise<ReturnType<typeof planVisual>>((resolve) => {
       const start = performance.now();
       const tick = () => {
-        const planSwitch = document.querySelector('[data-testid="plan-task-toggle"]');
-        if (planSwitch !== null || performance.now() - start > 120) {
-          requestAnimationFrame(() => resolve(read()));
+        const plan = document.querySelector<HTMLElement>('[data-testid="plan-task-toggle"]');
+        if (plan?.getAttribute("data-dock-phase") === "exit" || performance.now() - start > 1500) {
+          resolve(planVisual());
           return;
         }
         requestAnimationFrame(tick);
@@ -511,11 +921,95 @@ test("a collapse owns the swap and reduced motion drops the leaving nodes", {
       requestAnimationFrame(tick);
     });
   });
-  expect(statsToTasks.planSwitch).not.toBeNull();
-  expect(statsToTasks.planSwitch?.className).not.toContain("dock-swap");
-  expect(statsToTasks.planSwitch?.className).not.toContain("dock-text-in");
-  expect(statsToTasks.planSwitch?.animationName).toBe("none");
+  expect(tasksToStats).toMatchObject({
+    open: "true",
+    phase: "exit",
+    inert: true,
+    ariaHidden: "true",
+    pointerEvents: "none",
+  });
+  expectSweepExit(tasksToStats, "0s");
+  await expect
+    .poll(() =>
+      browser.evaluate(
+        () => document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
+      ),
+    )
+    .toBe("stats");
+  await expect(screen.getByTestId("composer-body")).toHaveAttribute("data-collapsed", "true");
+  await expect(screen.getByTestId("plan-task-toggle")).toHaveCount(0);
+
+  // stats -> tasks: the dock persists across the page switch, so the arriving
+  // plan switch enters at its slot-0 delay and stats' status word is dropped in
+  // the same swap frame instead of holding the arriving line off its geometry.
+  const statsToTasks = await browser.evaluate(() => {
+    const planVisual = () => {
+      const node = document.querySelector<HTMLElement>('[data-testid="plan-task-toggle"]');
+      if (node === null) return null;
+      const style = getComputedStyle(node);
+      return {
+        open: node.getAttribute("data-open"),
+        phase: node.getAttribute("data-dock-phase"),
+        inert: node.hasAttribute("inert"),
+        ariaHidden: node.getAttribute("aria-hidden"),
+        pointerEvents: style.pointerEvents,
+        transitionProperty: style.transitionProperty,
+        transitionDuration: style.transitionDuration,
+        transitionDelay: style.transitionDelay,
+        animationName: style.animationName,
+        animationDuration: style.animationDuration,
+        animationDelay: style.animationDelay,
+        className: node.className,
+        text: (node.textContent ?? "").trim(),
+      };
+    };
+    const readStatus = () => {
+      const node = document.querySelector<HTMLElement>(
+        '[data-testid="working-status"] [aria-live="polite"]',
+      );
+      return node === null
+        ? null
+        : {
+            open: node.getAttribute("data-open"),
+            phase: node.getAttribute("data-dock-phase"),
+            text: (node.textContent ?? "").trim(),
+            children: node.childElementCount,
+          };
+    };
+    const body = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
+    document.querySelector<HTMLButtonElement>('[data-testid="page-dot-tasks"]')?.click();
+    return new Promise<{
+      plan: ReturnType<typeof planVisual>;
+      status: ReturnType<typeof readStatus>;
+      collapsed: string | null;
+    }>((resolve) => {
+      const start = performance.now();
+      const tick = () => {
+        const plan = document.querySelector<HTMLElement>('[data-testid="plan-task-toggle"]');
+        if (plan?.getAttribute("data-dock-phase") === "enter" || performance.now() - start > 1500) {
+          resolve({
+            plan: planVisual(),
+            status: readStatus(),
+            collapsed: body?.getAttribute("data-collapsed") ?? null,
+          });
+          return;
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+  });
+  expect(statsToTasks.plan).toMatchObject({ open: "true", phase: "enter" });
+  expectSweepEnter(statsToTasks.plan, "0s");
+  expect(statsToTasks.status).toMatchObject({ open: "false", text: "", children: 0 });
   expect(statsToTasks.collapsed).toBe("false");
+  await expect
+    .poll(() => browser.evaluate(readGeometry))
+    .toMatchObject({
+      dockHeight: DOCK_HEIGHT,
+      composerHeight: COMPOSER_HEIGHT,
+      lineHeight: TOP_LINE_HEIGHT,
+    });
 
   // The same holds when a done task's collapsed detail closes back to create.
   const title = `Done dock ${Date.now()}`;
@@ -558,14 +1052,18 @@ test("a collapse owns the swap and reduced motion drops the leaving nodes", {
     const doneToCreate = await browser.evaluate(() => {
       const read = () => {
         const planSwitch = document.querySelector<HTMLElement>('[data-testid="plan-task-toggle"]');
+        const style = planSwitch === null ? null : getComputedStyle(planSwitch);
         const body = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
         return {
           planSwitch:
-            planSwitch === null
+            planSwitch === null || style === null
               ? null
               : {
-                  className: planSwitch.className,
-                  animationName: getComputedStyle(planSwitch).animationName,
+                  open: planSwitch.getAttribute("data-open"),
+                  phase: planSwitch.getAttribute("data-dock-phase"),
+                  animationName: style.animationName,
+                  animationDuration: style.animationDuration,
+                  animationDelay: style.animationDelay,
                 },
           collapsed: body?.getAttribute("data-collapsed") ?? null,
         };
@@ -574,9 +1072,14 @@ test("a collapse owns the swap and reduced motion drops the leaving nodes", {
       return new Promise<ReturnType<typeof read>>((resolve) => {
         const start = performance.now();
         const tick = () => {
-          const planSwitch = document.querySelector('[data-testid="plan-task-toggle"]');
-          if (planSwitch !== null || performance.now() - start > 120) {
-            requestAnimationFrame(() => resolve(read()));
+          const planSwitch = document.querySelector<HTMLElement>(
+            '[data-testid="plan-task-toggle"]',
+          );
+          if (
+            planSwitch?.getAttribute("data-dock-phase") === "enter" ||
+            performance.now() - start > 1500
+          ) {
+            resolve(read());
             return;
           }
           requestAnimationFrame(tick);
@@ -584,10 +1087,8 @@ test("a collapse owns the swap and reduced motion drops the leaving nodes", {
         requestAnimationFrame(tick);
       });
     });
-    expect(doneToCreate.planSwitch).not.toBeNull();
-    expect(doneToCreate.planSwitch?.className).not.toContain("dock-swap");
-    expect(doneToCreate.planSwitch?.className).not.toContain("dock-text-in");
-    expect(doneToCreate.planSwitch?.animationName).toBe("none");
+    expect(doneToCreate.planSwitch).toMatchObject({ open: "true", phase: "enter" });
+    expectSweepEnter(doneToCreate.planSwitch, "0s");
     expect(doneToCreate.collapsed).toBe("false");
   } finally {
     await removeTasks(browser, [title]);
@@ -860,6 +1361,9 @@ test("the plan chat renders its run status only in the composer dock", {
   timeout: 180_000,
 }, async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 390, height: 844 });
+  // The page switch into the plan chat is a sweep, so the settled word swaps
+  // below run with motion enabled rather than the runner's reduced-motion default.
+  await browser.emulateMedia({ reducedMotion: "no-preference" });
   await app.open("/?page=tasks");
   const title = `Plan status once ${Date.now()}`;
   await createOpenTask(screen, title);
@@ -877,6 +1381,15 @@ test("the plan chat renders its run status only in the composer dock", {
 
   const dock = screen.getByTestId("working-status");
   await expect(dock).toHaveText("idle", { timeout: 60_000 });
+  // Let the page switch into the plan chat finish before starting the run: the
+  // settled word swap below must not be folded into the sweep's enter leg.
+  await expect
+    .poll(async () =>
+      browser.evaluate(
+        () => document.querySelectorAll('[data-testid="composer-dock"] [data-dock-phase]').length,
+      ),
+    )
+    .toBe(0);
   const phoneIdle = await readPlanStatus(browser);
   expect(phoneIdle).toMatchObject({
     paneCount: 0,
@@ -890,7 +1403,15 @@ test("the plan chat renders its run status only in the composer dock", {
   // A run started from the plan composer keeps the dock as its only status.
   const input = screen.getByTestId("task-agent-input");
   await input.fill("SLOW keep the plan run open");
-  await screen.getByTestId("task-agent-send").tap();
+  const started = await sampleSettledStatusSwap(browser, { kind: "send" });
+  expect(started.final).toMatchObject({ phase: null });
+  expectDockTransition(started.final);
+  // The sweep suppressed the word's fade while it entered; this later idle ->
+  // running remount on the same surface must restore the settled 160 ms fade.
+  expect(started.samples.some((sample) => sample.textIn)).toBe(true);
+  expect(started.samples.find((sample) => sample.textIn)?.childAnimationName).toContain(
+    "dock-text-in",
+  );
   await expect(dock).toHaveAttribute("data-open", "true", { timeout: 30_000 });
   await expect(screen.getByTestId("header-activity")).toHaveText("planning", {
     timeout: 30_000,
@@ -907,7 +1428,10 @@ test("the plan chat renders its run status only in the composer dock", {
   expect(phoneLive.transcriptScrollTop).toBe(phoneIdle.transcriptScrollTop);
   await app.screenshot("plan-chat-live");
 
-  expect(await stopPlan(browser, taskId)).toBe(200);
+  const stopped = await sampleSettledStatusSwap(browser, { kind: "stop", id: taskId });
+  expect(stopped.final).toMatchObject({ phase: null });
+  expectDockTransition(stopped.final);
+  expect(stopped.samples.some((sample) => sample.textIn)).toBe(true);
   await expect(dock).toHaveAttribute("data-open", "false", { timeout: 30_000 });
   await expect(dock).toHaveText("idle", { timeout: 30_000 });
   const phoneStopped = await readPlanStatus(browser);

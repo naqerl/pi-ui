@@ -9,6 +9,7 @@ import {
   groupStartMs,
   groupSummary,
   groupSummaryParts,
+  rowDurationMs,
 } from "../src/client/activity-format.js";
 import { EventsView } from "../src/client/EventsView.js";
 import { NoticeLine } from "../src/client/NoticeView.js";
@@ -84,12 +85,11 @@ test("a live run row does not step back when a tool result replaces its start", 
     "2 tool calls · 16.0s",
   );
 
-  const started = anchorGroupStart(null, [liveFirst]);
-  assert.equal(started, RUN_START);
+  const anchored = anchorGroupStart(null, [liveFirst]);
+  assert.equal(anchored, RUN_START);
   const replacement = toolActivity({ id: "live-1", timestamp: at(16), durationMs: 5_000 });
   assert.equal(groupSummary([replacement], true, RUN_START + 16_000), "1 tool call · 5.0s");
-  const anchored = anchorGroupStart(started, [replacement]);
-  assert.equal(anchored, RUN_START);
+  assert.equal(anchorGroupStart(anchored, [replacement]), RUN_START);
   assert.equal(
     groupSummaryParts([replacement], true, RUN_START + 16_000, undefined, anchored).at(-1),
     "16.0s",
@@ -125,6 +125,23 @@ test("concurrent finished rows report their wall span, not the sum of their dura
   const first = toolActivity({ id: "a-1", timestamp: at(10), durationMs: 5_000 });
   const second = toolActivity({ id: "a-2", timestamp: at(10), durationMs: 3_000 });
   assert.equal(groupSummary([first, second], false, RUN_START + 30_000), "2 tool calls · 5.0s");
+});
+
+test("one row's duration ignores the group clock", () => {
+  const completed = toolActivity({ id: "a-1", timestamp: at(16), durationMs: 5_000 });
+  const running = toolActivity({ id: "live-1", pending: true, timestamp: at(16) });
+  const thinking = {
+    kind: "thinking" as const,
+    id: "think-1",
+    name: "thinking" as const,
+    text: "working",
+    timestamp: at(16),
+    order: 2,
+  };
+  assert.equal(rowDurationMs(completed, undefined), 5_000);
+  assert.equal(rowDurationMs(running, undefined), undefined);
+  assert.equal(rowDurationMs(thinking, toolActivity({ timestamp: at(11) })), 5_000);
+  assert.equal(rowDurationMs(toolActivity({ timestamp: "not a timestamp" }), undefined), undefined);
 });
 
 test("formatTime follows the zone Intl resolves at call time", () => {

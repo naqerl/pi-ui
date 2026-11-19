@@ -1,4 +1,5 @@
 import {
+  Fragment,
   lazy,
   memo,
   type ReactNode,
@@ -80,8 +81,9 @@ import {
   type TimelineGroup,
 } from "./timeline-groups";
 import type { SendOutcome, TimelineItem } from "./use-chat";
+import { type DockPhase, useDockScan } from "./use-dock-scan";
 import { usePager } from "./use-pager";
-import { usePresence } from "./use-presence";
+import { type PresenceState, usePresence, useReducedMotion } from "./use-presence";
 import { useStickToBottom } from "./use-stick-to-bottom";
 import { WorkingIndicator } from "./WorkingIndicator";
 import { workingWord } from "./working-state";
@@ -146,6 +148,8 @@ const CHAT_PAGE = 1;
 const TASKS_PAGE = 2;
 // The pager slides for 300ms; the composer body's height settles sooner.
 const PAGE_SETTLE_MS = 320;
+// A fast snapshot should never flash a loading card; a slow one gets an honest placeholder.
+const TRANSCRIPT_LOADING_DELAY_MS = 180;
 
 function pageFromLocation(): number {
   // A task-plan push opens the tasks page and the detail itself; the hash route
@@ -205,6 +209,45 @@ function activityRunFromLocation(): string | null | undefined {
   const path = window.location.pathname.replace(/\/+$/, "");
   if (path !== "/activity") return undefined;
   return new URLSearchParams(window.location.search).get("run");
+}
+
+/** True only after `active` has stayed on for `delayMs`, so a quick load never flashes. */
+function useDelayedFlag(active: boolean, delayMs: number): boolean {
+  const [shown, setShown] = useState(false);
+
+  useEffect(() => {
+    if (!active) {
+      setShown(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setShown(true), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [active, delayMs]);
+
+  return active && shown;
+}
+
+/**
+ * The transcript's placeholder while the first snapshot is in flight. It fills the reading
+ * area so hydration replaces it in place instead of letting the composer move, and it is
+ * only mounted when the transcript has no live rows of its own.
+ */
+function TranscriptLoadingCard() {
+  return (
+    <div
+      data-testid="chat-loading"
+      role="status"
+      aria-live="polite"
+      className="theme-radius flex min-h-40 flex-1 flex-col justify-center gap-xl border border-border bg-surface/90 px-2xl py-2xl shadow-sm backdrop-blur-md"
+    >
+      <span className="font-mono text-xs text-muted-foreground">Loading…</span>
+      <div aria-hidden="true" className="flex flex-col gap-lg">
+        <span className="h-2.5 w-2/3 animate-pulse rounded-sm bg-muted motion-reduce:animate-none" />
+        <span className="h-2.5 w-5/6 animate-pulse rounded-sm bg-muted [animation-delay:120ms] motion-reduce:animate-none" />
+        <span className="h-2.5 w-1/2 animate-pulse rounded-sm bg-muted [animation-delay:240ms] motion-reduce:animate-none" />
+      </div>
+    </div>
+  );
 }
 
 function MessageTime({ timestamp }: { timestamp: string }) {
@@ -304,49 +347,6 @@ function VersionUpdateCard({ message }: { message: ChatMessage }) {
   );
 }
 
-/** The operator's choices for a task-agent question set, rendered as readable rows. */
-function QuestionAnswersCard({ message }: { message: ChatMessage }) {
-  const block = message.questionAnswers;
-  if (block === undefined) return null;
-  return (
-    <div
-      data-message-id={message.id}
-      data-role={message.role}
-      data-testid="task-question-answers"
-      data-set-id={block.setId}
-      className="theme-radius w-full max-w-[92%] self-center border border-border/70 bg-surface p-xl text-sm leading-relaxed text-foreground"
-    >
-      <div className="mb-lg font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-        Operator answers
-      </div>
-      <ul className="flex flex-col gap-lg">
-        {block.answers.map((answer) => (
-          <li key={answer.id} data-question-id={answer.id} className="min-w-0">
-            <p className="min-w-0 [overflow-wrap:anywhere]">{answer.prompt}</p>
-            {answer.labels.length > 0 && (
-              <div className="mt-sm flex flex-wrap gap-md">
-                {answer.labels.map((label) => (
-                  <span
-                    key={label}
-                    className="theme-radius border border-border/70 bg-background px-lg py-xs font-mono text-[11px] leading-5 text-foreground"
-                  >
-                    {label}
-                  </span>
-                ))}
-              </div>
-            )}
-            {answer.text.length > 0 && (
-              <p className="mt-sm whitespace-pre-wrap border-l-2 border-border/70 pl-lg text-muted-foreground [overflow-wrap:anywhere]">
-                {answer.text}
-              </p>
-            )}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 /** An assistant reply: its full Markdown, rendered the same way at any length. */
 function AssistantReply({ message }: { message: ChatMessage }) {
   return (
@@ -439,7 +439,7 @@ export function MessageBubble({
         data-role={message.role}
         data-kind="session-reset"
         data-testid="session-reset"
-        className="theme-radius mx-auto w-fit min-w-0 max-w-[92%] border border-foreground/10 bg-surface/90 px-xl py-sm text-center font-mono text-[11px] leading-5 text-muted-foreground backdrop-blur-md [overflow-wrap:anywhere]"
+        className="theme-radius mx-auto w-fit min-w-0 max-w-[92%] border border-foreground/10 bg-surface/90 px-xl py-sm text-center font-mono text-[11px] leading-5 text-muted-foreground [overflow-wrap:anywhere]"
       >
         {message.text}
       </div>
@@ -458,16 +458,13 @@ export function MessageBubble({
     return <NoticeLine message={message} notice={message.notice} onSteer={onSteer} />;
   }
   if (message.role === "system") {
-    if (message.questionAnswers !== undefined) {
-      return <QuestionAnswersCard message={message} />;
-    }
     if (message.repair !== undefined) {
       return (
         <div
           data-message-id={message.id}
           data-role={message.role}
           data-testid="durable-repair"
-          className="theme-radius mx-auto w-fit min-w-0 max-w-[92%] border border-foreground/10 bg-surface/90 px-xl py-sm text-center font-mono text-[11px] leading-5 text-muted-foreground backdrop-blur-md [overflow-wrap:anywhere]"
+          className="theme-radius mx-auto w-fit min-w-0 max-w-[92%] border border-foreground/10 bg-surface/90 px-xl py-sm text-center font-mono text-[11px] leading-5 text-muted-foreground [overflow-wrap:anywhere]"
         >
           {message.text}
         </div>
@@ -495,7 +492,7 @@ export function MessageBubble({
       data-pending-send={message.pendingSend ? "true" : undefined}
       data-steer-error={message.steerError === undefined ? undefined : "true"}
       className={cn(
-        "theme-radius w-fit min-w-0 max-w-[85%] bg-surface px-xl py-lg text-sm leading-relaxed [overflow-wrap:anywhere]",
+        "theme-radius isolate w-fit min-w-0 max-w-[85%] bg-surface px-xl py-lg text-sm leading-relaxed [overflow-wrap:anywhere]",
         mine ? "ml-auto" : "mr-auto",
         framed && "border",
         mine && "border-foreground/15",
@@ -660,7 +657,7 @@ function MemoryActivityChip({ items }: { items: ActivityItem[] }) {
         <div
           id={detailsId}
           data-testid="memory-search-details"
-          className="theme-radius w-fit max-w-full border border-foreground/10 bg-surface/90 px-xl py-lg font-mono text-[11px] leading-5 text-muted-foreground shadow-sm backdrop-blur-md"
+          className="theme-radius w-fit max-w-full border border-foreground/10 bg-surface/90 px-xl py-lg font-mono text-[11px] leading-5 text-muted-foreground shadow-sm"
         >
           {view.paths.length > 0 && (
             <ul className="m-0 flex list-none flex-col gap-sm p-0">
@@ -742,33 +739,39 @@ function ActivityGroup({
         aria-haspopup="dialog"
         data-testid="run-info"
         aria-label={`Run activity: ${parts.join(", ")}`}
-        className="theme-radius flex min-h-9 w-fit min-w-0 max-w-full items-start gap-lg border border-border/70 bg-surface px-xl py-lg text-left font-mono text-xs leading-5 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40 sm:min-h-0 sm:py-md"
+        className={cn(
+          "theme-radius inline-flex w-fit min-w-0 max-w-full self-start flex-wrap items-center gap-lg border border-border/70 bg-surface px-xl py-md text-left font-mono text-xs leading-5 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
+          "min-h-11 sm:min-h-0",
+        )}
       >
-        {/* The 12px text's cap-height centre sits 1.5px below the SVG box centre. */}
-        <ChevronIcon size={14} className="shrink-0 translate-y-[1.5px]" />
+        <ChevronIcon size={14} className="shrink-0" />
         {/* Each piece stays whole and the line wraps between pieces on a narrow screen. */}
-        <span data-testid="run-info-summary" className="flex min-w-0 flex-wrap gap-x-md">
+        <span data-testid="run-info-summary" className="min-w-0">
           {parts.map((part, index) => (
-            <span key={part} className="whitespace-nowrap">
-              {index > 0 && (
-                <span aria-hidden="true" className="mr-md text-muted-foreground/60">
-                  ·
-                </span>
-              )}
-              {part}
-            </span>
+            <Fragment key={part}>
+              {index > 0 && " "}
+              <span className="whitespace-nowrap">
+                {index > 0 && (
+                  <span aria-hidden="true" className="mr-md text-muted-foreground/60">
+                    ·
+                  </span>
+                )}
+                {part}
+              </span>
+            </Fragment>
           ))}
         </span>
       </button>
     );
-  if (memory.length === 0 || memoryView === null) return runInfo;
+  const memoryVisible = memory.length > 0 && memoryView !== null;
+  if (runInfo === null && !memoryVisible) return null;
   return (
     <div
       data-testid="activity-group"
-      className="flex min-w-0 max-w-full flex-col items-start gap-sm"
+      className="isolate flex min-w-0 max-w-full flex-col items-start gap-sm"
     >
       {runInfo}
-      <MemoryActivityChip items={memory} />
+      {memoryVisible && <MemoryActivityChip items={memory} />}
     </div>
   );
 }
@@ -781,32 +784,85 @@ const BACKLOG_LONG_PRESS_MS = 500;
 /** Matches `.bg-jobs-counts`: the one duration every dock swap uses. */
 const DOCK_EXIT_MS = 160;
 
+/** The old nodes must disappear in the swap frame, not linger through the enter. */
+function dockPhaseExitMs(phase: DockPhase): number {
+  return phase === "enter" ? 0 : DOCK_EXIT_MS;
+}
+
+function dockOrderClass(order: number): string | undefined {
+  return order === 0 ? undefined : `dock-order-${order}`;
+}
+
+function dockPhaseAttr(phase: DockPhase): "exit" | "enter" | undefined {
+  return phase === "settled" ? undefined : phase;
+}
+
+/**
+ * A node that took part in a sweep has already been painted by its outer
+ * animation. Applying the settled text animation afterwards would fade it a
+ * second time, so suppress it until the keyed child's identity changes again
+ * outside a sweep. `identity` must describe that child, not just its surface:
+ * the status word swaps between a running and an idle element on the same
+ * surface, and each of those remounts owns the settled 160 ms fade.
+ */
+function useDockTextIn(swap: boolean, identity: unknown): boolean {
+  const previous = useRef(identity);
+  const fresh = useRef(swap);
+  if (previous.current !== identity) {
+    previous.current = identity;
+    fresh.current = swap;
+  }
+  if (!swap) fresh.current = false;
+  return swap && fresh.current;
+}
+
+/** The enter leg mounts the incoming view in the swap frame, not in an effect. */
+function dockScanPresence(
+  presence: PresenceState,
+  phase: DockPhase,
+  present: boolean,
+): PresenceState {
+  return phase === "enter" ? { mounted: present, open: present } : presence;
+}
+
 function PlanTaskSwitch({
   present,
+  phase,
+  order,
   swap,
   pressed,
   onToggle,
 }: {
   present: boolean;
+  phase: DockPhase;
+  order: number;
   swap: boolean;
   pressed: boolean;
   onToggle: () => void;
 }) {
-  const presence = usePresence(present, swap ? DOCK_EXIT_MS : 0);
+  const presence = dockScanPresence(usePresence(present, dockPhaseExitMs(phase)), phase, present);
+  const textIn = useDockTextIn(swap, presence.mounted);
+  // The exit keeps data-open for the sweep, but the leaving control is already
+  // gone from the accessibility tree and cannot take focus or a pointer.
+  const interactive = presence.open && phase !== "exit";
   if (!presence.mounted) return null;
   return (
     <button
       type="button"
       data-testid="plan-task-toggle"
       data-open={presence.open ? "true" : "false"}
+      data-dock-phase={dockPhaseAttr(phase)}
       aria-pressed={pressed}
-      aria-hidden={presence.open ? undefined : true}
-      inert={presence.open ? undefined : true}
-      tabIndex={presence.open ? 0 : -1}
+      aria-hidden={interactive ? undefined : true}
+      inert={interactive ? undefined : true}
+      tabIndex={interactive ? 0 : -1}
       title="Plan task"
       className={cn(
         "inline-flex shrink-0 cursor-pointer items-center gap-lg self-center rounded-none border-0 bg-transparent p-0 font-mono text-[11px] leading-4 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
-        swap && "dock-swap dock-text-in motion-reduce:transition-none",
+        "dock-swap motion-reduce:transition-none",
+        dockOrderClass(order),
+        textIn && "dock-text-in",
+        !interactive && "pointer-events-none",
       )}
       onPointerDown={(event) => {
         // Keep the composer focused so a phone's keyboard stays open.
@@ -845,6 +901,8 @@ function DockStatusWord({
   running,
   quiet = false,
   surface,
+  phase,
+  order,
   swap,
 }: {
   word: string | null;
@@ -852,19 +910,42 @@ function DockStatusWord({
   /** The plan run has sent no frame within the retry budget: keep the word, stop the clock. */
   quiet?: boolean;
   surface: string;
+  phase: DockPhase;
+  order: number;
   swap: boolean;
 }) {
-  const presence = usePresence(word !== null, swap ? DOCK_EXIT_MS : 0);
+  const present = word !== null;
+  const presence = dockScanPresence(usePresence(present, dockPhaseExitMs(phase)), phase, present);
   const last = useRef<{ word: string; running: boolean; surface: string } | null>(
     word === null ? null : { word, running, surface },
   );
   if (word !== null) last.current = { word, running, surface };
   const shown = word === null ? last.current : { word, running, surface };
-  const leaving = !presence.open;
-  const swapClass = swap && "dock-swap dock-text-in";
+  // The keyed child changes branch (and remounts) when the run starts or stops,
+  // even though the surface key stays the same.
+  const textIdentity =
+    shown === null
+      ? null
+      : `${shown.surface}:${shown.running ? "running" : "word"}:${presence.mounted}`;
+  const textIn = useDockTextIn(swap, textIdentity);
+  // A phased exit is leaving even though the frozen view still reports open.
+  const leaving = !presence.open || phase === "exit";
+  const textClass = textIn && "dock-text-in";
 
   return (
-    <div aria-live="polite" className="min-w-0 truncate">
+    <div
+      aria-live="polite"
+      data-open={presence.open ? "true" : "false"}
+      data-dock-phase={dockPhaseAttr(phase)}
+      aria-hidden={leaving ? true : undefined}
+      inert={leaving ? true : undefined}
+      tabIndex={leaving ? -1 : undefined}
+      className={cn(
+        "dock-swap min-w-0 truncate motion-reduce:transition-none",
+        dockOrderClass(order),
+        leaving && "pointer-events-none",
+      )}
+    >
       {presence.mounted &&
         shown !== null &&
         (shown.running ? (
@@ -874,7 +955,7 @@ function DockStatusWord({
             aria-hidden={leaving ? true : undefined}
             inert={leaving ? true : undefined}
             tabIndex={leaving ? -1 : undefined}
-            className={cn("flex min-w-0", swapClass)}
+            className={cn("flex min-w-0", textClass)}
           >
             <WorkingIndicator running={!quiet} word={shown.word} />
           </div>
@@ -885,7 +966,7 @@ function DockStatusWord({
             aria-hidden={leaving ? true : undefined}
             inert={leaving ? true : undefined}
             tabIndex={leaving ? -1 : undefined}
-            className={cn("block min-w-0 truncate", swapClass)}
+            className={cn("block min-w-0 truncate", textClass)}
           >
             {shown.word}
           </span>
@@ -897,46 +978,38 @@ function DockStatusWord({
 /** One grid cell, two children: the arriving and the leaving action share a box. */
 function DockAction({
   present,
+  phase,
+  order,
   swap,
   children,
 }: {
   present: boolean;
+  phase: DockPhase;
+  order: number;
   swap: boolean;
   children: ReactNode;
 }) {
-  const presence = usePresence(present, swap ? DOCK_EXIT_MS : 0);
+  const presence = dockScanPresence(usePresence(present, dockPhaseExitMs(phase)), phase, present);
+  const textIn = useDockTextIn(swap, presence.mounted);
+  const interactive = presence.open && phase !== "exit";
   if (!presence.mounted) return null;
   return (
     <div
       data-open={presence.open ? "true" : "false"}
-      aria-hidden={presence.open ? undefined : true}
-      inert={presence.open ? undefined : true}
-      tabIndex={presence.open ? undefined : -1}
+      data-dock-phase={dockPhaseAttr(phase)}
+      aria-hidden={interactive ? undefined : true}
+      inert={interactive ? undefined : true}
+      tabIndex={interactive ? undefined : -1}
       className={cn(
-        "h-9 w-full",
-        swap && "dock-swap dock-text-in",
-        !presence.open && "pointer-events-none",
+        "dock-swap h-9 w-full motion-reduce:transition-none",
+        dockOrderClass(order),
+        textIn && "dock-text-in",
+        !interactive && "pointer-events-none",
       )}
     >
       {children}
     </div>
   );
-}
-
-/**
- * A collapse owns the movement on both ends, so the per-node swaps stay quiet
- * for that crossing. Clearing only on the next surface change matters: a
- * passive effect would let a later pre-paint render start a second animation
- * while the 220 ms composer expansion is still running.
- */
-function useDockSwap(hidden: boolean, surface: string): boolean {
-  const [state, setState] = useState({ surface, hidden, suppressed: hidden });
-  const changed = state.surface !== surface || state.hidden !== hidden;
-  if (changed) {
-    setState({ surface, hidden, suppressed: hidden || state.hidden });
-  }
-  const suppressed = changed ? hidden || state.hidden : state.suppressed;
-  return !hidden && !suppressed;
 }
 /** Space above the first message and below the last, on every viewport. */
 const TRANSCRIPT_END_GAP = 16;
@@ -1187,6 +1260,7 @@ export function Composer({
   clearDraft,
   planDraft = false,
   dockSwap = true,
+  dockPhase = "settled",
 }: {
   tasksPage: boolean;
   /** When set, @project suggestions work even if this is not the create-task composer. */
@@ -1217,8 +1291,10 @@ export function Composer({
   draftKey?: string;
   /** The status line's plan-draft toggle was left on for this session. */
   planDraft?: boolean;
-  /** A collapsed dock owns the movement, so its action slot must not fade twice. */
+  /** The settled text animation still applies to a lane changing outside a sweep. */
   dockSwap?: boolean;
+  /** The top-line sweep phase; the action lanes share the cell's third slot. */
+  dockPhase?: DockPhase;
   /** A successful Retry consumes the exact draft that was restored for its failed row. */
   clearDraft?: {
     key: string;
@@ -1625,7 +1701,7 @@ export function Composer({
           }}
         />
         <div className="dock-stack h-9 w-9 shrink-0 items-stretch">
-          <DockAction present={tasksPage} swap={dockSwap}>
+          <DockAction present={tasksPage} phase={dockPhase} order={3} swap={dockSwap}>
             <Button
               type="submit"
               variant="ghost"
@@ -1659,6 +1735,8 @@ export function Composer({
           </DockAction>
           <DockAction
             present={!tasksPage && running && !hasText && attachments.items.length === 0}
+            phase={dockPhase}
+            order={3}
             swap={dockSwap}
           >
             <Button
@@ -1678,6 +1756,8 @@ export function Composer({
           </DockAction>
           <DockAction
             present={!tasksPage && running && (hasText || attachments.items.length > 0)}
+            phase={dockPhase}
+            order={3}
             swap={dockSwap}
           >
             <Button
@@ -1693,7 +1773,7 @@ export function Composer({
               <SendIcon />
             </Button>
           </DockAction>
-          <DockAction present={!tasksPage && !running} swap={dockSwap}>
+          <DockAction present={!tasksPage && !running} phase={dockPhase} order={3} swap={dockSwap}>
             <Button
               type="submit"
               variant="ghost"
@@ -1865,6 +1945,7 @@ export function ChatView({
   const [activityJobId, setActivityJobId] = useState<string | null>(null);
   const activityTriggerRef = useRef<HTMLButtonElement | null>(null);
   const tasksPage = pager.page === TASKS_PAGE;
+  const chatPage = pager.page === CHAT_PAGE;
   // An error belongs to the page it was raised on.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on page change only
   useEffect(() => setComposerError(null), [pager.page]);
@@ -1885,16 +1966,29 @@ export function ChatView({
   const dockToTask = wantTaskDock && taskDock !== null;
   const hideTasksComposer = statsPage || (tasksPage && composerMode === "collapsed");
   const showPlanToggle = tasksPage && !wantTaskDock && !hideTasksComposer;
-  // Collapsed is not a surface: its 220 ms height/opacity owns that change, so
-  // the individual swaps stay out of the way on either side of it.
   const dockSurface = tasksPage ? (wantTaskDock ? "dock" : "create") : "chat";
-  const dockSwap = useDockSwap(hideTasksComposer, dockSurface);
   // Each surface speaks for itself: the open task's plan run on the tasks page,
   // the main conversation's run everywhere else. No task open means an empty slot.
   const chatStatusWord = running ? workingWord(thinking) : ready ? "idle" : "connecting";
   const statusWord = tasksPage ? (taskSurfaceStatus?.word ?? null) : chatStatusWord;
   const statusRunning = tasksPage ? statusWord === "planning" : running;
   const statusQuiet = tasksPage ? taskSurfaceStatus?.quiet === true : quiet;
+  // The top line sweeps as one unit: freeze the old identities, swap while every
+  // node is transparent, then enter from the final x. The composer stays live.
+  const reducedMotion = useReducedMotion();
+  const dockScan = useDockScan(
+    {
+      surface: dockSurface,
+      plan: showPlanToggle,
+      word: statusWord,
+      running: statusRunning,
+      quiet: statusQuiet,
+      jobs: chatPage,
+      hidden: hideTasksComposer,
+    },
+    !reducedMotion,
+  );
+  const dockSwap = dockScan.phase === "settled" && !reducedMotion;
   // One header, fed by the active surface: the open task's plan run on the tasks
   // page when it has one, the main conversation everywhere else (and as the
   // fallback, so a chat failure stays visible while a task is open).
@@ -2027,6 +2121,9 @@ export function ChatView({
       }),
     [timeline],
   );
+  // Hydration owns an empty, idle transcript; a live turn (with or without rows) takes priority.
+  const hydrating = !ready && !running && groups.length === 0;
+  const showTranscriptLoading = useDelayedFlag(hydrating, TRANSCRIPT_LOADING_DELAY_MS);
   const footerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -2043,7 +2140,6 @@ export function ChatView({
   // A page switch is a navigation, not a content change. Hold the reader's position on
   // the way out and put it back before paint, so an off-screen dock resize cannot shift
   // the transcript. The first mount and a drag that snaps back stay untouched.
-  const chatPage = pager.page === CHAT_PAGE;
   const wasChatPage = useRef(chatPage);
   useLayoutEffect(() => {
     if (wasChatPage.current === chatPage) return;
@@ -2376,13 +2472,17 @@ export function ChatView({
                 <div
                   ref={stick.contentRef}
                   data-testid="chat-content"
-                  className="mx-auto flex w-full max-w-[72ch] flex-col gap-2xl px-2xl"
+                  data-hydrating={hydrating ? "true" : undefined}
+                  className={cn(
+                    "mx-auto flex w-full max-w-[72ch] flex-col gap-2xl px-2xl",
+                    hydrating && "min-h-full",
+                  )}
                   style={{
                     paddingTop: TRANSCRIPT_END_GAP,
                     paddingBottom: TRANSCRIPT_END_GAP,
                   }}
                 >
-                  {!ready && (
+                  {!ready && !showTranscriptLoading && (
                     <p
                       data-testid="chat-loading"
                       className="theme-radius w-fit self-center border border-border bg-surface/90 px-xl py-md font-mono text-xs text-muted-foreground shadow-sm backdrop-blur-md"
@@ -2390,6 +2490,7 @@ export function ChatView({
                       Loading…
                     </p>
                   )}
+                  {showTranscriptLoading && <TranscriptLoadingCard />}
                   {history?.hasEarlier === true && (
                     <EarlierMessages
                       history={history}
@@ -2466,23 +2567,29 @@ export function ChatView({
               className="flex min-w-0 flex-1 items-baseline gap-lg font-mono text-[11px] leading-4 text-muted-foreground"
             >
               <PlanTaskSwitch
-                present={showPlanToggle}
+                present={dockScan.view.plan}
+                phase={dockScan.phase}
+                order={0}
                 swap={dockSwap}
                 pressed={planDraft}
                 onToggle={togglePlanDraft}
+              />
+              <DockStatusWord
+                word={dockScan.view.word}
+                running={dockScan.view.running}
+                quiet={dockScan.view.quiet}
+                surface={dockScan.view.surface}
+                phase={dockScan.phase}
+                order={1}
+                swap={dockSwap}
               />
               <BackgroundJobsCounts
                 jobs={jobs}
                 delegates={delegates ?? []}
                 onOpen={setJobsSheet}
-                visible={chatPage}
-              />
-              <DockStatusWord
-                word={statusWord}
-                running={statusRunning}
-                quiet={statusQuiet}
-                surface={dockSurface}
-                swap={dockSwap}
+                visible={dockScan.view.jobs}
+                phase={dockScan.phase}
+                order={2}
               />
             </div>
             <div
@@ -2525,6 +2632,7 @@ export function ChatView({
           >
             <Composer
               dockSwap={dockSwap}
+              dockPhase={dockScan.phase}
               draftKey={
                 wantTaskDock
                   ? taskDock !== null

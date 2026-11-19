@@ -1,4 +1,4 @@
-import type { TaskLedger, TaskStatus } from "../shared/types";
+import type { TaskLedger, TaskQuestionAnswer, TaskStatus } from "../shared/types";
 
 const FALLBACK_ERROR = "Could not update tasks";
 
@@ -76,4 +76,39 @@ export function updateTask(
 
 export function removeTask(id: string): Promise<TaskOutcome> {
   return requestTask(`/api/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+async function requestQuestionLedger(url: string, body: object): Promise<TaskOutcome> {
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) return { ok: false, error: failureText(await response.text()) };
+    const payload = (await response.json()) as { ledger?: TaskLedger };
+    if (payload.ledger === undefined) return { ok: false, error: FALLBACK_ERROR };
+    return { ok: true, ledger: payload.ledger };
+  } catch {
+    return { ok: false, error: FALLBACK_ERROR };
+  }
+}
+
+/** Send the operator's answers; the server returns the ledger with `questions` cleared. */
+export function answerTaskQuestions(
+  taskId: string,
+  setId: string,
+  answers: TaskQuestionAnswer[],
+): Promise<TaskOutcome> {
+  return requestQuestionLedger(`/api/tasks/${encodeURIComponent(taskId)}/questions/answer`, {
+    setId,
+    answers,
+  });
+}
+
+/** Ask the agent to decide a pending set itself. */
+export function dismissTaskQuestions(taskId: string, setId: string): Promise<TaskOutcome> {
+  return requestQuestionLedger(`/api/tasks/${encodeURIComponent(taskId)}/questions/dismiss`, {
+    setId,
+  });
 }
