@@ -13,7 +13,6 @@ import type {
   ToolActivity,
 } from "../shared/types";
 
-/** The optimistic copy of a send that is still waiting for the server to confirm it. */
 export interface OptimisticSend {
   key: string;
   text: string;
@@ -26,12 +25,6 @@ export type TimelineItem =
   | { kind: "message"; order: number; message: ChatMessage }
   | { kind: "activity"; order: number; activity: ActivityItem };
 
-/**
- * The highest order a persisted row already occupies. Drafts, live tools, pending queue items,
- * optimistic sends and optimistic or pending activity rows are not settled; notice and job extras
- * carry their own orders but do not anchor a dropped steer. A failed steer freezes just past this
- * so later entries sort below it.
- */
 export function lastSettledOrder(
   messages: readonly ChatMessage[],
   activity: readonly ActivityItem[],
@@ -49,7 +42,6 @@ export function lastSettledOrder(
     order = Math.max(order, message.order);
   }
   for (const item of activity) {
-    // A live tool or an optimistic task row paints ahead of the transcript but is not settled.
     if (item.kind === "job" || item.pending === true) continue;
     if (item.kind === "tool" && item.optimistic === true) continue;
     order = Math.max(order, item.order);
@@ -57,7 +49,6 @@ export function lastSettledOrder(
   return order;
 }
 
-/** The id a pending send already has, matching the queued item the server will confirm. */
 export function optimisticId(item: OptimisticSend): string {
   return item.mode === "steer" ? `steer-pending-${item.key}` : `m-${item.key}`;
 }
@@ -85,7 +76,6 @@ export function optimisticMessage(item: OptimisticSend): ChatMessage {
   };
 }
 
-/** A confirmed message retires the optimistic copy it replaces by the id/key it shares. */
 export function confirmedOptimistic(item: OptimisticSend, message: ChatMessage): boolean {
   if (message.role !== "user") return false;
   if (message.id === optimisticId(item)) return true;
@@ -98,18 +88,13 @@ export interface ChatTimelineInput {
   liveTools: readonly ToolActivity[];
   draftText: string;
   draftThinking: string;
-  /** When the current thinking draft started; a stable timestamp keeps its row from remounting. */
+
   draftThinkingAt: string | null;
   steers: readonly PendingSteer[];
   queue: readonly QueuedMessage[];
   optimistic: readonly OptimisticSend[];
 }
 
-/**
- * The one transcript model both conversations render. The plan chat and the main chat
- * feed their own state in here and get the same row kinds for the same entries; only
- * the tool set and system prompt differ on the server.
- */
 export function buildChatTimeline(input: ChatTimelineInput): TimelineItem[] {
   const persistedActivityIds = new Set(input.activity.map((item) => item.id));
   const items: TimelineItem[] = [
@@ -162,8 +147,6 @@ export function buildChatTimeline(input: ChatTimelineInput): TimelineItem[] {
     });
   }
 
-  // Steers the run has not reached go below everything it is still doing; once delivered, the
-  // snapshot has them where they entered the conversation.
   for (const steer of input.steers) {
     const message =
       steer.dropped === undefined
@@ -172,11 +155,8 @@ export function buildChatTimeline(input: ChatTimelineInput): TimelineItem[] {
     items.push({ kind: "message", order: message.order, message });
   }
 
-  // Follow-ups wait for the whole turn, so they sit below the live draft and pending steers.
-  // A placed message already in `messages` owns the id; only its pending copy is dropped.
   const heldIds = new Set(input.messages.map((message) => message.id));
-  // Drop any queued copy already placed before grouping, so a burst whose first
-  // notice just landed does not hide the notices still waiting behind it.
+
   const pending = input.queue.filter(
     (item) => item.hidden !== true && !heldIds.has(queuedMessageId(item)),
   );
@@ -185,8 +165,6 @@ export function buildChatTimeline(input: ChatTimelineInput): TimelineItem[] {
     items.push({ kind: "message", order: message.order, message });
   }
 
-  // A send paints here before the request leaves. Once the server's queue or a placed
-  // message carries the same id/key, the optimistic copy is skipped instead of doubled.
   const queuedIds = new Set(input.queue.map(queuedMessageId));
   const pendingSteerKeys = new Set(
     input.steers.flatMap((steer) => (steer.key === undefined ? [] : [steer.key])),

@@ -72,7 +72,6 @@ const EMPTY_EVENTS: McpEventsState = {
   revision: 0,
 };
 
-/** A send that failed for a reason worth showing carries it in `error`. */
 export type SendOutcome = { ok: true } | { ok: false; error: string | null };
 
 function parseEvent<T>(event: MessageEvent<string>): T | null {
@@ -83,10 +82,6 @@ function parseEvent<T>(event: MessageEvent<string>): T | null {
   }
 }
 
-/**
- * Job results belong on the activity page. Older servers still send them as user messages, so
- * move those out of the chat before the transcript reaches the view.
- */
 function separateJobResults(messages: ChatMessage[]): {
   messages: ChatMessage[];
   activity: ActivityItem[];
@@ -116,7 +111,6 @@ function addJobActivity(current: ActivityItem[], extra: ActivityItem[]): Activit
   return [...current, ...extra.filter((item) => !held.has(item.id))];
 }
 
-/** A client key lets the optimistically painted bubble keep its id once the server confirms. */
 function newClientKey(): string {
   const cryptoApi = globalThis.crypto;
   if (typeof cryptoApi?.randomUUID === "function") return cryptoApi.randomUUID();
@@ -127,43 +121,32 @@ function markSendTiming(name: string, mode: MessageMode): void {
   try {
     performance.mark(name, { detail: { mode } });
   } catch {
-    // Older browsers without custom mark details still get the plain mark.
     try {
       performance.mark(name);
-    } catch {
-      // Timing is a diagnostic; a failure must never affect sending.
-    }
+    } catch {}
   }
 }
 
 function measureSendTiming(name: string, start: string, end: string): void {
   try {
     performance.measure(name, start, end);
-  } catch {
-    // The marks can be cleared by a devtools session; a missing measure is harmless.
-  }
+  } catch {}
 }
 
-/** The id a pending send already has, matching the queued item the server will confirm. */
-
-/** Messages fetched per scroll-up page. */
 const HISTORY_PAGE = 30;
-/** A failed state fetch retries from here, doubling up to the cap. */
+
 const RETRY_MIN_MS = 1_000;
 const RETRY_MAX_MS = 30_000;
 
-/** The same transcript row can arrive as a provisional copy before its entry is placed. */
 function sameMessage(left: ChatMessage, right: ChatMessage): boolean {
   return left.id === right.id || (left.steerKey !== undefined && left.steerKey === right.steerKey);
 }
 
-/** Adds an older page in front of what is held, skipping anything already there. */
 function prependPage<T extends { id: string }>(current: T[], page: T[]): T[] {
   const held = new Set(current.map((item) => item.id));
   return [...page.filter((item) => !held.has(item.id)), ...current];
 }
 
-/** True when a snapshot reset is newer than the one this page already applied. */
 function newerReset(next: string | undefined, current: string | null): boolean {
   if (next === undefined) return false;
   if (current === null) return true;
@@ -173,7 +156,6 @@ function newerReset(next: string | undefined, current: string | null): boolean {
   return !Number.isFinite(currentAt) || nextAt > currentAt;
 }
 
-/** A snapshot read, with the service worker's stale-cache marker kept out of the data. */
 export interface SnapshotRead {
   snapshot: Snapshot;
   stale: boolean;
@@ -189,11 +171,6 @@ export interface QueueMutation {
   queueRevision?: number;
 }
 
-/**
- * Where a conversation lives. The main chat and the plan chat speak different HTTP routes
- * but share every piece of client behaviour above this seam: transcript, scroll, queue,
- * steer revisions, optimistic rows, run status and the stream reducer.
- */
 export interface ChatTransport {
   readSnapshot(from: number | null): Promise<SnapshotRead | null>;
   readHistory(before: number, limit: number): Promise<TranscriptHistory | null>;
@@ -303,9 +280,7 @@ const MAIN_CHAT_TRANSPORT: ChatTransport = {
   async stop() {
     try {
       await fetch("/api/stop", { method: "POST" });
-    } catch {
-      // Ignore; the run state event is authoritative.
-    }
+    } catch {}
   },
   async dismissRunError(id) {
     await fetch("/api/run/error/dismiss", {
@@ -320,18 +295,14 @@ const MAIN_CHAT_TRANSPORT: ChatTransport = {
 };
 
 export interface UseChatOptions {
-  /** Load the whole transcript at once (activity and events pages). */
   fullHistory?: boolean;
-  /** Required for any conversation other than the main chat. */
+
   transport?: ChatTransport;
-  /** Observe each snapshot; the plan chat reads its pending question set from here. */
+
   onSnapshot?: (snapshot: Snapshot) => void;
-  /** A pushed question set; the plan chat replaces its pending panel without a snapshot. */
+
   onQuestions?: (questions: StreamQuestions["questions"]) => void;
-  /**
-   * Forward liveness to the plan shim. Only the main stream sets this: a plan chat
-   * re-emitting a heartbeat would make its own strip look alive after the relay died.
-   */
+
   publishLiveness?: boolean;
 }
 
@@ -367,7 +338,7 @@ export function useChat(options: UseChatOptions = {}) {
   );
 
   const [runState, setRunState] = useState<RunState>("idle");
-  /** The retry budget is the server's: it reports it on every liveness frame. */
+
   const quietAfter = useRef(150_000);
   const activityAt = useRef(Date.now());
   const [quiet, setQuiet] = useState(false);
@@ -376,15 +347,15 @@ export function useChat(options: UseChatOptions = {}) {
     setQuiet(false);
   }, []);
   const [runError, setRunError] = useState<RunError | null>(null);
-  /** Transport loss is shown by the same header, but never used to guess idle. */
+
   const [connectionError, setConnectionError] = useState<RunError | null>(null);
   const [dismissedErrors, setDismissedErrors] = useState<ReadonlySet<string>>(() => new Set());
   const [delegates, setDelegates] = useState<DelegateRunView[]>([]);
   const [jobs, setJobs] = useState<BuiltinJob[]>([]);
   const [queue, setQueue] = useState<QueuedMessage[]>([]);
-  /** Newest queue/steer revision applied; a snapshot below it is stale for those lists. */
+
   const queueRevision = useRef(0);
-  /** The newest reset this page applied, and the order below which rows must not survive. */
+
   const resetAt = useRef<string | null>(null);
   const resetOrder = useRef<number | null>(null);
   const [mcp, setMcp] = useState<McpStatus>({ servers: [], unavailable: [] });
@@ -392,12 +363,12 @@ export function useChat(options: UseChatOptions = {}) {
   const [context, setContext] = useState<ContextUsage | null>(null);
   const [mcpEvents, setMcpEvents] = useState<McpEventsState>(EMPTY_EVENTS);
   const [steers, setSteers] = useState<PendingSteer[]>([]);
-  /** Sends painted before the server answers; each leaves on confirmation or failure. */
+
   const [optimistic, setOptimistic] = useState<OptimisticSend[]>([]);
   const [ready, setReady] = useState(false);
   const [hasEarlier, setHasEarlier] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
-  /** Lowest transcript order held; refreshes ask for everything from here up. */
+
   const windowFrom = useRef<number | null>(null);
   const hasEarlierRef = useRef(false);
   const conversationRef = useRef<string | null>(null);
@@ -411,18 +382,18 @@ export function useChat(options: UseChatOptions = {}) {
   const initialLedger = { tasks: [], revision: -1 } satisfies TaskLedger;
   const taskLedgerRef = useRef<TaskLedger>(initialLedger);
   const [taskLedger, setTaskLedger] = useState<TaskLedger>(initialLedger);
-  /** The current refresh function, so a retry timer never holds a stale closure. */
+
   const refreshRef = useRef<() => Promise<void>>(async () => undefined);
   const retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const retryDelay = useRef(RETRY_MIN_MS);
-  /** The highest settled order, and every order already occupied by a persisted row. */
+
   const settledOrderRef = useRef(0);
   const settledOrdersRef = useRef<ReadonlySet<number>>(new Set());
 
   const applyTasks = useCallback((ledger: TaskLedger) => {
     if (ledger.revision < taskRevision.current) return;
     taskRevision.current = ledger.revision;
-    // A snapshot that omits run activity must not take a Working badge back down.
+
     const previous = taskLedgerRef.current;
     const next: TaskLedger = {
       ...ledger,
@@ -470,7 +441,6 @@ export function useChat(options: UseChatOptions = {}) {
     retryDelay.current = RETRY_MIN_MS;
   }, []);
 
-  /** True when this queue/steer update is at least as new as the one already shown. */
   const acceptQueueRevision = useCallback((revision: number | undefined): boolean => {
     if (revision === undefined) return true;
     if (revision < queueRevision.current) return false;
@@ -478,10 +448,6 @@ export function useChat(options: UseChatOptions = {}) {
     return true;
   }, []);
 
-  /**
-   * One step past the last settled row, stepping over an extra row already at that order. Real
-   * entries are spaced 10_000 apart, so the result stays inside the gap before the next one.
-   */
   const nextDroppedOrder = useCallback((): number => {
     let order = settledOrderRef.current + 1;
     while (settledOrdersRef.current.has(order)) order += 1;
@@ -501,8 +467,7 @@ export function useChat(options: UseChatOptions = {}) {
       if (sequence !== refreshSequence.current) return;
       onSnapshotRef.current?.(snapshot);
       const snapshotFrom = snapshot.from ?? 0;
-      // The first snapshot may have been read before a send committed. Keep what
-      // the response or SSE already painted instead of taking it off screen.
+
       const firstSnapshot = conversationRef.current === null;
       const sameConversation = conversationRef.current === snapshot.conversationId;
       conversationRef.current = snapshot.conversationId;
@@ -520,8 +485,7 @@ export function useChat(options: UseChatOptions = {}) {
         resetAt.current = snapshot.resetAt ?? null;
         resetOrder.current = snapshotResetRow.order;
       }
-      // A tab that missed the live frame still has the old rows. The snapshot's resetAt
-      // says which reset it already knows; a newer one drops everything below its row.
+
       const floor = resetOrder.current;
       if (sameConversation || firstSnapshot) {
         setMessages((current) =>
@@ -545,7 +509,7 @@ export function useChat(options: UseChatOptions = {}) {
         setActivity(freshActivity);
       }
       const persistedActivityIds = new Set(snapshot.activity.map((item) => item.id));
-      // A restarted server counts from 1 again; its snapshot replaces our stale counter.
+
       if (snapshot.toolsRevision !== undefined) {
         toolsRevision.current = adoptSnapshotRevision(
           toolsRevision.current,
@@ -561,15 +525,13 @@ export function useChat(options: UseChatOptions = {}) {
       if (snapshot.runError !== undefined) setRunError(snapshot.runError);
       if (snapshot.delegates !== undefined) setDelegates(snapshot.delegates);
       if (snapshot.jobs !== undefined) setJobs(snapshot.jobs);
-      // A send response or live queue update can land after this snapshot was
-      // read. Its revision wins; otherwise the pending bubble would blink out.
+
       if (acceptQueueRevision(snapshot.queueRevision)) {
         setQueue(snapshot.queue);
         setSteers((current) =>
           rebuildSteersFromSnapshot(
             consumeSteersInMessages(current, snapshot.messages),
-            // A snapshot read before the placement can still list a steer whose row is
-            // already in `messages`; never paint the pending copy beside its delivered row.
+
             consumeSteersInMessages(snapshot.steers ?? [], snapshot.messages),
           ),
         );
@@ -581,12 +543,10 @@ export function useChat(options: UseChatOptions = {}) {
       if (snapshot.mcpEvents !== undefined) applyEvents(snapshot.mcpEvents);
       if (snapshot.tasks !== undefined) applyTasks(snapshot.tasks);
       setReady(true);
-      // A service worker may answer a failed request from its cache; keep what it showed,
-      // but ask the network again instead of treating the cached render as hydrated.
+
       if (read.stale) scheduleRetry();
       else clearRetry();
     } catch {
-      // Keep the state already on screen and try again rather than showing an empty chat.
       scheduleRetry();
     }
   }, [
@@ -609,7 +569,6 @@ export function useChat(options: UseChatOptions = {}) {
 
   refreshRef.current = refreshState;
 
-  /** Fetches the page of transcript just older than what is held. */
   const loadEarlier = useCallback(async () => {
     const before = windowFrom.current;
     if (historyLoading.current || before === null || !hasEarlierRef.current) return;
@@ -631,7 +590,6 @@ export function useChat(options: UseChatOptions = {}) {
       );
       setHasEarlier(page.hasEarlier);
     } catch {
-      // A later scroll tries again.
     } finally {
       historyLoading.current = false;
       setLoadingEarlier(false);
@@ -662,11 +620,11 @@ export function useChat(options: UseChatOptions = {}) {
     };
     source.onopen = () => {
       setConnectionError(null);
-      // A new process counts its stream revisions from 1 again.
+
       const revisions = resetStreamRevisions();
       draftRevision.current = revisions.draft;
       toolsRevision.current = revisions.tools;
-      // A restarted server counts its queue revisions from zero again.
+
       queueRevision.current = 0;
       void refreshState();
     };
@@ -681,8 +639,6 @@ export function useChat(options: UseChatOptions = {}) {
       });
     };
 
-    // The server writes this on every heartbeat and on a new stream. Receiving
-    // one is proof it is alive, so an old transport error cannot claim offline.
     source.addEventListener("liveness", (event) => {
       const data = parseEvent<{ at?: string; quietAfterMs?: number }>(
         event as MessageEvent<string>,
@@ -730,7 +686,7 @@ export function useChat(options: UseChatOptions = {}) {
       const at = typeof data.resetAt === "string" ? data.resetAt : new Date().toISOString();
       resetAt.current = at;
       resetOrder.current = data.order;
-      // A stale delta from the run the reset ended must not paint above the reset line.
+
       draftBatch.clear();
       draftRevision.current += 1;
       setDraftText("");
@@ -924,8 +880,7 @@ export function useChat(options: UseChatOptions = {}) {
       setLiveTools((current) =>
         current.map((item) => (item.id === liveId ? { ...data.activity, pending: false } : item)),
       );
-      // A task transition is visible as soon as its result confirms it; the snapshot
-      // later reconciles this row by id (or task, tool and start) instead of adding it twice.
+
       setActivity((current) =>
         applyTaskToolResult(current, {
           toolCallId: data.toolCallId,
@@ -965,8 +920,6 @@ export function useChat(options: UseChatOptions = {}) {
     transport,
   ]);
 
-  // A run whose frames stop is still running, but its clock must stop too. This is the
-  // same retry budget the server uses to declare a run unhealthy; no second timer on a row.
   useEffect(() => {
     if (runState !== "running") {
       setQuiet(false);
@@ -980,8 +933,6 @@ export function useChat(options: UseChatOptions = {}) {
     return () => window.clearInterval(timer);
   }, [runState]);
 
-  // A snapshot, SSE message, queue update or older page can confirm a pending send at any
-  // time. Retire the optimistic copy then, not only when its own fetch response arrives.
   useEffect(() => {
     if (optimistic.length === 0) return;
     setOptimistic((current) => {
@@ -1014,13 +965,11 @@ export function useChat(options: UseChatOptions = {}) {
     [messages, activity, liveTools, draftText, draftThinking, steers, queue, optimistic],
   );
 
-  // A drop freezes just past the last settled row, not at the end of the transcript forever.
   settledOrderRef.current = lastSettledOrder(messages, activity);
   settledOrdersRef.current = new Set([
     ...messages.map((message) => message.order),
     ...activity.map((item) => item.order),
-    // A steer dropped earlier keeps its place, so a later drop at the same settled boundary
-    // steps over it instead of rendering ahead of it.
+
     ...steers.flatMap((steer) => (steer.droppedOrder === undefined ? [] : [steer.droppedOrder])),
   ]);
 
@@ -1033,8 +982,6 @@ export function useChat(options: UseChatOptions = {}) {
       const trimmed = text.trim();
       if (trimmed.length === 0 && attachments.length === 0) return { ok: false, error: null };
 
-      // Paint the bubble now; the request only confirms it. The stable key lets the
-      // queued/placed copy replace this one by id instead of remounting it.
       const key = newClientKey();
       const startMark = `pi.chat.send.start.${key}`;
       markSendTiming(startMark, mode);
@@ -1066,8 +1013,7 @@ export function useChat(options: UseChatOptions = {}) {
           return { ok: false, error: result.error };
         }
         const data = result.data;
-        // The queue and the place message use the same client key, so dropping the
-        // optimistic copy in this same batch never blanks the bubble.
+
         retire();
         const queueIsNewest = acceptQueueRevision(data.queueRevision);
         if (queueIsNewest) setQueue(data.queue);
@@ -1117,7 +1063,6 @@ export function useChat(options: UseChatOptions = {}) {
     [acceptQueueRevision, transport],
   );
 
-  /** Takes back the newest steer the run has not reached; null when there is none left to take. */
   const unsendSteer = useCallback(async (): Promise<QueuedMessage | null> => {
     let latest: PendingSteer | undefined;
     for (let index = steers.length - 1; index >= 0; index -= 1) {

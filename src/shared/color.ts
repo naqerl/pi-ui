@@ -1,4 +1,3 @@
-/** Plain hex or comma rgb(): what an installed app's manifest can paint without help. */
 const PLAIN_MANIFEST_COLOR =
   /^(#[0-9a-f]{3}(?:[0-9a-f]{3})?|rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\))$/i;
 
@@ -26,7 +25,6 @@ function parseHex(value: string): [number, number, number] | null {
   ];
 }
 
-/** One rgb() channel: a 0-255 number or a 0%-100% percentage. */
 function parseChannel(value: string): number | null {
   const text = value.trim();
   if (text.endsWith("%")) {
@@ -43,7 +41,7 @@ function parseRgb(value: string): [number, number, number] | null {
   const body = match[1].trim();
   const [main, alpha] = body.split("/").map((part) => part.trim());
   const parts = main.split(/\s*,\s*|\s+/).filter((part) => part.length > 0);
-  // Legacy comma syntax puts alpha inside the parentheses.
+
   if (alpha === undefined && parts.length === 4) parts.pop();
   if (parts.length < 3) return null;
   const channels = parts.slice(0, 3).map(parseChannel);
@@ -107,7 +105,6 @@ const NAMED_COLORS: Record<string, [number, number, number]> = {
   white: [255, 255, 255],
 };
 
-/** Resolve hex, rgb() and oklch() to an opaque sRGB hex value. Other syntaxes return null. */
 export function cssColorToHex(value: string): string | null {
   const text = value.trim().toLowerCase();
   const rgb = parseHex(text) ?? parseRgb(text) ?? parseOklch(text) ?? NAMED_COLORS[text] ?? null;
@@ -115,10 +112,6 @@ export function cssColorToHex(value: string): string | null {
   return `#${rgb.map(hexByte).join("")}`;
 }
 
-/**
- * A manifest-safe colour. Already-plain values keep their exact spelling so a
- * theme that wrote `#ABC` stays `#ABC`; other CSS colours are resolved to sRGB.
- */
 export function manifestColor(value: string): string | null {
   const text = value.trim();
   if (PLAIN_MANIFEST_COLOR.test(text)) return text;

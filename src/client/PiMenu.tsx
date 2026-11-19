@@ -12,7 +12,6 @@ import { ChevronLeftIcon, DotIcon } from "./icons";
 import { PushSettings } from "./PushSettings";
 import { applyTheme } from "./theme";
 
-/** Earlier builds kept the choice here. One load copies it to the server, then drops it. */
 const LEGACY_THEME_KEY = "pi-ui:theme";
 
 function legacySlug(): string | null {
@@ -27,9 +26,7 @@ function legacySlug(): string | null {
 function clearLegacy(): void {
   try {
     localStorage.removeItem(LEGACY_THEME_KEY);
-  } catch {
-    // The server copy is what the next document paints.
-  }
+  } catch {}
 }
 
 function persistTheme(slug: string): void {
@@ -37,9 +34,7 @@ function persistTheme(slug: string): void {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ slug }),
-  }).catch(() => {
-    // This page already shows the choice. The next load uses the last slug that saved.
-  });
+  }).catch(() => {});
 }
 
 export function PiMenu() {
@@ -84,9 +79,7 @@ export function PiMenu() {
           data.themes.find((item) => item.slug === data.current);
         if (theme !== undefined) applyTheme(theme.colors);
       })
-      .catch(() => {
-        // The document already carries the server theme, or the built-in colors.
-      });
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -138,7 +131,7 @@ export function PiMenu() {
     const place = () => {
       const rect = buttonRef.current?.getBoundingClientRect();
       if (rect === undefined) return;
-      // The gear lives in the bottom dock, so the menu opens upward when there is no room below.
+
       const gap = 4;
       const above = rect.top > window.innerHeight - rect.bottom;
       const left = Math.max(8, Math.min(rect.left, window.innerWidth - 296));

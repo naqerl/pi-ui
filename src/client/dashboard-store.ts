@@ -1,7 +1,5 @@
 import type { DashboardState } from "../shared/dashboard";
 
-// The latest dashboard frame. use-chat writes it from the event stream; the
-// dashboard page reads it with useSyncExternalStore.
 let current: DashboardState | null = null;
 const listeners = new Set<() => void>();
 

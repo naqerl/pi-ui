@@ -68,9 +68,9 @@ const HEADER_COMMAND_MAX_BYTES = 1024 * 1024;
 
 interface HostManagedMcpServer {
   createTransport(context: { server: string; signal: AbortSignal }): Transport | Promise<Transport>;
-  /** MCP tool names to expose. Omit to expose every tool the server lists. */
+
   readonly tools?: readonly string[];
-  /** Optional server-stated event-numbering generation, read over HTTP at subscribe time. */
+
   readGeneration?(): Promise<string | undefined>;
 }
 
@@ -202,7 +202,7 @@ interface RawServerEntry {
 export interface ServerFailure {
   readonly name: string;
   readonly auth: boolean;
-  /** Transport-level reason, never a URL, command, header, or token. */
+
   readonly reason?: string;
 }
 
@@ -224,11 +224,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/**
- * The generation a daemon states for its current event numbering. `startedAt`
- * changes on every restart; `pid` distinguishes two starts in one clock tick.
- * A server that states neither has no generation to offer.
- */
 export function mcpDaemonGeneration(value: unknown): string | undefined {
   if (!isRecord(value)) return undefined;
   const explicit = value.generation ?? value.epoch;
@@ -268,13 +263,11 @@ async function readDaemonGeneration(
   }
 }
 
-/** A zero cursor is not a position: never return it to a caller as a resume point. */
 function positionCursor(answer: unknown, fallback: string | null): string | null {
   if (typeof answer === "string" && hasPosition(answer)) return answer;
   return fallback !== null && hasPosition(fallback) ? fallback : null;
 }
 
-/** A stored zero cursor is not a position: say once that the stream starts now. */
 function logStartFromNow(record: McpSubscriptionRecord, sent: string | null): void {
   const stored = record.cursor;
   if (sent !== null || typeof stored !== "string" || stored.length === 0) return;
@@ -305,7 +298,6 @@ function interpolateEnv(value: string): string {
   );
 }
 
-/** Resolve a credential expression once, at boot. The value never leaves this module. */
 function resolveSecret(value: string): string {
   if (value.startsWith("!!")) return interpolateEnv(value.slice(1));
   if (!value.startsWith("!")) return interpolateEnv(value);
@@ -440,8 +432,7 @@ function webAccessServer(agentDir: string): HostManagedMcpServer | undefined {
     const packagePath = require.resolve("pi-web-access/package.json");
     const cli = join(dirname(packagePath), "dist", "mcp-cli.js");
     if (!existsSync(cli)) return undefined;
-    // The bundled server reads the same provider keys and agent-dir
-    // web-search.json as pi, so give it the boot environment explicitly.
+
     const env = {
       ...getDefaultEnvironment(),
       ...inheritedEnvironment(),
@@ -468,7 +459,6 @@ function isLiveAdapterStatus(value: unknown): boolean {
   return typeof value === "string" && LIVE_ADAPTER_STATUS.has(value);
 }
 
-/** The membership line an agent subscribe declares, without any cursor/health. */
 function declarationFrom(
   subscription: Record<string, unknown>,
   args: Record<string, unknown>,
@@ -505,7 +495,6 @@ function declarationFrom(
   };
 }
 
-/** Carry a declaration's title into the subscribe notice the feed shows. */
 function withDeclaredTitle(
   notice: ExtensionNotice,
   declarations: readonly DeclaredSubscription[] = [],
@@ -549,7 +538,6 @@ function declarationTitle(
   )?.title;
 }
 
-/** Compare config entries by value, not by the order their keys were written in. */
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(",")}]`;
   if (isRecord(value)) {
@@ -666,8 +654,7 @@ function httpStatus(error: unknown): number | undefined {
     if ("status" in current && typeof current.status === "number") {
       return current.status;
     }
-    // The Streamable HTTP client reports an unauthenticated request as an
-    // UnauthorizedError without an HTTP status field. It still means 401.
+
     if (current instanceof Error && current.name === "UnauthorizedError") return 401;
     current = "cause" in current ? current.cause : undefined;
   }
@@ -724,8 +711,7 @@ function credentialAwareTool(server: string, tool: DurableExtensionTool): Durabl
         .map((block) => block.text)
         .join("\n");
       const rejected = credentialsRejected(server);
-      // The host-managed adapter prefixes an isError result with "Error: ".
-      // Keep the credential rejection to the exact permitted wording.
+
       if (text === rejected || text === `Error: ${rejected}`) {
         return { ...result, content: [{ type: "text", text: rejected }], isError: true };
       }
@@ -745,18 +731,10 @@ const STALE_SESSION_TEXTS = new Set(["Invalid Request", "invalid during session 
 
 type StaleSessionReason = "http404" | "jsonrpc-32600";
 
-/** Text a server uses when it has forgotten the session it gave us. */
 function staleSessionText(text: string): boolean {
   return STALE_SESSION_TEXTS.has(text) || /session not found/i.test(text);
 }
 
-/**
- * A restarted server rejects the previous HTTP session with a 404 whose body
- * says `session not found`, or with JSON-RPC -32600 Invalid Request / invalid
- * during session initialization. pi-mcp-events treats any protocol error as
- * terminal, so the subscription stays failed and looks idle. Any other error,
- * including method-not-found, still reaches the adapter unchanged.
- */
 function isStaleSessionResponse(message: unknown): boolean {
   if (!isRecord(message) || "method" in message || !isRecord(message.error)) return false;
   const text = message.error.message;
@@ -770,10 +748,6 @@ function stringField(value: unknown, key: string): string | undefined {
   return isRecord(value) && typeof value[key] === "string" ? value[key] : undefined;
 }
 
-/**
- * Classify a tool-call failure without trusting a fixed error class: the
- * adapter keeps the real transport error only as `cause`.
- */
 function staleSessionReason(error: unknown): StaleSessionReason | undefined {
   let current: unknown = error;
   const seen = new Set<unknown>();
@@ -812,12 +786,6 @@ function transportFailureReason(error: unknown): string {
   return "server unreachable";
 }
 
-/**
- * The adapter installs its handlers on the transport it is given, while the
- * MCP client delivers frames to the transport it connected. Keep delivery on
- * the connected transport, and present the adapter with handlers that hide a
- * stale Invalid Request behind an ordinary close.
- */
 function watchStaleSession(transport: Transport, retire: () => void): Transport {
   let onMessage = transport.onmessage;
   let onClose = transport.onclose;
@@ -866,11 +834,6 @@ function watchStaleSession(transport: Transport, retire: () => void): Transport 
   });
 }
 
-/**
- * The adapter re-lists after tools/list_changed but keeps the catalog it froze
- * at ready(), so a new tool never becomes callable there. Watch the transport
- * so the channel can re-initialize and register the grown set through the shim.
- */
 function watchToolListChanges(transport: Transport, onChange: () => void): Transport {
   let onMessage = transport.onmessage;
   transport.onmessage = (message, extra) => {
@@ -906,9 +869,9 @@ function sameProtocolDefinition(a: McpProtocolDefinition, b: McpProtocolDefiniti
 
 export interface McpRuntimeOptions {
   readonly submit?: DurableExtensionSink;
-  /** Data directory for the durable subscription registry. */
+
   readonly dataDir?: string;
-  /** Share one registry with the event feed instead of creating it from `dataDir`. */
+
   readonly subscriptions?: McpSubscriptionRegistry;
 }
 
@@ -921,9 +884,9 @@ interface RestoreProbe {
   readonly cursor: string | null;
   readonly stale: boolean;
   readonly reason?: string;
-  /** The catalog fallback had to page before it found this stream. */
+
   readonly catalogPaged?: boolean;
-  /** What the cursor probe would have replayed, when it answered with events. */
+
   readonly backlog?: RestoreBacklog;
 }
 
@@ -937,7 +900,6 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** A JSON-RPC -32023 (NotFound) or an explicit unknown-subscription reply. */
 function isUnknownSubscriptionError(error: unknown): boolean {
   if (errorCode(error) === -32023) return true;
   const text = errorText(error);
@@ -952,11 +914,6 @@ function pollEvent(item: unknown): Record<string, unknown> | undefined {
   return isRecord(item.event) ? item.event : item;
 }
 
-/**
- * Probe page size, and the replay bound: anything this big is summarised as a
- * gap instead of replayed. A restart that missed a few events still delivers
- * them; one that missed a burst reports the burst in one line.
- */
 const RESTORE_PROBE_MAX_EVENTS = 25;
 
 interface RestoreBacklog {
@@ -965,7 +922,6 @@ interface RestoreBacklog {
   readonly truncated: boolean;
 }
 
-/** Describe what the server's poll answer would replay from this cursor. */
 function pollBacklog(response: unknown, startedAt: number): RestoreBacklog {
   if (!isRecord(response)) return { stale: false, count: 0, truncated: false };
   const events = Array.isArray(response.events)
@@ -982,11 +938,9 @@ function pollBacklog(response: unknown, startedAt: number): RestoreBacklog {
     if (first === undefined || parsed < first) first = parsed;
   }
   const truncated = response.truncated === true;
-  // A full probe page means the backlog is at least this large: whatever its
-  // timestamps say, replaying it is a flood, so it is the old case too.
+
   const fullPage = events.length >= RESTORE_PROBE_MAX_EVENTS;
-  // An untimestamped truncated answer is still a backlog, so it is the old
-  // case. A timestamped answer decides by the first missed event.
+
   const stale =
     fullPage || (first === undefined ? truncated : first < startedAt - RESTORE_GRACE_MS);
   return { stale, count: events.length, truncated: truncated || fullPage };
@@ -1011,19 +965,13 @@ interface ChannelCall {
   stale?: StaleSessionFailure;
 }
 
-/**
- * Owns one server's adapter for the whole process. The model-facing tools are
- * registered once, against this channel, so a stale session or a server that
- * was down at boot can be replaced without tripping the shim's duplicate-name
- * guard. A call retries at most once, and only for a stale-session signature.
- */
 class McpServerChannel {
   private adapter: HostManagedMcpAdapter | undefined;
   private tools = new Map<string, DurableExtensionTool>();
   private readonly registered = new Set<string>();
-  /** One adapter lifecycle operation or tool call at a time. */
+
   private tail: Promise<void> = Promise.resolve();
-  /** Identity of the call currently running through this channel. */
+
   private activeCall: ChannelCall | undefined;
   private nextCallToken = 0;
   private initPromise: Promise<boolean> | undefined;
@@ -1041,12 +989,10 @@ class McpServerChannel {
     private readonly hooks: McpChannelHooks,
   ) {}
 
-  /** The tools the current adapter lists, in shim-visible names. */
   get toolNames(): readonly string[] {
     return [...this.tools.keys()];
   }
 
-  /** The tools currently registered with the shim, even if the adapter is down. */
   get registeredToolNames(): readonly string[] {
     return [...this.registered];
   }
@@ -1055,11 +1001,6 @@ class McpServerChannel {
     return this.startInitialize(reason, announce, false);
   }
 
-  /**
-   * Replace this server's definition without dropping the old connection first.
-   * The replacement is fully connected before anything is committed; a failed
-   * reconnect closes only the candidate adapter and keeps the old tools live.
-   */
   reload(definition: HostManagedMcpServer, timeout: number): Promise<boolean> {
     return this.enqueue(async () => {
       await this.initPromise?.catch(() => {});
@@ -1109,11 +1050,6 @@ class McpServerChannel {
     return this.enqueue(() => this.runCall(name, args, signal, toolCallId));
   }
 
-  /**
-   * Calls, recovery, catalog refreshes and backoff probes share one queue. A
-   * recovery must never close an adapter under another in-flight call, and a
-   * queued call must see the fresh adapter rather than a transient gap.
-   */
   private enqueue<T>(task: () => Promise<T>): Promise<T> {
     const result = this.tail.then(task, task);
     this.tail = result.then(
@@ -1273,7 +1209,6 @@ class McpServerChannel {
     return api;
   }
 
-  /** Registered once; later adapters only change what the passthrough dispatches to. */
   private registerPassthrough(tool: DurableExtensionTool): void {
     if (this.registered.has(tool.name)) return;
     this.registered.add(tool.name);
@@ -1374,7 +1309,6 @@ class McpServerChannel {
     return retried;
   }
 
-  /** The retry also failed: keep the adapter closed and let backoff take over. */
   private async failAdapter(reason: StaleSessionReason): Promise<void> {
     const adapter = this.adapter;
     this.adapter = undefined;
@@ -1435,7 +1369,7 @@ class McpServerChannel {
     const auth = httpStatus(error) === 401 || httpStatus(error) === 403;
     this.hooks.onFailure(this.name, auth, reason);
     console.warn(describeBootFailure(this.name, error));
-    // A rejected credential is not transient; retrying it would only repeat it.
+
     if (!auth) this.scheduleRetry();
   }
 
@@ -1458,18 +1392,13 @@ class McpServerChannel {
   }
 }
 
-/**
- * Bridges the host-managed MCP adapter and pi-mcp-events into the durable
- * registry. There is no extension loader: the shim has exactly the surface
- * these two packages need.
- */
 export interface McpSubscriptionsReloadResult {
   readonly declared: number;
   readonly opened: number;
   readonly stopped: number;
   readonly pending: number;
   readonly errors: readonly string[];
-  /** Stable ids whose live stream was stopped by this reconciliation. */
+
   readonly stoppedIds: readonly string[];
 }
 
@@ -1487,7 +1416,7 @@ export class McpRuntime {
   readonly shim: DurableExtensionShim;
   readonly failedServers: ServerFailure[];
   readonly protocol: McpProtocol;
-  /** Process start time; no event from before it may become a chat notice. */
+
   readonly startedAt: number;
   private readonly servers: Record<string, HostManagedMcpServer>;
   private currentNames: readonly string[];
@@ -1498,36 +1427,36 @@ export class McpRuntime {
   private readonly channels = new Map<string, McpServerChannel>();
   private readonly protocolConnections = new Set<ProtocolConnection>();
   private readonly subscriptionStore: McpSubscriptionRegistry | undefined;
-  /** New subscription id → the persisted entry it was restored from. */
+
   private readonly restored = new Map<string, McpSubscriptionRecord>();
-  /** Entries whose server was not available yet; kept until a later connection. */
+
   private readonly pendingRestore = new Map<string, McpSubscriptionRecord>();
-  /** Restored entries the server rejected; never retried by this process. */
+
   private readonly dropped = new Set<string>();
-  /** Adapter id → stable id, filled from agent subscribe/list results. */
+
   private readonly adapterStableIds = new Map<string, string>();
-  /** Declared stable ids that currently have a live adapter stream. */
+
   private readonly declaredLive = new Set<string>();
-  /** Brand-new declarations must skip the probe on every retry until they open. */
+
   private readonly skipProbeRestores = new Set<string>();
-  /** Unknown unsubscribe ids already logged, so a retry does not spam. */
+
   private readonly warnedUnknownUnsubscribe = new Set<string>();
-  /** Last read of subscriptions.json, for the synchronous status snapshot. */
+
   private subscriptionConfig: SubscriptionConfig | undefined;
-  /** Resolve a stable id to every adapter id that has represented it. */
+
   private liveIdLookup: ((stableId: string) => readonly string[]) | undefined;
-  /** Ask the feed whether this declared identity is still live. */
+
   private liveStateLookup: ((stableId: string) => boolean) | undefined;
-  /** Keep the feed in step when a reload stops an undeclared stream. */
+
   private liveIdCancelled: ((stableId: string) => void) | undefined;
-  /** Called after a declaration write or reload so the server can broadcast. */
+
   private subscriptionConfigListener: (() => void) | undefined;
   private readonly restoring = new Set<string>();
-  /** Stable ids that already announced the backlog they did not replay. */
+
   private readonly restoreGaps = new Set<string>();
-  /** Direct fallback streams, used only when the mcp_events tool is not registered. */
+
   private readonly directSubscriptions = new Map<string, EventsStreamConnection>();
-  /** One reusable poll session per server; a new one per tick would leak transports. */
+
   private readonly pollSessions = new Map<string, ProtocolSession>();
   private readonly pendingNotices: ExtensionNotice[] = [];
   private observer: ((notice: ExtensionNotice) => unknown) | undefined;
@@ -1577,9 +1506,7 @@ export class McpRuntime {
         }>)
       | undefined;
     let protocol: McpProtocol | undefined;
-    // pi-mcp-events asks for the protocol again when its tool first connects.
-    // Serve the registration made below for that repeated request instead of
-    // letting the adapter reject a duplicate namespace.
+
     shim.events.on(protocolModule.MCP_PROTOCOL_EVENT, (raw: unknown) => {
       if (
         protocol === undefined ||
@@ -1613,8 +1540,7 @@ export class McpRuntime {
       if (resolveProtocol === undefined) throw new Error("MCP protocol is not ready");
       return resolveProtocol(name);
     });
-    // The watchdog needs events/poll on the same mediated connection the
-    // events extension uses. It is intentionally not sent to the extension.
+
     protocol = adapterModule.registerMcpProtocol(shim, {
       ...eventsProtocolModule.EVENTS_PROTOCOL,
       requests: [...eventsProtocolModule.EVENTS_PROTOCOL.requests, "events/poll"],
@@ -1632,10 +1558,7 @@ export class McpRuntime {
     );
     shim.setNoticeEnricher((notice) => runtime.enrichNotice(notice));
     resolveProtocol = (name) => runtime.protocolConnection(name);
-    // pi-mcp-events constructs EventConnection with only reconnect/onClose
-    // (dist/index.js:68), so maxRetries/retryBaseMs/heartbeatTimeoutMs cannot
-    // be supplied here. dist/stream.js:300 stops after five retries; the
-    // subscription watchdog reopens a stream that stays dead after that.
+
     eventsModule.default(shim);
     await shim.dispatch("session_start");
 
@@ -1655,41 +1578,25 @@ export class McpRuntime {
     return runtime;
   }
 
-  /** The configured servers, including built-in web when its package is present. */
   get serverNames(): readonly string[] {
     return this.currentNames;
   }
 
-  /** The shared durable registry, or undefined when this runtime was started without a data dir. */
   get subscriptionRegistry(): McpSubscriptionRegistry | undefined {
     return this.subscriptionStore;
   }
 
-  /**
-   * The server-stated generation, or the adapter session identity when the
-   * server does not expose one. Never throws: an unavailable daemon endpoint
-   * only means the old two-part event key stays in use.
-   */
   async generationFor(server: string, sessionIdentity?: string): Promise<string | undefined> {
     const definition = this.servers[server];
     if (definition?.readGeneration !== undefined) {
       try {
         const generation = await definition.readGeneration();
         if (generation !== undefined) return generation;
-      } catch {
-        // The endpoint is optional; subscribe must not fail just because of it.
-      }
+      } catch {}
     }
     return sessionIdentity;
   }
 
-  /**
-   * Attach the current generation to a copy of a subscribe/list result before
-   * the feed sees it. The adapter keeps the original subscription object for
-   * later list/re-subscribe answers, so mutating it would freeze the first
-   * generation forever. Always refresh the copy, even when the adapter result
-   * already carries an older generation.
-   */
   private async enrichNotice(notice: ExtensionNotice): Promise<ExtensionNotice> {
     if (notice.customType !== "mcp-events-tool" || !isRecord(notice.details)) return notice;
     const details = notice.details;
@@ -1738,10 +1645,6 @@ export class McpRuntime {
     };
   }
 
-  /**
-   * Ask the hub whether a subscription's cursor is really current. This uses
-   * the same adapter protocol connection as mcp_events, never a second client.
-   */
   async pollEvents(
     server: string,
     name: string,
@@ -1749,8 +1652,7 @@ export class McpRuntime {
     maxEvents = 1,
   ): Promise<unknown> {
     const session = await this.pollSession(server);
-    // A zero position is not a position. Nothing below this point may send
-    // `hub:0` (or any `:0`) to the transport and replay the hub's whole history.
+
     const from = hasPosition(cursor) ? cursor : null;
     try {
       return await session.request("events/poll", { name, cursor: from, maxEvents });
@@ -1773,7 +1675,6 @@ export class McpRuntime {
     return session;
   }
 
-  /** The event catalog, used only when a server cannot answer the cursor probe. */
   private async listEventNames(
     server: string,
     wanted: string,
@@ -1793,14 +1694,14 @@ export class McpRuntime {
             names.push(item.name);
           }
         }
-        // Stop at the first page that names the stream we are restoring.
+
         if (names.includes(wanted)) return { names, paged: cursor !== undefined };
         const next =
           typeof result.nextCursor === "string" && result.nextCursor.length > 0
             ? result.nextCursor
             : undefined;
         if (next === undefined) return { names, paged: cursor !== undefined };
-        // Match pi-mcp-events: reject a repeated cursor or an endless catalog.
+
         if (cursors.has(next) || cursors.size >= 100) {
           throw new Error("events/list pagination did not terminate");
         }
@@ -1816,12 +1717,6 @@ export class McpRuntime {
     }
   }
 
-  /**
-   * Stop the dead adapter stream and subscribe again at the hub cursor. The
-   * normal path is the mcp_events tool, so the extension keeps owning the
-   * replacement stream. A direct protocol session is used only when that tool
-   * is not registered.
-   */
   async reopenSubscription(
     record: McpSubscriptionRecord,
     cursor: string | null | undefined,
@@ -1832,10 +1727,6 @@ export class McpRuntime {
     status: string;
     endReason?: string;
   }> {
-    // When the caller supplies a cursor it wins: a real position resumes there
-    // and a zero position means "start in now", never the stored position.
-    // "No cursor at all" falls back to the newest durable position, not the
-    // caller's possibly stale record object.
     const saved = this.subscriptionStore?.findByStableId(recordStableId(record));
     const fallback = hasPosition(saved?.cursor)
       ? saved.cursor
@@ -1947,7 +1838,6 @@ export class McpRuntime {
     }
   }
 
-  /** Subscriptions opened at boot, with the id pi-mcp-events assigned this process. */
   get restoredSubscriptions(): RestoredMcpSubscription[] {
     return [...this.restored].map(([id, record]) => ({ ...record, id }));
   }
@@ -1960,7 +1850,6 @@ export class McpRuntime {
     return this.shim.tools.map((tool) => tool.name);
   }
 
-  /** Names and availability only: never a URL, command, header, or token. */
   get status(): McpStatus {
     const failures = new Map(this.failedServers.map((failure) => [failure.name, failure]));
     const servers: McpServerStatus[] = this.currentNames.map((name) => {
@@ -2017,7 +1906,6 @@ export class McpRuntime {
     };
   }
 
-  /** Keep one failure entry per server, so a later reconnect replaces the old reason. */
   private markFailure(name: string, auth: boolean, reason?: string): void {
     for (let failure = this.failedServers.length - 1; failure >= 0; failure -= 1) {
       if (this.failedServers[failure]?.name === name) this.failedServers.splice(failure, 1);
@@ -2031,11 +1919,7 @@ export class McpRuntime {
     }
   }
 
-  /** Recovery is news for the chat and a status broadcast for every open tab. */
   private notifyChannel(text: string, details: Record<string, unknown>): void {
-    // A recovery notice is MCP status, not a user turn. The head routes it through
-    // the MCP notice path, so the chat shows one chip instead of a queued bubble
-    // that looks like something the operator typed.
     this.shim.sendMessage({
       customType: "mcp-recovery",
       content: `${MCP_STATUS_HEAD}\n${text}`,
@@ -2048,23 +1932,19 @@ export class McpRuntime {
     this.shim.setMessageSink(sink);
   }
 
-  /** Observes MCP event batches and mcp_events tool results. Never includes secrets. */
   setObserver(observer: Parameters<DurableExtensionShim["setObserver"]>[0]): void {
     this.observer = observer;
     this.shim.setObserver(
       observer === undefined
         ? undefined
         : (notice) => {
-            // The shim's registerTool wrapper sees only model/tool calls. Restore
-            // and watchdog subscribes use callTool() and never reach this path.
             const enriched = withDeclaredTitle(notice, this.subscriptionConfig?.entries ?? []);
             void this.noteToolResult(enriched);
             return observer(enriched);
           },
     );
     if (observer === undefined) return;
-    // Restore runs before the feed exists. Replay its subscribe results now so
-    // /api/state has the real subscription ids and stored cursors immediately.
+
     for (const notice of this.pendingNotices.splice(0)) {
       try {
         observer(notice);
@@ -2074,31 +1954,22 @@ export class McpRuntime {
     }
   }
 
-  /** Broadcast after a declaration write, once the feed exists. */
   setSubscriptionConfigListener(listener: (() => void) | undefined): void {
     this.subscriptionConfigListener = listener;
   }
 
-  /** Let a reload resolve a declaration to every live adapter id for it. */
   setLiveIdLookup(lookup: ((stableId: string) => readonly string[]) | undefined): void {
     this.liveIdLookup = lookup;
   }
 
-  /** Ask the feed whether a declared identity is still live, not merely restored. */
   setLiveStateLookup(lookup: ((stableId: string) => boolean) | undefined): void {
     this.liveStateLookup = lookup;
   }
 
-  /** Cancel the feed row when a reload stops a stream that lost its declaration. */
   setLiveIdCancel(cancel: ((stableId: string) => void) | undefined): void {
     this.liveIdCancelled = cancel;
   }
 
-  /**
-   * Turn an agent tool result into a declaration intent. A successful subscribe
-   * appends a line; a successful unsubscribe removes it. Restore/watchdog calls
-   * bypass the tool wrapper entirely, so they can never edit the file.
-   */
   private async noteToolResult(notice: ExtensionNotice): Promise<void> {
     if (notice.customType !== "mcp-events-tool") return;
     const details = isRecord(notice.details) ? notice.details : undefined;
@@ -2173,14 +2044,6 @@ export class McpRuntime {
     return config;
   }
 
-  /**
-   * Subscribe to every stream declared in subscriptions.json. A recent cached
-   * cursor resumes where pi stopped; a backlog older than the restore grace
-   * window starts in now and is reported as one gap. A brand-new declaration
-   * has no cached position, so it subscribes from null without a probe: there
-   * is no history to call a "gap". Failures stay pending and are retried when
-   * the server answers.
-   */
   async restoreSubscriptions(): Promise<RestoredMcpSubscription[]> {
     const config = await this.refreshSubscriptionConfig();
     if (config.error !== undefined) {
@@ -2195,7 +2058,7 @@ export class McpRuntime {
       declarations.map((entry) => deriveStableId(entry.server, entry.name, entry.arguments)),
     );
     for (const stableId of declared) this.dropped.delete(stableId);
-    // The cache holds exactly the cursors of declared streams.
+
     await this.subscriptionStore?.prune(declared);
     const already = new Set([...this.restored.values()].map((record) => recordStableId(record)));
     for (const [key, record] of this.pendingRestore) {
@@ -2226,14 +2089,13 @@ export class McpRuntime {
         ...(entry.title === undefined ? {} : { title: entry.title }),
         cursor: cached?.cursor ?? null,
         deliveredEventIds: cached?.deliveredEventIds ?? [],
-        // The gap text names when the last event was seen; keep that history.
+
         ...(cached?.lastEventAt === undefined ? {} : { lastEventAt: cached.lastEventAt }),
         status: "active",
         updatedAt: new Date().toISOString(),
       };
       const key = recordKey(record);
-      // A declaration with no cached cursor has no history to probe. Keep that
-      // intent across failed retries so a later open cannot invent a gap.
+
       if (cached === undefined) this.skipProbeRestores.add(key);
       else this.skipProbeRestores.delete(key);
       this.pendingRestore.set(key, record);
@@ -2245,17 +2107,10 @@ export class McpRuntime {
     return this.restoredSubscriptions;
   }
 
-  /** A rejected restore is terminal for this process, including watchdog retries. */
   isSubscriptionDropped(stableId: string): boolean {
     return this.dropped.has(stableId);
   }
 
-  /**
-   * Stop a live adapter stream and mark the durable entry cancelled. `liveId`
-   * is the current adapter id when the caller knows it from the feed; the
-   * restored map covers subscriptions opened at boot. Repeating the call is
-   * harmless and still returns the existing cancelled record.
-   */
   async cancelSubscription(
     stableId: string,
     liveIds?: string | readonly string[],
@@ -2298,7 +2153,6 @@ export class McpRuntime {
     return cancelled ?? null;
   }
 
-  /** Alternate name for `cancelSubscription`, kept for callers that think in identity. */
   cancelByStableId(
     stableId: string,
     liveIds?: string | readonly string[],
@@ -2318,7 +2172,6 @@ export class McpRuntime {
     }
   }
 
-  /** Ask the server whether the persisted cursor still belongs to a live subscription. */
   private async probeRestore(record: McpSubscriptionRecord): Promise<RestoreProbe> {
     let probeFailure: unknown;
     try {
@@ -2329,10 +2182,7 @@ export class McpRuntime {
         RESTORE_PROBE_MAX_EVENTS,
       );
       const backlog = pollBacklog(response, this.startedAt);
-      // Only what the poll actually shows decides staleness. An idle
-      // subscription legitimately has an old lastEventAt while its cursor is
-      // current; treating that as a backlog would throw away the position and
-      // report a gap for events that do not exist.
+
       return {
         missing: false,
         cursor: positionCursor(polledEventCursor(response), record.cursor),
@@ -2345,8 +2195,7 @@ export class McpRuntime {
       }
       probeFailure = error;
     }
-    // Older servers may not implement events/poll. Their catalog still tells us
-    // whether the stream name itself disappeared.
+
     try {
       const catalog = await this.listEventNames(record.server, record.name);
       if (!catalog.names.includes(record.name)) {
@@ -2381,11 +2230,6 @@ export class McpRuntime {
     console.warn(`mcp: dropped restored subscription ${record.server}/${record.name}: ${reason}`);
   }
 
-  /**
-   * One durable gap record for a backlog this process deliberately did not
-   * replay. It is status text, not an event chip: the model learns that events
-   * were missed, without receiving days of history as individual deliveries.
-   */
   private noteRestoreGap(record: McpSubscriptionRecord, backlog: RestoreBacklog): void {
     const stableId = recordStableId(record);
     if (this.restoreGaps.has(stableId)) return;
@@ -2394,7 +2238,7 @@ export class McpRuntime {
     const missedSince = record.lastEventAt ?? "unknown";
     const at = new Date().toISOString();
     const count = backlog.count;
-    // A truncated probe counted only its first page, so say "at least".
+
     const label = count > 0 ? `${count}${backlog.truncated ? "+" : ""}` : "Some";
     const text = `${label} events were missed while pi was not running (from ${
       from ?? "no position"
@@ -2426,9 +2270,6 @@ export class McpRuntime {
     if (this.isSubscriptionDropped(stableId) || this.restoring.has(key)) return false;
     this.restoring.add(key);
     try {
-      // A brand-new declaration has no cached position: there is no history to
-      // probe, and probing would invent a "N events were missed" gap. The
-      // pending retry path keeps this intent until the stream actually opens.
       const probe =
         skipProbe || this.skipProbeRestores.has(key) ? undefined : await this.probeRestore(record);
       if (probe?.missing === true) {
@@ -2439,9 +2280,7 @@ export class McpRuntime {
         );
         return false;
       }
-      // A paged catalog is the restore-after-paging path: a real stored
-      // position is the stream's resume point. A zero cursor is never handed
-      // to the transport, even on that fallback.
+
       const stale = probe?.stale === true && probe.catalogPaged !== true;
       const cursor =
         probe?.catalogPaged === true && hasPosition(record.cursor)
@@ -2504,8 +2343,7 @@ export class McpRuntime {
       console.log(
         `mcp: restored subscription ${record.server}/${record.name} at ${subscription.cursor ?? "null"}`,
       );
-      // Record the skipped window only after the new cursor is live, so a
-      // failed restore cannot claim a gap it did not actually start from.
+
       if (stale && probe?.backlog !== undefined) this.noteRestoreGap(record, probe.backlog);
       this.deliverNotice({
         customType: "mcp-events-tool",
@@ -2532,7 +2370,6 @@ export class McpRuntime {
       void this.subscriptionStore?.record(restored).catch(() => {});
       return true;
     } catch {
-      // Keep the entry. A protocol connection for this server retries it.
       return false;
     } finally {
       this.restoring.delete(key);
@@ -2555,13 +2392,6 @@ export class McpRuntime {
     this.shim.install(registry);
   }
 
-  /**
-   * Re-read mcp.json and reconcile the live servers. A changed server is
-   * connected on a candidate adapter before its old one is touched, and a
-   * failed candidate leaves the old tools and connection in place. Direct
-   * callers are coalesced; the agent-facing tool reports a concurrent call as
-   * busy before it gets here.
-   */
   reload(target: "mcp" | "subscriptions" = "mcp"): Promise<McpReloadResult> {
     if (this.reloading !== undefined) return this.reloading;
     const run = this.runReload(target).finally(() => {
@@ -2571,7 +2401,6 @@ export class McpRuntime {
     return run;
   }
 
-  /** Close a server's event connections and poll session so a new definition is used lazily. */
   private async closeServerProtocol(name: string): Promise<void> {
     const poll = this.pollSessions.get(name);
     if (poll !== undefined) {
@@ -2617,8 +2446,6 @@ export class McpRuntime {
 
     const next = await readServers();
     if (next.configError !== undefined) {
-      // target=mcp reads both files even when mcp.json itself is unusable;
-      // declarations can still be added or removed by hand.
       const subscriptions = await this.reconcileDeclarations();
       return {
         ok: false,
@@ -2633,8 +2460,7 @@ export class McpRuntime {
     const errors: string[] = [];
     const current = new Set(this.currentNames);
     const nextNames = new Set(next.configuredNames);
-    // A configured server without a channel never connected, so the next call
-    // must try it as an addition again rather than waiting for a change.
+
     const added = next.configuredNames.filter(
       (name) => !current.has(name) || !this.channels.has(name),
     );
@@ -2661,8 +2487,7 @@ export class McpRuntime {
         if (this.failedServers[index]?.name === name) this.failedServers.splice(index, 1);
       }
       await this.closeServerProtocol(name);
-      // A removed server's declaration stays in subscriptions.json: pass
-      // removeDeclaration: false so it is retried if the server comes back.
+
       const stableIds = new Set<string>();
       for (const record of this.restored.values()) {
         if (record.server === name) stableIds.add(recordStableId(record));
@@ -2753,11 +2578,6 @@ export class McpRuntime {
     };
   }
 
-  /**
-   * Re-read subscriptions.json: stop live streams that lost their declaration,
-   * prune the cursor cache, and open newly declared streams. The file is the
-   * whole list; there is no second reconciliation model.
-   */
   private async reconcileDeclarations(): Promise<McpSubscriptionsReloadResult> {
     const previous = this.subscriptionConfig?.entries ?? [];
     const config = await this.refreshSubscriptionConfig();
@@ -2812,8 +2632,7 @@ export class McpRuntime {
           this.skipProbeRestores.delete(key);
         }
       }
-      // The runtime stopped the adapter stream; the feed row must not keep
-      // showing it live until the next snapshot.
+
       this.liveIdCancelled?.(stableId);
     }
     const liveBefore = new Set([...this.restored.values()].map(recordStableId));
@@ -2862,14 +2681,9 @@ export class McpRuntime {
       await transport.close().catch(() => {});
       throw protocolError(name, error);
     }
-    // A server that was down during the boot probe can come back later. The
-    // protocol connection is a live probe of the same definition, so clear
-    // every failure for this server instead of writing a stale array once.
+
     this.markConnected(name);
-    // The adapter reconnects a live stream through this same bridge without
-    // calling the mcp_events tool. Read the daemon identity before the
-    // replacement stream can emit an event, so a renumbered first event gets
-    // the new generation key and clears only its own stale history.
+
     const generation = await this.generationFor(name);
     if (generation !== undefined) {
       this.deliverNotice({
@@ -2877,8 +2691,7 @@ export class McpRuntime {
         details: { server: name, generation },
       });
     }
-    // A server that was unavailable during the boot probe can now restore its
-    // deferred subscriptions. The delay keeps the current subscribe first.
+
     setTimeout(() => {
       void this.restorePendingFor(name);
     }, 0).unref?.();

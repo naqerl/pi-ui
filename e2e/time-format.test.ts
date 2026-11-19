@@ -20,6 +20,9 @@ import {
 import type { ChatMessage } from "../src/shared/types.js";
 
 const ISO = "2026-01-15T12:34:56.000Z";
+const formatTimeParameterCount: Parameters<typeof formatTime>["length"] = 1;
+const formatTimeWithExtraArguments = (extra: unknown): string =>
+  String(Reflect.apply(formatTime, undefined, [ISO, extra]));
 
 function inZone<T>(zone: string, run: () => T): T {
   const previous = process.env.TZ;
@@ -72,16 +75,15 @@ test("formatTime always renders hh:mm, even when the instant has seconds", () =>
     "18:04",
   );
 
-  const withSecondsOption = (): string => {
-    // @ts-expect-error formatTime no longer accepts a seconds option
-    return formatTime(ISO, { seconds: true });
-  };
-  const withSecondsFlag = (): string => {
-    // @ts-expect-error formatTime no longer accepts a seconds argument
-    return formatTime(ISO, true);
-  };
-  assert.equal(inZone("UTC", withSecondsOption), "12:34");
-  assert.equal(inZone("UTC", withSecondsFlag), "12:34");
+  assert.equal(formatTimeParameterCount, 1);
+  assert.equal(
+    inZone("UTC", () => formatTimeWithExtraArguments({ seconds: true })),
+    "12:34",
+  );
+  assert.equal(
+    inZone("UTC", () => formatTimeWithExtraArguments(true)),
+    "12:34",
+  );
 });
 
 test("formatTime and formatDateTime leave invalid input blank", () => {
@@ -158,7 +160,7 @@ test("an MCP notice, the events page and the events widget render hh:mm for one 
     id: "mcp-notice",
     role: "user",
     text,
-    // A notice recorded later must still show the event's own instant.
+
     timestamp: "2026-01-15T23:59:00.000Z",
     order: 1,
     notice,

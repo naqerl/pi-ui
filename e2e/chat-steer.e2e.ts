@@ -69,12 +69,9 @@ describe("steer reconciliation against one shared app", { serial: true }, () => 
     }, text);
     expect(pendingText.includes("steer · pending")).toBe(true);
 
-    // The tool waits for the release file, so the steer cannot be consumed yet.
     await new Promise((resolve) => setTimeout(resolve, 250));
     await expect(pending).toBeVisible();
 
-    // Watch the DOM across the handoff: there must be no moment where neither the pending
-    // bubble nor the delivered steer bubble carries the message.
     await browser.evaluate((needle) => {
       const watch = { gap: false };
       const target = window as unknown as {
@@ -153,8 +150,6 @@ describe("steer reconciliation against one shared app", { serial: true }, () => 
       const pending = browser.locator('[data-pending-steer="true"]').filter({ hasText: text });
       await expect(pending).toHaveCount(1);
 
-      // Read the snapshot only once the server tracks the steer, so it is a valid
-      // pre-delivery answer rather than racing the send response.
       const stale = (await browser.evaluate(async (needle: string) => {
         const deadline = performance.now() + 10_000;
         while (performance.now() < deadline) {
@@ -195,8 +190,6 @@ describe("steer reconciliation against one shared app", { serial: true }, () => 
       await expect(pending).toHaveCount(0, { timeout: 20_000 });
       await expect(delivered).toHaveCount(1);
 
-      // The steer is already in the transcript. The older snapshot still lists it as
-      // pending; its stale revision must not put that pending bubble back.
       serveStale = true;
       await browser.evaluate(() => {
         window.dispatchEvent(new Event("focus"));

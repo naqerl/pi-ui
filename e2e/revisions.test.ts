@@ -10,7 +10,6 @@ test("a restarted server's lower snapshot counter lets its deltas through", () =
   const restarted = resetStreamRevisions();
   assert.deepEqual(restarted, { draft: 0, tools: 0 });
 
-  // The page held 9000 from the previous process; the snapshot says 2.
   const adopted = adoptSnapshotRevision(9000, 2);
   assert.equal(adopted, 2);
   assert.equal(acceptDeltaRevision(adopted, 3), 3);

@@ -5,7 +5,6 @@ type MarkdownModule = typeof import("./markdown");
 let loaded: MarkdownModule | null = null;
 let pending: Promise<MarkdownModule> | null = null;
 
-/** Starts loading the Markdown renderer (and `marked`) in its own chunk. */
 export function loadMarkdown(): Promise<MarkdownModule> {
   pending ??= import("./markdown").then((module) => {
     loaded = module;
@@ -59,11 +58,6 @@ function observe(element: Element, onNear: () => void): () => void {
   };
 }
 
-/**
- * Markdown for a message bubble. The text shows as plain wrapped text until the bubble comes
- * within a screen or so of the viewport and the renderer chunk has loaded; then it is parsed
- * once and stays rendered.
- */
 export function DeferredMarkdown({ text }: { text: string }) {
   const module = useMarkdownModule();
   const [near, setNear] = useState(false);
@@ -88,13 +82,11 @@ export function DeferredMarkdown({ text }: { text: string }) {
   );
 }
 
-/** One-line Markdown; the raw title shows until the renderer chunk is in. */
 export function LazyInlineMarkdown({ text }: { text: string }) {
   const module = useMarkdownModule();
   return module === null ? text : <module.InlineMarkdown text={text} />;
 }
 
-/** The visible text of a one-line Markdown title; the raw title until the renderer loads. */
 export function lazyPlainInline(text: string): string {
   return loaded === null ? text : loaded.plainInline(text);
 }

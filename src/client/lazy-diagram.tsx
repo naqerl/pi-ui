@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { type DiagramRenderResult, renderDiagram } from "./diagram-render";
+import { RawSvg } from "./RawSvg";
 
-/** A failed or invalid drawing stays a card in the message, with the parser's message. */
 function DiagramError({ message, source }: { message: string; source: string }) {
   return (
     <div
@@ -17,7 +17,6 @@ function DiagramError({ message, source }: { message: string; source: string }) 
   );
 }
 
-/** The drawing itself. Kept in its own chunk because the renderer is the largest part. */
 export function DiagramSvg({
   source,
   svg,
@@ -35,13 +34,9 @@ export function DiagramSvg({
     if (result.ok) onSvg?.(result.svg);
   }, [onSvg, result]);
   if (!result.ok) return <DiagramError message={result.message} source={source} />;
-  return (
-    // biome-ignore lint/security/noDangerouslySetInnerHtml: Pele escapes diagram text and filters links and styles.
-    <div className="diagram-svg" dangerouslySetInnerHTML={{ __html: result.svg }} />
-  );
+  return <RawSvg svg={result.svg} className="diagram-svg" />;
 }
 
-/** A mermaid fence in Markdown, drawn with the same renderer as a chat diagram part. */
 export function MarkdownDiagram({ source }: { source: string }) {
   return (
     <div

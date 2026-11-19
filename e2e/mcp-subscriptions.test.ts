@@ -103,7 +103,6 @@ test("persists the advanced cursor and restores the subscription with it", async
   const [saved] = await restarted.read();
   assert.equal(saved?.cursor, "hub:837");
 
-  // What the boot restore sends back: a new id, the same stored cursor.
   const restoredFeed = new McpEventFeed(restarted);
   restoredFeed.ingest({
     customType: "mcp-events-tool",
@@ -136,8 +135,6 @@ test("accepts the server cursor even when it moves backwards and deduplicates by
     },
   });
 
-  // Cursors are opaque. A fresh event with a lower-looking cursor is still a
-  // new delivery, and the server's cursor becomes the stored one.
   assert.equal(
     feed.ingest({
       customType: "mcp-events",
@@ -148,7 +145,6 @@ test("accepts the server cursor even when it moves backwards and deduplicates by
   assert.equal(feed.state.subscriptions[0]?.cursor, "hub:10");
   assert.equal(feed.state.events.length, 1);
 
-  // The same event id is the replay signal, even with an even lower cursor.
   assert.equal(
     feed.ingest({
       customType: "mcp-events",
@@ -185,19 +181,14 @@ test("a repeated event-id burst is dropped and a mixed flush is delivered once",
     eventItem(`hub:${index + 2}`, null, `${index + 2}`),
   );
 
-  // First delivery is live and stores all ids.
   assert.equal(feed.ingest({ customType: "mcp-events", details: { events: burst } }), true);
   const before = feed.state;
 
-  // Replaying those ids does not add events or a notice, even when a busy
-  // hub returns different cursors. The stored cursor still follows the server.
   assert.equal(feed.ingest({ customType: "mcp-events", details: { events: burst } }), false);
   assert.equal(feed.state.notice, before.notice);
   assert.equal(feed.state.events.length, before.events.length);
   assert.equal(feed.state.subscriptions[0]?.cursor, "hub:17");
 
-  // The same decision gates pi-mcp-events' follow-up message, so a pure
-  // replay cannot start a turn.
   const shim = new DurableExtensionShim();
   const submitted: string[] = [];
   shim.setObserver(() => false);
@@ -205,7 +196,6 @@ test("a repeated event-id burst is dropped and a mixed flush is delivered once",
   shim.sendMessage({ customType: "mcp-events", content: "replay", details: { events: burst } });
   assert.deepEqual(submitted, []);
 
-  // A flush that also has a new id is delivered once.
   assert.equal(
     feed.ingest({
       customType: "mcp-events",
@@ -417,7 +407,7 @@ test("persists delivered ids so the next process can recognise the replay", asyn
     }),
     true,
   );
-  // The delivered set records a committed chip, not merely an observed event.
+
   feed.markDelivered([eventItem("hub:7", null, "event-7")]);
   await registry.close();
 
@@ -480,7 +470,7 @@ test("cancelling by stableId after a restore stops the stream and survives a res
     });
     assert.equal(cancelled?.status, "cancelled");
     assert.equal(cancelled?.enabled, false);
-    // Repeating the cancellation is harmless.
+
     assert.equal(
       (await runtime.cancelSubscription(stableId, undefined, { removeDeclaration: true }))?.status,
       "cancelled",
@@ -534,7 +524,6 @@ test("a late status notice cannot revive a cancelled stable id", async (t) => {
   });
   assert.equal(feed.findByStableId(stableId)?.status, "cancelled");
 
-  // A queued status can also reach the registry after the cancellation.
   await registry.record(
     subscription({
       stableId,
@@ -568,7 +557,6 @@ function statusNotice(id: string, status: string) {
   };
 }
 
-/** The same status on the adapter's prose channel: no JSON payload in the text. */
 function proseStatus(id: string, status: string) {
   return {
     customType: "mcp-ui-status",
@@ -577,7 +565,6 @@ function proseStatus(id: string, status: string) {
   };
 }
 
-/** One JSON batch with every item on the same adapter status shape. */
 function batchStatusNotice(ids: readonly string[], status = "failed") {
   const subscriptions = ids.map((id) => ({
     id,
@@ -593,7 +580,6 @@ function batchStatusNotice(ids: readonly string[], status = "failed") {
   };
 }
 
-/** The index sink: ingest through the observer, filter untracked/superseded statuses. */
 function statusSink(feed: McpEventFeed) {
   const submitted: string[] = [];
   const shim = new DurableExtensionShim();
@@ -608,7 +594,6 @@ function statusSink(feed: McpEventFeed) {
   return { shim, submitted };
 }
 
-/** Bind only the immediate status path to a fake chat and capture its turns. */
 function immediateChat(feed: McpEventFeed) {
   const submitted: string[] = [];
   const fake = {
@@ -668,8 +653,6 @@ test("a durable id with a live sibling stays silent but its own id still speaks"
   const stableId = deriveStableId("hub", "hub", {});
   heartbeat(feed, "b-live", new Date().toISOString());
 
-  // No adapter id: this describes the durable subscription, and the live row
-  // is already the generation serving it.
   shim.sendMessage({
     customType: "mcp-events-status",
     content: `${MCP_STATUS_HEAD}\n${JSON.stringify({
@@ -680,7 +663,6 @@ test("a durable id with a live sibling stays silent but its own id still speaks"
 
   assert.deepEqual(submitted, [], "a live sibling makes the durable-id status noise");
 
-  // Naming the live generation itself is authoritative and still reaches chat.
   shim.sendMessage({
     customType: "mcp-events-status",
     content: `${MCP_STATUS_HEAD}\n${JSON.stringify({
@@ -908,7 +890,6 @@ test("a truncation warning for the tracked live stream still reaches the sink", 
   assert.match(submitted[0] ?? "", /replay is truncated for hub/);
 });
 
-/** The real extension preamble: it mentions reconnecting and failed itself. */
 function realisticStatus(id: string, status: string, cursor: string, name = "hub") {
   return realisticBatch([{ id, server: "hub", name, status, cursor }]);
 }
@@ -958,11 +939,9 @@ test("a killed tracked stream speaks once and its re-subscribe resumes at the ol
   });
   const { shim, submitted } = statusSink(feed);
 
-  // The stream dies and the extension reports the same outage twice.
   shim.sendMessage(realisticStatus("b-live", "reconnecting", "hub:867"));
   shim.sendMessage(realisticStatus("b-live", "reconnecting", "hub:868"));
 
-  // The replacement subscribe omits its cursor and the server answers zero.
   feed.ingest({
     customType: "mcp-events-tool",
     details: {
@@ -1335,7 +1314,6 @@ async function withAgentConfig(
   });
 }
 
-/** Membership now lives in the agent dir, next to mcp.json. */
 async function declareSubscriptions(
   entries: Array<Pick<McpSubscriptionRecord, "server" | "name" | "arguments" | "title">>,
 ): Promise<void> {
@@ -1439,8 +1417,6 @@ test("a restored historical id stays a replay and never produces a notice", asyn
     },
   });
 
-  // Event ids are the replay key. A redelivered historical id is stored with
-  // the replay mark, and repeating it cannot turn it into a chat notice.
   assert.equal(
     feed.ingest({
       customType: "mcp-events",
@@ -1815,7 +1791,6 @@ test("generation enrichment copies adapter results and refreshes a changed gener
     feed.ingest({ customType: "mcp-events", details: { events: [item] } });
     feed.markDelivered([item]);
 
-    // pi-mcp-events keeps the first result as its live subscription object.
     adapterSubscription.generation = "daemon-a";
     generation = "daemon-b";
     const listed = await enrich({
@@ -1862,7 +1837,6 @@ test("reopenSubscription without a cursor uses the newest durable position", asy
       return original(name, params, signal);
     };
 
-    // The caller still holds a record from before the last delivered event.
     const stale = subscription({
       id: "old-adapter",
       server: "stub",
@@ -1936,8 +1910,6 @@ test("a live protocol reconnect refreshes generation before the renumbered event
     feed.markDelivered([item]);
     assert.deepEqual(feed.novelEvents([item]), []);
 
-    // The adapter reconnects its live stream through protocolConnection; no
-    // mcp_events tool call or list follows before the first replayed event.
     generation = "daemon-b";
     await runtime.protocolConnection("stub");
 
@@ -1956,7 +1928,6 @@ test("a live protocol reconnect refreshes generation before the renumbered event
   }
 });
 
-/** Poll until a predicate observes the asynchronous declaration write. */
 async function waitFor(check: () => boolean | Promise<boolean>, label: string): Promise<void> {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
@@ -2146,7 +2117,6 @@ test("upsert and remove intents re-read from disk and skip no-op writes", async 
   assert.deepEqual(final.subscriptions, []);
 });
 
-/** Drive the runtime's observer exactly as the shim's tool wrapper would. */
 function notifyToolResult(
   runtime: Awaited<ReturnType<typeof startMcpRuntime>>,
   notice: unknown,
@@ -2322,7 +2292,7 @@ test("restore uses a declaration plus the cached cursor without a config write",
       state?.entries.map((entry) => [entry.stableId, entry.title, entry.state]),
       [[deriveStableId("stub", "stub-hub", {}), "Stub hub", "live"]],
     );
-    // Restore must not add a cursor, health or enabled flag to the declaration file.
+
     const document = JSON.parse(await readFile(join(agentDir, "subscriptions.json"), "utf8")) as {
       subscriptions: Array<Record<string, unknown>>;
     };
@@ -2689,9 +2659,7 @@ test("a NotFound restore drop leaves the declaration for a later retry", async (
     assert.equal(runtime.restoredSubscriptions.length, 0);
     assert.equal(runtime.isSubscriptionDropped("restore/gone-stream"), true);
     assert.deepEqual((await readSubscriptionConfig(agentDir)).entries, [declaration]);
-    // A reload clears the drop for a declared stable id and retries it; the
-    // server rejects it again, and the declaration is still the only thing
-    // that removes the line.
+
     await runtime.reload("subscriptions");
     assert.equal(runtime.restoredSubscriptions.length, 0);
     assert.deepEqual((await readSubscriptionConfig(agentDir)).entries, [declaration]);
@@ -2742,7 +2710,6 @@ test("a repaired config clears a stale write error on reload", async (t) => {
   assert.match(runtime.status.subscriptionConfig?.error ?? "", /could not be parsed/);
   assert.match(runtime.status.subscriptionConfig?.writeError ?? "", /could not be parsed/);
 
-  // The operator repairs the file; a reload reads it and retires the refusal.
   await writeFile(path, JSON.stringify({ version: 1, subscriptions: [] }));
   const result = await runtime.reload("subscriptions");
   assert.equal(result.ok, true);
@@ -2803,7 +2770,6 @@ test("a declaration with an unpaired surrogate is skipped instead of throwing", 
   assert.deepEqual(config.entries, [{ server: "zeroshot", name: "hub", arguments: {} }]);
   assert.equal(config.error, undefined);
   assert.ok(lines.some((line) => line.includes("entry 0 is invalid")));
-  // The same malformed component can reach the identity helper from an
-  // adapter result; it must stay total rather than throwing a URIError.
+
   assert.doesNotThrow(() => deriveStableId(loneSurrogate, "hub", {}));
 });

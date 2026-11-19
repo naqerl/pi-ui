@@ -2,11 +2,6 @@ import { useEffect, useId, useRef, useState } from "react";
 import { formatDateTime } from "../shared/time";
 import type { RunError } from "../shared/types";
 
-/**
- * One static line at the top of the chat. It is absolutely placed so it never
- * pushes the transcript down, and the full multi-line error lives behind a
- * click instead of growing the header.
- */
 export function RunErrorHeader({
   error,
   onDismiss,
@@ -63,7 +58,6 @@ export function RunErrorHeader({
         </div>
       </div>
       {open && (
-        // biome-ignore lint/a11y/useKeyWithClickEvents: Esc is handled by the dialog cancel event.
         <dialog
           ref={ref}
           data-testid="run-error-dialog"

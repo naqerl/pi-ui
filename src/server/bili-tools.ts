@@ -6,11 +6,6 @@ import {
 import type { BillionContextInline } from "./billion-context.js";
 import { jsonSchemaToTypeBox } from "./json-schema.js";
 
-/**
- * Expose billion-context's compression tools only when the in-process engine
- * answers the manifest endpoint. Missing or unreachable engines leave the
- * coding/web tool registry exactly as it was.
- */
 export async function createBiliTools(
   bili: BillionContextInline | undefined,
 ): Promise<readonly ToolRegistration[]> {
@@ -25,10 +20,6 @@ export async function createBiliTools(
       description: tool.description ?? `Run the billion-context ${tool.name} tool.`,
       parameters: jsonSchemaToTypeBox(tool.inputSchema),
       async execute(args, api): Promise<ToolExecutionResult> {
-        // The durable id (`api.conversationId`) is the integer in current.json.
-        // The live turn is bound to the head-scoped id, or to a task/delegate
-        // scope, and that is the id billion-context witnessed this call under.
-        // Posting the integer after a compaction head is a 409.
         const conversationId = String(bili.currentConversationId() ?? api.conversationId ?? "");
         if (conversationId.length === 0) {
           return {

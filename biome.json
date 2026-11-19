@@ -1,5 +1,69 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.6.3/schema.json",
+  "overrides": [
+    {
+      "includes": [
+        "src/client/markdown.tsx",
+        "src/client/NoticeView.tsx",
+        "src/client/StatsView.tsx"
+      ],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noArrayIndexKey": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/client/RawSvg.tsx"],
+      "linter": {
+        "rules": {
+          "security": {
+            "noDangerouslySetInnerHtml": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/client/TaskDetailVariants.tsx", "src/client/TasksView.tsx"],
+      "linter": {
+        "rules": {
+          "a11y": {
+            "useSemanticElements": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": [
+        "src/client/ChatView.tsx",
+        "src/client/DiagramViewer.tsx",
+        "src/client/MediaViewer.tsx",
+        "src/client/NoticeView.tsx",
+        "src/client/PageSheet.tsx",
+        "src/client/RunErrorHeader.tsx"
+      ],
+      "linter": {
+        "rules": {
+          "a11y": {
+            "useKeyWithClickEvents": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/client/ProjectSuggestions.tsx"],
+      "linter": {
+        "rules": {
+          "a11y": {
+            "useFocusableInteractive": "off",
+            "useKeyWithClickEvents": "off"
+          }
+        }
+      }
+    }
+  ],
   "files": {
     "includes": [
       "**",

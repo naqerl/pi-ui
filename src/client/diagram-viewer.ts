@@ -1,19 +1,16 @@
-/** Zoom is relative to the fitted drawing: 0.5x shows it at half fit, 8x at eight times fit. */
 export const MIN_ZOOM = 0.5;
 export const MAX_ZOOM = 8;
-/** Breathing room between the drawing and the stage edges when it is fitted. */
+
 export const VIEWER_PADDING = 24;
 
 export interface DiagramView {
-  /** Scale relative to fit. */
   zoom: number;
-  /** Screen-space translation of the drawing's top-left corner. */
+
   x: number;
   y: number;
 }
 
 export interface FittedView extends DiagramView {
-  /** The absolute scale at zoom 1, before the viewport transform. */
   scale: number;
 }
 
@@ -22,7 +19,6 @@ export function clampZoom(zoom: number): number {
   return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
 }
 
-/** The scale that fits `contentWidth` x `contentHeight` inside the stage with a small margin. */
 export function fitScale(
   viewportWidth: number,
   viewportHeight: number,
@@ -48,7 +44,6 @@ export function fitScale(
   return Number.isFinite(scale) && scale > 0 ? scale : 1;
 }
 
-/** The centred, fit-to-screen view used when the viewer opens or the reader taps fit. */
 export function fitView(
   viewportWidth: number,
   viewportHeight: number,
@@ -65,7 +60,6 @@ export function fitView(
   };
 }
 
-/** Zoom while keeping the content point under `(anchorX, anchorY)` in place. */
 export function zoomAt(
   view: DiagramView,
   nextZoom: number,
@@ -91,7 +85,6 @@ function slug(value: string): string {
     .slice(0, 60);
 }
 
-/** The name the viewer uses when it downloads the drawing as a standalone SVG file. */
 export function diagramDownloadName(id: string, title?: string): string {
   const safeId = slug(id) || "diagram";
   const label = title === undefined ? "" : slug(title);

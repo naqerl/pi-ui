@@ -227,8 +227,6 @@ test("a cut stream resumes at its last cursor without a status notice", {
       ])}`,
     );
 
-    // The first request stream ends after one delivered event. The replacement
-    // stream must continue from that event's cursor, not the original position.
     await expect
       .poll(
         () => lines(spawned.statePath).filter((line) => line.startsWith("stream:drop-stream:")),
@@ -236,8 +234,6 @@ test("a cut stream resumes at its last cursor without a status notice", {
       )
       .toEqual(["stream:drop-stream:null", "stream:drop-stream:drop:2"]);
 
-    // The next event proves the replacement stream is delivering, so the row is
-    // healthy again and no generation death belonged in the chat.
     await expect
       .poll(
         async () =>
@@ -291,8 +287,6 @@ test("the events page names declarations that are waiting or missing their serve
       .toContain("Declared in subscriptions.json: 1 (0 live, 1 waiting)");
     await expect.poll(bodyText, { timeout: 30_000 }).toContain("server not configured");
 
-    // A declaration-only row has no cache row and no feed row, but deleting
-    // its line is still a successful delete, not a 404.
     const deleted = await fetch(
       new URL(`/api/mcp/subscriptions/${encodeURIComponent("ghost/hub")}`, spawned.url),
       { method: "DELETE" },

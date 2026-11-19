@@ -3,10 +3,9 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { McpSubscriptionState } from "../shared/types.js";
 
-/** The registry lives next to the rest of pi-ui's durable state. */
 export const MCP_SUBSCRIPTIONS_FILE = "mcp-subscriptions.json";
 export const MCP_SUBSCRIPTIONS_VERSION = 1;
-/** Delivered ids kept per subscription for replay detection after a restart. */
+
 export const MAX_DELIVERED_EVENT_IDS = 1_000;
 
 export type McpSubscriptionRecordStatus =
@@ -22,44 +21,44 @@ export type McpSubscriptionRecordStatus =
 export interface McpSubscriptionRecord {
   readonly server: string;
   readonly name: string;
-  /** Optional human title carried from subscriptions.json. */
+
   readonly title?: string;
-  /** Never changes for the same server, stream name and arguments document. */
+
   readonly stableId?: string;
-  /** Server event-numbering generation captured at the last subscribe. */
+
   readonly generation?: string | number;
-  /** Adapter id. It changes when the process subscribes again. */
+
   readonly id?: string | null;
   readonly arguments: Record<string, unknown>;
   readonly cursor: string | null;
   readonly status: McpSubscriptionRecordStatus;
-  /** Watchdog health. Older rows omit it and derive it from `status`. */
+
   readonly state?: McpSubscriptionState;
-  /** False for a cancelled/stopped entry, so boot does not resubscribe it. */
+
   readonly enabled?: boolean;
-  /** Most recent event ids delivered for this stable id, oldest first. */
+
   readonly deliveredEventIds?: readonly string[];
-  /** ISO time of the last event delivered to this subscription. */
+
   readonly lastEventAt?: string;
-  /** ISO time of the last heartbeat from the push stream. */
+
   readonly lastHeartbeatAt?: string;
-  /** ISO time of the last poll, successful or failed. */
+
   readonly lastPollAt?: string;
-  /** Why the latest poll or recovery failed. Cleared by a healthy observation. */
+
   readonly lastError?: string;
-  /** ISO time of `lastError`. */
+
   readonly lastErrorAt?: string;
-  /** Consecutive automatic recovery attempts that failed. */
+
   readonly recoveryFailures?: number;
-  /** The last re-subscribe is still waiting for its first heartbeat/event. */
+
   readonly recoveryPending?: boolean;
-  /** The clock at which that re-subscribe happened. */
+
   readonly recoveryStartedAt?: string;
-  /** Watchdog re-opens since the subscription was last healthy. */
+
   readonly reconnects?: number;
-  /** Why the last watchdog re-open happened. */
+
   readonly lastReconnectReason?: string;
-  /** Adapter end reason for a stream that has stopped. */
+
   readonly endReason?: string;
   readonly updatedAt: string;
 }
@@ -70,13 +69,12 @@ interface RegistryDocument {
 }
 
 export interface McpSubscriptionRegistryOptions {
-  /** Minimum milliseconds between background writes. */
   readonly throttleMs?: number;
-  /** Override the clock in tests. */
+
   readonly now?: () => number;
-  /** One line is logged for a corrupt or unknown registry; never per event. */
+
   readonly log?: (line: string) => void;
-  /** Override the file name (used by tests); it still lives under the data dir. */
+
   readonly fileName?: string;
 }
 
@@ -88,7 +86,6 @@ function normalizeArguments(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 
-/** Recursively sort object keys so argument order cannot change the identity. */
 function sortValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortValue);
   if (!isRecord(value)) return value;
@@ -99,7 +96,6 @@ function sortValue(value: unknown): unknown {
   );
 }
 
-/** Canonical JSON used only to derive a stable id. */
 export function sortKeyArguments(args: Record<string, unknown> | undefined): string {
   try {
     return JSON.stringify(sortValue(args ?? {}));
@@ -108,14 +104,10 @@ export function sortKeyArguments(args: Record<string, unknown> | undefined): str
   }
 }
 
-/** Encode a component even when a hand-edited string has a lone surrogate. */
 function encodeStableComponent(value: string): string {
   try {
     return encodeURIComponent(value);
   } catch {
-    // A lone UTF-16 surrogate is not a valid URI component. Keep the identity
-    // deterministic for callers that still hold such a string; config parsing
-    // rejects it as an invalid declaration before this path.
     return encodeURIComponent(
       value.replace(
         /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
@@ -125,11 +117,6 @@ function encodeStableComponent(value: string): string {
   }
 }
 
-/**
- * A subscription's identity in pi-ui. It survives restarts and argument order,
- * while the adapter id (`mcp-extension-<uuid>-<n>`) does not. The common
- * no-arguments form is human readable, e.g. `zeroshot/hub`.
- */
 export function deriveStableId(
   server: string,
   name: string,
@@ -142,13 +129,11 @@ export function deriveStableId(
   return `${base}#${digest}`;
 }
 
-/** Alternate names kept for callers that describe the value rather than derive it. */
 export const stableIdFor = deriveStableId;
 export const subscriptionStableId = deriveStableId;
 
 const INACTIVE_STATUS = new Set(["stopped", "ended", "failed", "cancelled"]);
 
-/** A status only counts as enabled when boot may restore it. */
 export function subscriptionEnabled(status: string): boolean {
   return !INACTIVE_STATUS.has(status);
 }
@@ -161,22 +146,19 @@ const SUBSCRIPTION_STATES = new Set<McpSubscriptionState>([
   "cancelled",
 ]);
 
-/** Normalize a persisted state, accepting only the five public values. */
 export function normalizeSubscriptionState(value: unknown): McpSubscriptionState | undefined {
   return typeof value === "string" && SUBSCRIPTION_STATES.has(value as McpSubscriptionState)
     ? (value as McpSubscriptionState)
     : undefined;
 }
 
-/** Older rows have no `state`; derive one from the adapter's status spelling. */
 export function deriveSubscriptionState(
   status: string,
   state?: McpSubscriptionState,
 ): McpSubscriptionState {
   if (state !== undefined) return state;
   if (status === "cancelled" || status === "stopped" || status === "ended") return "cancelled";
-  // Retry exhaustion is a stall until the watchdog's two recovery attempts
-  // are used up; only that watchdog decision marks a row dead.
+
   if (status === "failed") return "stalled";
   if (status === "opening" || status === "reconnecting") return "recovering";
   return "active";
@@ -280,7 +262,6 @@ function needsRewrite(value: unknown): boolean {
   );
 }
 
-/** One entry per server, stream name and canonical arguments document. */
 export function subscriptionKey(
   server: string,
   name: string,
@@ -293,12 +274,10 @@ export function recordKey(record: McpSubscriptionRecord): string {
   return subscriptionKey(record.server, record.name, record.arguments);
 }
 
-/** The stable id of a record, deriving it when an older file omitted it. */
 export function recordStableId(record: McpSubscriptionRecord): string {
   return record.stableId ?? deriveStableId(record.server, record.name, record.arguments);
 }
 
-/** Alternate name kept for callers that describe the record rather than the value. */
 export const stableIdForRecord = recordStableId;
 
 function newer(first: McpSubscriptionRecord, second: McpSubscriptionRecord): boolean {
@@ -311,11 +290,6 @@ function parseTime(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-/**
- * True when a cursor names a real position. Cursors are opaque, so only the
- * trailing sequence is inspected: `hub:0`, `x:0` and `prefix:0` all mean the
- * stream's zero point, which a subscribe must treat as "start in now".
- */
 export function hasPosition(cursor: string | null | undefined): cursor is string {
   if (typeof cursor !== "string" || cursor.trim().length === 0) return false;
   const match = /:(\d+)$/.exec(cursor) ?? /^(\d+)$/.exec(cursor);
@@ -328,12 +302,9 @@ function hasUsableCursor(record: McpSubscriptionRecord): boolean {
 }
 
 function isCancelledRecord(record: McpSubscriptionRecord): boolean {
-  // `failed`, `stopped` and `ended` also persist `enabled: false`, but they are
-  // not an operator cancellation. Only a cancelled row wins over a live one.
   return record.status === "cancelled";
 }
 
-/** The timestamp that best describes when this row last observed its stream. */
 function observedAt(record: McpSubscriptionRecord): number {
   return (
     parseTime(record.lastEventAt) ??
@@ -344,11 +315,6 @@ function observedAt(record: McpSubscriptionRecord): number {
   );
 }
 
-/**
- * One row per server + stream name. Prefer real event activity over a bare
- * `updatedAt`, then a usable cursor, then the newest observation. An explicit
- * cancellation of the same stable identity stays cancelled.
- */
 function preferRecord(
   first: McpSubscriptionRecord,
   second: McpSubscriptionRecord,
@@ -373,7 +339,6 @@ function preferRecord(
   return secondAt > firstAt ? second : first;
 }
 
-/** Collapse old duplicate rows before they can restore two streams at boot. */
 function dedupeByServerName(records: readonly McpSubscriptionRecord[]): {
   records: McpSubscriptionRecord[];
   dropped: Map<string, number>;
@@ -394,20 +359,16 @@ function dedupeByServerName(records: readonly McpSubscriptionRecord[]): {
   return { records: [...byName.values()], dropped };
 }
 
-/** Merge two observations of the same subscription. The newest observation wins. */
 function mergeRecord(
   existing: McpSubscriptionRecord,
   incoming: McpSubscriptionRecord,
 ): McpSubscriptionRecord {
   const latest = newer(existing, incoming) ? incoming : existing;
-  // Cursors are opaque. The server's newest value is authoritative even when
-  // it looks smaller or is not the shape we saw before.
+
   const cursor = latest.cursor;
   let status = latest.status;
   let enabled = latest.enabled ?? subscriptionEnabled(status);
-  // A late reconnecting/active notice for the adapter id that was cancelled
-  // must not turn the durable entry back on. A genuinely new subscribe gets a
-  // new adapter id, so that observation is allowed to replace the cancellation.
+
   const cancelled =
     existing.status === "cancelled"
       ? existing
@@ -427,13 +388,11 @@ function mergeRecord(
     ...latest,
     stableId: latest.stableId ?? existing.stableId ?? incoming.stableId,
     generation: latest.generation ?? existing.generation ?? incoming.generation,
-    // A rewrite of an old file has no id yet; do not lose one already known.
+
     id: latest.id ?? existing.id ?? incoming.id ?? null,
     status,
     enabled,
-    // The feed owns this set: it writes the whole thing on every change and must be
-    // able to shrink it (dropping ids from an older hub numbering). A union made
-    // removal impossible, so a poisoned set could never be cleared.
+
     deliveredEventIds: normalizeEventIds(
       latest.deliveredEventIds ?? existing.deliveredEventIds ?? incoming.deliveredEventIds ?? [],
     ),
@@ -461,16 +420,6 @@ function mergeRecord(
   };
 }
 
-/**
- * Durable `DATA_DIR/mcp-subscriptions.json` registry. Reads never throw: a
- * missing, corrupt or future-versioned file simply starts an empty registry.
- * Background writes are coalesced and throttled; `flush()`/`close()` force the
- * final write so a shutdown keeps the last cursor.
- *
- * A file written before stable ids existed is upgraded in place on load: the
- * missing stable id, adapter id, enabled flag and delivered-id list are
- * derived, then the file is rewritten once.
- */
 export class McpSubscriptionRegistry {
   readonly path: string;
   private readonly throttleMs: number;
@@ -501,13 +450,11 @@ export class McpSubscriptionRegistry {
     this.log = options.log ?? ((line) => console.warn(line));
   }
 
-  /** Persisted entries, deduplicated by `(server, name, arguments)`. */
   async read(): Promise<McpSubscriptionRecord[]> {
     await this.load();
     return [...this.records.values()];
   }
 
-  /** Same data in memory after `read()`; useful for synchronous callers. */
   list(): McpSubscriptionRecord[] {
     return [...this.records.values()];
   }
@@ -520,7 +467,6 @@ export class McpSubscriptionRegistry {
     return this.read();
   }
 
-  /** The entry with this stable id, or undefined. */
   findByStableId(stableId: string): McpSubscriptionRecord | undefined {
     for (const record of this.records.values()) {
       if (recordStableId(record) === stableId) return record;
@@ -550,7 +496,6 @@ export class McpSubscriptionRegistry {
     return this.loading;
   }
 
-  /** Remember the newest observation and schedule one throttled write. */
   record(entry: McpSubscriptionRecord): Promise<void> {
     if (this.closed) return Promise.resolve();
     const incoming = normalizeRecord(entry);
@@ -574,11 +519,6 @@ export class McpSubscriptionRegistry {
     return this.flush();
   }
 
-  /**
-   * Mark every entry with this stable id cancelled. The live adapter id is no
-   * longer persisted as enabled, so the next boot does not subscribe again.
-   * Repeating it is harmless and returns the same cancelled record.
-   */
   async cancel(stableId: string): Promise<McpSubscriptionRecord | null> {
     await this.load();
     let found: McpSubscriptionRecord | undefined;
@@ -604,15 +544,10 @@ export class McpSubscriptionRegistry {
     return found ?? null;
   }
 
-  /** Alternate name for `cancel`, kept for callers that think in identity. */
   cancelByStableId(stableId: string): Promise<McpSubscriptionRecord | null> {
     return this.cancel(stableId);
   }
 
-  /**
-   * Drop cache rows whose stable id is not declared in subscriptions.json.
-   * The data dir then holds exactly the cursors of declared streams.
-   */
   async prune(stableIds: ReadonlySet<string> | readonly string[]): Promise<number> {
     await this.load();
     const keep = stableIds instanceof Set ? stableIds : new Set(stableIds);
@@ -627,7 +562,6 @@ export class McpSubscriptionRegistry {
     return removed;
   }
 
-  /** Force the dirty registry to disk now, bypassing the throttle. */
   flush(): Promise<void> {
     if (this.timer !== undefined) {
       clearTimeout(this.timer);
@@ -640,8 +574,6 @@ export class McpSubscriptionRegistry {
       return this.writing;
     }
     const run = this.writing.then(async () => {
-      // Merge what is already on disk before the first write from a fresh
-      // instance, so a caller that records before reading still keeps old rows.
       await this.load();
       if (!this.dirty) return;
       await this.writeNow();
@@ -656,7 +588,6 @@ export class McpSubscriptionRegistry {
     return run;
   }
 
-  /** Final flush on shutdown. The registry is not used for writes afterwards. */
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -753,5 +684,4 @@ export class McpSubscriptionRegistry {
   }
 }
 
-/** Alternate name for the same store, kept for callers that think in stores. */
 export { McpSubscriptionRegistry as McpSubscriptionStore };

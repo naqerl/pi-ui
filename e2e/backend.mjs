@@ -30,10 +30,9 @@ if (!live) {
                 name: "E2E Model",
                 reasoning: false,
                 input: ["text", "image"],
-                // Per million tokens, so measured task cost is a real number in the e2e runs.
+
                 cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-                // Large enough that the suite's shared conversation (history seeds
-                // ~50 bulky turns) never triggers preflight compression mid-run.
+
                 contextWindow: 1_048_576,
                 maxTokens: 2048,
               },
@@ -63,8 +62,7 @@ if (!live) {
               command: process.execPath,
               args: [join(import.meta.dirname, "stub-mcp.mjs")],
             },
-            // Loopback port 1 is closed, so this HTTP server fails at boot while
-            // the stdio stub above stays reachable.
+
             ...(allMcpReachable
               ? {}
               : { unreachable: { url: "http://127.0.0.1:1/mcp", requestTimeoutMs: 2000 } }),
@@ -78,12 +76,12 @@ if (!live) {
   process.env.PI_CODING_AGENT_DIR = agentDir;
   process.env.PI_MODEL = "e2e/e2e-model";
   process.env.PI_OFFLINE = "1";
-  // Dashboard polls hit the fake Hetzner API on the fake model server, fast.
+
   process.env.HCLOUD_TOKEN = FAKE_HCLOUD_TOKEN;
   process.env.PI_DASHBOARD_MIN_INTERVAL_MS = "500";
-  // A short quiet threshold, so the stalled-run watchdog and its strip run within a test.
+
   process.env.PI_UI_QUIET_AFTER_MS ??= "3000";
-  // A forced model failure should reach its error header in seconds, not minutes.
+
   process.env.PI_RETRY_BASE_MS ??= "50";
   process.env.PI_RETRY_MAX_DELAY_MS ??= "100";
   process.env.PI_RETRY_BUDGET_MS ??= "1000";

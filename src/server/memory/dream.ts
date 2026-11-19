@@ -73,8 +73,7 @@ function parseBlocks(file: string, text: string): JournalBlock[] {
     if (body.length === 0) continue;
     const heading =
       (body.match(/^#{1,4} (.+)$/m) ?? [])[1] ?? body.split(/\r?\n/)[0]?.slice(0, 70) ?? file;
-    // Keep every non-empty line. A short entry is still a whole block and must
-    // reach classification and the emitted merge item, never be dropped.
+
     const lines = body
       .split(/\r?\n/)
       .map((line) => line.trim())
@@ -250,8 +249,6 @@ export async function dreamMemory(
         "",
       ];
       for (const block of group.blocks) {
-        // Emit the full block text (heading and body). Sampled lines would lose
-        // short lines and make the merge item incomplete.
         item.push(`<!-- from ${block.file} -->`, block.text, "");
       }
       const file = join(options.emitDir, `${rel.replace(/\//g, "--")}`);

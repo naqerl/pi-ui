@@ -26,12 +26,11 @@ test("a failed run shows a thin dismissible error header without another action"
 
   const header = screen.getByTestId("run-error-header");
   await expect(header).toBeVisible({ timeout: 30_000 });
-  // One failure, one header: the surface must not grow a second copy.
+
   await expect.poll(async () => screen.getByTestId("run-error-header").count()).toBe(1);
   await expect(screen.getByTestId("composer-error")).toHaveCount(0);
   await expect(screen.getByTestId("run-error-class")).toHaveText(/Error$/);
 
-  // The failure reaches the phone over the existing push path, with a chat deep link.
   await expect
     .poll(async () =>
       browser.evaluate(async () => {
@@ -60,10 +59,9 @@ test("a failed run shows a thin dismissible error header without another action"
   });
   expect(placement?.position).toBe("absolute");
   expect(placement?.height ?? 99).toBeLessThan(40);
-  // The danger token supplies the colour; the literal red is not in the header.
+
   expect(placement?.color).not.toBe("rgb(255, 0, 0)");
 
-  // The same single host survives the wide layout.
   await browser.setViewport({ width: 1280, height: 900 });
   await expect.poll(async () => screen.getByTestId("run-error-header").count()).toBe(1);
 
@@ -73,12 +71,10 @@ test("a failed run shows a thin dismissible error header without another action"
   await browser.keyboard.press("Escape");
   await expect(screen.getByTestId("run-error-dialog")).toHaveCount(0);
 
-  // It stays until acknowledged, then the server clears it and no refresh brings it back.
   await screen.getByTestId("run-error-dismiss").tap();
   await expect(header).toHaveCount(0);
   await expect.poll(async () => screen.getByTestId("run-error-header").count()).toBe(0);
 
-  // A page switch is a new render, not a resurrection.
   await screen.getByTestId("page-dot-tasks").tap();
   await expect.poll(async () => screen.getByTestId("run-error-header").count()).toBe(0);
   await screen.getByTestId("page-dot-chat").tap();

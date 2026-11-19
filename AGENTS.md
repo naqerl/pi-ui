@@ -11,8 +11,19 @@ card with a solid or blurred background until a task explicitly says otherwise.
 Every interactive control gets the global press feedback from `index.css`: it
 compresses on pointer-down and eases back on release. Do not disable it in a
 component unless the control owns its own pointer gesture; in that case add
-`data-no-press` and a comment explaining why. Reduced motion must always be
-honoured.
+`data-no-press`. Reduced motion must always be honoured.
+
+## Comments
+
+Source carries no comments. Names and structure explain behaviour; `scripts/check-comments.mjs`
+runs in `lint` and `build`, so a comment fails the gate.
+
+## Lint overrides
+
+`biome.json` carries the file-scoped overrides that replaced inline suppressions: positional keys in
+`markdown.tsx`, `NoticeView.tsx` and `StatsView.tsx`; the original interactive roles in
+`TaskDetailVariants.tsx` and `TasksView.tsx`; the dialog and suggestion click handlers; and the one
+audited SVG inner-HTML sink in `RawSvg.tsx`.
 
 ## Spacing
 

@@ -38,7 +38,7 @@ test("preboot unseen IDs are news; A then [A,B,B] selects exactly B without adva
   assert.deepEqual(feed.novelEvents([a]), [a]);
   assert.deepEqual(feed.novelEvents([a]), [a]);
   feed.ingest({ customType: "mcp-events", details: { events: [a] } });
-  // Ingest only observes; the chip commit is what removes an id from novelty.
+
   feed.markDelivered([a]);
   assert.deepEqual(feed.novelEvents([a, b, b]), [b]);
   const text = mcpEventText({ head: MCP_EVENTS_HEAD, items: [], dropped: 0 }, [b]);
@@ -57,7 +57,7 @@ test("failed delivery survives restart with the same id, and completed IDs survi
   await first.load();
   await first.enqueue("news", ["stable/A"]);
   first.start();
-  // close waits for the in-flight attempt without discarding its durable record.
+
   await new Promise((resolve) => setTimeout(resolve, 25));
   await first.close();
   assert.equal(JSON.parse(await readFile(path, "utf8")).pending.length, 1);
@@ -287,7 +287,7 @@ test("a failed removal after the last part never re-submits an earlier part", as
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   const submitted = [...delivered];
-  // Let the removal retry run while the temp path is still a directory.
+
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.deepEqual(delivered, submitted, "a failed removal never replays a submitted part");
   assert.equal(new Set(delivered).size, delivered.length);
@@ -441,8 +441,7 @@ test("an enqueue racing the start of a restored delivery is not lost", async (t)
   });
   await outbox.load();
   outbox.start();
-  // The drain yields before it takes the restored item. This enqueue must not
-  // be folded into the request id whose old text is already being delivered.
+
   await outbox.enqueue(
     mcpEventText({ head: MCP_EVENTS_HEAD, items: [second], dropped: 0 }, [second]),
     ["racing-b"],
@@ -489,8 +488,6 @@ test("restoring two pending items keeps a distinct request id for the tail", asy
   const delivered: McpDelivery[] = [];
   const outbox = new McpOutbox(path, async (item) => {
     delivered.push(item);
-    // The first request may already be durable; replaying its id is a no-op.
-    // The tail must still arrive under a fresh id rather than A's.
   });
   await outbox.load();
   outbox.start();
@@ -524,8 +521,6 @@ test("a failed removal write never folds a new event into the delivered id", asy
   const outbox = new McpOutbox(path, async (item) => {
     delivered.push(item);
     if (delivered.length === 1) {
-      // The submission succeeds; the following removal write fails because
-      // the temp path is now a directory.
       await mkdir(temp);
     }
   });
@@ -538,7 +533,7 @@ test("a failed removal write never folds a new event into the delivered id", asy
   for (let attempt = 0; attempt < 100 && delivered.length < 1; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  // Let the successful delivery reach its failed removal write.
+
   await new Promise((resolve) => setTimeout(resolve, 20));
   const failed = JSON.parse(await readFile(path, "utf8")) as { pending: McpDelivery[] };
   assert.equal(failed.pending.length, 1, "the delivered item remains for its removal retry");
@@ -657,7 +652,6 @@ test("outbox delivery keeps the recovery the intake already accepted", async (t)
     outbox.start();
     await waitFor(() => submitted.length === 2);
 
-    // The intake still drops a repeated healthy status after the recovery.
     shim.sendMessage(notice("active"));
     assert.equal(queued.length, 0);
   } finally {
@@ -931,7 +925,6 @@ test("a generation clear never drops a pending status notice", async (t) => {
   assert.deepEqual(after.seen, []);
   await outbox.close();
 
-  // A row written by the previous code can already carry the event key.
   await writeFile(
     path,
     JSON.stringify({
