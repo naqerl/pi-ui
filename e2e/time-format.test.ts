@@ -4,8 +4,16 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import {
+  activitySummary,
+  groupStartMs,
+  groupSummary,
+  groupSummaryParts,
+} from "../src/client/activity-format.js";
 import { EventsView } from "../src/client/EventsView.js";
 import { NoticeLine } from "../src/client/NoticeView.js";
+import { mergeLiveTools } from "../src/client/use-chat.js";
+import { ChatService } from "../src/server/chat-service.js";
 import { McpEventFeed } from "../src/server/mcp-events.js";
 import { renderWidget } from "../src/shared/dashboard.js";
 import { DEFAULT_DASHBOARD } from "../src/shared/dashboard-default.js";
@@ -17,7 +25,7 @@ import {
   formatTime,
   toIsoTimestamp,
 } from "../src/shared/time.js";
-import type { ChatMessage } from "../src/shared/types.js";
+import type { ChatMessage, ToolActivity } from "../src/shared/types.js";
 
 const ISO = "2026-01-15T12:34:56.000Z";
 
@@ -42,6 +50,107 @@ async function inZoneAsync<T>(zone: string, run: () => Promise<T>): Promise<T> {
     else process.env.TZ = previous;
   }
 }
+
+const RUN_START = Date.UTC(2026, 0, 1, 12, 0, 0);
+const at = (seconds: number): string => new Date(RUN_START + seconds * 1_000).toISOString();
+
+function toolActivity(patch: Partial<ToolActivity> = {}): ToolActivity {
+  return {
+    kind: "tool",
+    id: "call-1",
+    name: "bash",
+    arguments: "{}",
+    isError: false,
+    timestamp: at(0),
+    order: 1,
+    ...patch,
+  };
+}
+
+test("a live run row does not step back when a tool result replaces its start", () => {
+  const liveFirst = toolActivity({ id: "live-1", pending: true, timestamp: at(0) });
+  const liveSecond = toolActivity({ id: "live-2", pending: true, timestamp: at(3) });
+  assert.equal(
+    groupSummary([liveFirst, liveSecond], true, RUN_START + 16_000),
+    "2 tool calls · 16.0s",
+  );
+
+  // The result's timestamp is when it arrived; its duration recovers the start it replaced.
+  const finishedFirst = toolActivity({ id: "a-1", timestamp: at(16), durationMs: 16_000 });
+  assert.equal(
+    groupSummary([finishedFirst, liveSecond], true, RUN_START + 16_000),
+    "2 tool calls · 16.0s",
+  );
+  assert.equal(activitySummary(finishedFirst), "bash · 16.0s · ok");
+
+  // A result without a duration cannot recover its start, so the group's earlier anchor
+  // keeps the elapsed time from falling back to the second row's start.
+  const noDuration = toolActivity({ id: "a-1", timestamp: at(16) });
+  assert.equal(
+    groupSummary([noDuration, liveSecond], true, RUN_START + 16_000),
+    "2 tool calls · 13.0s",
+  );
+  const anchored = groupStartMs([liveFirst]);
+  assert.equal(
+    groupSummaryParts([noDuration, liveSecond], true, RUN_START + 16_000, undefined, anchored).at(
+      -1,
+    ),
+    "16.0s",
+  );
+});
+
+test("a reconnect that repeats a running row keeps its original start", () => {
+  const before = toolActivity({ id: "live-1", pending: true, timestamp: at(0) });
+  const repeated = toolActivity({ id: "live-1", pending: true, timestamp: at(9) });
+  const merged = mergeLiveTools([before], [repeated]);
+  assert.equal(merged[0]?.timestamp, at(0));
+  assert.equal(groupSummary(merged, true, RUN_START + 16_000), "1 tool call · 16.0s");
+
+  // A genuinely earlier start still wins.
+  assert.equal(mergeLiveTools([repeated], [before])[0]?.timestamp, at(0));
+
+  // The server applies the same rule to the still-running slots of a view snapshot.
+  const activeTools = new Map([
+    ["call-1", { name: "bash", args: { command: "sleep 30" }, timestamp: at(0) }],
+  ]);
+  type SnapshotChat = {
+    activeTools: typeof activeTools;
+    toolsRevision: number;
+    currentText: string;
+    currentThinking: string;
+    noteEntry(entry: unknown): void;
+    rememberLatestMcpNotice(entries: readonly unknown[]): void;
+    absorbMessage(message: unknown): void;
+  };
+  const fake = {
+    activeTools,
+    toolsRevision: 4,
+    currentText: "",
+    currentThinking: "",
+    noteEntry: () => undefined,
+    rememberLatestMcpNotice: () => undefined,
+    absorbMessage: () => undefined,
+  } satisfies SnapshotChat;
+  const applySnapshot = (
+    ChatService.prototype as unknown as {
+      applySnapshot(this: SnapshotChat, snapshot: unknown): void;
+    }
+  ).applySnapshot;
+  applySnapshot.call(fake, {
+    type: "snapshot",
+    entries: [],
+    tools: [{ callId: "call-1", name: "bash", status: "running" }],
+    inbox: [],
+  });
+  assert.equal(fake.activeTools.get("call-1")?.timestamp, at(0));
+  assert.deepEqual(fake.activeTools.get("call-1")?.args, { command: "sleep 30" });
+});
+
+test("a finished run row spans from its first start to its last result", () => {
+  const first = toolActivity({ id: "a-1", timestamp: at(10), durationMs: 10_000 });
+  const second = toolActivity({ id: "a-2", timestamp: at(16), durationMs: 6_000 });
+  assert.equal(groupSummary([first, second], false, RUN_START + 30_000), "2 tool calls · 16.0s");
+});
 
 test("formatTime follows the zone Intl resolves at call time", () => {
   assert.equal(

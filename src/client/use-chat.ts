@@ -116,6 +116,24 @@ function addJobActivity(current: ActivityItem[], extra: ActivityItem[]): Activit
   return [...current, ...extra.filter((item) => !held.has(item.id))];
 }
 
+/**
+ * A reconnect repeats the running calls, and its snapshot may carry a later start. Keep the
+ * start each live row already showed so replacing it cannot reset its timer.
+ */
+export function mergeLiveTools(current: ToolActivity[], incoming: ToolActivity[]): ToolActivity[] {
+  if (current.length === 0) return incoming;
+  const previous = new Map(current.map((item) => [item.id, item]));
+  return incoming.map((item) => {
+    const before = previous.get(item.id);
+    if (before === undefined) return item;
+    const beforeAt = Date.parse(before.timestamp);
+    const nextAt = Date.parse(item.timestamp);
+    if (!Number.isFinite(beforeAt)) return item;
+    if (Number.isFinite(nextAt) && nextAt < beforeAt) return item;
+    return { ...item, timestamp: before.timestamp };
+  });
+}
+
 /** A client key lets the optimistically painted bubble keep its id once the server confirms. */
 function newClientKey(): string {
   const cryptoApi = globalThis.crypto;
@@ -553,7 +571,10 @@ export function useChat(options: UseChatOptions = {}) {
         );
       }
       if (snapshot.activeTools !== undefined) {
-        setLiveTools(snapshot.activeTools.filter((item) => !persistedActivityIds.has(item.id)));
+        const activeTools = snapshot.activeTools.filter(
+          (item) => !persistedActivityIds.has(item.id),
+        );
+        setLiveTools((current) => mergeLiveTools(current, activeTools));
       } else {
         setLiveTools((current) => current.filter((item) => !persistedActivityIds.has(item.id)));
       }
@@ -908,7 +929,10 @@ export function useChat(options: UseChatOptions = {}) {
         order: Number.MAX_SAFE_INTEGER - 1,
         pending: true,
       };
-      setLiveTools((current) => [...current.filter((item) => item.id !== tool.id), tool]);
+      setLiveTools((current) => [
+        ...current.filter((item) => item.id !== tool.id),
+        ...mergeLiveTools(current, [tool]),
+      ]);
       draftBatch.flush();
       setDraftThinking("");
       if (typeof data.toolsRevision === "number") {
