@@ -4,8 +4,11 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { groupStartMs, groupSummary, groupSummaryParts } from "../src/client/activity-format.js";
 import { EventsView } from "../src/client/EventsView.js";
 import { NoticeLine } from "../src/client/NoticeView.js";
+import { mergeLiveTools } from "../src/client/use-chat.js";
+import { ChatService } from "../src/server/chat-service.js";
 import { McpEventFeed } from "../src/server/mcp-events.js";
 import { renderWidget } from "../src/shared/dashboard.js";
 import { DEFAULT_DASHBOARD } from "../src/shared/dashboard-default.js";
@@ -17,7 +20,7 @@ import {
   formatTime,
   toIsoTimestamp,
 } from "../src/shared/time.js";
-import type { ChatMessage } from "../src/shared/types.js";
+import type { ChatMessage, ToolActivity } from "../src/shared/types.js";
 
 const ISO = "2026-01-15T12:34:56.000Z";
 
@@ -42,6 +45,93 @@ async function inZoneAsync<T>(zone: string, run: () => Promise<T>): Promise<T> {
     else process.env.TZ = previous;
   }
 }
+
+const RUN_START = Date.UTC(2026, 0, 1, 12, 0, 0);
+const at = (seconds: number): string => new Date(RUN_START + seconds * 1_000).toISOString();
+
+function toolActivity(patch: Partial<ToolActivity> = {}): ToolActivity {
+  return {
+    kind: "tool",
+    id: "call-1",
+    name: "bash",
+    arguments: "{}",
+    isError: false,
+    timestamp: at(0),
+    order: 1,
+    ...patch,
+  };
+}
+
+test("a live run row does not step back when a tool result replaces its start", () => {
+  const liveFirst = toolActivity({ id: "live-1", pending: true, timestamp: at(0) });
+  const liveSecond = toolActivity({ id: "live-2", pending: true, timestamp: at(3) });
+  assert.equal(
+    groupSummary([liveFirst, liveSecond], true, RUN_START + 16_000),
+    "2 tool calls · 16.0s",
+  );
+
+  const finishedFirst = toolActivity({
+    id: "a-1",
+    timestamp: at(16),
+    durationMs: 16_000,
+  });
+  assert.equal(
+    groupSummary([finishedFirst, liveSecond], true, RUN_START + 16_000),
+    "2 tool calls · 16.0s",
+  );
+
+  const anchored = groupStartMs([liveFirst]);
+  assert.equal(
+    groupSummaryParts([finishedFirst], true, RUN_START + 16_000, undefined, anchored).at(-1),
+    "16.0s",
+  );
+});
+
+test("a finished run row spans from its first start to its last result", () => {
+  const first = toolActivity({ id: "a-1", timestamp: at(10), durationMs: 10_000 });
+  const second = toolActivity({ id: "a-2", timestamp: at(16), durationMs: 6_000 });
+  assert.equal(groupSummary([first, second], false, RUN_START + 30_000), "2 tool calls · 16.0s");
+});
+
+test("a reconnect snapshot does not restart a running row's timer", () => {
+  // The server repeats the same live call after a reconnect. Painting its new timestamp would
+  // move the group's start forward and make the summary step back, so the first one survives.
+  const first = toolActivity({ id: "live-call-1", pending: true, timestamp: at(0) });
+  const repeated = toolActivity({ id: "live-call-1", pending: true, timestamp: at(12) });
+  const [merged] = mergeLiveTools([first], [repeated]);
+  assert.equal(merged?.timestamp, at(0));
+  assert.equal(groupSummary([merged], true, RUN_START + 16_000), "1 tool call · 16.0s");
+
+  // A snapshot that reports an earlier start is the better anchor, so it is adopted.
+  const earlier = toolActivity({ id: "live-call-1", pending: true, timestamp: at(-2) });
+  assert.equal(mergeLiveTools([first], [earlier])[0]?.timestamp, at(-2));
+});
+
+test("applying a reconnect snapshot keeps a running call's first start", () => {
+  const activeTools = new Map([
+    ["call-1", { name: "bash", args: { command: "ls" }, timestamp: at(0) }],
+  ]);
+  const fake = {
+    activeTools,
+    toolsRevision: 4,
+    currentText: "",
+    currentThinking: "",
+    noteEntry: () => undefined,
+    rememberLatestMcpNotice: () => undefined,
+  };
+  const apply = ChatService.prototype as unknown as {
+    applySnapshot(this: unknown, snapshot: unknown): void;
+  };
+  apply.applySnapshot.call(fake, {
+    type: "snapshot",
+    entries: [],
+    tools: [{ callId: "call-1", name: "bash", status: "running" }],
+    inbox: [],
+  });
+  assert.equal(activeTools.get("call-1")?.timestamp, at(0));
+  assert.deepEqual(activeTools.get("call-1")?.args, { command: "ls" });
+  assert.equal(fake.toolsRevision, 5);
+});
 
 test("formatTime follows the zone Intl resolves at call time", () => {
   assert.equal(
