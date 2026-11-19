@@ -12,14 +12,14 @@ test("a present dock switch mounts open", () => {
 test("an absent switch keeps its node mounted while it closes", () => {
   const closed = presenceReducer({ mounted: true, open: true }, false);
   assert.deepEqual(closed, { mounted: true, open: false });
-  // A second render during the exit does not restart it.
+
   assert.equal(presenceReducer(closed, false), closed);
 });
 
 test("the exit timer is the only step that unmounts the closed node", () => {
   const closed = presenceReducer({ mounted: true, open: true }, false);
   assert.deepEqual(unmountPresence(closed), { mounted: false, open: false });
-  // An open node can never be unmounted by an early timer.
+
   assert.deepEqual(unmountPresence({ mounted: true, open: true }), {
     mounted: true,
     open: true,

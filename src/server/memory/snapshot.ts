@@ -14,7 +14,6 @@ export type SnapshotReason =
 
 const TRUNCATION_MARKER = "\n... (truncated) ...\n";
 
-/** Keep both ends: the standing rules at the top and the newest map lines at the bottom. */
 export function middleTruncate(text: string, cap: number): string {
   if (cap <= 0) return "";
   if (text.length <= cap) return text;
@@ -25,7 +24,6 @@ export function middleTruncate(text: string, cap: number): string {
   return `${text.slice(0, head)}${TRUNCATION_MARKER}${text.slice(text.length - tail)}`;
 }
 
-/** Keep the newest bytes of a journal or scratchpad. */
 export function tailTruncate(text: string, cap: number): string {
   if (cap <= 0) return "";
   if (text.length <= cap) return text;
@@ -80,26 +78,17 @@ export async function buildSnapshot(store: MemoryStore, reason: SnapshotReason):
   return text;
 }
 
-/**
- * The injected prefix is what a caching runtime keys on, so the snapshot is built
- * once per checkpoint. Daily and scratchpad writes do not invalidate it; a
- * long-term topic write bumps the store revision, which does.
- */
 export class SnapshotCache {
   private text: string | undefined;
   private day: string | undefined;
   private checkpoint = -1;
-  /** Long-term topics written from a plan chat, waiting for the main chat's next turn. */
+
   private readonly planWrites = new Map<string, string>();
 
   get built(): boolean {
     return this.text !== undefined;
   }
 
-  /**
-   * Remember the body of a long-term plan write. The snapshot itself only carries
-   * the memory map, so the main conversation needs the body as a one-turn delta.
-   */
   notePlanWrite(record: { readonly path: string; readonly text: string }): void {
     if (!record.path.startsWith("topics/")) return;
     const text = record.text.trim();
@@ -111,7 +100,6 @@ export class SnapshotCache {
     this.planWrites.set(record.path, text);
   }
 
-  /** Take the plan writes for one instruction rebuild, so they do not repeat forever. */
   takePlanWrites(): string[] {
     const writes = [...this.planWrites.values()];
     this.planWrites.clear();
@@ -140,13 +128,6 @@ export function composeInstructions(base: string, block: string): string {
   return `${base.replace(/\s+$/, "")}\n\n${block}`;
 }
 
-/**
- * Rebuilds the injected block at a checkpoint but keeps the live instructions
- * stable. Only a first turn, a day rollover, a compaction and a pending plan-chat
- * write reconfigure the conversation; an ordinary long-term topic write updates the
- * cache for the next forced rebuild and is announced as a tail delta instead. Daily
- * and scratchpad writes leave the prefix untouched.
- */
 export class SnapshotController {
   private lastInstructions: string | undefined;
   private configured: boolean;
@@ -166,7 +147,6 @@ export class SnapshotController {
     this.lastRevision = store.checkpoint;
   }
 
-  /** Adopt a rebuilt base prompt so later memory checkpoints keep it. */
   rebase(base: string, instructions?: string): void {
     this.base = base;
     if (instructions !== undefined) this.lastInstructions = instructions;
@@ -192,9 +172,7 @@ export class SnapshotController {
           );
     const fromPlan = planWrites.length > 0;
     const forced = chosen === "day_rollover" || chosen === "compaction";
-    // Observe every rebuild so a later first_turn does not mistake the pending
-    // topic write for an unconfigured conversation. A plan-chat write is applied
-    // on the next turn because it has no main-chat chip or tail delta carrying it.
+
     if (
       (fromPlan || chosen !== "long_term_write") &&
       (fromPlan || forced || !this.configured || next !== this.lastInstructions)

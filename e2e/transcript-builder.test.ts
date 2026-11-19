@@ -11,7 +11,6 @@ import { buildTranscript, TranscriptBuilder } from "../src/server/session.js";
 
 const diagramId = "abcdefghij";
 
-/** An MCP status notice the parser recognises: a head line plus its JSON payload. */
 function mcpStatus(status: string): string {
   return [
     "MCP subscription status follows.",
@@ -19,7 +18,6 @@ function mcpStatus(status: string): string {
   ].join("\n");
 }
 
-/** A sequence that exercises every row kind, every retroactive update and the reset cut. */
 function conversation(): EntryRecord[] {
   const entries: unknown[] = [
     { id: 10, kind: UserEntry.kind, model: [{ role: "user", content: "hello", timestamp: 1 }] },
@@ -58,7 +56,6 @@ function conversation(): EntryRecord[] {
       model: [{ role: "user", content: "queued input", timestamp: 4 }],
     },
     {
-      // A decision shares the queued copy's key, so the copy must not also show.
       id: 14,
       kind: "ui.task-decision",
       data: {
@@ -130,7 +127,6 @@ test("appending one entry at a time equals the whole-list build", () => {
     incremental.push(structuredClone(builder.build()));
   }
 
-  // Every prefix must match the same prefix built from scratch, not just the last one.
   for (let end = 1; end <= entries.length; end++) {
     assert.deepEqual(incremental[end - 1], buildTranscript(entries.slice(0, end)));
   }
@@ -147,7 +143,7 @@ test("a later MCP notice updates the one row its group already shows", () => {
 
 test("a decision drops the queued copy it shares a key with", () => {
   const transcript = buildTranscript(conversation());
-  // The notice owns the shared id; the queued input must not also show as a user message.
+
   const shared = transcript.messages.filter((message) => message.id === "m-queue-1");
   assert.equal(shared.length, 1);
   assert.equal(shared[0]?.notice?.kind, "decision");
@@ -177,7 +173,7 @@ test("a replaced drawing raises the revision of the row already shown", () => {
   assert.equal(builder.refreshDiagrams(), true);
   const after = builder.build().messages.find((message) => message.id === "m-12");
   assert.equal(after?.parts?.[0]?.kind === "diagram" ? after.parts[0].diagram.revision : 0, 2);
-  // A second pass with nothing moved must not report a change.
+
   assert.equal(builder.refreshDiagrams(), false);
 });
 

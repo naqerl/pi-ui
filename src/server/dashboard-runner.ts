@@ -17,8 +17,6 @@ export type PollRunner = (run: PollRun) => Promise<PollOutcome>;
 const MAX_LOG_LINES = 40;
 const MAX_LOG_LINE = 400;
 
-// Runs in its own worker thread: a hung or crashing script cannot block or
-// take down the server, and terminate() stops even a busy loop.
 const WORKER_SOURCE = `
 const { parentPort, workerData } = require("node:worker_threads");
 const logs = [];
@@ -50,7 +48,6 @@ const AsyncFunction = (async () => {}).constructor;
 })();
 `;
 
-/** Runs one poll script in a fresh worker thread with a timeout and an output cap. */
 export const runPollScript: PollRunner = (run) =>
   new Promise((resolve) => {
     const started = Date.now();
@@ -67,7 +64,7 @@ export const runPollScript: PollRunner = (run) =>
       stdout: true,
       stderr: true,
     });
-    // Script console output is not part of the result; drain and drop it.
+
     worker.stdout.resume();
     worker.stderr.resume();
     const finish = (outcome: PollOutcome) => {

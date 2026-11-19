@@ -1,7 +1,6 @@
 import { createContext, type ReactNode, useContext, useMemo } from "react";
 import type { Task } from "../shared/types";
 
-/** What the Markdown renderer needs to turn a four-character task id into a link. */
 export interface TaskLinkValue {
   tasks: readonly Task[];
   openTask: (id: string) => void;
@@ -24,11 +23,6 @@ export function useTaskLink(): TaskLinkValue | null {
 
 const TASK_ID = /^[a-z0-9]{4}$/;
 
-/**
- * The task a four-character codespan names, or undefined when the span is not a task id.
- * Exact ids win; a longer id can also be cited by the short handle its card shows, but only
- * when that prefix is unambiguous.
- */
 export function taskForCode(text: string, tasks: readonly Task[]): Task | undefined {
   if (!TASK_ID.test(text)) return undefined;
   const exact = tasks.find((task) => task.id === text);

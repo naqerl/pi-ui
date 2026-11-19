@@ -74,14 +74,8 @@ import { pendingVersionNotice, writeLastSeenVersion } from "./version-notice.js"
 
 export const SESSION_CONTEXT: Context = BACKGROUND_CONTEXT;
 
-/**
- * Durable compaction is off until the chat has a head, or the log is still small.
- * `ChatService.start` flips this once that is true. The settings function reads it
- * on each turn, so a harness opened at boot follows the later decision.
- */
 let modelCompactionEnabled = false;
 
-/** Allow threshold compaction. A large headless log must not be summarized in one call. */
 export function enableModelCompaction(): void {
   modelCompactionEnabled = true;
 }
@@ -94,33 +88,22 @@ const InterruptedRunEntry = defineEntry<{
   createdAt: string;
 }>("ui.run-interrupted");
 
-/** A version change seen at start. `model` carries the notice so the agent reads it in context. */
 const VersionUpdateEntry = defineEntry<{
   from: string | null;
   to: string;
   note: string;
-  /** The changelog sections the model was told about, so the chat can show them on demand. */
+
   changes?: string;
   createdAt: string;
 }>("ui.version-update");
 
-/**
- * A background job result. The agent-visible result is placed as this entry through an input, so
- * its model message is unchanged; a cancelled or `notify: false` result has no `model` part and is
- * only recorded for the activity page.
- */
 const JobNoticeEntry = defineEntry<{
   text: string;
   createdAt: string;
 }>("ui.job-notice");
 
-/** The entry kind a job result is placed as; the chat never renders it as a user message. */
 export const JOB_NOTICE_ENTRY_KIND = JobNoticeEntry.kind;
 
-/**
- * A finished sub-agent run. Like a job result it carries a model message, so the
- * agent can read the result next turn, but the chat renders it as a notice chip.
- */
 const DelegateNoticeEntry = defineEntry<{
   text: string;
   createdAt: string;
@@ -128,11 +111,6 @@ const DelegateNoticeEntry = defineEntry<{
 
 export const DELEGATE_NOTICE_ENTRY_KIND = DelegateNoticeEntry.kind;
 
-/**
- * An MCP event notice. The first entry of a key carries the model message that
- * starts the turn; later entries for the same key only update its text and time.
- * `buildTranscript` keeps one visible message per key.
- */
 const McpNoticeEntry = defineEntry<{
   noticeId: string;
   key: string;
@@ -143,7 +121,6 @@ const McpNoticeEntry = defineEntry<{
 
 export const MCP_NOTICE_ENTRY_KIND = McpNoticeEntry.kind;
 
-/** A memory_write result. It carries no model message, so it never starts or joins a turn. */
 const MemoryWriteEntry = defineEntry<{
   path: string;
   text: string;
@@ -153,11 +130,6 @@ const MemoryWriteEntry = defineEntry<{
 
 export const MEMORY_WRITE_ENTRY_KIND = MemoryWriteEntry.kind;
 
-/**
- * Legacy compact tail notice for long-term topic writes. It carried a model
- * message in older transcripts; new writes only show the per-write memory chip.
- */
-// legacy: read-only, existing transcripts only
 const MemoryDeltaEntry = defineEntry<{
   text: string;
   topics: Array<{ path: string; title: string; chars: number; updated: string }>;
@@ -166,10 +138,6 @@ const MemoryDeltaEntry = defineEntry<{
 
 export const MEMORY_DELTA_ENTRY_KIND = MemoryDeltaEntry.kind;
 
-/**
- * The automated idle prompt. It carries a model message so it starts a turn, but
- * the chat renders it as a notice chip rather than a user bubble.
- */
 const IdleNudgeEntry = defineEntry<{
   text: string;
   taskIds: string[];
@@ -178,10 +146,6 @@ const IdleNudgeEntry = defineEntry<{
 
 export const IDLE_NUDGE_ENTRY_KIND = IdleNudgeEntry.kind;
 
-/**
- * A human's decision on a proposal. It carries the model prompt, so the agent
- * learns the decision before its next response, and renders as a notice chip.
- */
 const TaskDecisionEntry = defineEntry<{
   proposalId: string;
   taskId: string;
@@ -193,11 +157,6 @@ const TaskDecisionEntry = defineEntry<{
 
 export const TASK_DECISION_ENTRY_KIND = TaskDecisionEntry.kind;
 
-/**
- * The model-facing half of a proposal decision. The visible notice is appended
- * immediately as a display-only write; this entry carries the prompt, so a busy
- * conversation reads the decision at its next boundary without showing it twice.
- */
 const TaskDecisionPromptEntry = defineEntry<{
   proposalId: string;
   taskId: string;
@@ -209,7 +168,6 @@ const TaskDecisionPromptEntry = defineEntry<{
 
 export const TASK_DECISION_PROMPT_ENTRY_KIND = TaskDecisionPromptEntry.kind;
 
-/** A notify_operator call. It carries no model message and shows as a chat chip. */
 const OperatorNoticeEntry = defineEntry<{
   title: string;
   body: string;
@@ -219,7 +177,6 @@ const OperatorNoticeEntry = defineEntry<{
 
 export const OPERATOR_NOTICE_ENTRY_KIND = OperatorNoticeEntry.kind;
 
-/** A repaired durable document, shown once in the transcript rather than as a per-request error. */
 const DurableRepairEntry = defineEntry<{
   text: string;
   kind: string;
@@ -228,10 +185,6 @@ const DurableRepairEntry = defineEntry<{
   createdAt: string;
 }>("ui.durable-repair");
 
-/**
- * The time a plain `pi.reset` was applied. durable's reset entry carries no data, so this
- * companion write follows it and lets a snapshot reconcile a client that missed the frame.
- */
 const SessionResetMarkerEntry = defineEntry<{ resetAt: string }>("ui.session-reset");
 
 export const SESSION_RESET_MARKER_ENTRY_KIND = SessionResetMarkerEntry.kind;
@@ -242,7 +195,7 @@ export interface DurableSessionOptions {
   readonly models: Parameters<typeof HarnessImpl.open>[1]["models"];
   readonly instructions: string;
   readonly model: ModelRef | undefined;
-  /** When a resumed conversation already stores a model, keep it if this returns true. */
+
   readonly keepStoredModel?: (model: ModelRef) => boolean;
   readonly bili?: BillionContextInline;
   readonly tasks: TaskBridge;
@@ -254,11 +207,11 @@ export interface DurableSessionOptions {
     readonly snapshot?: SnapshotCache;
     readonly onWrite?: (record: MemoryWriteRecord) => void | Promise<void>;
   };
-  /** Diagrams the agent draws into the chat. */
+
   readonly diagrams?: DiagramBridge;
-  /** The explicit notify_operator path: web push plus its chat chip. */
+
   readonly operator?: OperatorBridge;
-  /** Targets the `reload` tool can rebuild in this session. */
+
   readonly reload?: {
     readonly prompt?: () => Promise<{ readonly instructions: string; readonly changed: boolean }>;
     readonly models?: () => Promise<import("./models.js").ModelCatalogReload>;
@@ -285,11 +238,11 @@ export interface DurableSessionBoot {
   readonly diagramTools: readonly string[];
   readonly operatorTools: readonly string[];
   readonly reloadTools: readonly string[];
-  /** Model stored on the conversation after boot. A menu choice wins over `PI_MODEL`. */
+
   readonly model: ModelRef | undefined;
-  /** pi-ui's own version from package.json. */
+
   readonly version: string;
-  /** Re-run the durable doctor against this boot's store (used before a view is resumed). */
+
   readonly repairDurableState: () => Promise<DurableDoctorReport>;
 }
 
@@ -301,8 +254,6 @@ export async function openDurableSession(
   const currentPath = join(dataDir, "current.json");
   await mkdir(dataDir, { recursive: true });
 
-  // Repair a torn materialised view before the harness reads it. This is best-effort: a busy or
-  // locked store must not make the server unbootable; ChatService's watch rescue retries later.
   const repairDurableState = () => durableDoctor({ databasePath, repair: true });
   let durableReport: DurableDoctorReport | undefined;
   try {
@@ -369,9 +320,7 @@ export async function openDurableSession(
       models: options.models,
       registry: registry as Registry,
       env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? options.cwd }),
-      // Read on each turn. Compaction stays off until a head exists, so the first
-      // turn cannot summarize the whole month. After the head, compaction keeps
-      // the model on a tail. Billion-context gets a new conversation id at each head.
+
       settings: () => ({
         compaction: {
           enabled: modelCompactionEnabled,
@@ -379,12 +328,9 @@ export async function openDurableSession(
           keepRecentTokens: 20_000,
           backgroundTokens: 0,
         },
-        // Three attempts in all, a short backoff and a cap, instead of durable's default
-        // three retries with a minute-long ceiling: a failing provider must not hold the
-        // chat, and everything sent behind the turn waits with it.
+
         retry: retrySettings(),
-        // Every steer waiting at a turn boundary goes in at that boundary, in the order sent,
-        // instead of one per boundary, which pushed later steers past the run's end.
+
         steeringMode: "all",
       }),
       onReport: (report) => console.error(`[pi] harness report (${report.kind})`, report.error),
@@ -472,7 +418,6 @@ export async function openDurableSession(
   };
 }
 
-/** Put one system line in the chat for a repair that happened at boot. */
 export async function recordDurableRepairNotice(
   conversation: Conversation,
   report: DurableDoctorReport,
@@ -515,10 +460,6 @@ export async function recordDurableRepairNotice(
   }
 }
 
-/**
- * Compares the running version with the last one this data directory saw. After an update the
- * agent gets the new changelog sections as a context message, then the new version is recorded.
- */
 async function recordVersion(
   conversation: Conversation,
   dataDir: string,
@@ -616,9 +557,7 @@ async function readCurrentConversationId(currentPath: string): Promise<Conversat
     ) {
       return value.conversationId as ConversationId;
     }
-  } catch {
-    // Fall through and replace a malformed file with a valid one.
-  }
+  } catch {}
   console.warn(`[pi] ignoring malformed ${currentPath}; creating a new conversation`);
   return undefined;
 }
@@ -632,12 +571,6 @@ async function writeCurrentConversationId(
   await rename(temporary, currentPath);
 }
 
-/**
- * A process that died mid-turn reopens with live durable work. pi-durable owns
- * resuming that work from its last checkpoint, so leave it pending. A stop
- * requested before the restart is the exception: settle it once and keep the
- * partial answer instead of replaying the request.
- */
 async function recoverInterruptedRun(
   harness: Harness,
   conversation: Conversation,
@@ -696,12 +629,6 @@ async function appendCapturedPartial(
   return entry.id;
 }
 
-/**
- * The assistant entry the interrupted run produced. A marker can outlive the
- * turn, so restrict the lookup to entries after the user message that started
- * the marked run: the previous completed answer must never be labelled partial
- * when the new turn died before committing an answer of its own.
- */
 function interruptedAssistantEntryId(
   entries: readonly EntryRecord[],
   marker: RunMarker,
@@ -758,8 +685,6 @@ export async function appendInterruptionNote(
   });
   if (alreadyRecorded) return;
 
-  // A run that left no reply and was not stopped has nothing to report. Only promise a
-  // resume for a partial run that was not stopped, which is the case boot resumes.
   const note = marker.stopRequested
     ? "The previous run was stopped before the server restarted. The last response may be partial."
     : marker.partialEntryId !== null
@@ -786,7 +711,6 @@ export async function appendInterruptionNote(
   }
 }
 
-/** The newest durable reset and its companion timestamp, if this transcript has one. */
 export function latestSessionReset(
   entries: readonly EntryRecord[],
 ): { entry: EntryRecord; order: number; resetAt: string | undefined } | undefined {
@@ -821,7 +745,6 @@ export function latestSessionReset(
   return { entry: reset, order: reset.id * 10_000, resetAt };
 }
 
-/** Record when a reset was applied, in an entry that never renders as a chat row. */
 export async function appendSessionResetMarker(
   conversation: Conversation,
   resetAt: string,
@@ -835,34 +758,21 @@ export async function appendSessionResetMarker(
   );
 }
 
-/** Maps an image block in a user entry to its served media id. */
 export type MediaResolver = (data: string, mimeType: string) => MediaRef | undefined;
 
-/** Reads a diagram's current revision, so a replaced drawing updates without a new entry. */
 export type DiagramRevisionResolver = (id: string) => number | undefined;
 
-/** What a transcript holds: both lists in display order. */
 export interface BuiltTranscript {
   messages: ChatMessage[];
   activity: ActivityItem[];
 }
 
-/** Where a diaried drawing sits, so a replace can update its row instead of adding one. */
 interface DiagramSlot {
   message: ChatMessage;
   diagramId: string;
   revision: number;
 }
 
-/**
- * Builds the chat transcript one entry at a time, in ascending entry id.
- *
- * `buildTranscript()` is this over a whole list. Keeping one builder alive for a
- * conversation turns the `/api/state` poll into an append of the few entries that
- * arrived since the last poll instead of a rebuild of every entry in the
- * conversation, which is the difference between milliseconds and seconds once a
- * conversation has tens of thousands of entries.
- */
 export class TranscriptBuilder {
   private readonly messages: ChatMessage[] = [];
   private readonly activity: ActivityItem[] = [];
@@ -885,27 +795,19 @@ export class TranscriptBuilder {
     private readonly diagramRevision?: DiagramRevisionResolver,
   ) {}
 
-  /**
-   * Appends the next entry. Entries must arrive in ascending id order: a later
-   * entry may update a row this builder already emitted, but never reorder it.
-   */
   append(entry: EntryRecord): void {
     const kind = entry.kind;
 
-    // A reset marker never renders; it only records when the reset was applied.
     if (kind === SESSION_RESET_MARKER_ENTRY_KIND) {
       this.noteResetMarker(entry);
       return;
     }
-    // Effects a later entry has on a row that is already in the transcript. The
-    // full-list version learned these in a pre-pass; here they arrive in order.
+
     if (kind === InterruptedRunEntry.kind) this.notePartialEntry(entry);
     if (kind === TASK_DECISION_ENTRY_KIND) this.noteDecisionQueueKeys(entry);
     if (kind === McpNoticeEntry.kind) this.noteMcpNotice(entry);
 
     if (kind === ResetEntry.kind) {
-      // A reset starts the active context at itself. Everything before it is history
-      // that this transcript no longer shows, so the builder starts over.
       this.clear();
       this.resetEntry = entry;
       this.resetAt = resetTimestampOf(entry);
@@ -1060,7 +962,7 @@ export class TranscriptBuilder {
         notice: {
           kind: "interrupted",
           note,
-          // Older entries predate the flag; their wording still says which case it was.
+
           stopped:
             typeof entry.data.stopped === "boolean"
               ? entry.data.stopped
@@ -1099,7 +1001,7 @@ export class TranscriptBuilder {
       });
       return;
     }
-    // legacy: read-only, existing transcripts only
+
     if (kind === MemoryDeltaEntry.kind) {
       if (!isRecord(entry.data) || typeof entry.data.text !== "string") return;
       const topics = Array.isArray(entry.data.topics)
@@ -1194,8 +1096,7 @@ export class TranscriptBuilder {
       if (text.length > 0 || attachments.length > 0) {
         const notice = parseNotice(text);
         if (notice?.kind === "mcp") this.latestMcpNoticeText = text;
-        // Older conversations stored a job result as a normal user entry. Keep it out of the chat
-        // too, and show it where every other result of that run is shown.
+
         if (notice?.kind === "job") {
           this.emitActivity({
             kind: "job",
@@ -1286,10 +1187,9 @@ export class TranscriptBuilder {
       return;
     }
 
-    // ToolResultEntry.
     const toolCallId = typeof message.toolCallId === "string" ? message.toolCallId : "";
     const call = this.toolCalls.get(toolCallId);
-    // A call is only needed until its result arrives, so later entries do not carry it.
+
     if (toolCallId.length > 0) this.toolCalls.delete(toolCallId);
     const tool = toolActivityFromEntry(entry, call?.arguments);
     if (tool) {
@@ -1297,8 +1197,7 @@ export class TranscriptBuilder {
       if (usage !== undefined) this.pendingToolSpend.delete(toolCallId);
       this.emitActivity(usage === undefined ? tool : { ...tool, usage });
     }
-    // A drawing owns one message; a replace or edit only raises that message's revision, so
-    // the transcript is not rewritten with another bubble for the same diagram.
+
     const diagram = parseDiagramDetails(message.details);
     const part = diagramPartFromDetails(message.details, this.diagramRevision);
     const revises = call?.name === "replace_diagram" || call?.name === "edit_diagram";
@@ -1320,26 +1219,18 @@ export class TranscriptBuilder {
     }
   }
 
-  /** The transcript as it stands. Both lists are in display order. */
   build(): BuiltTranscript {
     return { messages: this.messages, activity: this.activity };
   }
 
-  /** How many rows this transcript holds, for the periodic memory line. */
   size(): { messages: number; activity: number } {
     return { messages: this.messages.length, activity: this.activity.length };
   }
 
-  /** The one visible row for an MCP notice. The id stays on the group's first entry. */
   mcpChip(noticeId: string): ChatMessage | undefined {
     return this.mcpNotices.get(noticeId)?.message;
   }
 
-  /**
-   * Re-reads the drawings in this transcript. A replace or edit raises a diagram's
-   * revision without adding an entry, so the row that already shows it must follow.
-   * Returns true when a row changed.
-   */
   refreshDiagrams(): boolean {
     let changed = false;
     for (const slot of this.diagramSlots) {
@@ -1378,7 +1269,6 @@ export class TranscriptBuilder {
     this.resetMessage = undefined;
   }
 
-  /** A restart's interrupt note names the assistant entry it cut off. */
   private notePartialEntry(entry: EntryRecord): void {
     if (!isRecord(entry.data)) return;
     const partialEntryId = entry.data.partialEntryId;
@@ -1386,7 +1276,7 @@ export class TranscriptBuilder {
     this.partialEntryIds.add(partialEntryId);
     const message = this.messages.find((item) => item.id === `m-${partialEntryId}`);
     if (message === undefined || message.partial === true) return;
-    // Keep the field order of an assistant row built with the flag already known.
+
     const { usage, ...rest } = message;
     this.replaceMessage(message, {
       ...rest,
@@ -1395,14 +1285,10 @@ export class TranscriptBuilder {
     });
   }
 
-  /**
-   * A placed queue copy shares its key with the decision notice that is its visible
-   * form, so the copy must not also appear as a user message.
-   */
   private noteDecisionQueueKeys(entry: EntryRecord): void {
     const queueKey = entryQueueKeyFromData(entry.data);
     if (queueKey !== undefined) this.dropQueuedMessage(queueKey);
-    // Older notice entries only carried the logical key, not the queued input's key.
+
     const key = queueKeyFromEntryData(entry.data);
     if (key !== undefined) this.dropQueuedMessage(key);
   }
@@ -1416,7 +1302,6 @@ export class TranscriptBuilder {
     }
   }
 
-  /** Tracks the newest entry of each MCP notice, so its one row shows the latest text. */
   private noteMcpNotice(entry: EntryRecord): void {
     const groupId = mcpNoticeGroupId(entry);
     if (groupId === null) return;
@@ -1467,7 +1352,6 @@ export class TranscriptBuilder {
     group.message = updated;
   }
 
-  /** A reset marker only refines the time the reset row shows. */
   private noteResetMarker(entry: EntryRecord): void {
     if (this.resetEntry === undefined || entry.id <= this.resetEntry.id) return;
     if (!isRecord(entry.data) || typeof entry.data.resetAt !== "string") return;
@@ -1498,7 +1382,6 @@ export class TranscriptBuilder {
   }
 }
 
-/** Index a new item belongs at, keeping display order and matching a stable sort. */
 function firstOrderAbove(items: readonly { order: number }[], order: number): number {
   let low = 0;
   let high = items.length;
@@ -1510,7 +1393,6 @@ function firstOrderAbove(items: readonly { order: number }[], order: number): nu
   return low;
 }
 
-/** The time a reset row shows, from the reset entry itself; a marker refines it later. */
 function resetTimestampOf(entry: EntryRecord): string | undefined {
   const message = asRecord(entry.model?.[0]);
   const timestamp = message.timestamp;
@@ -1587,11 +1469,6 @@ export function assistantMessageFromEntry(entry: EntryRecord): ChatMessage | nul
   };
 }
 
-/**
- * Appends a proposal decision as a display-only notice. Durable places it even
- * while another turn runs, so the operator sees the approval immediately; the
- * model-facing prompt follows separately at the next boundary.
- */
 export async function appendTaskDecisionNotice(
   conversation: Conversation,
   record: TaskDecisionNoticeRecord,
@@ -1616,17 +1493,12 @@ export async function appendTaskDecisionNotice(
   return buildTranscript([entry]).messages[0];
 }
 
-/**
- * Appends the newest text for an open MCP notice and returns the one visible
- * message for its key. Updates carry no model message, so they never start a turn.
- */
 export async function appendMcpNotice(
   conversation: Conversation,
   notice: { noticeId: string; key: string; text: string; at: string },
 ): Promise<EntryRecord> {
   const createdAt = notice.at;
-  // The chip id is the group's first entry, so the caller folds this row into the
-  // transcript it already holds and reads `TranscriptBuilder.mcpChip`.
+
   return conversation.commit(
     (tx) =>
       tx.appendEntry(McpNoticeEntry, conversation.id, {
@@ -1642,7 +1514,6 @@ export async function appendMcpNotice(
   );
 }
 
-/** Records a memory write as a persistent chip the chat can show after a reload. */
 export async function appendMemoryWriteNotice(
   conversation: Conversation,
   record: { path: string; text: string },
@@ -1659,7 +1530,6 @@ export async function appendMemoryWriteNotice(
   return buildTranscript([entry]).messages[0];
 }
 
-/** Records a notify_operator call as a persistent chat chip. */
 export async function appendOperatorNotice(
   conversation: Conversation,
   record: OperatorNoticeRecord,
@@ -1675,7 +1545,6 @@ export async function appendOperatorNotice(
   return buildTranscript([entry]).messages[0];
 }
 
-/** Records a job result the agent is not told about and returns its activity item. */
 export async function appendJobNotice(
   conversation: Conversation,
   text: string,
@@ -1781,7 +1650,6 @@ function userImages(content: unknown, media: MediaResolver): MediaRef[] {
   return refs;
 }
 
-/** The id a machine notice's chat message keeps across its queued and placed forms. */
 function entryMessageId(entry: EntryRecord): string {
   const queueKey =
     isRecord(entry.data) && typeof entry.data.queueKey === "string" ? entry.data.queueKey : null;
@@ -1791,7 +1659,7 @@ function entryMessageId(entry: EntryRecord): string {
 function mcpNoticeGroupId(entry: EntryRecord): string | null {
   if (entry.kind !== McpNoticeEntry.kind || !isRecord(entry.data)) return null;
   if (typeof entry.data.noticeId === "string") return entry.data.noticeId;
-  // Entries from before per-window ids still group by their logical key.
+
   return typeof entry.data.key === "string" ? `legacy:${entry.data.key}` : null;
 }
 

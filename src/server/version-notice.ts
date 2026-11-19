@@ -2,15 +2,13 @@ import { readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** The package root: `src/server` in development and `dist/server` in the image are both two levels down. */
 export const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
-/** The longest changelog excerpt handed to the agent. Older sections are dropped first. */
 const MAX_CHANGES = 8000;
 
 export interface ChangelogSection {
   version: string;
-  /** The section's heading line and body, trimmed. */
+
   text: string;
 }
 
@@ -18,13 +16,12 @@ export interface VersionNotice {
   from: string | undefined;
   to: string;
   changes: string;
-  /** The text the agent sees. */
+
   prompt: string;
-  /** The short line shown in the transcript. */
+
   note: string;
 }
 
-/** Splits a changelog into its `## <version>` sections, in file order. */
 export function parseChangelog(markdown: string): ChangelogSection[] {
   const sections: ChangelogSection[] = [];
   let current: { version: string; lines: string[] } | undefined;
@@ -36,7 +33,6 @@ export function parseChangelog(markdown: string): ChangelogSection[] {
       }
       current = { version: heading[1], lines: [line] };
     } else if (/^#\s/.test(line)) {
-      // A top-level heading ends the section above it.
     } else if (current !== undefined) {
       current.lines.push(line);
     }
@@ -47,7 +43,6 @@ export function parseChangelog(markdown: string): ChangelogSection[] {
   return sections;
 }
 
-/** Compares `major.minor.patch` versions; a prerelease sorts before its release. */
 export function compareVersions(a: string, b: string): number {
   const parse = (value: string) => {
     const [core = "", pre] = value.replace(/^v/, "").split("-", 2);
@@ -65,10 +60,6 @@ export function compareVersions(a: string, b: string): number {
   return left.pre < right.pre ? -1 : 1;
 }
 
-/**
- * The sections a reader moving from `from` to `to` has not seen: newer than `from`, up to `to`.
- * Without a known `from` (or after a downgrade) only the section for `to` is returned.
- */
 export function changesBetween(
   sections: readonly ChangelogSection[],
   from: string | undefined,
@@ -83,7 +74,6 @@ export function changesBetween(
   return picked.sort((a, b) => compareVersions(b.version, a.version));
 }
 
-/** Builds what the agent and the transcript are told about a version change. */
 export function buildVersionNotice(
   from: string | undefined,
   to: string,
@@ -158,11 +148,6 @@ export async function writeLastSeenVersion(dataDir: string, version: string): Pr
   await rename(temporary, path);
 }
 
-/**
- * Decides whether this start needs a notice. A new install (no record and a fresh conversation)
- * only records the version; an existing conversation without a record predates this check and
- * gets the current version's changes.
- */
 export async function pendingVersionNotice(options: {
   dataDir: string;
   resumed: boolean;

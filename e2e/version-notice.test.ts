@@ -106,9 +106,9 @@ test("a start only notifies when the version moved", async () => {
   try {
     await writeFile(join(root, "package.json"), JSON.stringify({ version: "1.6.0" }));
     await writeFile(join(root, "CHANGELOG.md"), CHANGELOG);
-    // New install: nothing to tell.
+
     assert.equal((await pendingVersionNotice({ dataDir, resumed: false, root })).notice, undefined);
-    // Existing conversation from before the check: the current section.
+
     const first = await pendingVersionNotice({ dataDir, resumed: true, root });
     assert.match(first.notice?.changes ?? "", /Six/);
     assert.doesNotMatch(first.notice?.changes ?? "", /Five/);

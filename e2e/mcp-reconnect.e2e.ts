@@ -207,8 +207,7 @@ test("concurrent calls share one bounded recovery instead of failing a parallel 
       })
       .toBe(2);
     expect(lines(fixture.statePath).filter((line) => line === "drop")).toHaveLength(1);
-    // The fixture logs a call after the response body is piped, so a loaded
-    // runner can observe the client result a tick before the log line lands.
+
     await expect
       .poll(() => lines(fixture.statePath).filter((line) => line === "call").length)
       .toBe(2);
@@ -310,8 +309,6 @@ test("a server that is down at boot appears after the backoff retries, without a
       started.runtime.status.servers.find((server) => server.name === "tracer")?.available,
     ).toBe(true);
 
-    // The 1s/5s/15s/60s/capped-5min schedule bounds how many attempts fit in
-    // this window; a retry storm would be far above this.
     expect(
       lines(fixture.statePath).filter((line) => line === "attempt").length,
     ).toBeLessThanOrEqual(5);
@@ -336,8 +333,7 @@ test("method-not-found is a real failure, never a session recovery", async () =>
         timeout: 10_000,
       })
       .toBe(1);
-    // The fixture logs a call after piping the response, so the client can
-    // observe the result a tick before the log line lands.
+
     await expect
       .poll(() => lines(fixture.statePath).filter((line) => line === "call").length)
       .toBe(1);

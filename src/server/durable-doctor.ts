@@ -4,15 +4,6 @@ import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { apply } from "@earendil-works/chord/delta";
 
-/**
- * pi-durable 1.5 materialises a document by applying every delta after its newest base directly to the
- * parsed base value. A delta that was replayed onto a base which already contains it can therefore
- * corrupt the materialised view even though every stored revision row is valid JSON. The doctor reads
- * that same table, materialises idempotently, validates the document shape, and can append a clean base
- * revision that pins the repaired value. It deliberately works against the SQLite table instead of
- * editing the package in node_modules.
- */
-
 export const DURABLE_DOCUMENT_KINDS = ["pi.live", "pi.agent", "pi.inbox"] as const;
 export type DurableDocumentKind = (typeof DURABLE_DOCUMENT_KINDS)[number];
 
@@ -59,13 +50,12 @@ export interface DurableDoctorReport {
 }
 
 export interface DurableDoctorOptions {
-  /** Explicit database file. Otherwise `<DATA_DIR>/pi.sqlite3`, or `<cwd>/data/pi.sqlite3`. */
   readonly databasePath?: string;
-  /** Repair torn documents (after taking a backup). Defaults to false, i.e. a dry run. */
+
   readonly repair?: boolean;
-  /** Only inspect these document kinds. */
+
   readonly kinds?: readonly DurableDocumentKind[];
-  /** Only inspect one document id (the current conversation's document, for example). */
+
   readonly documentId?: number;
 }
 
@@ -185,11 +175,6 @@ function itemIdentity(item: unknown): string | undefined {
   return undefined;
 }
 
-/**
- * Insert at a splice position, updating an existing element with the same identity instead of
- * duplicating it. Chord's tracker writes an append as `["p", path, 0, 0, [item]]`, so the
- * position alone cannot distinguish an append from a prepend.
- */
 function mergeAppend(target: unknown[], index: number, items: readonly unknown[]): void {
   const existing = new Map<string, number>();
   target.forEach((item, at) => {
@@ -216,10 +201,6 @@ function mergeAppend(target: unknown[], index: number, items: readonly unknown[]
   if (inserted.length > 0) target.splice(Math.min(index, target.length), 0, ...inserted);
 }
 
-/**
- * Apply one decoded delta batch, treating value replacement and duplicate appends as no-ops.
- * This is the small, self-contained subset of Chord's op grammar that durable stores.
- */
 function applyOpsIdempotent(root: unknown, ops: readonly unknown[]): unknown {
   let value = root;
   for (const raw of ops) {
@@ -333,13 +314,6 @@ function slotKey(slot: Record<string, unknown>, index: number): string {
   return typeof id === "string" || typeof id === "number" ? String(id) : `#${index}`;
 }
 
-/**
- * The authored shape rule says a terminal slot needs a result id. pi-durable's ToolSlot contract
- * documents `entry` as absent when a tool task faulted or was orphaned, so rejecting `done`
- * without an entry would reject a valid base and discard newer deltas. That is the deliberate
- * exception here. Pending/running slots without a result are residue; a repaired base marks them
- * interrupted instead of deleting the call.
- */
 function validateLive(value: unknown): string | undefined {
   if (!isRecord(value)) return "document is not an object";
   const checkSlots = (name: "tools" | "nestedTools"): string | undefined => {
@@ -359,8 +333,6 @@ function validateLive(value: unknown): string | undefined {
       if (slot.status !== undefined && typeof slot.status !== "string") {
         return `${name}[${index}] has an invalid status`;
       }
-      // pi-durable intentionally leaves `entry` absent when a tool task faulted or was
-      // orphaned, and `summary` absent for the same nested outcomes. Those are valid.
     }
     return undefined;
   };
@@ -437,12 +409,6 @@ function parseRevisionContent(content: string): unknown {
   return JSON.parse(content) as unknown;
 }
 
-/**
- * Materialise one document from its stored revisions. The newest base is preferred; if applying its
- * trailing deltas fails (or the result fails shape validation), the newest base that validates is used
- * and every trailing delta is dropped. A delta whose exact content already appeared after the base is
- * skipped, so replaying the same revision is a no-op.
- */
 export function materializeStoredDocument(
   kind: DurableDocumentKind,
   revisions: readonly DoctorRevision[],
@@ -498,8 +464,7 @@ export function materializeStoredDocument(
     }
 
     let value = cloneJson(parsedBase);
-    // The package view is what the next resume would read. Track it with the package's strict
-    // applier, so a deduplication that changes the value is detected instead of hidden.
+
     let packageValue = cloneJson(parsedBase);
     const seenDestructive = new Set<string>();
     let destructiveReplay = false;
@@ -542,8 +507,6 @@ export function materializeStoredDocument(
           );
           const fingerprint = destructive ? JSON.stringify(content) : undefined;
           if (fingerprint !== undefined && seenDestructive.has(fingerprint)) {
-            // A splice removal replayed twice would remove another item (or throw). Keep both
-            // replays at the first application and force a clean base below.
             destructiveReplay = true;
             skippedDeltas++;
           } else {
@@ -557,8 +520,7 @@ export function materializeStoredDocument(
         droppedDeltas = tail.length;
         break;
       }
-      // A replayed state-setting delta (the observed pending -> running duplicate) is a no-op.
-      // Text appends that genuinely repeat a chunk still change the value and are applied.
+
       if (jsonEqual(before, value)) skippedDeltas++;
     }
     if (failure === undefined) {
@@ -601,7 +563,6 @@ export function materializeStoredDocument(
       }
     }
 
-    // The newest base itself validates: use it exactly as stored, dropping the trailing deltas.
     const residue = markResidueInterrupted(parsedBase);
     return {
       value: residue.value,
@@ -645,9 +606,7 @@ function conversationIdOf(row: DocumentRow): number | undefined {
       const id = record.scope.conversationId;
       if (typeof id === "number" && Number.isSafeInteger(id)) return id;
     }
-  } catch {
-    // Keep the owner column as the fallback.
-  }
+  } catch {}
   return Number.isSafeInteger(row.owner_id) ? row.owner_id : undefined;
 }
 
@@ -658,7 +617,6 @@ function tableExists(db: DatabaseSync, table: string): boolean {
   return row?.name !== undefined;
 }
 
-/** pi-durable stores indexed strings JSON-encoded; older test rows may use the plain form. */
 function decodeIndexedString(value: string): string {
   if (!value.startsWith('"')) return value;
   try {
@@ -737,8 +695,6 @@ function writeRepairs(
       | undefined;
     let seq = nextSequence(db, Number(maxRow?.seq ?? 0) + 1);
     for (const repair of repairs) {
-      // A live commit may land between the scan and this transaction. Never supersede it with a
-      // base built from an older revision; the next rescue will see and repair the newer state.
       const current = db
         .prepare("SELECT MAX(seq) AS seq FROM document_revisions WHERE document_id = ?")
         .get(repair.documentId) as { seq?: number | null } | undefined;
@@ -753,7 +709,7 @@ function writeRepairs(
     if (tableExists(db, "durable_metadata")) {
       db.prepare("UPDATE durable_metadata SET next_seq = ? WHERE singleton = 1").run(seq);
     }
-    // Newer store records carry the document revision; keep it ahead of the base we appended.
+
     for (const repair of repairs) {
       let record: unknown;
       try {
@@ -771,17 +727,13 @@ function writeRepairs(
           JSON.stringify(record),
           repair.documentId,
         );
-      } catch {
-        // A store that exposes `documents` as a view derives the record; the appended base is enough.
-      }
+      } catch {}
     }
     db.exec("COMMIT");
   } catch (error) {
     try {
       db.exec("ROLLBACK");
-    } catch {
-      // Preserve the original failure.
-    }
+    } catch {}
     throw error;
   }
   return written;
@@ -829,7 +781,6 @@ function reportLine(report: DurableDocumentReport): string {
   return parts.join(" — ");
 }
 
-/** The one-line description a caller can put in the chat for the first repaired document. */
 export function durableRepairNotice(
   report: DurableDoctorReport,
   conversationId?: number,
@@ -842,7 +793,7 @@ export function durableRepairNotice(
         document.kind === kind &&
         (conversationId === undefined || document.conversationId === conversationId),
     );
-  // The live document is what the chat reads first; prefer it when several documents were repaired.
+
   const repaired = repairedFor("pi.live") ?? repairedFor("pi.agent") ?? repairedFor("pi.inbox");
   if (repaired === undefined) return undefined;
   const label =
@@ -857,10 +808,6 @@ export function durableRepairNotice(
   return `repaired ${label} from revision ${repaired.baseRevision}${dropped}`;
 }
 
-/**
- * Inspect (and optionally repair) the durable documents in a pi-ui SQLite store. The report is safe to
- * print: it contains revision numbers and reasons, never the document values.
- */
 export async function durableDoctor(
   options: DurableDoctorOptions = {},
 ): Promise<DurableDoctorReport> {
@@ -918,12 +865,9 @@ export async function durableDoctor(
       }
     }
   } finally {
-    // WAL content must be in the main file before it is copied as the backup.
     try {
       db.exec("PRAGMA wal_checkpoint(FULL)");
-    } catch {
-      // A reader may hold the file; the backup still names the main database.
-    }
+    } catch {}
     db.close();
   }
 

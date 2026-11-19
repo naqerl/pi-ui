@@ -25,24 +25,21 @@ import type { TaskActivity } from "../shared/types.js";
 
 export * from "../shared/idle-nudge.js";
 
-/** A stable hash over the sorted unblocked open-task ids. */
 export function taskSetHash(taskIds: readonly string[]): string {
   const hash = createHash("sha256");
   for (const id of [...taskIds].sort()) hash.update(id).update("\0");
   return hash.digest("hex");
 }
 
-/** What the nudge remembers about one task: naming history and how long it was ignored. */
 export interface IdleNudgeTaskRecord {
-  /** How many times this task has been named by a nudge. */
   named: number;
-  /** When it was last named, as an ISO timestamp. */
+
   lastNamedAt: string;
-  /** Whether it was named as work to pick or as a working task needing a status. */
+
   state: "open" | "working";
-  /** Consecutive nudges that left this ignored task out; zero while it is active. */
+
   silent: number;
-  /** Aliases written for readers that describe the count or time differently. */
+
   count?: number;
   times?: number;
   lastAt?: string;
@@ -51,9 +48,9 @@ export interface IdleNudgeTaskRecord {
 export interface IdleNudgeRecord {
   hash: string;
   nudgedAt: string;
-  /** Per-task memory. Absent on records written before this protocol. */
+
   tasks?: Record<string, IdleNudgeTaskRecord>;
-  /** Closed task ids already folded into the hash, so a closure is asked at most once. */
+
   closed?: string[];
 }
 
@@ -64,12 +61,10 @@ export interface IdleNudgeStorageOptions {
 
 type IdleNudgeStorage = string | IdleNudgeStorageOptions;
 
-/** The `idle-nudge.json` path for a data directory. */
 export function idleNudgeFile(dataDir: string): string {
   return join(dataDir, IDLE_NUDGE_FILE);
 }
 
-/** The `stale-nudge.json` path for a data directory. */
 export function staleRunNudgeFile(dataDir: string): string {
   return join(dataDir, STALE_RUN_NUDGE_FILE);
 }
@@ -115,17 +110,14 @@ function stringIds(value: unknown): string[] | undefined {
   return [...new Set(value.filter((id): id is string => typeof id === "string" && id.length > 0))];
 }
 
-/** When the activity feed last saw a durable-memory tool call. */
 function lastMemoryWriteAt(activity: TaskActivity | undefined): number | null {
   return instant(activity?.lastMemoryWriteAt ?? activity?.memoryWriteAt);
 }
 
-/** When a done task closed, using the older ledger spellings when needed. */
 function closedAt(task: IdleTask): number | null {
   return instant(task.completedAt) ?? instant(task.closedAt) ?? instant(task.lastWorkedAt);
 }
 
-/** Closed tasks that happened after the previous nudge and have no memory write after them. */
 function unrecordedClosures(
   tasks: readonly IdleTask[],
   since: number,
@@ -138,8 +130,7 @@ function unrecordedClosures(
     .filter((task) => {
       const at = closedAt(task);
       if (at === null) return false;
-      // A pending id survives a failed submission even though its closure time is
-      // already behind the stable watermark.
+
       if (at <= since && !pending.has(task.id)) return false;
       return wroteAt === null || wroteAt < at;
     })
@@ -189,7 +180,6 @@ function readTaskRecords(
   return out;
 }
 
-/** Read the last nudge record; a missing or malformed file simply yields undefined. */
 export function readIdleNudgeRecord(fileOrDataDir: string): IdleNudgeRecord | undefined {
   const file = storageFile(fileOrDataDir);
   if (file === undefined) return undefined;
@@ -203,7 +193,7 @@ export function readIdleNudgeRecord(fileOrDataDir: string): IdleNudgeRecord | un
   const record = parsed as Record<string, unknown>;
   if (typeof record.hash !== "string" || record.hash.length === 0) return undefined;
   const nudgedAt = iso(record.nudgedAt);
-  // A valid hash with an unusable timestamp is still a corrupt record.
+
   if (nudgedAt === undefined) return undefined;
   const tasks = readTaskRecords(record, nudgedAt);
   const closed = stringIds(
@@ -217,7 +207,6 @@ export function readIdleNudgeRecord(fileOrDataDir: string): IdleNudgeRecord | un
   };
 }
 
-/** Write the nudge record through a temporary file, then rename it into place. */
 export function writeIdleNudgeRecord(
   fileOrDataDir: string,
   record: IdleNudgeRecord,
@@ -231,7 +220,6 @@ export function writeIdleNudgeRecord(
   return file;
 }
 
-/** Remove the nudge record after its submission failed, so the same set can retry. */
 export function clearIdleNudgeRecord(fileOrDataDir: string): void {
   const file = storageFile(fileOrDataDir);
   if (file === undefined) return;
@@ -245,10 +233,8 @@ export function clearIdleNudgeRecord(fileOrDataDir: string): void {
   }
 }
 
-/** The last stale-run nudge for each task, as task id to ISO timestamp. */
 export type StaleRunNudgeRecord = Record<string, string>;
 
-/** Read the per-task stale-run records; a missing or malformed file yields an empty map. */
 export function readStaleRunNudgeRecord(fileOrDataDir: string): StaleRunNudgeRecord {
   const file = storageFile(fileOrDataDir, STALE_RUN_NUDGE_FILE);
   if (file === undefined) return {};
@@ -270,7 +256,6 @@ export function readStaleRunNudgeRecord(fileOrDataDir: string): StaleRunNudgeRec
   return out;
 }
 
-/** Write the per-task stale-run records through a temporary file, then rename. */
 export function writeStaleRunNudgeRecord(
   fileOrDataDir: string,
   record: StaleRunNudgeRecord,
@@ -289,10 +274,6 @@ export interface StaleRunNudgePlan {
   taskIds: string[];
 }
 
-/**
- * The one-hour status check for a live run that stopped calling tools on a task.
- * Each task gets at most one nudge per window, even across a restart.
- */
 export class StaleRunNudge {
   private readonly storage: string | undefined;
   private readonly nudgedAt = new Map<string, number>();
@@ -318,7 +299,6 @@ export class StaleRunNudge {
     }
   }
 
-  /** Tasks due for a status check right now, after the per-task cooldown. */
   due(
     tasks: readonly IdleTask[],
     activity: TaskActivity | undefined,
@@ -331,21 +311,18 @@ export class StaleRunNudge {
     });
   }
 
-  /** Remember that these tasks were nudged, so they stay quiet for one window. */
   record(taskIds: readonly string[], at: number = this.clock()): void {
     if (taskIds.length === 0) return;
     for (const id of taskIds) this.nudgedAt.set(id, at);
     this.save();
   }
 
-  /** Forget a failed submission, so the same tasks can try again. */
   forget(taskIds: readonly string[]): void {
     if (taskIds.length === 0) return;
     for (const id of taskIds) this.nudgedAt.delete(id);
     this.save();
   }
 
-  /** A ready-to-submit status check, or null when nothing is due. */
   maybeNudge(
     tasks: readonly IdleTask[],
     activity: TaskActivity | undefined,
@@ -370,30 +347,28 @@ export class StaleRunNudge {
 }
 
 export interface IdleNudgeState {
-  /** A turn is running, or a submission has not reached durable yet. */
   active: boolean;
-  /** Messages and steers waiting for the current turn. */
+
   queued: number;
-  /** Open tasks ready to pick. Derived from `tasks` when omitted. */
+
   openTaskIds?: readonly string[];
-  /** Tasks the agent has already started and not finished. */
+
   workingTaskIds?: readonly string[];
-  /** A richer task list; its statuses may include the derived working state. */
+
   tasks?: readonly IdleTask[];
-  /** The stale subset, when the caller already selected it. Derived from `tasks` otherwise. */
+
   staleTasks?: readonly IdleTask[];
-  /** Explicit task states, for callers that keep them separately from the ids. */
+
   taskStatuses?: Readonly<Record<string, IdleTaskStatus>>;
   statuses?: Readonly<Record<string, IdleTaskStatus>>;
-  /** Tool-call activity, where the last memory write is recorded. */
+
   activity?: TaskActivity;
-  /** Alias for callers that name the activity feed as their task activity. */
+
   taskActivity?: TaskActivity;
 }
 
 export type IdleNudgeStart = number | IdleNudgeStorage;
 
-/** The open and working ids after all the accepted state shapes are folded together. */
 function selectableTasks(state: IdleNudgeState): { open: string[]; working: string[] } {
   const open: string[] = [];
   const working: string[] = [];
@@ -433,24 +408,20 @@ function taskRecord(
   };
 }
 
-/**
- * Tracks one idle period. `noteActivity` re-arms it after any user message,
- * steer, run start or run end; `maybeNudge` remembers each task it named.
- */
 export class IdleNudge {
   private readonly storage: string | undefined;
   private lastActivityAt: number;
-  /** Stable closure watermark: noteActivity does not advance it. */
+
   private closureSinceAt: number;
-  /** Unasked closures restored after their first submission failed. */
+
   private pendingClosures = new Set<string>();
-  /** The closures in the latest nudge attempt; forgetNudge restores them on failure. */
+
   private attemptedClosures: string[] = [];
   private fired = false;
   private record: IdleNudgeRecord | undefined;
-  /** The last idle window that advanced the per-task counters, prompt or not. */
+
   private lastOpportunityAt: number | undefined;
-  /** True for an old hash-only record, which cannot be expanded until its next write. */
+
   private legacy = false;
 
   constructor(
@@ -480,30 +451,21 @@ export class IdleNudge {
     return this.enabled && !this.fired;
   }
 
-  /** The task set that last produced a nudge, loaded from disk at startup. */
   get nudgedHash(): string | undefined {
     return this.record?.hash;
   }
 
-  /** The per-task naming memory, loaded from disk at startup. */
   get nudgedTasks(): Readonly<Record<string, IdleNudgeTaskRecord>> {
     return this.record?.tasks ?? {};
   }
 
-  /** Reload the persisted task set, tolerant of a missing or corrupt record. */
   load(): void {
     if (this.storage === undefined) return;
     this.record = readIdleNudgeRecord(this.storage);
     this.legacy = this.record !== undefined && this.record.tasks === undefined;
   }
 
-  /**
-   * Forget the last nudge after its submission failed. Clearing both copies lets
-   * the same task set try again instead of staying silenced until the set changes.
-   */
   forgetNudge(): void {
-    // The submission never reached the chat, so the closures it named are still
-    // unasked. Keep them for the retry even after the record is cleared.
     for (const id of this.attemptedClosures) this.pendingClosures.add(id);
     this.attemptedClosures = [];
     this.record = undefined;
@@ -516,15 +478,13 @@ export class IdleNudge {
     }
   }
 
-  /** Any user message, steer, run start or run end starts a fresh idle period. */
   noteActivity(at: number = Date.now()): void {
     this.lastActivityAt = at;
     this.fired = false;
-    // A fresh activity window is a new opportunity; only the quiet timer is spaced out.
+
     this.lastOpportunityAt = undefined;
   }
 
-  /** The prompt to submit now, or null while disabled, busy, waiting, blocked or already nudged. */
   maybeNudge(state: IdleNudgeState, at?: number, activity?: TaskActivity): string | null;
   maybeNudge(state: IdleNudgeState, activity?: TaskActivity, at?: number): string | null;
   maybeNudge(
@@ -547,14 +507,11 @@ export class IdleNudge {
     if (!this.armed) return null;
     if (state.active || state.queued > 0) return null;
     const { open, working } = selectableTasks(state);
-    // Stale working tasks ride along with the usual decision prompt, and can also
-    // produce a nudge on their own when there is no new work to pick. A caller may
-    // have already selected them; otherwise derive them from the richer task list.
+
     const stale = state.staleTasks ?? staleWorkedTasks(state.tasks ?? [], at);
     const activity = explicitActivity ?? state.activity ?? state.taskActivity;
     const previousNudge = this.record === undefined ? null : instant(this.record.nudgedAt);
-    // noteActivity advances lastActivityAt even for run ends and failed retries; a
-    // closure must stay visible until a nudge actually carries it.
+
     const since = previousNudge ?? this.closureSinceAt;
     const closures = unrecordedClosures(state.tasks ?? [], since, activity, this.pendingClosures);
     const liveClosures = new Set(closures.map((task) => task.id));
@@ -572,9 +529,7 @@ export class IdleNudge {
     ];
     const hash = taskSetHash([...new Set([...open, ...working, ...staleIds, ...closedIds])]);
     const hasMemoryAsk = closures.length > 0;
-    // The 10s timer may poll many times inside one idle window. Only one check per
-    // window may advance the cooldown, or three silent opportunities become 30s. A
-    // genuinely new task set is new information and is not held back.
+
     if (
       !hasMemoryAsk &&
       hash === this.record?.hash &&
@@ -583,8 +538,7 @@ export class IdleNudge {
     ) {
       return null;
     }
-    // A legacy record only knows a hash. Keep its old silence until the set changes,
-    // then the write below upgrades it to the per-task form.
+
     if (!hasMemoryAsk && this.legacy && hash === this.record?.hash) return null;
 
     const atIso = new Date(at).toISOString();
@@ -608,8 +562,6 @@ export class IdleNudge {
         continue;
       }
       if (currentState === "working") {
-        // A task that just started working is answered, so ask at once. A task that
-        // was already working is asked again only after the hourly interval.
         if (previous.state === "working") {
           const last = Date.parse(previous.lastNamedAt);
           if (Number.isFinite(last) && at - last < IDLE_STATUS_INTERVAL_MS) continue;
@@ -620,7 +572,6 @@ export class IdleNudge {
         continue;
       }
       if (previous.state === "working") {
-        // It left the working state without being closed, so it is work to pick again.
         previous.silent = 0;
         pickedOpen.push(id);
         continue;
@@ -631,13 +582,10 @@ export class IdleNudge {
       } else if (previous.silent > 0) {
         previous.silent += 1;
       } else {
-        // It was named as work and is still untouched: this is the first silent nudge.
         previous.silent = 1;
       }
     }
 
-    // The text names at most twenty ids, so only those tasks may be remembered as
-    // named. Recording the rest would silence tasks the agent never saw.
     const visibleOpen = pickedOpen.slice(0, IDLE_NUDGE_TASK_LIMIT);
     const visibleWorking = pickedWorking.slice(
       0,
@@ -645,9 +593,6 @@ export class IdleNudge {
     );
 
     if (visibleOpen.length === 0 && visibleWorking.length === 0) {
-      // No new work is due. A stale working task still deserves an actualize request,
-      // unless this exact new-work + actualize set was already named. A closure is
-      // new information even when the work set is unchanged.
       const staleDue = stale.length > 0 && (hash !== this.record?.hash || hasMemoryAsk);
       if (staleDue || hasMemoryAsk) {
         const base = staleDue ? idleActualizeNudgeText(stale) : "";
@@ -672,8 +617,7 @@ export class IdleNudge {
         }
         return text;
       }
-      // Nothing to submit, but the silent counters still move. Persist them so the
-      // next idle window resumes from here instead of starting over at zero.
+
       this.lastOpportunityAt = at;
       this.record = {
         hash,
@@ -717,7 +661,6 @@ export class IdleNudge {
     return text;
   }
 
-  /** Remember what this submission carries; forgetNudge restores the closures on failure. */
   private markAttempt(closures: readonly IdleTask[], at: number): void {
     this.attemptedClosures = closures.map((task) => task.id);
     this.pendingClosures.clear();

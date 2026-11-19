@@ -17,7 +17,6 @@ function mergedDrafts(current: Drafts, questions: readonly TaskQuestion[]): Draf
   );
 }
 
-/** Free text wins over the choices for a question that offers an Other field. */
 function otherAnswers(
   question: TaskQuestion,
   draft: Pick<TaskQuestionAnswer, "values" | "text">,
@@ -71,11 +70,6 @@ function OptionRow({
   );
 }
 
-/**
- * The pending plan-chat questions: one card, one Send answers action above the composer.
- * The card takes its natural height so every question is visible; the transcript pane owns
- * scrolling and keeps a detached reader in place while the card grows below them.
- */
 export function TaskQuestionPanel({
   set,
   onAnswer,

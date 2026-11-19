@@ -25,7 +25,6 @@ after(async () => {
 
 type Diagnostic = { severity: string; code?: string; message: string };
 
-/** Records everything the tool sends through the invocation api, keeping a bounded tail. */
 function fakeApi(limit = 20_000) {
   let text = "";
   let truncated = false;
@@ -152,7 +151,7 @@ test("restarting never reuses a kept truncated log", async (t) => {
     jobs: unknown[];
   };
   assert.ok((saved.sequence ?? 0) >= 1, "the id high-water mark is persisted");
-  // Older indexes had no sequence field; the log names must still reserve their ids.
+
   delete saved.sequence;
   await writeFile(indexPath, JSON.stringify(saved));
 
@@ -362,9 +361,7 @@ test("load adopts a hidden live command and drops one whose pid is gone", async 
   t.after(async () => {
     try {
       if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
-    } catch {
-      // Already gone.
-    }
+    } catch {}
     await rm(dataDir, { recursive: true, force: true });
   });
   await mkdir(join(dataDir, "jobs"), { recursive: true });

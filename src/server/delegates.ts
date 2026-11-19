@@ -30,7 +30,6 @@ import { buildPiSystemPrompt } from "./pi.js";
 import { retrySettings } from "./retry.js";
 import { JOB_NOTICE_ENTRY_KIND } from "./session.js";
 
-/** Every sub-agent gets the coding tools plus the job tools a handed-off command needs. */
 export const DELEGATE_TOOLS = [
   "read",
   "bash",
@@ -47,18 +46,15 @@ Use read, bash, edit, write, job_list, job_output, and job_cancel. Do not ask th
 ${TIMED_BASH_DESCRIPTION}
 When you are done, write a short report as your final message: what you changed, what you ran, and anything still blocked.`;
 
-/** Told to the chat when a turn was in flight and the process restarted. */
 export const DELEGATE_RESTART_ERROR = "pi-ui restarted before this turn finished.";
 
-/** Most sub-agents running at once. Extra prompts stay queued in launch order. */
 export const MAX_CONCURRENT_DELEGATES = positiveIntegerEnv("PI_ACP_DELEGATE_MAX_CONCURRENT", 4);
-/** Idle sessions kept open so acp_delegate_continue can resume them. Oldest past this are closed. */
+
 export const MAX_IDLE_DELEGATES = 8;
 const EXCERPT_CHARS = 1_500;
 
 export class DelegateError extends Error {}
 
-/** One turn of a sub-agent. The manager does not wait on it inside the chat tool. */
 export interface DelegateTurnResult {
   readonly text: string;
   readonly usage?: DelegateTokenUsage;
@@ -66,18 +62,11 @@ export interface DelegateTurnResult {
   readonly cancelled?: boolean;
 }
 
-/** A kept sub-agent session. submit starts one turn and resolves when that turn ends. */
 export interface DelegateSession {
   submit(prompt: string): Promise<DelegateTurnResult>;
-  /**
-   * Deliver a finished background job's notice into an open turn without starting
-   * another one. A closed or idle conversation refuses it.
-   */
+
   submitNotice?(text: string): Promise<void>;
-  /**
-   * Continue a turn the previous process left in flight. When durable has
-   * nothing left to run, start `prompt` as a new turn.
-   */
+
   resume?(prompt: string): Promise<DelegateTurnResult>;
   abort(): void;
   close(): Promise<void>;
@@ -88,11 +77,11 @@ export interface DelegateManagerOptions {
   readonly cwd: string;
   readonly models: ModelRuntime;
   readonly model: Model<Api> | undefined;
-  /** Background jobs shared with the chat, so a handed-off delegate command reports back. */
+
   readonly jobs?: JobManager;
-  /** Override the bash foreground window. Defaults to PI_BASH_HANDOFF_MS, then 120 s. */
+
   readonly handoffMs?: number;
-  /** Tests inject this. Production opens a sqlite harness per sub-agent. */
+
   readonly openSession?: (run: { id: string; cwd: string }) => Promise<DelegateSession>;
 }
 
@@ -126,14 +115,13 @@ interface TurnGate {
 interface DelegateRun extends SerializedDelegateRun {
   result?: string;
   cancelRequested: boolean;
-  /** True while a prompt has been accepted and not yet finished. */
+
   turnOpen: boolean;
-  /** True when this turn was queued again because the process restarted. */
+
   resumed: boolean;
   gate: TurnGate;
 }
 
-/** Distinguishes temporary files written by concurrent managers in this process. */
 let writeSequence = 0;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -252,11 +240,6 @@ function isOutcome(value: unknown): value is TurnOutcome {
   return value === "completed" || value === "failed" || value === "cancelled";
 }
 
-/**
- * Sub-agents for local work the chat should not sit inside. Each one is its own durable
- * conversation. acp_delegate and acp_delegate_continue return as soon as the prompt is accepted.
- * The chat hears about the turn from one chip, then can continue the same session.
- */
 export class DelegateManager {
   private readonly dir: string;
   private readonly indexPath: string;
@@ -270,7 +253,7 @@ export class DelegateManager {
   private changeListener: (() => void) | undefined;
   private activeCount = 0;
   private shuttingDown = false;
-  /** Runs load() put back on the queue. Pumped once the chat can hear the chip. */
+
   private pendingRestarts: string[] = [];
 
   constructor(private readonly options: DelegateManagerOptions) {
@@ -300,11 +283,6 @@ export class DelegateManager {
     if (changed) this.save();
   }
 
-  /**
-   * Start every sub-agent whose turn was in flight when the process stopped.
-   * Call this after setNotifier, so a turn that ends immediately still chips.
-   * A run with no saved database stays failed; flushBootNotices reports that one.
-   */
   restartInterrupted(): number {
     if (this.shuttingDown) return 0;
     const ids = this.pendingRestarts.splice(0);
@@ -327,15 +305,10 @@ export class DelegateManager {
     this.notifier = notifier;
   }
 
-  /** Called whenever a run is queued, starts, or finishes. The dock renders this. */
   onChange(listener: (() => void) | undefined): void {
     this.changeListener = listener;
   }
 
-  /**
-   * One chip for every turn that was in flight when the process stopped.
-   * Call this after setNotifier. A session with a saved database stays continuable.
-   */
   async flushBootNotices(): Promise<void> {
     const pending = [...this.runs.values()].filter((run) => run.pendingNotice === true);
     for (const run of pending) {
@@ -359,7 +332,6 @@ export class DelegateManager {
     return this.viewOf(this.run(id));
   }
 
-  /** Accept a prompt and return. The turn runs after this resolves. */
   async start(options: DelegateStartOptions): Promise<DelegateRunView> {
     if (this.shuttingDown)
       throw new DelegateError("pi-ui is shutting down; no sub-agent can start.");
@@ -387,10 +359,6 @@ export class DelegateManager {
     return this.viewOf(run);
   }
 
-  /**
-   * Send another prompt to an idle sub-agent and return. Refuses a run that is already
-   * working, and one whose session was closed.
-   */
   async continue(id: string, prompt: string): Promise<DelegateRunView> {
     if (this.shuttingDown)
       throw new DelegateError("pi-ui is shutting down; no sub-agent can continue.");
@@ -422,11 +390,6 @@ export class DelegateManager {
     return this.viewOf(run);
   }
 
-  /**
-   * Deliver a finished job's notice to a live sub-agent turn. It never opens or
-   * resumes a session and never starts a turn; a closed run falls back to the
-   * parent chat's activity row.
-   */
   async submitJobNotice(id: string, text: string): Promise<boolean> {
     const run = this.runs.get(id.trim());
     if (run === undefined || run.closed === true || !run.turnOpen) return false;
@@ -442,7 +405,6 @@ export class DelegateManager {
     }
   }
 
-  /** Stop the current turn. The session stays, so a later continue still works. */
   cancel(id: string): DelegateRunView {
     const run = this.run(id);
     if (run.status === "queued") {
@@ -470,8 +432,6 @@ export class DelegateManager {
     this.shuttingDown = true;
     const waiting: Promise<void>[] = [];
     for (const run of this.runs.values()) {
-      // A turn that already flipped to idle can still be writing its chip files.
-      // Its gate settles at the end of that write, so wait for every gate.
       if (run.status === "queued" || run.status === "running") this.cancel(run.id);
       waiting.push(run.gate.done);
     }
@@ -504,8 +464,7 @@ export class DelegateManager {
     restart: boolean;
   } {
     const wasLive = raw.status === "running" || raw.status === "queued";
-    // The session is still on disk, so the turn continues from its checkpoint
-    // instead of being failed for the parent to continue by hand.
+
     if (wasLive && this.hasDatabase(raw.id)) {
       const run = this.hydrate({
         id: raw.id,
@@ -637,7 +596,7 @@ export class DelegateManager {
         session = await this.openFor(run);
         this.sessions.set(run.id, session);
       }
-      // Cancel during open has no session to abort yet. Do not submit after that.
+
       if (run.cancelRequested || this.shuttingDown || !run.turnOpen) return;
       const result =
         restarting && session.resume !== undefined
@@ -986,11 +945,6 @@ class DurableDelegateSession implements DelegateSession {
     }
   }
 
-  /**
-   * The previous process died mid-turn. Scheduling was off, so resume it and
-   * wait for the submission that was already admitted. A turn that never
-   * landed in durable starts again from the same prompt.
-   */
   async resume(prompt: string): Promise<DelegateTurnResult> {
     try {
       const outcome = await withConversationIdentity(String(this.conversation.id), async () => {
@@ -1046,10 +1000,6 @@ class DurableDelegateSession implements DelegateSession {
     };
   }
 
-  /**
-   * A job notice rides the current run as a steer. `whenIdle: "reject"` makes sure
-   * a completion that races the end of a turn cannot start another one.
-   */
   async submitNotice(text: string): Promise<void> {
     const createdAt = new Date().toISOString();
     await withConversationIdentity(String(this.conversation.id), async () => {
@@ -1096,9 +1046,7 @@ async function readConversationId(path: string): Promise<ConversationId | undefi
     ) {
       return value.conversationId as ConversationId;
     }
-  } catch {
-    // A malformed pointer is replaced the next time the session is created.
-  }
+  } catch {}
   return undefined;
 }
 

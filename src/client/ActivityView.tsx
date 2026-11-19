@@ -15,13 +15,13 @@ import type { TimelineItem } from "./use-chat";
 interface ActivityViewProps {
   timeline: TimelineItem[];
   ready: boolean;
-  /** Restrict the list to one timeline group; defaults to the page's ?run= value. */
+
   run?: string | null;
-  /** Running shell jobs, shown through the same job row as finished ones. */
+
   jobs?: readonly BuiltinJob[];
-  /** Focus one live job when arriving from the background-work sheet. */
+
   focusJobId?: string | null;
-  /** Render as the body of a modal instead of a standalone page. */
+
   dialog?: { onClose: () => void; titleId: string };
 }
 
@@ -34,15 +34,13 @@ interface ActivityDialogProps {
   onClose: () => void;
 }
 
-/** Output longer than this shows its start until the reader asks for the rest. */
 const PREVIEW_LINES = 40;
 const PREVIEW_CHARS = 4000;
-/** A single line's 12px text has its cap-height centre 1.5px above the line box. */
+
 const DISCLOSURE_BOX =
   "flex size-4 shrink-0 items-center justify-center transition-transform group-data-[state=open]:rotate-90 motion-reduce:transition-none";
 const SINGLE_LINE_SHIFT = "-translate-y-[1.5px]";
 
-/** Keep the optical shift for one-line summaries, but leave a wrapped block centred. */
 function useDisclosureAlignment() {
   const summaryRef = useRef<HTMLSpanElement>(null);
   const [wrapped, setWrapped] = useState(false);
@@ -188,7 +186,6 @@ function JobActivityRow({
   );
 }
 
-/** A running job in the same shape the activity page already renders. */
 function liveJobActivity(job: BuiltinJob, output: string): ActivityItem {
   return {
     kind: "job",
@@ -261,7 +258,6 @@ function TextActivityRow({ activity }: { activity: Exclude<ActivityItem, { kind:
   );
 }
 
-/** The run's activity list, shared by the standalone page and the chat's modal. */
 export function ActivityView({
   timeline,
   ready,
@@ -393,7 +389,6 @@ export function ActivityView({
   return <div className="activity-screen">{card}</div>;
 }
 
-/** The activity view in a native modal over the chat. */
 export function ActivityDialog({
   timeline,
   ready,

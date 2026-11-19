@@ -18,7 +18,6 @@ const queued: QueuedMessage = {
 
 function transcript(kind: "main" | "plan") {
   return buildChatTimeline({
-    // The same conversation entries reach both cores; `kind` only names which one is built.
     messages: kind === "main" ? entries : entries.map((message) => ({ ...message })),
     activity: [],
     liveTools: [],
@@ -32,8 +31,6 @@ function transcript(kind: "main" | "plan") {
 }
 
 test("the plan chat and the main chat build the same row kinds from the same entries", () => {
-  // Why: both conversations render one core. A row kind that appears in the main chat must
-  // appear in the plan chat for the same entry, or they have forked again.
   const main = transcript("main");
   const plan = transcript("plan");
   assert.deepEqual(

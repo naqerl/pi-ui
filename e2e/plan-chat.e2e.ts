@@ -18,13 +18,10 @@ interface PlanSwitchGeometry {
   parentTestId: string | null;
 }
 
-// Measured on main at 390x844: the dock is 90 px, the composer body 48 px and
-// the top line 41 px. The switch must ride that existing line, not grow it.
 const DOCK_HEIGHT = 90;
 const COMPOSER_HEIGHT = 48;
 const TOP_LINE_HEIGHT = 41;
 
-/** The opacity leg of a dock swap must be the full 160 ms, not a colour duration. */
 function expectDockTransition(
   node: { transitionProperty: string | null; transitionDuration: string | null } | null,
 ) {
@@ -60,7 +57,6 @@ interface DockTaskSample {
 
 type DockTaskTrigger = { kind: "open"; id: string } | { kind: "close" } | { kind: "read" };
 
-/** Clicks one dock trigger and reads the swap at the first frame where both variants overlap. */
 function sampleTaskDockTransition(
   browser: Browser,
   trigger: DockTaskTrigger,
@@ -91,8 +87,7 @@ function sampleTaskDockTransition(
       const button = document.querySelector<HTMLElement>(`button[aria-label="${label}"]`);
       return visual(button?.closest<HTMLElement>(".dock-swap") ?? null);
     };
-    // The task send loses its test id the moment the dock leaves the task surface,
-    // while its leaving wrapper is still mounted; find that exit by its label.
+
     const taskSend = () => lane("task-agent-send") ?? laneByLabel("Send");
     const statusNode = () => {
       const live = document.querySelector<HTMLElement>(
@@ -159,8 +154,6 @@ function sampleTaskDockTransition(
 test("the plan switch sits on the dock's top line with a visible label", {
   timeout: 120_000,
 }, async ({ app, browser, screen }) => {
-  // The phone is the first acceptance surface: the dock's top line and its
-  // action row collapse differently there, so sample the alignment before wide.
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/?page=tasks");
   await browser.evaluate(() => {
@@ -172,7 +165,7 @@ test("the plan switch sits on the dock's top line with a visible label", {
   const toggle = screen.getByTestId("plan-task-toggle");
   await expect(toggle).toBeVisible();
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
-  // The visible label is the whole accessible name, exactly once.
+
   await expect(screen.getByRole("button", "Plan task")).toHaveCount(1);
   await expect(toggle).toHaveAccessibleName("Plan task");
   const visibleLabel = toggle.getByText("Plan task", { exact: true });
@@ -281,16 +274,12 @@ test("the plan switch sits on the dock's top line with a visible label", {
   await expect(composer).toHaveValue("keep this draft");
   await app.screenshot("plan-task-switch-on");
 
-  // The same top-line alignment holds when the dock is wide.
   await browser.setViewport({ width: 1280, height: 900 });
   await expect(toggle).toBeVisible();
   const wide = await readGeometry();
   checkGeometry(wide);
   await expect(screen.getByTestId("composer-plus")).toBeVisible();
 
-  // A page switch only changes identities: sample both the leaving and the
-  // arriving switch while they are fading. The dock, top line and composer
-  // must keep the exact heights they had before the switch.
   await browser.setViewport({ width: 390, height: 844 });
   await browser.emulateMedia({ reducedMotion: "no-preference" });
   const switchAndSample = (id: "chat" | "tasks", waitForLeaving: boolean) =>
@@ -367,7 +356,7 @@ test("the plan switch sits on the dock's top line with a visible label", {
   expectDockTransition(arrivingSample.planSwitch);
   await expect(toggle).toBeVisible();
   await expect(toggle).toHaveAttribute("data-open", "true");
-  // The same persistent Composer kept the draft and the focus across the swap.
+
   await expect(composer).toHaveValue("keep this draft");
   await expect.poll(focusedInput).toBe("New task");
 });
@@ -396,7 +385,6 @@ test("create and plan-chat fade the action and status without moving the dock", 
     await expect(screen.getByTestId("plan-task-toggle")).toBeVisible();
     await expect(screen.getByTestId("add-task")).toBeVisible();
 
-    // create -> plan-chat: the add-task control leaves while the task send arrives.
     const opened = await sampleTaskDockTransition(browser, { kind: "open", id: taskId });
     expect(opened.dockHeight).toBe(DOCK_HEIGHT);
     expect(opened.composerHeight).toBe(COMPOSER_HEIGHT);
@@ -416,7 +404,6 @@ test("create and plan-chat fade the action and status without moving the dock", 
     });
     expectDockTransition(opened.actions.taskSend);
 
-    // The status word enters as its own keyed child, never as a second live region.
     await expect
       .poll(async () => (await sampleTaskDockTransition(browser, { kind: "read" })).status?.text)
       .toBe("idle");
@@ -430,7 +417,6 @@ test("create and plan-chat fade the action and status without moving the dock", 
     expect(enteredScenario.status?.animationName).toContain("dock-text-in");
     expectDockTransition(enteredScenario.status);
 
-    // plan-chat -> create: the task send leaves, and the held status word exits.
     const closed = await sampleTaskDockTransition(browser, { kind: "close" });
     expect(closed.dockHeight).toBe(DOCK_HEIGHT);
     expect(closed.composerHeight).toBe(COMPOSER_HEIGHT);
@@ -472,8 +458,6 @@ test("a collapse owns the swap and reduced motion drops the leaving nodes", {
   await browser.emulateMedia({ reducedMotion: "no-preference" });
   await app.open("/?page=tasks");
 
-  // stats is a collapsed surface. Expanding into tasks must not start a second
-  // animation on the nodes the 220 ms composer expansion already carries.
   await screen.getByTestId("page-dot-stats").tap();
   await expect
     .poll(() =>
@@ -517,7 +501,6 @@ test("a collapse owns the swap and reduced motion drops the leaving nodes", {
   expect(statsToTasks.planSwitch?.animationName).toBe("none");
   expect(statsToTasks.collapsed).toBe("false");
 
-  // The same holds when a done task's collapsed detail closes back to create.
   const title = `Done dock ${Date.now()}`;
   const doneId = await browser.evaluate(async (needle) => {
     const response = await fetch("/api/tasks", {
@@ -593,7 +576,6 @@ test("a collapse owns the swap and reduced motion drops the leaving nodes", {
     await removeTasks(browser, [title]);
   }
 
-  // Reduced motion is an immediate unmount, not a zero-length fade.
   await browser.emulateMedia({ reducedMotion: "reduce" });
   await app.open("/?page=tasks");
   await expect(screen.getByTestId("plan-task-toggle")).toBeVisible();
@@ -682,10 +664,10 @@ test("a plan run that dies without an answer shows a dismissible error", {
 
   const header = screen.getByTestId("run-error-header");
   await expect(header).toBeVisible({ timeout: 60_000 });
-  // The failed run settles to the composer dock's idle word, with no pane copy.
+
   await expect(screen.getByTestId("working-status")).toHaveText("idle", { timeout: 60_000 });
   await expect(screen.getByTestId("task-agent-status")).toHaveCount(0);
-  // The plan pane has no second copy of the run error.
+
   await expect.poll(async () => screen.getByTestId("run-error-header").count()).toBe(1);
   await expect(screen.getByTestId("composer-error")).toHaveCount(0);
   await expect(screen.getByTestId("run-error-class")).toHaveText("ModelError");
@@ -702,10 +684,9 @@ test("a plan run that dies without an answer shows a dismissible error", {
   });
   expect(planPlacement.position).toBe("absolute");
   expect(planPlacement.height).toBeLessThan(40);
-  // Absolute placement: the header overlays the top, it does not move the transcript.
+
   expect(planPlacement.transcriptTop).toBe(transcriptTop);
 
-  // The same single host survives the wide layout.
   await browser.setViewport({ width: 1280, height: 900 });
   await expect.poll(async () => screen.getByTestId("run-error-header").count()).toBe(1);
 
@@ -739,7 +720,6 @@ test("a plan run that dies without an answer shows a dismissible error", {
       tag: `run-error-${taskId}`,
     });
 
-  // The chat is idle with the error, never bare idle and nothing else.
   await expect
     .poll(async () =>
       browser.evaluate(async (taskTitle) => {
@@ -778,14 +758,12 @@ test("a plan run that dies without an answer shows a dismissible error", {
     )
     .toBeNull();
 
-  // A page switch is a new render, not a resurrection of the dismissed plan error.
   await screen.getByTestId("page-dot-chat").tap();
   await expect.poll(async () => screen.getByTestId("run-error-header").count()).toBe(0);
   await screen.getByTestId("page-dot-tasks").tap();
   await expect.poll(async () => screen.getByTestId("run-error-header").count()).toBe(0);
   await expect(screen.getByTestId("task-agent-chat")).toBeVisible();
 
-  // The composer is the retry path after a failed run: another message starts a run.
   const retryInput = screen.getByTestId("task-agent-input");
   await retryInput.fill("SLOW retry after the failed plan run");
   await screen.getByTestId("task-agent-send").tap();
@@ -887,7 +865,6 @@ test("the plan chat renders its run status only in the composer dock", {
   expect(phoneIdle.composerHeight ?? 0).toBeGreaterThan(0);
   await app.screenshot("plan-chat-idle");
 
-  // A run started from the plan composer keeps the dock as its only status.
   const input = screen.getByTestId("task-agent-input");
   await input.fill("SLOW keep the plan run open");
   await screen.getByTestId("task-agent-send").tap();
@@ -920,7 +897,6 @@ test("the plan chat renders its run status only in the composer dock", {
   expect(phoneStopped.composerHeight).toBe(phoneIdle.composerHeight);
   expect(phoneStopped.transcriptScrollTop).toBe(phoneLive.transcriptScrollTop);
 
-  // The same single status survives the wide split layout.
   await browser.setViewport({ width: 1280, height: 900 });
   await expect(dock).toHaveText("idle", { timeout: 60_000 });
   const wideIdle = await readPlanStatus(browser);

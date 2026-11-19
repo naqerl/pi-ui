@@ -26,14 +26,12 @@ const GREP_MAX_LINE_CHARS = 240;
 const GREP_MAX_FILE_BYTES = 512 * 1024;
 const READ_MAX_LIMIT = 400;
 
-/** One matching line from memory_grep. */
 export interface MemoryGrepHit {
   readonly path: string;
   readonly line: number;
   readonly text: string;
 }
 
-/** The structured result memory_grep reports alongside its text summary. */
 export interface MemoryGrepDetails {
   readonly hits: MemoryGrepHit[];
   readonly topics: number;
@@ -90,7 +88,6 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Every .md file under topics/, recursively, including INDEX.md. */
 async function listTopicFiles(store: MemoryStore): Promise<string[]> {
   const files: string[] = [];
   const walk = async (directory: string, prefix: string): Promise<void> => {
@@ -111,7 +108,6 @@ async function listTopicFiles(store: MemoryStore): Promise<string[]> {
   return files;
 }
 
-/** Reads one grep candidate, skipping anything too large or unreadable. */
 async function readGrepFile(store: MemoryStore, path: string): Promise<string | undefined> {
   try {
     const file = store.resolvePath(path);
@@ -128,20 +124,18 @@ function failure(error: unknown): ToolExecutionResult {
 }
 
 export interface MemoryWriteRecord {
-  /** Memory-relative path, such as topics/projects/widget.md. */
   readonly path: string;
-  /** The text just written, without front matter. */
+
   readonly text: string;
-  /** The topic title, when this was a long-term write. */
+
   readonly title?: string;
-  /** The full topic body length after the write, when this was a long-term write. */
+
   readonly chars?: number;
-  /** The ISO date the topic was restamped with, when this was a long-term write. */
+
   readonly updated?: string;
 }
 
 export interface MemoryToolHooks {
-  /** Persist a chip for a successful write. A failure here never fails the write. */
   readonly onWrite?: (record: MemoryWriteRecord) => void | Promise<void>;
 }
 
@@ -154,7 +148,6 @@ function topicPath(topic: string, scope: string | undefined, title: string | und
   return `topics/${chosenScope}/${stem}.md`;
 }
 
-/** Tools for the layered memory tree. Not deferred, so every turn offers them. */
 export function createMemoryTools(
   store: MemoryStore,
   snapshot?: SnapshotCache,

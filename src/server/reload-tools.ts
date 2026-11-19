@@ -66,10 +66,6 @@ function json(value: unknown, isError = false): ToolExecutionResult {
   };
 }
 
-/**
- * The agent-facing reload tool. It never restarts the process, and a second
- * call made while one is running reports `busy` instead of racing it.
- */
 export function createReloadTool(hooks: ReloadHooks): ToolRegistration {
   let running = false;
 

@@ -1,7 +1,5 @@
 import type { StreamTextDelta } from "../shared/types";
 
-/** Ordered updates, painted at most once per frame. Clear at authoritative boundaries
- * (snapshot/done/tool transition), so a scheduled frame cannot resurrect an old draft. */
 export function frameBatch<T>(
   apply: (items: T[]) => void,
   schedule: (run: () => void) => number,
@@ -36,8 +34,6 @@ export function reduceDraft(current: string, updates: StreamTextDelta[]): string
   return current;
 }
 
-/** Burst refreshes share one request; requests during a fetch get one trailing pass.
- * Unlike dropping in-flight calls, this cannot miss a completion after the read began. */
 export function refreshBatch(work: () => Promise<void>, delayMs = 32) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let running = false;

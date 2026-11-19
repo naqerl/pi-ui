@@ -13,7 +13,7 @@ import {
 test("fit scaling uses the tighter of the two stage axes", () => {
   assert.equal(fitScale(390, 844, 2000, 500, 20), 0.175);
   assert.equal(fitScale(1280, 720, 400, 200, 20), 3.1);
-  // A degenerate stage or drawing still yields a usable scale rather than NaN/Infinity.
+
   assert.equal(fitScale(0, 844, 400, 200), 1);
   assert.equal(fitScale(390, 844, 0, 200), 1);
 });

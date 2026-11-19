@@ -5,13 +5,10 @@ import { manifestColor } from "../shared/color.js";
 import { mixed, themePalette, themeTokens } from "../shared/theme.js";
 import type { OmarchyTheme, OmarchyThemes, ThemeColors } from "../shared/types.js";
 
-/** Colors and lengths that can sit in an HTML style attribute. */
 const SAFE_CSS = /^[#%(),.\s\w/+-]+$/;
 
-/** Stock Omarchy themes. The image copies the vendored catalog to this path. */
 const STOCK_THEMES = "/usr/share/omarchy/themes";
 
-/** Page theme when the desktop has no current name and nothing is saved. */
 const FALLBACK_SLUG = "vantablack";
 
 function displayName(slug: string): string {
@@ -33,7 +30,6 @@ function sameColor(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase();
 }
 
-/** First candidate that is not the page and not one of the colors already used. */
 function firstDifferent(
   background: string,
   skip: readonly string[],
@@ -66,8 +62,7 @@ function parseColors(text: string): Omit<ThemeColors, "radius"> | null {
   const lighter = values.lighter_background;
   const dark = values.dark_background;
   const darker = values.darker_background;
-  // Prefer a raised panel. Themes like Solitude set lighter equal to the page,
-  // so the chrome steps down to dark_background instead of matching the transcript.
+
   const surface =
     firstDifferent(background, [], [lighter, dark, darker]) ?? mixed(background, foreground, 86);
   const muted =
@@ -97,14 +92,11 @@ async function readColors(dir: string, slug: string): Promise<Omit<ThemeColors, 
   }
 }
 
-/** User `hyprland.lua` wins. A theme with no `rounding` stays square, like Vantablack. */
 async function readRounding(userDir: string, stockDir: string, slug: string): Promise<number> {
   for (const dir of [userDir, stockDir]) {
     try {
       return parseRounding(await readFile(join(dir, slug, "hyprland.lua"), "utf8"));
-    } catch {
-      // Missing file: try the stock theme, then square corners.
-    }
+    } catch {}
   }
   return 0;
 }
@@ -123,13 +115,10 @@ async function currentSlug(): Promise<string | null> {
     const text = await readFile(join(homedir(), ".local/state/omarchy/current/theme.name"), "utf8");
     const slug = text.trim();
     if (slug.length > 0) return slug;
-  } catch {
-    // No desktop theme. Vantablack is in the image catalog.
-  }
+  } catch {}
   return FALLBACK_SLUG;
 }
 
-/** Stock themes plus any user theme of the same slug, which wins. */
 export async function listThemes(): Promise<OmarchyThemes> {
   const stock = STOCK_THEMES;
   const user = join(homedir(), ".config/omarchy/themes");
@@ -172,7 +161,6 @@ export async function writeThemeSlug(file: string, slug: string): Promise<void> 
   await rename(temporary, file);
 }
 
-/** Saved slug when it is still installed, otherwise the desktop theme. */
 export async function resolveTheme(file: string): Promise<{
   themes: OmarchyThemes;
   active: OmarchyTheme | null;
@@ -186,11 +174,6 @@ export async function resolveTheme(file: string): Promise<{
   return { themes: { ...listed, selected }, active };
 }
 
-/**
- * Declarations for the document element. Inline on `<html>` so they win over
- * the stylesheet's default `:root` colors and the first paint is the theme.
- * Returns null when a value is not safe to embed.
- */
 export function themeStyle(colors: ThemeColors): string | null {
   const declarations: Array<[string, string]> = [
     ["--background", colors.background],
@@ -215,7 +198,6 @@ export function themeStyle(colors: ThemeColors): string | null {
   return parts.join(";");
 }
 
-/** Put the active theme on `<html>` and replace the default `color-scheme` and `theme-color` metas. */
 export function injectTheme(html: string, theme: OmarchyTheme | null): string {
   if (theme === null) return html;
   const style = themeStyle(theme.colors);
@@ -224,13 +206,12 @@ export function injectTheme(html: string, theme: OmarchyTheme | null): string {
     const cleaned = attrs.replace(/\sstyle="[^"]*"/i, "").replace(/\sdata-mode="[^"]*"/i, "");
     return `<html${cleaned} data-mode="${theme.colors.mode}" style="${style}">`;
   });
-  // `\b` after the closing quote never matches: `"` and the following space are both non-words.
+
   const withoutThemeColor = opened.replace(
     /[ \t]*<meta\b[^>]*\bname="theme-color"[^>]*>\r?\n?/gi,
     "",
   );
-  // The UA paints its own surfaces (form controls, scrollbars, overscroll) in the
-  // theme's scheme before any stylesheet loads.
+
   const withoutScheme = withoutThemeColor.replace(
     /[ \t]*<meta\b[^>]*\bname="color-scheme"[^>]*>\r?\n?/gi,
     "",
@@ -247,13 +228,6 @@ export function injectTheme(html: string, theme: OmarchyTheme | null): string {
   );
 }
 
-/**
- * The web app manifest painted with the active theme. An installed app reads
- * `theme_color` and `background_color` for its splash screen and system bars
- * (status bar, and the navigation bar with the home button on Android) before
- * the page sets its own `theme-color`. Both follow the page background so the
- * bars blend into the app. Unknown or unsafe colors leave the file as it is.
- */
 export function themeManifest(manifest: string, theme: OmarchyTheme | null): string {
   if (theme === null) return manifest;
   const color = manifestColor(theme.colors.background);
