@@ -51,7 +51,6 @@ const SOURCE_DOC = `Sources:
 - {"type":"poll","script":"…","intervalSec":60,"timeoutSec":10}: script is the body of an async function (fetch, env, prev, log) that returns JSON. env is the read-only server environment: read tokens from it (e.g. env.HCLOUD_TOKEN), never write them into the script. prev is the last result; log(...) lines come back from dashboard_upsert. Runs in an isolated worker, at least every 30s, only while the dashboard page is open; 10 poll widgets at most, results capped at 128 KB, so return only what the widget shows. A failure keeps the last good value with an error badge; after 5 failures in a row polling backs off and you get one message.
 - {"type":"static"}: data you send with dashboard_push.`;
 
-/** Tools that let the agent build the dashboard page. Not deferred. */
 export function createDashboardTools(dashboard: DashboardManager): ToolRegistration[] {
   return [
     defineTool({
@@ -162,8 +161,6 @@ ${MAPPING_DOC}`,
                     Type.Literal("auto"),
                   ],
                   {
-                    // A tuple schema (`items: [A, B]`) is rejected by the model provider, so the
-                    // pair is described as a two-element array of numbers instead.
                     description: 'Fixed y-axis range as [min, max], or "auto".',
                   },
                 ),

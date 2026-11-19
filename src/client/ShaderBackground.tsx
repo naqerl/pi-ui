@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from "react";
 const SHAPE = "warp" as const;
 const TYPE = "4x4" as const;
 const SIZE = 2.5;
-/** Share of the theme foreground mixed into the page color. Lower is dimmer. */
 const INK = 0.28;
 
 interface ThemeInk {
@@ -17,7 +16,6 @@ function readThemeInk(): ThemeInk {
   return { back: style.backgroundColor, front: style.color };
 }
 
-/** Comma-separated rgb() and hex. Paper rejects oklch and space-separated rgb(). */
 const PAPER_RGB = /^rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*(?:,\s*[0-9.]+)?\s*\)$/i;
 
 function channels(color: string): [number, number, number] | null {
@@ -28,7 +26,6 @@ function channels(color: string): [number, number, number] | null {
 
 let colorProbe: CanvasRenderingContext2D | null | undefined;
 
-/** Resolve oklch and other CSS colors to sRGB bytes. Computed style keeps oklch. */
 function canvasChannels(color: string): [number, number, number] | null {
   if (colorProbe === undefined) {
     const canvas = document.createElement("canvas");
@@ -52,14 +49,12 @@ function resolved(color: string): [number, number, number] | null {
   return channels(color) ?? canvasChannels(color);
 }
 
-/** A color string Paper's parser accepts. Already-valid strings stay unchanged. */
 function paperColor(color: string): string {
   if (color.startsWith("#") || PAPER_RGB.test(color)) return color;
   const parsed = resolved(color);
   return parsed === null ? color : rgb(parsed);
 }
 
-/** Pull the theme foreground toward the page so the warp stays a texture. */
 function dimInk(back: string, front: string): string {
   const bg = resolved(back);
   const fg = resolved(front);
@@ -86,18 +81,10 @@ function useReducedMotion(): boolean {
 
 function contextLost(canvas: HTMLCanvasElement | null): boolean {
   if (canvas === null) return false;
-  // Returns the canvas's existing context; a fresh canvas would get a new one.
   const gl = canvas.getContext("webgl2");
   return gl === null || gl.isContextLost();
 }
 
-/**
- * Mobile browsers drop the WebGL context of a page that sits in the background
- * (GPU memory pressure, a frozen or bfcached installed app). Paper never rebuilds
- * its program after that, so the full-screen canvas stays blank, which reads as
- * a white page until a restart. Remount the shader with a fresh canvas whenever
- * the page is visible again and the context is gone.
- */
 function useShaderRecovery(host: React.RefObject<HTMLDivElement | null>): number {
   const [generation, setGeneration] = useState(0);
 
@@ -117,9 +104,7 @@ function useShaderRecovery(host: React.RefObject<HTMLDivElement | null>): number
     const onLost = (event: Event) => {
       const target = event.target;
       if (!(target instanceof HTMLCanvasElement)) return;
-      // Lets the browser restore it; the remount below replaces it either way.
       event.preventDefault();
-      // Paper's own dispose also loses the context; that canvas is gone a tick later.
       window.setTimeout(() => {
         if (target.isConnected && element.contains(target)) recoverWhenVisible();
       }, 0);
@@ -149,7 +134,6 @@ function useShaderRecovery(host: React.RefObject<HTMLDivElement | null>): number
   return generation;
 }
 
-/** Warp dither behind every page. It drifts on its own and ignores the pointer. */
 export function ShaderBackground() {
   const [colors, setColors] = useState(readThemeInk);
   const reduced = useReducedMotion();
@@ -197,7 +181,6 @@ export function ShaderBackground() {
       data-shader-color-front={front}
       data-shader-ink={INK}
       className="pointer-events-none fixed inset-0 z-0"
-      // The theme color shows instead of a blank canvas while the shader recovers.
       style={{ backgroundColor: back }}
     >
       <Dithering

@@ -9,13 +9,6 @@ export interface ModelCatalog {
   readonly model: Model<Api> | undefined;
 }
 
-/**
- * Build the same model catalog pi uses. This follows the installed coding agent's
- * `dist/core/model-runtime.js`: `ModelRuntime.create()` reads `auth.json` from
- * `PI_CODING_AGENT_DIR` (default `~/.pi/agent`), applies optional
- * `models-store.json` overrides and `models.json` provider config, and composes
- * the built-in pi-ai provider catalog. `PI_OFFLINE` disables catalog refreshes.
- */
 export async function createModelCatalog(): Promise<ModelCatalog> {
   const agentDir = getAgentDir();
   const runtime = await ModelRuntime.create();
@@ -61,10 +54,6 @@ export interface ModelCatalogReload {
   readonly errors: readonly string[];
 }
 
-/**
- * Re-read models.json and the provider catalogs on the live runtime, so every
- * consumer of this catalog sees a newly added model without a restart.
- */
 export async function reloadModelCatalog(runtime: ModelRuntime): Promise<ModelCatalogReload> {
   const before = await listAvailableModels(runtime);
   const result = await runtime.refresh({ allowNetwork: false });
@@ -82,7 +71,6 @@ export async function reloadModelCatalog(runtime: ModelRuntime): Promise<ModelCa
   };
 }
 
-/** Models with configured credentials. The snapshot is filled during catalog creation. */
 export async function listAvailableModels(runtime: ModelRuntime): Promise<ModelOption[]> {
   const available = await runtime.getAvailable();
   const seen = new Set<string>();
@@ -125,9 +113,6 @@ function selectModel(
     console.warn(`[pi] no model found for PI_PROVIDER="${provider}"`);
   }
 
-  // pi's fallback is the first available model with valid credentials. Without
-  // credentials, keeping the first catalog model lets the provider produce the
-  // real authentication error instead of failing before a request is made.
   return available[0] ?? runtime.getModels()[0];
 }
 

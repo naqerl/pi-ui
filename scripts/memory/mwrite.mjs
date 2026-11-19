@@ -1,7 +1,4 @@
 #!/usr/bin/env node
-// Write a topic body safely: node mwrite.mjs topics/<scope>/<file>.md < newbody
-// Keeps the front matter, stamps `updated`, writes tmp+rename (no half-written topic),
-// then refreshes that scope's INDEX.md line for the topic.
 import fs from "node:fs";
 import path from "node:path";
 
@@ -43,7 +40,6 @@ const fm = new Map(
 fm.set("updated", new Date().toISOString().slice(0, 10));
 if (!fm.has("topic")) fm.set("topic", JSON.stringify(path.basename(file, ".md")));
 if (!fm.has("scope")) fm.set("scope", path.basename(path.dirname(file)));
-// the first markdown heading of the new body is the authoritative title
 const headingTitle = body.split("\n").find((l) => /^#{1,3} /.test(l));
 if (headingTitle) fm.set("topic", JSON.stringify(headingTitle.replace(/^#{1,3} /, "").trim()));
 const front = `---\n${[...fm].map(([k, v]) => `${k}: ${v}`).join("\n")}\n---\n`;
@@ -52,7 +48,6 @@ const tmp = `${file}.tmp-${process.pid}`;
 fs.writeFileSync(tmp, `${front}\n${body}\n`);
 fs.renameSync(tmp, file);
 
-// keep the scope index in step
 const scope = path.basename(path.dirname(file));
 const idxFile = path.join(MEM, "topics", scope, "INDEX.md");
 const name = path.basename(file);

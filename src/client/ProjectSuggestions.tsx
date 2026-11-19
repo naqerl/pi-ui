@@ -7,11 +7,9 @@ const MAX_SUGGESTIONS = 6;
 
 export interface ProjectSuggestion {
   name: string;
-  /** True for a name no task uses yet: accepting it starts a new project. */
   create: boolean;
 }
 
-/** Known projects matching what follows `@`, then "Create" for a new valid name. */
 export function projectSuggestions(
   projects: readonly string[],
   query: string,
@@ -26,7 +24,6 @@ export function projectSuggestions(
   return items;
 }
 
-/** The `@` autocomplete: a listbox floating just above the composer row. */
 export function ProjectSuggestions({
   anchor,
   items,
@@ -72,7 +69,6 @@ export function ProjectSuggestions({
       style={{ left: box.left, top: box.top, width: box.width }}
     >
       {items.map((item, index) => (
-        // biome-ignore lint/a11y/useFocusableInteractive lint/a11y/useKeyWithClickEvents: focus stays in the composer; it points here with aria-activedescendant.
         <div
           key={`${item.create ? "new" : "known"}-${item.name}`}
           id={`project-suggestion-${index}`}
@@ -83,7 +79,6 @@ export function ProjectSuggestions({
             "flex min-h-9 cursor-pointer items-center gap-lg rounded-sm px-lg py-md text-sm leading-5 [overflow-wrap:anywhere]",
             index === active && "bg-muted",
           )}
-          // Keep focus (and the phone keyboard) in the composer while tapping a suggestion.
           onPointerDown={(event) => event.preventDefault()}
           onMouseDown={(event) => event.preventDefault()}
           onPointerEnter={() => onHover(index)}

@@ -59,14 +59,8 @@ const rowMetrics = (browser: Browser) =>
     };
   });
 
-/**
- * The two texts share the row's baseline. Both use the same 11px/16px mono
- * metrics, so equal box bottoms mean equal baselines.
- */
 const baselineGap = (browser: Browser) =>
   browser.evaluate(() => {
-    // While a run is live the word is the indicator's `header-activity` span; when
-    // the run is idle the same row paints the status word itself.
     const word =
       document.querySelector<HTMLElement>('[data-testid="header-activity"]') ??
       document.querySelector<HTMLElement>(
@@ -76,8 +70,6 @@ const baselineGap = (browser: Browser) =>
       document.querySelector<HTMLElement>('[data-testid="bg-jobs-line-jobs"]') ??
       document.querySelector<HTMLElement>('[data-testid="bg-jobs-line-subagents"]');
     if (word === null || count === null) return null;
-    // Range rects cover the glyphs, not the padded line box, so equal bottoms
-    // mean equal text baselines regardless of the button's inline-block metrics.
     const textBottom = (element: HTMLElement) => {
       const range = document.createRange();
       range.selectNodeContents(element);
@@ -98,7 +90,6 @@ async function sendText(browser: Browser, text: string): Promise<void> {
   expect(status).toBe(202);
 }
 
-/** Let the 220 ms dock transition and the counts' 180 ms entry settle. */
 async function settleDock(browser: Browser): Promise<void> {
   await browser.evaluate(async () => {
     await new Promise<void>((resolve) => window.setTimeout(resolve, 360));
@@ -152,19 +143,16 @@ test("a background job count opens a live sheet and returns focus to the compose
 
   await settleDock(browser);
   const withCounts = await rowMetrics(browser);
-  // Same row, same width budget: the count rides after the working indicator.
   expect(withCounts.hasSlot).toBe(false);
   expect(withCounts.countsInsideStatus).toBe(true);
   expect(withCounts.countBottom).toBeGreaterThan(withCounts.rowTop);
   expect(withCounts.countTop).toBeLessThan(withCounts.rowBottom);
-  // The row does not grow when the counts arrive, so the composer cannot move.
   expect(Math.abs(withCounts.rowHeight - empty.rowHeight)).toBeLessThan(0.5);
   expect(await statusY(browser)).toBeCloseTo(baseline, 0);
   const gap = await baselineGap(browser);
   expect(gap).not.toBeNull();
   expect(gap ?? 99).toBeLessThan(2);
 
-  // The same baseline holds when the live working indicator paints the row.
   await sendText(browser, "SLOW keep working");
   await expect(screen.getByTestId("header-activity")).toBeVisible();
   await settleDock(browser);
@@ -175,7 +163,6 @@ test("a background job count opens a live sheet and returns focus to the compose
   await expect(screen.getByTestId("working-status")).toHaveAttribute("data-open", "false");
   await settleDock(browser);
 
-  // The status row still sits directly above the composer body, with no strip between.
   const order = await browser.evaluate(() => {
     const top = (id: string) =>
       document.querySelector<HTMLElement>(`[data-testid="${id}"]`)?.getBoundingClientRect().y ?? -1;

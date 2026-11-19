@@ -60,9 +60,7 @@ function readConversationId(path) {
     if (typeof value.conversationId === "number" && Number.isSafeInteger(value.conversationId)) {
       return String(value.conversationId);
     }
-  } catch {
-    // No durable conversation yet.
-  }
+  } catch {}
   return undefined;
 }
 
@@ -76,8 +74,6 @@ async function checkModels() {
   const { createModelCatalog } = await import(
     new URL("../src/server/models.ts", import.meta.url).href
   );
-  // The catalog logs the selected model to stdout when it boots. Keep stdout for the
-  // report only, and send that operational line to stderr instead.
   const originalLog = console.log;
   console.log = (...args) => console.error(...args);
   try {

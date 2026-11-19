@@ -48,7 +48,6 @@ before(async () => {
   directory = await mkdtemp(join(tmpdir(), "pi-ui-task-agent-"));
   store = new TaskStore(join(directory, "tasks.json"));
   await store.load();
-  // Keep project-guidance tests hermetic: no developer ~/.pi/agent/AGENTS.md.
   const agentDir = join(directory, "agent");
   await mkdir(agentDir, { recursive: true });
   process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -205,7 +204,6 @@ test("the plan memory tools share the store the chat agent writes", async () => 
   );
   assert.equal(result.isError === true, false);
 
-  // The plan registry shares the store and carries memory_write plus the readers.
   const plan = new Map(
     selectTaskAgentTools(createMemoryTools(memoryStore, new SnapshotCache())).map((tool) => [
       tool.name,
@@ -248,7 +246,6 @@ test("building a fresh plan block leaves the chat snapshot cache alone", async (
   );
   assert.match(plan, /plan-only scratchpad item/);
 
-  // The plan build reads the files itself; the chat's cached prefix must survive.
   assert.equal(await shared.get(memoryStore, "first_turn"), chatBlock);
   assert.doesNotMatch(chatBlock, /plan-only scratchpad item/);
 });
@@ -311,7 +308,6 @@ test("a new plan session reads current memory and the project AGENTS.md", async 
   const projectMarker = `project-guidance-${Date.now()}`;
   await writeFile(join(project, "AGENTS.md"), `# AGENTS.md\n\n- ${projectMarker}\n`, "utf8");
 
-  // Prime the cache the way boot does, then prove a session does not trust it.
   const cache = new SnapshotCache();
   await memoryStore.atomicWrite(memoryStore.memoryFile, "# MEMORY\n\n- old note\n");
   await cache.get(memoryStore, "first_turn");
@@ -333,8 +329,6 @@ test("a new plan session reads current memory and the project AGENTS.md", async 
   const marker = "new note after boot";
   await memoryStore.appendScratchpad(marker);
 
-  // A session that existed before the write still sees the old block until its
-  // refresh runs; a session created afterwards reads the files as they are now.
   const stale = await taskAgentMemoryBase(
     "BASE INSTRUCTIONS",
     { store: memoryStore, snapshot: cache },
@@ -405,7 +399,6 @@ test("a plan refresh rebuilds the existing session without touching the chat cac
   const session = fakes.get(task.id);
   assert.ok(session);
 
-  // The session starts with the block as it was before the write.
   await manager.refreshInstructions(task.id, true);
   const initial = session.instructions.at(-1);
   assert.ok(initial);
@@ -422,7 +415,6 @@ test("a plan refresh rebuilds the existing session without touching the chat cac
   );
   await manager.refreshInstructions(task.id, true);
 
-  // The same session was refreshed, while the chat cache stayed put.
   assert.equal(session.instructions.length, 2);
   const refreshed = session.instructions.at(-1);
   assert.ok(refreshed);
@@ -469,7 +461,6 @@ test("a plan write refreshes the existing session without touching the chat cach
   const session = fakes.get(task.id);
   assert.ok(session);
 
-  // The session starts with the block as it was before the write.
   await manager.refreshInstructions(task.id, true);
   const initial = session.instructions.at(-1);
   assert.ok(initial);
@@ -481,7 +472,6 @@ test("a plan write refreshes the existing session without touching the chat cach
   assert.ok(write);
   await write.execute({ target: "scratchpad", body: marker } as never, {} as never, {} as never);
 
-  // The same session was refreshed by the write, while the chat cache stayed put.
   assert.equal(session.instructions.length, 2);
   const refreshed = session.instructions.at(-1);
   assert.ok(refreshed);
@@ -549,7 +539,6 @@ test("a long-term plan write invalidates the shared cache and reaches the main i
   assert.equal(memoryStore.checkpoint, before + 1);
   assert.equal(shared.built, false, "the shared snapshot must be invalidated");
 
-  // The main conversation gets the written topic body on its next turn, without a chip.
   const next = await mainMemory.refresh();
   assert.match(next, new RegExp(marker));
   assert.match(applied.at(-1) ?? "", new RegExp(marker));
@@ -1164,11 +1153,9 @@ test("cancelling a queued follow-up does not end the live plan run", async () =>
   assert.ok(queueId);
   assert.equal(await session.cancelQueued(queueId), true);
 
-  // The cancelled submission settles `unanswered`/`aborted` after the abort.
   conversation.settle(2, { type: "input", status: "unanswered", reason: "aborted" });
   await new Promise((resolve) => setTimeout(resolve, 20));
 
-  // The earlier submission still owns the live run, so its status must stay running.
   assert.equal(session.running(), true);
 });
 
@@ -1216,7 +1203,6 @@ test("moving a queued follow-up to a steer does not resend one already placed", 
   assert.ok(queueId);
   assert.equal(conversation.submissionCount, 2);
 
-  // Durable already placed it: resending would duplicate the transcript row.
   assert.equal(await session.steerQueued(queueId), null);
   assert.equal(conversation.submissionCount, 2);
   assert.equal((await session.snapshot()).queue?.length, 0);
@@ -1241,7 +1227,6 @@ test("an undelivered plan steer leaves a dropped bubble instead of vanishing", a
   assert.equal(steer.queued, false);
   assert.equal((await session.snapshot()).steers?.length, 1);
 
-  // A done submission whose entry never carried the steer must not delete it silently.
   conversation.settle(2, { type: "input", status: "done", entry: 2 });
   await new Promise((resolve) => setTimeout(resolve, 20));
 
@@ -1275,7 +1260,6 @@ test("a settled failure frames an error, clears on submit, and dismisses without
   assert.equal(failed.runError?.detail, detail);
   assert.equal((await session.snapshot()).runError?.class, "ModelError");
 
-  // The next accepted submit starts clean before its own run settles.
   const retried = await session.submit("try again");
   assert.equal(retried.runError, null);
   assert.equal((await session.snapshot()).runError, null);
@@ -1330,7 +1314,6 @@ test("the agent session is created on first use, stopped when the task is done, 
   assert.equal(fake.running(), false);
   assert.equal(fake.closed, false);
 
-  // A second ensure reuses the live session.
   const same = await manager.ensure(created.id);
   assert.equal(same, fake);
 
@@ -1375,23 +1358,18 @@ test("a plan session nobody is using is closed and reopened on demand", async ()
   const [firstId, secondId] = ids;
   assert.ok(firstId && secondId);
 
-  // One session is planning: the pool must not close it whatever its age.
   const busy = opened[3];
   assert.ok(busy);
   busy.run = "running";
 
-  // Nine are idle; the pool keeps eight, so the one touched longest ago goes.
   const closed = await manager.evictIdle();
   assert.deepEqual(closed, [firstId]);
   assert.equal(opened[0]?.closed, true);
   assert.equal(busy.closed, false);
 
-  // Asking for the closed task again opens a fresh session instead of handing out a dead one.
   const reopened = await manager.ensure(firstId);
   assert.notEqual(reopened, opened[0]);
 
-  // Ten minutes on, every idle session has expired — the one reopened above included,
-  // since it was opened before the clock moved — and the live run is still untouched.
   now += 10 * 60_000;
   const expired = await manager.evictIdle();
   assert.equal(expired.length, 9);
@@ -1444,7 +1422,6 @@ test("planning reports only live plan runs on active tasks", async () => {
     fake.run = "running";
   }
 
-  // Backlog and done sessions may exist, but they are never planning work.
   assert.deepEqual(manager.planningTaskIds(), [open.id]);
   assert.deepEqual(
     derivePlanningTaskIds(
@@ -1460,7 +1437,6 @@ test("planning reports only live plan runs on active tasks", async () => {
     ["open", "working"],
   );
 
-  // The same task stops planning as soon as its run is no longer live.
   const live = fakes.get(open.id);
   assert.ok(live);
   live.run = "idle";

@@ -4,7 +4,6 @@ const FALLBACK_ERROR = "Could not update tasks";
 
 export type TaskOutcome = { ok: true; ledger: TaskLedger } | { ok: false; error: string };
 
-/** Read the reason a rejected create names, whether the server sends text or JSON. */
 function failureText(body: string): string {
   const text = body.trim();
   if (text.length === 0) return FALLBACK_ERROR;
@@ -15,9 +14,7 @@ function failureText(body: string): string {
       const message = record.error ?? record.message;
       if (typeof message === "string" && message.trim().length > 0) return message.trim();
     }
-  } catch {
-    // Plain text is the common shape; keep it verbatim.
-  }
+  } catch {}
   return text;
 }
 

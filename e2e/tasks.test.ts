@@ -102,7 +102,6 @@ test("the plan-task composer choice is on by default and remembered for the sess
       values.set(key, value);
     },
   };
-  // A fresh session starts planning; only an explicit off choice wins over it.
   assert.equal(readPlanTaskDraft(storage), true);
   writePlanTaskDraft(false, storage);
   assert.equal(values.get(PLAN_TASK_DRAFT_KEY), "0");
@@ -1024,7 +1023,6 @@ test("a released task ignores a late attributed call", async () => {
     assert.equal(released?.workingSince, undefined);
     assert.equal(released?.lastWorkedAt, null);
 
-    // The release tool's own end-of-call attribution used to land here and revive the badge.
     await store.noteWorked(
       task.id,
       new Date(Date.parse(released?.releasedAt ?? "2026-01-01T00:00:00.000Z") + 2),
@@ -1267,8 +1265,6 @@ test("reopen stats count tasks and this week's reopens per project", () => {
 });
 
 test("the tab swipe edge rule yields to the page pager only at a tab edge", () => {
-  // Plan is the first tab, Chat the last: right on Plan and left on Chat belong
-  // to the page pager, while the middle direction belongs to the tab track.
   assert.equal(swipeCanAttribute(0, 2), "next");
   assert.equal(swipeCanAttribute(1, 2), "prev");
   assert.equal(swipeCanAttribute(0, 1), "");
@@ -1276,12 +1272,10 @@ test("the tab swipe edge rule yields to the page pager only at a tab edge", () =
 
 test("a horizontal scroller keeps the gesture only while it can still pan", () => {
   const box = (scrollLeft: number) => ({ scrollLeft, clientWidth: 400, scrollWidth: 1000 });
-  // The 1.6.95 regression: either edge used to swallow the gesture in both directions.
   assert.equal(scrollerCanPan(box(0), false, 1), true);
   assert.equal(scrollerCanPan(box(600), false, 1), false);
   assert.equal(scrollerCanPan(box(0), false, -1), false);
   assert.equal(scrollerCanPan(box(1), false, -1), true);
-  // A custom pan surface marked with data-hscroll keeps the gesture at its edge.
   assert.equal(scrollerCanPan(box(600), true, 1), true);
 });
 

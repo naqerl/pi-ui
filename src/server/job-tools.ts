@@ -18,7 +18,6 @@ function failure(error: unknown): ToolExecutionResult {
   );
 }
 
-/** The read tool's text semantics, with a job id in place of a path. */
 const read = createReadTool();
 
 function noOutput(value: string): ToolExecutionResult {
@@ -30,7 +29,6 @@ function isMissingLog(error: unknown): boolean {
   return code === "ENOENT" || code === "not_found";
 }
 
-/** Tools for long shell commands that should not hold up the turn. Not deferred. */
 export function createJobTools(jobs: JobManager): ToolRegistration[] {
   return [
     defineTool({
@@ -71,7 +69,6 @@ export function createJobTools(jobs: JobManager): ToolRegistration[] {
     }),
     defineTool({
       ...read,
-      // The read tool's repair, if any, expects a path; job_output takes an id.
       prepareArguments: undefined,
       name: "job_output",
       description:

@@ -2,10 +2,8 @@ import type { TaskIndex } from "./task-index.js";
 import { descendantIds, isActiveStatus, isReleasedTask, liveBlockerIds } from "./tasks.js";
 import type { Task, TaskActivity, TaskState, TaskTrace } from "./types.js";
 
-/** Kept for callers that still name the old recency window; working now lasts until the run ends. */
 export const WORKING_WINDOW_MS = 10 * 60_000;
 
-/** After an hour without an attributed call, a working task is shown as stale as well. */
 export const STALE_WORKING_MS = 60 * 60_000;
 
 function nowOf(activity: TaskActivity | undefined): number {
@@ -19,10 +17,6 @@ function instant(value: string | null | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-/**
- * The newest attributed call recorded for a task: the ledger's `lastWorkedAt`, or a live trace
- * when it is fresher. The trace also covers views from before the ledger remembered the time.
- */
 export function lastWorkedAtMs(task: Task, activity: TaskActivity | undefined): number | null {
   let newest = instant(task.lastWorkedAt);
   const traced = instant(activity?.traces[task.id]?.lastActivityAt);
@@ -30,44 +24,30 @@ export function lastWorkedAtMs(task: Task, activity: TaskActivity | undefined): 
   return newest;
 }
 
-/** True when the trace says its run has not reached a terminal outcome yet. */
 function runIsLive(trace: TaskTrace | undefined): boolean {
   return trace?.lastRun?.outcome === "running";
 }
 
-/** True when the trace records a terminal run, so a badge may clear. */
 export function runIsTerminal(trace: TaskTrace | undefined): boolean {
   const outcome = trace?.lastRun?.outcome;
   return outcome === "ok" || outcome === "error" || outcome === "interrupted";
 }
 
-/**
- * True when a task was touched by a run that has not ended. A later snapshot that omits
- * the activity (or carries the same non-terminal run) must not clear the badge; only the
- * task closing or a terminal outcome does.
- */
 export function isWorking(task: Task, activity: TaskActivity | undefined): boolean {
   if (task.status !== "open" || activity === undefined) return false;
   const trace = activity.traces[task.id];
   if (!runIsLive(trace)) return false;
-  // Another run being live means this task belongs to an older run, not the current one.
   if (activity.running && activity.runId !== null) {
     return trace?.lastRun?.id === activity.runId;
   }
-  // No terminal event has arrived for the run that touched the task.
   return true;
 }
 
-/** True when the run that last touched the task errored or was interrupted. */
 export function isFailed(task: Task, activity: TaskActivity | undefined): boolean {
   const outcome = activity?.traces[task.id]?.lastRun?.outcome;
   return outcome === "error" || outcome === "interrupted";
 }
 
-/**
- * True when an open task carries the working badge but nothing has touched it for over an
- * hour. The marker never replaces `working`; done and proposed tasks are never stale.
- */
 export function isStaleWorking(
   task: Task,
   activity: TaskActivity | undefined,
@@ -81,10 +61,6 @@ export function isStaleWorking(
   return last !== null && at - last > STALE_WORKING_MS;
 }
 
-/**
- * Carries a task's working trace across a snapshot that omits it, so a badge already shown
- * stays until the task closes or the snapshot reports a terminal run for it.
- */
 export function carryWorkingTraces(
   previous: TaskActivity | undefined,
   next: TaskActivity | undefined,
@@ -104,12 +80,6 @@ export function carryWorkingTraces(
   return { ...next, traces };
 }
 
-/**
- * The one state a task shows. Ledger facts (proposed, done, a live blocker) win; then a task
- * keeps its working badge once it has been attributed, even after the run ends; live activity only
- * animates it. A failed run or a parent with some finished subtasks follows, and anything else
- * is ready.
- */
 export function taskState(
   tasks: readonly Task[],
   task: Task,
@@ -121,11 +91,9 @@ export function taskState(
   if (task.status === "backlog") return "backlog";
   if (task.status === "done") return "done";
   if (task.status === "working") return "working";
-  // A release is the last transition: it clears any older attribution that would show working.
   if (!isReleasedTask(task)) {
     if (isWorking(task, activity)) return "working";
     if (task.lastWorkedAt !== undefined && task.lastWorkedAt !== null) {
-      // A live blocker is still ledger truth, even for work attributed before it appeared.
       if (
         (index === undefined ? liveBlockerIds(tasks, task) : (index.blockers.get(task.id) ?? []))
           .length > 0
@@ -150,7 +118,6 @@ export function taskState(
   return "ready";
 }
 
-/** Done and total direct subtasks, for a parent's row meta. */
 export function subtaskCount(tasks: readonly Task[], id: string): { done: number; total: number } {
   const children = tasks.filter((task) => task.parentId === id && task.status !== "proposed");
   return {

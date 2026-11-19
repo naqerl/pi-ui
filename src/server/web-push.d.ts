@@ -1,7 +1,3 @@
-/**
- * Minimal typings for the CJS `web-push` package. The package does not ship
- * declarations, and pi-ui only uses the small surface below.
- */
 declare module "web-push" {
   export interface PushSubscription {
     endpoint: string;

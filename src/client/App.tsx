@@ -2,7 +2,6 @@ import { lazy, Suspense } from "react";
 import { ChatView } from "./ChatView";
 import { useChat } from "./use-chat";
 
-// Everything off the chat's first paint loads in its own chunk.
 const EventsView = lazy(() => import("./EventsView").then((m) => ({ default: m.EventsView })));
 const ShaderBackground = lazy(() =>
   import("./ShaderBackground").then((m) => ({ default: m.ShaderBackground })),
@@ -16,7 +15,6 @@ function currentPath(): string {
 export function App() {
   const path = currentPath();
   const detailPage = path === "/activity" || path === "/events";
-  // The activity and events pages read the whole conversation; the chat starts from its end.
   const chat = useChat({ fullHistory: detailPage });
 
   let view = (

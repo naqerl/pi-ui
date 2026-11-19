@@ -1,26 +1,12 @@
 import type { Transport } from "@modelcontextprotocol/client";
 import { hasPosition } from "./mcp-subscriptions.js";
 
-/**
- * pi-mcp-events drops an `events/event` notification without a word unless
- * it has a string `eventId` and `timestamp`, a `data` field, a known
- * subscription id, and the exact `name` of the subscription's stream.
- * Heartbeats still move the cursor, so such a server looks subscribed and
- * healthy while every event vanishes (naqerl/pi-ui#3). This check watches the
- * protocol connection and logs, once per server and reason, each frame
- * pi-mcp-events is about to reject. Event frames are never changed or
- * dropped: the server is the one to fix. The one edit is on the adapter's own
- * cursor bookkeeping — heartbeat/active frames cannot advance an established
- * subscription past the last event this process actually received.
- */
-
 const EVENT_METHOD = "notifications/events/event";
 const HEARTBEAT_METHOD = "notifications/events/heartbeat";
 const ACTIVE_METHOD = "notifications/events/active";
 const STREAM_METHOD = "events/stream";
 const SUBSCRIPTION_META = "io.modelcontextprotocol/subscriptionId";
 
-/** A heartbeat proves the push stream is alive; an activation does not. */
 export interface EventTraffic {
   readonly subscriptionId?: string;
   readonly method: string;
@@ -32,11 +18,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/**
- * Why pi-mcp-events would reject this `events/event` payload, or null when it
- * would accept it. `stream` is the subscription's requested name, undefined
- * when the subscription is not known.
- */
 export function eventRejection(
   params: Record<string, unknown>,
   stream: string | undefined,
@@ -53,12 +34,6 @@ export function eventRejection(
   return null;
 }
 
-/**
- * Wrap a protocol transport to log `events/event` frames pi-mcp-events will
- * drop. Same handler-swapping pattern as `watchStaleSession`: the router
- * installs `onmessage` on the returned proxy, and every frame is passed on
- * exactly as it arrived.
- */
 export function checkEventNotifications(
   transport: Transport,
   server: string,
@@ -66,9 +41,7 @@ export function checkEventNotifications(
   observe?: (traffic: EventTraffic) => void,
 ): Transport {
   let onMessage = transport.onmessage;
-  /** Open `events/stream` request id → requested stream name. */
   const streams = new Map<string, string>();
-  /** Last event cursor actually delivered for a subscription, never a heartbeat. */
   const deliveredCursor = new Map<string, string>();
   const reported = new Set<string>();
 
@@ -91,9 +64,6 @@ export function checkEventNotifications(
               log(`[mcp] ${server}: events/event ${reason}; pi-mcp-events drops it`);
             }
           } else if (subscriptionId !== undefined) {
-            // The hub puts the position in `data.cursor` and leaves the
-            // envelope cursor null. pi-mcp-events only reads the envelope, so
-            // propagate the real position before handing it the frame.
             const data = isRecord(frame.params.data) ? frame.params.data : undefined;
             const cursor =
               typeof data?.cursor === "string" && hasPosition(data.cursor)
@@ -111,12 +81,6 @@ export function checkEventNotifications(
           subscriptionId !== undefined &&
           (frame.method === HEARTBEAT_METHOD || frame.method === ACTIVE_METHOD)
         ) {
-          // pi-mcp-events keeps one `sub.cursor` and uses it for the next
-          // re-subscribe. A heartbeat or a re-activation may be ahead of the
-          // last event pi-ui was handed, so resuming from it silently skips
-          // that event. Pin an established subscription to its last delivered
-          // event, while a brand-new stream (no event yet) keeps the cursor the
-          // server announced.
           const last = deliveredCursor.get(subscriptionId);
           if (last !== undefined) frame.params.cursor = last;
         }
@@ -128,9 +92,7 @@ export function checkEventNotifications(
               cursor: typeof frame.params.cursor === "string" ? frame.params.cursor : null,
               at: new Date().toISOString(),
             });
-          } catch {
-            // Observing traffic must never affect frame delivery.
-          }
+          } catch {}
         }
       }
     }

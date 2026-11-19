@@ -1,5 +1,11 @@
 # AGENTS.md
 
+## Comments
+
+The repository contains no comments in code or configuration. Make each site
+self-evident from its code instead. `npm run build` and `npm run lint` run
+`scripts/check-no-comments.mjs`, which rejects a comment that comes back.
+
 ## UI surfaces
 
 The main background of pi-ui is dynamic and changing, so plain text placed
@@ -11,8 +17,7 @@ card with a solid or blurred background until a task explicitly says otherwise.
 Every interactive control gets the global press feedback from `index.css`: it
 compresses on pointer-down and eases back on release. Do not disable it in a
 component unless the control owns its own pointer gesture; in that case add
-`data-no-press` and a comment explaining why. Reduced motion must always be
-honoured.
+`data-no-press`. Reduced motion must always be honoured.
 
 ## Spacing
 
