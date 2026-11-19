@@ -35,7 +35,7 @@ import type {
   TokenSpend,
   ToolActivity,
 } from "../shared/types";
-import { groupSummaryParts } from "./activity-format";
+import { groupElapsedMs, groupSummaryParts } from "./activity-format";
 import {
   BackgroundJobsCounts,
   type BackgroundJobsKind,
@@ -716,6 +716,7 @@ function ActivityGroup({
   onOpen: (groupKey: string, trigger: HTMLButtonElement) => void;
 }) {
   const [now, setNow] = useState(Date.now);
+  const liveElapsed = useRef(0);
   const memory = items.filter(
     (item): item is ToolActivity => item.kind === "tool" && item.memory !== undefined,
   );
@@ -729,7 +730,13 @@ function ActivityGroup({
     return () => window.clearInterval(timer);
   }, [live]);
 
-  const parts = groupSummaryParts(items, live, now, usage);
+  // A replaced or replayed row can carry a later timestamp. Keep the live clock at the
+  // highest value it has shown until the turn ends, so it never counts backwards.
+  const elapsed = groupElapsedMs(items, live, now, live ? liveElapsed.current : 0);
+  useEffect(() => {
+    if (live) liveElapsed.current = Math.max(liveElapsed.current, elapsed);
+  }, [live, elapsed]);
+  const parts = groupSummaryParts(items, live, now, usage, elapsed);
   const runInfo =
     other.length === 0 ? null : (
       <button

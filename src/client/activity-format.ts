@@ -79,20 +79,46 @@ export function activitySummary(activity: ActivityItem): string {
   return `${activity.name} · ${formatDuration(activity.durationMs)} · ${activityStatus(activity)}`;
 }
 
-function groupWallMs(items: ActivityItem[], running: boolean, now: number): number {
-  const stamps = items
-    .map((item) => Date.parse(item.timestamp))
-    .filter((value) => Number.isFinite(value));
-  if (stamps.length === 0) return 0;
-  const start = Math.min(...stamps);
-  if (running) return Math.max(0, now - start);
-  const span = Math.max(...stamps) - start;
+/** A tool result carries its end time; its measured duration recovers when the call started. */
+function activityStartMs(activity: ActivityItem): number {
+  const at = Date.parse(activity.timestamp);
+  if (!Number.isFinite(at)) return Number.NaN;
+  if (activity.kind !== "tool" || activity.durationMs === undefined) return at;
+  return at - Math.max(0, activity.durationMs);
+}
+
+function activityEndMs(activity: ActivityItem): number {
+  const at = Date.parse(activity.timestamp);
+  return Number.isFinite(at) ? at : Number.NaN;
+}
+
+/**
+ * The elapsed span of one activity group. A live tool row carries its start while
+ * its result carries the end, so a tool's measured duration is used to keep the
+ * group anchored to the start when that row is replaced. `minimumMs` lets a live
+ * clock keep the last value it showed when a reconnect repeats a row with a newer
+ * timestamp, so the elapsed time of a running turn never goes backwards.
+ */
+export function groupElapsedMs(
+  items: ActivityItem[],
+  running: boolean,
+  now: number,
+  minimumMs = 0,
+): number {
+  const floor = Number.isFinite(minimumMs) ? Math.max(0, minimumMs) : 0;
+  const starts = items.map(activityStartMs).filter((value) => Number.isFinite(value));
+  if (starts.length === 0) return floor;
+  const start = Math.min(...starts);
+  if (running) return Math.max(floor, 0, now - start);
+  const ends = items.map(activityEndMs).filter((value) => Number.isFinite(value));
+  const end = ends.length > 0 ? Math.max(...ends) : start;
+  const span = Math.max(0, end - start);
   if (span > 0) return span;
   let sum = 0;
   for (const item of items) {
     if (item.kind === "tool" && item.durationMs !== undefined) sum += item.durationMs;
   }
-  return sum;
+  return Math.max(span, sum);
 }
 
 function formatTokens(count: number): string {
@@ -130,6 +156,7 @@ export function groupSummaryParts(
   running: boolean,
   now = Date.now(),
   extra?: TokenSpend,
+  minimumElapsedMs = 0,
 ): string[] {
   const tools = items.filter((item) => item.kind === "tool");
   const parts: string[] = [];
@@ -139,7 +166,7 @@ export function groupSummaryParts(
     parts.push(`${formatTokens(spend.input)} in`);
     parts.push(`${formatTokens(spend.output)} out`);
   }
-  parts.push(formatDuration(groupWallMs(items, running, now)));
+  parts.push(formatDuration(groupElapsedMs(items, running, now, minimumElapsedMs)));
   return parts;
 }
 
@@ -148,6 +175,7 @@ export function groupSummary(
   running: boolean,
   now = Date.now(),
   extra?: TokenSpend,
+  minimumElapsedMs = 0,
 ): string {
-  return groupSummaryParts(items, running, now, extra).join(" · ");
+  return groupSummaryParts(items, running, now, extra, minimumElapsedMs).join(" · ");
 }
