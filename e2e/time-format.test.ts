@@ -5,9 +5,9 @@ import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
-  activityGroupStart,
   activitySummary,
-  formatDuration,
+  groupStartMs,
+  groupSummary,
   groupSummaryParts,
 } from "../src/client/activity-format.js";
 import { EventsView } from "../src/client/EventsView.js";
@@ -49,6 +49,107 @@ async function inZoneAsync<T>(zone: string, run: () => Promise<T>): Promise<T> {
     else process.env.TZ = previous;
   }
 }
+
+const RUN_START = Date.UTC(2026, 0, 1, 12, 0, 0);
+const at = (seconds: number): string => new Date(RUN_START + seconds * 1_000).toISOString();
+
+function toolActivity(patch: Partial<ToolActivity> = {}): ToolActivity {
+  return {
+    kind: "tool",
+    id: "call-1",
+    name: "bash",
+    arguments: "{}",
+    isError: false,
+    timestamp: at(0),
+    order: 1,
+    ...patch,
+  };
+}
+
+test("a live run row does not step back when a tool result replaces its start", () => {
+  const liveFirst = toolActivity({ id: "live-1", pending: true, timestamp: at(0) });
+  const liveSecond = toolActivity({ id: "live-2", pending: true, timestamp: at(3) });
+  assert.equal(
+    groupSummary([liveFirst, liveSecond], true, RUN_START + 16_000),
+    "2 tool calls · 16.0s",
+  );
+
+  const finishedFirst = toolActivity({
+    id: "a-1",
+    timestamp: at(16),
+    durationMs: 16_000,
+  });
+  assert.equal(
+    groupSummary([finishedFirst, liveSecond], true, RUN_START + 16_000),
+    "2 tool calls · 16.0s",
+  );
+
+  const anchored = groupStartMs([liveFirst]);
+  assert.equal(
+    groupSummaryParts([finishedFirst], true, RUN_START + 16_000, undefined, anchored).at(-1),
+    "16.0s",
+  );
+});
+
+test("a finished run row spans from its first start to its last result", () => {
+  const first = toolActivity({ id: "a-1", timestamp: at(10), durationMs: 10_000 });
+  const second = toolActivity({ id: "a-2", timestamp: at(16), durationMs: 6_000 });
+  assert.equal(groupSummary([first, second], false, RUN_START + 30_000), "2 tool calls · 16.0s");
+  // The group keeps the result's own duration as the row's duration.
+  assert.equal(activitySummary(second), "bash · 6.0s · ok");
+});
+
+test("a reconnect that repeats a running row keeps the group clock anchored", () => {
+  const live = toolActivity({ id: "live-1", pending: true, timestamp: at(0) });
+  // The snapshot used to re-stamp the still-running call at the reconnect time.
+  const repeated = toolActivity({ id: "live-1", pending: true, timestamp: at(10) });
+  const anchored = Math.min(
+    groupStartMs([live]) ?? Number.POSITIVE_INFINITY,
+    groupStartMs([repeated]) ?? Number.POSITIVE_INFINITY,
+  );
+  assert.equal(anchored, RUN_START);
+  assert.equal(
+    groupSummaryParts([repeated], true, RUN_START + 16_000, undefined, anchored).at(-1),
+    "16.0s",
+  );
+});
+
+test("a reconnect snapshot keeps a running tool's start, arguments and task", () => {
+  const startedAt = at(0);
+  const fake = {
+    activeTools: new Map([
+      ["call-1", { name: "bash", args: { command: "ls" }, timestamp: startedAt, taskId: "t1" }],
+    ]),
+    toolsRevision: 3,
+    currentText: "partial",
+    currentThinking: "thought",
+    noteEntry() {},
+    rememberLatestMcpNotice() {},
+    absorbMessage() {},
+  };
+  const applySnapshot = (
+    ChatService.prototype as unknown as {
+      applySnapshot(this: typeof fake, snapshot: unknown): void;
+    }
+  ).applySnapshot;
+  applySnapshot.call(fake, {
+    type: "snapshot",
+    entries: [],
+    tools: [
+      { callId: "call-1", name: "bash", status: "running" },
+      { callId: "call-2", name: "read", status: "running" },
+    ],
+    inbox: [],
+  });
+
+  const carried = fake.activeTools.get("call-1");
+  assert.equal(carried?.timestamp, startedAt);
+  assert.deepEqual(carried?.args, { command: "ls" });
+  assert.equal(carried?.taskId, "t1");
+  // A call the snapshot introduces starts now, because it has no earlier timestamp to keep.
+  assert.notEqual(fake.activeTools.get("call-2")?.timestamp, startedAt);
+  assert.equal(fake.toolsRevision, 4);
+});
 
 test("formatTime follows the zone Intl resolves at call time", () => {
   assert.equal(
@@ -118,112 +219,6 @@ test("toIsoTimestamp rewrites offsets to the UTC wire form", () => {
   assert.equal(toIsoTimestamp("2026-01-15T07:04:56-05:30"), ISO);
   assert.equal(toIsoTimestamp(ISO), ISO);
   assert.equal(toIsoTimestamp("not a timestamp"), null);
-});
-
-function toolActivity(overrides: Partial<ToolActivity> = {}): ToolActivity {
-  return {
-    kind: "tool",
-    id: "live-call-1",
-    toolCallId: "call-1",
-    name: "bash",
-    arguments: '{"command":"ls"}',
-    isError: false,
-    timestamp: "2026-01-15T12:00:00.000Z",
-    order: 1,
-    pending: true,
-    ...overrides,
-  };
-}
-
-test("a tool result keeps the activity group's clock and the row's own duration", () => {
-  const start = Date.parse("2026-01-15T12:00:00.000Z");
-  const live = toolActivity();
-  const anchor = activityGroupStart([live]);
-  assert.equal(anchor, start);
-  assert.equal(groupSummaryParts([live], true, start + 16_000, undefined, anchor).at(-1), "16.0s");
-
-  const result = toolActivity({
-    id: "a-1",
-    pending: false,
-    timestamp: new Date(start + 16_000).toISOString(),
-    durationMs: 16_000,
-  });
-  // The result's timestamp is its arrival, not its start; the row still reports its duration.
-  assert.equal(formatDuration(result.durationMs), "16.0s");
-  assert.equal(activitySummary(result), "bash · 16.0s · ok");
-
-  const resumed = activityGroupStart([result], anchor);
-  assert.equal(resumed, start);
-  assert.equal(
-    groupSummaryParts([result], true, start + 16_000, undefined, resumed).at(-1),
-    "16.0s",
-  );
-  assert.equal(
-    groupSummaryParts([result], false, start + 16_000, undefined, resumed).at(-1),
-    "16.0s",
-  );
-
-  // Even if the result's duration undercounts the live delay, the group anchor wins.
-  const jittered = { ...result, durationMs: 15_000 };
-  const jitteredStart = activityGroupStart([jittered], anchor);
-  assert.equal(jitteredStart, start);
-  assert.equal(
-    groupSummaryParts([jittered], true, start + 16_000, undefined, jitteredStart).at(-1),
-    "16.0s",
-  );
-  assert.equal(activitySummary(jittered), "bash · 15.0s · ok");
-});
-
-test("a reconnect that repeats a running row does not restart the group clock", () => {
-  const start = Date.parse("2026-01-15T12:00:00.000Z");
-  const live = toolActivity();
-  const anchor = activityGroupStart([live]);
-
-  // A snapshot rebuild used to stamp the still-running call with its read time.
-  const repeated = toolActivity({ timestamp: new Date(start + 10_000).toISOString() });
-  const resumed = activityGroupStart([repeated], anchor);
-  assert.equal(resumed, start);
-  assert.equal(
-    groupSummaryParts([repeated], true, start + 16_000, undefined, resumed).at(-1),
-    "16.0s",
-  );
-});
-
-test("a reconnect snapshot keeps a running tool's start time", () => {
-  const startedAt = "2026-01-15T12:00:00.000Z";
-  const fake = {
-    activeTools: new Map([
-      ["call-1", { name: "bash", args: { command: "ls" }, timestamp: startedAt, taskId: "t1" }],
-    ]),
-    toolsRevision: 3,
-    currentText: "partial",
-    currentThinking: "thought",
-    noteEntry() {},
-    rememberLatestMcpNotice() {},
-    absorbMessage() {},
-  };
-  const applySnapshot = (
-    ChatService.prototype as unknown as {
-      applySnapshot(this: typeof fake, snapshot: unknown): void;
-    }
-  ).applySnapshot;
-  applySnapshot.call(fake, {
-    type: "snapshot",
-    entries: [],
-    tools: [
-      { callId: "call-1", name: "bash", status: "running" },
-      { callId: "call-2", name: "read", status: "running" },
-    ],
-    inbox: [],
-  });
-
-  const carried = fake.activeTools.get("call-1");
-  assert.equal(carried?.timestamp, startedAt);
-  assert.deepEqual(carried?.args, { command: "ls" });
-  assert.equal(carried?.taskId, "t1");
-  // A call the snapshot introduces starts now, because it has no earlier timestamp to keep.
-  assert.notEqual(fake.activeTools.get("call-2")?.timestamp, startedAt);
-  assert.equal(fake.toolsRevision, 4);
 });
 
 test("the MCP feed keeps event timestamps in the UTC wire form", () => {

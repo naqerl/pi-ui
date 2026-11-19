@@ -238,8 +238,8 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     });
     expect(contentTop).not.toBeNull();
     expect(contentTop?.barAbovePane).toBe(true);
-    expect(contentTop?.barGap ?? Number.POSITIVE_INFINITY).toBeGreaterThanOrEqual(0);
-    expect(contentTop?.barGap ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(20);
+    // The header-to-pane step is the same 8px rhythm as every other stack.
+    expect(contentTop?.barGap).toBe(8);
     expect(contentTop?.label).toBe(true);
     expect(contentTop?.hasTitle).toBe(false);
     expect(contentTop?.hasMeta).toBe(false);
@@ -281,6 +281,9 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     expect(body?.cardOverflow).toBeLessThanOrEqual(1);
     expect(body?.rationaleInside).toBe(true);
     expect(body?.aboveComposer).toBe(true);
+
+    // Keep the header-to-pane 8px step as visual evidence at the review width.
+    await app.screenshot("tasks-detail-header-1280-after");
 
     // Escape closes the desktop detail so the nav dock can return to full width.
     await browser.keyboard.press("Escape");
@@ -338,10 +341,12 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     const phone = await browser.evaluate(() => {
       const header = document.querySelector<HTMLElement>('[data-testid="task-header"]');
       const detail = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
-      const plan = document.querySelector<HTMLElement>('[data-testid="task-plan-card"]');
+      // The plan pane starts at its first card, below the wrapper's pt-2 step.
+      const plan = document.querySelector<HTMLElement>('[data-testid="task-detail-stack"]');
       if (header === null || detail === null || plan === null) return null;
       const h = header.getBoundingClientRect();
       const d = detail.getBoundingClientRect();
+      const p = plan.getBoundingClientRect();
       return {
         insideDetail: detail.contains(header),
         within:
@@ -349,6 +354,7 @@ describe("task detail against a mocked state route", { serial: true }, () => {
           h.right <= d.right + 1 &&
           h.top >= d.top - 1 &&
           h.bottom <= d.bottom + 1,
+        headerPlanGap: p.top - h.bottom,
         headerBeforePlan: !!(
           header.compareDocumentPosition(plan) & Node.DOCUMENT_POSITION_FOLLOWING
         ),
@@ -360,6 +366,7 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     expect(phone).not.toBeNull();
     expect(phone?.insideDetail).toBe(true);
     expect(phone?.within).toBe(true);
+    expect(phone?.headerPlanGap).toBe(8);
     expect(phone?.headerBeforePlan).toBe(true);
     expect(phone?.detailBeforePlan).toBe(true);
     expect(await horizontalOverflow(browser)).toEqual([]);

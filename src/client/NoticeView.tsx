@@ -10,6 +10,7 @@ import {
   type MemoryNoticeDetails,
   memoryUndoPrompt,
   type OperatorNoticeDetails,
+  type QuestionNoticeDetails,
   type TaskDecisionNoticeDetails,
 } from "../shared/notices";
 import { noticeIconName } from "../shared/queue";
@@ -58,6 +59,7 @@ export function ChipButton({
   title,
   onClick,
   dialog = false,
+  interactive = true,
   expanded,
   controls,
   tone = "default",
@@ -69,11 +71,34 @@ export function ChipButton({
   onClick?: () => void;
   /** Opens a modal dialog rather than expanding inline. */
   dialog?: boolean;
+  /** False for a chip that is status only, not a control. */
+  interactive?: boolean;
   expanded?: boolean;
   controls?: string;
   tone?: "default" | "warning" | "destructive";
   children: ReactNode;
 }) {
+  const className = cn(
+    "inline-flex min-w-0 max-w-[92%] items-center gap-md rounded-full border px-xl py-xs font-mono text-[11px] leading-5 shadow-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
+    tone === "warning"
+      ? "border-status-warn/40 bg-status-warn/10 text-status-warn"
+      : tone === "destructive"
+        ? "border-destructive/40 bg-surface/90 text-destructive"
+        : "border-foreground/10 bg-surface/90 text-muted-foreground",
+    interactive &&
+      (tone === "warning"
+        ? "hover:border-status-warn/60 hover:text-status-warn"
+        : tone === "destructive"
+          ? "hover:border-foreground/25 hover:text-destructive"
+          : "hover:border-foreground/25 hover:text-foreground"),
+  );
+  if (!interactive) {
+    return (
+      <span data-testid={testId} data-notice-kind={kind} className={className}>
+        {children}
+      </span>
+    );
+  }
   return (
     <button
       type="button"
@@ -84,14 +109,7 @@ export function ChipButton({
       aria-controls={controls}
       title={title}
       onClick={onClick}
-      className={cn(
-        "inline-flex min-w-0 max-w-[92%] items-center gap-md rounded-full border px-xl py-xs font-mono text-[11px] leading-5 shadow-sm backdrop-blur-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
-        tone === "warning"
-          ? "border-status-warn/40 bg-status-warn/10 text-status-warn hover:border-status-warn/60 hover:text-status-warn"
-          : tone === "destructive"
-            ? "border-destructive/40 bg-surface/90 text-destructive hover:border-foreground/25 hover:text-destructive"
-            : "border-foreground/10 bg-surface/90 text-muted-foreground hover:border-foreground/25 hover:text-foreground",
-      )}
+      className={className}
     >
       {children}
     </button>
@@ -116,6 +134,9 @@ export function NoticeLine({
   const timestamp = noticeTimestamp(message, notice);
   const time = noticeClock(message, notice);
   const label = noticeLabel(notice);
+  // An interrupted run that is still resuming is status, not a control. The
+  // stopped variant keeps its dialog so the recorded note stays available.
+  const interactive = notice.kind !== "interrupted" || notice.stopped;
   return (
     <div
       data-message-id={message.id}
@@ -126,8 +147,10 @@ export function NoticeLine({
         testId="chat-notice"
         kind={notice.kind}
         title={label}
-        dialog
+        dialog={interactive}
+        interactive={interactive}
         onClick={() => {
+          if (!interactive) return;
           // A decision is about one task: opening its chip also selects that task
           // behind the dialog, so closing the dialog shows the work it approved.
           if (taskId !== undefined) link?.openTask(taskId);
@@ -147,7 +170,7 @@ export function NoticeLine({
           </time>
         )}
       </ChipButton>
-      {open && (
+      {interactive && open && (
         <NoticeDialog
           message={message}
           notice={notice}
@@ -220,11 +243,13 @@ function NoticeDialog({
                             : "Idle nudge"
                           : notice.kind === "decision"
                             ? "Proposal decision"
-                            : notice.kind === "operator"
-                              ? "Operator request"
-                              : notice.stopped
-                                ? "Run stopped"
-                                : "Run interrupted"}
+                            : notice.kind === "questions"
+                              ? "Question answers"
+                              : notice.kind === "operator"
+                                ? "Operator request"
+                                : notice.stopped
+                                  ? "Run stopped"
+                                  : "Run interrupted"}
               {dateTime !== "" && ` · ${dateTime}`}
             </div>
             <h2 id={titleId} className="mt-xs font-mono text-sm [overflow-wrap:anywhere]">
@@ -256,6 +281,8 @@ function NoticeDialog({
             <IdleDetails notice={notice} />
           ) : notice.kind === "decision" ? (
             <TaskDecisionDetails notice={notice} />
+          ) : notice.kind === "questions" ? (
+            <QuestionDetails notice={notice} />
           ) : notice.kind === "operator" ? (
             <OperatorDetails notice={notice} />
           ) : (
@@ -348,6 +375,52 @@ function TaskDecisionDetails({ notice }: { notice: TaskDecisionNoticeDetails }) 
           ["Title", notice.taskTitle],
         ]}
       />
+      <Block label="Prompt sent to the agent">{notice.text}</Block>
+    </>
+  );
+}
+
+function QuestionDetails({ notice }: { notice: QuestionNoticeDetails }) {
+  return (
+    <>
+      <Fields
+        rows={[
+          ["Answers", String(notice.count)],
+          ["Set", notice.setId],
+        ]}
+      />
+      {notice.answers.length === 0 ? (
+        <p className="mt-md text-muted-foreground">
+          {notice.dismissed === true
+            ? "The questions were dismissed, so the agent will decide itself."
+            : "The answers were sent to the agent."}
+        </p>
+      ) : (
+        <ul className="mt-md flex flex-col gap-md">
+          {notice.answers.map((answer) => (
+            <li key={answer.id} data-question-id={answer.id} className="min-w-0">
+              <p className="min-w-0 [overflow-wrap:anywhere]">{answer.prompt}</p>
+              {answer.labels.length > 0 && (
+                <div className="mt-xs flex flex-wrap gap-xs">
+                  {answer.labels.map((label) => (
+                    <span
+                      key={label}
+                      className="theme-radius border border-border/70 bg-background px-sm py-xs font-mono text-[11px] leading-5 text-foreground"
+                    >
+                      {label}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {answer.text.length > 0 && (
+                <p className="mt-xs whitespace-pre-wrap border-l-2 border-border/70 pl-sm text-muted-foreground [overflow-wrap:anywhere]">
+                  {answer.text}
+                </p>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
       <Block label="Prompt sent to the agent">{notice.text}</Block>
     </>
   );

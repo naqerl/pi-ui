@@ -3,13 +3,21 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import { createModels } from "@earendil-works/pi-ai";
+import type { EntryRecord, SubmissionDraft } from "@earendil-works/pi-durable";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { createJobTools } from "../src/server/job-tools.js";
+import { MediaStore } from "../src/server/media.js";
 import { SnapshotCache, SnapshotController } from "../src/server/memory/snapshot.js";
 import { MemoryStore } from "../src/server/memory/store.js";
 import { createMemoryTools } from "../src/server/memory/tools.js";
 import { RunMarkerStore } from "../src/server/run-marker.js";
-import { JOB_NOTICE_ENTRY_KIND } from "../src/server/session.js";
+import {
+  buildTranscript,
+  JOB_NOTICE_ENTRY_KIND,
+  SESSION_CONTEXT,
+  TASK_ATTACHMENTS_ENTRY_KIND,
+} from "../src/server/session.js";
 import type { SseFrame } from "../src/server/sse.js";
 import { StreamHub } from "../src/server/stream-hub.js";
 import {
@@ -22,6 +30,7 @@ import {
   planPromptFingerprint,
   selectTaskAgentMemoryTools,
   selectTaskAgentTools,
+  syncTaskAttachments,
   TASK_AGENT_MEMORY_TOOL_NAMES,
   TASK_AGENT_TOOL_NAMES,
   TaskAgentManager,
@@ -990,7 +999,7 @@ test("the first message on a placeholder task sets the title and strips @project
   assert.equal(follow.message, "Also consider this");
 });
 
-test("visible task chat rows omit notice and keep ordinary messages", () => {
+test("visible task chat rows keep system notices and omit user ones", () => {
   const rows: ChatMessage[] = [
     { id: "u", role: "user", text: "hello", timestamp: "", order: 1 },
     {
@@ -1002,10 +1011,18 @@ test("visible task chat rows omit notice and keep ordinary messages", () => {
       notice: { kind: "job" },
     } as ChatMessage,
     { id: "a", role: "assistant", text: "plan", timestamp: "", order: 3 },
+    {
+      id: "q",
+      role: "system",
+      text: "Answers sent",
+      timestamp: "",
+      order: 4,
+      notice: { kind: "questions", setId: "s", count: 1, text: "", summary: "Answers sent" },
+    } as ChatMessage,
   ];
   assert.deepEqual(
     visibleTaskAgentMessages(rows).map((item) => item.id),
-    ["u", "a"],
+    ["u", "a", "q"],
   );
 });
 
@@ -1082,6 +1099,49 @@ type FakeSettlement = {
   reason?: string;
   detail?: string;
 };
+
+/** Records passive writes as entries, so the attachment seed can be inspected. */
+class FakeAttachmentConversation {
+  readonly entries: EntryRecord[] = [];
+  readonly writes: SubmissionDraft[] = [];
+  private nextId = 1;
+
+  async context() {
+    return { entries: this.entries, docs: {} };
+  }
+
+  async submit(submission: SubmissionDraft) {
+    this.writes.push(submission);
+    assert.equal(submission.type, "write");
+    const entry = submission.entry;
+    this.entries.push({
+      id: this.nextId as never,
+      conversationId: 1 as never,
+      kind: entry.kind,
+      ...(entry.model === undefined ? {} : { model: entry.model }),
+      ...(entry.data === undefined ? {} : { data: entry.data }),
+    });
+    this.nextId += 1;
+    return { id: this.nextId } as never;
+  }
+}
+
+/** A busy conversation: writes stay queued and its context gains nothing yet. */
+class FakeQueuedAttachmentConversation {
+  readonly writes: SubmissionDraft[] = [];
+
+  async context() {
+    return { entries: [], docs: {} };
+  }
+
+  async submit(submission: SubmissionDraft) {
+    this.writes.push(submission);
+    return {
+      id: this.writes.length as never,
+      status: async () => ({ type: "write", status: "queued" }) as never,
+    } as never;
+  }
+}
 
 class FakePlanConversation {
   private calls = 0;
@@ -1504,6 +1564,227 @@ test("the manager forwards image attachments to the task agent session", async (
   assert.equal(imageOnly.messages.at(-1)?.text, "");
 
   await manager.close();
+});
+
+test("a task's images enter the plan context once and never become a chat row", async () => {
+  const media = new MediaStore(join(directory, "plan-attachment-media"));
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const first = await media.save(png, "image/png");
+  const second = await media.save(Buffer.concat([png, Buffer.from([1])]), "image/png");
+  const third = await media.save(Buffer.concat([png, Buffer.from([2])]), "image/png");
+  const conversation = new FakeAttachmentConversation();
+  const task = {
+    id: "attachments-one",
+    title: "Look at the screenshots",
+    attachments: [first.id, second.id],
+  };
+
+  await syncTaskAttachments(conversation as never, task, media);
+
+  const seeded = conversation.entries.filter((entry) => entry.kind === TASK_ATTACHMENTS_ENTRY_KIND);
+  assert.equal(seeded.length, 1);
+  const seededEntry = seeded[0];
+  assert.ok(seededEntry);
+  const content = seededEntry.model?.[0]?.content;
+  assert.ok(Array.isArray(content));
+  assert.equal(content.filter((block) => block.type === "image").length, 2);
+  assert.deepEqual((seededEntry.data as { ids: string[] }).ids, [first.id, second.id]);
+  assert.equal(conversation.writes.length, 1);
+  assert.equal(visibleTaskAgentMessages(buildTranscript(conversation.entries).messages).length, 0);
+
+  // Reopening with the same ids is a diff of nothing.
+  await syncTaskAttachments(conversation as never, task, media);
+  assert.equal(conversation.writes.length, 1);
+  assert.equal(
+    conversation.entries.filter((entry) => entry.kind === TASK_ATTACHMENTS_ENTRY_KIND).length,
+    1,
+  );
+
+  // A third image is one image block in a delta entry.
+  await syncTaskAttachments(
+    conversation as never,
+    { ...task, attachments: [first.id, second.id, third.id] },
+    media,
+  );
+  const delta = conversation.entries.at(-1);
+  assert.ok(delta);
+  assert.equal(delta.kind, TASK_ATTACHMENTS_ENTRY_KIND);
+  const deltaContent = delta.model?.[0]?.content;
+  assert.ok(Array.isArray(deltaContent));
+  assert.equal(deltaContent.filter((block) => block.type === "image").length, 1);
+  assert.deepEqual((delta.data as { ids: string[] }).ids, [first.id, second.id, third.id]);
+  const preamble = deltaContent.find((block) => block.type === "text");
+  assert.ok(preamble !== undefined && preamble.type === "text");
+  assert.match(preamble.text, /3 attached images/);
+
+  // No attachments writes nothing at all.
+  const empty = new FakeAttachmentConversation();
+  await syncTaskAttachments(
+    empty as never,
+    { id: "attachments-none", title: "No images", attachments: [] },
+    media,
+  );
+  assert.equal(empty.writes.length, 0);
+  assert.equal(empty.entries.length, 0);
+
+  // One missing file becomes a text block, not a reason to drop the other images.
+  const missing = `${"f".repeat(32)}.png`;
+  const partial = new FakeAttachmentConversation();
+  await syncTaskAttachments(
+    partial as never,
+    {
+      id: "attachments-missing",
+      title: "One image is gone",
+      attachments: [first.id, missing, second.id],
+    },
+    media,
+  );
+  assert.equal(partial.writes.length, 1);
+  const partialEntry = partial.entries[0];
+  assert.ok(partialEntry);
+  const partialContent = partialEntry.model?.[0]?.content;
+  assert.ok(Array.isArray(partialContent));
+  assert.equal(partialContent.filter((block) => block.type === "image").length, 2);
+  assert.ok(
+    partialContent.some(
+      (block) => block.type === "text" && block.text.includes(`image ${missing} is missing`),
+    ),
+  );
+  assert.deepEqual((partialEntry.data as { ids: string[] }).ids, [first.id, missing, second.id]);
+});
+
+test("the plan prompt names the attachment count and asks the agent to look first", () => {
+  const prompt = taskAgentInstructions("base prompt", {
+    id: "attachments-prompt",
+    title: "Read the screenshots",
+    project: "pi-ui",
+    body: "",
+    attachments: ["first", "second"],
+  });
+  assert.match(prompt, /- attachments: 2 images \(in your context\)/);
+  assert.ok(prompt.indexOf("Look before you ask") < prompt.indexOf("ask_questions"));
+
+  // A task without images gets neither the count nor the image-specific instruction.
+  const plain = taskAgentInstructions("base prompt", {
+    id: "attachments-none-prompt",
+    title: "No screenshots here",
+    project: "pi-ui",
+    body: "",
+  });
+  assert.doesNotMatch(plain, /Look before you ask/);
+  assert.doesNotMatch(plain, /- attachments:/);
+  assert.match(plain, /ask_questions/);
+});
+
+test("a text-only plan model gets attachment text instead of image blocks", () => {
+  const prompt = taskAgentInstructions(
+    "base prompt",
+    {
+      id: "attachments-text-only",
+      title: "Read the screenshots",
+      project: "pi-ui",
+      body: "",
+      attachments: ["first", "second"],
+    },
+    { attachmentCount: 2, imagesInContext: false },
+  );
+  assert.match(prompt, /- attachments: 2 images \(this plan model cannot view images/);
+  assert.doesNotMatch(prompt, /Look before you ask/);
+});
+
+test("concurrent syncs on a busy plan conversation append one image write", async () => {
+  const media = new MediaStore(join(directory, "plan-attachment-queued-media"));
+  const image = await media.save(
+    Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64",
+    ),
+    "image/png",
+  );
+  const conversation = new FakeQueuedAttachmentConversation();
+  const task = { id: "attachments-queued", title: "Busy plan", attachments: [image.id] };
+
+  await Promise.all([
+    syncTaskAttachments(conversation as never, task, media),
+    syncTaskAttachments(conversation as never, task, media),
+  ]);
+
+  assert.equal(conversation.writes.length, 1);
+  const write = conversation.writes[0];
+  assert.equal(write?.type, "write");
+  const content = write?.type === "write" ? write.entry.model?.[0]?.content : undefined;
+  assert.ok(Array.isArray(content));
+  assert.equal(content.filter((block) => block.type === "image").length, 1);
+});
+
+test("a text-only plan session opens and live-syncs attachments as text", async () => {
+  const media = new MediaStore(join(directory, "plan-text-only-media"));
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const first = await media.save(png, "image/png");
+  const second = await media.save(Buffer.concat([png, Buffer.from([1])]), "image/png");
+  const third = await media.save(Buffer.concat([png, Buffer.from([2])]), "image/png");
+  const task = (await store.create("Plan with a text-only model", null)).tasks.find(
+    (item) => item.title === "Plan with a text-only model",
+  );
+  assert.ok(task);
+  await store.update(task.id, { attachments: [first.id, second.id] });
+
+  const manager = new TaskAgentManager({
+    dataDir: join(directory, "plan-text-only-sessions"),
+    cwd: directory,
+    models: createModels() as never,
+    model: { provider: "e2e", id: "text-only", input: ["text"] } as never,
+    store,
+    publish: () => undefined,
+    baseInstructions: "base",
+    media,
+  });
+
+  try {
+    const session = await manager.ensure(task.id);
+    const conversation = (
+      session as unknown as {
+        conversation: { context: (context: never) => Promise<{ entries: EntryRecord[] }> };
+      }
+    ).conversation;
+    const entries = async () =>
+      (await conversation.context(SESSION_CONTEXT as never)).entries.filter(
+        (entry) => entry.kind === TASK_ATTACHMENTS_ENTRY_KIND,
+      );
+
+    const seeded = await entries();
+    assert.equal(seeded.length, 1);
+    const content = seeded[0]?.model?.[0]?.content;
+    assert.ok(Array.isArray(content));
+    assert.equal(content.filter((block) => block.type === "image").length, 0);
+    const preamble = content.find((block) => block.type === "text");
+    assert.ok(preamble !== undefined && preamble.type === "text");
+    assert.match(preamble.text, /2 attached images/);
+    assert.match(preamble.text, /cannot view images/);
+
+    // The live PATCH path uses the same gate.
+    await store.update(task.id, { attachments: [first.id, second.id, third.id] });
+    await manager.syncTaskAttachments(task.id);
+    const synced = await entries();
+    assert.equal(synced.length, 2);
+    const delta = synced.at(-1);
+    assert.ok(delta);
+    const deltaContent = delta.model?.[0]?.content;
+    assert.ok(Array.isArray(deltaContent));
+    assert.equal(deltaContent.filter((block) => block.type === "image").length, 0);
+    const deltaText = deltaContent.find((block) => block.type === "text");
+    assert.ok(deltaText !== undefined && deltaText.type === "text");
+    assert.match(deltaText.text, /3 attached images/);
+    assert.match(deltaText.text, /cannot view images/);
+  } finally {
+    await manager.close();
+  }
 });
 
 test("a restart restores only plan turns whose marker was live", async () => {

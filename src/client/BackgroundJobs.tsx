@@ -1,10 +1,12 @@
-import { useEffect, useId, useMemo, useReducer, useState } from "react";
+import { useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
 import { Sheet } from "react-modal-sheet";
 import type { BuiltinJob } from "../shared/dashboard";
 import { formatDateTime, formatTime } from "../shared/time";
 import type { DelegateRunView } from "../shared/types";
 import { haptic } from "./haptics";
 import { CloseIcon } from "./icons";
+import { cn } from "./lib/utils";
+import type { DockPhase } from "./use-dock-scan";
 
 export type BackgroundJobsKind = "jobs" | "subagents";
 
@@ -69,9 +71,9 @@ function countsReducer(state: CountsState, action: CountsAction): CountsState {
 }
 
 /**
- * The live jobs/sub-agent counts, painted inline at the start of the composer's
- * status row. They are deliberately absent when both lists are empty, and only
- * their own opacity/transform animates: the row keeps its height, so the
+ * The live jobs/sub-agent counts, painted inline after the status word in the
+ * composer's status row. They are deliberately absent when both lists are empty,
+ * and only their own opacity/transform animates: the row keeps its height, so the
  * composer and the transcript never move when work starts, finishes, or the
  * reader switches pages. The node is removed after the exit, so a non-chat
  * surface never carries a hidden counter.
@@ -81,12 +83,17 @@ export function BackgroundJobsCounts({
   delegates,
   onOpen,
   visible,
+  phase = "settled",
+  order = 2,
 }: {
   jobs: readonly BuiltinJob[];
   delegates: readonly DelegateRunView[];
   onOpen: (kind: BackgroundJobsKind) => void;
   /** Counts belong to the chat page only; the exit still paints before they unmount. */
   visible: boolean;
+  /** The top-line sweep: the counts ride the second slot, after the word. */
+  phase?: DockPhase;
+  order?: number;
 }) {
   const jobCount = activeJobs(jobs).length;
   const subagentCount = activeSubagents(delegates).length;
@@ -104,13 +111,40 @@ export function BackgroundJobsCounts({
     dispatch({ type: "hide" });
   }, [visible, live, jobCount, subagentCount]);
 
+  // The swap frame drops the old surface's counts and mounts the incoming ones
+  // before their enter animation starts, so the arriving line never reflows later.
+  const entering = phase === "enter";
+  const rendered = entering
+    ? visible && live
+      ? { jobs: jobCount, subagents: subagentCount }
+      : null
+    : state.counts;
+  const open = entering ? visible && live : state.open;
+  const exitMs = entering ? 0 : EXIT_MS;
+  // A node that mounted inside the sweep already owns its entrance. Remember it
+  // so removing data-dock-phase at settle cannot restart bg-jobs-counts-in; a
+  // changed count outside a sweep clears the marker for the ordinary entrance.
+  const identity = rendered === null ? null : `${rendered.jobs}:${rendered.subagents}`;
+  const previous = useRef({ identity, phase });
+  const swept = useRef(false);
+  if (phase === "enter" && rendered !== null) {
+    swept.current = true;
+  } else if (
+    phase === "settled" &&
+    previous.current.phase === "settled" &&
+    previous.current.identity !== identity
+  ) {
+    swept.current = false;
+  }
+  previous.current = { identity, phase };
+  const interactive = open && phase !== "exit";
+
   useEffect(() => {
     if (state.counts === null || state.open) return;
-    const timer = window.setTimeout(() => dispatch({ type: "unmount" }), EXIT_MS);
+    const timer = window.setTimeout(() => dispatch({ type: "unmount" }), exitMs);
     return () => window.clearTimeout(timer);
-  }, [state.counts, state.open]);
+  }, [state.counts, state.open, exitMs]);
 
-  const rendered = state.counts;
   if (rendered === null) return null;
 
   const chip = (kind: BackgroundJobsKind, count: number, noun: string) => (
@@ -131,12 +165,17 @@ export function BackgroundJobsCounts({
   return (
     <span
       data-testid="bg-jobs-line"
-      data-open={state.open ? "true" : "false"}
+      data-open={open ? "true" : "false"}
+      data-swept={swept.current ? "true" : undefined}
       data-surface={visible ? "chat" : "away"}
-      // The outer box starts just left of the plus button's box; the inset puts
-      // the text ink on the plus icon's ink, so the edge reads aligned on both
-      // sizes.
-      className="bg-jobs-counts -ml-xl inline-flex min-w-0 shrink-0 items-baseline gap-md pl-xl"
+      data-dock-phase={phase === "settled" ? undefined : phase}
+      aria-hidden={interactive ? undefined : true}
+      inert={interactive ? undefined : true}
+      className={cn(
+        "bg-jobs-counts dock-swap inline-flex min-w-0 shrink-0 items-baseline gap-md",
+        order !== 0 && `dock-order-${order}`,
+        !interactive && "pointer-events-none",
+      )}
     >
       {rendered.jobs > 0 && chip("jobs", rendered.jobs, "job")}
       {rendered.jobs > 0 && rendered.subagents > 0 && (

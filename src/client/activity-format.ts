@@ -59,6 +59,30 @@ export function formatDuration(durationMs: number | undefined): string {
   return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
 }
 
+/**
+ * How long one activity row took. A completed tool records its own execution time; a completed
+ * thinking block only has the instant its message was stored, so it runs from the previous row
+ * in the same activity group. A row that is still running has no duration yet, and a row without
+ * usable timing information keeps its current markup.
+ */
+export function rowDurationMs(
+  activity: ActivityItem,
+  previous: ActivityItem | undefined,
+): number | undefined {
+  if (activity.kind === "job") return undefined;
+  if (activity.pending === true) return undefined;
+  if (activity.kind === "tool") {
+    if (activity.durationMs === undefined || !Number.isFinite(activity.durationMs)) {
+      return undefined;
+    }
+    return Math.max(0, activity.durationMs);
+  }
+  const end = Date.parse(activity.timestamp);
+  const start = previous === undefined ? Number.NaN : Date.parse(previous.timestamp);
+  if (!Number.isFinite(end) || !Number.isFinite(start)) return undefined;
+  return Math.max(0, end - start);
+}
+
 export function activityStatus(activity: ActivityItem): string {
   if (activity.kind === "thinking") return "ok";
   if (activity.kind === "job") {
@@ -70,64 +94,60 @@ export function activityStatus(activity: ActivityItem): string {
   return activity.isError ? "failed" : "ok";
 }
 
-export function activitySummary(activity: ActivityItem): string {
+export function activitySummary(activity: ActivityItem, includeDuration = true): string {
   if (activity.kind === "thinking") {
     return `${activity.name} · ${activity.text.length} chars`;
   }
   if (activity.kind === "job") return activity.notice.summary;
   if (activity.pending) return `${activity.name} · running`;
+  if (!includeDuration) return `${activity.name} · ${activityStatus(activity)}`;
   return `${activity.name} · ${formatDuration(activity.durationMs)} · ${activityStatus(activity)}`;
 }
 
-function itemStart(activity: ActivityItem): number | undefined {
-  const stamp = Date.parse(activity.timestamp);
-  if (!Number.isFinite(stamp)) return undefined;
-  // A finished tool's timestamp is when its result arrived, so its work began one
-  // duration earlier. A pending row's timestamp is already its start.
-  if (activity.kind === "tool" && activity.pending !== true) {
-    const duration = activity.durationMs;
-    if (duration !== undefined && Number.isFinite(duration) && duration >= 0) {
-      return stamp - duration;
-    }
+/**
+ * A row's span. A completed tool's timestamp is when its result arrived, so its start is
+ * derived once from the duration the result records; a live row's timestamp is already its
+ * start. That keeps one item's start stable when the live copy is replaced by its result.
+ */
+function activityWindow(item: ActivityItem): { start: number; end: number } | null {
+  const stamp = Date.parse(item.timestamp);
+  if (!Number.isFinite(stamp)) return null;
+  if (item.kind !== "tool" || item.pending === true) return { start: stamp, end: stamp };
+  if (item.durationMs === undefined || !Number.isFinite(item.durationMs)) {
+    return { start: stamp, end: stamp };
   }
-  return stamp;
+  return { start: stamp - Math.max(0, item.durationMs), end: stamp };
 }
 
-/**
- * The earliest start a group has shown. A caller keeps the previous value so a row that
- * is replaced by its result, or repeated by a reconnect with a fresh timestamp, cannot
- * move the group's clock backwards.
- */
-export function activityGroupStart(items: ActivityItem[], previous?: number): number | undefined {
-  let start = previous;
+/** Earliest start a group can derive from its rows, before any live anchor is applied. */
+export function groupStartMs(items: ActivityItem[]): number | undefined {
+  let start = Number.POSITIVE_INFINITY;
   for (const item of items) {
-    const value = itemStart(item);
-    if (value !== undefined && (start === undefined || value < start)) start = value;
+    const window = activityWindow(item);
+    if (window !== null) start = Math.min(start, window.start);
   }
-  return start;
+  return Number.isFinite(start) ? start : undefined;
 }
 
 function groupWallMs(
   items: ActivityItem[],
   running: boolean,
   now: number,
-  startAt?: number,
+  startedAt?: number,
 ): number {
-  const start = startAt ?? activityGroupStart(items);
-  if (start === undefined) return 0;
-  if (running) return Math.max(0, now - start);
-  let end = start;
+  let end = Number.NEGATIVE_INFINITY;
   for (const item of items) {
-    const stamp = Date.parse(item.timestamp);
-    if (Number.isFinite(stamp)) end = Math.max(end, stamp);
+    const window = activityWindow(item);
+    if (window !== null) end = Math.max(end, window.end);
   }
-  const span = end - start;
-  if (span > 0) return span;
-  let sum = 0;
-  for (const item of items) {
-    if (item.kind === "tool" && item.durationMs !== undefined) sum += item.durationMs;
-  }
-  return sum;
+  const derivedStart = groupStartMs(items);
+  if (derivedStart === undefined || !Number.isFinite(end)) return 0;
+  const start =
+    startedAt !== undefined && Number.isFinite(startedAt)
+      ? Math.min(startedAt, derivedStart)
+      : derivedStart;
+  const finish = running ? Math.max(end, now) : end;
+  return Math.max(0, finish - start);
 }
 
 function formatTokens(count: number): string {
@@ -165,7 +185,7 @@ export function groupSummaryParts(
   running: boolean,
   now = Date.now(),
   extra?: TokenSpend,
-  startAt?: number,
+  startedAt?: number,
 ): string[] {
   const tools = items.filter((item) => item.kind === "tool");
   const parts: string[] = [];
@@ -175,7 +195,7 @@ export function groupSummaryParts(
     parts.push(`${formatTokens(spend.input)} in`);
     parts.push(`${formatTokens(spend.output)} out`);
   }
-  parts.push(formatDuration(groupWallMs(items, running, now, startAt)));
+  parts.push(formatDuration(groupWallMs(items, running, now, startedAt)));
   return parts;
 }
 
@@ -184,7 +204,6 @@ export function groupSummary(
   running: boolean,
   now = Date.now(),
   extra?: TokenSpend,
-  startAt?: number,
 ): string {
-  return groupSummaryParts(items, running, now, extra, startAt).join(" · ");
+  return groupSummaryParts(items, running, now, extra).join(" · ");
 }
