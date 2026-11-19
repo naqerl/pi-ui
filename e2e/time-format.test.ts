@@ -4,8 +4,15 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import {
+  activityGroupStart,
+  activitySummary,
+  formatDuration,
+  groupSummaryParts,
+} from "../src/client/activity-format.js";
 import { EventsView } from "../src/client/EventsView.js";
 import { NoticeLine } from "../src/client/NoticeView.js";
+import { ChatService } from "../src/server/chat-service.js";
 import { McpEventFeed } from "../src/server/mcp-events.js";
 import { renderWidget } from "../src/shared/dashboard.js";
 import { DEFAULT_DASHBOARD } from "../src/shared/dashboard-default.js";
@@ -17,7 +24,7 @@ import {
   formatTime,
   toIsoTimestamp,
 } from "../src/shared/time.js";
-import type { ChatMessage } from "../src/shared/types.js";
+import type { ChatMessage, ToolActivity } from "../src/shared/types.js";
 
 const ISO = "2026-01-15T12:34:56.000Z";
 
@@ -111,6 +118,112 @@ test("toIsoTimestamp rewrites offsets to the UTC wire form", () => {
   assert.equal(toIsoTimestamp("2026-01-15T07:04:56-05:30"), ISO);
   assert.equal(toIsoTimestamp(ISO), ISO);
   assert.equal(toIsoTimestamp("not a timestamp"), null);
+});
+
+function toolActivity(overrides: Partial<ToolActivity> = {}): ToolActivity {
+  return {
+    kind: "tool",
+    id: "live-call-1",
+    toolCallId: "call-1",
+    name: "bash",
+    arguments: '{"command":"ls"}',
+    isError: false,
+    timestamp: "2026-01-15T12:00:00.000Z",
+    order: 1,
+    pending: true,
+    ...overrides,
+  };
+}
+
+test("a tool result keeps the activity group's clock and the row's own duration", () => {
+  const start = Date.parse("2026-01-15T12:00:00.000Z");
+  const live = toolActivity();
+  const anchor = activityGroupStart([live]);
+  assert.equal(anchor, start);
+  assert.equal(groupSummaryParts([live], true, start + 16_000, undefined, anchor).at(-1), "16.0s");
+
+  const result = toolActivity({
+    id: "a-1",
+    pending: false,
+    timestamp: new Date(start + 16_000).toISOString(),
+    durationMs: 16_000,
+  });
+  // The result's timestamp is its arrival, not its start; the row still reports its duration.
+  assert.equal(formatDuration(result.durationMs), "16.0s");
+  assert.equal(activitySummary(result), "bash · 16.0s · ok");
+
+  const resumed = activityGroupStart([result], anchor);
+  assert.equal(resumed, start);
+  assert.equal(
+    groupSummaryParts([result], true, start + 16_000, undefined, resumed).at(-1),
+    "16.0s",
+  );
+  assert.equal(
+    groupSummaryParts([result], false, start + 16_000, undefined, resumed).at(-1),
+    "16.0s",
+  );
+
+  // Even if the result's duration undercounts the live delay, the group anchor wins.
+  const jittered = { ...result, durationMs: 15_000 };
+  const jitteredStart = activityGroupStart([jittered], anchor);
+  assert.equal(jitteredStart, start);
+  assert.equal(
+    groupSummaryParts([jittered], true, start + 16_000, undefined, jitteredStart).at(-1),
+    "16.0s",
+  );
+  assert.equal(activitySummary(jittered), "bash · 15.0s · ok");
+});
+
+test("a reconnect that repeats a running row does not restart the group clock", () => {
+  const start = Date.parse("2026-01-15T12:00:00.000Z");
+  const live = toolActivity();
+  const anchor = activityGroupStart([live]);
+
+  // A snapshot rebuild used to stamp the still-running call with its read time.
+  const repeated = toolActivity({ timestamp: new Date(start + 10_000).toISOString() });
+  const resumed = activityGroupStart([repeated], anchor);
+  assert.equal(resumed, start);
+  assert.equal(
+    groupSummaryParts([repeated], true, start + 16_000, undefined, resumed).at(-1),
+    "16.0s",
+  );
+});
+
+test("a reconnect snapshot keeps a running tool's start time", () => {
+  const startedAt = "2026-01-15T12:00:00.000Z";
+  const fake = {
+    activeTools: new Map([
+      ["call-1", { name: "bash", args: { command: "ls" }, timestamp: startedAt, taskId: "t1" }],
+    ]),
+    toolsRevision: 3,
+    currentText: "partial",
+    currentThinking: "thought",
+    noteEntry() {},
+    rememberLatestMcpNotice() {},
+    absorbMessage() {},
+  };
+  const applySnapshot = (
+    ChatService.prototype as unknown as {
+      applySnapshot(this: typeof fake, snapshot: unknown): void;
+    }
+  ).applySnapshot;
+  applySnapshot.call(fake, {
+    type: "snapshot",
+    entries: [],
+    tools: [
+      { callId: "call-1", name: "bash", status: "running" },
+      { callId: "call-2", name: "read", status: "running" },
+    ],
+    inbox: [],
+  });
+
+  const carried = fake.activeTools.get("call-1");
+  assert.equal(carried?.timestamp, startedAt);
+  assert.deepEqual(carried?.args, { command: "ls" });
+  assert.equal(carried?.taskId, "t1");
+  // A call the snapshot introduces starts now, because it has no earlier timestamp to keep.
+  assert.notEqual(fake.activeTools.get("call-2")?.timestamp, startedAt);
+  assert.equal(fake.toolsRevision, 4);
 });
 
 test("the MCP feed keeps event timestamps in the UTC wire form", () => {

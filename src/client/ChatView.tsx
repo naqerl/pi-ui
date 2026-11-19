@@ -35,7 +35,7 @@ import type {
   TokenSpend,
   ToolActivity,
 } from "../shared/types";
-import { groupSummaryParts } from "./activity-format";
+import { activityGroupStart, groupSummaryParts } from "./activity-format";
 import {
   BackgroundJobsCounts,
   type BackgroundJobsKind,
@@ -716,6 +716,11 @@ function ActivityGroup({
   onOpen: (groupKey: string, trigger: HTMLButtonElement) => void;
 }) {
   const [now, setNow] = useState(Date.now);
+  // Keep the earliest start this group has shown. A live row is replaced by its result,
+  // and a reconnect can repeat a running row, both with a later timestamp; without the
+  // anchor the group's elapsed clock would jump backwards.
+  const startedAt = useRef<number | undefined>(undefined);
+  startedAt.current = activityGroupStart(items, startedAt.current);
   const memory = items.filter(
     (item): item is ToolActivity => item.kind === "tool" && item.memory !== undefined,
   );
@@ -729,7 +734,7 @@ function ActivityGroup({
     return () => window.clearInterval(timer);
   }, [live]);
 
-  const parts = groupSummaryParts(items, live, now, usage);
+  const parts = groupSummaryParts(items, live, now, usage, startedAt.current);
   const runInfo =
     other.length === 0 ? null : (
       <button

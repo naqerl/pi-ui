@@ -79,14 +79,49 @@ export function activitySummary(activity: ActivityItem): string {
   return `${activity.name} · ${formatDuration(activity.durationMs)} · ${activityStatus(activity)}`;
 }
 
-function groupWallMs(items: ActivityItem[], running: boolean, now: number): number {
-  const stamps = items
-    .map((item) => Date.parse(item.timestamp))
-    .filter((value) => Number.isFinite(value));
-  if (stamps.length === 0) return 0;
-  const start = Math.min(...stamps);
+function itemStart(activity: ActivityItem): number | undefined {
+  const stamp = Date.parse(activity.timestamp);
+  if (!Number.isFinite(stamp)) return undefined;
+  // A finished tool's timestamp is when its result arrived, so its work began one
+  // duration earlier. A pending row's timestamp is already its start.
+  if (activity.kind === "tool" && activity.pending !== true) {
+    const duration = activity.durationMs;
+    if (duration !== undefined && Number.isFinite(duration) && duration >= 0) {
+      return stamp - duration;
+    }
+  }
+  return stamp;
+}
+
+/**
+ * The earliest start a group has shown. A caller keeps the previous value so a row that
+ * is replaced by its result, or repeated by a reconnect with a fresh timestamp, cannot
+ * move the group's clock backwards.
+ */
+export function activityGroupStart(items: ActivityItem[], previous?: number): number | undefined {
+  let start = previous;
+  for (const item of items) {
+    const value = itemStart(item);
+    if (value !== undefined && (start === undefined || value < start)) start = value;
+  }
+  return start;
+}
+
+function groupWallMs(
+  items: ActivityItem[],
+  running: boolean,
+  now: number,
+  startAt?: number,
+): number {
+  const start = startAt ?? activityGroupStart(items);
+  if (start === undefined) return 0;
   if (running) return Math.max(0, now - start);
-  const span = Math.max(...stamps) - start;
+  let end = start;
+  for (const item of items) {
+    const stamp = Date.parse(item.timestamp);
+    if (Number.isFinite(stamp)) end = Math.max(end, stamp);
+  }
+  const span = end - start;
   if (span > 0) return span;
   let sum = 0;
   for (const item of items) {
@@ -130,6 +165,7 @@ export function groupSummaryParts(
   running: boolean,
   now = Date.now(),
   extra?: TokenSpend,
+  startAt?: number,
 ): string[] {
   const tools = items.filter((item) => item.kind === "tool");
   const parts: string[] = [];
@@ -139,7 +175,7 @@ export function groupSummaryParts(
     parts.push(`${formatTokens(spend.input)} in`);
     parts.push(`${formatTokens(spend.output)} out`);
   }
-  parts.push(formatDuration(groupWallMs(items, running, now)));
+  parts.push(formatDuration(groupWallMs(items, running, now, startAt)));
   return parts;
 }
 
@@ -148,6 +184,7 @@ export function groupSummary(
   running: boolean,
   now = Date.now(),
   extra?: TokenSpend,
+  startAt?: number,
 ): string {
-  return groupSummaryParts(items, running, now, extra).join(" · ");
+  return groupSummaryParts(items, running, now, extra, startAt).join(" · ");
 }

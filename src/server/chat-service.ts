@@ -3298,13 +3298,18 @@ export class ChatService {
       this.absorbMessage(partial);
     }
 
+    const previousTools = new Map(this.activeTools);
     this.activeTools.clear();
     for (const slot of snapshot.tools) {
       if (isTerminalSlot(slot)) continue;
+      const previous = previousTools.get(slot.callId);
       this.activeTools.set(slot.callId, {
         name: slot.name,
-        args: {},
-        timestamp: new Date().toISOString(),
+        // A reconnect repeats the running call; keep the start it already showed so the
+        // client's elapsed clock continues instead of restarting at the snapshot.
+        args: previous?.args ?? {},
+        timestamp: previous?.timestamp ?? new Date().toISOString(),
+        ...(previous?.taskId === undefined ? {} : { taskId: previous.taskId }),
       });
     }
     this.toolsRevision += 1;
