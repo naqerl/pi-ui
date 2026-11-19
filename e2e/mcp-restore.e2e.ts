@@ -44,9 +44,7 @@ async function waitForHealth(baseUrl: string, child: ChildProcess, logs: () => s
     try {
       const response = await fetch(`${baseUrl}/api/health`);
       if (response.ok) return;
-    } catch {
-      // The app is still booting.
-    }
+    } catch {}
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(`app did not answer within 90 seconds\n${logs()}`);
@@ -93,7 +91,6 @@ async function startRestoreApp(
     join(dataDir, "mcp-subscriptions.json"),
     JSON.stringify({ version: 1, subscriptions }, null, 2),
   );
-  // Membership is declared in the agent dir; the data dir holds only cursors.
   writeFileSync(
     join(agentDir, "subscriptions.json"),
     JSON.stringify(
@@ -201,7 +198,6 @@ interface DeclarationApp {
   readonly stop: () => Promise<void>;
 }
 
-/** Spawn the real backend at fixed agent/data dirs, without touching the agent dir. */
 async function startDeclarationApp(agentDir: string, dataDir: string): Promise<DeclarationApp> {
   writeFileSync(
     join(agentDir, "mcp.json"),
@@ -322,7 +318,6 @@ describe("durable restore against one shared browser", { serial: true }, () => {
           ],
         });
 
-      // The healthy restore still delivers its new event as a chat notice.
       await expect
         .poll(
           async () => {
@@ -335,12 +330,9 @@ describe("durable restore against one shared browser", { serial: true }, () => {
         )
         .toBe(true);
 
-      // Give the old backlog and the 22-event burst time to arrive.
       await new Promise((resolve) => setTimeout(resolve, 1_500));
       const state = await readState(spawned.url);
       const notices = mcpNotices(state);
-      // Two backlogs are one gap status chip each, never a replayed event chip:
-      // the old one by its timestamp, the flood one by its size.
       expect(
         state.messages.filter(
           (message) =>
@@ -379,23 +371,18 @@ describe("durable restore against one shared browser", { serial: true }, () => {
       ).toHaveLength(0);
 
       const calls = readFileSync(spawned.logPath, "utf8").split("\n").filter(Boolean);
-      // One rejection at boot, then the dropped id is remembered.
       expect(calls.filter((line) => line.startsWith("poll:gone-stream:"))).toHaveLength(1);
       expect(calls.filter((line) => line.startsWith("stream:gone-stream:"))).toHaveLength(0);
-      // An old backlog starts from now; a recent one still replays its cursor.
       expect(calls).toContain("stream:old-stream:null");
       expect(calls).not.toContain("stream:old-stream:old:42");
       expect(calls).toContain("stream:recent-stream:recent:41");
-      // A burst that fills the probe page is a backlog even when it is recent.
       expect(calls).toContain("stream:flood-stream:null");
       expect(calls).not.toContain("stream:flood-stream:flood:9");
-      // A zero position is not sent to events/poll either.
       expect(calls).toContain("poll:live-stream:null");
       expect(calls).toContain("poll:burst-stream:null");
       expect(calls).not.toContain("poll:live-stream:live:0");
       expect(calls).not.toContain("poll:burst-stream:burst:0");
 
-      // No events/poll on this server, so the catalog fallback must follow nextCursor.
       const pagedCalls = readFileSync(spawned.pagedLogPath, "utf8").split("\n").filter(Boolean);
       expect(pagedCalls).toContain("list:first");
       expect(pagedCalls).toContain("list:page-2");
@@ -433,7 +420,6 @@ describe("durable restore against one shared browser", { serial: true }, () => {
         )
         .toBe("recent-stream:1");
 
-      // The cursor advances before the queued notice is committed to chat.
       await expect
         .poll(
           async () => {
@@ -489,8 +475,6 @@ describe("durable restore against one shared browser", { serial: true }, () => {
       await first.stop();
     }
 
-    // A different, empty data dir still opens the declared stream: membership
-    // is configuration, not the runtime registry.
     const freshData = mkdtempSync(join(tmpdir(), "pi-ui-declaration-fresh-"));
     const second = await startDeclarationApp(agentDir, freshData);
     try {

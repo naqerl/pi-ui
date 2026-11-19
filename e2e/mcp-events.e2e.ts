@@ -27,11 +27,6 @@ const mcpEvents = (browser: Page) =>
 const hubSubscription = async (browser: Page) =>
   (await mcpEvents(browser)).subscriptions.find((item) => item.name === "stub-hub");
 
-/**
- * Stops a subscription by its durable id. Cancelling by adapter id can be
- * defeated by a late status or a replacement row, which is exactly what the
- * shared feed does after several members; the durable id covers every alias.
- */
 async function stopSubscription(browser: Page, name: string) {
   const subscription = (await mcpEvents(browser)).subscriptions.find((item) => item.name === name);
   if (subscription === undefined) return;
@@ -53,7 +48,6 @@ async function stopSubscription(browser: Page, name: string) {
     .toBe("cancelled");
 }
 
-/** The highest activity order a completed tool_search already has. */
 async function toolSearchOrder(browser: Page): Promise<number> {
   return browser.evaluate(async () => {
     const res = await fetch("/api/state");
@@ -67,7 +61,6 @@ async function toolSearchOrder(browser: Page): Promise<number> {
   });
 }
 
-/** Waits for a tool_search entry newer than the previous member's, then idle. */
 async function awaitToolSearch(browser: Page, previousOrder: number) {
   await expect
     .poll(
@@ -94,11 +87,6 @@ describe("MCP events against one shared app", { serial: true }, () => {
     await browser.setViewport({ width: 1280, height: 900 });
   });
 
-  // Regression for #3: events from a live subscription, not only `mcp_events`
-  // tool results, must reach the feed behind /api/state, the inline notice, the
-  // `MCP events` widget and the mcp widget. The stub's `stub-hub` stream sends
-  // what a hub sends: events named after the stream with a `stub-hub.job` kind
-  // in data.kind, which the notice and widgets show.
   test("a subscription's events reach the feed, the chat notice and both MCP widgets", async ({
     app,
     browser,
@@ -111,7 +99,6 @@ describe("MCP events against one shared app", { serial: true }, () => {
       await screen.getByRole("button", "Send").tap();
     };
 
-    // mcp_events is deferred behind tool_search.
     await send([{ name: "tool_search", arguments: { query: "mcp_events" } }]);
     await expect
       .poll(
@@ -150,7 +137,6 @@ describe("MCP events against one shared app", { serial: true }, () => {
       expect.objectContaining({ status: "active", cursor: "hub:510" }),
     );
 
-    // The follow-up lands in the chat as an MCP notice, not a raw bubble.
     await expect
       .poll(
         () =>
@@ -181,7 +167,6 @@ describe("MCP events against one shared app", { serial: true }, () => {
     });
     await app.screenshot("mcp-subscription-widgets");
 
-    // Stop the stream by its durable id so a replaced adapter row cannot revive it.
     await screen.getByRole("tab", "Chat").tap();
     const subscription = await hubSubscription(browser);
     expect(subscription?.stableId).toBeTruthy();
@@ -224,7 +209,6 @@ describe("MCP events against one shared app", { serial: true }, () => {
     await send([{ name: "tool_search", arguments: { query: "mcp_events" } }]);
     await awaitToolSearch(browser, searchOrder);
 
-    // Subscribe and hold the tool round open until all three events have queued.
     const tag = Date.now();
     const prefix = `burst-${tag}`;
     const ids = [1, 2, 3].map((index) => `${prefix}-${index}`);

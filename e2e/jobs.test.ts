@@ -21,10 +21,6 @@ after(async () => {
   await rm(cwd, { recursive: true, force: true });
 });
 
-/**
- * A fresh job directory per test, plus a cleanup hook that cancels and awaits any job the test
- * left running before the directory is removed. No job may cross into the next test.
- */
 async function jobStore(t: { after: (fn: () => Promise<void>) => void }): Promise<{
   dataDir: string;
   track: (jobs: JobManager) => JobManager;
@@ -104,8 +100,6 @@ function processGroup(pid: number): string[] {
 
 function isLiveProcess(line: string): boolean {
   const state = line.split(/\s+/)[3] ?? "";
-  // Zombies (Z) and dead (X) processes are no longer running. An isolated test
-  // container may not reap them, so they can remain listed in the group forever.
   return !/^[ZX]/.test(state);
 }
 
@@ -259,8 +253,6 @@ test("two managers on one directory save the same index at once", async (t) => {
     "the first manager adopted the second manager's saved job",
   );
 
-  // A saved running job whose pid is gone makes both managers finish and save the
-  // same full list at once: the shared temp-file collision this case covers.
   const stamp = new Date().toISOString();
   await writeFile(
     join(dataDir, "jobs", "jobs.json"),
@@ -565,9 +557,7 @@ test("promotions share the one orphan watcher already running", async (t) => {
   } finally {
     try {
       if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
-    } catch {
-      // Already gone.
-    }
+    } catch {}
   }
 });
 

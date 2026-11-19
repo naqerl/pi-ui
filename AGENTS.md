@@ -11,8 +11,7 @@ card with a solid or blurred background until a task explicitly says otherwise.
 Every interactive control gets the global press feedback from `index.css`: it
 compresses on pointer-down and eases back on release. Do not disable it in a
 component unless the control owns its own pointer gesture; in that case add
-`data-no-press` and a comment explaining why. Reduced motion must always be
-honoured.
+`data-no-press`. Reduced motion must always be honoured.
 
 ## Spacing
 
@@ -64,3 +63,11 @@ Two consequences for anything written down here:
 - **A placeholder is not a redaction you can plan around.** It is per-consumer and per-run; it will
   not work in another session, in a file read by CI, or in a commit that leaves this machine. If a
   secret genuinely has to live in a repo, it goes through SOPS.
+
+## Comments
+
+Code carries no comments. TypeScript, JSX, CSS, Dockerfiles, compose files,
+workflows and shell scripts explain themselves through names and structure.
+`scripts/no-comments.mjs` runs in `lint` and `build` and fails on a comment.
+Rationale belongs in `docs/`, not beside the code, and lint suppressions live in
+`biome.json` overrides rather than in comment directives.

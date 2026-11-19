@@ -47,5 +47,76 @@
       "path": "./biome-plugins/spacing.grit",
       "includes": ["src/client/**"]
     }
+  ],
+  "overrides": [
+    {
+      "includes": [
+        "src/client/ChatView.tsx",
+        "src/client/DiagramViewer.tsx",
+        "src/client/MediaViewer.tsx",
+        "src/client/NoticeView.tsx",
+        "src/client/PageSheet.tsx",
+        "src/client/ProjectSuggestions.tsx",
+        "src/client/RunErrorHeader.tsx"
+      ],
+      "linter": {
+        "rules": {
+          "a11y": {
+            "useKeyWithClickEvents": "off",
+            "useFocusableInteractive": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/client/DiagramViewer.tsx", "src/client/lazy-diagram.tsx"],
+      "linter": {
+        "rules": {
+          "security": {
+            "noDangerouslySetInnerHtml": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": [
+        "src/client/NoticeView.tsx",
+        "src/client/StatsView.tsx",
+        "src/client/markdown.tsx"
+      ],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noArrayIndexKey": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/client/TaskDetailVariants.tsx", "src/client/TasksView.tsx"],
+      "linter": {
+        "rules": {
+          "a11y": {
+            "useSemanticElements": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": [
+        "src/client/ChatView.tsx",
+        "src/client/DiagramViewer.tsx",
+        "src/client/StatsView.tsx",
+        "src/client/TasksView.tsx",
+        "src/client/use-stick-to-bottom.ts"
+      ],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "useExhaustiveDependencies": "off"
+          }
+        }
+      }
+    }
   ]
 }

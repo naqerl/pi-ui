@@ -1,9 +1,3 @@
-/**
- * Time handling shared by the server and the client. The wire always carries
- * instants as UTC ISO-8601 strings (or epoch milliseconds); only a browser
- * turns one into a clock, using its own timezone at call time.
- */
-
 export type TimestampValue = string | number | Date;
 
 function asDate(value: TimestampValue): Date | null {
@@ -20,11 +14,9 @@ function asDate(value: TimestampValue): Date | null {
 }
 
 function formatter(options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
-  // Constructed per call so a test can change process.env.TZ before the call.
   return new Intl.DateTimeFormat(undefined, options);
 }
 
-/** Local `hh:mm` for any parseable instant. */
 export function formatTime(value: TimestampValue): string {
   const date = asDate(value);
   if (date === null) return "";
@@ -35,14 +27,12 @@ export function formatTime(value: TimestampValue): string {
   }).format(date);
 }
 
-/** A local date and time for titles and detail rows. */
 export function formatDateTime(value: TimestampValue): string {
   const date = asDate(value);
   if (date === null) return "";
   return formatter({ dateStyle: "medium", timeStyle: "medium" }).format(date);
 }
 
-/** Local `dd.MM.yyyy HH:mm` for compact detail stamps. */
 export function formatCompactDateTime(value: TimestampValue): string {
   const date = asDate(value);
   if (date === null) return "";
@@ -50,7 +40,6 @@ export function formatCompactDateTime(value: TimestampValue): string {
   return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-/** A compact whole-minute duration such as "3h 12m" or "48m". */
 export function formatDurationMinutes(minutes: number): string {
   const total = Math.max(0, Math.round(minutes));
   const hours = Math.floor(total / 60);
@@ -59,7 +48,6 @@ export function formatDurationMinutes(minutes: number): string {
   return rest === 0 ? `${hours}h` : `${hours}h ${rest}m`;
 }
 
-/** A short local date such as "Thu, Oct 29", with the year only when it is not `thisYear`. */
 export function formatDay(value: TimestampValue, thisYear?: number): string {
   const date = asDate(value);
   if (date === null) return "";
@@ -72,7 +60,6 @@ export function formatDay(value: TimestampValue, thisYear?: number): string {
   }).format(date);
 }
 
-/** A short local month and day such as "Oct 29", with the year only when it is not `thisYear`. */
 export function formatMonthDay(value: TimestampValue, thisYear?: number): string {
   const date = asDate(value);
   if (date === null) return "";
@@ -84,10 +71,6 @@ export function formatMonthDay(value: TimestampValue, thisYear?: number): string
   }).format(date);
 }
 
-/**
- * Converts any accepted instant into the UTC ISO form the wire uses. Returns
- * null for a value that cannot be parsed, so callers can choose a fallback.
- */
 export function toIsoTimestamp(value: TimestampValue | null | undefined): string | null {
   if (value === null || value === undefined) return null;
   const date = asDate(value);

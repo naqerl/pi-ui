@@ -28,11 +28,8 @@ export function TaskAgentChat({
 }: {
   task: Task;
   projects: string[];
-  /** `pane` is the main-chat look: no card, bubbles, blurred composer. */
   variant?: "pane" | "flush";
-  /** `dock` registers send/stop on the persistent main-chat float footer. */
   composerTarget?: "local" | "dock";
-  /** False while a mobile tab hides the pane; the shared scroll hook restores on return. */
   active?: boolean;
 }) {
   const done = task.status === "done";
@@ -125,8 +122,6 @@ export function TaskAgentChat({
 
   useRegisterTaskDock(session);
 
-  // The status belongs to the mounted plan surface, and its quiet flag comes from the
-  // same frame clock that drives the transcript. The ledger only says whether to plan.
   const surfaceStatus = useMemo(() => {
     const live =
       task.planning === true && (isActiveStatus(task.status) || task.status === "planning");
@@ -135,7 +130,6 @@ export function TaskAgentChat({
   }, [task.id, task.planning, task.status, chat.quiet]);
   useRegisterTaskSurfaceStatus(surfaceStatus);
 
-  // The plan pane has no header of its own: the one app-level host owns run errors.
   const runErrorSurface = useMemo(
     () => ({ taskId: task.id, error: chat.runError, dismiss: chat.dismissError }),
     [task.id, chat.runError, chat.dismissError],
@@ -154,7 +148,6 @@ export function TaskAgentChat({
       unsendSteer={chat.unsendSteer}
       addTask={async () => false}
       projects={projects}
-      // Send failures are not RunErrors; the global run-error header cannot carry them.
       error={chat.error}
       onDismissError={chat.dismissError}
       textareaRef={inputRef}
@@ -175,8 +168,6 @@ export function TaskAgentChat({
         ref={stick.containerRef}
         data-testid="task-agent-transcript"
         className={cn(
-          // The gap above the first row belongs inside the scroller so it scrolls
-          // away with the transcript; padding on the pane would leave a fixed band.
           "flex min-h-0 flex-1 flex-col overflow-y-auto px-xl pt-xl pb-xl",
           "[scrollbar-gutter:stable]",
         )}

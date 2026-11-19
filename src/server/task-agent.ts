@@ -86,10 +86,6 @@ import { createProposeTaskTool } from "./task-tools.js";
 import { TaskError, type TaskStore } from "./tasks.js";
 import { diffToolSlots, type ToolSlotFrame } from "./tool-frames.js";
 
-/**
- * The only tools a task planning agent may call: inspect the repo, edit its task,
- * ask the operator, propose distinct follow-up work for approval, and use memory.
- */
 export const TASK_AGENT_MEMORY_TOOL_NAMES = [
   "memory_read",
   "memory_grep",
@@ -113,11 +109,6 @@ export type TaskAgentToolName = (typeof TASK_AGENT_TOOL_NAMES)[number];
 
 const TASK_AGENT_TOOL_SET = new Set<string>(TASK_AGENT_TOOL_NAMES);
 const TASK_AGENT_MEMORY_TOOL_SET = new Set<string>(TASK_AGENT_MEMORY_TOOL_NAMES);
-/**
- * The memory factory is shared with the main chat. Plan mode may write memory
- * (carried into the main chat by SnapshotCache.notePlanWrite), but dreaming stays
- * forbidden because it is not a plan action.
- */
 const TASK_AGENT_FORBIDDEN_TOOL_SET = new Set<string>(["memory_dream"]);
 
 export class TaskAgentError extends Error {
@@ -133,19 +124,13 @@ export class TaskAgentError extends Error {
 export interface TaskAgentChatSnapshot {
   taskId: string;
   messages: ChatMessage[];
-  /** Tool calls and thinking blocks from the same transcript the chat page renders. */
   activity: ActivityItem[];
   run: RunState;
-  /** The last plan-run failure, until dismissed or the next submit. */
   runError?: RunError | null;
   draft: { text: string; thinking: string; revision: number };
-  /** The unanswered set, or null. Persisted beside the task agent's conversation. */
   questions: TaskQuestionSet | null;
-  /** Follow-ups waiting for the current plan run to end. */
   queue?: QueuedMessage[];
-  /** Steers waiting for the run's next turn boundary. */
   steers?: QueuedMessage[];
-  /** Revision of the two lists above, so a late snapshot cannot undo a newer update. */
   queueRevision?: number;
 }
 
@@ -156,7 +141,6 @@ export interface TaskAgentSession {
   running(): boolean;
   snapshot(): Promise<TaskAgentChatSnapshot>;
   submit(text: string, attachments?: string[]): Promise<TaskAgentChatSnapshot>;
-  /** The main-chat-shaped send answer, used by the shared client core. */
   send?(
     text: string,
     attachments: string[],
@@ -168,19 +152,14 @@ export interface TaskAgentSession {
   unsendSteer?(id: string): Promise<QueuedMessage | null>;
   dismissError?(id?: string): Promise<TaskAgentChatSnapshot>;
   stop(): Promise<void>;
-  /** Persist the live turn and close the harness without aborting it. */
   shutdown?(): Promise<void>;
   close(): Promise<void>;
   applyInstructions?(instructions: string): Promise<void>;
-  /** The pending set for the answer panel, or null when nothing waits. */
   pendingQuestions?(): Promise<TaskQuestionSet | null>;
-  /** Record the operator's answers, add a readable transcript row, and wake the tool. */
   answerQuestions?(setId: string, answers: unknown): Promise<TaskAgentChatSnapshot>;
-  /** Deliver a finished background job's notice to this plan conversation. */
   submitJobNotice?(text: string): Promise<void>;
 }
 
-/** The memory tree and the chat snapshot cache; plan sessions keep their own cache. */
 export interface TaskAgentMemory {
   readonly store: MemoryStore;
   readonly snapshot?: SnapshotCache;
@@ -193,48 +172,28 @@ export interface TaskAgentManagerOptions {
   readonly model: Model<Api> | undefined;
   readonly store: TaskStore;
   readonly publish: (ledger: TaskLedger) => void;
-  /**
-   * Base system prompt (coding-agent path with only read and bash described), or a
-   * builder for a per-session prompt that already includes the memory block.
-   */
   readonly baseInstructions: string | (() => Promise<string>);
-  /** The memory tree and snapshot block injected into the plan prompt. */
   readonly memory?: TaskAgentMemory;
-  /** Background jobs shared with the chat, so a handed-off plan command reports back. */
   readonly jobs?: JobManager;
-  /** Tests inject a fake session instead of opening a durable harness. */
   readonly openSession?: (taskId: string, manager: TaskAgentManager) => Promise<TaskAgentSession>;
-  /** Forward session frames onto the main /api/stream so the browser can reuse that EventSource. */
   readonly relay?: (taskId: string, frame: SseFrame) => void;
-  /** A plan run started or ended, so the tasks payload can be pushed again with `planning`. */
   readonly onRunState?: (taskId: string) => void;
-  /** Used to resolve image attachments sent in the plan chat. */
   readonly media?: MediaStore;
-  /** Where a finished planning turn is announced. Defaults to web push. */
   readonly notify?: PlanTurnPushSender;
-  /** Where a failed planning turn is announced. Defaults to web push. */
   readonly runErrorNotify?: RunErrorPushSender;
-  /** Reuse the chat page's failure notifier, so their 60 s windows share one clock. */
   readonly runErrorNotifier?: Pick<RunErrorNotifier, "deliver">;
-  /** Minimum milliseconds between pushes for the same task. Zero disables the guard. */
   readonly pushWindowMs?: number;
   readonly burstWindowMs?: number;
   readonly coalesceMs?: number;
-  /** Override the clock in tests. */
   readonly now?: () => number;
 }
 
-/**
- * Keep only the TASK_AGENT_TOOL_NAMES allow-list. Used both when building a registry
- * and in tests that assert the restriction without starting a harness.
- */
 export function selectTaskAgentTools<T extends { name: string }>(tools: readonly T[]): T[] {
   return tools.filter(
     (tool) => TASK_AGENT_TOOL_SET.has(tool.name) && !TASK_AGENT_FORBIDDEN_TOOL_SET.has(tool.name),
   );
 }
 
-/** Keep only the memory tools the plan agent is allowed to call. */
 export function selectTaskAgentMemoryTools<T extends { name: string }>(tools: readonly T[]): T[] {
   return tools.filter(
     (tool) =>
@@ -243,9 +202,7 @@ export function selectTaskAgentMemoryTools<T extends { name: string }>(tools: re
 }
 
 export interface PlanPromptFingerprintOptions {
-  /** Override the home directory in tests. */
   readonly homeDir?: string;
-  /** Override the coding agent directory in tests. */
   readonly agentDir?: string;
 }
 
@@ -258,7 +215,6 @@ async function fingerprintPath(path: string): Promise<string> {
   }
 }
 
-/** Include the directories and markdown skill files below one skills root. */
 async function collectSkillTree(root: string, paths: Set<string>): Promise<void> {
   paths.add(root);
   const entries = await readdir(root, { withFileTypes: true }).catch(() => undefined);
@@ -274,11 +230,6 @@ async function collectSkillTree(root: string, paths: Set<string>): Promise<void>
   }
 }
 
-/**
- * The plan prompt is rebuilt only when the skills or guidance files it lists have
- * changed. mtimeMs plus size is enough to notice an edit or a newly added skill;
- * a missing path is part of the signature, so creating one also rebuilds.
- */
 export async function planPromptFingerprint(
   cwd: string,
   options: PlanPromptFingerprintOptions = {},
@@ -308,20 +259,12 @@ export async function planPromptFingerprint(
 
 export interface PlanPromptBuilderOptions {
   readonly cwd: string;
-  /** Re-runs DefaultResourceLoader and returns the coding-agent system prompt. */
   readonly buildBase: () => Promise<string>;
   readonly memory?: TaskAgentMemory;
-  /** Set false for PI_PLAN_MEMORY=0; defaults to the environment. */
   readonly memoryEnabled?: boolean;
-  /** Override the file fingerprint in tests. */
   readonly fingerprint?: () => Promise<string>;
 }
 
-/**
- * One lazy plan-prompt builder shared by every plan session. The expensive
- * coding-agent prompt is memoized on a file fingerprint, while the memory block
- * is composed fresh so a plan never opens with the previous boot's snapshot.
- */
 export function createPlanPromptBuilder(options: PlanPromptBuilderOptions): () => Promise<string> {
   let cached: { key: string; base: Promise<string> } | undefined;
   const fingerprint = options.fingerprint ?? (() => planPromptFingerprint(options.cwd));
@@ -344,27 +287,16 @@ export function createPlanPromptBuilder(options: PlanPromptBuilderOptions): () =
 }
 
 export interface TaskAgentMemoryBaseOptions {
-  /** Read the project's current guidance files as part of the block. */
   readonly cwd?: string;
-  /**
-   * Build the memory block from the files instead of the shared snapshot cache.
-   * Defaults to true so a new session never inherits a block cached at boot.
-   */
   readonly fresh?: boolean;
 }
 
 const EMBEDDED_PROJECT_CONTEXT = /<project_context>[\s\S]*?<\/project_context>\s*/g;
 
-/** Drop the boot-time project block so the current files can be the only copy. */
 function withoutEmbeddedProjectContext(base: string): string {
   return base.replace(EMBEDDED_PROJECT_CONTEXT, "").trimEnd();
 }
 
-/**
- * The project guidance a session can be given, using the same files the coding
- * agent loads (AGENTS.override.md, AGENTS.md, CLAUDE.md, ancestor and global
- * files). The skills list itself comes from buildPiSystemPrompt.
- */
 export async function taskAgentProjectInstructions(cwd: string): Promise<string | undefined> {
   const files = loadProjectContextFiles({ cwd, agentDir: getAgentDir() });
   const blocks: string[] = [];
@@ -376,11 +308,6 @@ export async function taskAgentProjectInstructions(cwd: string): Promise<string 
   return blocks.length === 0 ? undefined : blocks.join("\n\n");
 }
 
-/**
- * Compose the plan's base prompt with the memory snapshot as it is now, plus the
- * current project guidance. The fresh path builds from the files and never
- * invalidates the chat's shared snapshot cache.
- */
 export async function taskAgentMemoryBase(
   base: string | (() => Promise<string>),
   memory: TaskAgentMemory | undefined,
@@ -407,10 +334,6 @@ export function isTaskAgentToolName(name: string): name is TaskAgentToolName {
   return TASK_AGENT_TOOL_SET.has(name);
 }
 
-/**
- * The task ids the tasks payload may report as Planning. `running` is the manager's
- * existing session bookkeeping; terminal and parked tasks are never planning work.
- */
 export function derivePlanningTaskIds(
   tasks: readonly Pick<Task, "id" | "status">[],
   running: Iterable<string>,
@@ -423,7 +346,6 @@ export function derivePlanningTaskIds(
     .map((task) => task.id);
 }
 
-/** Visible chat rows: user and assistant text, plus system notes. Never tool-call lists. */
 export function visibleTaskAgentMessages(messages: readonly ChatMessage[]): ChatMessage[] {
   return messages.filter((message) => {
     if (message.notice !== undefined) return false;
@@ -431,7 +353,6 @@ export function visibleTaskAgentMessages(messages: readonly ChatMessage[]): Chat
   });
 }
 
-/** The harness policy the plan agent opens with, so retries behave like the main chat. */
 export function taskAgentHarnessSettings(env: NodeJS.ProcessEnv = process.env): HarnessSettings {
   return {
     compaction: { enabled: false },
@@ -441,7 +362,6 @@ export function taskAgentHarnessSettings(env: NodeJS.ProcessEnv = process.env): 
 }
 
 export interface TaskAgentInstructionOptions {
-  /** False when PI_PLAN_MEMORY=0 or no memory store was supplied. */
   readonly memoryEnabled?: boolean;
 }
 
@@ -503,7 +423,6 @@ const editSchema = Type.Object({
   ),
 });
 
-/** The one task-edit tool bound to a single task. It cannot target any other task. */
 export function createTaskEditTool(options: {
   taskId: string;
   store: TaskStore;
@@ -602,10 +521,6 @@ function answerToolResult(result: QuestionAnswerResult) {
   };
 }
 
-/**
- * The two plan-chat question tools. They are bound to one task and share the persisted pending
- * set, so append_questions can grow a set that ask_questions is already waiting on.
- */
 export function createTaskQuestionTools(options: {
   taskId: string;
   questions: TaskQuestionsStore;
@@ -664,10 +579,6 @@ export function createTaskQuestionTools(options: {
   ];
 }
 
-/**
- * From a user message, the title/project that should land on a freshly created task
- * and the text that should go to the agent (@project tokens stripped).
- */
 export function openingTaskPatch(
   task: Pick<Task, "title" | "project">,
   text: string,
@@ -740,9 +651,7 @@ async function readConversationId(path: string): Promise<ConversationId | undefi
     ) {
       return value.conversationId as ConversationId;
     }
-  } catch {
-    // Replace a malformed pointer on the next create.
-  }
+  } catch {}
   return undefined;
 }
 
@@ -752,15 +661,12 @@ async function writeConversationId(path: string, conversationId: ConversationId)
   await rename(temporary, path);
 }
 
-/** Exported so the session's submit/settle/dismiss path can be exercised with a fake conversation. */
 export class DurableTaskAgentSession implements TaskAgentSession {
   closed = false;
   readonly hub = new StreamHub();
   private runState: RunState = "idle";
   private runError: RunError | null = null;
-  /** A deliberate stop must not turn its aborted turn into a phone notification. */
   private stopRequested = false;
-  /** One failure id reaches the notifier once, even if a watch replays it. */
   private pushedRunErrorId: string | undefined;
   private currentText = "";
   private currentThinking = "";
@@ -768,17 +674,12 @@ export class DurableTaskAgentSession implements TaskAgentSession {
   private lastViewEntryId: EntryRecord["id"] | undefined;
   private viewLive: LiveState | undefined;
   private watch: ConversationWatch | undefined;
-  /** Follow-ups durable has not placed yet, grouped by submission id. */
   private readonly queued = new Map<string, QueuedMessage>();
-  /** Steers still waiting for the current run, by submission id. */
   private readonly steers = new Map<string, QueuedMessage>();
-  /** Bumped on every queue/steer mutation; the client's monotonic guard reads this. */
   private queueRevision = 0;
-  /** The durable hint that this task had a live turn, kept beside pi.sqlite3. */
   private marker: RunMarker | undefined;
   private markerTimer: ReturnType<typeof setTimeout> | undefined;
   private markerWrites: Promise<void> = Promise.resolve();
-  /** True while shutting down, so an idle state cannot clear the marker being flushed. */
   private shuttingDown = false;
   private readonly stopQuestionChanges: (() => void) | undefined;
 
@@ -799,7 +700,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     });
   }
 
-  /** The pending set is durable state, not a tool result: publish it as soon as it changes. */
   private async publishQuestions(): Promise<void> {
     if (this.closed || this.questions === undefined) return;
     try {
@@ -911,7 +811,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     } catch (error) {
       console.error(`[task-agent] could not record answers for ${this.taskId}`, error);
     } finally {
-      // The tool result must not stay blocked just because the display row failed.
       this.questions.resolve(setId, result);
     }
     return this.snapshot();
@@ -923,9 +822,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
   }
 
   private identity<T>(run: () => T): T {
-    // The numeric conversation id is unique only inside this task's
-    // sqlite file. billion-context keys sessions process-wide, so stamp a
-    // name that cannot collide with the main chat or another task.
     return withConversationIdentity(`task-agent:${this.taskId}`, run);
   }
 
@@ -948,8 +844,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
         console.error(`[task-agent] view handling failed for ${this.taskId}`, error);
       }
     });
-    // A stop requested before the process died is settled by the boot restore; never
-    // let opening the task chat quietly continue it.
     if (this.marker?.stopRequested !== true) {
       this.identity(() => this.harness.resume());
       const inspection = await this.harness.inspect(SESSION_CONTEXT);
@@ -997,8 +891,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     this.currentThinking = nextThinking;
     if (draftChanged) this.publishDraft();
 
-    // The run state goes out before the transcript rows. A client refresh triggered by
-    // `message.done` then cannot read a snapshot from before the run started and paint idle.
     const running = liveRunning(live);
     const wasRunning = liveRunning(previousLive);
     if (running !== wasRunning || (running && this.runState !== "running")) {
@@ -1011,16 +903,11 @@ export class DurableTaskAgentSession implements TaskAgentSession {
 
     if (newEntries.length > 0) {
       const built = buildTranscript(newEntries, this.mediaRef);
-      // A job result belongs on the activity surface even while the run is live; durable
-      // committed it already, so the row matches the one a later snapshot will build.
       for (const activity of built.activity) {
         if (activity.kind === "job") {
           this.emit({ event: "activity", data: { activity } });
         }
       }
-      // A placed steer leaves the pending list in the same update as its transcript row.
-      // Otherwise a snapshot read before this entry still lists it, and the client would
-      // rebuild the pending bubble beside the delivered row.
       let consumedSteer = false;
       for (const message of built.messages) {
         if (this.takeTrackedSteer(message)) consumedSteer = true;
@@ -1038,7 +925,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     }
   }
 
-  /** Emit the same tool frames the main chat publishes, using the committed result row when present. */
   private emitToolFrame(frame: ToolSlotFrame): void {
     if (frame.type === "start") {
       this.emit({
@@ -1055,7 +941,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     const committed =
       frame.entry === undefined ? undefined : toolActivityFromEntry(frame.entry, frame.args);
     const result = frame.result;
-    // This is the same fallback `ChatService.toolActivity` uses when no committed row exists.
     const activity = committed ?? {
       kind: "tool" as const,
       id: `local-${frame.toolCallId}`,
@@ -1083,7 +968,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     });
   }
 
-  /** Takes a tracked steer off the queue when its transcript entry carries the same key. */
   private takeTrackedSteer(message: ChatMessage, submissionId?: string): boolean {
     if (message.steerKey === undefined) return false;
     let removed = false;
@@ -1093,8 +977,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
       this.steers.delete(id);
       removed = true;
     }
-    // Consuming a steer is a queue mutation too: the revision must move before any
-    // snapshot taken after this entry is accepted.
     if (removed) this.markQueueChanged();
     return removed;
   }
@@ -1107,14 +989,12 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     return [...this.steers.values()];
   }
 
-  /** Bump before an await can interleave a snapshot read with a queue mutation. */
   private markQueueChanged(): void {
     this.queueRevision += 1;
     void this.persistMarkerState();
     this.maybeClearMarker();
   }
 
-  /** Keep the durable hint in step with the pending queue without a write per mutation. */
   private async persistMarkerState(flush = false): Promise<void> {
     const marker = this.marker;
     if (marker === undefined) return;
@@ -1185,7 +1065,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     this.emit({ event: "run.state", data: this.runStatus() });
   }
 
-  /** The placed transcript row for a submission, or the pending row while it waits. */
   private async submittedMessage(
     submission: Submission,
     text: string,
@@ -1242,10 +1121,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     };
   }
 
-  /**
-   * Waits for a submission to be placed or settled, retires its pending queue/steer
-   * row, and keeps the plan chat's run-error behaviour identical to the main chat.
-   */
   private async monitorSubmission(
     submission: Submission,
     startsRun: boolean,
@@ -1270,8 +1145,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
       if (final !== undefined && final.status === "unanswered") {
         this.dropTrackedSteer(steerId, steerDropReason(final.reason, final.detail));
       } else if (final !== undefined && final.type === "input" && final.status === "done") {
-        // The row may have been placed but the watch has not consumed it yet. Read the
-        // entry directly, then leave a failed bubble if the run ended without delivering it.
         if (await this.consumeSteerEntry(final.entry, steerId)) this.broadcastQueue();
         if (this.steers.has(steerId)) {
           this.dropTrackedSteer(steerId, "The run ended before the steer was delivered.");
@@ -1288,8 +1161,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
       this.broadcastQueue();
     }
 
-    // `done` is the run's successful answer, including a steer or follow-up placed into it.
-    // A failed, stopped or cancelled run settles `unanswered`, and keeps its in-app error.
     if (final !== undefined && final.status === "done") {
       try {
         await this.onTurnFinished?.(this.taskId);
@@ -1298,9 +1169,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
       }
     }
 
-    // A cancelled queued follow-up settles `unanswered`/`aborted` while the earlier run is
-    // still live. It must not turn that run idle or hand it a run error. The submission that
-    // started the run still ends it normally (including a deliberate stop).
     if (final !== undefined && final.status === "unanswered") {
       if (this.closed) return;
       const errorId = `${this.taskId}:${submission.id}`;
@@ -1317,7 +1185,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     }
   }
 
-  /** Sends one failed planning turn to the phone, unless it was deliberately stopped. */
   private async announceRunError(runError: RunError): Promise<void> {
     if (this.stopRequested || this.pushedRunErrorId === runError.id) return;
     this.pushedRunErrorId = runError.id;
@@ -1328,7 +1195,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     }
   }
 
-  /** Drops a pending steer and reveals why it never reached the transcript. */
   private dropTrackedSteer(id: string, reason: string): boolean {
     if (!this.steers.delete(id)) return false;
     this.markQueueChanged();
@@ -1337,7 +1203,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     return true;
   }
 
-  /** Reads a done submission's entry and consumes the pending steer it placed. */
   private async consumeSteerEntry(entryId: number, submissionId: string): Promise<boolean> {
     const context = await this.conversation.context(SESSION_CONTEXT);
     const entry = context.entries.find((candidate) => candidate.id === entryId);
@@ -1346,7 +1211,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     return message === undefined ? false : this.takeTrackedSteer(message, submissionId);
   }
 
-  /** The shared chat core's send: a queued follow-up or a steer, with main-chat semantics. */
   async send(
     text: string,
     attachments: string[] = [],
@@ -1383,15 +1247,10 @@ export class DurableTaskAgentSession implements TaskAgentSession {
         partialEntryId: null,
         updatedAt: new Date().toISOString(),
       };
-      // The hint must be on disk before durable admits the turn: a process that dies
-      // after the submission is placed must still leave enough behind to resume it.
       await this.flushMarkerState();
       this.setRunState("running", null);
     }
     let submission: Submission;
-    // Model requests go through billion-context; they must carry this
-    // conversation's id, not the main chat's, or the turn can hang or
-    // attach itself to the parent session.
     try {
       submission = await this.identity(() =>
         this.conversation.submit(
@@ -1464,7 +1323,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     };
   }
 
-  /** Delivers a finished job's notice as a queued message in this plan conversation. */
   async submitJobNotice(text: string): Promise<void> {
     if (this.closed) throw new TaskAgentError("Task agent has been closed", 409);
     const startsRun = this.runState !== "running" && this.queued.size === 0;
@@ -1543,11 +1401,7 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     } catch (error) {
       console.error(`[task-agent] could not move a queued message for ${this.taskId}`, error);
     }
-    // A message durable already placed is in the transcript; sending it again would
-    // duplicate it. Return null so the client refreshes from the authoritative state.
     if (!aborted) return null;
-    // Do not reuse the queue key: it is also the submission request id, so durable
-    // would deduplicate the new steer against the queued submission just aborted.
     return this.send(item.text, item.attachments ?? [], "steer");
   }
 
@@ -1605,7 +1459,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     }
   }
 
-  /** Delete or replace: abort the turn and forget the marker before the directory goes. */
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -1619,13 +1472,10 @@ export class DurableTaskAgentSession implements TaskAgentSession {
       if (this.runState === "running") {
         await this.identity(() => this.conversation.abort(SESSION_CONTEXT));
       }
-    } catch {
-      // Closing anyway.
-    }
+    } catch {}
     await this.closeHarness();
   }
 
-  /** Process shutdown: keep the live turn and its marker for the next boot. */
   async shutdown(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -1656,22 +1506,13 @@ export class DurableTaskAgentSession implements TaskAgentSession {
   }
 }
 
-/**
- * A plan session holds a durable store, a harness and its own transcript. Opening one per
- * task and keeping it for the life of the process cost 2.5 MB each: 298 tasks reached
- * 750 MB and pushed the heap into a GC storm at V8's container-sized cap. A session nobody
- * is looking at is closed and reopened on demand instead.
- */
 const IDLE_SESSION_MS = 10 * 60_000;
-/** Idle sessions kept open even before one has been idle long enough to expire. */
 const IDLE_SESSION_MAX = 8;
 const IDLE_SWEEP_MS = 60_000;
 
 export class TaskAgentManager {
   private readonly sessions = new Map<string, TaskAgentSession>();
-  /** When each open session was last asked for, so the sweep can tell idle from in use. */
   private readonly lastUsed = new Map<string, number>();
-  /** Per-task question stores, so a task leaving planning can drop its pending set. */
   private readonly planQuestions = new Map<string, TaskQuestionsStore>();
   private sweeper: ReturnType<typeof setInterval> | undefined;
   private readonly opening = new Map<string, Promise<TaskAgentSession>>();
@@ -1703,7 +1544,6 @@ export class TaskAgentManager {
     });
   }
 
-  /** Announce one finished planning turn. Exposed so a caller can flush or test the path. */
   notifyTurnFinished(taskId: string): Promise<boolean> {
     return this.planTurnNotifier.notifyTurn(taskId);
   }
@@ -1763,10 +1603,6 @@ export class TaskAgentManager {
     return session.submit(patch.message, attachments);
   }
 
-  /**
-   * Delivers a finished job's notice to a live plan session. It never opens a session:
-   * a notice for a closed plan pane becomes an activity row instead of a paid plan turn.
-   */
   async submitJobNotice(taskId: string, text: string): Promise<boolean> {
     const session = this.sessions.get(taskId);
     if (session === undefined || session.closed || session.submitJobNotice === undefined) {
@@ -1776,7 +1612,6 @@ export class TaskAgentManager {
     return true;
   }
 
-  /** Send through the shared client core's main-chat-shaped endpoint. */
   async send(
     taskId: string,
     text: string,
@@ -1870,7 +1705,6 @@ export class TaskAgentManager {
     return session.answerQuestions(setId, answers);
   }
 
-  /** Drop any pending plan question set when the task leaves planning, without waking the agent. */
   async clearQuestions(taskId: string): Promise<void> {
     const store = this.planQuestions.get(taskId);
     if (store !== undefined) await store.clearPending();
@@ -1887,9 +1721,7 @@ export class TaskAgentManager {
             timer.unref?.();
           }),
         ]);
-      } catch {
-        // The opener failed or stalled; still remove any files.
-      }
+      } catch {}
     }
     const session = this.sessions.get(taskId);
     this.sessions.delete(taskId);
@@ -1907,7 +1739,6 @@ export class TaskAgentManager {
     this.sessions.clear();
     this.lastUsed.clear();
     this.planQuestions.clear();
-    // A deploy is not a stop: leave every live plan turn for the next boot to resume.
     await Promise.all(
       sessions.map((session) =>
         session.shutdown === undefined ? session.close() : session.shutdown(),
@@ -1915,11 +1746,6 @@ export class TaskAgentManager {
     );
   }
 
-  /**
-   * Closes the plan sessions nobody is using: never one with a live run, and never more
-   * than `IDLE_SESSION_MAX` idle ones. Returns the task ids closed, so a test can assert
-   * the choice without a timer. A closed session reopens on the next request.
-   */
   async evictIdle(): Promise<string[]> {
     const now = this.clock();
     const idle: Array<{ taskId: string; session: TaskAgentSession; usedAt: number }> = [];
@@ -1948,16 +1774,10 @@ export class TaskAgentManager {
     return [...closing.keys()];
   }
 
-  /** Open plan sessions right now, for the periodic memory line. */
   poolSize(): number {
     return this.sessions.size;
   }
 
-  /**
-   * Open every plan turn the previous process left live. The marker only selects
-   * candidates; pi-durable decides whether there is work left to resume. Idle plans
-   * and tasks deleted or finished while the process was down stay closed.
-   */
   async restore(): Promise<string[]> {
     let entries: Dirent[];
     try {
@@ -2000,7 +1820,6 @@ export class TaskAgentManager {
     return resumed;
   }
 
-  /** Kept for callers from before the marker-based restore. */
   resumeInterrupted(): Promise<string[]> {
     return this.restore();
   }
@@ -2009,7 +1828,6 @@ export class TaskAgentManager {
     return this.options.now?.() ?? Date.now();
   }
 
-  /** Task ids whose plan agent has a live run, filtered to work the UI may badge. */
   planningTaskIds(): string[] {
     const running: string[] = [];
     for (const [taskId, session] of this.sessions) {
@@ -2176,10 +1994,8 @@ export class TaskAgentManager {
     return session;
   }
 
-  /** The plan keeps its own snapshot cache for instructions while tools share the chat's cache. */
   private readonly planSnapshot = new SnapshotCache();
 
-  /** The memory tools use the shared cache, so a long-term write invalidates the chat's block. */
   private planMemory(): TaskAgentMemory | undefined {
     if (process.env.PI_PLAN_MEMORY === "0") return undefined;
     if (this.options.memory === undefined) return undefined;
@@ -2189,18 +2005,12 @@ export class TaskAgentManager {
     };
   }
 
-  /** Plan instructions keep their own cache so reading/writing them never disturbs the chat. */
   private planResolutionMemory(): TaskAgentMemory | undefined {
     if (process.env.PI_PLAN_MEMORY === "0") return undefined;
     if (this.options.memory === undefined) return undefined;
     return { store: this.options.memory.store, snapshot: this.planSnapshot };
   }
 
-  /**
-   * The plan registry's memory tools, with the same write path as chat. A long-term
-   * write invalidates the shared cache and is carried into the main chat's next
-   * instructions; the plan session itself is refreshed from the files immediately.
-   */
   planMemoryTools(taskId: string): ToolRegistration[] {
     const memory = this.planMemory();
     if (memory === undefined) return [];
@@ -2226,7 +2036,6 @@ export class TaskAgentManager {
     });
   }
 
-  /** Rebuild a live plan session's instructions from the current task and files. */
   async refreshInstructions(taskId: string, fresh = false): Promise<void> {
     const session = this.sessions.get(taskId);
     if (session === undefined || session.closed || session.applyInstructions === undefined) return;

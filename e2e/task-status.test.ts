@@ -70,7 +70,6 @@ test("working follows a live run until it reaches a terminal outcome", () => {
     ),
     "working",
   );
-  // Same trace, but the run is over: not working, and nothing failed, so ready.
   assert.equal(
     taskState(
       [a],
@@ -81,7 +80,6 @@ test("working follows a live run until it reaches a terminal outcome", () => {
     ),
     "ready",
   );
-  // A live run with no recent tool call keeps working; only a terminal outcome clears it.
   assert.equal(
     taskState(
       [a],
@@ -94,7 +92,6 @@ test("working follows a live run until it reaches a terminal outcome", () => {
     ),
     "working",
   );
-  // Another run is live; this task was touched by an older one.
   assert.equal(
     taskState(
       [a],
@@ -107,7 +104,6 @@ test("working follows a live run until it reaches a terminal outcome", () => {
     ),
     "ready",
   );
-  // Without any activity view there is nothing to measure.
   assert.equal(taskState([a], a, undefined), "ready");
 });
 

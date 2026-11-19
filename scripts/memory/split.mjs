@@ -1,7 +1,4 @@
 #!/usr/bin/env node
-// Split MEMORY.md into a two-level index: MEMORY.md (rules + map) and
-// topics/<scope>/<topic>.md bodies with a per-scope INDEX.md.
-// Usage: node split.mjs [--apply]
 import fs from "node:fs";
 import path from "node:path";
 
@@ -15,7 +12,6 @@ const MEM = (() => {
 const APPLY = process.argv.includes("--apply");
 const raw = fs.readFileSync(path.join(MEM, "MEMORY.md"), "utf8");
 
-// --- parse ---------------------------------------------------------------
 const marks = [];
 const re = /^## (.+)$/gm;
 let _m;
@@ -28,7 +24,6 @@ const sections = marks.map((mk, i) => {
   return { title: mk.title, body, letters: body.replace(/^## .+$/m, "").trim() };
 });
 
-// --- scope assignment (ordered, first match wins) ------------------------
 const DEFAULT_RULES = [
   ["core", /^(Standing rules|Who the user is|Operating role|Rules that always apply)\b/i],
   ["harness", /^Pi\b|pi MCP|qmd|^Skills$|skill discovery/i],
@@ -39,7 +34,6 @@ const DEFAULT_RULES = [
   ["machines", /^(Machine:|Where the code lives)(?=[\s:—]|$)/i],
   ["prefs", /^Contact note|preference|^Working style|End-of-turn|tmux status bar/i],
 ];
-// scopes.json in the memory dir wins: [[scope, "regex"], …] — same shape, ordered, first match wins.
 const SCOPES_FILE = path.join(MEM, "scopes.json");
 const RULES = fs.existsSync(SCOPES_FILE)
   ? JSON.parse(fs.readFileSync(SCOPES_FILE, "utf8")).map(([scope, pattern]) => [
@@ -72,16 +66,14 @@ const DESCRIPTION = {
 };
 const MAX = 8000;
 
-// --- bucket --------------------------------------------------------------
 const buckets = new Map();
 for (const s of sections) {
   const scope = scopeOf(s.title);
-  if (scope === "core" && /^Standing rules/.test(s.title)) continue; // stays inline
+  if (scope === "core" && /^Standing rules/.test(s.title)) continue;
   if (!buckets.has(scope)) buckets.set(scope, []);
   buckets.get(scope).push({ ...s, scope });
 }
 
-// oversized topics: split on headings, then on paragraphs, so no body is a blob
 function carve(t) {
   if (t.body.length <= MAX) return [{ ...t, file: `${slug(t.title)}.md` }];
   let parts = t.body.split(/^(?=#{1,3} )/m);
@@ -116,7 +108,6 @@ function carve(t) {
 }
 for (const [scope, list] of buckets) buckets.set(scope, list.flatMap(carve));
 
-// --- plan ----------------------------------------------------------------
 const inline = sections.filter((s) => /^Standing rules/.test(s.title));
 let moved = 0;
 console.log(`source ${raw.length} chars, ${sections.length} sections`);
@@ -140,7 +131,6 @@ if (!APPLY) {
   process.exit(0);
 }
 
-// --- write ---------------------------------------------------------------
 const today = new Date().toISOString().slice(0, 10);
 const oneLine = (text) => {
   const first =
