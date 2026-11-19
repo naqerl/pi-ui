@@ -16,7 +16,6 @@ function unknownSchema(schema: unknown, reason: string): TSchema {
   return Type.Unknown(isRecord(schema) ? schemaOptions(schema) : {});
 }
 
-/** Keywords TypeBox can carry straight through to the model. `format` is deliberately dropped. */
 function schemaOptions(schema: JsonSchema): Record<string, unknown> {
   const options: Record<string, unknown> = {};
   for (const key of [
@@ -61,10 +60,6 @@ function copyArrayOptions(schema: JsonSchema, options: Record<string, unknown>):
   }
 }
 
-/**
- * Convert an MCP tool's JSON Schema to TypeBox. Only the shapes MCP servers emit are
- * needed; anything else becomes `Unknown` so one odd tool never stops boot.
- */
 export function jsonSchemaToTypeBox(schema: unknown): TSchema {
   if (!isRecord(schema)) return unknownSchema(schema, "schema is not an object");
 

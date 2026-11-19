@@ -24,7 +24,7 @@ import { CheckIcon, CloseIcon, MoreIcon, MoreVerticalIcon, PlusIcon, RefreshIcon
 import { STACK_4, STACK_8 } from "./lib/spacing";
 import { cn } from "./lib/utils";
 import { MediaViewer } from "./MediaViewer";
-import { InlineMarkdown, Markdown } from "./markdown";
+import { InlineMarkdown, Markdown, plainInline } from "./markdown";
 import { mediaUrl } from "./media-client";
 import type { ProjectSuggestion } from "./ProjectSuggestions";
 import { SECTION_BAR_ICON_BUTTON, SECTION_BAR_LABEL, SectionBar } from "./SectionBar";
@@ -48,7 +48,6 @@ export interface TaskDetailModel {
   state: TaskState;
   trace: TaskTrace | undefined;
   wide: boolean;
-  /** This task's plan agent currently has a live run. */
   planning: boolean;
   statusPending: boolean;
   notice: string | null;
@@ -164,32 +163,25 @@ function TitleField({ model, className }: { model: TaskDetailModel; className?: 
   }
   return (
     <div className={cn("w-full min-w-0", STACK_4)}>
-      {/* biome-ignore lint/a11y/useSemanticElements: the read-only markdown is replaced by a textarea when focused. */}
-      <div
-        role="textbox"
-        aria-readonly="true"
-        aria-label="Task title"
-        tabIndex={0}
+      <h2
         data-testid="task-title"
         className={cn(
-          "min-w-0 cursor-text outline-none focus-visible:ring-1 focus-visible:ring-foreground",
+          "relative min-w-0 text-base font-semibold leading-5 [overflow-wrap:anywhere]",
           className,
         )}
-        onFocus={() => {
-          setTitleDraft(task.title);
-          setTitleError(null);
-          setEditingTitle(true);
-        }}
       >
-        <h2
-          className={cn(
-            "min-w-0 text-base font-semibold leading-5 [overflow-wrap:anywhere]",
-            className,
-          )}
-        >
-          <InlineMarkdown text={task.title} />
-        </h2>
-      </div>
+        <button
+          type="button"
+          aria-label={plainInline(task.title)}
+          className="absolute inset-0 w-full cursor-text rounded-none outline-none focus-visible:ring-1 focus-visible:ring-foreground"
+          onFocus={() => {
+            setTitleDraft(task.title);
+            setTitleError(null);
+            setEditingTitle(true);
+          }}
+        />
+        <InlineMarkdown text={task.title} />
+      </h2>
       {titleError !== null && <ErrorLine>{titleError}</ErrorLine>}
     </div>
   );
@@ -399,14 +391,12 @@ function BodyField({ model, fill }: { model: TaskDetailModel; fill?: boolean }) 
     );
   }
   return (
-    // biome-ignore lint/a11y/useSemanticElements: the body keeps its markdown descendants instead of becoming a fieldset.
-    <div
+    <fieldset
       data-testid="task-body-section"
-      role="group"
       aria-label="Task body"
       {...{ tabIndex: 0 }}
       className={cn(
-        "min-w-0 cursor-text outline-none focus-visible:ring-1 focus-visible:ring-foreground",
+        "m-0 min-w-0 cursor-text border-0 p-0 outline-none focus-visible:ring-1 focus-visible:ring-foreground",
         STACK_4,
         grow && "min-h-32 flex-1",
       )}
@@ -416,7 +406,7 @@ function BodyField({ model, fill }: { model: TaskDetailModel; fill?: boolean }) 
         }
         beginBodyEdit();
       }}
-      onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
+      onKeyDown={(event: KeyboardEvent<HTMLFieldSetElement>) => {
         if (event.target !== event.currentTarget) return;
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
@@ -446,7 +436,7 @@ function BodyField({ model, fill }: { model: TaskDetailModel; fill?: boolean }) 
         )}
         <DecisionActions model={model} />
       </div>
-    </div>
+    </fieldset>
   );
 }
 
@@ -940,7 +930,6 @@ function hasLeftoverMeta(model: TaskDetailModel): boolean {
   );
 }
 
-/** The one place a proposal or plan draft is approved or dismissed. */
 function DecisionActions({ model }: { model: TaskDetailModel }) {
   const { draft, proposed, title, onApprove, onDismiss } = model;
   if (!draft && !proposed) return null;
@@ -1052,9 +1041,6 @@ const TAB_INDEX = { plan: 0, chat: 1 } as const;
 
 function MobileDetail({ model }: { model: TaskDetailModel }) {
   const [tab, setTab] = useState<"plan" | "chat">(() => linkedTab(model.task.id));
-  // The same pager that drives the app's pages, nested in the detail body. It
-  // owns the swipe-to-tab state machine; `tab` stays the label TabBar and the
-  // hash link read.
   const tabs = usePager(2, TAB_INDEX[tab], { nested: true, keyboard: false });
   const lastTab = useRef(tabs.page);
 
@@ -1072,8 +1058,6 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
     return () => window.removeEventListener("hashchange", sync);
   }, [model.task.id, tabs.setPage]);
 
-  // A committed tab change is worth a tap of haptics; the first paint and a
-  // snap back to the current tab stay silent.
   useEffect(() => {
     if (lastTab.current === tabs.page) return;
     lastTab.current = tabs.page;

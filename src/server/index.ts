@@ -111,14 +111,11 @@ const taskActivity = new TaskActivityTracker(
 );
 await taskActivity.load();
 taskActivity.observeLedger(taskStore.ledger().tasks);
-/** The heartbeat carries the retry budget, so a client freezes animation on the same clock. */
 function livenessFrame(): { at: string; quietAfterMs: number } {
   return { at: new Date().toISOString(), quietAfterMs: retryBudgetMs() };
 }
 
-/** Filled once the task-agent manager exists; before that no plan run can be live. */
 let planningTaskIds = (): string[] => [];
-/** The ledger as clients see it: tasks plus what the runs measured and planned for them. */
 function taskView(ledger: TaskLedger = taskStore.ledger()): TaskLedger {
   const planning = planningTaskIds();
   const live = new Set(planning);
@@ -165,8 +162,6 @@ if (!Number.isInteger(port) || port < 0 || port > 65535) {
   throw new Error(`Invalid PORT: ${process.env.PORT}`);
 }
 
-// Install billion-context before the durable harness exists, so the first
-// provider request already goes through the in-process wire engine.
 process.env.BILI_PI_INLINE ??= "1";
 const bili = await installBillionContextInline({
   currentPath: resolve(cwd, process.env.DATA_DIR?.trim() || "data", "current.json"),
@@ -271,7 +266,6 @@ memoryCheckpoints = new SnapshotController(
   memorySnapshot,
   instructions,
 );
-/** The browser suite may read the live instructions and drive a memory checkpoint. */
 const e2eMemoryHook = process.env.PI_E2E_DATA_DIR !== undefined;
 const hub = new StreamHub();
 taskBridge.publish = (ledger) => {
@@ -279,7 +273,6 @@ taskBridge.publish = (ledger) => {
   hub.broadcast({ event: "tasks", data: taskView(ledger) });
   dashboard.broadcast();
 };
-// Tool calls arrive in bursts; one refresh per half second keeps the tasks page live enough.
 let activityTimer: NodeJS.Timeout | undefined;
 taskActivity.onChange(() => {
   if (activityTimer !== undefined) return;
@@ -337,14 +330,11 @@ boot.mcp.setLiveIdCancel((stableId) => {
   events.cancel(stableId);
 });
 boot.mcp.setLiveStateLookup((stableId) => {
-  // Match the Events page's health rule: opening/reconnecting are recovering,
-  // not live, and a dead row must stop counting as declared-live immediately.
   const row = events.findByStableId(stableId);
   if (row === undefined) return false;
   return row.state === "active";
 });
 boot.mcp.setSubscriptionConfigListener(() => {
-  // A declaration write or a reload is membership news for every open tab.
   hub.broadcast({ event: "mcp.status", data: boot.mcp.status });
   hub.broadcast({ event: "mcp.events", data: events.state });
 });
@@ -358,7 +348,6 @@ const drainGenerationClears = (): void => {
   for (const stableId of events.takeGenerationClears()) forgetMcpGeneration(stableId);
 };
 const generationRefreshes = new Map<string, Promise<void>>();
-/** An adapter reconnect can reuse its protocol session; refresh before its events. */
 const refreshGeneration = (server: string): Promise<void> => {
   const existing = generationRefreshes.get(server);
   if (existing !== undefined) return existing;
@@ -400,24 +389,16 @@ const refreshGenerationForStatus = (notice: { customType?: string; details?: unk
   for (const server of servers) void refreshGeneration(server);
 };
 boot.mcp.setObserver((notice) => {
-  // Event batches cross the durable outbox boundary in the message sink below.
-  // Never advance delivered IDs/cursors before their retryable text is on disk.
   if (notice.customType === "mcp-events") return;
   const previous = events.state;
   const changed = events.ingest(notice);
   drainGenerationClears();
   refreshGenerationForStatus(notice);
-  // A protocol connection can clear a boot failure, so keep the live status
-  // in every tab instead of leaving the snapshot from startup on screen.
   hub.broadcast({ event: "mcp.status", data: boot.mcp.status });
   if (events.state.revision !== previous.revision) {
-    // A replay can change the visible log without being news, so broadcast
-    // any state change but only submit a turn when `changed` says it is new.
     hub.broadcast({ event: "mcp.events", data: events.state });
   }
   if (!changed) {
-    // A pure replay has no chat notice. Do not submit its extension message,
-    // or it would wake the model for history that was already announced.
     return notice.customType === "mcp-events" ? false : undefined;
   }
   return undefined;
@@ -444,8 +425,6 @@ const taskAgents = new TaskAgentManager({
   memory: { store: memory, snapshot: memorySnapshot },
   jobs,
 });
-// Do not hold HTTP or the main chat behind sessions that were live at the last stop;
-// shutdown awaits this promise so an in-flight open cannot race the close.
 const restoring = taskAgents.restore().catch((error: unknown) => {
   console.error("[task-agent] could not restore live plan turns", error);
   return [] as string[];
@@ -510,7 +489,6 @@ jobs.setNotifier((job, tail) => {
     void delegates
       .submitJobNotice(job.owner.runId, text)
       .then((delivered) => {
-        // A run that already ended is not woken for a job result; the activity row remains.
         if (!delivered) return chat.recordNotice(text);
       })
       .catch((error: unknown) => {
@@ -522,7 +500,6 @@ jobs.setNotifier((job, tail) => {
     void taskAgents
       .submitJobNotice(job.owner.taskId, text)
       .then((delivered) => {
-        // A closed plan pane is not woken for a job result; the activity row remains.
         if (!delivered) return chat.recordNotice(text);
       })
       .catch((error: unknown) => {
@@ -558,8 +535,6 @@ boot.mcp.setSubmit((text, options) => {
   const envelope = mcpEventEnvelope(text);
   if (envelope !== null) {
     mcpIntake.enqueue(async () => {
-      // A reconnect status may have started a generation read. Let it finish
-      // before judging novelty, so the renumbered first event uses the new key.
       const eventServers = new Set<string>();
       for (const item of envelope.items) {
         if (isRecord(item) && typeof item.server === "string") eventServers.add(item.server);
@@ -569,10 +544,6 @@ boot.mcp.setSubmit((text, options) => {
         return pending === undefined ? [] : [pending];
       });
       if (refreshes.length > 0) await Promise.all(refreshes);
-      // A stream can hand over its adapter's retained history, and a subscribe
-      // can hand us a retained history. Age first, then bound: an old sibling
-      // must not occupy a slot or evict a fresh event. The feed applies the same
-      // gate again when it ingests the original batch, so its gap count matches.
       const aged = events.filterStaleEvents(envelope.items, false);
       const batch = boundMcpEventBatch(aged.items);
       const dropped = envelope.dropped + aged.dropped + batch.dropped;
@@ -581,20 +552,9 @@ boot.mcp.setSubmit((text, options) => {
         .filter((item) => !mcpOutbox.has(events.eventKey(item)));
       const boundedNovel = boundMcpEventBatch(novel);
       const deliveryDropped = dropped + boundedNovel.dropped;
-      // A batch made only of events older than the grace has no news to report.
-      // The feed still records the gap and the debug log, but the stream's old
-      // history must not create a chat entry (or a turn) on its own.
       const staleOnly = envelope.dropped === 0 && aged.dropped > 0 && aged.items.length === 0;
-      // Persist a gap-only batch when something other than age was dropped:
-      // missing data must stay visible in chat too.
       if (!staleOnly && (boundedNovel.items.length > 0 || deliveryDropped > 0)) {
-        // Adapter items have no generation of their own. Carry the current one
-        // into the delivery copy so outbox merges cannot fold a new epoch into
-        // an old pending text just because the cursor text is the same.
         const deliveryItems = boundedNovel.items.map((item) => events.withEventGeneration(item));
-        // A restore may be replaying a continuous backlog. Give it one bounded
-        // chip plus a gap instead of one busy delivery per replayed event; the
-        // outbox merger cannot be relied on when batches arrive continuously.
         const restored = events.isRestoreBatch(deliveryItems);
         const texts = restored
           ? mcpRestoreDeliveryTexts({
@@ -621,12 +581,6 @@ boot.mcp.setSubmit((text, options) => {
     return;
   }
   if (isMcpNotice(text)) {
-    // The observer above already ingested this notice. A status that names no
-    // tracked subscription is not news about this app: the adapter mints a new
-    // id per connection, so a dead pre-restart generation must stay silent even
-    // when it is the same stream. With no id to attribute, the existing
-    // `(server, name)` supersession rule still decides. Only authentic notices
-    // reach the outbox.
     const delivered = acceptMcpStatusNotice(events, text, options.details, options.customType);
     if (delivered === null) return;
     mcpIntake.enqueue(async () => {
@@ -692,8 +646,6 @@ app.delete("/api/push/subscribe", async (c) => {
 
 app.get("/api/push/status", async (c) => c.json(await pushStatus()));
 
-// The browser suite has no real push service. In its shards the server records
-// each delivered payload here, and the test asserts what the notification said.
 if (e2ePushSinkEnabled()) {
   const sink = () => {
     const notifications = readPushSink();
@@ -848,8 +800,6 @@ app.delete("/api/mcp/subscriptions/*", async (c) => {
   if (stableId.length === 0) return c.text("stableId is required", 400);
   const live = events.findByStableId(stableId);
   const liveIds = events.adapterIdsForStableId(stableId);
-  // A pending or missing-server declaration has no cache row and no feed row;
-  // deleting its line still succeeded even though nothing was cancelled.
   const declaredBefore =
     boot.mcp.status.subscriptionConfig?.entries.some((entry) => entry.stableId === stableId) ??
     false;
@@ -928,7 +878,6 @@ app.delete("/api/dashboard/widgets/:id", async (c) => {
 app.post("/api/dashboard/viewer", async (c) => {
   let body: unknown;
   try {
-    // sendBeacon posts text/plain, so parse the raw text.
     body = JSON.parse(await c.req.text());
   } catch {
     return c.text("Expected a JSON body", 400);
@@ -1059,7 +1008,6 @@ app.post("/api/tasks", async (c) => {
       try {
         await taskAgents.submit(created.id, created.body ?? title);
       } catch (error) {
-        // The draft still exists; its chat shows the failed run instead of losing the task.
         console.error(`[pi] could not start the plan run for ${created.id}`, error);
       }
       return c.json(taskView(), 201);
@@ -1151,7 +1099,6 @@ app.patch("/api/tasks/:id", async (c) => {
     if (!parsed.ok) return c.text(parsed.error, 400);
     patch.releaseReason = parsed.reason;
   }
-  // Evidence is optional here: a human ticking a task off may have nothing to point at.
   if ("completion" in body && body.completion !== null && body.completion !== undefined) {
     if (patch.status !== "done") return c.text('completion requires status "done"', 400);
     const parsed = parseCompletion(body.completion);
@@ -1190,8 +1137,6 @@ app.delete("/api/tasks/:id", async (c) => {
   try {
     const id = c.req.param("id");
     const ledger = await taskStore.remove(id);
-    // Close the planning session in the background so deleting a task
-    // stays a ledger write, even if the harness is still shutting down.
     void taskAgents.remove(id).catch((error: unknown) => {
       console.error(`[pi] could not remove the task agent for ${id}`, error);
     });
@@ -1466,7 +1411,6 @@ app.post("/api/queue/:id", async (c) => {
   return c.text('Action must be "cancel" or "steer"', 400);
 });
 
-// Takes back a steer the run has not reached yet; a delivered one is in the transcript and stays.
 app.post("/api/steer/:id", async (c) => {
   const id = c.req.param("id");
   let body: unknown;
@@ -1505,8 +1449,6 @@ app.post("/api/stop", async (c) => {
 });
 
 app.get("/api/stream", (c) => {
-  // State changes are written as they happen. A buffering reverse proxy would otherwise
-  // hold a small frame until the next heartbeat, so tell it not to buffer this stream.
   c.header("X-Accel-Buffering", "no");
   return streamSSE(c, async (stream) => {
     let tail = Promise.resolve();
@@ -1524,10 +1466,7 @@ app.get("/api/stream", (c) => {
     };
     hub.add(client);
 
-    // Keepalive only: a change is pushed by its own `hub.broadcast`, not by this tick.
     const heartbeat = setInterval(() => {
-      // The event, not the comment alone, tells the browser the server's own
-      // liveness is still current and clears a stale connection header.
       void enqueue(async () => {
         await stream.write(": heartbeat\n\n");
         await stream.writeSSE({
@@ -1635,10 +1574,6 @@ app.get("/activity", serveIndex);
 app.get("/activity/", serveIndex);
 app.get("/events", serveIndex);
 app.get("/events/", serveIndex);
-// A push carries a page route, so a document request to /tasks or /chat must
-// boot the app shell and let the client pager take over. A task detail route is
-// the path alias of the task-plan hash route. Unknown paths still fall through
-// to serveStatic and a real 404.
 app.get("/tasks/:id", serveIndex);
 app.get("/tasks/:id/", serveIndex);
 for (const id of PAGE_IDS) {
@@ -1713,11 +1648,6 @@ const server = serve({ fetch: app.fetch, port }, (info) => {
   console.log(`tools: ${toolParts.join(" + ")}`);
 });
 
-/**
- * One line every five minutes naming what the process holds. The heap sits under a
- * container-derived cap, and reaching it turned a send into a 700 ms GC pause; these
- * numbers are what tell the next report of slowness apart from a guess.
- */
 const MEMORY_LOG_MS = 5 * 60_000;
 const megabytes = (bytes: number) => Math.round(bytes / 1_048_576);
 function logMemory(): void {

@@ -283,7 +283,6 @@ test("the planning questions card never steals the transcript", {
   await expect(screen.getByTestId("task-agent-chat")).toBeVisible();
   const taskId = await taskIdFor(browser, title);
 
-  // Make the plan transcript taller than the phone viewport before asking anything.
   for (let index = 0; index < 6; index += 1) {
     expect(await postPlanMessage(browser, taskId, `Planning row ${index} for ${title}`)).toBe(202);
   }
@@ -301,7 +300,6 @@ test("the planning questions card never steals the transcript", {
   await expect(screen.getByTestId("working-status")).toHaveText("idle", { timeout: 60_000 });
   await expect(screen.getByTestId("task-agent-status")).toHaveCount(0);
 
-  // The run's only status is the composer dock row; a run must not add another.
   await scrollTranscript(browser, 0.45);
   const beforePlanRun = await readTranscript(browser);
   expect(beforePlanRun).not.toBeNull();
@@ -346,7 +344,6 @@ test("the planning questions card never steals the transcript", {
   expect(afterPlanRun.composerHeight).toBe(beforePlanRun.composerHeight);
   await expect(screen.getByTestId("task-agent-status")).toHaveCount(0);
 
-  // 1. Arrival while reading the middle: the card appears below, the offset does not move.
   await scrollTranscript(browser, 0.45);
   const beforeArrival = await readTranscript(browser);
   expect(beforeArrival).not.toBeNull();
@@ -378,14 +375,12 @@ test("the planning questions card never steals the transcript", {
   expect(afterArrival.visibleMessageIds).toContain(beforeArrival.anchorId);
   expect(afterArrival.panelSetId).not.toBeNull();
 
-  // 3. The questions card takes its natural height: no cap, no inner scrollbar.
   expect(afterArrival.panel).not.toBeNull();
   if (afterArrival.panel === null) return;
   expect(afterArrival.panel.scrollHeight).toBe(afterArrival.panel.clientHeight);
   expect(afterArrival.panelOverflow).toEqual([]);
   expect(afterArrival.scrollHeight).toBeGreaterThan(afterArrival.clientHeight);
 
-  // 4. Answering while detached rewrites no transcript offset.
   const beforeAnswer = await readTranscript(browser);
   expect(beforeAnswer).not.toBeNull();
   if (beforeAnswer === null || afterArrival.panelSetId === null) return;
@@ -405,7 +400,6 @@ test("the planning questions card never steals the transcript", {
   expect(afterAnswer.scrollTop).toBe(beforeAnswer.scrollTop);
   expect(afterAnswer.visibleMessageIds).toContain(beforeAnswer.anchorId);
 
-  // 2. Arrival while at the bottom still follows the new content, as before.
   await scrollTranscript(browser, 1);
   await expect
     .poll(async () => (await readTranscript(browser))?.distance ?? 99)
@@ -438,8 +432,6 @@ test("the planning questions card never steals the transcript", {
   expect(afterBottomArrival.panel.scrollHeight).toBe(afterBottomArrival.panel.clientHeight);
   expect(afterBottomArrival.panelOverflow).toEqual([]);
 
-  // 5. On the phone the card's end is reachable above the composer, and the
-  // pane, not the card, is what scrolls.
   expect(afterBottomArrival.panel.bottom).toBeLessThanOrEqual(
     afterBottomArrival.scrollerBottom + 1,
   );
@@ -581,7 +573,6 @@ test("leaving planning clears the pending questions", {
     }, taskId);
   await expect.poll(hasQuestions, { timeout: 60_000 }).toBe(true);
 
-  // Leaving planning is what the operator sees when the draft becomes open work.
   expect(
     await browser.evaluate(
       async (id) =>
@@ -604,7 +595,6 @@ test("the plan chat renders the same activity surface as the chat page", {
   timeout: 300_000,
 }, async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 1280, height: 900 });
-  // The tool sleeps so the run stays live long enough to sample its clock.
   const prompt = `TOOLCALLS ${JSON.stringify([
     { name: "bash", arguments: { command: "sleep 4; printf plan-activity" } },
   ])}`;
@@ -639,7 +629,6 @@ test("the plan chat renders the same activity surface as the chat page", {
   expect(await postPlanMessage(browser, taskId, prompt)).toBe(202);
   const transcript = screen.getByTestId("task-agent-transcript");
   await expect(transcript.getByTestId("run-info")).toBeVisible({ timeout: 60_000 });
-  // A plan run is live data: its duration counts up instead of freezing until the next frame.
   const liveSummary = transcript.getByTestId("run-info-summary");
   const before = await liveSummary.textContent();
   await new Promise((resolve) => setTimeout(resolve, 1_200));

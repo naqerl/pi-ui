@@ -1,4 +1,3 @@
-// biome-ignore-all lint/suspicious/noArrayIndexKey: Markdown tokens have no ids; their order is the identity.
 import { Lexer, lexer, type Token, type Tokens } from "marked";
 import {
   Fragment,
@@ -40,8 +39,30 @@ const alignClasses: Record<NonNullable<Tokens.Table["align"][number]>, string> =
   right: "text-right",
 };
 
-/** Inside a button (a task card) links cannot be interactive, so they render as styled text. */
 type InlineMode = "interactive" | "static";
+
+interface KeyedItem<T> {
+  item: T;
+  key: string;
+}
+
+function keyedItems<T>(
+  items: readonly T[],
+  prefix: string,
+  identity: (item: T) => string,
+): KeyedItem<T>[] {
+  const occurrences = new Map<string, number>();
+  return items.map((item) => {
+    const base = `${prefix}-${identity(item)}`;
+    const occurrence = (occurrences.get(base) ?? 0) + 1;
+    occurrences.set(base, occurrence);
+    return { item, key: `${base}-${occurrence}` };
+  });
+}
+
+export function markdownTokenKeys(tokens: readonly Token[], prefix: string): string[] {
+  return keyedItems(tokens, prefix, (token) => token.type).map(({ key }) => key);
+}
 
 function inline(
   tokens: readonly Token[] | undefined,
@@ -49,8 +70,8 @@ function inline(
   mode: InlineMode = "interactive",
 ): ReactNode[] {
   const list = tokens ?? [];
-  return list.map((token, index) =>
-    inlineToken(token, `${keyPrefix}-${index}`, index === 0 || index === list.length - 1, mode),
+  return keyedItems(list, keyPrefix, (token) => token.type).map(({ item, key }, position) =>
+    inlineToken(item, key, position === 0 || position === list.length - 1, mode),
   );
 }
 
@@ -140,7 +161,9 @@ function inlineToken(token: Token, key: string, edge: boolean, mode: InlineMode)
 }
 
 function blocks(tokens: readonly Token[], keyPrefix: string): ReactNode[] {
-  return tokens.map((token, index) => blockToken(token, `${keyPrefix}-${index}`));
+  return keyedItems(tokens, keyPrefix, (token) => token.type).map(({ item, key }) =>
+    blockToken(item, key),
+  );
 }
 
 function blockToken(token: Token, key: string): ReactNode {
@@ -189,11 +212,13 @@ function blockToken(token: Token, key: string): ReactNode {
               : "my-sm list-disc space-y-sm pl-2xl marker:text-muted-foreground"
           }
         >
-          {node.items.map((item, index) => (
-            <li key={`${key}-item-${index}`} className="min-w-0 pl-sm">
-              {listItem(item, `${key}-item-${index}`)}
-            </li>
-          ))}
+          {keyedItems(node.items, `${key}-item`, (item) => item.type).map(
+            ({ item, key: itemKey }) => (
+              <li key={itemKey} className="min-w-0 pl-sm">
+                {listItem(item, itemKey)}
+              </li>
+            ),
+          )}
         </Tag>
       );
     }
@@ -204,27 +229,33 @@ function blockToken(token: Token, key: string): ReactNode {
           <table className="w-max min-w-full border-collapse text-left text-xs [overflow-wrap:normal]">
             <thead>
               <tr className="border-b border-border bg-muted/50">
-                {node.header.map((cell, index) => (
-                  <th
-                    key={`${key}-h-${index}`}
-                    className={`max-w-[24rem] border border-border px-lg py-sm font-semibold break-words ${alignClass(cell.align)}`}
-                  >
-                    {inline(cell.tokens, `${key}-h-${index}`)}
-                  </th>
-                ))}
+                {keyedItems(node.header, `${key}-h`, (cell) => cell.text).map(
+                  ({ item: cell, key: cellKey }) => (
+                    <th
+                      key={cellKey}
+                      className={`max-w-[24rem] border border-border px-lg py-sm font-semibold break-words ${alignClass(cell.align)}`}
+                    >
+                      {inline(cell.tokens, cellKey)}
+                    </th>
+                  ),
+                )}
               </tr>
             </thead>
             <tbody>
-              {node.rows.map((row, rowIndex) => (
-                <tr key={`${key}-r-${rowIndex}`} className="border-b border-border">
-                  {row.map((cell, cellIndex) => (
-                    <td
-                      key={`${key}-r-${rowIndex}-c-${cellIndex}`}
-                      className={`max-w-[24rem] border border-border px-lg py-sm align-top break-words ${alignClass(cell.align)}`}
-                    >
-                      {inline(cell.tokens, `${key}-r-${rowIndex}-c-${cellIndex}`)}
-                    </td>
-                  ))}
+              {keyedItems(node.rows, `${key}-r`, (cells) =>
+                cells.map((cell) => cell.text).join("\u0000"),
+              ).map(({ item: cells, key: rowKey }) => (
+                <tr key={rowKey} className="border-b border-border">
+                  {keyedItems(cells, `${rowKey}-c`, (cell) => cell.text).map(
+                    ({ item: cell, key: cellKey }) => (
+                      <td
+                        key={cellKey}
+                        className={`max-w-[24rem] border border-border px-lg py-sm align-top break-words ${alignClass(cell.align)}`}
+                      >
+                        {inline(cell.tokens, cellKey)}
+                      </td>
+                    ),
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -269,13 +300,13 @@ function listItem(item: Tokens.ListItem, key: string): ReactNode {
           className="mr-lg align-middle accent-foreground"
         />
       )}
-      {item.tokens.map((token, index) =>
+      {keyedItems(item.tokens, key, (token) => token.type).map(({ item: token, key: tokenKey }) =>
         token.type === "text" ? (
-          <Fragment key={`${key}-${index}`}>
-            {token.tokens === undefined ? token.text : inline(token.tokens, `${key}-${index}`)}
+          <Fragment key={tokenKey}>
+            {token.tokens === undefined ? token.text : inline(token.tokens, tokenKey)}
           </Fragment>
         ) : (
-          blockToken(token, `${key}-${index}`)
+          blockToken(token, tokenKey)
         ),
       )}
     </>
@@ -288,9 +319,7 @@ async function copyText(text: string): Promise<boolean> {
       await navigator.clipboard.writeText(text);
       return true;
     }
-  } catch {
-    // Fall back to a selection copy below; plain-http hosts have no clipboard API.
-  }
+  } catch {}
   const field = document.createElement("textarea");
   field.value = text;
   field.setAttribute("readonly", "");
@@ -389,9 +418,7 @@ function safeHref(value: string): string | undefined {
     if (url.protocol === "http:" || url.protocol === "https:" || url.protocol === "mailto:") {
       return value;
     }
-  } catch {
-    // Fall through and render the link label without an anchor.
-  }
+  } catch {}
   return undefined;
 }
 
@@ -560,8 +587,6 @@ function CodeSpan({ text, mode }: { text: string; mode: InlineMode }) {
 
 export function Markdown({ text }: { text: string }) {
   const tokens = useMemo(() => lexer(normalize(text)), [text]);
-  // overflow-wrap:anywhere lets long hashes, URLs and inline code break inside a bubble;
-  // code blocks and tables opt back out and scroll sideways instead.
   return (
     <div className="min-w-0 max-w-full space-y-lg [overflow-wrap:anywhere]">
       {blocks(tokens, "md")}
@@ -569,17 +594,11 @@ export function Markdown({ text }: { text: string }) {
   );
 }
 
-/**
- * One-line Markdown for task titles: bold, italic, strikethrough, inline code and links.
- * Block syntax stays literal, line breaks are kept, and links are plain styled text because
- * the title sits inside the task card's button.
- */
 export function InlineMarkdown({ text }: { text: string }) {
   const tokens = useMemo(() => Lexer.lexInline(text), [text]);
   return <>{inline(tokens, "imd", "static")}</>;
 }
 
-/** The text a reader sees in {@link InlineMarkdown}, for labels and titles. */
 export function plainInline(text: string): string {
   const flatten = (tokens: readonly Token[] | undefined): string =>
     (tokens ?? [])

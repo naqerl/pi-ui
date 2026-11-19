@@ -11,12 +11,6 @@ import type { Static, TSchema } from "typebox";
 import { MCP_STATUS_HEAD } from "../shared/notices.js";
 import type { ExtensionNotice } from "./mcp-events.js";
 
-/**
- * The small part of pi's extension API that the MCP adapter and pi-mcp-events
- * use. pi-ui has no general extension loader: tools registered here are
- * installed into the durable registry and messages go through the chat's
- * durable submit path.
- */
 export interface DurableExtensionApi {
   readonly events: EventEmitter;
   registerTool(tool: DurableExtensionTool): void;
@@ -63,14 +57,12 @@ interface DurableExtensionContent {
 export interface DurableSendOptions {
   readonly triggerTurn?: boolean;
   readonly deliverAs?: "steer" | "followUp" | "nextTurn";
-  /** Extension notice identity, forwarded so the sink can tell notices apart. */
   readonly customType?: string;
   readonly details?: unknown;
 }
 
 export type DurableExtensionSink = (text: string, options: DurableSendOptions) => void;
 
-/** ` : 2 events from stub` style detail for the one-line notice log. */
 function noticeSummary(details: unknown): string {
   if (typeof details !== "object" || details === null) return "";
   const record = details as Record<string, unknown>;
@@ -102,10 +94,6 @@ function messageText(message: DurableExtensionMessage): string {
     .join("\n");
 }
 
-/**
- * A deliberately small ExtensionAPI stand-in. It exposes only registration,
- * an event bus, handler hooks, and durable message submission.
- */
 export class DurableExtensionShim implements DurableExtensionApi {
   readonly events = new EventEmitter();
   private readonly installed: ToolRegistration[] = [];
@@ -123,7 +111,6 @@ export class DurableExtensionShim implements DurableExtensionApi {
     this.observer = observer;
   }
 
-  /** Add runtime-only metadata to a tool notice before it reaches the feed. */
   setNoticeEnricher(
     enricher: ((notice: ExtensionNotice) => ExtensionNotice | Promise<ExtensionNotice>) | undefined,
   ): void {
@@ -152,7 +139,6 @@ export class DurableExtensionShim implements DurableExtensionApi {
       description: tool.description,
       parameters: tool.parameters,
       ...(tool.promptSnippet === undefined ? {} : { promptSnippet: tool.promptSnippet }),
-      // MCP tools stay behind tool_search, as the hand-rolled bridge did.
       deferred: true,
       callers: ["model", "tools"],
       execute: async (args: Static<TSchema>, api, context) => {
@@ -163,8 +149,6 @@ export class DurableExtensionShim implements DurableExtensionApi {
             details: {
               args,
               result: result.details ?? null,
-              // Kept so the runtime can tell a failed tool call from a
-              // successful one without the adapter's details shape.
               ...(result.isError === true ? { isError: true } : {}),
             },
           };
@@ -188,7 +172,6 @@ export class DurableExtensionShim implements DurableExtensionApi {
     this.extensionTools.set(tool.name, tool);
   }
 
-  /** Drop tools a reloaded extension no longer offers. */
   removeTools(names: readonly string[]): void {
     if (names.length === 0) return;
     const removed = new Set(names);
@@ -199,11 +182,6 @@ export class DurableExtensionShim implements DurableExtensionApi {
     for (const name of removed) this.extensionTools.delete(name);
   }
 
-  /**
-   * Invoke an extension tool directly. pi-mcp-events registers `mcp_events`
-   * this way, so boot-time restoration can subscribe with a stored cursor
-   * without going through the model or the durable tool registry.
-   */
   async callTool(name: string, params: unknown, signal?: AbortSignal): Promise<AgentToolResult> {
     if (this.closed) throw new Error("Extension API is closed");
     const tool = this.extensionTools.get(name);
@@ -217,12 +195,6 @@ export class DurableExtensionShim implements DurableExtensionApi {
     this.handlers.set(event, handlers);
   }
 
-  /**
-   * Bound, so an extension that keeps `pi.sendMessage` apart from `pi`, or
-   * gets an `Object.create(shim)` view, still reaches this observer and sink.
-   * Extensions call this from timers (pi-mcp-events batches for 500ms), where
-   * a throw would vanish, so every failure is logged here instead.
-   */
   readonly sendMessage = (
     message: DurableExtensionMessage,
     options: DurableSendOptions = {},
@@ -266,8 +238,6 @@ export class DurableExtensionShim implements DurableExtensionApi {
   };
 
   install(registry: Registry<ToolRegistration>): void {
-    // Install even when empty: a reload may have removed the last server, and
-    // the empty replacement is what drops its tools from the registry.
     registry.install(
       Object.freeze({
         name: "pi-ui-mcp-tools",

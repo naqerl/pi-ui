@@ -50,36 +50,23 @@ export interface AppRegistryOptions {
   readonly dataDir?: string;
   readonly bili?: BillionContextInline;
   readonly tasks: TaskBridge;
-  /** Background shell jobs. Without it, the job tools are not offered. */
   readonly jobs?: JobManager;
-  /** Sub-agent runs. Without it, the delegate tools are not offered. */
   readonly delegates?: DelegateManager;
-  /** The agent-editable dashboard page. Without it, the dashboard tools are not offered. */
   readonly dashboard?: DashboardManager;
-  /** The layered memory tree, its injected-snapshot cache and the write notice hook. */
   readonly memory?: {
     readonly store: MemoryStore;
     readonly snapshot?: SnapshotCache;
     readonly onWrite?: (record: MemoryWriteRecord) => void | Promise<void>;
   };
-  /** Diagrams the agent draws into the chat. Without it, the diagram tools are not offered. */
   readonly diagrams?: DiagramBridge;
-  /** Web push plus the chat chip for an explicit operator request. */
   readonly operator?: OperatorBridge;
-  /** Rebuild the chat session's own prompt or model catalog when `reload` is called. */
   readonly reload?: {
     readonly prompt?: () => Promise<{ readonly instructions: string; readonly changed: boolean }>;
     readonly models?: () => Promise<ModelCatalogReload>;
   };
 }
 
-/**
- * The registry the server boots with. MCP tools stay deferred; `tool_search`
- * is installed alongside them so loading a tool can expose it later. A legacy `piuiTaskId`
- * argument is still stripped before a tool runs, but no tool advertises it.
- */
 export async function createAppRegistry(options: AppRegistryOptions): Promise<AppRegistryBoot> {
-  // Every tool accepts and strips the legacy task id; see task-attribution.
   const registry = attributeTools(createRegistry());
   const taskTools = createTaskTools(options.tasks);
   registry.install(
@@ -141,8 +128,6 @@ export async function createAppRegistry(options: AppRegistryOptions): Promise<Ap
   const mcp = await startMcpRuntime(
     options.dataDir === undefined ? {} : { dataDir: options.dataDir },
   );
-  // A reload can add servers after boot, so keep the MCP extension installed
-  // even when the catalog starts empty and tool_search ready to expose it.
   mcp.install(registry);
   registry.install(createToolSearchExtension());
 

@@ -135,7 +135,6 @@ test("calls are charged to nobody without exactly one working task", () => {
   const tracker = new TaskActivityTracker(undefined, () => now);
   tracker.observeLedger([task("a"), task("b")]);
   tracker.runStarted();
-  // An old tag is ignored: it no longer decides attribution.
   assert.equal(tracker.toolStarted("bash", { command: "ls", [TASK_ID_PARAM]: "a" }), undefined);
   tracker.modelCall({ toolCalls: [{ arguments: { [TASK_ID_PARAM]: "a" } }], tokens: 100, cost: 1 });
   now += 1_000;

@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import type { ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { EventsView } from "../src/client/EventsView.js";
@@ -40,6 +41,34 @@ import type { Task } from "../src/shared/types.js";
 const dirs: string[] = [];
 let http: Server;
 let base = "";
+
+type ToolContext = Parameters<ToolRegistration["execute"]>[2];
+
+const toolContext = {
+  abortSignal: undefined,
+  telemetry: {
+    startSpan: async () => {
+      throw new Error("dashboard tool used telemetry");
+    },
+    addLink: () => undefined,
+    addEvent: () => undefined,
+    setAttributes: () => undefined,
+    setStatus: () => undefined,
+  },
+  value: () => undefined,
+  toString: () => "[dashboard tool test context]",
+} satisfies ToolContext;
+
+function toolApi(): ToolExecutionApi {
+  return new Proxy(
+    {},
+    {
+      get: (_target, property) => {
+        throw new Error(`dashboard tool used the execution api: ${String(property)}`);
+      },
+    },
+  ) as ToolExecutionApi;
+}
 
 before(async () => {
   http = createServer((req, res) => {
@@ -87,8 +116,6 @@ async function until(check: () => boolean, ms = 5000): Promise<void> {
 function widget(partial: Partial<Widget> & Pick<Widget, "kind" | "mapping">): Widget {
   return { id: "w", title: "W", source: { type: "static" }, ...partial } as Widget;
 }
-
-// ── mapping ──────────────────────────────────────────────────────────────
 
 test("path expressions pick fields, map arrays and index from either end", () => {
   const data = {
@@ -761,8 +788,6 @@ test("an older dashboard.json is not overwritten and records defaultVersion", as
   await first.flush();
 });
 
-// ── masking ──────────────────────────────────────────────────────────────
-
 test("token-looking strings are masked, ordinary ids are not", () => {
   const masked = maskSecrets(
     "auth Bearer abcdef0123456789xyz key ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 env s3cr3t-value-here",
@@ -777,8 +802,6 @@ test("token-looking strings are masked, ordinary ids are not", () => {
   assert.equal(maskSecrets(`commit ${sha}`), `commit ${sha}`);
   assert.equal(maskSecrets("web-1 running cx22"), "web-1 running cx22");
 });
-
-// ── poll isolation ───────────────────────────────────────────────────────
 
 function run(script: string, extra: Partial<PollRun> = {}): Promise<PollOutcome> {
   return runPollScript({ script, prev: null, env: {}, timeoutMs: 3000, maxBytes: 4096, ...extra });
@@ -820,12 +843,9 @@ test("throwing, crashing and oversized scripts fail cleanly", async () => {
   assert.match(big.ok ? "" : big.error, /cap/);
   const undefinedResult = await run("return undefined");
   assert.equal(undefinedResult.ok, true);
-  // The server is still fine afterwards.
   const after = await run("return 1 + 1");
   assert.deepEqual(after.ok && after.value, 2);
 });
-
-// ── manager ──────────────────────────────────────────────────────────────
 
 interface FakeHost extends DashboardHost {
   notices: string[];
@@ -898,7 +918,6 @@ test("polls run only while a client shows the dashboard", async () => {
   await new Promise((resolve) => setTimeout(resolve, 200));
   assert.ok(runner.calls <= stopped + 1, "polling stops when hidden");
 
-  // A viewer that stops reporting expires.
   dashboard.setViewer("tab-2", true);
   assert.equal(dashboard.polling(), true);
   await until(() => !dashboard.polling(), 2000);
@@ -941,11 +960,9 @@ test("failures keep the last value, back off and notify the agent once", async (
   assert.doesNotMatch(value?.error ?? "", /abcdef0123456789xyz/, "errors are masked");
   assert.equal(host.notices.length, 1);
   assert.match(host.notices[0] ?? "", /Widget "n" \(N\) failed 5 polls in a row/);
-  // After the 5th failure the wait doubles each time, so polls slow down.
   const calls = runner.calls;
   await new Promise((resolve) => setTimeout(resolve, 150));
   assert.ok(runner.calls - calls <= 2, `backed off: ${runner.calls - calls} more polls`);
-  // Recovery clears the error and re-arms the notice.
   fail = false;
   await until(() => dashboard.state().values.n?.error === undefined, 8000);
   assert.equal(dashboard.state().values.n?.failures, 0);
@@ -1213,20 +1230,22 @@ test("the tools return the first render so the agent can iterate", async () => {
   });
   await dashboard.load();
   dashboard.setHost(fakeHost());
-  const tools = Object.fromEntries(
-    createDashboardTools(dashboard).map((tool) => [tool.name, tool]),
-  );
-  assert.deepEqual(Object.keys(tools).sort(), [
+  const tools = createDashboardTools(dashboard);
+  assert.deepEqual(tools.map((tool) => tool.name).sort(), [
     "dashboard_get",
     "dashboard_layout",
     "dashboard_push",
     "dashboard_remove",
     "dashboard_upsert",
   ]);
-  const call = async (name: string, args: unknown) => {
-    // biome-ignore lint/suspicious/noExplicitAny: test harness for tool execute
-    const result = await (tools[name] as any).execute(args, {});
-    return { text: result.output[0].text as string, isError: result.isError === true };
+  type DashboardToolArgs = Parameters<(typeof tools)[number]["execute"]>[0];
+  const call = async (name: string, args: DashboardToolArgs) => {
+    const tool = tools.find((candidate) => candidate.name === name);
+    assert.ok(tool !== undefined);
+    const result = await tool.execute(args, toolApi(), toolContext);
+    const content = result.output?.[0];
+    const text = content !== undefined && "text" in content ? content.text : "";
+    return { text, isError: result.isError === true };
   };
   const wrong = await call("dashboard_upsert", {
     id: "servers",

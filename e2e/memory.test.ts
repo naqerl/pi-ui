@@ -570,7 +570,6 @@ test("a snapshot controller keeps instructions stable on a long-term write", asy
   );
   assert.ok(third.startsWith("BASE INSTRUCTIONS\n\n"));
 
-  // The cache still saw the write, so the next forced rebuild carries it.
   const fourth = await controller.refresh("compaction");
   assert.notEqual(fourth, third);
   assert.match(fourth, /compaction/);

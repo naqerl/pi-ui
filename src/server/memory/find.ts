@@ -29,9 +29,7 @@ export interface FindResult {
   readonly updated: string;
   readonly score: number;
   readonly snippet: string;
-  /** Matching term occurrences in the title and body. */
   readonly hits: number;
-  /** The first body line that matched, for the chat chip's provenance list. */
   readonly line: string;
 }
 
@@ -120,9 +118,7 @@ export async function findMemory(
   let usage: UsageState = { version: 1, hits: {} };
   try {
     usage = await store.readUsage();
-  } catch {
-    // a broken usage file must not stop search
-  }
+  } catch {}
   const now = options.now?.getTime() ?? Date.now();
 
   const ranked = documents
@@ -133,8 +129,6 @@ export async function findMemory(
         if (exact > 0) {
           score += (1 + Math.log(exact)) * idf(term) * EXACT_TERM_WEIGHT;
         } else {
-          // Prefix matching both ways: `verif` finds `verifier`, and a long query
-          // word still finds its shorter index term.
           for (const [word, count] of document.tokens) {
             if (word.startsWith(term) || term.startsWith(word)) {
               score += (1 + Math.log(count)) * idf(word) * PREFIX_TERM_WEIGHT;

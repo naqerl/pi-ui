@@ -1,8 +1,4 @@
 #!/usr/bin/env node
-// A real Streamable HTTP MCP server that models the two production incidents:
-// a server that forgets our session (drop-once), a server whose tool catalog
-// grows (grow), a server that is down during boot (down), plus the two
-// failures that must never trigger a re-initialize (method-not-found, 401).
 import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync } from "node:fs";
 import { createServer } from "node:http";
@@ -117,8 +113,6 @@ function createMcpServer(holder) {
         setTimeout(() => {
           void notify("notifications/events/active", { cursor: resumed });
         }, 10);
-        // Stay silent: the extension's 65 s heartbeat timeout starts the
-        // reconnect, which must carry this same cursor back to the server.
         await closed;
         return {};
       }
@@ -132,9 +126,6 @@ function createMcpServer(holder) {
           void notify("notifications/events/heartbeat", { cursor: "drop:1" });
         }, 40);
         setTimeout(() => {
-          // The production hub leaves the envelope cursor null and puts the
-          // position in the payload. The stream is cut before the next
-          // heartbeat, so only that payload cursor can carry the resume point.
           void notify("notifications/events/event", {
             eventId: "drop:2",
             name: "drop-stream",
@@ -143,11 +134,6 @@ function createMcpServer(holder) {
             data: { kind: "drop.record", id: "drop-2", cursor: "drop:2" },
           });
         }, 50);
-        // The hub itself never closes a live stream; a proxy or network reset
-        // ends just this request while the session and the subscription live
-        // on. The HTTP layer destroys the response with no final reply, so the
-        // client sees a disconnected request stream. The extension reconnects
-        // from the cursor it last delivered.
         await closed;
         return {};
       }
@@ -201,8 +187,6 @@ async function createSession(id) {
   const server = createMcpServer(holder);
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: () => id,
-    // The cut-stream fixture needs a real per-request SSE response so ending
-    // the handler ends the subscription stream itself, not a JSON reply.
     enableJsonResponse: mode !== "event-cut",
     onsessionclosed: () => {
       sessions.delete(id);
@@ -275,9 +259,7 @@ async function sendGrown(session) {
   try {
     await session.server.notification({ method: "notifications/tools/list_changed" });
     log("grow");
-  } catch {
-    // A later session sees the grown catalog anyway.
-  }
+  } catch {}
 }
 
 const http = createServer(async (request, res) => {

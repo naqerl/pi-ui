@@ -19,7 +19,6 @@ import { CloseIcon, NoticeIcon } from "./icons";
 import { cn } from "./lib/utils";
 import { useTaskLink } from "./task-link";
 
-/** The instant a notice is about: the newest MCP event, or when the notice was recorded. */
 function noticeTimestamp(message: ChatMessage, notice: ChatNotice): string {
   if (notice.kind === "mcp") {
     for (let index = notice.events.length - 1; index >= 0; index--) {
@@ -51,7 +50,6 @@ function noticeIcon(notice: ChatNotice) {
     : noticeIconName(notice.kind);
 }
 
-/** The shared chip surface for chat notices and tool-activity chips. */
 export function ChipButton({
   testId,
   kind,
@@ -67,7 +65,6 @@ export function ChipButton({
   kind: string;
   title: string;
   onClick?: () => void;
-  /** Opens a modal dialog rather than expanding inline. */
   dialog?: boolean;
   expanded?: boolean;
   controls?: string;
@@ -98,7 +95,6 @@ export function ChipButton({
   );
 }
 
-/** A background job result, MCP event or restart note, shown as one centred line. */
 export function NoticeLine({
   message,
   notice,
@@ -106,7 +102,6 @@ export function NoticeLine({
 }: {
   message: ChatMessage;
   notice: ChatNotice;
-  /** Sends the memory Undo prompt as a steer through the chat's existing path. */
   onSteer?: (text: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -128,8 +123,6 @@ export function NoticeLine({
         title={label}
         dialog
         onClick={() => {
-          // A decision is about one task: opening its chip also selects that task
-          // behind the dialog, so closing the dialog shows the work it approved.
           if (taskId !== undefined) link?.openTask(taskId);
           setOpen(true);
         }}
@@ -181,7 +174,6 @@ function NoticeDialog({
     return () => dialog?.close();
   }, []);
   return (
-    // biome-ignore lint/a11y/useKeyWithClickEvents: Esc is handled by the dialog's cancel event.
     <dialog
       ref={ref}
       data-testid="notice-dialog"
@@ -190,8 +182,12 @@ function NoticeDialog({
         event.preventDefault();
         onClose();
       }}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        onClose();
+      }}
       onClick={(event) => {
-        // Clicks on the backdrop land on the dialog itself; the panel fills the rest.
         if (event.target === event.currentTarget) onClose();
       }}
       className="m-0 mt-auto w-full max-w-full overflow-hidden rounded-t-xl border border-foreground/15 bg-surface p-0 text-foreground shadow-xl backdrop:bg-black/50 sm:m-auto sm:w-[min(40rem,calc(100vw-2rem))] sm:rounded-xl"
@@ -379,7 +375,6 @@ function MemoryDetails({
   );
 }
 
-// legacy: read-only, existing transcripts only
 function MemoryDeltaDetailsView({ notice }: { notice: MemoryDeltaDetails }) {
   return (
     <>
@@ -464,6 +459,13 @@ function McpDetails({ notice }: { notice: McpNoticeDetails }) {
   if (notice.raw !== undefined) {
     return <Block label="Raw notice">{notice.raw}</Block>;
   }
+  const eventKeys = new Map<string, number>();
+  const statusKeys = new Map<string, number>();
+  const uniqueKey = (seen: Map<string, number>, base: string): string => {
+    const count = (seen.get(base) ?? 0) + 1;
+    seen.set(base, count);
+    return count === 1 ? base : `${base}-${count}`;
+  };
   return (
     <>
       <Fields
@@ -477,43 +479,44 @@ function McpDetails({ notice }: { notice: McpNoticeDetails }) {
             : []),
         ]}
       />
-      {notice.events.map((event, index) => (
-        <section
-          // biome-ignore lint/suspicious/noArrayIndexKey: a notice never changes once recorded.
-          key={`${event.id ?? "event"}-${index}`}
-          className="mt-2xl border-t border-foreground/10 pt-xl"
-        >
-          <Fields
-            rows={[
-              ["Event", event.name],
-              ...(notice.servers.length > 1
-                ? [["Server", event.server] as [string, ReactNode]]
-                : []),
-              ...(event.timestamp !== null
-                ? [["Time", formatDateTime(event.timestamp)] as [string, ReactNode]]
-                : []),
-              ...(event.id !== null ? [["Id", event.id] as [string, ReactNode]] : []),
-            ]}
-          />
-          <Block label="Payload">{payload(event.data)}</Block>
-        </section>
-      ))}
-      {notice.statuses.map((status, index) => (
-        <section
-          // biome-ignore lint/suspicious/noArrayIndexKey: a notice never changes once recorded.
-          key={`${status.server}-${status.name}-${index}`}
-          className="mt-2xl border-t border-foreground/10 pt-xl"
-        >
-          <Fields
-            rows={[
-              ["Subscription", status.name],
-              ["Server", status.server],
-              ["Status", status.status],
-              ...(status.error !== null ? [["Error", status.error] as [string, ReactNode]] : []),
-            ]}
-          />
-        </section>
-      ))}
+      {notice.events.map((event) => {
+        const key = uniqueKey(
+          eventKeys,
+          `${event.server}-${event.name}-${event.id ?? event.subscriptionId ?? event.timestamp ?? "event"}`,
+        );
+        return (
+          <section key={key} className="mt-2xl border-t border-foreground/10 pt-xl">
+            <Fields
+              rows={[
+                ["Event", event.name],
+                ...(notice.servers.length > 1
+                  ? [["Server", event.server] as [string, ReactNode]]
+                  : []),
+                ...(event.timestamp !== null
+                  ? [["Time", formatDateTime(event.timestamp)] as [string, ReactNode]]
+                  : []),
+                ...(event.id !== null ? [["Id", event.id] as [string, ReactNode]] : []),
+              ]}
+            />
+            <Block label="Payload">{payload(event.data)}</Block>
+          </section>
+        );
+      })}
+      {notice.statuses.map((status) => {
+        const key = uniqueKey(statusKeys, `${status.server}-${status.name}`);
+        return (
+          <section key={key} className="mt-2xl border-t border-foreground/10 pt-xl">
+            <Fields
+              rows={[
+                ["Subscription", status.name],
+                ["Server", status.server],
+                ["Status", status.status],
+                ...(status.error !== null ? [["Error", status.error] as [string, ReactNode]] : []),
+              ]}
+            />
+          </section>
+        );
+      })}
     </>
   );
 }

@@ -3,11 +3,6 @@ import { test } from "node:test";
 import { type EntryRecord, UserEntry } from "@earendil-works/pi-durable";
 import { ChatService } from "../src/server/chat-service.js";
 
-/**
- * A conversation that has already placed the message: the send path knows the entry id
- * and should read that row, not the conversation. On a month-long transcript the whole
- * read is 0.8-0.9 s, which is the wait a send used to sit behind.
- */
 function placedChat() {
   const entries = [
     {

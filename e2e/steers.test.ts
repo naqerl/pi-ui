@@ -39,7 +39,6 @@ test("a pending steer renders after the run's live work, marked pending", () => 
   assert.equal(message.pendingSteer, true);
   assert.equal(message.steerKey, "key-7");
   assert.equal(message.order, PENDING_STEER_ORDER);
-  // Drafts sit at MAX_SAFE_INTEGER - 2 and - 3; a pending steer must not land above them.
   assert.ok(message.order > Number.MAX_SAFE_INTEGER - 2);
   assert.deepEqual(message.attachments, [{ id: "abc.png", mimeType: "image/*" }]);
   assert.equal(pendingSteerMessage({ id: "8", text: "x", createdAt: "" }).attachments, undefined);
@@ -52,7 +51,6 @@ test("pending becomes consumed when the transcript entry with its key arrives", 
     after.map((item) => item.id),
     ["2"],
   );
-  // The real entry carries the same key, so the same update can append it.
   assert.equal(steerKeyFromEntryData({ key: "key-1" }), "key-1");
   assert.equal(steerKeyFromEntryData({}), undefined);
   assert.equal(steerKeyFromEntryData(undefined), undefined);
@@ -71,11 +69,9 @@ test("pending becomes dropped with a visible reason, and stays failed across liv
   assert.equal(failed.steerError, reason);
   assert.equal(failed.order, PENDING_STEER_ORDER);
 
-  // A run-state update no longer lists it; the failed bubble must not disappear.
   const live = mergeLiveSteers(dropped, []);
   assert.equal(live.length, 1);
   assert.equal(live[0]?.dropped, reason);
-  // A later snapshot without it keeps the reported failure until reload.
   const reloaded = rebuildSteersFromSnapshot(live, []);
   assert.equal(reloaded.length, 1);
   assert.equal(reloaded[0]?.dropped, reason);
@@ -97,7 +93,6 @@ test("a dropped steer freezes just past the last settled row and stays there", (
       timestamp: "",
       order: 25_000,
     },
-    // A successful task tool stays here until its entry lands; it must not anchor a drop.
     {
       kind: "tool",
       id: "optimistic-task",
@@ -124,14 +119,12 @@ test("a dropped steer freezes just past the last settled row and stays there", (
   assert.equal(settled, 25_000);
   assert.ok(settled < OPTIMISTIC_ACTIVITY_ORDER);
 
-  // Two drops in the same update share the frozen order; stable sort keeps their sequence.
   const firstDrop = dropSteer([steer("1"), steer("2")], "1", reason, settled + 1);
   const dropped = dropSteer(firstDrop, "2", reason, settled + 1);
   const failed = dropped.map((item) => droppedSteerMessage(item, reason));
   assert.equal(failed[0]?.order, settled + 1);
   assert.equal(failed[1]?.order, settled + 1);
   assert.ok((failed[0]?.order ?? 0) < PENDING_STEER_ORDER);
-  // A live update replaces the pending copy but must not unfreeze its failed order.
   assert.deepEqual(
     mergeLiveSteers(dropped, [steer("1"), steer("2")]).map((item) => item.droppedOrder),
     [settled + 1, settled + 1],
@@ -177,7 +170,6 @@ test("a cancelled pending steer leaves no residue", () => {
     ["1"],
   );
   assert.deepEqual(cancelSteer([steer("1")], "1"), []);
-  // The server's next run-state update is authoritative for a cancellation made elsewhere.
   assert.deepEqual(
     mergeLiveSteers(before, [steer("1")]).map((item) => item.id),
     ["1"],
@@ -245,7 +237,6 @@ test("a reload rebuilds the pending list from the server snapshot", () => {
     ],
   );
 
-  // A live update adds a steer from another tab without dropping one still waiting here.
   const live = mergeLiveSteers([steer("5")], [steer("5"), steer("6")]);
   assert.deepEqual(
     live.map((item) => item.id),

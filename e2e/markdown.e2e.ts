@@ -95,7 +95,6 @@ describe("markdown interaction against one shared app", { serial: true }, () => 
     await browser.mouse.down();
     await browser.mouse.up();
     await browser.mouse.move(0, 0);
-    // The copied state resets after 1.5s, so read the label and text together.
     await expect
       .poll(async () => {
         const button = await readCopyButton(browser);

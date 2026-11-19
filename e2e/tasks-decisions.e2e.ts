@@ -102,7 +102,6 @@ const decisionBubbles = (browser: Browser) =>
       ).length,
   );
 
-/** A local endpoint that proves no web push leaves the server for a decision. */
 async function pushSink() {
   let hits = 0;
   const server = createServer((request, response) => {
@@ -198,9 +197,6 @@ describe("task decisions against one shared app", { serial: true }, () => {
         .toContain(
           `Task proposal ${proposal.id} was approved and is now task ${proposal.id}: ${title}.`,
         );
-      // The reply streams in, and a delta carries the text so far rather than one whole
-      // sentence: the poll above can return while the notice is still being painted, so
-      // the part asserted next is waited for on its own rather than read straight after.
       await expect
         .poll(() => assistantText(browser), { timeout: 60_000 })
         .toContain("You may start working on it now");
@@ -229,7 +225,6 @@ describe("task decisions against one shared app", { serial: true }, () => {
       await new Promise((resolve) => setTimeout(resolve, 250));
       expect(sink.hits()).toBe(0);
 
-      // A repeated write of the same state does not notify again.
       expect(await decide(browser, proposal.id, "approved")).toBe(200);
       await new Promise((resolve) => setTimeout(resolve, 250));
       expect(await decisionNotices(browser)).toHaveLength(1);

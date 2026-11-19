@@ -121,10 +121,6 @@ function sumSpend(items: ActivityItem[], extra: TokenSpend | undefined): TokenSp
   return seen ? { input, output } : undefined;
 }
 
-/**
- * The pieces of a run's summary line: tool calls, tokens, and time. Thinking blocks are counted
- * in the group but not named here; `/activity` still lists them.
- */
 export function groupSummaryParts(
   items: ActivityItem[],
   running: boolean,

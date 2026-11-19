@@ -72,14 +72,16 @@ test("formatTime always renders hh:mm, even when the instant has seconds", () =>
     "18:04",
   );
 
-  const withSecondsOption = (): string => {
-    // @ts-expect-error formatTime no longer accepts a seconds option
-    return formatTime(ISO, { seconds: true });
-  };
-  const withSecondsFlag = (): string => {
-    // @ts-expect-error formatTime no longer accepts a seconds argument
-    return formatTime(ISO, true);
-  };
+  type OnlyValueArgument<F extends (...args: never[]) => unknown> =
+    Parameters<F> extends [unknown] ? true : false;
+  const secondsOptionRejected: OnlyValueArgument<typeof formatTime> = true;
+  const secondsFlagRejected: OnlyValueArgument<typeof formatTime> = true;
+  assert.equal(secondsOptionRejected, true);
+  assert.equal(secondsFlagRejected, true);
+
+  const withSecondsOption = (): string =>
+    String(Reflect.apply(formatTime, undefined, [ISO, { seconds: true }]));
+  const withSecondsFlag = (): string => String(Reflect.apply(formatTime, undefined, [ISO, true]));
   assert.equal(inZone("UTC", withSecondsOption), "12:34");
   assert.equal(inZone("UTC", withSecondsFlag), "12:34");
 });
@@ -158,7 +160,6 @@ test("an MCP notice, the events page and the events widget render hh:mm for one 
     id: "mcp-notice",
     role: "user",
     text,
-    // A notice recorded later must still show the event's own instant.
     timestamp: "2026-01-15T23:59:00.000Z",
     order: 1,
     notice,
