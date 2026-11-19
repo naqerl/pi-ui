@@ -113,10 +113,9 @@ export function questionAnswerReady(
   if (question.kind === "text") return note.length > 0;
   const valid = optionValues(question);
   const values = answer.values.filter((value) => valid.has(value));
-  if (question.kind === "single") {
-    return values.length === 1 || (question.allowOther === true && note.length > 0);
-  }
-  return values.length > 0 || (question.allowOther === true && note.length > 0);
+  // Free text is available on every choice question and overrides its choices.
+  if (question.kind === "single") return values.length === 1 || note.length > 0;
+  return values.length > 0 || note.length > 0;
 }
 
 /** Validate submitted answers against the pending questions, preserving question order. */
@@ -143,7 +142,10 @@ export function parseTaskQuestionAnswers(
     if (raw.text !== undefined && typeof raw.text !== "string") {
       return { ok: false, error: `Answer "${id}" text must be a string` };
     }
-    const values = rawValues.map((item) => item.trim());
+    const note = typeof raw.text === "string" ? raw.text.trim() : "";
+    // A typed answer wins over the choices, so the choice list is not validated against it.
+    const values =
+      question.kind !== "text" && note.length > 0 ? [] : rawValues.map((item) => item.trim());
     if (new Set(values).size !== values.length) {
       return { ok: false, error: `Answer "${id}" repeats a value` };
     }
@@ -158,7 +160,7 @@ export function parseTaskQuestionAnswers(
     if (question.kind === "text" && values.length > 0) {
       return { ok: false, error: `Answer "${id}" is free text, not a choice` };
     }
-    submitted.set(id, { id, values, text: typeof raw.text === "string" ? raw.text.trim() : "" });
+    submitted.set(id, { id, values, text: note });
   }
   const answers: TaskQuestionAnswer[] = [];
   for (const question of questions) {

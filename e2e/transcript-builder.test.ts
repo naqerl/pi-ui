@@ -7,7 +7,11 @@ import {
   ToolResultEntry,
   UserEntry,
 } from "@earendil-works/pi-durable";
-import { buildTranscript, TranscriptBuilder } from "../src/server/session.js";
+import {
+  buildTranscript,
+  INTERRUPTED_RUN_RESTART_NOTE,
+  TranscriptBuilder,
+} from "../src/server/session.js";
 
 const diagramId = "abcdefghij";
 
@@ -111,7 +115,7 @@ function conversation(): EntryRecord[] {
       data: {
         markerKey: "run-1",
         partialEntryId: 17,
-        note: "The previous run was interrupted by a server restart.",
+        note: INTERRUPTED_RUN_RESTART_NOTE,
         stopped: false,
         createdAt: "2026-01-01T00:00:04.000Z",
       },
@@ -161,6 +165,55 @@ test("an interrupt marks the reply it cut off as partial", () => {
   const transcript = buildTranscript(conversation());
   const partial = transcript.messages.find((message) => message.id === "m-17");
   assert.equal(partial?.partial, true);
+});
+
+test("a legacy question-answer entry still renders its recorded rows", () => {
+  const transcript = buildTranscript([
+    {
+      id: 1,
+      kind: "ui.task-question-answers",
+      data: {
+        setId: "set-1",
+        taskId: "task-1",
+        text: "Answers sent",
+        answers: [
+          {
+            id: "layout",
+            prompt: "Which layout?",
+            kind: "single",
+            values: ["split"],
+            labels: ["Split layout"],
+            text: "",
+          },
+          {
+            id: "notes",
+            prompt: "Anything else?",
+            kind: "text",
+            values: [],
+            labels: [],
+            text: "Keep it compact",
+          },
+        ],
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    },
+  ] as unknown as EntryRecord[]);
+
+  const notice = transcript.messages[0]?.notice;
+  if (notice === undefined || !("answers" in notice)) {
+    return assert.fail("expected a question notice");
+  }
+  assert.equal(notice.kind, "questions");
+  assert.equal(notice.setId, "set-1");
+  assert.equal(notice.count, 2);
+  assert.equal(notice.summary, "Answers recorded · 2 questions");
+  assert.deepEqual(
+    notice.answers.map((answer) => [answer.id, answer.labels, answer.text]),
+    [
+      ["layout", ["Split layout"], ""],
+      ["notes", [], "Keep it compact"],
+    ],
+  );
 });
 
 test("a replaced drawing raises the revision of the row already shown", () => {

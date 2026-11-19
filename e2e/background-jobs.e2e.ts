@@ -42,12 +42,21 @@ const rowMetrics = (browser: Browser) =>
     const status = document.querySelector<HTMLElement>('[data-testid="working-status"]');
     const row = status?.parentElement;
     const counts = document.querySelector<HTMLElement>('[data-testid="bg-jobs-line"]');
+    const word =
+      document.querySelector<HTMLElement>('[data-testid="header-activity"]') ??
+      document.querySelector<HTMLElement>(
+        '[data-testid="working-status"] > div > span:not([aria-hidden])',
+      );
     const box = (element: HTMLElement | null | undefined) =>
       element?.getBoundingClientRect() ?? null;
     const rowBox = box(row);
     const countBox = box(counts);
+    const statusBox = box(status);
     return {
-      statusY: box(status)?.y ?? -1,
+      statusY: statusBox?.y ?? -1,
+      statusLeft: statusBox?.left ?? -1,
+      wordLeft: box(word)?.left ?? -1,
+      countLeft: countBox?.left ?? -1,
       rowHeight: rowBox?.height ?? -1,
       rowTop: rowBox?.top ?? -1,
       rowBottom: rowBox?.bottom ?? -1,
@@ -155,6 +164,8 @@ test("a background job count opens a live sheet and returns focus to the compose
   // Same row, same width budget: the count rides after the working indicator.
   expect(withCounts.hasSlot).toBe(false);
   expect(withCounts.countsInsideStatus).toBe(true);
+  expect(withCounts.countLeft).toBeGreaterThan(withCounts.wordLeft);
+  expect(withCounts.countLeft).toBeGreaterThan(withCounts.statusLeft);
   expect(withCounts.countBottom).toBeGreaterThan(withCounts.rowTop);
   expect(withCounts.countTop).toBeLessThan(withCounts.rowBottom);
   // The row does not grow when the counts arrive, so the composer cannot move.
@@ -164,10 +175,86 @@ test("a background job count opens a live sheet and returns focus to the compose
   expect(gap).not.toBeNull();
   expect(gap ?? 99).toBeLessThan(2);
 
+  // A page switch must not give the counters a second entrance at settle: the
+  // sweep animation owns the mount, and removing data-dock-phase leaves opacity
+  // at 1 with no running animation.
+  await browser.emulateMedia({ reducedMotion: "no-preference" });
+  await browser.evaluate(
+    () =>
+      new Promise<boolean>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))),
+      ),
+  );
+  await screen.getByTestId("page-dot-tasks").tap();
+  await expect
+    .poll(() =>
+      browser.evaluate(
+        () => document.querySelector("[data-testid=pager]")?.getAttribute("data-page") ?? null,
+      ),
+    )
+    .toBe("tasks");
+  await settleDock(browser);
+  expect(await hasCounts(browser)).toBe(false);
+  const sweep = await browser.evaluate(() => {
+    const samples: Array<{
+      phase: string | null;
+      animationName: string;
+      opacity: number;
+      transform: string;
+    }> = [];
+    document.querySelector<HTMLButtonElement>('[data-testid="page-dot-chat"]')?.click();
+    return new Promise<typeof samples>((resolve) => {
+      const start = performance.now();
+      let sawEnter = false;
+      let settledAt: number | null = null;
+      const tick = () => {
+        const node = document.querySelector<HTMLElement>('[data-testid="bg-jobs-line"]');
+        if (node !== null) {
+          const style = getComputedStyle(node);
+          const phase = node.getAttribute("data-dock-phase");
+          samples.push({
+            phase,
+            animationName: style.animationName,
+            opacity: Number(style.opacity),
+            transform: style.transform,
+          });
+          if (phase === "enter") sawEnter = true;
+          if (sawEnter && phase === null && settledAt === null) settledAt = performance.now();
+        }
+        const now = performance.now();
+        if ((settledAt !== null && now - settledAt > 320) || now - start > 2500) {
+          resolve(samples);
+          return;
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+  });
+  const enteringCounts = sweep.filter((sample) => sample.phase === "enter");
+  expect(enteringCounts.length).toBeGreaterThan(0);
+  for (const sample of enteringCounts) expect(sample.animationName).toContain("dock-scan-in");
+  const settledCounts = sweep.filter((sample) => sample.phase === null);
+  expect(settledCounts.length).toBeGreaterThan(0);
+  for (const sample of settledCounts) {
+    expect(sample.animationName).toBe("none");
+    expect(sample.opacity).toBe(1);
+  }
+  await browser.emulateMedia({ reducedMotion: "reduce" });
+  await browser.evaluate(
+    () =>
+      new Promise<boolean>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))),
+      ),
+  );
+
   // The same baseline holds when the live working indicator paints the row.
   await sendText(browser, "SLOW keep working");
   await expect(screen.getByTestId("header-activity")).toBeVisible();
   await settleDock(browser);
+  const working = await rowMetrics(browser);
+  expect(working.countLeft).toBeGreaterThan(working.wordLeft);
+  expect(working.countLeft).toBeGreaterThan(working.statusLeft);
   const workingGap = await baselineGap(browser);
   expect(workingGap).not.toBeNull();
   expect(workingGap ?? 99).toBeLessThan(2);

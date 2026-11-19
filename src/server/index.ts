@@ -19,7 +19,13 @@ import {
   TASK_ATTACHMENTS_MAX,
   TASK_BODY_MAX_LENGTH,
 } from "../shared/tasks.js";
-import type { TaskChatFrame, TaskCompletion, TaskLedger, TaskStatus } from "../shared/types.js";
+import type {
+  TaskChatFrame,
+  TaskCompletion,
+  TaskLedger,
+  TaskQuestionSet,
+  TaskStatus,
+} from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
 import {
   ChatService,
@@ -94,8 +100,13 @@ const operatorNotices: {
 const taskNotices: {
   current?: (record: TaskDecisionNoticeRecord) => void | Promise<void>;
 } = {};
+/** Filled with the manager; before that no plan-agent question set can be pending. */
+let pendingQuestionsFor = (_taskId: string): TaskQuestionSet | null => null;
+const openQuestionsBlocker =
+  "Answer or dismiss this task's open questions before approving it or sending it to a worker";
 const taskStore = new TaskStore(resolve(dataDir, "tasks.json"), {
   notice: (record) => taskNotices.current?.(record),
+  workingBlocker: (taskId) => (pendingQuestionsFor(taskId) === null ? null : openQuestionsBlocker),
 });
 const media = new MediaStore(resolve(dataDir, "media"));
 const diagrams = new DiagramStore(resolve(dataDir, "diagrams"));
@@ -128,6 +139,7 @@ function taskView(ledger: TaskLedger = taskStore.ledger()): TaskLedger {
     tasks: ledger.tasks.map((task) => ({
       ...task,
       planning: live.has(task.id) && (isActiveStatus(task.status) || task.status === "planning"),
+      questions: pendingQuestionsFor(task.id),
     })),
     activity: taskActivity.view(),
     reopenStats: taskReopenStats(ledger.tasks),
@@ -440,6 +452,9 @@ const taskAgents = new TaskAgentManager({
   onRunState: () => {
     hub.broadcast({ event: "tasks", data: taskView() });
   },
+  onQuestions: () => {
+    hub.broadcast({ event: "tasks", data: taskView() });
+  },
   baseInstructions: planBase,
   memory: { store: memory, snapshot: memorySnapshot },
   jobs,
@@ -451,6 +466,7 @@ const restoring = taskAgents.restore().catch((error: unknown) => {
   return [] as string[];
 });
 planningTaskIds = () => taskAgents.planningTaskIds();
+pendingQuestionsFor = (taskId) => taskAgents.pendingQuestions(taskId);
 function builtinJobs() {
   return jobs.list().map((job) => ({
     id: job.id,
@@ -1167,15 +1183,19 @@ app.patch("/api/tasks/:id", async (c) => {
   }
   try {
     const id = c.req.param("id");
-    const before = taskStore.ledger().tasks.find((task) => task.id === id);
     const ledger = await taskStore.update(id, patch);
     const after = ledger.tasks.find((task) => task.id === id);
-    if (before?.status === "planning" && after?.status !== "planning") {
-      await taskAgents.clearQuestions(id).catch((error: unknown) => {
-        console.error(`[pi] could not clear the questions for ${id}`, error);
+    if ("attachments" in patch) {
+      // A screenshot attached while the plan chat is open is in its context now,
+      // not only after the next session open.
+      void taskAgents.syncTaskAttachments(id).catch((error: unknown) => {
+        console.error(`[pi] could not sync the task images for ${id}`, error);
       });
     }
     if (after?.status === "done") {
+      await taskAgents.clearQuestions(id).catch((error: unknown) => {
+        console.error(`[pi] could not clear the questions for ${id}`, error);
+      });
       await taskAgents.stopRun(id).catch((error: unknown) => {
         console.error(`[pi] could not stop the task agent for ${id}`, error);
       });
@@ -1189,6 +1209,9 @@ app.patch("/api/tasks/:id", async (c) => {
 app.delete("/api/tasks/:id", async (c) => {
   try {
     const id = c.req.param("id");
+    await taskAgents.clearQuestions(id).catch((error: unknown) => {
+      console.error(`[pi] could not clear the questions for ${id}`, error);
+    });
     const ledger = await taskStore.remove(id);
     // Close the planning session in the background so deleting a task
     // stays a ledger write, even if the harness is still shutting down.
@@ -1283,12 +1306,18 @@ app.post("/api/tasks/:id/chat/steer/:steerId", async (c) => {
 
 app.get("/api/tasks/:id/questions", async (c) => {
   try {
-    const session = await taskAgents.ensure(c.req.param("id"));
-    return c.json({ questions: (await session.pendingQuestions?.()) ?? null });
+    return c.json({ questions: taskAgents.pendingQuestions(c.req.param("id")) });
   } catch (error) {
     return taskAgentFailure(c, error);
   }
 });
+
+function questionSetId(body: unknown): string {
+  if (typeof body !== "object" || body === null) return "";
+  if ("setId" in body && typeof body.setId === "string") return body.setId;
+  if ("id" in body && typeof body.id === "string") return body.id;
+  return "";
+}
 
 async function answerTaskQuestions(c: Context) {
   let body: unknown;
@@ -1298,18 +1327,31 @@ async function answerTaskQuestions(c: Context) {
     return c.text("Expected a JSON body", 400);
   }
   if (typeof body !== "object" || body === null) return c.text("Expected a JSON body", 400);
-  const setId =
-    "setId" in body && typeof body.setId === "string"
-      ? body.setId
-      : "id" in body && typeof body.id === "string"
-        ? body.id
-        : "";
+  const setId = questionSetId(body);
   if (setId.length === 0) return c.text("setId is required", 400);
   if (!("answers" in body) || !Array.isArray(body.answers)) {
     return c.text("answers must be a list", 400);
   }
   try {
-    return c.json(await taskAgents.answerQuestions(c.req.param("id") ?? "", setId, body.answers));
+    await taskAgents.answerQuestions(c.req.param("id") ?? "", setId, body.answers);
+    return c.json({ ledger: taskView() });
+  } catch (error) {
+    return taskAgentFailure(c, error);
+  }
+}
+
+async function dismissTaskQuestions(c: Context) {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.text("Expected a JSON body", 400);
+  }
+  const setId = questionSetId(body);
+  if (setId.length === 0) return c.text("setId is required", 400);
+  try {
+    await taskAgents.dismissQuestions(c.req.param("id") ?? "", setId);
+    return c.json({ ledger: taskView() });
   } catch (error) {
     return taskAgentFailure(c, error);
   }
@@ -1317,6 +1359,7 @@ async function answerTaskQuestions(c: Context) {
 
 app.post("/api/tasks/:id/questions/answer", (c) => answerTaskQuestions(c));
 app.post("/api/tasks/:id/questions", (c) => answerTaskQuestions(c));
+app.post("/api/tasks/:id/questions/dismiss", (c) => dismissTaskQuestions(c));
 
 app.post("/api/tasks/:id/chat/stop", async (c) => {
   try {
