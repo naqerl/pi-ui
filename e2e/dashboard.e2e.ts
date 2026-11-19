@@ -42,7 +42,6 @@ test("sources are discoverable and reset restores the committed default board", 
     assert.notEqual(source.sample, undefined, `${source.name} has a sample`);
   }
 
-  // Delete a builtin and add an unrelated widget, then reset.
   await browser.evaluate(async () => {
     const removed = await fetch("/api/dashboard/widgets/context", { method: "DELETE" });
     if (!removed.ok) throw new Error(`delete failed: ${removed.status}`);

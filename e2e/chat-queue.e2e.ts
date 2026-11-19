@@ -56,12 +56,10 @@ describe("queued follow-ups against one shared app", { serial: true }, () => {
     expect(ids[0]).not.toBeNull();
     expect(ids[1]).not.toBeNull();
 
-    // Cancelling the first removes exactly that bubble and leaves the second in order.
     await pending.nth(0).getByRole("button", { name: "cancel" }).tap();
     await expect(pending).toHaveCount(1);
     await expect(pending.nth(0)).toContainText(second);
 
-    // Watch the handoff: the bubble must never vanish between pending and placed.
     await browser.evaluate((needle: string) => {
       const watch = { gap: false };
       const target = window as unknown as {

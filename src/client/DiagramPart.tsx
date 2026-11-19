@@ -5,12 +5,10 @@ import { DiagramViewer } from "./DiagramViewer";
 
 const DiagramSvg = lazy(() => import("./lazy-diagram").then((m) => ({ default: m.DiagramSvg })));
 
-/** The JSON `GET /api/diagrams/<id>` returns. The source is never part of the transcript. */
 interface DiagramFile {
   id: string;
   format: string;
   source: string;
-  /** Rendered once by the server and cached beside the diagram; SVG stays sharp at any zoom. */
   svg?: string;
   createdAt: string;
   updatedAt: string;
@@ -39,7 +37,6 @@ function Card({ id, revision, children }: { id: string; revision: number; childr
   );
 }
 
-/** A format this bundle cannot draw is shown as its source, never as a blank card. */
 function RawFallback({ diagram }: { diagram: DiagramFile }) {
   return (
     <div data-testid="diagram-raw" className="space-y-sm p-lg">
@@ -55,10 +52,6 @@ function RawFallback({ diagram }: { diagram: DiagramFile }) {
 
 const DRAWING_CLASS = "max-h-[260px] overflow-hidden sm:max-h-[420px]";
 
-/**
- * One diagram part of a message. It stores only `{id, revision}`; the source is fetched here, so
- * a replace changes the revision and redraws the same message without touching the transcript.
- */
 export function DiagramPart({ id, revision }: DiagramRef) {
   const [load, setLoad] = useState<Load>({ status: "loading" });
   const [renderedSvg, setRenderedSvg] = useState<string | null>(null);

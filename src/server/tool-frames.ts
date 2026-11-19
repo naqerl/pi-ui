@@ -5,7 +5,6 @@ import {
   type ToolSlot,
 } from "@earendil-works/pi-durable";
 
-/** What a done tool slot still has when its result entry is missing (faulted, orphaned, or folded away). */
 export interface ToolSlotEndResult {
   output?: string;
   details?: unknown;
@@ -13,7 +12,6 @@ export interface ToolSlotEndResult {
   durationMs?: number;
 }
 
-/** One tool-slot change between two conversation views, before either client turns it into a frame. */
 export type ToolSlotFrame =
   | { type: "start"; toolCallId: string; toolName: string; args: unknown }
   | {
@@ -29,7 +27,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** A repaired slot uses `interrupted`, which is terminal even though durable's ToolSlot type omits it. */
 export function isInterruptedSlot(slot: Pick<ToolSlot, "status"> | undefined): boolean {
   return (slot?.status as string | undefined) === "interrupted";
 }
@@ -38,7 +35,6 @@ export function isTerminalSlot(slot: Pick<ToolSlot, "status">): boolean {
   return slot.status === "done" || isInterruptedSlot(slot);
 }
 
-/** What a done tool slot still has when its result entry is missing. */
 function toolResultFromSlot(slot: ToolSlot): ToolSlotEndResult | undefined {
   if (slot.output === undefined && slot.details === undefined) return undefined;
   return {
@@ -84,10 +80,6 @@ function findToolResultEntry(
   });
 }
 
-/**
- * The tool-slot diff shared by the main chat and a plan session. Both views publish the
- * same start/end transitions; only the frame transport differs.
- */
 export function diffToolSlots(
   entries: readonly EntryRecord[],
   previousLive: LiveState | undefined,
@@ -124,8 +116,6 @@ export function diffToolSlots(
       });
     }
     if (slot.status === "done" && before?.status !== "done") {
-      // A call that went pending (or appeared and finished) between two view revisions
-      // never got its start event; send one so the client has a chip to update.
       if (before?.status !== "running") {
         frames.push({
           type: "start",

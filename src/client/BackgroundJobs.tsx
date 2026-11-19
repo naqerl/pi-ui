@@ -8,12 +8,10 @@ import { CloseIcon } from "./icons";
 
 export type BackgroundJobsKind = "jobs" | "subagents";
 
-/** Finished jobs stay in the registry; only a running one belongs on the live line. */
 export function activeJobs(jobs: readonly BuiltinJob[]): BuiltinJob[] {
   return jobs.filter((job) => job.status === "running");
 }
 
-/** A queued sub-agent is already accepted work, so it counts until it finishes. */
 export function activeSubagents(delegates: readonly DelegateRunView[]): DelegateRunView[] {
   return delegates.filter((run) => run.status === "running" || run.status === "queued");
 }
@@ -22,7 +20,6 @@ function plural(count: number, singular: string): string {
   return `${count} ${singular}${count === 1 ? "" : "s"}`;
 }
 
-/** `mm:ss`, or `h:mm:ss` once the item has run for an hour. */
 function elapsed(startedAt: string | null, now: number): string {
   if (startedAt === null) return "—";
   const started = Date.parse(startedAt);
@@ -35,9 +32,7 @@ function elapsed(startedAt: string | null, now: number): string {
   return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`;
 }
 
-/** How long the counts stay mounted for their opacity/transform exit. */
 const EXIT_MS = 220;
-/** Open at a partial detent; the 80dvh cap keeps the top of the page visible. */
 const SHEET_SNAP_POINTS = [0, 0.72, 1];
 
 interface JobCounts {
@@ -68,14 +63,6 @@ function countsReducer(state: CountsState, action: CountsAction): CountsState {
   }
 }
 
-/**
- * The live jobs/sub-agent counts, painted inline at the start of the composer's
- * status row. They are deliberately absent when both lists are empty, and only
- * their own opacity/transform animates: the row keeps its height, so the
- * composer and the transcript never move when work starts, finishes, or the
- * reader switches pages. The node is removed after the exit, so a non-chat
- * surface never carries a hidden counter.
- */
 export function BackgroundJobsCounts({
   jobs,
   delegates,
@@ -85,7 +72,6 @@ export function BackgroundJobsCounts({
   jobs: readonly BuiltinJob[];
   delegates: readonly DelegateRunView[];
   onOpen: (kind: BackgroundJobsKind) => void;
-  /** Counts belong to the chat page only; the exit still paints before they unmount. */
   visible: boolean;
 }) {
   const jobCount = activeJobs(jobs).length;
@@ -133,9 +119,6 @@ export function BackgroundJobsCounts({
       data-testid="bg-jobs-line"
       data-open={state.open ? "true" : "false"}
       data-surface={visible ? "chat" : "away"}
-      // The outer box starts just left of the plus button's box; the inset puts
-      // the text ink on the plus icon's ink, so the edge reads aligned on both
-      // sizes.
       className="bg-jobs-counts -ml-xl inline-flex min-w-0 shrink-0 items-baseline gap-md pl-xl"
     >
       {rendered.jobs > 0 && chip("jobs", rendered.jobs, "job")}
@@ -159,11 +142,6 @@ async function readJson<T>(url: string): Promise<T | null> {
   }
 }
 
-/**
- * The page sheet shared by the jobs and sub-agent chips. It re-reads the registry once
- * on open; the live duration is the only thing that ticks, and it never polls. A job
- * row opens the activity surface. A sub-agent row stays in this sheet.
- */
 export function BackgroundJobsSheet({
   kind,
   jobs,
@@ -201,8 +179,6 @@ export function BackgroundJobsSheet({
   }, [kind]);
 
   const liveJobs = useMemo(() => {
-    // The one re-read can see a job before its stream frame; the live frame wins on
-    // status, while the fetched row still supplies fields the frame omits.
     const merged = new Map<string, BuiltinJob>();
     for (const job of jobItems ?? []) merged.set(job.id, job);
     for (const job of jobs) merged.set(job.id, { ...merged.get(job.id), ...job });

@@ -1,7 +1,6 @@
 @import "tailwindcss";
 
 :root {
-  /* Let height animate between an intrinsic size and zero on the composer body. */
   interpolate-size: allow-keywords;
   --radius: 0px;
   --background: oklch(1 0 0);
@@ -23,7 +22,6 @@
   --status-bad: oklch(0.577 0.245 27.325);
   --status-idle: oklch(0.556 0 0);
   --status-info: oklch(0.546 0.245 262.881);
-  /* Plot aliases stay here; the theme's inline chart tokens flow through them. */
   --plot-1: var(--chart-1);
   --plot-2: var(--chart-2);
   --plot-3: var(--chart-3);
@@ -58,8 +56,6 @@
   }
 }
 
-/* An installed Omarchy theme owns its mode, which need not match the desktop
-   preference. The marker makes status colours follow the chosen theme. */
 :root[data-mode="light"] {
   --status-ok: oklch(0.596 0.145 163.225);
   --status-warn: oklch(0.666 0.179 58.318);
@@ -98,19 +94,15 @@
   --radius-md: var(--radius);
   --radius-lg: var(--radius);
   --radius-xl: var(--radius);
-  /* The app's entire spacing scale. Nothing else is allowed: a seventh step is a
-     design decision, and it belongs in docs/spacing.md first. */
-  --spacing-xs: 0.125rem; /*  2px — the tightest inset, pills and mono chips      */
-  --spacing-sm: 0.25rem; /*  4px — row rhythm for dense lists                    */
-  --spacing-md: 0.375rem; /*  6px — icon-to-label, chip internals                 */
-  --spacing-lg: 0.5rem; /*  8px — default gap between siblings                  */
-  --spacing-xl: 0.75rem; /* 12px — control padding, card gutters                 */
-  --spacing-2xl: 1rem; /* 16px — section padding, card edges                   */
+  --spacing-xs: 0.125rem;
+  --spacing-sm: 0.25rem;
+  --spacing-md: 0.375rem;
+  --spacing-lg: 0.5rem;
+  --spacing-xl: 0.75rem;
+  --spacing-2xl: 1rem;
   --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
-
-/* Boxed controls follow the active theme's Hyprland rounding. 0px stays square. */
 
 @layer base {
   *,
@@ -132,7 +124,6 @@
     background: color-mix(in oklch, var(--foreground) 22%, transparent);
   }
 
-  /* Pele reads these variables, so a drawing follows the active theme and its fonts. */
   .diagram-svg {
     --pele-bg: var(--background);
     --pele-fg: var(--foreground);
@@ -153,9 +144,6 @@
     height: auto;
   }
 
-  /* Every scroll area, vertical or horizontal, uses the transcript's thin scrollbar
-     instead of the browser default. The track stays transparent over whatever surface
-     the element carries. */
   * {
     scrollbar-width: thin;
     scrollbar-color: color-mix(in oklch, var(--foreground) 28%, transparent) transparent;
@@ -167,15 +155,11 @@
     height: 100%;
   }
 
-  /* A rightward swipe would otherwise leave the page as the browser's back gesture. */
   html {
     background-color: var(--background);
     overscroll-behavior-x: none;
   }
 
-  /* Pin the theme colour below every page. The negative insets bleed the paint
-     past the layout viewport, so an installed app's home-indicator row cannot
-     expose the platform's white backdrop when the visual viewport stops short. */
   .safe-area-blocker {
     position: fixed;
     top: calc(-1 * env(safe-area-inset-top));
@@ -206,9 +190,6 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  /* One shell owns the viewport height. The transcript is the flexible child and
-     the dock grows below it, so a composer animation resizes the scroll viewport
-     instead of relaying out every message. */
   .chat-shell {
     display: flex;
     flex-direction: column;
@@ -223,15 +204,10 @@
     overflow-x: hidden;
     overflow-y: auto;
     overscroll-behavior: contain;
-    /* The stick hook owns the offset while the viewport resizes. */
     overflow-anchor: none;
-    /* Vertical panning stays native; a horizontal swipe belongs to the pager. */
     touch-action: pan-y;
   }
 
-  /* Floating chrome. On a wide screen the dock is a little wider than the
-     transcript column. On a narrow screen that cap is the full width.
-     The composer fills solid while the field is focused. */
   .float-footer {
     flex: 0 0 auto;
     width: min(100%, calc(72ch + 2rem));
@@ -246,10 +222,6 @@
     transition: background-color 280ms ease;
   }
 
-  /* A page slide moves the layout under the dock; a full-area blur recomputed
-     every frame is the expensive half of the transition. Flatten it while the
-     pager is in flight, then restore the glass once the pages settle. */
-  /* Keep data-transitioning available for the pager state; do not flatten the glass. */
   .float-footer[data-transitioning="true"] {
     transition: none;
   }
@@ -265,14 +237,9 @@
     background-color: var(--surface);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
-    /* The home-indicator inset would sit between the field and the keyboard. */
     padding-bottom: 0;
   }
 
-  /* The stats page keeps the dock chrome but collapses the composer body. The
-     body owns the whole height change, so the navigation row above it arrives
-     with the movement instead of snapping when a timer releases it. Visibility
-     flips at the end of the collapse, so the body is not blank while it shrinks. */
   .composer-body {
     height: auto;
     overflow: clip;
@@ -284,10 +251,6 @@
       visibility 220ms ease;
   }
 
-  /* The job/sub-agent counts ride inside the status row. Only their own opacity
-     and transform animates: the row keeps its height, so the composer and the
-     transcript never move when work starts, finishes, or the reader pages. The
-     node itself is removed after the exit, so another surface has no counter. */
   .bg-jobs-counts {
     animation: bg-jobs-counts-in 180ms ease-out;
     transform-origin: left bottom;
@@ -309,8 +272,6 @@
     }
   }
 
-  /* Only the nodes whose identity changes fade. The dock, its top line and the
-     composer body keep their heights, so a surface change never moves the page. */
   .dock-swap {
     transition:
       opacity 160ms ease-out,
@@ -323,7 +284,6 @@
     pointer-events: none;
   }
 
-  /* One cell, two children: the arriving and the leaving control occupy the same box. */
   .dock-stack {
     display: grid;
     min-width: 0;
@@ -388,7 +348,6 @@
     padding-top: max(0.75rem, env(safe-area-inset-top));
   }
 
-  /* Same outer inset the chat column keeps from the screen, filling what remains. */
   .activity-screen {
     box-sizing: border-box;
     height: 100%;
@@ -403,22 +362,14 @@
   }
 }
 
-/* Device insets are geometry, not design rhythm. Keep them out of class lists
-   and unlayered so they survive a `pb-*` utility on the same element. */
 .safe-bottom {
   padding-bottom: env(safe-area-inset-bottom);
 }
 
-/* The jobs sheet owns a 12px bottom gutter as well as the home-indicator inset. */
 .safe-bottom.pb-xl {
   padding-bottom: calc(var(--spacing-xl) + env(safe-area-inset-bottom));
 }
 
-/* Every interactive control compresses slightly while pressed. Transform-only,
-   so the feedback stays on the compositor and never reflows the page. The
-   explicit superset keeps transitions controls already declare (opacity,
-   colours) instead of replacing them. Controls that own a pointer gesture opt
-   out with data-no-press and say why. */
 @media (prefers-reduced-motion: no-preference) {
   button:not(:disabled):not([aria-disabled="true"]):not([data-no-press]),
   [role="button"]:not([aria-disabled="true"]):not([data-no-press]) {
@@ -432,9 +383,6 @@
     transform: scale(0.97);
   }
 
-  /* The plan switch is a button whose own opacity/transform exit is the dock
-     swap. Keep the press feedback, but give the fade its 160 ms duration; the
-     generic rule above would otherwise shorten opacity to its colour timing. */
   button.dock-swap:not(:disabled):not([aria-disabled="true"]):not([data-no-press]) {
     transition-property: transform, background-color, color, border-color, opacity;
     transition-duration: 160ms, 120ms, 120ms, 120ms, 160ms;
@@ -442,17 +390,12 @@
   }
 }
 
-/* Theme border often matches the surface, so chrome edges use the foreground. */
 .ink-line {
   border-color: color-mix(in srgb, var(--foreground) 28%, transparent);
 }
 
-/* The composable dashboard grid: a quiet placeholder and a resize grip that
-   only appears while its card is hovered or focused. */
 .dashboard-grid .react-grid-item {
   min-width: 0;
-  /* RGL owns the live preview; animating cells would make the placeholder and
-     the persisted coordinates briefly disagree with the rendered cards. */
   transition: none;
 }
 
@@ -466,8 +409,6 @@
   z-index: 20;
 }
 
-/* Cross-section drags outline the section that will receive the card. An
-   outline is painted, not laid out, so it cannot intercept the pointer. */
 .dashboard-section[data-drop-target] > [data-section-heading] {
   outline: 2px dashed color-mix(in oklch, var(--foreground) 55%, transparent);
   outline-offset: 2px;

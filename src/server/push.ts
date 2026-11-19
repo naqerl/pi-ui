@@ -3,15 +3,11 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path";
 import webpush from "web-push";
 
-/** The VAPID key pair lives next to the rest of pi-ui's durable state. */
 export const PUSH_VAPID_FILE = "push-vapid.json";
 export const PUSH_SUBSCRIPTIONS_FILE = "push-subscriptions.json";
 export const PUSH_SUBSCRIPTIONS_VERSION = 1;
-/** Web push requires a contact address in the VAPID subject. */
 export const PUSH_VAPID_SUBJECT = "mailto:pi@localhost";
-/** The only endpoint hosts a test-mode service may deliver to. */
 export const TEST_PUSH_HOSTS = ["push.example", "example.test", "localhost", "127.0.0.1"] as const;
-/** Explicit escape hatch; no test sets it, so the guard is on by default. */
 export const ALLOW_REAL_PUSH_ENV = "PI_E2E_ALLOW_REAL_PUSH";
 
 const TEST_PUSH_HOST_SET = new Set<string>(TEST_PUSH_HOSTS);
@@ -40,11 +36,9 @@ export interface PushNotification {
   readonly body?: string;
   readonly url?: string;
   readonly tag?: string;
-  /** Extra fields the service worker copies onto the notification's data. */
   readonly data?: Record<string, unknown>;
 }
 
-/** One delivery captured by the browser-suite stub instead of a real push endpoint. */
 export interface PushSinkRecord extends PushNotification {
   readonly endpoint: string;
   readonly sentAt: string;
@@ -52,7 +46,6 @@ export interface PushSinkRecord extends PushNotification {
 
 const pushSinkRecords: PushSinkRecord[] = [];
 
-/** The browser suite starts its backend with this env var; production never sets it. */
 export function e2ePushSinkEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.PI_E2E_DATA_DIR !== undefined;
 }
@@ -78,19 +71,13 @@ function recordPushSink(endpoint: string, payload: string): void {
       ...(typeof parsed.tag === "string" ? { tag: parsed.tag } : {}),
       ...(isRecord(parsed.data) ? { data: parsed.data } : {}),
     });
-  } catch {
-    // A malformed payload cannot have come from this service; leave the sink alone.
-  }
+  } catch {}
 }
 
 export interface PushSubscriptionStoreOptions {
-  /** Minimum milliseconds between background writes. */
   readonly throttleMs?: number;
-  /** Override the clock in tests. */
   readonly now?: () => number;
-  /** One line is logged for a corrupt or unknown registry; never per event. */
   readonly log?: (line: string) => void;
-  /** Override the file name (used by tests); it still lives under the data dir. */
   readonly fileName?: string;
 }
 
@@ -123,7 +110,6 @@ export interface PushServiceOptions {
   readonly send?: PushSender;
   readonly vapidSubject?: string;
   readonly throttleMs?: number;
-  /** Reuse a store, mostly for tests that want to inspect the same records. */
   readonly store?: PushSubscriptionStore;
 }
 
@@ -149,7 +135,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The lower-case host of an endpoint, or null when it is not a usable URL. */
 export function pushEndpointHost(endpoint: string): string | null {
   try {
     return new URL(endpoint).hostname.toLowerCase() || null;
@@ -158,10 +143,6 @@ export function pushEndpointHost(endpoint: string): string | null {
   }
 }
 
-/**
- * Test mode may only reach hosts that can never deliver to a real device.
- * Returns the refusal message (naming the host) or null when delivery is safe.
- */
 export function testPushGuardError(
   endpoint: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -174,7 +155,6 @@ export function testPushGuardError(
   return `refusing to push to ${named} in test mode; only test hosts are allowed`;
 }
 
-/** Thrown only when the test-mode push guard refuses a real endpoint. */
 export class TestPushGuardError extends Error {
   constructor(message: string) {
     super(message);
@@ -214,12 +194,6 @@ function subscriptionFrom(
   return normalizeSubscription(value, now);
 }
 
-/**
- * Durable `DATA_DIR/push-subscriptions.json`. Reads never throw: a missing,
- * corrupt or unknown file simply starts empty. Writes are coalesced and
- * throttled, and use a temporary file plus rename so a crash cannot leave a
- * half-written registry behind.
- */
 export class PushSubscriptionStore {
   readonly path: string;
   private readonly throttleMs: number;
@@ -271,7 +245,6 @@ export class PushSubscriptionStore {
     }
   }
 
-  /** Adds a subscription. The same endpoint replaces the earlier record. */
   async subscribe(value: unknown): Promise<PushSubscriptionRecord | null> {
     if (this.closed) return null;
     await this.load();
@@ -291,7 +264,6 @@ export class PushSubscriptionStore {
     return this.subscribe(value);
   }
 
-  /** Removes an endpoint, returning whether it was present. Safe to repeat. */
   async remove(endpoint: string): Promise<boolean> {
     await this.load();
     const key = endpoint.trim();
@@ -302,7 +274,6 @@ export class PushSubscriptionStore {
     return true;
   }
 
-  /** Notes a successful delivery without making the sender wait for the write. */
   markOk(endpoint: string): void {
     const current = this.records.get(endpoint);
     if (current === undefined) return;
@@ -439,7 +410,6 @@ export class PushSubscriptionStore {
   }
 }
 
-/** Alternate name for callers that think in stores rather than registries. */
 export { PushSubscriptionStore as PushSubscriptionRegistry };
 
 function createVapidKeys(): PushVapidKeys {
@@ -452,7 +422,6 @@ function createVapidKeys(): PushVapidKeys {
   if (typeof privateJwk.d !== "string") {
     throw new Error("could not export the VAPID private key");
   }
-  // `pushManager.subscribe()` wants the uncompressed point: 0x04 || x || y.
   const point = Buffer.concat([
     Buffer.from([0x04]),
     Buffer.from(publicJwk.x, "base64url"),
@@ -513,10 +482,6 @@ async function readOrCreateVapidKeys(
   return keys;
 }
 
-/**
- * Reads `DATA_DIR/push-vapid.json`, generating the pair on first use. The file
- * keeps the private key at mode 0600 and survives later starts unchanged.
- */
 export function loadOrCreateVapidKeys(
   pathOrDataDir: string,
   options: VapidKeyOptions = {},
@@ -565,11 +530,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/**
- * Owns the VAPID keys and the subscription registry. Sending is best-effort:
- * one dead endpoint is dropped, any other failure is logged and skipped, and
- * `notify()` never throws into a turn or a route.
- */
 export class PushService {
   readonly store: PushSubscriptionStore;
   private readonly dataDir: string;
@@ -614,7 +574,6 @@ export class PushService {
     return this.keys;
   }
 
-  /** The base64url uncompressed point a browser passes as `applicationServerKey`. */
   async publicKey(): Promise<string> {
     return (await this.vapidKeys()).publicKey;
   }
@@ -635,11 +594,6 @@ export class PushService {
     return { subscriptions: (await this.store.read()).length, enabled: true };
   }
 
-  /**
-   * Sends one notification to every stored subscription and returns how many
-   * sends succeeded. Delivery failures are swallowed; only the test-mode guard
-   * throws, so a test can never reach a real push endpoint.
-   */
   async notify(input: PushNotification): Promise<number> {
     let sent = 0;
     try {
@@ -705,7 +659,6 @@ function defaultDataDir(): string {
 
 let defaultService: PushService | undefined;
 
-/** Points the module-level `notify()` used by the server at one data directory. */
 export function configurePush(
   dataDirOrOptions: string | PushServiceOptions,
   options: PushServiceOptions | Omit<PushServiceOptions, "dataDir"> = {},
@@ -739,7 +692,6 @@ export function pushStatus(): Promise<{ subscriptions: number; enabled: true }> 
   return getPushService().status();
 }
 
-/** Best-effort notification used by the operator tool and the task ledger. */
 export async function notify(input: PushNotification): Promise<number> {
   return getPushService().notify(input);
 }

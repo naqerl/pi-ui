@@ -1,12 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { formatDateTime } from "../shared/time";
 import type { RunError } from "../shared/types";
+import { useDialogBackdrop } from "./use-dialog-backdrop";
 
-/**
- * One static line at the top of the chat. It is absolutely placed so it never
- * pushes the transcript down, and the full multi-line error lives behind a
- * click instead of growing the header.
- */
 export function RunErrorHeader({
   error,
   onDismiss,
@@ -25,6 +21,8 @@ export function RunErrorHeader({
     if (open && !dialog.open) dialog.showModal();
     if (!open && dialog.open) dialog.close();
   }, [open]);
+
+  useDialogBackdrop(ref, () => setOpen(false));
 
   return (
     <>
@@ -63,7 +61,6 @@ export function RunErrorHeader({
         </div>
       </div>
       {open && (
-        // biome-ignore lint/a11y/useKeyWithClickEvents: Esc is handled by the dialog cancel event.
         <dialog
           ref={ref}
           data-testid="run-error-dialog"
@@ -71,9 +68,6 @@ export function RunErrorHeader({
           onCancel={(event) => {
             event.preventDefault();
             setOpen(false);
-          }}
-          onClick={(event) => {
-            if (event.target === event.currentTarget) setOpen(false);
           }}
           className="m-0 mt-auto flex max-h-[85vh] w-full max-w-full flex-col overflow-hidden rounded-t-xl border border-destructive/40 bg-surface p-0 text-foreground shadow-xl backdrop:bg-foreground/40 sm:m-auto sm:w-[min(40rem,calc(100vw-2rem))] sm:rounded-xl"
         >

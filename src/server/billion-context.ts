@@ -5,12 +5,6 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-/**
- * The in-process billion-context engine listens on this virtual origin. It is
- * not a DNS name: only the fetch transport installed by billion-context's pi
- * native bootstrap can dispatch requests for it. Every call in this module goes
- * through that transport (`inlineFetch` below), never through plain undici.
- */
 export const BILLION_CONTEXT_INLINE_ORIGIN = "http://billion-context.inline";
 
 const INTERCEPT_FLAG = Symbol.for("billion-context.native-fetch-intercept");
@@ -21,7 +15,6 @@ const PLUGIN_MODEL_HEADER = "x-bili-plugin-model";
 const REQUEST_TIMEOUT_MS = 5_000;
 const MAX_OBSERVED_REQUESTS = 32;
 
-/** Mirrors billion-context@0.1.208's model endpoint matcher. */
 const MODEL_API_SUFFIX =
   /(?:^|\/)(?:v\d+\/)?(?:messages|chat\/completions|completions|responses|conversations)\/?$|(?:^|\/)models\/[^/:?]+:(?:streamGenerateContent|generateContent|countTokens)$/;
 
@@ -64,17 +57,7 @@ export interface BillionContextInline {
   readonly observed: readonly ObservedRequest[];
   readonly fetch: typeof globalThis.fetch;
   currentConversationId(): string | undefined;
-  /**
-   * Supply model limits discovered after the engine was installed. The native
-   * chain normally adds these to model requests; the pi-ui wrapper is outermost
-   * and therefore stamps them itself so the engine can size its compression
-   * window correctly.
-   */
   setModelMetadata(metadata: BiliModelMetadata): void;
-  /**
-   * Identity stamped on model requests. A delegate's `conversationScope` still
-   * wins. This wins over `current.json`. Passing `undefined` clears it.
-   */
   setConversationIdentity(conversationId: string | undefined): void;
   registerIdentity(conversationId?: string): Promise<boolean>;
   manifest(signal?: AbortSignal): Promise<readonly BiliToolDefinition[] | undefined>;
@@ -88,17 +71,11 @@ export interface BillionContextInline {
 }
 
 export interface InstallOptions {
-  /** `<DATA_DIR>/current.json`, the pi-ui single-conversation pointer. */
   readonly currentPath: string;
 }
 
 let installed: BillionContextInline | undefined;
 
-/**
- * A delegate's model requests must carry the delegate conversation's id, not
- * the parent's, or billion-context could compress the child with the parent's
- * state. The in-process delegate wraps its run in this scope.
- */
 const conversationScope = new AsyncLocalStorage<string>();
 
 export function withConversationIdentity<T>(conversationId: string | undefined, run: () => T): T {
@@ -106,11 +83,6 @@ export function withConversationIdentity<T>(conversationId: string | undefined, 
   return conversationScope.run(conversationId, run);
 }
 
-/**
- * Install billion-context's inline engine once per process, then put the pi-ui
- * identity wrapper outermost. Call this before creating the durable session so
- * every model request made by the harness carries the conversation identity.
- */
 export async function installBillionContextInline(
   options: InstallOptions,
 ): Promise<BillionContextInline> {
@@ -118,10 +90,6 @@ export async function installBillionContextInline(
 
   process.env.BILI_PI_INLINE ??= "1";
 
-  // billion-context still parses ACP_PORT/PORT as a listening port even in
-  // inline mode, where it never binds one. PORT=0 is node's "pick an ephemeral
-  // port" convention and is valid for the pi-ui HTTP server, but the engine
-  // rejects it; give the engine its documented override instead.
   if (process.env.PORT === "0" && process.env.ACP_PORT === undefined) {
     process.env.ACP_PORT = "8787";
   }
@@ -149,19 +117,10 @@ export async function installBillionContextInline(
 
   ensureBillionContextDirs();
 
-  // A pre-existing chain already contains the inline transport. Importing
-  // pi-native again would see the chain flag and decline to install, leaving no
-  // accessor to capture (and previously threw); reuse the live chain instead.
   const inlineFetch = hadChain ? globalThis.fetch : await importPiNativeAndCaptureInlineFetch();
   let fallbackConversationId: string | undefined;
   let overrideConversationId: string | undefined;
 
-  // pi-ui has exactly one durable conversation, so one boot-time path is
-  // enough. A future multi-conversation UI must stamp the id from the durable
-  // conversation handling the request; a process-global current.json would
-  // misattribute concurrent conversations. The override is the head-scoped
-  // billion-context id; it must not be written into current.json, which is a
-  // durable conversation pointer and has to stay a positive integer.
   const currentConversationId = (): string | undefined =>
     conversationScope.getStore() ??
     overrideConversationId ??
@@ -172,9 +131,6 @@ export async function installBillionContextInline(
   const modelMetadata: { model?: string; contextWindow?: number; maxOutput?: number } = {};
   const wrapped = createIdentityFetch(inlineFetch, currentConversationId, observed, modelMetadata);
 
-  // This must remain the outermost fetch replacement. billion-context's own
-  // native chain is installed before us; assigning through its accessor would
-  // re-chain us underneath it, so define the property directly.
   Object.defineProperty(globalThis, "fetch", {
     configurable: true,
     enumerable: true,
@@ -213,8 +169,6 @@ export async function installBillionContextInline(
         console.warn("[pi] billion-context: no conversation id to register yet");
         return false;
       }
-      // Keep the id available to the fetch wrapper even if current.json has not
-      // been written yet (for example during a standalone bridge check).
       fallbackConversationId = id;
       try {
         const response = await wrapped(`${baseUrl()}/__bili/plugin/register`, {
@@ -315,9 +269,7 @@ function createDisabled(hadChain: boolean, currentPath: string): BillionContextI
     observed: [],
     fetch: globalThis.fetch,
     currentConversationId: () => overrideConversationId ?? readConversationId(currentPath),
-    setModelMetadata: () => {
-      // The engine is disabled, so there is nothing to size.
-    },
+    setModelMetadata: () => {},
     setConversationIdentity(conversationId) {
       overrideConversationId =
         conversationId === undefined || conversationId.length === 0 ? undefined : conversationId;
@@ -331,12 +283,6 @@ function createDisabled(hadChain: boolean, currentPath: string): BillionContextI
   };
 }
 
-/**
- * billion-context@0.1.208 does not export its inline fetch transport. Its pi
- * bootstrap installs it as the first chain and then installs the native model
- * chain around it. Capture both accessors during the import so requests can be
- * dispatched to the in-process engine without going through DNS.
- */
 async function importPiNativeAndCaptureInlineFetch(): Promise<typeof globalThis.fetch> {
   const captures: Array<typeof globalThis.fetch> = [];
   const realDefineProperty = Object.defineProperty;
@@ -351,9 +297,7 @@ async function importPiNativeAndCaptureInlineFetch(): Promise<typeof globalThis.
       try {
         const candidate: unknown = attributes.get();
         if (typeof candidate === "function") captures.push(candidate as typeof globalThis.fetch);
-      } catch {
-        // The accessor is not ready; the next install attempt may be.
-      }
+      } catch {}
     }
     return result;
   } as typeof Object.defineProperty;
@@ -465,10 +409,7 @@ function ensureBillionContextDirs(): void {
   try {
     accessSync(homedir(), constants.W_OK);
     return;
-  } catch {
-    // Some execution sandboxes mount $HOME read-only while leaving the agent
-    // directory writable. Keep billion-context persistent there instead.
-  }
+  } catch {}
 
   const agentDir = process.env.PI_CODING_AGENT_DIR?.trim();
   if (agentDir === undefined || agentDir.length === 0) return;
@@ -488,11 +429,6 @@ function ensureBillionContextDirs(): void {
 
 const BILI_IDENTITY_FILE = "bili-identity.json";
 
-/**
- * The billion-context id for one durable conversation and one compaction head.
- * Reuses the stored id when the head matches, so a restart does not abandon a
- * fold that is still valid. `current.json` is left untouched.
- */
 export function biliIdentityForHead(
   currentPath: string,
   durableId: string,
@@ -546,9 +482,7 @@ function readConversationId(path: string): string | undefined {
     const value = parsed.conversationId;
     if (typeof value === "string" && value.length > 0) return value;
     if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return String(value);
-  } catch {
-    // Missing or malformed files are normal before the first conversation exists.
-  }
+  } catch {}
   return undefined;
 }
 
@@ -585,16 +519,11 @@ function withUrl(
   url: string,
 ): { input: Parameters<typeof fetch>[0]; init: RequestInit | undefined } {
   if (input instanceof Request) {
-    // Reuse the request body stream instead of buffering or re-serialising it.
     return { input: new Request(url, input), init };
   }
   return { input: url, init };
 }
 
-/**
- * Add headers without touching the body. Request headers are mutable in Node;
- * for string/URL input and an init object, only the headers object is replaced.
- */
 function withHeaders(
   input: Parameters<typeof fetch>[0],
   init: RequestInit | undefined,
@@ -606,9 +535,7 @@ function withHeaders(
     try {
       for (const [name, value] of Object.entries(extra)) input.headers.set(name, value);
       if (init?.headers === undefined) return { input, init };
-    } catch {
-      // If a Request guard rejects mutation, fall through to init-only stamping.
-    }
+    } catch {}
   }
 
   if (init?.headers !== undefined) {

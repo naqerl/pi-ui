@@ -1,11 +1,8 @@
 import { useEffect, useId, useRef } from "react";
 import { CloseIcon } from "./icons";
 import { mediaUrl } from "./media-client";
+import { useDialogBackdrop } from "./use-dialog-backdrop";
 
-/**
- * The full-screen image surface. It is a native modal dialog, so focus stays on
- * the image, Escape closes it and the task behind it keeps its scroll position.
- */
 export function MediaViewer({
   id,
   alt,
@@ -32,8 +29,9 @@ export function MediaViewer({
     };
   }, []);
 
+  useDialogBackdrop(dialogRef, onClose);
+
   return (
-    // biome-ignore lint/a11y/useKeyWithClickEvents: Esc is handled by the dialog cancel event.
     <dialog
       ref={dialogRef}
       data-testid="media-viewer"
@@ -41,9 +39,6 @@ export function MediaViewer({
       onCancel={(event) => {
         event.preventDefault();
         onClose();
-      }}
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
       }}
       className="m-0 h-dvh max-h-dvh w-screen max-w-screen overflow-hidden bg-black/85 p-0 text-white backdrop:bg-black/60"
     >

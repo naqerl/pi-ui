@@ -1,7 +1,6 @@
 import { Badge } from "./components/ui/badge";
 import { cn } from "./lib/utils";
 
-/** The compact chip that says this task's plan agent has a live run right now. */
 export function TaskPlanningBadge({ testId, className }: { testId: string; className?: string }) {
   return (
     <Badge

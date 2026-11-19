@@ -123,7 +123,6 @@ test("an early-returning drain does not poison the next wake", async () => {
   try {
     internal.runState = "idle";
     internal.queued.set("7", {});
-    // This known-facts pass returns immediately: a live guard must not outlive it.
     await internal.drainQueuedInputs({ run: false, inbox: 0, submitting: 0 });
     assert.deepEqual(submitted, []);
     internal.durableRunFacts = async () => ({ run: false, inbox: 1, submitting: 0 });

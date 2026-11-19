@@ -9,28 +9,21 @@ import {
 import { mcpEventText, mcpMergedNoticeTexts } from "./chat-service.js";
 import { deriveStableId } from "./mcp-subscriptions.js";
 
-/** Events kept in one waiting delivery. Older events are dropped and counted. */
 export { MAX_PENDING_MCP_EVENTS };
 
 export interface McpDelivery {
   id: string;
-  /** The first text of the delivery; also the whole delivery when it fits. */
   text: string;
   at: string;
-  /** Every text of an over-cap merged delivery, in order. Absent when text is enough. */
   texts?: string[];
-  /** One part of a multi-part merge; it already carries its own remainder summary. */
   mergedChunk?: boolean;
-  /** Event keys folded into this delivery, so a restart keeps the dedupe set. */
   keys?: string[];
 }
 
-/** All texts one delivery renders, including a merged delivery that had to split. */
 export function deliveryTexts(item: McpDelivery): string[] {
   return item.texts !== undefined && item.texts.length > 0 ? item.texts : [item.text];
 }
 
-/** The bounded parts of one logical delivery, each with a stable per-part identity. */
 export function deliveryParts(item: McpDelivery): McpDelivery[] {
   const texts = deliveryTexts(item);
   if (texts.length === 1) return [{ ...item, text: texts[0] ?? item.text, texts: undefined }];
@@ -56,7 +49,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Parse the same envelope shape chat-service renders and splits. */
 function deliveryEnvelope(text: string): DeliveryEnvelope | null {
   if (!text.startsWith(MCP_EVENTS_HEAD)) return null;
   const newline = text.indexOf("\n");
@@ -70,7 +62,6 @@ function deliveryEnvelope(text: string): DeliveryEnvelope | null {
   };
 }
 
-/** One transient line, replaced rather than appended when another batch is folded in. */
 function batchHead(head: string, dropped: number): string {
   const base = head.replace(SUMMARY_SUFFIX, "").replace(DROP_SUFFIX, "");
   if (dropped <= 0) return base;
@@ -78,7 +69,6 @@ function batchHead(head: string, dropped: number): string {
   return `${base} ${dropped} older ${suffix} dropped from this batch.`;
 }
 
-/** Event ids are the dedupe key, including across two subscriptions to one server. */
 function eventKey(item: unknown): string {
   if (isRecord(item) && isRecord(item.event)) {
     const event = item.event;
@@ -101,10 +91,8 @@ function eventKey(item: unknown): string {
   return `event:${JSON.stringify(item)}`;
 }
 
-/** Newest keys retained for one stable id in the durable dedupe set. */
 export const MAX_SEEN_PER_STABLE_ID = 500;
 
-/** The stable id is the first part of every JSON-array event key. */
 function keyStableId(key: string): string | undefined {
   try {
     const parsed: unknown = JSON.parse(key);
@@ -114,7 +102,6 @@ function keyStableId(key: string): string | undefined {
   }
 }
 
-/** Keep the newest keys per stable id, preserving their original global order. */
 function boundSeen(keys: readonly string[]): string[] {
   const totals = new Map<string, number>();
   for (const key of keys) {
@@ -136,7 +123,6 @@ function boundSeen(keys: readonly string[]): string[] {
   return bounded;
 }
 
-/** Stable ids named by an older delivery that predates per-event keys. */
 function envelopeStableIds(item: McpDelivery): Set<string> {
   const ids = new Set<string>();
   for (const text of deliveryTexts(item)) {
@@ -160,7 +146,6 @@ function deliveryStableIds(item: McpDelivery): Set<string> {
   return ids.size === 0 ? envelopeStableIds(item) : ids;
 }
 
-/** The cursor/event id is the last part of an event key. */
 function keyCursor(key: string): string | undefined {
   try {
     const parsed: unknown = JSON.parse(key);
@@ -178,18 +163,13 @@ function itemCursor(item: unknown): string | undefined {
   return typeof cursor === "string" || typeof cursor === "number" ? String(cursor) : undefined;
 }
 
-/** Remove only one stable id's events from a batch that may also carry siblings. */
 function withoutStable(item: McpDelivery, stableId: string): McpDelivery | null {
   const keys = item.keys ?? [];
   const forgottenKeys = keys.filter((key) => keyStableId(key) === stableId);
   if (forgottenKeys.length === 0 && keys.length > 0) return item;
   const keptKeys = keys.filter((key) => keyStableId(key) !== stableId);
-  // A split delivery stores every part in `texts`; never rebuild from `text` alone.
   const envelopes = deliveryTexts(item).map(deliveryEnvelope);
   if (envelopes.some((envelope) => envelope === null)) {
-    // Status, recovery and gap notices have no event list. An older row may
-    // carry an event key stamped onto the whole merged group; strip the
-    // forgotten key but never discard the notice itself.
     if (keys.length === 0) return item;
     return {
       ...item,
@@ -212,14 +192,8 @@ function withoutStable(item: McpDelivery, stableId: string): McpDelivery | null 
       return deriveStableId(entry.server, name, {}) !== stableId;
     });
   } else if (keys.length === events.length) {
-    // The intake supplies one key per event, in envelope order. This also
-    // distinguishes two streams that reuse the same cursor in one generation.
     kept = events.filter((_entry, index) => keyStableId(keys[index] ?? "") !== stableId);
   } else {
-    // Key/event counts differ when mergeDeliveryTexts dedupes two sibling
-    // subscriptions that share a cursor. Cursor-only deletion would then take
-    // the surviving sibling with the forgotten one: keep any event that still
-    // has a remaining key for that cursor.
     const keptCursors = new Set(
       keptKeys.flatMap((key) => {
         const cursor = keyCursor(key);
@@ -242,7 +216,6 @@ function withoutStable(item: McpDelivery, stableId: string): McpDelivery | null 
     return keys.length === 0 ? item : { ...item, keys: keptKeys };
   }
   if (kept.length === 0) return null;
-  // Rebuild the split so each surviving part gets a correct remainder summary.
   const texts = mcpMergedNoticeTexts({ head, items: kept, dropped }, kept);
   return {
     ...item,
@@ -252,10 +225,8 @@ function withoutStable(item: McpDelivery, stableId: string): McpDelivery | null 
   };
 }
 
-/** Join delivery texts into bounded envelopes (or one plain notice). */
 export function mergeDeliveryTexts(texts: readonly string[]): string[] {
   if (texts.length === 0) return [];
-  // An identical notice queued twice (a replay) must not count its gap twice.
   const uniqueTexts = [...new Set(texts)];
   const envelopes = uniqueTexts.map(deliveryEnvelope);
   if (envelopes.every((envelope) => envelope !== null)) {
@@ -278,14 +249,9 @@ export function mergeDeliveryTexts(texts: readonly string[]): string[] {
       events.splice(0, events.length - MAX_PENDING_MCP_EVENTS);
     }
     const envelope = { head: batchHead(head, dropped), items: events, dropped };
-    // A gap-only batch has no events to split, but must still reach chat.
     if (events.length === 0) return [mcpEventText(envelope, [])];
-    // Keep the split contract: an over-cap merge renders several bounded parts,
-    // each carrying the remaining count, instead of one oversized notice.
     return mcpMergedNoticeTexts(envelope, events);
   }
-  // Status and raw notices have no event list. Keep one bounded text rather than
-  // turning a merged delivery into a second queue entry.
   return [uniqueTexts.join("\n\n")];
 }
 
@@ -314,9 +280,6 @@ function mergeItems(items: readonly McpDelivery[]): McpDelivery {
   };
 }
 
-/** Event envelopes and status/raw notices never share a text: a blank-line join
- * would start with the event head but no longer parse as an envelope. Keep one
- * waiting item of each kind and merge each kind with its own shape. */
 function mergeByKind(items: readonly McpDelivery[], freshMergedIds = false): McpDelivery[] {
   const groups: Record<DeliveryKind, McpDelivery[]> = { events: [], notice: [] };
   for (const item of items) groups[deliveryKind(item)].push(item);
@@ -324,24 +287,17 @@ function mergeByKind(items: readonly McpDelivery[], freshMergedIds = false): Mcp
     .filter((group) => group.length > 0)
     .map((group) => {
       const merged = mergeItems(group);
-      // A single restored item keeps the durable id it was submitted under.
-      // Only a real merge of several old rows needs a new request id.
       return freshMergedIds && group.length > 1 ? { ...merged, id: randomUUID() } : merged;
     });
 }
 
-/** Persist before acknowledging the provider cursor. Delivery uses a durable request id,
- * so a crash after submission but before removal is harmless. One waiting item, one FIFO
- * retry loop: a burst while the first item is in flight is folded into the next delivery. */
 export class McpOutbox {
   private pending: McpDelivery[] = [];
   private seen: string[] = [];
   private writes: Promise<unknown> = Promise.resolve();
   private draining: Promise<void> | undefined;
   private delivering: string | undefined;
-  /** Delivered parts whose item removal write has not succeeded yet; keep them protected. */
   private readonly delivered = new Set<string>();
-  /** A restored pending item may already be durable; never fold new events into its id. */
   private restoredHead: string | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private closed = false;
@@ -369,16 +325,12 @@ export class McpOutbox {
         )
       )
         throw new Error("Invalid MCP outbox");
-      // The first item may already have reached durable before the crash, so
-      // keep its request id and deliver it separately. An older file may hold
-      // one item per event behind it; that tail is the one waiting delivery.
       const [head, ...tail] = data.pending as McpDelivery[];
       const waiting = mergeByKind(tail, true);
       this.pending = head === undefined ? [] : [head, ...waiting];
       this.restoredHead = head?.id;
       const seen = Array.isArray(data.seen) ? data.seen : [];
       this.seen = boundSeen(seen);
-      // Persist a trim left by an older file instead of waiting for a delivery.
       if (this.seen.length !== seen.length) {
         await this.write(this.pending, this.seen);
       }
@@ -419,10 +371,6 @@ export class McpOutbox {
     return this.seen.includes(key);
   }
 
-  /**
-   * Drop one stable id's old generation from both the durable seen set and any
-   * waiting delivery. Other streams keep their keys and pending batches.
-   */
   forgetStable(stableId: string): Promise<void> {
     return this.update(
       (items) =>
@@ -443,8 +391,6 @@ export class McpOutbox {
   async enqueueMany(texts: string[], keys: string[] = []): Promise<void> {
     if (this.closed) throw new Error("MCP outbox closed");
     if (texts.length === 0) {
-      // A gap-only batch has no novel text but its event keys still belong in
-      // the seen set. Keep any pending delivery exactly as it was.
       if (keys.length > 0) await this.update((items) => items, keys);
       return;
     }
@@ -452,17 +398,11 @@ export class McpOutbox {
       (text): McpDelivery => ({ id: randomUUID(), text, at: new Date().toISOString() }),
     );
     await this.update((items) => {
-      // Resolve the protected item inside the serialized write. Capturing it
-      // before this callback lets an enqueue that runs while drain() is just
-      // starting merge into an item whose old text is already being delivered.
       const protectedId = this.delivering ?? this.restoredHead;
       const inFlight =
         protectedId === undefined ? undefined : items.find((item) => item.id === protectedId);
       const waiting = items.filter((item) => item.id !== protectedId);
       const merged = mergeByKind([...waiting, ...added]).map((item) => {
-        // Event keys identify events, not the status/recovery/gap notice that
-        // happened to share this enqueue. Stamping them here made a later
-        // generation clear delete an unrelated notice row.
         if (deliveryKind(item) !== "events") return item;
         const itemKeys = [...new Set([...(item.keys ?? []), ...keys])];
         return {
@@ -474,7 +414,6 @@ export class McpOutbox {
     }, keys);
   }
 
-  /** Start after chat recovery, and after newly accepted batches have advanced the feed. */
   start(): void {
     if (this.closed || this.draining !== undefined) return;
     if (this.timer !== undefined) clearTimeout(this.timer);
@@ -493,11 +432,6 @@ export class McpOutbox {
         if (item === undefined) return;
         this.delivering = item.id;
         const parts = deliveryParts(item);
-        // A removal-write failure leaves a successfully delivered item in the
-        // file. Retry the removal, not the submission: its durable request id
-        // already names this exact text, so merging another event into it would
-        // be deduplicated away without ever reaching the chat. Each part has its
-        // own stable identity, so a retry resumes rather than replaying earlier parts.
         for (const part of parts) {
           if (this.delivered.has(part.id)) continue;
           await this.deliver(part);
@@ -509,8 +443,6 @@ export class McpOutbox {
         this.delivering = undefined;
       }
     } catch (error) {
-      // Keep delivering/delivered parts: an item already passed to deliver() must
-      // stay protected until its removal write succeeds.
       console.error("[mcp] durable delivery pending; will retry", error);
       if (!this.closed) {
         this.timer = setTimeout(() => this.start(), this.retryMs);
@@ -527,8 +459,6 @@ export class McpOutbox {
   }
 }
 
-/** Do not let a later cursor overtake a batch whose disk write failed. Shutdown
- * leaves the cursor unacknowledged so the provider can replay it next time. */
 export class McpIntake {
   private tail: Promise<void> = Promise.resolve();
   private closed = false;

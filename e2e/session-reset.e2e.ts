@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { beforeEach, describe, test } from "@e2e-dev/web";
 import { expect, type Screen } from "e2e";
 
-/** The built app registers /sw.js, and a worker's requests bypass Playwright routes. */
 async function openChat(
   app: { open: (path: string) => Promise<void> },
   browser: { addInitScript: (script: () => void) => Promise<void> },
@@ -26,7 +25,6 @@ async function resetFromSettings(screen: Screen) {
   await screen.getByTestId("reset-session").tap();
 }
 
-/** The public state of the tab the fixture drives. */
 async function snapshot(browser: { evaluate: <T>(fn: () => Promise<T>) => Promise<T> }) {
   return browser.evaluate(async () => {
     const response = await fetch("/api/state", { cache: "no-store" });
@@ -89,14 +87,10 @@ describe("session reset", () => {
       await composer.fill(`TOOLCALLS ${JSON.stringify(calls)}`);
       await screen.getByRole("button", { name: "Send" }).tap();
       await expect(screen.getByRole("button", { name: "Stop" })).toBeVisible();
-      // Wait until the model has actually called the held tool. A reset admitted
-      // before the first tool round may land earlier than the post-tools boundary.
       await expect(browser.locator('[data-testid="run-info"]')).toBeVisible({ timeout: 15_000 });
       await expect(browser.locator('[data-testid="session-reset"]')).toHaveCount(0);
 
       await resetFromSettings(screen);
-      // The tool is still held open, so the queued reset has not been placed and the
-      // live run is still running instead of being interrupted by the click.
       await new Promise((resolve) => setTimeout(resolve, 500));
       await expect(screen.getByRole("button", { name: "Stop" })).toBeVisible();
       await expect(browser.locator('[data-testid="session-reset"]')).toHaveCount(0);
@@ -134,9 +128,6 @@ describe("session reset", () => {
       timeout: 15_000,
     });
 
-    // The parent's stream is already open, so aborting future stream requests only
-    // starves the second tab: it misses session.reset and keeps its stale transcript
-    // until a state read tells it the reset is newer.
     await browser.route("**/api/stream", async (route) => {
       await route.abort();
     });
@@ -175,9 +166,7 @@ describe("session reset", () => {
               ) {
                 return { open: true, stale, reset };
               }
-            } catch {
-              // The child document is still navigating.
-            }
+            } catch {}
             await new Promise((resolve) => setTimeout(resolve, 50));
           }
           return { open: true, stale: false, reset: 0 };
@@ -190,7 +179,6 @@ describe("session reset", () => {
 
     await resetFromSettings(screen);
     await expect(browser.locator('[data-testid="session-reset"]')).toHaveCount(1);
-    // The parent saw the live frame; the silent tab still holds the old transcript.
     expect((await child(text, false)).stale).toBe(true);
 
     await browser.evaluate(() => {

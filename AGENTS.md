@@ -11,8 +11,13 @@ card with a solid or blurred background until a task explicitly says otherwise.
 Every interactive control gets the global press feedback from `index.css`: it
 compresses on pointer-down and eases back on release. Do not disable it in a
 component unless the control owns its own pointer gesture; in that case add
-`data-no-press` and a comment explaining why. Reduced motion must always be
-honoured.
+`data-no-press`. Reduced motion must always be honoured.
+
+## No comments
+
+Source, styles, container files, workflows and shell scripts carry no comments.
+Names and structure must make each site self-evident. `scripts/check-comments.mjs`
+runs in lint and build and fails on any comment that comes back.
 
 ## Spacing
 

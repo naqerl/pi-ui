@@ -18,6 +18,7 @@ import {
   zoomAt,
 } from "./diagram-viewer";
 import { CloseIcon, MinusIcon } from "./icons";
+import { useDialogBackdrop } from "./use-dialog-backdrop";
 
 const TOOLBAR_BUTTON =
   "theme-radius min-h-8 border border-foreground/15 bg-background px-xl py-sm font-mono text-[11px] leading-4 text-foreground hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40 disabled:opacity-40";
@@ -48,7 +49,6 @@ interface DiagramViewerProps {
   onClose: () => void;
 }
 
-/** Pele writes width and height attributes; the viewBox keeps them exact for the transform. */
 function svgSize(svg: string): { width: number; height: number } {
   try {
     const document = new DOMParser().parseFromString(svg, "image/svg+xml");
@@ -73,9 +73,7 @@ function svgSize(svg: string): { width: number; height: number } {
     if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) {
       return { width, height };
     }
-  } catch {
-    // A malformed SVG still gets a viewer; the drawing itself explains the parse failure.
-  }
+  } catch {}
   return { width: 1, height: 1 };
 }
 
@@ -88,16 +86,9 @@ function midpoint(a: Point, b: Point): Point {
 }
 
 function SvgMarkup({ svg }: { svg: string }) {
-  return (
-    // biome-ignore lint/security/noDangerouslySetInnerHtml: pele escapes diagram text and filters links and styles.
-    <div className="diagram-svg h-full w-full" dangerouslySetInnerHTML={{ __html: svg }} />
-  );
+  return <div className="diagram-svg h-full w-full" dangerouslySetInnerHTML={{ __html: svg }} />;
 }
 
-/**
- * The full-screen drawing. It keeps the SVG (not a bitmap) so text stays crisp, and turns
- * pointer, wheel and double-tap input into a transform without touching the transcript.
- */
 export function DiagramViewer({ id, revision, source, svg, onClose }: DiagramViewerProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -161,11 +152,12 @@ export function DiagramViewer({ id, revision, source, svg, onClose }: DiagramVie
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
   };
 
+  useDialogBackdrop(dialogRef, onClose);
+
   useEffect(() => {
     const dialog = dialogRef.current;
     const bodyOverflow = document.body.style.overflow;
     const htmlOverflow = document.documentElement.style.overflow;
-    // The transcript behind the viewer must not move while it is open.
     document.body.style.overflow = "hidden";
     document.documentElement.style.overflow = "hidden";
     if (dialog !== null && !dialog.open) dialog.showModal();
@@ -189,9 +181,9 @@ export function DiagramViewer({ id, revision, source, svg, onClose }: DiagramVie
     return () => observer.disconnect();
   }, []);
 
-  // Open on a fit; a rotation or a resized window also starts from a usable fit.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reset only when the stage or drawing changes
   useEffect(() => {
+    void contentSize.height;
+    void contentSize.width;
     if (viewport.width === 0 || viewport.height === 0) return;
     reset();
   }, [contentSize.height, contentSize.width, viewport.height, viewport.width, reset]);
@@ -215,9 +207,7 @@ export function DiagramViewer({ id, revision, source, svg, onClose }: DiagramVie
     pointersRef.current.set(event.pointerId, point);
     try {
       event.currentTarget.setPointerCapture(event.pointerId);
-    } catch {
-      // Synthetic pointer input (and some embedded browsers) cannot be captured.
-    }
+    } catch {}
     if (pointersRef.current.size === 1) {
       dragRef.current = {
         pointerId: event.pointerId,
@@ -274,9 +264,7 @@ export function DiagramViewer({ id, revision, source, svg, onClose }: DiagramVie
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
-    } catch {
-      // The pointer may already have been released by the browser.
-    }
+    } catch {}
 
     if (pinchRef.current !== null) {
       pinchRef.current = null;
@@ -309,7 +297,6 @@ export function DiagramViewer({ id, revision, source, svg, onClose }: DiagramVie
   };
 
   return (
-    // biome-ignore lint/a11y/useKeyWithClickEvents: Esc is handled by the dialog's cancel event.
     <dialog
       ref={dialogRef}
       data-testid="diagram-viewer"
@@ -317,9 +304,6 @@ export function DiagramViewer({ id, revision, source, svg, onClose }: DiagramVie
       onCancel={(event) => {
         event.preventDefault();
         onClose();
-      }}
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
       }}
       className="m-auto h-[calc(100dvh-1.5rem)] w-[calc(100vw-1.5rem)] max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-xl border border-foreground/15 bg-surface p-0 text-foreground shadow-xl backdrop:bg-black/40 sm:h-[calc(100dvh-3rem)] sm:w-[calc(100vw-3rem)] sm:max-w-[calc(100vw-3rem)]"
     >
