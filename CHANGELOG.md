@@ -1,3 +1,18 @@
+## 1.11.0
+
+### Added
+
+- Activity rows show their own duration: a tool row reports the execution time its result records, and a thinking row runs from the previous row in the same turn. A row that is still running has no duration yet, and an expanded row keeps its four-sided card. (gb82)
+
+### Fixed
+
+- The activity timer no longer steps backwards. A tool row is measured from the start derived from its recorded duration, not from the moment its result arrived, so replacing a live row with its result — or a reconnect that repeats it — keeps the elapsed time monotonic. (5y4s)
+- The transcript reserves its reading space while the first snapshot is in flight. A delayed placeholder card fills the area instead of letting the composer jump, and a fast snapshot never flashes it; the old centred `Loading…` chip stays for the cases the card does not cover, so the two never render together. (sstr)
+- The activity chip aligns its chevron, summary and wrap on a narrow screen, expanded activity and job rows use the carded four-sided panel instead of a cropped strip of background, and the task-details header keeps the same 8px step as every other stack. (aqk7)
+- A run interrupted by a server restart is now one short status line, "The previous run was interrupted by a server restart": plain text, no dialog, no click affordance and no hover. A run the operator stopped keeps its dialog so the recorded note stays available. (nuw2)
+- The composer dock reads status first and job counts second, and the counts no longer carry the negative margin that used to line them up with the plus button. (wi2i)
+- The plan agent sees the task's attached images before its first response. The images enter its context as one model-facing entry — only newly added ids get image blocks, and a later attachment while the chat is open is a delta — with no transcript row. A text-only plan model gets a truthful note instead of image blocks it would reject. (jrbx)
+
 ## 1.10.0
 
 ### Changed

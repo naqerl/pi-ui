@@ -78,8 +78,6 @@ export interface ChatMessage {
   repair?: { baseRevision: number };
   /** True when a server restart cut off this assistant response. */
   partial?: boolean;
-  /** Operator choices recorded for a task-agent question set, shown as a readable block. */
-  questionAnswers?: TaskQuestionAnswerBlock;
   /** Input and output tokens for this assistant call. Omitted when the call also produced activity. */
   usage?: TokenSpend;
 }
@@ -132,11 +130,6 @@ export interface AnsweredQuestionItem {
   values: string[];
   labels: string[];
   text: string;
-}
-
-export interface TaskQuestionAnswerBlock {
-  setId: string;
-  answers: AnsweredQuestionItem[];
 }
 
 /** The durable record of an answered set. */
@@ -517,6 +510,8 @@ export interface Task {
   releaseReason?: string;
   /** True on a client view while this task's plan agent has a live run. Derived, never stored. */
   planning?: boolean;
+  /** Pending plan-agent questions on a client view, or null. Derived, never stored. */
+  questions?: TaskQuestionSet | null;
   /** When the task was closed, or null while it is open. */
   completedAt: string | null;
   /** The report recorded when the task was closed, or null while it is open. */

@@ -204,7 +204,8 @@ test("a job notice reaches an open turn without starting another", async () => {
     assert.equal(box.chips.length, 0, "a notice does not finish the turn");
 
     box.finish(run.id, { text: "build done" });
-    await waitFor(() => box.manager.get(run.id).status === "idle");
+    // The turn turns idle before its notice is written; wait for the chip it promises.
+    await waitFor(() => box.manager.get(run.id).status === "idle" && box.chips.length === 1);
     assert.equal(box.chips.length, 1, "only the finished turn chips");
   } finally {
     await cleanup(manager, dir);

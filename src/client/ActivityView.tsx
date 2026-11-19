@@ -3,7 +3,7 @@ import type { BuiltinJob } from "../shared/dashboard";
 import { noticeIconName } from "../shared/queue";
 import { formatTime } from "../shared/time";
 import type { ActivityItem } from "../shared/types";
-import { activitySummary } from "./activity-format";
+import { activitySummary, formatDuration, rowDurationMs } from "./activity-format";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./components/ui/collapsible";
 import { ChevronIcon, CloseIcon, NoticeIcon } from "./icons";
 import { cn } from "./lib/utils";
@@ -41,6 +41,9 @@ const PREVIEW_CHARS = 4000;
 const DISCLOSURE_BOX =
   "flex size-4 shrink-0 items-center justify-center transition-transform group-data-[state=open]:rotate-90 motion-reduce:transition-none";
 const SINGLE_LINE_SHIFT = "-translate-y-[1.5px]";
+/** An expanded row's panel: a four-sided card, not a cropped strip of background. */
+const EXPANDED_PANEL =
+  "theme-radius mb-lg space-y-xl border border-border bg-muted/40 px-xl py-xl text-xs";
 
 /** Keep the optical shift for one-line summaries, but leave a wrapped block centred. */
 function useDisclosureAlignment() {
@@ -167,7 +170,7 @@ function JobActivityRow({
         )}
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="theme-radius space-y-xl border-b border-border bg-muted/40 px-xl py-xl pl-2xl text-xs">
+        <div className={EXPANDED_PANEL} data-testid="activity-panel">
           <dl className="grid grid-cols-[auto_1fr] gap-x-xl gap-y-sm font-mono text-xs">
             <JobField label="Job" value={notice.id} />
             <JobField label="Name" value={notice.name} />
@@ -212,18 +215,27 @@ function liveJobActivity(job: BuiltinJob, output: string): ActivityItem {
 
 function ActivityRow({
   activity,
+  previous,
   defaultOpen = false,
 }: {
   activity: ActivityItem;
+  previous?: ActivityItem;
   defaultOpen?: boolean;
 }) {
   if (activity.kind === "job")
     return <JobActivityRow activity={activity} defaultOpen={defaultOpen} />;
-  return <TextActivityRow activity={activity} />;
+  return <TextActivityRow activity={activity} previous={previous} />;
 }
 
-function TextActivityRow({ activity }: { activity: Exclude<ActivityItem, { kind: "job" }> }) {
-  const summary = activitySummary(activity);
+function TextActivityRow({
+  activity,
+  previous,
+}: {
+  activity: Exclude<ActivityItem, { kind: "job" }>;
+  previous?: ActivityItem;
+}) {
+  const durationMs = rowDurationMs(activity, previous);
+  const summary = activitySummary(activity, durationMs === undefined);
   const failed = activity.kind === "tool" && activity.isError;
   const { summaryRef, disclosureClassName } = useDisclosureAlignment();
   return (
@@ -242,9 +254,17 @@ function TextActivityRow({ activity }: { activity: Exclude<ActivityItem, { kind:
         <span ref={summaryRef} className="min-w-0 flex-1 [overflow-wrap:anywhere]">
           {summary}
         </span>
+        {durationMs !== undefined && (
+          <span
+            data-testid="activity-duration"
+            className="shrink-0 whitespace-nowrap tabular-nums opacity-60"
+          >
+            {formatDuration(durationMs)}
+          </span>
+        )}
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="theme-radius space-y-xl border-b border-border bg-muted/40 px-xl py-xl pl-2xl text-xs">
+        <div className={EXPANDED_PANEL} data-testid="activity-panel">
           {activity.kind === "tool" ? (
             <>
               <Detail label="arguments">{activity.arguments}</Detail>
@@ -272,13 +292,11 @@ export function ActivityView({
 }: ActivityViewProps) {
   const locationRun = new URLSearchParams(window.location.search).get("run");
   const run = runProp === undefined ? locationRun : runProp;
-  const activities = useMemo(() => {
+  const activityGroups = useMemo(() => {
     const groups = groupTimeline(timeline);
-    const selected =
-      run === null
-        ? groups
-        : groups.filter((group) => group.kind === "activity" && group.key === run);
-    return selected.flatMap((group) => (group.kind === "activity" ? group.items : []));
+    return groups.flatMap((group) =>
+      group.kind === "activity" && (run === null || group.key === run) ? [group.items] : [],
+    );
   }, [run, timeline]);
   const liveJobs = useMemo(() => {
     const all = jobs ?? [];
@@ -313,10 +331,20 @@ export function ActivityView({
     () => liveJobs.map((job) => liveJobActivity(job, liveOutputs[job.id] ?? "")),
     [liveJobs, liveOutputs],
   );
-  const shownActivities =
-    focusJobId === undefined || focusJobId === null
-      ? [...liveActivities, ...activities]
-      : liveActivities;
+  const shownActivities = useMemo(() => {
+    const rows: { activity: ActivityItem; previous?: ActivityItem }[] = liveActivities.map(
+      (activity) => ({ activity }),
+    );
+    if (focusJobId !== undefined && focusJobId !== null) return rows;
+    // Each group is one contiguous turn. Its first row has no predecessor, so a new turn
+    // never measures its first step from the previous turn's last row.
+    for (const items of activityGroups) {
+      for (const [index, activity] of items.entries()) {
+        rows.push(index === 0 ? { activity } : { activity, previous: items[index - 1] });
+      }
+    }
+    return rows;
+  }, [activityGroups, focusJobId, liveActivities]);
 
   const card = (
     <div
@@ -373,10 +401,11 @@ export function ActivityView({
           </p>
         )}
         <div>
-          {shownActivities.map((activity) => (
+          {shownActivities.map(({ activity, previous }) => (
             <ActivityRow
               key={activity.id}
               activity={activity}
+              previous={previous}
               {...(activity.kind === "job" && focusJobId === activity.notice.id
                 ? { defaultOpen: true }
                 : {})}

@@ -75,13 +75,22 @@ test("a live run row does not step back when a tool result replaces its start", 
     "2 tool calls · 16.0s",
   );
 
-  // The result's timestamp is when it arrived; its duration recovers the start it replaced.
-  const finishedFirst = toolActivity({ id: "a-1", timestamp: at(16), durationMs: 16_000 });
+  const finishedFirst = toolActivity({
+    id: "a-1",
+    timestamp: at(16),
+    durationMs: 16_000,
+  });
   assert.equal(
     groupSummary([finishedFirst, liveSecond], true, RUN_START + 16_000),
     "2 tool calls · 16.0s",
   );
   assert.equal(activitySummary(finishedFirst), "bash · 16.0s · ok");
+
+  const anchored = groupStartMs([liveFirst]);
+  assert.equal(
+    groupSummaryParts([finishedFirst], true, RUN_START + 16_000, undefined, anchored).at(-1),
+    "16.0s",
+  );
 
   // A result without a duration cannot recover its start, so the group's earlier anchor
   // keeps the elapsed time from falling back to the second row's start.
@@ -90,7 +99,6 @@ test("a live run row does not step back when a tool result replaces its start", 
     groupSummary([noDuration, liveSecond], true, RUN_START + 16_000),
     "2 tool calls · 13.0s",
   );
-  const anchored = groupStartMs([liveFirst]);
   assert.equal(
     groupSummaryParts([noDuration, liveSecond], true, RUN_START + 16_000, undefined, anchored).at(
       -1,

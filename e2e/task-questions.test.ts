@@ -20,8 +20,9 @@ function tool(name: string) {
   return found;
 }
 
-async function call(name: string, questions: unknown, taskId = "tool-1") {
-  return tool(name).execute({ questions } as never, { taskId } as never, context);
+async function call(name: string, questions: unknown, callId = "call-1") {
+  // The real harness gives every tool task a numeric id and every invocation a string call id.
+  return tool(name).execute({ questions } as never, { taskId: 42, callId } as never, context);
 }
 
 function text(result: Awaited<ReturnType<typeof call>>) {
@@ -135,7 +136,7 @@ test("append_questions merges into the same persisted pending set", async () => 
   assert.deepEqual(await reloaded.pending(), merged);
 });
 
-test("ask_questions returns the same ids and clears the pending set after answering", async () => {
+test("ask_questions returns immediately and leaves the set pending for the Plan tab", async () => {
   const questions: TaskQuestion[] = [
     {
       id: "layout",
@@ -162,38 +163,125 @@ test("ask_questions returns the same ids and clears the pending set after answer
       allowOther: true,
     },
   ];
-  const running = call("ask_questions", questions, "tool-ask");
-  let set = await pending();
-  for (let attempt = 0; attempt < 50 && set === null; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    set = await pending();
-  }
+  const result = text(await call("ask_questions", questions, "tool-ask"));
+  assert.equal(result.isError, false);
+  assert.match(result.text, /Registered 3 questions/);
+  assert.match(result.text, /layout, parts, notes/);
+  assert.match(result.text, /Do not wait/);
+
+  const set = await pending();
   assert.ok(set);
   assert.deepEqual(
     set.questions.map((question) => question.id),
     ["layout", "parts", "notes"],
   );
 
+  // A fresh store reads the same pending set, as after a page reload or server restart.
+  const reloaded = new TaskQuestionsStore(path);
+  await reloaded.load();
+  assert.deepEqual(await reloaded.pending(), set);
+
   const answers = [
     { id: "layout", values: ["split"], text: "" },
     { id: "parts", values: ["sidebar", "timeline"], text: "" },
     { id: "notes", values: [], text: "Keep the phone width in mind." },
   ];
-  const answered = await store.answer(set.id, answers);
-  store.resolve(set.id, answered);
-  const result = text(await running);
-  assert.equal(result.isError, false);
-  const [summary, json] = result.text.split("\n");
-  assert.match(summary ?? "", /Answered 3 questions/);
-  assert.match(summary ?? "", /Split/);
-  const payload = JSON.parse(json ?? "{}") as {
-    answers: Array<{ id: string; values: string[]; text: string }>;
-  };
-  assert.deepEqual(payload.answers, answers);
+  await store.answer(set.id, answers);
   assert.equal(await pending(), null);
+
+  // A replayed tool call still returns the recorded answers instead of re-asking.
+  const replay = text(await call("ask_questions", questions, "tool-ask"));
+  assert.equal(replay.isError, false);
+  assert.match(replay.text, /Answered 3 questions/);
+  assert.match(replay.text, /Split/);
+  assert.equal(await pending(), null);
+
+  // A new call is not a replay: it may ask a different set in the same task.
+  const fresh = text(
+    await call(
+      "ask_questions",
+      [{ id: "later", prompt: "Anything else?", kind: "text" }],
+      "tool-later",
+    ),
+  );
+  assert.match(fresh.text, /Registered 1 question/);
+  assert.deepEqual(
+    (await pending())?.questions.map((question) => question.id),
+    ["later"],
+  );
+});
+
+test("a pending set is capped and refuses questions over the limit", async () => {
+  const five: TaskQuestion[] = Array.from({ length: 5 }, (_, index) => ({
+    id: `q${index}`,
+    prompt: `Question ${index}?`,
+    kind: "text" as const,
+  }));
+  const accepted = text(await call("ask_questions", five));
+  assert.equal(accepted.isError, false);
+  assert.equal((await pending())?.questions.length, 5);
+
+  const over = text(
+    await call("append_questions", [{ id: "q5", prompt: "One too many?", kind: "text" }]),
+  );
+  assert.equal(over.isError, true);
+  assert.match(over.text, /at most 5 questions/i);
+  assert.equal((await pending())?.questions.length, 5);
+
+  const tooMany = text(
+    await call(
+      "ask_questions",
+      Array.from({ length: 6 }, (_, index) => ({
+        id: `n${index}`,
+        prompt: `Question ${index}?`,
+        kind: "text",
+      })),
+    ),
+  );
+  assert.equal(tooMany.isError, true);
+  assert.match(tooMany.text, /at most 5 questions/i);
+});
+
+test("clearPending drops a saved set when the task leaves planning", async () => {
+  await call("ask_questions", [{ id: "layout", prompt: "Which layout?", kind: "text" }]);
+  assert.ok(await pending());
+
+  assert.equal(await store.clearPending(), true);
+  assert.equal(await pending(), null);
+
   const reloaded = new TaskQuestionsStore(path);
   await reloaded.load();
   assert.equal(await reloaded.pending(), null);
+  assert.equal(await store.clearPending(), false);
+});
+
+test("free text answers a choice question and overrides its choices", async () => {
+  const added = await store.add("task-1", [
+    {
+      id: "layout",
+      prompt: "Which layout?",
+      kind: "single",
+      options: [{ value: "split", label: "Split" }],
+    },
+    {
+      id: "parts",
+      prompt: "Which parts?",
+      kind: "multi",
+      options: [{ value: "sidebar", label: "Sidebar" }],
+    },
+  ]);
+  const answered = await store.answer(added.set.id, [
+    { id: "layout", values: ["split"], text: "A new layout of my own" },
+    { id: "parts", values: [], text: "Only the footer" },
+  ]);
+  assert.deepEqual(
+    answered.items.map((item) => ({ id: item.id, values: item.values, text: item.text })),
+    [
+      { id: "layout", values: [], text: "A new layout of my own" },
+      { id: "parts", values: [], text: "Only the footer" },
+    ],
+  );
+  assert.equal(await pending(), null);
 });
 
 test("answers are validated against the waiting questions", async () => {
