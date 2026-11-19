@@ -11,7 +11,6 @@ type TaskRead = {
   releaseReason?: string;
 };
 
-// The e2e server and its task store are shared by every test file: leave no tasks behind.
 async function removeTasks(browser: Browser, titles: readonly string[]) {
   await browser.evaluate(async (names) => {
     const matching = async () =>
@@ -174,7 +173,6 @@ describe("task tool routes against one shared app", { serial: true }, () => {
       expect(typeof afterFirst?.workingSince).toBe("string");
       expect(typeof afterFirst?.lastWorkedAt).toBe("string");
 
-      // Reload the page: the badge comes from the persisted status, not from a live run.
       await app.open("/?page=tasks");
       await expect(screen.getByTestId(`task-${id}`)).toHaveAttribute("data-state", "working");
       await expect(screen.getByTestId(`task-${id}`)).toContainText("Working");
@@ -226,7 +224,6 @@ describe("task tool routes against one shared app", { serial: true }, () => {
       expect(released?.workingSince).toBeUndefined();
       expect(released?.lastWorkedAt ?? null).toBeNull();
 
-      // The release's own attributed call must not revive the badge after it was cleared.
       await app.open("/?page=tasks");
       await expect(screen.getByTestId(`task-${id}`)).toHaveAttribute("data-state", "ready");
       await expect(screen.getByTestId(`task-badge-${id}`)).toHaveCount(0);

@@ -142,7 +142,6 @@ describe("plan runs against one shared app", { serial: true }, () => {
       selectionEnd: 5,
     });
 
-    // Start a plan run on a task while the operator is typing in the main chat.
     expect(await startPlanRun(browser, taskId, "SLOW keep the plan run open")).toBe(202);
     await expect
       .poll(
@@ -158,13 +157,11 @@ describe("plan runs against one shared app", { serial: true }, () => {
       .toBe(true);
     await settle(browser);
 
-    // Page, focus, and caret are exactly where the operator left them.
     expect(await readChatFocus(browser)).toEqual(before);
     expect(
       await browser.evaluate(() => document.querySelector('[data-testid="task-detail"]') !== null),
     ).toBe(false);
 
-    // The end of the run is not a navigation either.
     expect(await stopPlanRun(browser, taskId)).toBe(200);
     await expect
       .poll(
@@ -210,7 +207,6 @@ describe("plan runs against one shared app", { serial: true }, () => {
       .toBe(true);
     await settle(browser);
 
-    // The list stays the page, the card carries the signal, and no detail opens.
     expect(
       await browser.evaluate(
         () =>

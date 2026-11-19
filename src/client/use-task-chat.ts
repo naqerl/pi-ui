@@ -15,7 +15,6 @@ import { subscribeTaskChatEvents, subscribeTaskChatLiveness } from "./task-chat-
 import type { ChatTransport, QueueMutation, TransportSendResult } from "./use-chat";
 import { useChat } from "./use-chat";
 
-/** The plan chat does not track main-chat usage; these keep the shared snapshot shape. */
 const EMPTY_USAGE: UsageSummary = {
   input: 0,
   output: 0,
@@ -59,11 +58,6 @@ function asSnapshot(taskId: string, snapshot: TaskAgentSnapshot): Snapshot {
   };
 }
 
-/**
- * The plan chat's routes behind the main chat's transport seam. Everything above this
- * — transcript rows, scroll, queue/steer reconciliation, status and the stream reducer —
- * is the one shared chat core in `use-chat.ts`.
- */
 function inertStream(): EventSource {
   return {
     readyState: 0,
@@ -73,12 +67,6 @@ function inertStream(): EventSource {
   } as unknown as EventSource;
 }
 
-/**
- * The plan pane's stream is a shim over the one main EventSource. It subscribes to the
- * relayed `task.chat` frames for this task and re-emits them under their inner event names,
- * so `useChat` reduces a plan run with the same code as the main conversation. Subscribe
- * first, snapshot second: `useChat` opens the stream before its first `readSnapshot`.
- */
 function createTaskStream(taskId: string): EventSource {
   let closed = false;
   const listeners = new Map<
@@ -126,8 +114,7 @@ function createTaskStream(taskId: string): EventSource {
   const stopFrames = subscribeTaskChatEvents((frame) => {
     if (!closed) dispatch(frame.event, frame.data);
   }, taskId);
-  // The heartbeat subscription replays the newest frame immediately; hold it until
-  // `useChat` has registered its listener on the opening microtask.
+
   let opening = true;
   let firstLiveness: unknown;
   const stopLiveness = subscribeTaskChatLiveness((data) => {
@@ -151,7 +138,6 @@ function createTaskTransport(
   taskId: string,
   onQuestions: (questions: TaskQuestionSet | null) => void,
 ): ChatTransport {
-  // The design fixture has no server conversation; keep its transcript local and silent.
   const fixture = taskId.startsWith("fixture-");
   const base = `/api/tasks/${encodeURIComponent(taskId)}/chat`;
   return {
@@ -177,7 +163,6 @@ function createTaskTransport(
       return { snapshot: asSnapshot(taskId, snapshot), stale: false };
     },
     async readHistory() {
-      // The plan conversation is small and always read whole; there is no earlier page.
       return null;
     },
     async send(text, mode, attachments, queueKey): Promise<TransportSendResult> {
@@ -252,9 +237,7 @@ function createTaskTransport(
     async stop() {
       try {
         await fetch(`${base}/stop`, { method: "POST" });
-      } catch {
-        // The run state event is authoritative.
-      }
+      } catch {}
     },
     async dismissRunError(id) {
       await fetch(`${base}/error/dismiss`, {

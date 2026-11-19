@@ -8,6 +8,7 @@ RUN npm ci
 
 COPY tsconfig.json tsconfig.server.json vite.config.ts index.html ./
 COPY src ./src
+COPY scripts ./scripts
 COPY public ./public
 RUN npm run build && npm prune --omit=dev
 
@@ -19,12 +20,6 @@ ENV NODE_ENV=production \
     PI_CWD=/workspace \
     PORT=8787
 
-# Only what pi's bash tool needs to be useful. No compilers, Python, or package managers.
-# openssh-client (ssh, scp, sftp, ssh-keygen, ssh-keyscan) lets the agent reach other
-# machines. The identity itself is not baked in: it arrives as one read-only file mount.
-# gnupg + age + sops decrypt secrets on the fly (the gitops repo's SOPS files are
-# PGP-encrypted); no key material is baked in, the keys live in a mounted GnuPG home.
-# gh is the GitHub CLI. No token is baked in: it arrives as GH_TOKEN at runtime.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         age \
@@ -38,9 +33,6 @@ RUN apt-get update \
         ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
-# sops is not in Debian bookworm's archive; getsops publishes static binaries. Pin both
-# the version and its checksum so a re-tagged or tampered release cannot enter the
-# image silently. The release workflow builds linux/amd64 only, so the asset is fixed.
 ARG SOPS_VERSION=3.13.3
 ARG SOPS_SHA256=e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b
 RUN curl -fsSLo /usr/local/bin/sops \
@@ -49,9 +41,6 @@ RUN curl -fsSLo /usr/local/bin/sops \
     && chmod 0755 /usr/local/bin/sops \
     && sops --version
 
-# gh is not in Debian bookworm. GitHub publishes a linux/amd64 tarball. Pin the
-# version and its checksum so a re-tagged or tampered release cannot enter the
-# image silently. The release workflow builds linux/amd64 only, so the asset is fixed.
 ARG GH_VERSION=2.104.0
 ARG GH_SHA256=98cb101ad87dbbd3f6b2f2bfcbd43197ccd07643140121d8a9cfaa91eadbc24e
 RUN curl -fsSLo /tmp/gh.tgz \
@@ -62,7 +51,6 @@ RUN curl -fsSLo /tmp/gh.tgz \
     && rm -rf /tmp/gh.tgz "/tmp/gh_${GH_VERSION}_linux_amd64" \
     && gh --version
 
-# The node image already ships a uid 1000 "node" account; replace it with "pi".
 RUN set -eux; \
     userdel -r node 2>/dev/null || true; \
     groupdel node 2>/dev/null || true; \
@@ -72,23 +60,15 @@ RUN set -eux; \
     mkdir -p -m 700 /home/pi/.ssh; \
     chown -R pi:pi /home/pi /workspace
 
-# Vite copies public/ (manifest, service worker, icons) into dist/client during the build,
-# so the runtime image needs dist/ only; the source public/ tree is not copied.
 COPY --from=build --chown=pi:pi /app/dist ./dist
 COPY --from=build --chown=pi:pi /app/node_modules ./node_modules
 COPY --from=build --chown=pi:pi /app/package.json /app/package-lock.json ./
-# Read on start: after an update the agent gets the sections it has not seen.
 COPY --chown=pi:pi CHANGELOG.md ./
-# Color and rounding files only. Wallpaper assets stay out of the image.
 COPY --chown=pi:pi themes/omarchy /usr/share/omarchy/themes
 
 USER pi
 EXPOSE 8787
 
-# A cold start after an image pull takes longer than the old 15 s start period: Docker then
-# marked the fresh container unhealthy at ~105 s and pi-ui-update rolled the release back, only to
-# succeed on a later retry when the layers were already local. Give the first start two minutes
-# and one extra retry, so a slow boot is not mistaken for a broken release.
 HEALTHCHECK --interval=30s --timeout=30s --start-period=120s --retries=4 \
     CMD curl -fsS "http://127.0.0.1:${PORT:-8787}/" || exit 1
 

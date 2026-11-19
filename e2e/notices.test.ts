@@ -229,7 +229,7 @@ test("an interrupted run becomes one warning chip after the partial reply", () =
   assert.match(markup, /class="[^"]*\bborder-status-warn\/40\b/);
   assert.match(markup, /class="[^"]*\bbg-status-warn\/10\b/);
   assert.match(markup, /class="[^"]*\btext-status-warn\b/);
-  // The neutral chip surface must not compete with the warning tone in CSS order.
+
   assert.doesNotMatch(markup, /class="[^"]*\bbg-surface\/90\b/);
   assert.doesNotMatch(markup, /class="[^"]*\btext-muted-foreground\b/);
   assert.doesNotMatch(markup, /class="[^"]*\bborder-foreground\/10\b/);
@@ -251,7 +251,6 @@ test("a memory write becomes a persistent chip with an undo steer", async () => 
   assert.equal(message.role, "system");
   assert.notEqual(entries[0]?.kind, "user");
 
-  // A later snapshot rebuild reads the same chip from the stored entry.
   const reloaded = buildTranscript(entries).messages[0];
   assert.deepEqual(reloaded?.notice, message.notice);
   const notice = reloaded?.notice;

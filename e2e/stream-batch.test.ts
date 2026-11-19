@@ -72,7 +72,7 @@ test("stream replacements send the prefix once, while reconnect uses authoritati
     bumpDraft: () => 5,
     hub: { broadcast: (frame: { event: string; data: unknown }) => frames.push(frame) },
   };
-  // Exercise the actual server publisher without constructing a provider/session.
+
   const publisher = ChatService.prototype as unknown as { broadcastText(this: unknown): void };
   publisher.broadcastText.call(fake);
   assert.deepEqual(frames[0]?.data, { text: "", full: fake.currentText, revision: 5 });

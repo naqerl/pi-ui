@@ -1,8 +1,3 @@
-/**
- * The agent-editable dashboard: widget config, the path mapper that turns
- * source data into a widget's view, and token masking. Shared by the server
- * and the client.
- */
 import type { BuiltinName } from "./dashboard-sources.js";
 import type { TaskDurationStats, TaskReopenStats, UsageSummary } from "./types.js";
 
@@ -18,37 +13,33 @@ export type ChartType = (typeof CHART_TYPES)[number];
 export const CHART_FORMATS = ["number", "currency", "percent", "bytes"] as const;
 export type ChartFormat = (typeof CHART_FORMATS)[number];
 
-/** One drawn series in a sparkline. `key` indexes the mapped series data. */
 export interface ChartSeries {
   key: string;
   label?: string;
-  /** A themed CSS token, usually one of `--chart-1` … `--chart-6`. */
+
   color?: string;
   type?: ChartType;
   dashed?: boolean;
-  /** Area only, 0..1; default 0.35. */
+
   fillOpacity?: number;
   stack?: string;
 }
 
-/** A horizontal line at a fixed y value. */
 export interface ChartReference {
   value: number;
   label?: string;
-  /** Defaults to var(--chart-4). */
+
   color?: string;
-  /** Default true. */
+
   dashed?: boolean;
 }
 
-/** Presentation choices for a sparkline; data still comes only from its mapping. */
 export interface SparklineChart {
-  /** Default for every series; default "area". */
   type?: ChartType;
-  /** Legacy single-series colour; `series[i].color` wins. */
+
   color?: string;
   height?: number;
-  /** Default: true when there is more than one series. */
+
   legend?: boolean;
   showTooltip?: boolean;
   yDomain?: [number, number] | "auto";
@@ -64,7 +55,6 @@ export interface SparklineSeries {
   points: (number | null)[];
 }
 
-/** Widths in the dashboard's 12-column desktop grid. */
 export const SPAN_COLUMNS: Record<WidgetSpan, number> = { full: 12, half: 6, third: 4 };
 export const GRID_COLUMNS = 12;
 export const DEFAULT_WIDGET_ROWS = 4;
@@ -73,20 +63,12 @@ export function widthForSpan(span: WidgetSpan): number {
   return SPAN_COLUMNS[span];
 }
 
-/** The span a resized widget keeps, so arbitrary drag widths stay representable. */
 export function spanForWidth(width: number): WidgetSpan {
   if (width >= 10) return "full";
   if (width >= 5) return "half";
   return "third";
 }
 
-/**
- * Sanitises a section into the 12-column grid. Existing, non-overlapping
- * positions survive; missing coordinates and overlapping stored positions take
- * the first free cell at or below the requested row. The server runs this on
- * every write and the default board runs it while seeding; the page only uses
- * it when normalising stored state, never per pointer event.
- */
 export function packLayoutSlots(slots: readonly LayoutSlot[], reset = false): LayoutSlot[] {
   const occupied = new Set<string>();
   const placed: LayoutSlot[] = [];
@@ -135,14 +117,13 @@ export type WidgetSource =
   | { type: "builtin"; name: BuiltinName }
   | {
       type: "poll";
-      /** Body of an async function `(fetch, env, prev, log)` that returns JSON. */
+
       script: string;
       intervalSec?: number;
       timeoutSec?: number;
     }
   | { type: "static" };
 
-/** Field name → path expression, a `=literal`, or (table `columns`) header → path. */
 export type WidgetMapping = Record<string, string | Record<string, string>>;
 
 export interface Widget {
@@ -151,14 +132,14 @@ export interface Widget {
   kind: WidgetKind;
   source: WidgetSource;
   mapping: WidgetMapping;
-  /** Sparkline presentation only; rejected on every other kind. */
+
   chart?: SparklineChart;
 }
 
 export interface LayoutSlot {
   id: string;
   span: WidgetSpan;
-  /** Grid coordinates, in the 12-column desktop grid. */
+
   x?: number;
   y?: number;
   w?: number;
@@ -176,9 +157,9 @@ export interface DashboardLayout {
 
 export interface DashboardConfig {
   version: number;
-  /** Ids the user deleted; seeding never brings them back. */
+
   tombstones: string[];
-  /** Set when the file was written by an older default; lets the UI offer reset. */
+
   defaultVersion?: number;
   widgets: Widget[];
   layout: DashboardLayout;
@@ -194,16 +175,16 @@ export type WidgetView =
       delta?: string;
       trend?: "up" | "down" | "flat";
       unit?: string;
-      /** 0–100, drawn as a meter. */
+
       progress?: number;
     }
   | { kind: "list"; items: { key?: string; label: string; value?: string }[]; empty?: string }
   | { kind: "table"; columns: string[]; rows: string[][]; empty?: string }
   | {
       kind: "sparkline";
-      /** Legacy single unnamed series. */
+
       points?: (number | null)[];
-      /** Named series, in source order. */
+
       series?: SparklineSeries[];
       labels?: string[];
       value?: string;
@@ -220,7 +201,7 @@ export interface WidgetValue {
   view?: WidgetView;
   error?: string;
   updatedAt?: string;
-  /** Polls failed in a row; the last good view is kept. */
+
   failures: number;
 }
 
@@ -231,7 +212,7 @@ export interface BuiltinJob {
   exitCode: number | null;
   startedAt: string;
   endedAt: string | null;
-  /** The command line, for the jobs sheet; absent when a dashboard source supplies only the summary. */
+
   command?: string;
   cwd?: string;
 }
@@ -242,7 +223,6 @@ export interface BuiltinSession {
   run: string;
 }
 
-/** The `dashboard` stream frame and `GET /api/dashboard`. Poll scripts are not sent. */
 export interface DashboardState {
   widgets: Widget[];
   layout: DashboardLayout;
@@ -253,9 +233,9 @@ export interface DashboardState {
     taskReopens?: TaskReopenStats;
     taskDurations?: TaskDurationStats;
   };
-  /** True while some client has the dashboard open, so polls run. */
+
   polling: boolean;
-  /** Present when a newer default board is available; offer reset. */
+
   defaultVersion?: number;
 }
 
@@ -269,14 +249,8 @@ export const HISTORY_POINTS = 30;
 
 export class DashboardError extends Error {}
 
-// ---------- path expressions ----------
-
 type Step = { t: "key"; k: string } | { t: "index"; i: number } | { t: "each" };
 
-/**
- * Parses `a.b`, `a[]`, `a[].b`, `a[0]`, `a[-1]`, `["odd key"]`, with an optional
- * leading `$`. `$` or an empty path is the whole value.
- */
 export function parsePath(path: string): Step[] {
   let source = path.trim();
   if (source === "$" || source === "") return [];
@@ -314,7 +288,6 @@ export function parsePath(path: string): Step[] {
   return steps;
 }
 
-/** Reads a path. Any `[]` makes the result an array, one entry per element. */
 export function evalPath(data: unknown, path: string): unknown {
   let values: unknown[] = [data];
   let multi = false;
@@ -340,7 +313,6 @@ export function evalPath(data: unknown, path: string): unknown {
   return multi ? values : values[0];
 }
 
-/** A mapping field: `=text` is a literal, anything else a path. */
 export function resolveField(data: unknown, field: string | undefined): unknown {
   if (field === undefined) return undefined;
   if (field.startsWith("=")) return field.slice(1);
@@ -433,13 +405,6 @@ function stringField(mapping: WidgetMapping, name: string): string | undefined {
   return value;
 }
 
-/**
- * Required mapping fields per kind; the rest are optional.
- *
- * A sparkline normally derives its headline from the last point of its first
- * series. When `value` is mapped, its resolved non-empty string or number is
- * shown verbatim instead; `value: "="` suppresses the headline entirely.
- */
 export const KIND_FIELDS: Record<WidgetKind, { required: string[][]; optional: string[] }> = {
   stat: { required: [["value"]], optional: ["label", "delta", "unit", "progress"] },
   list: { required: [["items"]], optional: ["key", "label", "value", "empty"] },
@@ -449,7 +414,6 @@ export const KIND_FIELDS: Record<WidgetKind, { required: string[][]; optional: s
   status: { required: [["items", "state"]], optional: ["key", "label", "detail", "empty"] },
 };
 
-/** Checks a mapping's fields and path syntax for its kind. Throws a DashboardError. */
 export function validateMapping(kind: WidgetKind, mapping: WidgetMapping): void {
   const spec = KIND_FIELDS[kind];
   const allowed = new Set([...spec.required.flat(), ...spec.optional]);
@@ -482,7 +446,6 @@ export function validateMapping(kind: WidgetKind, mapping: WidgetMapping): void 
   }
 }
 
-/** Builds a widget's view from its source data. `history` is earlier numeric values. */
 export function renderWidget(widget: Widget, data: unknown, history: number[] = []): WidgetView {
   const { mapping } = widget;
   switch (widget.kind) {
@@ -725,15 +688,12 @@ function emptyText(data: unknown, mapping: WidgetMapping): { empty?: string } {
   return empty === undefined ? {} : { empty };
 }
 
-/** The number a stat or sparkline shows, kept as history for sparklines. */
 export function viewNumber(widget: Widget, data: unknown): number | undefined {
   if (widget.kind !== "stat" && widget.kind !== "sparkline") return undefined;
   const field = widget.mapping.value;
   if (typeof field !== "string") return undefined;
   return asNumber(resolveField(data, field));
 }
-
-// ---------- masking ----------
 
 const MASK = "••••";
 
@@ -744,11 +704,6 @@ const SECRET_PATTERNS: RegExp[] = [
 ];
 const LONG_RUN = /[A-Za-z0-9_+/-]{32,}={0,2}/g;
 
-/**
- * Hides token-looking text: known secret values, auth headers, well-known
- * key prefixes, JWTs, and long runs that mix upper case, lower case and
- * digits. Plain hex (hashes, ids) and ordinary words are left alone.
- */
 export function maskSecrets(text: string, secrets: readonly string[] = []): string {
   let out = text;
   for (const secret of secrets) {
@@ -763,7 +718,6 @@ export function maskSecrets(text: string, secrets: readonly string[] = []): stri
   );
 }
 
-/** Masks every string in a JSON value, keys included. */
 export function maskDeep<T>(value: T, secrets: readonly string[] = []): T {
   if (typeof value === "string") return maskSecrets(value, secrets) as T;
   if (Array.isArray(value)) return value.map((item) => maskDeep(item, secrets)) as T;
@@ -778,19 +732,14 @@ export function maskDeep<T>(value: T, secrets: readonly string[] = []): T {
   return value;
 }
 
-/** Masks the strings in a view, for anything shown on the page. */
 export function maskView(view: WidgetView): WidgetView {
   return maskDeep(view);
 }
 
-// ---------- builtin sources ----------
-
-/** Kept for compatibility with code and tests that size the MCP event feed. */
 export const MCP_EVENT_LIMIT = 20;
-/** Recent MCP events the `mcp_events` builtin lists, newest first. */
+
 export const MCP_EVENT_WIDGET_LIMIT = 3;
 
-/** The public watchdog state, derived from the adapter status for older rows. */
 export function subscriptionHealth(item: {
   status: string;
   state?: string;
@@ -812,7 +761,6 @@ export function subscriptionHealth(item: {
   return "active";
 }
 
-/** A title wins; with arguments the stable id is the only copyable identity. */
 export function subscriptionLabel(item: {
   title?: string;
   stableId?: string;
@@ -824,7 +772,6 @@ export function subscriptionLabel(item: {
   return item.name;
 }
 
-/** Share of prompt tokens served from the provider cache. Null before any model call. */
 export function cacheHitRate(usage: UsageSummary): number | null {
   const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
   if (prompt <= 0) return null;

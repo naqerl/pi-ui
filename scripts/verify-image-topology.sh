@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Assert what this image actually provides: identity, runtimes, pi wiring and the
-# browser stack a Playwright run depends on. Every value below is measured.
+
 set -euo pipefail
 
 failures=0
@@ -15,7 +14,6 @@ section "identity"
 uname_value=$(uname -srmo)
 value "uname -srmo" "$uname_value"
 if [ -r /etc/os-release ]; then
-  # shellcheck disable=SC1091
   pretty=$(. /etc/os-release && printf '%s' "${PRETTY_NAME:-unknown}")
 else
   pretty="no /etc/os-release"

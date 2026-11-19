@@ -1,13 +1,3 @@
-// The e2e app under test is a small pool of independent servers. The runner
-// starts one app command per target, but the browser suite shares that app
-// across every worker/file unless each browser session is routed to its own
-// state. A per-session shard keeps DATA_DIR, the conversation, tasks, jobs and
-// MCP registries isolated while the suite runs files in parallel.
-//
-// The first request from a browser context is assigned a sticky shard cookie;
-// every later request from that context (including SSE reconnects) is proxied
-// to the same backend. Node-side requests without a cookie get their own shard
-// too, so they never mutate a browser test's state by accident.
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer as createHttpServer, request } from "node:http";
@@ -29,12 +19,9 @@ const requestedShards = Number(process.env.PI_E2E_SHARDS ?? defaultShards);
 const initialShards = Number.isInteger(requestedShards)
   ? Math.min(64, Math.max(1, requestedShards))
   : defaultShards;
-// Under heavy load a wide, dynamic shard pool multiplies backend boot races.
-// Keep the pool bounded by the machine, with only a little room for overlapping
-// browser contexts.
+
 const MAX_SHARDS = Math.min(64, initialShards + Math.ceil(cpuCount / 2));
-// A newly leased shard stays out of the pool long enough for its first document
-// and EventSource to arrive; an open SSE stream keeps it leased until it closes.
+
 const LEASE_MS = 15_000;
 const IDLE_GRACE_MS = 1_000;
 
@@ -84,9 +71,7 @@ async function waitForHealth(shard) {
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(3_000) });
       if (response.ok) return;
-    } catch {
-      // The backend is still booting.
-    }
+    } catch {}
     await new Promise((resolve) => setTimeout(resolve, delay));
     delay = Math.min(1_000, delay * 2);
   }
@@ -110,7 +95,6 @@ function startShard(shard) {
     child.stdout?.on("data", (chunk) => appendLog(shard, chunk));
     child.stderr?.on("data", (chunk) => appendLog(shard, chunk));
     child.on("exit", () => {
-      // A dead shard gets a fresh backend on its next request.
       if (!shuttingDown) {
         shard.child = null;
         shard.port = null;
@@ -131,11 +115,6 @@ function ensureShard(shard) {
   return shard.ready;
 }
 
-/**
- * A new browser context gets a clean backend: the shard's previous DATA_DIR is
- * removed and a fresh process started. This keeps tests in different files from
- * inheriting each other's conversation, dashboard, tasks, jobs or MCP registry.
- */
 async function restartShard(shard) {
   if (shard.ready === null && shard.child === null) return;
   const child = shard.child;
@@ -147,9 +126,7 @@ async function restartShard(shard) {
   if (shard.dataDir !== null) {
     try {
       rmSync(shard.dataDir, { recursive: true, force: true });
-    } catch {
-      // Best effort; a leftover temp dir is harmless.
-    }
+    } catch {}
   }
   shard.child = null;
   shard.port = null;
@@ -158,7 +135,6 @@ async function restartShard(shard) {
   shard.log = "";
 }
 
-/** Boots a shard, first clearing any state the previous browser session left. */
 async function prepareShard(shard, fresh) {
   if (fresh && shard.used) await restartShard(shard);
   shard.used = true;
@@ -195,8 +171,6 @@ function assignShard(reserve) {
       };
       shards.push(chosen);
     } else {
-      // More live sessions than the cap allows (not expected at these worker
-      // counts): share the quietest shard rather than fail the run outright.
       chosen = shards.toSorted((a, b) => a.streams - b.streams || a.lastUsed - b.lastUsed)[0];
     }
   }
@@ -253,8 +227,7 @@ const server = createHttpServer((req, res) => {
       : undefined;
   if (req.url?.startsWith("/api/stream")) shard.streams += 1;
   shard.lastUsed = ++clock;
-  // A cookie-less health/state probe must not lock a shard; a browser that has
-  // the cookie keeps it leased even if its EventSource is briefly absent.
+
   if (existing !== undefined)
     shard.leasedUntil = Math.max(shard.leasedUntil, Date.now() + LEASE_MS);
   res.on("close", () => {
@@ -280,15 +253,11 @@ function shutdown() {
   for (const shard of shards) {
     try {
       shard.child?.kill("SIGKILL");
-    } catch {
-      // The child already left.
-    }
+    } catch {}
     if (shard.dataDir !== null) {
       try {
         rmSync(shard.dataDir, { recursive: true, force: true });
-      } catch {
-        // Best effort; a leftover temp dir is harmless.
-      }
+      } catch {}
     }
   }
   process.exit(0);

@@ -1,17 +1,14 @@
 import { toIsoTimestamp } from "./time.js";
 import type { ChatMessage, QueuedMessage } from "./types.js";
 
-/** Pending steers sort after everything the run is still doing, oldest first. */
 export const PENDING_STEER_ORDER = Number.MAX_SAFE_INTEGER;
 
-/** A steer held by the server, and the reason if it was dropped before it was placed. */
 export interface PendingSteer extends QueuedMessage {
   dropped?: string;
-  /** The order frozen when the drop was reported, so the failed bubble keeps its place. */
+
   droppedOrder?: number;
 }
 
-/** The chat bubble for a steer the run has not reached yet. */
 export function pendingSteerMessage(steer: QueuedMessage): ChatMessage {
   return {
     id: `steer-pending-${steer.id}`,
@@ -28,7 +25,6 @@ export function pendingSteerMessage(steer: QueuedMessage): ChatMessage {
   };
 }
 
-/** The failed bubble a dropped steer leaves behind, carrying the reason it never arrived. */
 export function droppedSteerMessage(steer: PendingSteer, reason: string): ChatMessage {
   return {
     id: `steer-dropped-${steer.id}`,
@@ -46,7 +42,6 @@ export function droppedSteerMessage(steer: PendingSteer, reason: string): ChatMe
   };
 }
 
-/** Removes a steer that entered the transcript, matched by its shared key or submission id. */
 export function consumeSteer(
   steers: readonly PendingSteer[],
   key: string | undefined,
@@ -58,7 +53,6 @@ export function consumeSteer(
   );
 }
 
-/** Marks a pending steer failed instead of letting it disappear without a reason. */
 export function dropSteer(
   steers: readonly PendingSteer[],
   id: string,
@@ -76,15 +70,10 @@ export function dropSteer(
   );
 }
 
-/** A user cancelled a pending steer; it leaves no bubble and no notice. */
 export function cancelSteer(steers: readonly PendingSteer[], id: string): PendingSteer[] {
   return steers.filter((steer) => steer.id !== id);
 }
 
-/**
- * Applies a live queue update. A dropped steer stays failed; a pending one is retired only after the
- * server stops listing it, which happens when its transcript entry has already been sent.
- */
 export function mergeLiveSteers(
   current: readonly PendingSteer[],
   next: readonly QueuedMessage[],
@@ -107,7 +96,6 @@ export function mergeLiveSteers(
   return merged;
 }
 
-/** Removes a steer once any transcript message carries its key, even after a failed copy was kept. */
 export function consumeSteersInMessages(
   steers: readonly PendingSteer[],
   messages: readonly ChatMessage[],
@@ -118,7 +106,6 @@ export function consumeSteersInMessages(
   return steers.filter((steer) => steer.key === undefined || !delivered.has(steer.key));
 }
 
-/** A snapshot is authoritative for pending steers; failed ones remain visible until a reload. */
 export function rebuildSteersFromSnapshot(
   current: readonly PendingSteer[],
   snapshot: readonly QueuedMessage[],
@@ -130,7 +117,6 @@ export function rebuildSteersFromSnapshot(
   ];
 }
 
-/** Ids of tracked steers durable's inbox no longer holds: they were placed or withdrawn. */
 export function settledSteerIds(
   tracked: Iterable<string>,
   inbox: readonly { id: unknown; mode: string }[],
@@ -141,7 +127,6 @@ export function settledSteerIds(
   return [...tracked].filter((id) => !held.has(id));
 }
 
-/** A steer read back from durable's inbox after a restart, including its entry key and timestamp. */
 export function steerFromInboxItem(
   item: {
     id?: unknown;
@@ -170,14 +155,12 @@ export function steerFromInboxItem(
   };
 }
 
-/** The key a steer entry carries, so its pending bubble can be retired atomically. */
 export function steerKeyFromEntryData(data: unknown): string | undefined {
   if (typeof data !== "object" || data === null || !("key" in data)) return undefined;
   const key = (data as { key: unknown }).key;
   return typeof key === "string" && key.length > 0 ? key : undefined;
 }
 
-/** The text of a user message's content: a string, or its text parts joined by newlines. */
 export function contentText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -193,7 +176,6 @@ export function contentText(content: unknown): string {
     .join("\n");
 }
 
-/** A durable submission reason turned into something a person can act on. */
 export function steerDropReason(reason: string, detail?: unknown): string {
   switch (reason) {
     case "aborted":

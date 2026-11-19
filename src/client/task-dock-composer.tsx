@@ -12,15 +12,13 @@ export type TaskDockSession = {
   dismissError: () => void;
 };
 
-/** The open task's own status, shown in the composer slot while the tasks page is active. */
 export type TaskSurfaceStatus = {
   taskId: string;
   word: TaskStatusWord;
-  /** The plan run has sent no frame within the retry budget; keep the word, stop the clock. */
+
   quiet?: boolean;
 };
 
-/** The open task's run error, hosted by the one app-level header instead of the plan pane. */
 export type TaskRunErrorSurface = {
   taskId: string;
   error: RunError | null;
@@ -53,7 +51,6 @@ export function TaskDockComposerProvider({
   );
 }
 
-/** TaskAgentChat registers its dock send/stop/placeholder while the task is open. */
 export function useRegisterTaskDock(session: TaskDockSession | null) {
   const register = useContext(TaskDockRegister);
   useLayoutEffect(() => {
@@ -62,7 +59,6 @@ export function useRegisterTaskDock(session: TaskDockSession | null) {
   }, [register, session]);
 }
 
-/** The tasks page registers the open task's status; null means no task is open. */
 export function useRegisterTaskSurfaceStatus(status: TaskSurfaceStatus | null) {
   const register = useContext(TaskSurfaceStatusRegister);
   useLayoutEffect(() => {
@@ -71,7 +67,6 @@ export function useRegisterTaskSurfaceStatus(status: TaskSurfaceStatus | null) {
   }, [register, status]);
 }
 
-/** TaskAgentChat registers the open task's run error for the app-level header. */
 export function useRegisterTaskRunError(surface: TaskRunErrorSurface | null) {
   const register = useContext(TaskRunErrorRegister);
   useLayoutEffect(() => {
