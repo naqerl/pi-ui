@@ -929,7 +929,11 @@ export function useChat(options: UseChatOptions = {}) {
         order: Number.MAX_SAFE_INTEGER - 1,
         pending: true,
       };
-      setLiveTools((current) => [...current.filter((item) => item.id !== tool.id), tool]);
+      setLiveTools((current) => [
+        ...current.filter((item) => item.id !== tool.id),
+        // A reconnect replays the start for a running call; keep the start it already showed.
+        ...mergeLiveTools(current, [tool]),
+      ]);
       draftBatch.flush();
       setDraftThinking("");
       if (typeof data.toolsRevision === "number") {
