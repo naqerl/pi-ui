@@ -1,7 +1,5 @@
 #!/usr/bin/env node
-// A stub hub for the restored-subscription tests. It answers the cursor probe
-// differently per stream: one subscription is gone, one has a pre-restart
-// backlog, one is healthy, and one emits a burst that lies about `replayed`.
+
 import { appendFileSync } from "node:fs";
 import { ProtocolError, Server } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
@@ -10,9 +8,9 @@ import { z } from "zod";
 const logPath = process.env.RESTORE_MCP_LOG;
 const mode = process.env.RESTORE_MCP_MODE === "paged" ? "paged" : "poll";
 const oldTimestamp = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-// A stream can hand over a backlog from its adapter, not only a fresh replay.
+
 const staleBatchTimestamp = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
-// A restart a moment ago: the missed event is seconds old, so replay is right.
+
 const recentTimestamp = new Date(Date.now() - 2_000).toISOString();
 const names =
   mode === "paged"
@@ -27,8 +25,7 @@ const names =
         "stale-batch-stream",
         "mixed-batch-stream",
         "fresh-batch-stream",
-        // events/poll probes this stream too, and events/subscribe rejects a
-        // name its catalog does not list, so the catalog must include it.
+
         "flood-stream",
       ];
 
@@ -115,8 +112,6 @@ if (mode !== "paged") {
         };
       }
       if (params.name === "flood-stream") {
-        // A busy hub after a short outage: twenty-five events, every one of
-        // them recent. Only the size gives it away as a backlog.
         return {
           events: Array.from({ length: 25 }, (_, index) => ({
             event: {
@@ -169,7 +164,7 @@ server.setRequestHandler(
     setTimeout(() => {
       void notify("notifications/events/active", {
         cursor: params.cursor ?? null,
-        // Only a client that kept the stale cursor is told its replay is truncated.
+
         ...(params.name === "old-stream" && params.cursor === "old:42" ? { truncated: true } : {}),
       });
     }, 10);
@@ -177,7 +172,6 @@ server.setRequestHandler(
     if (params.name === "old-stream") {
       setTimeout(() => {
         if (params.cursor === "old:42") {
-          // Only a process that kept the stale cursor sees the backlog.
           void notify("notifications/events/event", {
             eventId: "old-stream-backlog",
             name: "old-stream",

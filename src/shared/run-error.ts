@@ -1,13 +1,11 @@
 import type { RunError } from "./types.js";
 
-/** One line is enough for the header; the full provider text stays in the dialog. */
 const SUMMARY_LIMIT = 160;
 
 const NO_MODEL_MESSAGE =
   "pi has no model configured for this conversation. Add provider credentials to " +
   "PI_CODING_AGENT_DIR/auth.json, then send the message again.";
 
-/** A deliberate stop or reset is not a failure the operator needs to dismiss. */
 const SILENT_REASONS = new Set(["aborted", "reset", "merged_into_mcp_notice"]);
 
 function detailText(detail: unknown): string | undefined {
@@ -34,12 +32,6 @@ function summary(text: string): string {
   return line.length <= SUMMARY_LIMIT ? line : `${line.slice(0, SUMMARY_LIMIT - 1)}…`;
 }
 
-/**
- * The error the plan chat shows when a run settles without an answer.
- *
- * `id` is supplied by the caller so it can tie the row to the task and durable
- * submission; the reason vocabulary matches `steerDropReason`.
- */
 export function runErrorFromUnanswered(
   reason: string,
   detail?: unknown,
@@ -83,7 +75,6 @@ export function runErrorFromUnanswered(
   }
 }
 
-/** True only when an explicit dismiss id targets the run error currently shown. */
 export function runErrorMatchesDismissal(
   id: string | undefined,
   runError: RunError | null,

@@ -1,10 +1,6 @@
 import { useCallback, useRef } from "react";
 import { ATTACH_ACCEPT } from "./media-client";
 
-/**
- * The one hidden file input every image control opens. The composer and the task
- * detail use the same picker so the accepted types and reset behaviour cannot drift.
- */
 export function useMediaPicker(
   onFiles: (files: File[]) => void,
   options: { testId?: string } = {},

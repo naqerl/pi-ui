@@ -1,9 +1,9 @@
 import type { MediaRef } from "../shared/types";
 
 const ACCEPTED = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-/** Longest side sent to the model. Larger photos are scaled down before upload. */
+
 const MAX_SIDE = 2048;
-/** Providers cap one image near 5 MB; stay below it once base64 grows the bytes by a third. */
+
 const MAX_BYTES = 3_500_000;
 
 export const ATTACH_ACCEPT = "image/png,image/jpeg,image/gif,image/webp,image/*";
@@ -36,10 +36,6 @@ async function decode(
   };
 }
 
-/**
- * A file the server accepts: PNG, JPEG, GIF or WebP, at most 2048 px on the longest side and
- * about 3.5 MB. Anything else is redrawn as a JPEG. A small GIF passes through, animation and all.
- */
 export async function prepareImage(file: File): Promise<Blob> {
   if (!file.type.startsWith("image/")) throw new Error("Only images can be attached");
   let decoded: Awaited<ReturnType<typeof decode>>;

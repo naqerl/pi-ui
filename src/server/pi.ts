@@ -9,16 +9,6 @@ import { TASK_ID_PARAM } from "./task-attribution.js";
 
 const TOOLS = ["read", "bash", "edit", "write"];
 
-/**
- * Build the system prompt with the same coding-agent path as before the move to
- * pi-durable, then keep it as the conversation's durable `instructions`.
- *
- * `src/server/pi.ts` previously let `createAgentSession` build this prompt. The
- * durable harness renders instructions as the final prompt section, so only the
- * session layer changed; the prompt text still comes from the installed coding
- * agent and includes its tool descriptions, docs pointers, cwd, project context,
- * and skills.
- */
 export async function buildPiSystemPrompt(
   cwd: string,
   modelRuntime: ModelRuntime,
@@ -28,8 +18,7 @@ export async function buildPiSystemPrompt(
   const resourceLoader = new DefaultResourceLoader({
     cwd,
     agentDir,
-    // The durable registry owns tools now. No coding-agent extensions, MCP, or
-    // codemode are loaded into this prompt-building session.
+
     noExtensions: true,
     disabledBuiltinExtensions: ["mcp", "codemode", "tool_search"],
   });
@@ -58,7 +47,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function formatToolArguments(value: unknown): string {
   if (value === undefined) return "{}";
-  // A legacy task tag is bookkeeping, not part of what the tool did.
+
   if (isRecord(value) && TASK_ID_PARAM in value) {
     const { [TASK_ID_PARAM]: _tag, ...rest } = value;
     value = rest;

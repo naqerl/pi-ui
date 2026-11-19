@@ -30,10 +30,10 @@ const models = {} as ModelRuntime;
 interface Harness {
   readonly manager: DelegateManager;
   readonly chips: string[];
-  /** Job notices delivered into an open sub-agent turn. */
+
   readonly jobNotices: string[];
   finish(id: string, result: DelegateTurnResult): void;
-  /** Resolves with the prompt once that run's current turn has started. */
+
   submitted(id: string): Promise<string>;
 }
 

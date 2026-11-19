@@ -56,21 +56,20 @@ import { useWide, WIDE_QUERY } from "./use-wide";
 export { useWide, WIDE_QUERY };
 
 const LONG_PRESS_MS = 500;
-/** A pointer sequence this long after the menu opened cannot still be the dismissing tap. */
+
 const CARD_CLICK_IGNORE_MS = 700;
-/** Past days of the done list shown at first; "Show older days" adds this many more. */
+
 const DAY_PAGE = 7;
-/** TaskRow also renders on its own in tests, where no plan run is live. */
+
 const EMPTY_PLANNING: ReadonlySet<string> = new Set();
-/** One vertical rhythm for every header and card stack on the tasks page. */
+
 const TASK_STACK = STACK_8;
-/** Same type as a stats widget section title. */
+
 const STATS_SECTION_TITLE =
   "text-[11px] tracking-wide text-muted-foreground [overflow-wrap:anywhere]";
-/** Reserve the scrollbar's gutter so content never reflows or slides under the thumb. */
+
 const SCROLLBAR_GUTTER = "[scrollbar-gutter:stable]";
 
-/** A painted create whose request failed: the row stays until Retry succeeds. */
 export interface TaskCreateFailure {
   error: string;
   retrying: boolean;
@@ -79,23 +78,22 @@ export interface TaskCreateFailure {
 
 interface TasksViewProps {
   tasks: Task[];
-  /** Task ids whose plan agent currently has a live run. */
+
   planning?: readonly string[];
   activity?: TaskActivity;
   ready: boolean;
   footerClearance: number;
   onLedger: (ledger: TaskLedger) => void;
-  /** A task id another page asked to open, with a request count so repeats still open it. */
+
   selection?: { id: string; request: number } | null;
-  /** True while a task detail covers the mobile list, so the page composer can hide. */
+
   onMobileDetailChange?: (open: boolean) => void;
-  /** Which composer belongs in the shared float footer on the Tasks page. */
+
   onComposerMode?: (mode: "create" | "task-chat" | "collapsed") => void;
-  /** Failed optimistic creates keyed by their client task id. */
+
   createFailures?: Record<string, TaskCreateFailure>;
 }
 
-/** Root tasks split into one group per project, A–Z, with "No project" (null) last. */
 export function groupByProject<T extends { project?: string }>(
   items: T[],
 ): Array<[string | null, T[]]> {
@@ -120,13 +118,11 @@ export function groupByProject<T extends { project?: string }>(
 
 type TaskDetailHistoryState = Record<string, unknown> & { piTaskDetailId?: string };
 
-/** The current history state, when it is an object we can add the detail marker to. */
 function taskDetailHistory(): TaskDetailHistoryState | null {
   const state: unknown = window.history.state;
   return state !== null && typeof state === "object" ? (state as TaskDetailHistoryState) : null;
 }
 
-/** One pointerdown/up/click sequence; the token is shared by every handler on that event. */
 type CardPointerToken = { sequence: number };
 type CardClickGuard = {
   pointer: CardPointerToken | null;
@@ -144,7 +140,6 @@ function cardPointerToken(event: Event): CardPointerToken {
   return token;
 }
 
-/** A local calendar day as `YYYY-MM-DD`, the key the day groups sort and match on. */
 export function dayKey(value: string | Date): string {
   const at = typeof value === "string" ? new Date(value) : value;
   const month = String(at.getMonth() + 1).padStart(2, "0");
@@ -152,7 +147,6 @@ export function dayKey(value: string | Date): string {
   return `${at.getFullYear()}-${month}-${day}`;
 }
 
-/** "Today", "Yesterday", or a short weekday and date such as "Thu, Oct 29". */
 export function dayLabel(key: string, now: Date): string {
   if (key === dayKey(now)) return "Today";
   const yesterday = new Date(now);
@@ -163,7 +157,6 @@ export function dayLabel(key: string, now: Date): string {
   return formatDay(date, now.getFullYear());
 }
 
-/** The heading for one done day: "Done today", "Done yesterday", then "Done <date>". */
 export function doneDayLabel(key: string, now: Date): string {
   if (key === dayKey(now)) return "Done today";
   const yesterday = new Date(now);
@@ -174,7 +167,6 @@ export function doneDayLabel(key: string, now: Date): string {
   return `Done ${formatMonthDay(date, now.getFullYear())}`;
 }
 
-/** Items grouped by the local day of `at`, newest day first, keeping each group's order. */
 export function groupByDay<T>(items: T[], at: (item: T) => string): Array<[string, T[]]> {
   const groups = new Map<string, T[]>();
   for (const item of items) {
@@ -342,7 +334,7 @@ function TasksViewImpl({
   );
   const [reopenTaskId, setReopenTaskId] = useState<string | null>(null);
   const [dayLimit, setDayLimit] = useState(DAY_PAGE);
-  // A decision paints its row before the request returns; null means the row is gone.
+
   const [optimisticTasks, setOptimisticTasks] = useState<Record<string, Task | null>>({});
   const optimisticSequence = useRef<Record<string, number>>({});
   const cardClickGuard = useRef<CardClickGuard>({ pointer: null, ignore: null, timer: null });
@@ -402,8 +394,7 @@ function TasksViewImpl({
       const right = b.proposedAt ?? b.createdAt;
       return left === right ? (a.id < b.id ? -1 : 1) : left < right ? -1 : 1;
     });
-  // A failed create is still the operator's problem, including a plan draft that never
-  // reached the server. It must stay in the retryable row instead of a phantom draft.
+
   const failedTasks = tasks.filter(
     (task) => task.status !== "done" && task.status !== "proposed" && state(task) === "failed",
   );
@@ -412,14 +403,13 @@ function TasksViewImpl({
     .filter((task) => task.parentId === null || !ids.has(task.parentId))
     .sort(rowIndex.compare);
   const hasChildren = (task: Task) => (rowIndex.children.get(task.id)?.length ?? 0) > 0;
-  // A failed leaf already sits under "Needs you"; a failed parent stays in the tree with its subtasks.
+
   const activeRoots = roots.filter(
     (task) => task.status !== "done" && !(state(task) === "failed" && !hasChildren(task)),
   );
-  // Decisions stay in the project's own list, above its open work. Each block keeps its
-  // existing order; only the concatenation puts proposals first, then drafts, then open.
+
   const listRoots = [...proposedTasks, ...draftTasks, ...activeRoots];
-  // Work is grouped by project once any task has one; grouped rows drop the label.
+
   const projectGroups = groupByProject(listRoots);
   const grouped = projectGroups.some(([name]) => name !== null);
   const doneRoots = roots.filter((task) => task.status === "done").sort(byCompletedDesc);
@@ -442,7 +432,7 @@ function TasksViewImpl({
       }
     }
     const next = await outcome;
-    // A newer action for this row owns the result now.
+
     if (optimisticSequence.current[id] !== sequence) return;
     setOptimisticTasks((current) => {
       if (!(id in current)) return current;
@@ -467,21 +457,19 @@ function TasksViewImpl({
   const dismiss = (task: Task) => void apply(task.id, removeTask(task.id), () => null);
 
   const menuTask = menu === null ? undefined : activeTasks.find((task) => task.id === menu.id);
-  // A failed create only exists on the client until Retry succeeds; its pending id has no detail.
+
   const openTask =
     openTaskId === null || createFailures?.[openTaskId] !== undefined
       ? undefined
       : tasks.find((task) => task.id === openTaskId);
   const reopenTask =
     reopenTaskId === null ? undefined : tasks.find((task) => task.id === reopenTaskId);
-  // A narrow detail is a history entry of its own, so the OS back gesture closes
-  // it. Replacing an open detail keeps one entry, not a stack of them.
+
   const openDetail = useCallback(
     (id: string) => {
       if (!wide) {
         const page = pageRef.current;
-        // Only the list -> detail step owns a return position. Opening a child
-        // from a parent detail keeps pointing at the original list position.
+
         if (openTaskIdRef.current === null && page !== null) {
           const pageRect = page.getBoundingClientRect();
           let anchor: { id: string; offset: number } | null = null;
@@ -516,8 +504,6 @@ function TasksViewImpl({
     [wide],
   );
 
-  // The chat asks for a task by id after moving the pager to this page. The request count
-  // lets the same id open again without the wide layout's first-row default replacing it.
   useEffect(() => {
     if (selection === null || lastSelectionRequest.current === selection.request) return;
     lastSelectionRequest.current = selection.request;
@@ -541,8 +527,7 @@ function TasksViewImpl({
     const onPop = (event: PopStateEvent) => {
       if (wide) return;
       const state = event.state as TaskDetailHistoryState | null;
-      // Our own detail entry can surface as a popstate around a pager or a
-      // replaceState; only a genuine back to an entry without this detail closes it.
+
       setOpenTaskId((current) =>
         current !== null && state?.piTaskDetailId === current ? current : null,
       );
@@ -563,8 +548,7 @@ function TasksViewImpl({
       openDetail(FIXTURE_PLAN_ID);
       return;
     }
-    // A notification's task link owns the first render. Later layout changes
-    // keep the existing narrow-list behaviour.
+
     if (!wide && linkedTask.current?.id === openTaskIdRef.current) {
       linkedTask.current = null;
       return;
@@ -605,9 +589,7 @@ function TasksViewImpl({
       const target = event.target;
       if (!(target instanceof Node)) return;
       if (document.getElementById("task-menu")?.contains(target)) return;
-      // A tap that only dismisses the menu must not also open the row. The token
-      // belongs to this pointer sequence, so a missing click cannot poison the
-      // next tap, which carries a new token.
+
       if (target instanceof Element && target.closest("[data-task-card]") !== null) {
         armCardClickIgnore(cardPointerToken(event));
       } else if (cardClickGuard.current.ignore !== null) {
@@ -633,15 +615,14 @@ function TasksViewImpl({
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       const target = event.target;
-      // Title, body, and other fields use Escape to cancel an edit.
+
       if (
         target instanceof HTMLElement &&
         target.closest("input, textarea, select, [contenteditable='true']") !== null
       ) {
         return;
       }
-      // Capture while a portaled menu still exists so Escape closes the menu,
-      // not the task detail behind it.
+
       if (
         document.querySelector(
           "[data-slot='dropdown-menu-content'], [data-testid='task-detail-menu-content'], [data-testid='task-project-menu']",
@@ -829,8 +810,6 @@ function TasksViewImpl({
 
   const detailOpen = openTaskId !== null;
 
-  // A narrow detail and the list share one scroller. Open the detail at its top,
-  // then put the list back under the same card when the detail closes.
   useLayoutEffect(() => {
     const page = pageRef.current;
     if (page === null) return;
@@ -858,8 +837,6 @@ function TasksViewImpl({
     return () => window.cancelAnimationFrame(frame);
   }, [detailOpen]);
 
-  // The browser keeps its own scroll for a history entry. A narrow detail owns
-  // the scroll while it is present, so stop the back navigation from fighting it.
   useEffect(() => {
     if (wide || !detailOpen) return;
     const previous = window.history.scrollRestoration;
@@ -1038,7 +1015,6 @@ function Group({
   );
 }
 
-/** What a task and all its subtasks measured, summed. */
 export function subtreeMeasured(
   tasks: Task[],
   id: string,
@@ -1076,7 +1052,6 @@ function failureLabel(trace: TaskTrace | undefined): string {
   return trace?.lastRun?.outcome === "interrupted" ? "Interrupted" : "Failed";
 }
 
-/** The short task id, the handle cards and the detail share. */
 export function shortTaskId(id: string): string {
   return id.slice(0, 4);
 }
@@ -1099,7 +1074,6 @@ function TaskIdChip({ id, className }: { id: string; className?: string }) {
   );
 }
 
-/** How many times a task has come back, shown beside its id. */
 function ReopenBadge({ task, testId }: { task: Task; testId?: string }) {
   const count = task.reopens?.length ?? 0;
   if (count === 0) return null;
@@ -1116,7 +1090,6 @@ function ReopenBadge({ task, testId }: { task: Task; testId?: string }) {
   );
 }
 
-/** The quiet marker that says a working badge has not been touched for over an hour. */
 function StaleMarker({ id }: { id: string }) {
   return (
     <Badge
@@ -1129,7 +1102,6 @@ function StaleMarker({ id }: { id: string }) {
   );
 }
 
-/** The status word for a badge, or null for a plain open task. */
 export function stateBadge(state: TaskState, trace: TaskTrace | undefined): string | null {
   switch (state) {
     case "working":
@@ -1151,7 +1123,6 @@ export function stateBadge(state: TaskState, trace: TaskTrace | undefined): stri
   }
 }
 
-/** The one muted line under a row's title, or "" for none. */
 function rowNote(
   task: Task,
   tasks: Task[],
@@ -1213,15 +1184,15 @@ export function TaskRow({
   task: Task;
   tasks: Task[];
   index?: TaskIndex;
-  /** Task ids whose plan agent currently has a live run. */
+
   planning?: ReadonlySet<string>;
   activity: TaskActivity | undefined;
   state: (task: Task) => TaskState;
   depth: number;
   flat?: boolean;
-  /** A row in the done-by-day list: no status badge, the day already says it. */
+
   history?: boolean;
-  /** Name the project on the row, for lists not already grouped by project. */
+
   showProject?: boolean;
   selectedId: string | null;
   cardClickGuard: { current: CardClickGuard };
@@ -1281,7 +1252,7 @@ export function TaskRow({
       data-pending-task={task.id.startsWith("pending-") ? "true" : undefined}
       data-create-failed={createFailure !== null ? "true" : undefined}
     >
-      {/* biome-ignore lint/a11y/useSemanticElements: the card is a row of block content. */}
+      {}
       <div
         data-task-card=""
         role="button"
@@ -1326,8 +1297,7 @@ export function TaskRow({
           const guard = cardClickGuard.current;
           const suppress = guard.ignore !== null && guard.ignore === guard.pointer;
           clearPress();
-          // Only the gesture that opened or dismissed a menu suppresses its
-          // pointerup; a plain tap must keep the browser's following click.
+
           if (suppress) event.preventDefault();
         }}
         onPointerCancel={clearPress}
@@ -1462,7 +1432,7 @@ function ProposedTask({
   selected: boolean;
   notice: string | null;
   onOpen: () => void;
-  /** A plan draft is approved into open work, not a proposed idea. */
+
   draft?: boolean;
 }) {
   return (
@@ -1471,7 +1441,7 @@ function ProposedTask({
       data-state={draft ? "planning" : "proposed"}
       className="min-w-0"
     >
-      {/* biome-ignore lint/a11y/useSemanticElements: the title may hold inline markdown links. */}
+      {}
       <div
         data-task-card=""
         role="button"
@@ -1511,7 +1481,6 @@ function ProposedTask({
   );
 }
 
-/** One clipped line of card metadata: markers, project, times and the task id. */
 function TaskCardMeta({
   task,
   project,
@@ -1520,7 +1489,7 @@ function TaskCardMeta({
 }: {
   task: Task;
   project?: string;
-  /** Keep the extra chip on the existing meta line even at phone width. */
+
   planning?: boolean;
   children?: ReactNode;
 }) {
@@ -1548,7 +1517,6 @@ function TaskCardMeta({
   );
 }
 
-/** The compact created/closed clock on a task card; the detail keeps the long form. */
 export function TaskCardTimes({ task }: { task: Task }) {
   const created = formatTime(task.createdAt);
   const createdFull = formatDateTime(task.createdAt);
@@ -1576,7 +1544,6 @@ export function TaskCardTimes({ task }: { task: Task }) {
   );
 }
 
-/** Created and closed instants of a task, in the browser's own zone. */
 export function TaskTimes({ task }: { task: Task }) {
   const created = formatDateTime(task.createdAt);
   const closed =
@@ -1622,7 +1589,7 @@ export function TaskDetail({
   state: TaskState;
   trace: TaskTrace | undefined;
   wide: boolean;
-  /** This task's plan agent currently has a live run. */
+
   planning?: boolean;
   statusPending?: boolean;
   notice: string | null;
@@ -1632,7 +1599,7 @@ export function TaskDetail({
   onApprove: () => void;
   onDismiss: () => void;
   onRemove: () => void;
-  /** Called after an inline edit saves, so the tasks page takes the new ledger. */
+
   onLedger?: (ledger: TaskLedger) => void;
 }) {
   const [editingTitle, setEditingTitle] = useState(false);
@@ -1662,8 +1629,6 @@ export function TaskDetail({
     projectOpen && projectDraft.trim().length > 0 ? projectSuggestions(projects, projectQuery) : [];
   const activeProject = Math.min(projectActive, Math.max(0, projectMatches.length - 1));
 
-  // A different task starts with a clean editor; a saved edit refreshes its draft.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reset only when the open task changes
   useEffect(() => {
     setEditingTitle(false);
     setTitleDraft(task.title);
@@ -1700,7 +1665,6 @@ export function TaskDetail({
     element.setSelectionRange(element.value.length, element.value.length);
   }, [editingBody]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the draft changes the height being measured
   useLayoutEffect(() => {
     if (!editingTitle) return;
     const element = titleRef.current;
@@ -1709,7 +1673,6 @@ export function TaskDetail({
     element.style.height = `${element.scrollHeight}px`;
   }, [editingTitle, titleDraft]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: bodyDraft, wide and bodyError change the height being measured
   useLayoutEffect(() => {
     if (!editingBody) return;
     const element = bodyRef.current;
@@ -1993,7 +1956,6 @@ function TaskMenu({
   );
 }
 
-/** A small prompt for the reason a done task is coming back. */
 function ReopenPrompt({
   task,
   onCancel,

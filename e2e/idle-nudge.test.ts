@@ -166,7 +166,7 @@ test("a released task is not stale-working", () => {
     blockedBy: [],
     releasedAt: old,
     releaseReason: "Waiting for the next build slot",
-    // The release's own attributed call used to land just after the release and revive this.
+
     lastWorkedAt: new Date(Date.parse(old) + 2).toISOString(),
   };
 
@@ -359,7 +359,6 @@ test("an ignored task returns after three silent nudges", async () => {
     const first = nudge.maybeNudge({ ...nothing, tasks: firstTasks }, 1_000);
     for (const id of ["a1", "a2", "a3", "a4", "a5"]) assert.match(first ?? "", new RegExp(id));
 
-    // Three tasks were answered by starting them; two were silently ignored.
     const tasks = [
       task("a1", "working"),
       task("a2", "working"),
@@ -415,7 +414,7 @@ test("a single ignored task comes back on the fourth quiet idle window", async (
         tasks: Record<string, { silent: number }>;
       };
       assert.equal(record.tasks.a1?.silent, index, "each quiet window is remembered");
-      // The timer may poll again immediately; that must not burn another window.
+
       assert.equal(nudge.maybeNudge({ ...nothing, tasks }, at + 1), null);
     }
 
@@ -612,7 +611,7 @@ test("it never fires while running, queued, or with no open task", () => {
 
   nudge.noteActivity(5_000);
   assert.equal(nudge.maybeNudge({ ...work, active: true }, 10_000), null);
-  // The run end starts a fresh window; the active check above did not consume one.
+
   nudge.noteActivity(10_000);
   assert.equal(nudge.maybeNudge(work, 10_999), null);
   assert.ok(nudge.maybeNudge(work, 11_000), "an idle window starts after the run ends");
@@ -762,7 +761,6 @@ test("the nudge's own run re-arms, so a new task set fires again", async () => {
     assert.equal(seen[0]?.kind, IDLE_NUDGE_ENTRY_KIND);
     assert.equal(driven.idleNudge.armed, true, "the nudge's own run end re-arms");
 
-    // Move the clock past a second window without counting it as new user activity.
     tasks.push("a2");
     (driven.idleNudge as unknown as { lastActivityAt: number }).lastActivityAt = Date.now() - 1_001;
     await driven.checkIdleNudge();

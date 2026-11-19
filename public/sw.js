@@ -60,8 +60,7 @@ async function networkFirst(request) {
   } catch {
     const cached = await cache.match(request);
     if (cached === undefined) return Response.error();
-    // Keep the last render usable offline, but tell the client it is stale so it
-    // keeps retrying instead of treating a cached state snapshot as hydrated.
+
     const headers = new Headers(cached.headers);
     headers.set("X-Pi-Stale", "1");
     return new Response(await cached.blob(), {
@@ -104,8 +103,6 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 
-  // Event streams must reach the browser byte by byte. `networkFirst` below waits for the
-  // whole body so it can cache it, which would hold every SSE connection open forever.
   if (
     url.pathname === "/api/stream" ||
     (request.headers.get("accept") ?? "").includes("text/event-stream")
@@ -126,7 +123,6 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(cacheFirst(request));
 });
 
-/** A focused app has the user's attention, so a push stays silent. */
 function shouldNotify(clients) {
   return !Array.isArray(clients) || !clients.some((client) => client && client.focused === true);
 }
@@ -159,7 +155,7 @@ self.addEventListener("push", (event) => {
         body,
         data: { ...extra, url },
         tag,
-        // A replacement with the same tag is silent unless it re-notifies.
+
         ...(tag ? { renotify: true } : {}),
         icon: "/icons/icon-192.png",
         badge: "/icons/icon-192.png",
@@ -186,10 +182,7 @@ self.addEventListener("notificationclick", (event) => {
           try {
             await client.navigate(target);
             return;
-          } catch {
-            // A client that cannot navigate still got focus, but the target
-            // page is what the notification promised, so open it below.
-          }
+          } catch {}
         }
       }
       await self.clients.openWindow(target);

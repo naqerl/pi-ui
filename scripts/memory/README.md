@@ -35,9 +35,8 @@ scopes.json          optional [[scope, "regex"], …], ordered, first match wins
 ## Loop
 
 ```sh
-node dream.mjs --emit /tmp/merge      # one work item per topic to fold
-#   … fold each item with mwrite.mjs …
-node dream.mjs --commit               # archive the consumed journal, rebuild the map
+node dream.mjs --emit /tmp/merge
+node dream.mjs --commit
 node find.mjs "what you half-remember"
 ```
 

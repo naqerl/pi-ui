@@ -3,23 +3,18 @@ import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { MessageMode, QueuedMessage } from "../shared/types.js";
 
-/**
- * Durable record of the turn that is currently in flight. It lives next to
- * `pi.sqlite3` and `current.json`, so a process that dies mid-run leaves enough
- * information behind to mark the transcript partial and resume the turn once.
- */
 export interface RunMarker {
   readonly version: 1;
-  /** The user message that started the run. */
+
   readonly userMessage: string;
   readonly startedAt: string;
   readonly mode: MessageMode;
-  /** Set before an explicit stop so a restart never continues a stopped run. */
+
   readonly stopRequested: boolean;
-  /** Stable key for restored queue request ids and the interrupted-run note. */
+
   readonly idempotencyKey: string;
   readonly queue: readonly QueuedMessage[];
-  /** Last assistant entry when the marker was recovered, so the UI can label it partial. */
+
   readonly partialEntryId: number | null;
   readonly updatedAt: string;
 }
@@ -43,9 +38,7 @@ export class RunMarkerStore {
     try {
       const value: unknown = JSON.parse(contents);
       if (isRunMarker(value)) return value;
-    } catch {
-      // Fall through and ignore the malformed marker.
-    }
+    } catch {}
     console.warn(`[pi] ignoring malformed run marker ${this.path}`);
     return undefined;
   }

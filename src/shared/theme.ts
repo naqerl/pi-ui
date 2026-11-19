@@ -8,7 +8,6 @@ function sameColor(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase();
 }
 
-/** Fill missing ANSI colors deterministically from the page colors. */
 export function themePalette(
   background: string,
   foreground: string,
@@ -32,7 +31,6 @@ function readable(background: string, foreground: string, value: string): string
 
 const CHART_PALETTE = ["blue", "magenta", "green", "orange", "cyan", "yellow"] as const;
 
-/** The semantic tokens plots and status pills read, painted from the palette. */
 export function themeTokens(colors: ThemeColors): Array<[string, string]> {
   const token = (value: string) => readable(colors.background, colors.foreground, value);
   return [

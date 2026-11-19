@@ -1,34 +1,27 @@
-/** The first matching line of a memory topic, used by the chat's search chip. */
 export interface MemoryPathMatch {
-  /** Memory-relative path, such as topics/projects/widget-cache.md. */
   path: string;
   line: string;
 }
 
-/** One file a memory_read tool call returned, with the range it covered. */
 export interface MemoryReadRange {
   path: string;
   from: number;
   to: number;
 }
 
-/**
- * The typed part of a memory tool result. The model still gets the ordinary text output; this is
- * only what the chat needs to paint one honest chip instead of a generic tool card.
- */
 export interface MemoryToolDetails {
   kind: "memory";
-  /** Older payloads omit this; a read is inferred from its ranges and lack of matches. */
+
   operation?: "find" | "read";
-  /** Matching term occurrences for a find; absent when the tool did not report a count. */
+
   hits?: number;
-  /** Topic files a single find matched; absent when the tool did not report a count. */
+
   topics?: number;
-  /** Matched topic paths, each with its first matching line. */
+
   paths: MemoryPathMatch[];
-  /** Characters of matching snippets the tool returned; absent when unreported. */
+
   chars?: number;
-  /** Files this call read, with their line ranges. */
+
   reads: MemoryReadRange[];
 }
 
@@ -61,7 +54,6 @@ function parseReadRange(value: unknown): MemoryReadRange | undefined {
   return { path: value.path, from, to };
 }
 
-/** Reads the typed memory payload from a tool result, rejecting anything that is not one. */
 export function parseMemoryToolDetails(value: unknown): MemoryToolDetails | undefined {
   if (!isRecord(value) || value.kind !== "memory") return undefined;
   const hits = nonNegativeInteger(value.hits);
@@ -76,8 +68,7 @@ export function parseMemoryToolDetails(value: unknown): MemoryToolDetails | unde
   }
   const normalizedPaths = paths as MemoryPathMatch[];
   const normalizedReads = reads as MemoryReadRange[];
-  // Older or test payloads may omit the operation; a read is the only call that has a range
-  // without a matching path.
+
   const operation =
     value.operation === "find" || value.operation === "read"
       ? value.operation

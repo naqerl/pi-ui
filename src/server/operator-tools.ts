@@ -8,27 +8,23 @@ import type { OperatorNoticeRecord } from "../shared/notices.js";
 import { PAGE_PATHS } from "../shared/pages.js";
 import type { PushNotification } from "./push.js";
 
-/** The limits the tool validates before anything is sent or clamped. */
 export const NOTIFY_OPERATOR_LIMITS = {
   title: 60,
   body: 140,
   reason: 200,
 } as const;
 
-/** At most one operator push in this window; later calls are suppressed. */
 export const NOTIFY_OPERATOR_RATE_LIMIT_MS = 30_000;
 
 export interface OperatorBridge {
-  /** Sends the push and returns how many subscriptions accepted it. Never throws. */
   notify(notification: PushNotification): Promise<number> | number;
-  /** Adds the chat chip for the call; a failure here never fails the tool. */
+
   recordNotice(record: OperatorNoticeRecord): void | Promise<void>;
 }
 
 export interface OperatorToolOptions {
-  /** Override the clock in tests. */
   readonly now?: () => number;
-  /** How long one push keeps later calls suppressed. */
+
   readonly rateLimitMs?: number;
 }
 
@@ -44,7 +40,6 @@ function overLength(field: string, value: string, limit: number): string | null 
   return null;
 }
 
-/** Tools for asking the operator for a decision. Not deferred, so every turn offers it. */
 export function createOperatorTools(
   bridge: OperatorBridge,
   options: OperatorToolOptions = {},
@@ -100,7 +95,6 @@ export function createOperatorTools(
               data: { reason },
             });
           } catch (error) {
-            // A dead push service must still leave a successful tool result.
             console.error("[pi] operator push failed", error);
             sent = 0;
           }

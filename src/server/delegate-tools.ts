@@ -28,10 +28,6 @@ function started(run: Awaited<ReturnType<DelegateManager["start"]>>): string {
   ].join("\n");
 }
 
-/**
- * The model-facing sub-agent surface. A call returns as soon as the prompt is accepted.
- * The chat is told the result later, as one chip, and can continue the same session.
- */
 export function createAcpDelegateTools(manager: DelegateManager): ToolRegistration[] {
   return [
     defineTool({

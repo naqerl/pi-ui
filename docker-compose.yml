@@ -1,74 +1,36 @@
-# Documentation that runs: the host paths below are the complete runtime state.
-# The image itself contains no credentials and no extensions. It is stateless
-# apart from these mutable, host-backed paths: data/ (the durable
-# conversation and the memory tree), PI_CODING_AGENT_DIR (pi credentials and
-# model catalog), billion-context (compression fold state), and the GnuPG home
-# below. One further read-only file mount supplies the hub bearer token; the
-# container never sees the rest of the zeroshot configuration.
 services:
   pi-ui:
     image: ghcr.io/naqerl/pi-ui:${PI_UI_TAG:-latest}
     build:
       context: .
-    # The hub MCP listens on the host loopback only, and mcp.json addresses it
-    # as http://127.0.0.1:7383/mcp. Bridge networking would make that address
-    # the container itself, so the server would disappear from the tool set.
+
     network_mode: host
-    # No ports mapping: the listener binds the host network directly; its port
-    # still comes from PORT (8787 by default).
+
     environment:
       PORT: "${PORT:-8787}"
-      # The container cap sizes V8's default heap to ~1.4 GB, which is exactly where a
-      # month-long transcript plus its caches nearly live: at the cap V8 falls into
-      # half-second full GCs instead of collecting cheaply. Give it headroom below the
-      # memory cap, so a spike collects instead of stalling the page.
+
       NODE_OPTIONS: "--max-old-space-size=1792"
-      # gh reads GH_TOKEN from the process environment when the operator sets it.
-      # These three keep the CLI from paging or prompting inside the agent's bash.
+
       GH_PROMPT_DISABLED: "1"
       GH_PAGER: cat
       GH_NO_UPDATE_NOTIFIER: "1"
       PI_CWD: /workspace
       PI_CODING_AGENT_DIR: /home/pi/.pi/agent
-      # The durable conversation lives in data/ inside the workspace mount.
-      # Override only if the replacement path is also inside /workspace.
+
       DATA_DIR: /workspace/data
     volumes:
-      # pi's working tree plus data/pi.sqlite3 and data/current.json (the durable
-      # conversation). Survives container replacement.
       - "${PI_WORK_DIR:-./work}:/workspace"
-      # Read-write because pi updates state/history here. This is PI_CODING_AGENT_DIR:
-      # auth.json, web-search.json, and the model catalog (models-store.json,
-      # settings.json, installed pi packages) come from this mount.
+
       - "${PI_AGENT_DIR:-$HOME/.pi/agent}:/home/pi/.pi/agent"
-      # billion-context fold state (sessions/index.db/logs). Must be writable by
-      # uid 1000 and persist across container replacement, or fold history is lost.
-      # Create it first on the host: mkdir -p ~/.local/share/billion-context
+
       - "${BILI_DATA_DIR:-$HOME/.local/share/billion-context}:/home/pi/.local/share/billion-context"
-      # Read-only, one file: the hub bearer token. mcp.json reads it with
-      #   "bearerToken": "!cat /run/secrets/zeroshot-hub-token"
-      # so nothing else from the hub's configuration (its Hetzner token, its
-      # gateway key, its GitHub token) is reachable from inside this container.
+
       - "${ZEROSHOT_HUB_TOKEN_FILE:-$HOME/.config/zeroshot/hub/api-token}:/run/secrets/zeroshot-hub-token:ro"
-      # Read-only, one file: your SSH identity (private half only; ssh derives the
-      # public half when a host asks for it). The container can authenticate as you
-      # to anything that trusts this key — read-only stops it rewriting or rotating
-      # the key, not using it. Keep the source at 0600: the running uid is 1000, the
-      # same as a normal host user, so ssh enforces the mode. Override with
-      # SSH_KEY_FILE when the key lives elsewhere (e.g. an agent-specific identity).
+
       - "${SSH_KEY_FILE:-$HOME/.ssh/id_ed25519}:/home/pi/.ssh/id_ed25519:ro"
-      # Read-write, a directory: a GnuPG home the container owns, so `sops` can
-      # decrypt SOPS-encrypted files with a key imported into it. gpg writes
-      # trustdb, lock files and its agent socket here, hence read-write. Do not
-      # point this at a live host ~/.gnupg written by GnuPG >= 2.4: keyboxd stores
-      # pubring.db, which bookworm's gpg 2.2 cannot read. Export from the host and
-      # import into this directory instead (README: SOPS and GPG keys).
+
       - "${GNUPGHOME_DIR:-$HOME/.pi-ui/gnupg}:/home/pi/.gnupg"
-    # Containment. The two things that grow without bound are the fold state in
-    # billion-context and the transcript of a month-long conversation, and the host
-    # is smaller than either on a bad day. A cap turns a runaway fold into one
-    # container restart instead of a dead host (which happened in November).
-    # Sized from the measured peak; raise it only with the host, not instead of it.
+
     mem_limit: 2800m
     memswap_limit: 3600m
     cpus: 1.5

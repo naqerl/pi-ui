@@ -14,35 +14,32 @@ import type {
 import { noteLegacyTaskId } from "./task-attribution.js";
 
 const HISTORY_LIMIT = 50;
-/** Traces are kept for this many tasks; the oldest activity goes first. */
+
 const TRACE_LIMIT = 500;
 const SAVE_DELAY_MS = 1_000;
 
-/** A model reply as far as attribution needs it. */
 export interface ModelCall {
   toolCalls: { arguments: unknown }[];
   tokens: number;
   cost: number;
 }
 
-/** Per-run bookkeeping for one task, so active time is first-to-last call within each run. */
 interface RunSpan {
   firstAt: number;
   lastAt: number;
-  /** Tagged calls still running; a long build is active time, not silence. */
+
   open: number;
 }
 
 interface Persisted {
   version: 1;
   traces: Record<string, TaskTrace>;
-  /** What each task looked like last time, so ledger diffs survive a restart. */
+
   seen: Record<string, LedgerFacts>;
-  /** The last memory tool call, so the idle nudge can see it after a restart. */
+
   lastMemoryWriteAt?: string | null;
 }
 
-/** Tool names that write durable memory. */
 const MEMORY_WRITE_TOOLS = new Set(["memory_write", "memory_long_term"]);
 
 interface LedgerFacts {
@@ -94,23 +91,17 @@ function readTrace(value: unknown): TaskTrace | null {
   };
 }
 
-/**
- * What the agent's runs did per task, measured from calls made while the task was working.
- * It never trusts the agent to report progress: a task is working because the ledger says so,
- * failed because its run errored, and its time, tokens and cost are the sums of those runs.
- * A call is attributed only when exactly one task is working; none or several mean nobody.
- */
 export class TaskActivityTracker {
   private traces = new Map<string, TaskTrace>();
   private seen = new Map<string, LedgerFacts>();
   private runId: string | null = null;
-  /** Tasks the live run touched, with their first and last attributed call. */
+
   private spans = new Map<string, RunSpan>();
-  /** Tasks a live model reply mentioned, even if no attributed tool call followed. */
+
   private mentioned = new Set<string>();
-  /** The one task whose status is working, or undefined when none or several are. */
+
   private workingTaskId: string | undefined;
-  /** A failure seen during the run, reported when it ends. */
+
   private failure: { outcome: "error" | "interrupted"; reason: string } | null = null;
   private lastMemoryWriteAt: string | null = null;
   private listeners = new Set<() => void>();
@@ -119,7 +110,7 @@ export class TaskActivityTracker {
   constructor(
     private readonly path: string | undefined,
     private readonly clock: () => number = Date.now,
-    /** Records an attributed call in the ledger, so `lastWorkedAt` survives a restart. */
+
     private readonly onWorkedCall?: (taskId: string, at: number) => void,
   ) {}
 
@@ -142,7 +133,7 @@ export class TaskActivityTracker {
     for (const [id, value] of Object.entries(parsed.traces ?? {})) {
       const trace = readTrace(value);
       if (trace === null) continue;
-      // A run that was live when pi-ui stopped never got to finish.
+
       if (trace.lastRun?.outcome === "running") {
         trace.lastRun = {
           ...trace.lastRun,
@@ -178,11 +169,11 @@ export class TaskActivityTracker {
       const live = span === undefined ? 0 : Math.max(0, this.spanEnd(span, now) - span.firstAt);
       traces[id] = {
         ...trace,
-        // A call still in flight is activity right now, however long the tool takes.
+
         lastActivityAt:
           span !== undefined && span.open > 0 ? new Date(now).toISOString() : trace.lastActivityAt,
         lastRun: trace.lastRun === null ? null : { ...trace.lastRun },
-        // The live run's time so far counts before it ends.
+
         measured: { ...trace.measured, activeMs: trace.measured.activeMs + live },
         history: [...trace.history],
       };
@@ -196,7 +187,6 @@ export class TaskActivityTracker {
     };
   }
 
-  /** A run began. Calls from here on belong to it. */
   runStarted(): void {
     if (this.runId !== null) return;
     this.runId = randomUUID();
@@ -206,15 +196,13 @@ export class TaskActivityTracker {
     this.changed();
   }
 
-  /** Remember that the live run failed; the outcome lands on its tasks when it ends. */
   runFailed(outcome: "error" | "interrupted", reason: string): void {
     if (this.runId === null) return;
-    // An error explains more than the abort that usually follows it.
+
     if (this.failure?.outcome === "error") return;
     this.failure = { outcome, reason: reason.trim().slice(0, 200) || outcome };
   }
 
-  /** The run ended. `interrupted` comes from pi-ui itself, e.g. a restart. */
   runEnded(interrupted = false): void {
     if (this.runId === null) return;
     const outcome: TaskRunOutcome = interrupted ? "interrupted" : (this.failure?.outcome ?? "ok");
@@ -256,13 +244,9 @@ export class TaskActivityTracker {
     return span.open > 0 ? Math.max(span.lastAt, now) : span.lastAt;
   }
 
-  /**
-   * A top-level tool call started. It belongs to the one task whose status is working, if any,
-   * and the returned id is kept for the matching `toolEnded` even if that task closes meanwhile.
-   */
   toolStarted(name: string, args?: unknown): string | undefined {
     noteLegacyTaskId(args);
-    // Some tool calls arrive without a run_start we saw, e.g. right after a restart.
+
     if (this.runId === null) this.runStarted();
     const runId = this.runId as string;
     const now = this.clock();
@@ -294,7 +278,6 @@ export class TaskActivityTracker {
     return taskId;
   }
 
-  /** An attributed tool call finished; it keeps the task's activity fresh. */
   toolEnded(taskId: string | undefined): void {
     if (taskId === undefined || this.runId === null) return;
     const span = this.spans.get(taskId);
@@ -312,15 +295,10 @@ export class TaskActivityTracker {
     try {
       this.onWorkedCall?.(taskId, at);
     } catch (error) {
-      // A ledger write failure must not break the tool that was attributed.
       console.error(`[pi] could not record work on task ${taskId}:`, error);
     }
   }
 
-  /**
-   * A model reply ended. When it made tool calls and exactly one task is working, its tokens
-   * and cost go to that task; replies without tool calls stay unattributed.
-   */
   modelCall(call: ModelCall): void {
     for (const toolCall of call.toolCalls) noteLegacyTaskId(toolCall.arguments);
     const id = call.toolCalls.length === 0 ? undefined : this.workingTaskId;
@@ -328,8 +306,7 @@ export class TaskActivityTracker {
     const trace = this.trace(id);
     trace.measured.tokens += Math.round(call.tokens);
     trace.measured.cost += call.cost;
-    // A model reply made while the task is working is a mention that outlives this snapshot.
-    // It keeps the task working until the run it belongs to ends, even without a tool call.
+
     if (this.runId !== null && trace.lastRun?.id !== this.runId) {
       const at = this.iso();
       trace.lastRun = { id: this.runId, outcome: "running", at };
@@ -339,7 +316,6 @@ export class TaskActivityTracker {
     this.changed();
   }
 
-  /** Record status changes from the ledger as history. Call with every published ledger. */
   observeLedger(tasks: readonly Task[]): void {
     const at = this.iso();
     let touched = false;
@@ -369,7 +345,6 @@ export class TaskActivityTracker {
     if (touched) this.changed();
   }
 
-  /** Write pending changes now, e.g. on shutdown. */
   async flush(): Promise<void> {
     if (this.saveTimer !== undefined) clearTimeout(this.saveTimer);
     this.saveTimer = undefined;

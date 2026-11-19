@@ -3,7 +3,6 @@ import { expect } from "e2e";
 
 const openButtons = '[data-testid="task-attachments"] [data-testid^="task-attachment-open-"]';
 
-/** Draw a small PNG in the page and hand it to the composer's file input. */
 async function attachImage(browser: { evaluate: <T>(fn: () => T | Promise<T>) => Promise<T> }) {
   return browser.evaluate(async () => {
     const canvas = document.createElement("canvas");
@@ -61,7 +60,6 @@ async function attachmentCount(
   }, id);
 }
 
-/** Upload a randomly coloured PNG and create a task carrying two of them. */
 async function createTaskWithImages(browser: {
   evaluate: <T>(fn: () => T | Promise<T>) => Promise<T>;
 }) {
@@ -114,7 +112,6 @@ async function createTaskWithImages(browser: {
   });
 }
 
-/** Put one image through the task detail's shared media picker. */
 async function addImageThroughPicker(
   browser: {
     evaluate: <T>(fn: (color: string) => T | Promise<T>, arg: string) => Promise<T>;
@@ -141,7 +138,6 @@ async function addImageThroughPicker(
   }, color);
 }
 
-/** Upload the exact bytes of an existing image again through the shared picker. */
 async function reAddMediaThroughPicker(
   browser: {
     evaluate: <T>(fn: (id: string) => T | Promise<T>, arg: string) => Promise<T>;
@@ -166,7 +162,6 @@ async function reAddMediaThroughPicker(
   }, mediaId);
 }
 
-/** Scroll the mobile detail pane that owns the attachments and return its offset. */
 async function scrollDetail(browser: { evaluate: <T>(fn: () => T | Promise<T>) => Promise<T> }) {
   return browser.evaluate(() => {
     const attachments = document.querySelector<HTMLElement>('[data-testid="task-attachments"]');
@@ -259,7 +254,6 @@ describe("task media against one shared app", { serial: true }, () => {
     expect(scrollTop).not.toBeNull();
     expect(scrollTop as number).toBeGreaterThan(0);
 
-    // Remove immediately, without letting the test runner scroll the thumbnail into view.
     await browser.evaluate(() => {
       document.querySelector<HTMLElement>('[data-testid="task-attachment-remove-1"]')?.click();
       return true;
@@ -281,7 +275,6 @@ describe("task media against one shared app", { serial: true }, () => {
     await expect(browser.locator(openButtons)).toHaveCount(2);
     expect(await attachmentCount(browser, id)).toBe(2);
 
-    // Removing the last image must not keep its content-addressed id hidden forever.
     const targetId = await browser.evaluate(async (taskId) => {
       const ledger = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
         tasks: Array<{ id: string; attachments?: string[] }>;
@@ -290,9 +283,6 @@ describe("task media against one shared app", { serial: true }, () => {
     }, id);
     expect(targetId).not.toBeNull();
 
-    // Remove every remaining image, one render at a time. The buttons are keyed
-    // by 1-based index, so the first one always exists; querying by prefix and
-    // pausing between clicks keeps each click off a node React has just replaced.
     await expect
       .poll(
         async () => {

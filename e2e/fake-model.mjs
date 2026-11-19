@@ -61,7 +61,6 @@ function bulkAnswer(prompt) {
   ].join("\n");
 }
 
-/** The update line pi-ui put in context on start, for "WHATVERSION" prompts. */
 function updateNotice(body) {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   for (const message of messages) {
@@ -73,7 +72,6 @@ function updateNotice(body) {
 }
 
 function responseFor(prompt, body = {}) {
-  // Only a memory-delta prompt starts this way; newer builds must never submit one.
   if (prompt.startsWith("Memory updated:")) return "memory delta nudge";
   if (prompt.includes("REPEAT_FIRST_INSTRUCTION")) {
     const messages = Array.isArray(body.messages) ? body.messages : [];
@@ -85,12 +83,11 @@ function responseFor(prompt, body = {}) {
     return `First user message: ${first.slice(0, 300)}\nUser messages: ${users.length}`;
   }
   if (prompt.includes("WHATVERSION")) return `Update notice: ${updateNotice(body)}`;
-  // The echo guard test wants the model to repeat a notice verbatim, trailer included.
+
   if (prompt.includes("MCP event data follows.") && prompt.includes("ECHO_MCP_NOTICE")) {
     return prompt;
   }
-  // A bounded huge burst carries kilobytes of event data; a short reply keeps
-  // its multi-turn delivery test about the notices, not the echo.
+
   if (prompt.includes("stub-huge.event")) return "Huge burst received.";
   if (prompt.includes("BULK")) return bulkAnswer(prompt);
   if (prompt.includes("LONG")) {
@@ -155,11 +152,9 @@ function readBody(req) {
   });
 }
 
-/** Bearer token the fake ExampleCloud API accepts; e2e/server.mjs exports it as HCLOUD_TOKEN. */
 export const FAKE_HCLOUD_TOKEN = "e2e-hcloud-token-not-secret";
 let cloudHits = 0;
 
-/** A tiny stand-in for `GET https://api.example-cloud.cloud/v1/servers`. */
 function cloudServers(req, res) {
   if (req.headers.authorization !== `Bearer ${FAKE_HCLOUD_TOKEN}`) {
     res.writeHead(401, { "Content-Type": "application/json" });
@@ -193,7 +188,7 @@ function cloudServers(req, res) {
 
 export function startFakeModelServer() {
   let origin = "";
-  // A retried call repeats the same prompt, so the marker keeps its own attempt count.
+
   const failOnceAttempts = new Map();
   const server = createServer(async (req, res) => {
     if (req.method === "GET" && req.url?.startsWith("/example-cloud/v1/servers")) {
@@ -251,10 +246,9 @@ export function startFakeModelServer() {
 
     const messages = Array.isArray(body.messages) ? body.messages : [];
     const last = messages.at(-1);
-    // "JOBSTART <command>" calls job_start once; the tool result is then read back.
+
     const jobCommand = prompt.match(/^JOBSTART (.+)$/m)?.[1];
-    // "TOOLCALLS [{"name":…,"arguments":{…}}, …]" makes those calls in one turn.
-    // {{FAKE_HTTP}} in the JSON becomes this server's origin.
+
     const toolCalls = prompt.match(/^TOOLCALLS (.+)$/ms)?.[1];
     if (last?.role === "user" && toolCalls) {
       const calls = JSON.parse(toolCalls.replaceAll("{{FAKE_HTTP}}", origin));
@@ -279,7 +273,7 @@ export function startFakeModelServer() {
           },
         ],
       });
-      // Usage scales with the calls, so per-task token and cost measurement has numbers to split.
+
       writeEvent(
         res,
         chunkFor("", "tool_calls", {

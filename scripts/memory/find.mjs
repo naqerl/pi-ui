@@ -1,8 +1,5 @@
 #!/usr/bin/env node
-// TF-IDF search over memory/topics. Records what was asked in .usage.json so the
-// index can rank by recall the way Grok Build's /memory does.
-//   node find.mjs "delivery stall verifier"
-//   node find.mjs --json "mcp session"
+
 import fs from "node:fs";
 import path from "node:path";
 
@@ -92,7 +89,6 @@ const results = docs
       const exact = d.tf.get(q) || 0;
       if (exact) score += (1 + Math.log(exact)) * idf(q) * 2.2;
       else {
-        // prefix match keeps "verif" → "verifier" working without a stemmer
         for (const [w, n] of d.tf)
           if (w.startsWith(q) || q.startsWith(w)) score += (1 + Math.log(n)) * idf(w) * 0.6;
       }
@@ -100,7 +96,7 @@ const results = docs
       if (d.file.includes(q)) score += 2.0;
     }
     if (!score) return null;
-    // recency and recall nudges, both small relative to term match
+
     const ageDays = d.updated ? Math.max(0, (now - Date.parse(d.updated)) / 86400000) : 90;
     score *= 1 + 0.25 * Math.exp(-ageDays / 45);
     const hits = usage.hits?.[d.rel]?.count || 0;

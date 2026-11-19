@@ -50,8 +50,7 @@ function splitOnParagraphs(body: string): string[] {
       buffer = "";
     }
     buffer += `${paragraph}\n\n`;
-    // A single paragraph can itself exceed the cap; it stays whole rather than
-    // losing a character to an arbitrary cut.
+
     if (buffer.length > MAX_TOPIC_CHARS) {
       parts.push(buffer);
       buffer = "";

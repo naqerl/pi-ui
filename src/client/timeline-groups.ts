@@ -5,12 +5,6 @@ export type TimelineGroup =
   | { kind: "message"; key: string; message: ChatMessage }
   | { kind: "activity"; key: string; items: ActivityItem[] };
 
-/**
- * Group contiguous activity between messages, using only the timeline order.
- * Keys are positional (the preceding message plus the activity run after it) so
- * a live item being replaced by its persisted entry does not remount the group
- * or reset its expansion state.
- */
 export function groupTimeline(timeline: TimelineItem[]): TimelineGroup[] {
   const groups: TimelineGroup[] = [];
   let activity: ActivityItem[] | null = null;
@@ -43,7 +37,6 @@ export function groupTimeline(timeline: TimelineItem[]): TimelineGroup[] {
   return groups;
 }
 
-/** The newest real user turn; a pending steer or queue bubble does not start one. */
 export function lastUserMessageOrder(timeline: TimelineItem[]): number {
   let order = Number.NEGATIVE_INFINITY;
   for (const item of timeline) {
@@ -60,11 +53,6 @@ export function lastUserMessageOrder(timeline: TimelineItem[]): number {
   return order;
 }
 
-/**
- * The one live activity group for a transcript: the last activity run after the newest
- * user turn. Both the main and plan surfaces derive it here, so a row cannot be live on
- * one page and frozen on the other.
- */
 export function liveActivityGroupKey(
   timeline: TimelineItem[],
   groups: TimelineGroup[],

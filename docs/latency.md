@@ -67,7 +67,7 @@ the idle send→visible and approval→delivered paths are under 1 s.
    meanwhile. The idle nudge is no longer a delivery mechanism.
 4. **SSE could be buffered by a proxy.** The stream now sends
    `X-Accel-Buffering: no`. The 20-second heartbeat remains only as a keepalive;
-   a comment says it is not a state-delivery cadence.
+   its frame is labelled `heartbeat` and is not a state-delivery cadence.
 
 ## Checks
 
