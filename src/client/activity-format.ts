@@ -79,20 +79,57 @@ export function activitySummary(activity: ActivityItem): string {
   return `${activity.name} · ${formatDuration(activity.durationMs)} · ${activityStatus(activity)}`;
 }
 
-function groupWallMs(items: ActivityItem[], running: boolean, now: number): number {
-  const stamps = items
-    .map((item) => Date.parse(item.timestamp))
-    .filter((value) => Number.isFinite(value));
-  if (stamps.length === 0) return 0;
-  const start = Math.min(...stamps);
-  if (running) return Math.max(0, now - start);
-  const span = Math.max(...stamps) - start;
-  if (span > 0) return span;
-  let sum = 0;
-  for (const item of items) {
-    if (item.kind === "tool" && item.durationMs !== undefined) sum += item.durationMs;
+/**
+ * A row's span. A completed tool's timestamp is when its result arrived, so its start is
+ * derived once from the duration the result records; a live row's timestamp is already its
+ * start. That keeps one item's start stable when the live copy is replaced by its result.
+ */
+function activityWindow(item: ActivityItem): { start: number; end: number } | null {
+  const stamp = Date.parse(item.timestamp);
+  if (!Number.isFinite(stamp)) return null;
+  if (item.kind !== "tool" || item.pending === true) return { start: stamp, end: stamp };
+  if (item.durationMs === undefined || !Number.isFinite(item.durationMs)) {
+    return { start: stamp, end: stamp };
   }
-  return sum;
+  return { start: stamp - Math.max(0, item.durationMs), end: stamp };
+}
+
+/** Earliest start a group can derive from its rows, before any live anchor is applied. */
+export function groupStartMs(items: ActivityItem[]): number | undefined {
+  let start = Number.POSITIVE_INFINITY;
+  for (const item of items) {
+    const window = activityWindow(item);
+    if (window !== null) start = Math.min(start, window.start);
+  }
+  return Number.isFinite(start) ? start : undefined;
+}
+
+/** Keep the earliest start a running group has shown, so replacing a row cannot step back. */
+export function anchorGroupStart(previous: number | null, items: ActivityItem[]): number | null {
+  const derived = groupStartMs(items);
+  if (derived === undefined) return previous;
+  return previous === null ? derived : Math.min(previous, derived);
+}
+
+function groupWallMs(
+  items: ActivityItem[],
+  running: boolean,
+  now: number,
+  startedAt?: number,
+): number {
+  let end = Number.NEGATIVE_INFINITY;
+  for (const item of items) {
+    const window = activityWindow(item);
+    if (window !== null) end = Math.max(end, window.end);
+  }
+  const derivedStart = groupStartMs(items);
+  if (derivedStart === undefined || !Number.isFinite(end)) return 0;
+  const start =
+    startedAt !== undefined && Number.isFinite(startedAt)
+      ? Math.min(startedAt, derivedStart)
+      : derivedStart;
+  const finish = running ? Math.max(end, now) : end;
+  return Math.max(0, finish - start);
 }
 
 function formatTokens(count: number): string {
@@ -130,6 +167,7 @@ export function groupSummaryParts(
   running: boolean,
   now = Date.now(),
   extra?: TokenSpend,
+  startedAt?: number,
 ): string[] {
   const tools = items.filter((item) => item.kind === "tool");
   const parts: string[] = [];
@@ -139,7 +177,7 @@ export function groupSummaryParts(
     parts.push(`${formatTokens(spend.input)} in`);
     parts.push(`${formatTokens(spend.output)} out`);
   }
-  parts.push(formatDuration(groupWallMs(items, running, now)));
+  parts.push(formatDuration(groupWallMs(items, running, now, startedAt)));
   return parts;
 }
 

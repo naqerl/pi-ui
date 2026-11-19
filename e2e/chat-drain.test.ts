@@ -160,3 +160,39 @@ test("a drain already in flight is shared instead of submitting twice", async ()
     await chat.close();
   }
 });
+
+test("a reconnect snapshot keeps a running tool's start, arguments and task", async () => {
+  const { chat, internal } = makeChat({ run: false, inbox: 0, submitting: 0 });
+  const timestamp = "2026-01-01T12:00:00.000Z";
+  const activeTools = (
+    internal as unknown as {
+      activeTools: Map<string, { name: string; args: unknown; timestamp: string; taskId?: string }>;
+    }
+  ).activeTools;
+  const handleEvent = (
+    internal as unknown as { handleEvent(event: unknown): Promise<void> }
+  ).handleEvent.bind(internal);
+  const snapshot = {
+    type: "snapshot",
+    entries: [],
+    tools: [{ callId: "call-1", name: "bash", status: "running" }],
+    inbox: [],
+  };
+  try {
+    activeTools.set("call-1", {
+      name: "bash",
+      args: { command: "sleep 10" },
+      timestamp,
+      taskId: "task-1",
+    });
+    await handleEvent(snapshot);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await handleEvent(snapshot);
+    const kept = activeTools.get("call-1");
+    assert.equal(kept?.timestamp, timestamp);
+    assert.deepEqual(kept?.args, { command: "sleep 10" });
+    assert.equal(kept?.taskId, "task-1");
+  } finally {
+    await chat.close();
+  }
+});
