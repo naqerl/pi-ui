@@ -5,11 +5,19 @@ import { TASK_DECISION_ENTRY_KIND } from "../src/server/session.js";
 import type { DurableRunFacts } from "../src/shared/run-health.js";
 import type { StreamMessageDone } from "../src/shared/types.js";
 
+type SnapshotEvent = {
+  type: "snapshot";
+  entries: [];
+  tools: { callId: string; name: string; status: "running" }[];
+  inbox: [];
+};
+
 type InternalChat = {
   runState: string;
   queued: Map<string, unknown>;
+  activeTools: Map<string, { args: unknown; timestamp: string }>;
   durableRunFacts(): Promise<DurableRunFacts>;
-  handleEvent(event: { type: "run_end" }): Promise<void>;
+  handleEvent(event: { type: "run_end" } | SnapshotEvent): Promise<void>;
   drainQueuedInputs(facts?: DurableRunFacts): Promise<void>;
 };
 
@@ -156,6 +164,27 @@ test("a drain already in flight is shared instead of submitting twice", async ()
     release?.();
     await Promise.all([first, second]);
     assert.deepEqual(submitted, [{ type: "continue" }]);
+  } finally {
+    await chat.close();
+  }
+});
+
+test("a reconnect snapshot keeps the start of a still-running tool", async () => {
+  const { chat, internal } = makeChat({ run: true, inbox: 0, submitting: 0 });
+  const snapshot: SnapshotEvent = {
+    type: "snapshot",
+    entries: [],
+    tools: [{ callId: "call-1", name: "bash", status: "running" }],
+    inbox: [],
+  };
+  try {
+    await internal.handleEvent(snapshot);
+    const started = internal.activeTools.get("call-1");
+    assert.notEqual(started, undefined);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await internal.handleEvent(snapshot);
+    const repeated = internal.activeTools.get("call-1");
+    assert.equal(repeated?.timestamp, started?.timestamp);
   } finally {
     await chat.close();
   }

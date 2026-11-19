@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { groupStartMs, groupSummary, groupSummaryParts } from "../src/client/activity-format.js";
 import { EventsView } from "../src/client/EventsView.js";
 import { NoticeLine } from "../src/client/NoticeView.js";
 import { McpEventFeed } from "../src/server/mcp-events.js";
@@ -17,7 +18,7 @@ import {
   formatTime,
   toIsoTimestamp,
 } from "../src/shared/time.js";
-import type { ChatMessage } from "../src/shared/types.js";
+import type { ChatMessage, ToolActivity } from "../src/shared/types.js";
 
 const ISO = "2026-01-15T12:34:56.000Z";
 
@@ -42,6 +43,53 @@ async function inZoneAsync<T>(zone: string, run: () => Promise<T>): Promise<T> {
     else process.env.TZ = previous;
   }
 }
+
+const RUN_START = Date.UTC(2026, 0, 1, 12, 0, 0);
+const at = (seconds: number): string => new Date(RUN_START + seconds * 1_000).toISOString();
+
+function toolActivity(patch: Partial<ToolActivity> = {}): ToolActivity {
+  return {
+    kind: "tool",
+    id: "call-1",
+    name: "bash",
+    arguments: "{}",
+    isError: false,
+    timestamp: at(0),
+    order: 1,
+    ...patch,
+  };
+}
+
+test("a live run row does not step back when a tool result replaces its start", () => {
+  const liveFirst = toolActivity({ id: "live-1", pending: true, timestamp: at(0) });
+  const liveSecond = toolActivity({ id: "live-2", pending: true, timestamp: at(3) });
+  assert.equal(
+    groupSummary([liveFirst, liveSecond], true, RUN_START + 16_000),
+    "2 tool calls · 16.0s",
+  );
+
+  const finishedFirst = toolActivity({
+    id: "a-1",
+    timestamp: at(16),
+    durationMs: 16_000,
+  });
+  assert.equal(
+    groupSummary([finishedFirst, liveSecond], true, RUN_START + 16_000),
+    "2 tool calls · 16.0s",
+  );
+
+  const anchored = groupStartMs([liveFirst]);
+  assert.equal(
+    groupSummaryParts([finishedFirst], true, RUN_START + 16_000, undefined, anchored).at(-1),
+    "16.0s",
+  );
+});
+
+test("a finished run row spans from its first start to its last result", () => {
+  const first = toolActivity({ id: "a-1", timestamp: at(10), durationMs: 10_000 });
+  const second = toolActivity({ id: "a-2", timestamp: at(16), durationMs: 6_000 });
+  assert.equal(groupSummary([first, second], false, RUN_START + 30_000), "2 tool calls · 16.0s");
+});
 
 test("formatTime follows the zone Intl resolves at call time", () => {
   assert.equal(
@@ -229,4 +277,23 @@ test("client code formats clocks only through the shared helper", async () => {
       file,
     );
   }
+});
+
+test("a reconnect that repeats a running row keeps the group timer moving forward", () => {
+  const live = toolActivity({ id: "live-1", pending: true, timestamp: at(0) });
+  // A reconnect can repeat the same call with a fresh timestamp. The group keeps the earliest
+  // start it already showed instead of reading the repeat as a row that just began.
+  const repeated = toolActivity({ id: "live-1", pending: true, timestamp: at(16) });
+  const anchored = groupStartMs([live]);
+  assert.equal(
+    groupSummaryParts([repeated], true, RUN_START + 16_000, undefined, anchored).at(-1),
+    "16.0s",
+  );
+  assert.equal(groupSummaryParts([repeated], true, RUN_START + 16_000).at(-1), "0.0s");
+});
+
+test("a finished row's start is derived from its own duration", () => {
+  const finished = toolActivity({ timestamp: at(16), durationMs: 16_000 });
+  assert.equal(groupStartMs([finished]), RUN_START);
+  assert.equal(groupSummary([finished], true, RUN_START + 16_000), "1 tool call · 16.0s");
 });
