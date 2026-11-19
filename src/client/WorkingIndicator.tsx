@@ -41,11 +41,6 @@ function BrailleSpinner({ running }: { running: boolean }) {
   );
 }
 
-/**
- * The run's one word and a braille spinner. Shown above the composer while a run is active.
- * The strip deliberately carries no elapsed time or quiet counter: neither is actionable, and
- * a per-second clock made the composer dock re-render forever for no benefit.
- */
 export function WorkingIndicator({
   running,
   thinking = false,
@@ -55,9 +50,9 @@ export function WorkingIndicator({
 }: {
   running: boolean;
   thinking?: boolean;
-  /** The surface's own word: the chat's run word or the tasks page's plan word. */
+
   word?: string;
-  /** Two composers can be on screen at once, so each surface names its own node. */
+
   testId?: string;
   activityTestId?: string;
 }) {

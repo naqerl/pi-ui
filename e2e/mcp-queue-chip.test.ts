@@ -49,7 +49,6 @@ function mcpText(eventId = "evt-42"): string {
   })}\n${MCP_EVENTS_TRAILER}`;
 }
 
-/** A terminal event the policy delivers immediately instead of coalescing. */
 function immediateText(runId = "r"): string {
   return `${MCP_EVENTS_HEAD}\n${JSON.stringify({
     events: [{ kind: "hub.run", runId, terminal: true }],
@@ -76,7 +75,6 @@ function statusText(): string {
   })}`;
 }
 
-/** A chat service held in a running turn, so every submitted item stays queued. */
 function queuedChat(): {
   chat: ChatService;
   submissions: unknown[];

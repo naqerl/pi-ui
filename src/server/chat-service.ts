@@ -109,7 +109,6 @@ import {
   JOB_NOTICE_ENTRY_KIND,
   latestSessionReset,
   MCP_NOTICE_ENTRY_KIND,
-  // legacy: read-only, existing transcripts only
   MEMORY_DELTA_ENTRY_KIND,
   recordDurableRepairNotice,
   SESSION_CONTEXT,
@@ -132,11 +131,10 @@ interface ActiveTool {
   name: string;
   args: unknown;
   timestamp: string;
-  /** The task this call was attributed to when it started, if any. */
+
   taskId?: string;
 }
 
-/** A view revision as the event handlers below consume it; watches replaced the event stream in 1.5. */
 type ViewMessageChange = { type: "message"; message: AssistantMessage };
 
 type ViewSnapshot = {
@@ -183,22 +181,11 @@ interface QueuedRun {
   submission: Submission;
 }
 
-/**
- * The status marker is the extension's prose channel. A notice that no longer
- * names a tracked subscription must not become a user turn here, even when a
- * caller bypasses the intake filter in index.ts. The duplicate fingerprint is
- * left to the intake, which sees the notice first.
- */
 function filterStatusForChat(eventFeed: McpEventFeed | undefined, text: string): string | null {
   if (eventFeed === undefined || !text.startsWith(MCP_STATUS_HEAD)) return text;
   return eventFeed.filterStatusNotice(text, undefined, undefined, { markReported: false });
 }
 
-/**
- * The outbox delivers text the intake already accepted. Enforce only identity
- * here: re-running health/deduplication would turn an accepted recovery back
- * into a "still healthy" repeat and drop it.
- */
 function filterStatusIdentityForDelivery(
   eventFeed: McpEventFeed | undefined,
   text: string,
@@ -208,27 +195,25 @@ function filterStatusIdentityForDelivery(
 }
 
 interface SubmitOptions {
-  /** Durable deduplication key, used by recovery and queue restoration. */
   requestId?: string;
-  /** Media ids sent as images after the text. */
+
   attachments?: string[];
-  /** Place an input as this application entry instead of a normal user entry. */
+
   entry?: InputEntry & { label?: string };
-  /** Stable key from the client (or a restart) so a pending bubble keeps its id. */
+
   queueKey?: string;
-  /** Keep an internal entry out of the pending chip list when its notice is already recorded. */
+
   queuedNotice?: false;
 }
 
-/** `PI_UI_QUIET_AFTER_MS` shortens the quiet threshold for tests. */
 export const QUIET_AFTER_MS = positiveEnv("PI_UI_QUIET_AFTER_MS") ?? DEFAULT_QUIET_AFTER_MS;
 const WATCHDOG_INTERVAL_MS = Math.min(10_000, QUIET_AFTER_MS);
-/** Rows read from the store in one step while the transcript is caught up. */
+
 const TRANSCRIPT_PAGE = 256;
-/** A log this long, or this large, gets one static head before compaction can run. */
+
 const LARGE_LOG_ENTRIES = 1_500;
 const LARGE_LOG_BYTES = 2_000_000;
-/** Recent tail kept verbatim: about 20k tokens, or this many rows, whichever comes first. */
+
 const MODEL_TAIL_BYTES = 80_000;
 const MODEL_TAIL_SCAN = 800;
 const MODEL_CONTEXT_SUMMARY =
@@ -238,7 +223,6 @@ const STREAM_RETRY_MS = 1_000;
 const MCP_EVENT_HEAD = MCP_EVENTS_HEAD;
 
 export interface McpEventEnvelope {
-  /** The extension's full safety preamble, preserved verbatim. */
   readonly head: string;
   readonly items: unknown[];
   readonly dropped: number;
@@ -248,14 +232,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The task a task tool names, used to tell a release of this run's work from another task's. */
 function taskIdFromToolArgs(args: unknown): string | undefined {
   if (!isRecord(args)) return undefined;
   const id = args.id;
   return typeof id === "string" && id.trim().length > 0 ? id.trim() : undefined;
 }
 
-/** The envelope around an MCP event notice, or null for another kind of message. */
 export function mcpEventEnvelope(text: string): McpEventEnvelope | null {
   if (!text.startsWith(MCP_EVENT_HEAD)) return null;
   const newline = text.indexOf("\n");
@@ -276,7 +258,6 @@ export function mcpEventText(envelope: McpEventEnvelope, items: readonly unknown
   })}\n${MCP_EVENTS_TRAILER}`;
 }
 
-/** Longest merged MCP notice text before a second notice carries the rest. */
 export const MCP_MERGED_NOTICE_TEXT_LIMIT = 20_000;
 
 type InboxInputItem = Extract<InboxItem, { mode: "steer" | "followUp" }>;
@@ -295,7 +276,7 @@ interface McpQueueItemInfo {
   readonly text: string;
   readonly createdAt: string;
   readonly key: string;
-  /** The durable key for a replacement submission a merge had to create. */
+
   readonly requestId?: string;
 }
 
@@ -325,12 +306,10 @@ function isMcpNoticeItem(item: InboxItem): item is InboxInputItem {
   return inboxMcpEnvelope(item) !== null;
 }
 
-/** A part of an already-split merge keeps its own summary and is never merged again. */
 function isMergeableMcpNoticeItem(item: InboxItem): item is InboxInputItem {
   return isMcpNoticeItem(item) && inboxItemData(item).mergedChunk !== true;
 }
 
-/** One envelope with every event of a run, in the order the entries arrived. */
 function mergeMcpNoticeItems(run: readonly InboxInputItem[]): MergedMcpEvents | null {
   let head: string | null = null;
   let dropped = 0;
@@ -377,7 +356,6 @@ function mergeMcpNoticeItems(run: readonly InboxInputItem[]): MergedMcpEvents | 
   };
 }
 
-/** Split events so a merged notice stays bounded; an oversized lone event stays whole. */
 function splitMcpEvents(envelope: McpEventEnvelope, events: readonly unknown[]): unknown[][] {
   const chunks: unknown[][] = [];
   let current: unknown[] = [];
@@ -397,7 +375,6 @@ function splitMcpEvents(envelope: McpEventEnvelope, events: readonly unknown[]):
   return chunks;
 }
 
-/** Batch idle news into bounded turns; busy news keeps per-event queue/cancel identity. */
 export function mcpDeliveryTexts(envelope: McpEventEnvelope, busy: boolean): string[] {
   const bounded = boundMcpEventBatch(envelope.items);
   const boundedEnvelope = {
@@ -414,12 +391,6 @@ export function mcpDeliveryTexts(envelope: McpEventEnvelope, busy: boolean): str
   );
 }
 
-/**
- * A restored subscription may replay continuously. Unlike a busy live stream,
- * it must not produce one delivery per event: cap the batch at the merge limit
- * and turn the remainder into one gap text. The result is at most one event
- * chip and one gap chip, however long the replay runs.
- */
 export function mcpRestoreDeliveryTexts(envelope: McpEventEnvelope): string[] {
   const bounded = boundMcpEventBatch(envelope.items);
   const dropped = envelope.dropped + bounded.dropped;
@@ -451,7 +422,6 @@ function mergedNoticeText(
   ]);
 }
 
-/** The bounded texts one merged run produces, with the remaining count on every part. */
 export function mcpMergedNoticeTexts(
   envelope: McpEventEnvelope,
   events: readonly unknown[],
@@ -482,20 +452,18 @@ function positiveEnv(name: string): number | undefined {
   return Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
-/** One line for the thin error header; the full text stays in the detail dialog. */
 function errorSummary(text: string, limit = 160): string {
   const line = text.replace(/\s+/g, " ").trim();
   if (line.length === 0) return "The run failed.";
   return line.length <= limit ? line : `${line.slice(0, limit - 1)}…`;
 }
 
-/** Debug-gated submit breakdown: cheap enough to leave on for every send. */
 function logSubmitTiming(timing: {
   mediaMs: number;
   beforeTurnMs: number;
   markerMs: number;
   conversationMs: number;
-  /** Inside `statusMs`: the submission record read and the placed entry read. */
+
   submissionMs: number;
   entryMs: number;
   statusMs: number;
@@ -503,8 +471,6 @@ function logSubmitTiming(timing: {
   totalMs: number;
   queueDepth: number;
 }): void {
-  // A send that takes a noticeable time names its own parts in the log, so a report of
-  // "sending is slow" can be measured instead of guessed. Full timing is opt-in.
   const slow = timing.totalMs >= SLOW_SEND_MS;
   if (!slow && !submitTimingEnabled()) return;
   const line =
@@ -517,7 +483,6 @@ function logSubmitTiming(timing: {
   else console.debug(line);
 }
 
-/** A submit slower than this is logged with its breakdown even without the debug flag. */
 const SLOW_SEND_MS = 1_000;
 
 function submitTimingEnabled(): boolean {
@@ -528,22 +493,18 @@ function submitTimingEnabled(): boolean {
     .some((part) => part === "pi" || part === "pi:*" || part === "*");
 }
 
-/** The durable key for a queued submission, reused when a restart replays its marker item. */
 function queueRequestId(queueKey: string): string {
   return `queue:${queueKey}`;
 }
 
-/** The durable key for a proposal decision, so a retried approval cannot place two entries. */
 function decisionRequestId(proposalId: string): string {
   return `decision:${proposalId}`;
 }
 
-/** The key its model-facing queue copy shares with the visible decision notice. */
 function decisionQueueKey(proposalId: string): string {
   return `decision:${proposalId}`;
 }
 
-/** The client key an entry carries, for matching a retried send to its placed message. */
 function clientKeyFromEntry(entry: EntryRecord): string | undefined {
   if (!isRecord(entry.data)) return undefined;
   if (typeof entry.data.queueKey === "string" && entry.data.queueKey.length > 0) {
@@ -553,14 +514,12 @@ function clientKeyFromEntry(entry: EntryRecord): string | undefined {
   return queueKeyFromEntryData(entry.data);
 }
 
-/** The queued application entry, carrying a stable key so its chip and placed notice share an id. */
 function entryWithQueueKey(entry: InputEntry, key: string | undefined): InputEntry {
   if (key === undefined) return entry;
   const data = isRecord(entry.data) ? entry.data : {};
   return { kind: entry.kind, data: { ...data, queueKey: key } as InputEntry["data"] };
 }
 
-/** The short chip text for a queued application entry. */
 function entryNoticeLabel(kind: string, label?: string): string {
   if (label !== undefined && label.trim().length > 0) return label.trim();
   if (kind === MCP_NOTICE_ENTRY_KIND) return "MCP events";
@@ -582,7 +541,7 @@ export interface SubmittedMessage {
   placed: boolean;
   queue: QueuedMessage[];
   steers: QueuedMessage[];
-  /** The queue/steer revision these lists carry. */
+
   queueRevision: number;
 }
 
@@ -595,24 +554,24 @@ export class ChatService {
   private eventFeed: McpEventFeed | undefined;
   private taskActivity: TaskActivityTracker | undefined;
   private readonly mcpNotices = new NoticeCoalescer();
-  /** Events shown by each open notice window, so an update carries the full text. */
+
   private readonly mcpNoticeEvents = new Map<string, unknown[]>();
-  /** The most recent MCP notice text delivered here, used to spot an assistant echo. */
+
   private lastMcpNoticeText: string | null = null;
-  /** Proposal ids whose decision already reached the conversation. */
+
   private readonly taskDecisions = new Set<string>();
   private readonly activeTools = new Map<string, ActiveTool>();
   private stream: ConversationWatch | undefined;
   private closed = false;
-  /** The newest entry in the attached view, so a later revision only reports what it appended. */
+
   private lastViewEntryId: EntryRecord["id"] | undefined;
-  /** The last view's live state, diffed to recover run, tool, retry, and compaction changes. */
+
   private viewLive: LiveState | undefined;
-  /** Compaction tasks whose checkpoint already refreshed the turn memory. */
+
   private readonly compactionRefreshes = new Set<string>();
-  /** When the conversation watch last delivered anything; see `QUIET_AFTER_MS`. */
+
   private lastEventAt = Date.now();
-  /** Submissions sent to durable that it has not recorded yet. */
+
   private submitting = 0;
   private watchdog: ReturnType<typeof setInterval> | undefined;
   private idleNudgeTimer: ReturnType<typeof setInterval> | undefined;
@@ -624,62 +583,58 @@ export class ChatService {
   private checkingStaleRunNudge = false;
   private quietLogged = false;
   private readonly queued = new Map<string, QueuedRun>();
-  /** Steers durable holds in its inbox for the next turn boundary, by submission id. */
+
   private readonly steers = new Map<string, QueuedMessage>();
-  /** Bumped on every queue/steer mutation, so a stale snapshot cannot undo it. */
+
   private queueRevision = 0;
-  /** One event-driven wake for inputs a finished run left queued; see `drainQueuedInputs`. */
+
   private queueDrain: Promise<void> | undefined;
   private marker: RunMarker | undefined;
   private markerWrites: Promise<void> = Promise.resolve();
-  /** Coalesced state writes: many queue mutations in one tick become one marker write. */
+
   private markerTimer: ReturnType<typeof setTimeout> | undefined;
   private shuttingDown = false;
   private modelWindow: number | undefined;
-  /** First retry of the current episode; the budget is measured from here. */
+
   private retryStartedAt: number | undefined;
-  /** How many retries this episode has already asked for. */
+
   private retryAttempts = 0;
-  /** The provider's last retry message, kept for the failure detail. */
+
   private retryLastError = "";
-  /** The last run failure, until the operator acknowledges it. */
+
   private runError: RunError | null = null;
   private runErrorSequence = 0;
-  /** Which turn recorded the current failure, so a retry clears only its own attempt. */
+
   private runTurn = 0;
   private runErrorTurn: number | null = null;
-  /** Guards the abort path so a burst of retry events abandons a turn once. */
+
   private abandoning = false;
-  /** A deliberate stop or release keeps its failure off the phone until the next run. */
+
   private runStopped = false;
   private runReleased = false;
-  /** The ledger tasks this run has touched, so another task's release is not ours. */
+
   private readonly runTaskIds = new Set<string>();
-  /** The last failure sequence already offered to the phone, so a replay cannot ring twice. */
+
   private pushedRunErrorSequence = 0;
-  /** Guards the pre-boundary merge so a nested commit cannot start it twice. */
+
   private mergingMcpQueue = false;
   private readonly mergeMcpQueue = () => this.mergeQueuedMcpNotices();
   private selected: ModelOption | null;
-  /** The newest durable reset's row order and ISO time, carried into snapshots. */
+
   private resetOrder: number | undefined;
   private resetAt: string | undefined;
-  /** The time named when the reset was requested, until its durable entry is placed. */
+
   private pendingResetAt: string | undefined;
-  /** Read on every snapshot, so a server may recover after its boot probe fails. */
+
   private readonly mcpStatus: () => McpStatus;
-  /**
-   * One transcript for the life of the process. Boot replays `entries()` into it;
-   * the watch and a catch-up read append only rows that are not already folded.
-   * The raw records are not kept.
-   */
+
   private transcript!: TranscriptBuilder;
-  /** The app data directory, so the billion-context id can sit beside `current.json`. */
+
   private dataDir: string | undefined;
   private transcriptSync: Promise<void> | undefined;
-  /** True while a page of entries is being folded, so the watch cannot double-apply. */
+
   private replaying = false;
-  /** True once the watch is attached. A head noticed after that rotates the fold id. */
+
   private watched = false;
   private readonly queuedNotes: EntryRecord[] = [];
   private readonly appliedIds = new Set<number>();
@@ -708,20 +663,17 @@ export class ChatService {
     initialModel: Model<Api> | undefined,
     private readonly bili: BillionContextInline,
     private readonly media: MediaStore,
-    /** Refresh the injected memory block at a turn/compaction checkpoint. */
+
     private readonly beforeTurn: (reason?: string) => Promise<void> = async () => undefined,
-    /** Reads a stored diagram's current revision for the transcript's message part. */
+
     private readonly diagramRevision: DiagramRevisionResolver = () => undefined,
-    /**
-     * The ledger tasks read when an idle window expires. Tests and older callers
-     * may still pass the ready task ids directly instead of the whole task list.
-     */
+
     idleTasks: IdleTaskSource = () => [],
-    /** The app data directory, so the nudged task set survives a restart. */
+
     idleNudgeDataDirOrTasks?: string | IdleTaskSource,
-    /** Re-run the durable doctor when a view read throws; it repairs and the read is retried. */
+
     private readonly repairDurableState?: () => Promise<DurableDoctorReport>,
-    /** Announces a failed turn over the push path; the plan chat shares one notifier. */
+
     private readonly runErrorNotifier: Pick<RunErrorNotifier, "deliver"> = new RunErrorNotifier(),
   ) {
     this.mcpStatus = typeof mcpStatus === "function" ? mcpStatus : () => mcpStatus;
@@ -748,10 +700,6 @@ export class ChatService {
     registerMcpQueueMerger(this.conversation.id, this.mergeMcpQueue);
   }
 
-  /**
-   * pi-ai swaps images for an "image omitted" note when the model is text-only, so the agent
-   * would never see them. Refuse up front instead. With no model chosen the run fails anyway.
-   */
   private assertAcceptsImages(): void {
     if (this.selected === null) return;
     const model = this.catalog.getModel(this.selected.provider, this.selected.id);
@@ -791,12 +739,9 @@ export class ChatService {
     await this.restorePersistedQueue();
     await this.restorePendingSteers();
     this.startIdleNudge();
-    // A large log whose head could not be written stays uncompacted. Summarizing
-    // it would be one model call over the whole month. A small log, or one that
-    // now has a head, can compact inside that bound.
+
     if (this.headMarkerId !== undefined || !this.logIsLarge()) enableModelCompaction();
-    // Durable carries a turn across a restart from its committed checkpoint. A
-    // stop requested before the restart was settled in recovery, so leave it be.
+
     if (this.marker?.stopRequested !== true) {
       this.harness.resume();
       console.log("[pi] main agent resumed");
@@ -812,10 +757,6 @@ export class ChatService {
     await this.stream?.stop();
   }
 
-  /**
-   * Check often enough that a short test window still fires near its deadline,
-   * without waking the process every millisecond in normal use.
-   */
   private startIdleNudge(): void {
     const windows = [
       ...(this.idleNudge.enabled ? [this.idleNudge.intervalMs] : []),
@@ -830,10 +771,6 @@ export class ChatService {
     this.idleNudgeTimer.unref?.();
   }
 
-  /**
-   * Sends one automated prompt after an idle window with open work. It uses the
-   * normal queue path, never a steer, and only while no turn or submission waits.
-   */
   private async checkIdleNudge(): Promise<void> {
     if (this.closed || this.checkingIdleNudge || !this.idleNudge.enabled) return;
     const tasks = this.idleTasks();
@@ -870,7 +807,6 @@ export class ChatService {
         },
       });
     } catch (error) {
-      // Nothing reached the chat, so let the same task set try again after re-arming.
       this.idleNudge.forgetNudge();
       this.idleNudge.noteActivity();
       console.error("[pi] could not submit the idle nudge", error);
@@ -879,11 +815,6 @@ export class ChatService {
     }
   }
 
-  /**
-   * A live run that has not called a tool for an hour on one of its working tasks gets
-   * one status check. It uses the same notice chip and queue path as the idle nudge,
-   * never a steer, and is silent for terminal, blocked or waiting runs.
-   */
   private async checkStaleRunNudge(): Promise<void> {
     if (this.closed || this.checkingStaleRunNudge || !this.staleRunNudge.enabled) return;
     if (this.runState !== "running" || this.submitting > 0) return;
@@ -903,7 +834,6 @@ export class ChatService {
         },
       });
     } catch (error) {
-      // Nothing reached the chat, so let the same task try again instead of waiting an hour.
       this.staleRunNudge.forget(plan.taskIds);
       console.error("[pi] could not submit the stale-run nudge", error);
     } finally {
@@ -911,10 +841,6 @@ export class ChatService {
     }
   }
 
-  /**
-   * The conversation view is the only thing that ends a run in this server. When durable ends
-   * it (a failed Session, a listener error), attach a new one; its snapshot settles the run state.
-   */
   private watchStreamEnd(stream: ConversationWatch): void {
     void stream.closed.then((end) => {
       if (this.closed || stream !== this.stream) return;
@@ -971,10 +897,6 @@ export class ChatService {
     }
   }
 
-  /**
-   * A run that has been quiet for `QUIET_AFTER_MS` is checked against durable's live state, so a
-   * lost end event cannot leave the chat working forever. A run durable still has stays running.
-   */
   private async checkQuietRun(): Promise<void> {
     if (this.closed || this.checkingRun || this.runState !== "running") {
       this.quietLogged = false;
@@ -996,7 +918,7 @@ export class ChatService {
         );
       }
       this.reconcileRun(facts);
-      // A failed run keeps its queued inputs. No nudge should be needed to start them.
+
       if (!facts.run) void this.drainQueuedInputs(facts);
     } catch (error) {
       console.error("[pi] could not check the run state", error);
@@ -1017,7 +939,6 @@ export class ChatService {
   }
 
   private reconcileRun(facts: DurableRunFacts): void {
-    // Our own queue still waits on durable, so it keeps the run alive too.
     const next = reconcileRunState(this.runState, {
       ...facts,
       inbox: facts.inbox + this.queued.size,
@@ -1028,39 +949,29 @@ export class ChatService {
     if (next !== "running") void this.drainQueuedInputs(facts);
   }
 
-  /**
-   * Starts a run for inputs a finished run left queued. Durable keeps follow-ups after a
-   * failed run until the next submission; without this wake a queued message (or an
-   * approval) waits for the idle nudge, which is minutes away and unrelated to delivery.
-   * Submissions wake the drain on admission; this covers a run that ended after them.
-   */
   private drainQueuedInputs(known?: DurableRunFacts): Promise<void> {
     if (this.closed || this.shuttingDown || this.marker?.stopRequested === true) {
       return Promise.resolve();
     }
     if (this.queued.size === 0 && this.steers.size === 0) return Promise.resolve();
-    // Known-stale facts need no drain at all, not even a resolved guard; a caller may
-    // hand fresh facts in the same tick after an early return.
+
     if (known !== undefined && (known.run || known.inbox === 0)) return Promise.resolve();
     if (this.queueDrain !== undefined) return this.queueDrain;
     const work = (async () => {
       try {
         const facts = known ?? (await this.durableRunFacts());
-        // A live run already owns its boundary; an empty inbox has nothing to start.
+
         if (facts.run || facts.inbox === 0) return;
-        // A stop that arrived while the view was read owns the queue now.
+
         if (this.marker?.stopRequested === true) return;
         await this.conversation.submit({ type: "continue" }, SESSION_CONTEXT);
       } catch (error) {
-        // A run that started between the check and the continue owns the queue now.
         if (!(error instanceof ConversationBusy)) {
           console.error("[pi] could not drain the queued inputs", error);
         }
       }
     })();
-    // Attach cleanup before storing the guard. A known-facts early return resolves in a
-    // microtask, so clearing in the work itself could race the assignment and leave a
-    // resolved promise here forever. The identity check keeps a later drain untouched.
+
     let run: Promise<void>;
     run = work.finally(() => {
       if (this.queueDrain === run) this.queueDrain = undefined;
@@ -1069,7 +980,6 @@ export class ChatService {
     return run;
   }
 
-  /** Keep the run marker on disk while the process winds down. */
   beginShutdown(): void {
     this.shuttingDown = true;
   }
@@ -1082,7 +992,6 @@ export class ChatService {
     this.eventFeed = feed;
   }
 
-  /** Measure which task each run works on from the single task marked working. */
   setTaskActivity(tracker: TaskActivityTracker): void {
     this.taskActivity = tracker;
     if (this.runState === "running") tracker.runStarted();
@@ -1118,7 +1027,6 @@ export class ChatService {
     return { current, models };
   }
 
-  /** Store the choice on the conversation. An in-flight turn keeps the model it started with. */
   async setModel(provider: string, id: string): Promise<ModelOption | undefined> {
     const model = this.catalog.getModel(provider, id);
     if (model === undefined) return undefined;
@@ -1145,22 +1053,14 @@ export class ChatService {
     return choice;
   }
 
-  /**
-   * Queue a durable reset. While a run is live durable holds it for the post-tools boundary;
-   * that run ends with reason `reset` after its tools finish, instead of being torn down.
-   */
   async resetSession(): Promise<void> {
     const resetAt = new Date().toISOString();
     this.pendingResetAt = resetAt;
     await this.conversation.reset(undefined, SESSION_CONTEXT);
-    // The reset entry has no data, so a companion write keeps its time for later snapshots.
+
     await appendSessionResetMarker(this.conversation, resetAt);
   }
 
-  /**
-   * Counts the folded projection. `entries` and `built` are the rows folded so far,
-   * not a second copy of the log.
-   */
   memoryReport(): { entries: number; messages: number; activity: number; built: number } {
     const size = this.transcript.size();
     return {
@@ -1171,14 +1071,12 @@ export class ChatService {
     };
   }
 
-  /** One page of older transcript, ending just below `request.before`. */
   async getHistory(request: WindowRequest): Promise<TranscriptHistory> {
     await this.syncTranscript();
     this.transcript.refreshDiagrams();
     return windowTranscript(this.transcript.build(), request);
   }
 
-  /** Usage, context and MCP status without building the transcript window. */
   async statsSnapshot(): Promise<Pick<Snapshot, "usage" | "context" | "mcp" | "conversationId">> {
     await this.syncTranscript();
     const usage = await this.harness.usage(SESSION_CONTEXT);
@@ -1191,9 +1089,6 @@ export class ChatService {
   }
 
   async getSnapshot(request: WindowRequest = {}): Promise<Snapshot> {
-    // Capture the lists and their revision together before reading: a mutation that
-    // lands while the snapshot is built must get a higher revision than the data
-    // this response can claim, and the revision must describe the lists returned.
     const queueRevision = this.queueRevision;
     const queue = this.queueItems();
     const steers = this.steerItems();
@@ -1246,7 +1141,6 @@ export class ChatService {
     return this.foldedCount >= LARGE_LOG_ENTRIES || this.foldedBytes >= LARGE_LOG_BYTES;
   }
 
-  /** Fold rows committed since the projection last caught up. One indexed read when it has. */
   private async syncTranscript(): Promise<void> {
     if (this.transcriptSync !== undefined) return this.transcriptSync;
     this.transcriptSync = this.drainEntries().finally(() => {
@@ -1271,8 +1165,7 @@ export class ChatService {
         for (const entry of page.items) this.applyEntry(entry);
         if (page.next === undefined) break;
         cursor = page.next;
-        // The watch is not attached yet. Yield so a long boot does not pin the thread
-        // for the whole log. After the watch is attached, a catch-up is a few rows.
+
         if (!this.watched) await new Promise<void>((resolve) => setImmediate(resolve));
       }
     } finally {
@@ -1283,7 +1176,6 @@ export class ChatService {
     }
   }
 
-  /** Fold one entry. The watch and the replay can both see it; the second time is a no-op. */
   private noteEntry(entry: EntryRecord): void {
     if (this.replaying) {
       this.queuedNotes.push(entry);
@@ -1375,11 +1267,6 @@ export class ChatService {
     this.resetAt = entry.data.resetAt;
   }
 
-  /**
-   * One static head on a large headless log, at a recent user or assistant row.
-   * The earlier rows stay in the chat. `context()` then scans only the tail.
-   * A failure leaves compaction off: summarizing the uncut log is the outcome to avoid.
-   */
   private async boundModelContext(): Promise<void> {
     if (this.headMarkerId !== undefined) {
       this.adoptBiliIdentity(this.headMarkerId);
@@ -1412,7 +1299,6 @@ export class ChatService {
     }
   }
 
-  /** Oldest kept entry of the tail, or undefined when the log should stay whole. */
   private async modelTailBoundary(): Promise<EntryId | undefined> {
     let cursor: Cursor | undefined;
     let bytes = 0;
@@ -1565,8 +1451,7 @@ export class ChatService {
       broadcastMs: 0,
     };
     this.idleNudge.noteActivity();
-    // A retried send whose client message id is already on the transcript is the same
-    // message: return that entry instead of placing a second one and starting a turn.
+
     const duplicate =
       options.queueKey === undefined ? undefined : await this.placedClientMessage(options.queueKey);
     if (duplicate !== undefined) {
@@ -1583,7 +1468,7 @@ export class ChatService {
     const steer = mode === "steer";
     const attachments = options.attachments ?? [];
     if (attachments.length > 0) this.assertAcceptsImages();
-    // Read the images first, so an unknown id fails before the run state changes.
+
     const mediaStart = Date.now();
     const images = attachments.length === 0 ? [] : await this.media.images(attachments);
     timing.mediaMs = Date.now() - mediaStart;
@@ -1591,18 +1476,14 @@ export class ChatService {
       images.length === 0
         ? text
         : [...(text.length > 0 ? [{ type: "text" as const, text }] : []), ...images];
-    // The memory snapshot is keyed on a stable prefix. Refresh it at the turn
-    // boundary: a day rollover or long-term write reconfigures instructions;
-    // daily and scratchpad writes leave the cached block untouched. Deployments
-    // pass memoryCheckpoints.refresh here, so time the real callback.
+
     const beforeTurnStart = Date.now();
     await this.beforeTurn();
     timing.beforeTurnMs = Date.now() - beforeTurnStart;
     const startsRun = this.runState !== "running" && this.queued.size === 0;
     const startedAt = new Date().toISOString();
     const steerKey = steer ? (options.queueKey ?? randomUUID()) : undefined;
-    // A queued follow-up gets an application entry with a stable key, so its pending bubble
-    // and the placed transcript message share one id instead of remounting at the handoff.
+
     const queueKey =
       !steer && !startsRun && options.entry === undefined
         ? (options.queueKey ?? randomUUID())
@@ -1611,16 +1492,12 @@ export class ChatService {
       !steer && !startsRun && options.entry !== undefined
         ? (options.queueKey ?? randomUUID())
         : undefined;
-    // An idle client send also carries its key into the placed entry, so the optimistic
-    // bubble and its transcript message share one id even though nothing is queued.
+
     const placedKey =
       !steer && startsRun && options.entry === undefined ? options.queueKey : undefined;
-    // A submit that checked startsRun before another one won the run can still be queued
-    // by durable. Reuse the placed key there too, or the chip and the optimistic bubble
-    // would get different ids and render the same message twice.
+
     const pendingKey = queueKey ?? entryKey ?? placedKey;
-    // The same durable key is stored on the queued item, so restoration replays the
-    // original submission instead of admitting a second one for the same message.
+
     const requestId =
       options.requestId ?? (pendingKey === undefined ? undefined : queueRequestId(pendingKey));
     const notice =
@@ -1753,8 +1630,7 @@ export class ChatService {
       timing,
     );
     timing.statusMs = Date.now() - statusStart;
-    // An idle steer is already in the transcript; the response carries it, so no pending bubble
-    // is left behind. A queued steer stays tracked until its entry is actually appended.
+
     if (steer && placed && this.steers.delete(id)) this.markQueueChanged();
     if (steer) {
       const broadcastStart = Date.now();
@@ -1793,8 +1669,6 @@ export class ChatService {
       timing.broadcastMs += Date.now() - broadcastStart;
     }
 
-    // Placement wakes the drain at once: a queue admitted after a failed run must not
-    // wait for the next nudge or an unrelated message before it starts.
     if (queued) void this.drainQueuedInputs();
     void this.monitorSubmission(submission, startsRun, queued ? id : undefined);
     logSubmitTiming({
@@ -1825,10 +1699,6 @@ export class ChatService {
     return aborted;
   }
 
-  /**
-   * Takes back a steer durable has not placed yet and returns it, so its text can go back to the
-   * composer. Null when it is unknown or already in the transcript; a delivered steer stays.
-   */
   async unsendSteer(id: string): Promise<QueuedMessage | null> {
     const item = this.steers.get(id);
     if (item === undefined) return null;
@@ -1839,7 +1709,6 @@ export class ChatService {
     return aborted ? item : null;
   }
 
-  /** Withdraws a submission still in durable's inbox; false when it was placed or settled. */
   private async withdraw(id: string, what: string): Promise<boolean> {
     try {
       const result = await this.harness.abortSubmission(
@@ -1861,7 +1730,7 @@ export class ChatService {
     this.markQueueChanged();
     await this.persistMarkerState();
     this.broadcastQueue();
-    // A message durable already placed is in the transcript; sending it again would duplicate it.
+
     if (!(await this.withdraw(id, "move a queued message into the run"))) return null;
     return this.submit(queued.item.text, "steer", {
       ...(queued.item.attachments === undefined ? {} : { attachments: queued.item.attachments }),
@@ -1871,7 +1740,7 @@ export class ChatService {
   async stop(): Promise<void> {
     if (this.runState !== "running" && this.queued.size === 0) return;
     const wasRunning = this.runState === "running";
-    // A stop from the UI is deliberate: its aborted turn must not ring the phone.
+
     if (wasRunning) this.runStopped = true;
     if (wasRunning && this.marker !== undefined) {
       this.marker = {
@@ -1890,8 +1759,7 @@ export class ChatService {
       const clearedQueue = this.queued.size > 0;
       this.queued.clear();
       if (clearedQueue) this.markQueueChanged();
-      // Pending steers stay until their submissions settle, so each one can be reported as
-      // dropped with the reason instead of vanishing when the run stops.
+
       if (wasRunning) {
         this.setRunState("idle");
       } else {
@@ -1904,9 +1772,7 @@ export class ChatService {
   private async restorePersistedQueue(): Promise<void> {
     const marker = this.marker;
     if (marker === undefined || marker.stopRequested) return;
-    // Reacquire the submissions a pre-requestId marker named, instead of admitting
-    // them again under a new key. The old restore used `run-queue:<marker>:<item>`;
-    // newer markers carry the request id they admitted.
+
     let live: Awaited<ReturnType<Harness["inspect"]>>["submissions"] = [];
     try {
       const inspection = await this.harness.inspect(SESSION_CONTEXT);
@@ -1964,8 +1830,7 @@ export class ChatService {
         failed.push(item);
       }
     }
-    // Adopted submissions do not themselves ask durable for a boundary. If they are
-    // still waiting and no run is live, continue once so they are placed and answered.
+
     if (this.queued.size > 0) {
       try {
         const facts = await this.durableRunFacts();
@@ -1977,8 +1842,7 @@ export class ChatService {
       }
     }
     if (adopted) this.broadcastQueue();
-    // Retire only items this pass actually handled; a failed restore stays in the
-    // marker so the next restart can retry it instead of dropping the message.
+
     const current = this.marker ?? marker;
     const queue = [...this.queueItems()];
     for (const item of failed) {
@@ -2001,8 +1865,7 @@ export class ChatService {
       queue: this.queueItems(),
       updatedAt: new Date().toISOString(),
     };
-    // The in-memory marker is authoritative and last-write-wins; one disk write per
-    // tick is enough, and the caller no longer waits for it before broadcasting.
+
     if (flush) {
       await this.flushMarkerState();
       return;
@@ -2020,7 +1883,6 @@ export class ChatService {
     this.markerTimer.unref?.();
   }
 
-  /** Writes the newest marker before the process closes, without reviving a cleared one. */
   private async flushMarkerState(): Promise<void> {
     if (this.markerTimer !== undefined) {
       clearTimeout(this.markerTimer);
@@ -2054,12 +1916,6 @@ export class ChatService {
     await this.markerWrites;
   }
 
-  /** The transcript message a retried client send already produced, if it is placed. */
-  /**
-   * One entry by id without reading the conversation. `context()` re-parses every entry of
-   * a month-long transcript — 0.8-0.9 s measured — and the send path only needs the entry
-   * it just placed. Bounding the scan to that id reads a single row.
-   */
   private async readEntryById(id: EntryRecord["id"]): Promise<EntryRecord | undefined> {
     const page = await this.conversation.entries(
       { minEntryId: id, maxEntryId: id, order: "ascending" },
@@ -2105,8 +1961,7 @@ export class ChatService {
     }
 
     const notice = parseNotice(text);
-    // A reused submission must keep the id its optimistic or queued copy already
-    // has; a submission-scoped id would replace the bubble and blink it out.
+
     const pendingMessageId =
       !steer && pendingKey !== undefined ? `m-${pendingKey}` : `m-pending-${submission.id}`;
     return {
@@ -2172,18 +2027,17 @@ export class ChatService {
       }
       if (queuedId !== undefined && this.queued.delete(queuedId)) {
         this.markQueueChanged();
-        // Delivery is the point this queue item must leave the durable marker too.
+
         await this.persistMarkerState(true);
         this.broadcastQueue();
       }
-      // A withdrawn queue item can leave successors behind after a failed run.
+
       if (queuedId !== undefined) void this.drainQueuedInputs();
       if (startsRun && this.queued.size === 0) this.setRunState("idle");
       else this.maybeClearMarker();
     }
   }
 
-  /** Removes the pending steer an entry consumed and shows the entry in the same update. */
   private consumeSteerEntryRecord(entry: EntryRecord, submissionId?: string): boolean {
     const message = buildTranscript([entry], this.mediaRef, this.diagramRevision).messages[0];
     if (message === undefined) return false;
@@ -2201,13 +2055,11 @@ export class ChatService {
     return true;
   }
 
-  /** Reads an entry by id and consumes its pending steer, for events that arrived out of order. */
   private async consumeSteerEntry(entryId: number, submissionId?: string): Promise<boolean> {
     const entry = await this.readEntryById(entryId as EntryRecord["id"]);
     return entry === undefined ? false : this.consumeSteerEntryRecord(entry, submissionId);
   }
 
-  /** Takes a tracked steer off the queue when its transcript entry carries the same key. */
   private takeTrackedSteer(message: ChatMessage, submissionId?: string): boolean {
     let removed = false;
     if (submissionId !== undefined && this.steers.delete(submissionId)) removed = true;
@@ -2218,14 +2070,11 @@ export class ChatService {
         removed = true;
       }
     }
-    // Consuming a steer is a queue mutation too: without a new revision, an older
-    // snapshot that still lists it could be accepted after the handoff and put the
-    // pending bubble back beside the delivered row.
+
     if (removed) this.markQueueChanged();
     return removed;
   }
 
-  /** Consumes every pending steer already present in a snapshot's entries. */
   private consumeSteersInEntries(entries: readonly EntryRecord[]): ChatMessage[] {
     const consumed: ChatMessage[] = [];
     for (const entry of entries) {
@@ -2236,7 +2085,6 @@ export class ChatService {
     return consumed;
   }
 
-  /** A pending steer durable dropped is reported as failed, never silently removed. */
   private dropSteer(id: string, reason: string): boolean {
     if (!this.steers.delete(id)) return false;
     this.markQueueChanged();
@@ -2253,13 +2101,6 @@ export class ChatService {
     return true;
   }
 
-  /**
-   * Collapses each run of consecutive queued MCP notices into one entry, just
-   * before durable's final boundary places the oldest follow-up. The run rule
-   * matches `mergeQueuedNotices`: a human message (or another notice kind) ends
-   * the run. A run larger than the text cap becomes several merged entries, each
-   * saying how many events it carries and how many remain.
-   */
   private async mergeQueuedMcpNotices(): Promise<void> {
     if (this.closed || this.mergingMcpQueue) return;
     let runLength = 0;
@@ -2327,8 +2168,7 @@ export class ChatService {
                 ? base.queueKey
                 : randomUUID();
             const requestId = reused === undefined ? queueRequestId(queueKey) : undefined;
-            // A fresh id keeps a later display update for one source notice
-            // from becoming the group's first entry and hiding the merge.
+
             const noticeId = `mcp/merged#${randomUUID()}`;
             const data = {
               ...base,
@@ -2428,11 +2268,6 @@ export class ChatService {
     }
   }
 
-  /**
-   * Applies the MCP event policy to one event notice. The first event of a key
-   * starts a normal notice/turn; later events in its window replace that
-   * notice's text without appending a turn; redundant events are dropped.
-   */
   async submitMcpEventNotice(
     text: string,
     deliverAs?: "steer" | "followUp" | "nextTurn",
@@ -2528,9 +2363,7 @@ export class ChatService {
           text: latest,
           at,
         });
-        // A catch-up read may be in flight. Wait for it, then fold this row, so the
-        // chip keeps the group's first id instead of being applied out of order.
-        // A test double with no entries() scan still records the row on the projection.
+
         if (typeof this.conversation.entries === "function") await this.syncTranscript();
         this.noteEntry(entry);
         const message = this.transcript.mcpChip(noticeId);
@@ -2547,7 +2380,6 @@ export class ChatService {
           kind: MCP_NOTICE_ENTRY_KIND,
           label: "MCP events",
           data: {
-            // An immediate event is a new notice, never an update of an earlier window.
             noticeId: `mcp/immediate#${randomUUID()}`,
             key: "mcp/immediate",
             text,
@@ -2558,15 +2390,9 @@ export class ChatService {
       });
     }
 
-    // The durable delivered set may only name ids whose notice was submitted.
-    // A failure above leaves them novel so the retry can still produce a chip.
     this.eventFeed?.markDelivered(committed);
   }
 
-  /** Durable outbox batches already contain only novel events. Use the same request id
-   * on every retry/restart; durable deduplicates both queued and placed submissions.
-   * An over-cap merge keeps one logical delivery but submits each bounded part with
-   * its own queue/cancel identity, in order. */
   async submitMcpDelivery(item: {
     id: string;
     text: string;
@@ -2595,22 +2421,19 @@ export class ChatService {
             text: delivered,
             at: item.at,
             createdAt: item.at,
-            // These parts already carry their own carried/remaining summary, so
-            // the queue merger must not merge them again and duplicate the head.
+
             ...(multiPart ? { mergedChunk: true } : {}),
           },
         },
       });
     }
-    // Only a fully submitted delivery may remove its ids from the novel set, so a
-    // retry after a failed part still has the whole delivery to replay.
+
     for (const text of texts) {
       const envelope = mcpEventEnvelope(text);
       if (envelope !== null) this.eventFeed?.markDelivered(envelope.items);
     }
   }
 
-  /** Sends a job result to the agent without placing a user message in the chat. */
   async submitJobNotice(text: string): Promise<void> {
     await this.submit(text, "queue", {
       entry: {
@@ -2621,7 +2444,6 @@ export class ChatService {
     });
   }
 
-  /** Sends one finished delegate result to the agent as a notice chip, never a user bubble. */
   async submitDelegateNotice(text: string): Promise<void> {
     await this.submit(text, "queue", {
       entry: {
@@ -2632,39 +2454,24 @@ export class ChatService {
     });
   }
 
-  /**
-   * Records a job result the agent is not told about and shows it to open clients.
-   * It belongs to the activity page, so this never touches the chat draft.
-   */
   async recordNotice(text: string): Promise<void> {
     const activity = await appendJobNotice(this.conversation, text);
     if (activity === undefined) return;
     this.hub.broadcast({ event: "activity", data: { activity } satisfies StreamActivity });
   }
 
-  /**
-   * Shows a memory write as a persistent chat chip. It never changes the model
-   * context: the tool result is the model's confirmation, and a long-term write
-   * still rebuilds the snapshot for the next day rollover / compaction.
-   */
   async recordMemoryWrite(record: MemoryWriteRecord): Promise<void> {
     const message = await appendMemoryWriteNotice(this.conversation, record);
     if (message === undefined) return;
     this.hub.broadcast({ event: "notice", data: { message } satisfies StreamNotice });
   }
 
-  /** Shows a notify_operator call as a persistent chat chip without placing a user message. */
   async recordOperatorNotice(record: OperatorNoticeRecord): Promise<void> {
     const message = await appendOperatorNotice(this.conversation, record);
     if (message === undefined) return;
     this.hub.broadcast({ event: "notice", data: { message } satisfies StreamNotice });
   }
 
-  /**
-   * Delivers a proposal decision to the model through the queue path, as one notice
-   * chip. An idle chat starts a turn with the decision; a running turn gets it as a
-   * follow-up. The proposal id makes a repeated delivery a no-op.
-   */
   async recordTaskDecision(record: TaskDecisionNoticeRecord): Promise<void> {
     const key = record.proposalId;
     if (this.taskDecisions.has(key)) return;
@@ -2673,23 +2480,17 @@ export class ChatService {
       await this.syncTranscript();
       const queueKey = decisionQueueKey(key);
       if (!this.decisionProposals.has(key)) {
-        // The notice is a display-only write, so durable places it even while another
-        // turn runs. The user sees the decision now, not when that turn ends.
         const message = await appendTaskDecisionNotice(this.conversation, record, queueKey);
         this.decisionProposals.add(key);
         if (message !== undefined) {
           this.hub.broadcast({ event: "notice", data: { message } satisfies StreamNotice });
         }
       }
-      // Entries written before the notice and prompt were split carried the prompt themselves.
-      // `noteEntry` records those on the prompted set while the log is folded.
+
       if (this.promptedDecisions.has(key)) return;
       const text = taskDecisionPrompt(record);
       const createdAt = new Date().toISOString();
       await this.submit(text, "queue", {
-        // The prompt is separate from the visible notice, so it can wait for a busy
-        // turn without hiding the chip. The shared key identifies the copy to suppress;
-        // the proposal id still makes a retried delivery idempotent.
         requestId: decisionRequestId(key),
         queueKey,
         queuedNotice: false,
@@ -2726,7 +2527,6 @@ export class ChatService {
     }
   }
 
-  /** Start a view revision's diff from a fresh attachment: no history is replayed. */
   private resetView(view: ConversationView): ViewSnapshot {
     let newest: EntryRecord["id"] | undefined;
     for (const entry of view.entries) {
@@ -2763,11 +2563,6 @@ export class ChatService {
     };
   }
 
-  /**
-   * Turns one conversation view revision into the events the handlers below already understand.
-   * Durable 1.5 removed `watchEvents()`; the view carries the same run, partial, tool, retry,
-   * compaction, and transcript information, so the diff keeps the UI behaviour intact.
-   */
   private async handleView(view: ConversationView): Promise<void> {
     this.lastEventAt = Date.now();
     const live = view.docs["pi.live"] as LiveState | undefined;
@@ -2862,8 +2657,7 @@ export class ChatService {
       } catch (error) {
         console.error("[pi] view entry handling failed", error);
       }
-      // Marker persistence waits on disk. The watch drain awaits this listener, so
-      // the write has to leave the frame or the next entry cannot be delivered.
+
       void this.releasePlacedQueueEntry(entry).catch((error: unknown) => {
         console.error("[pi] queue retirement failed", error);
       });
@@ -2891,8 +2685,6 @@ export class ChatService {
       await this.handleEvent({ type: "compaction_start", reason: compaction.trigger });
     }
 
-    // A compaction that started and ended between two view revisions never appeared in
-    // `pi.live.compactions`; its failure or summary entry is the only trace of it.
     const failure = live?.compactionFailure;
     const failureBefore = previousLive?.compactionFailure;
     const shortFailure =
@@ -2953,7 +2745,6 @@ export class ChatService {
     }
   }
 
-  /** A queued bubble retires when its entry is placed, after the placed message is published. */
   private async releasePlacedQueueEntry(entry: EntryRecord): Promise<void> {
     const data = isRecord(entry.data) ? entry.data : undefined;
     const key =
@@ -2967,19 +2758,13 @@ export class ChatService {
     if (removed) await this.publishQueueRetirement();
   }
 
-  /**
-   * Retires queued bubbles whose submissions left `queued` even when their entry carried no
-   * matching key, such as the start-race path or an MCP merge replacement. Runs after the
-   * view's entries, so a placed message is already on screen before its bubble goes.
-   */
   private async retireSettledQueueEntries(): Promise<void> {
     if (this.queued.size === 0) return;
     let removed = false;
     for (const [id, queued] of [...this.queued]) {
       const record = await queued.submission.status(SESSION_CONTEXT).catch(() => undefined);
       if (record === undefined || record.status === "queued") continue;
-      // Do not retire before the placed entry is in the view, or the pending bubble would
-      // disappear for a frame while its transcript message is still in flight.
+
       if (
         record.entry !== undefined &&
         (this.lastViewEntryId === undefined || record.entry > this.lastViewEntryId)
@@ -3005,7 +2790,6 @@ export class ChatService {
   }
 
   private async publishQueueRetirement(): Promise<void> {
-    // A delivered item must be gone from the marker before any restart can read it.
     await this.persistMarkerState(true);
     this.broadcastQueue();
     this.hub.broadcast({
@@ -3025,13 +2809,13 @@ export class ChatService {
       case "snapshot": {
         this.applySnapshot(event);
         const consumed = this.consumeSteersInEntries(event.entries);
-        // A snapshot replaces events durable dropped, a run's end among them.
+
         this.reconcileRun({
           run: event.run !== undefined,
           inbox: event.inbox.length,
           submitting: this.submitting,
         });
-        // A fresh view is proof the agent connection is back. A model failure stays.
+
         this.clearRunError("ConnectionError");
         const revision = this.bumpDraft();
         const frames: SseFrame[] = consumed.map((message) => ({
@@ -3068,7 +2852,7 @@ export class ChatService {
 
       case "run_end":
         this.setRunState("idle");
-        // Reads the store. Awaiting it here holds the watch drain for the whole turn's tail.
+
         void this.drainQueuedInputs();
         return;
 
@@ -3097,15 +2881,10 @@ export class ChatService {
           event.entry.kind === QUEUE_ENTRY_KIND ||
           event.entry.kind === MCP_NOTICE_ENTRY_KIND ||
           event.entry.kind === DELEGATE_NOTICE_ENTRY_KIND ||
-          // legacy: read-only, existing transcripts only
           event.entry.kind === MEMORY_DELTA_ENTRY_KIND ||
           event.entry.kind === TASK_DECISION_ENTRY_KIND ||
           event.entry.kind === IDLE_NUDGE_ENTRY_KIND
         ) {
-          // Send the placed entry before the queue update retires its pending bubble, so the
-          // same message id hands over without a frame where neither copy is on screen.
-          // A decision or nudge chip is a user-facing state change of its own: push it now
-          // instead of waiting for the run it started to end and refresh the whole chat.
           const placedMessage = buildTranscript([event.entry], this.mediaRef, this.diagramRevision)
             .messages[0];
           if (event.entry.kind === STEER_ENTRY_KIND) {
@@ -3168,7 +2947,7 @@ export class ChatService {
       case "tool_execution_start": {
         if (event.parentToolCallId !== undefined) return;
         const taskId = this.taskActivity?.toolStarted(event.toolName, event.args);
-        // Track the work this run owns. A release is checked when it succeeds below.
+
         if (taskId !== undefined) this.runTaskIds.add(taskId);
         if (event.toolName !== "task_release") {
           const namedTask = taskIdFromToolArgs(event.args);
@@ -3200,7 +2979,7 @@ export class ChatService {
         const active = this.activeTools.get(event.toolCallId);
         this.activeTools.delete(event.toolCallId);
         this.taskActivity?.toolEnded(active?.taskId);
-        // Only a successful release of this run's own task deliberately parks the work.
+
         if (event.toolName === "task_release" && event.result?.isError === false) {
           const releasedId = taskIdFromToolArgs(active?.args ?? event.args);
           const related =
@@ -3263,8 +3042,7 @@ export class ChatService {
         this.retryStartedAt ??= now;
         this.retryAttempts += 1;
         this.retryLastError = event.errorMessage;
-        // A failure already reported for this turn is being retried, not the end
-        // of the run. Clear it now so a transient attempt never leaves a header.
+
         this.clearCurrentTurnModelError();
         const budget = retryBudgetMs();
         console.warn(
@@ -3277,7 +3055,6 @@ export class ChatService {
       }
 
       case "auto_retry_end":
-        // The provider answered again, so the next failure starts a fresh budget.
         this.clearCurrentTurnModelError();
         this.resetRetryBudget();
         return;
@@ -3310,7 +3087,6 @@ export class ChatService {
     this.toolsRevision += 1;
   }
 
-  /** Recover the latest delivered notice so an echo is caught after a restart too. */
   private rememberLatestMcpNotice(entries: readonly EntryRecord[]): void {
     let latestId = -1;
     for (const entry of entries) {
@@ -3367,7 +3143,6 @@ export class ChatService {
     return [...this.steers.values()];
   }
 
-  /** After a restart, steers still in durable's inbox are listed again, so they can be taken back. */
   private async restorePendingSteers(): Promise<void> {
     try {
       const view = await this.readView();
@@ -3392,7 +3167,6 @@ export class ChatService {
     }
   }
 
-  /** Reads one conversation view and releases its watch; for the watchdog and restart recovery. */
   private async readView(): Promise<ConversationView> {
     const watch = await this.watchConversation();
     try {
@@ -3402,10 +3176,6 @@ export class ChatService {
     }
   }
 
-  /**
-   * A torn durable view throws while it materialises. Repair the store and retry once instead of
-   * ending the turn; if the doctor cannot help, the original failure still reaches the caller.
-   */
   private async watchConversation(): Promise<ConversationWatch> {
     try {
       return await this.conversation.watch(SESSION_CONTEXT);
@@ -3421,7 +3191,6 @@ export class ChatService {
     }
   }
 
-  /** Marks the pending lists changed before an await can interleave a snapshot read. */
   private markQueueChanged(): void {
     this.queueRevision += 1;
   }
@@ -3448,7 +3217,7 @@ export class ChatService {
     this.idleNudge.noteActivity();
     if (state === "running") {
       this.runTurn += 1;
-      // A new run is not the stop or release that ended the previous one.
+
       this.runStopped = false;
       this.runReleased = false;
       this.runTaskIds.clear();
@@ -3473,7 +3242,6 @@ export class ChatService {
     if (state !== "running") this.pushRunErrorWhenSettled();
   }
 
-  /** Hand a finished model reply to the task tracker: its attributed tool calls, cost and failure. */
   private measureModelCall(entry: EntryRecord): void {
     const tracker = this.taskActivity;
     if (tracker === undefined || !AssistantEntry.is(entry)) return;
@@ -3508,8 +3276,7 @@ export class ChatService {
           ? message.errorMessage
           : "model error";
       tracker.runFailed("error", errorText);
-      // The failed attempt pi-durable commits before retrying is not a finished
-      // run; only a failure with no retry in flight is the turn's outcome.
+
       if (this.retryStartedAt === undefined) {
         this.noteRunError("ModelError", errorText, errorText);
       }
@@ -3518,14 +3285,12 @@ export class ChatService {
     }
   }
 
-  /** Record a failure as the server saw it and push the thin header to every client. */
   private noteRunError(errorClass: string, message: string, detail?: string): void {
     const summary = errorSummary(message);
     const fullDetail = detail?.trim();
     const nextDetail = fullDetail === undefined || fullDetail.length === 0 ? undefined : fullDetail;
     const current = this.runError;
-    // A stale header from an earlier turn is not this turn's failure, even when its
-    // text matches: each failed turn gets its own sequence and its own push window.
+
     if (
       current !== null &&
       current.class === errorClass &&
@@ -3553,19 +3318,17 @@ export class ChatService {
     this.pushRunErrorWhenSettled();
   }
 
-  /** A failure is news only once its turn has actually ended, not while a retry is in flight. */
   private pushRunErrorWhenSettled(): void {
     if (this.runState === "running" || this.runError === null) return;
-    // Losing the stream or reconnecting is not a failed turn; it is repaired in place.
+
     if (this.runError.class === "ConnectionError") return;
     this.pushRunError(this.runError.message);
   }
 
-  /** Announce this one failure unless the turn was deliberately stopped or released. */
   private pushRunError(message: string): void {
     const sequence = this.runErrorSequence;
     if (sequence === 0 || this.pushedRunErrorSequence === sequence) return;
-    // Mark it even when suppressed: a later view of the same failure must not ring.
+
     this.pushedRunErrorSequence = sequence;
     if (this.runStopped || this.runReleased || this.marker?.stopRequested === true) return;
     void Promise.resolve(this.runErrorNotifier.deliver({ message })).catch((error: unknown) => {
@@ -3573,7 +3336,6 @@ export class ChatService {
     });
   }
 
-  /** Drop a ModelError recorded by an attempt this turn is still retrying. */
   private clearCurrentTurnModelError(): void {
     if (this.runError?.class !== "ModelError" || this.runErrorTurn !== this.runTurn) return;
     this.clearRunError("ModelError");
@@ -3605,11 +3367,6 @@ export class ChatService {
     this.retryLastError = "";
   }
 
-  /**
-   * The turn spent its retry budget: stop it instead of waiting out another attempt, say
-   * why in the chat, and hand the queue the turn it was holding. Without this a provider
-   * that keeps failing freezes every message sent behind it.
-   */
   private async abandonRetryingTurn(spentMs: number): Promise<void> {
     if (this.abandoning || this.closed) return;
     this.abandoning = true;
@@ -3650,7 +3407,6 @@ export class ChatService {
     }
   }
 
-  /** Runs the oldest queued message once the turn that held it is gone. */
   private async startOldestQueued(): Promise<void> {
     const first = this.queued.entries().next();
     if (first.done === true) return;

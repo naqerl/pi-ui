@@ -18,10 +18,6 @@ export interface ViewerImage {
 
 let pendingKey = 0;
 
-/**
- * The task detail's image list: upload through the shared picker, patch the task,
- * and keep the visible list optimistic while the ledger catches up.
- */
 export function useTaskMedia(task: Task, onLedger?: (ledger: TaskLedger) => void) {
   const [pending, setPending] = useState<PendingImage[]>([]);
   const [removed, setRemoved] = useState<Set<string>>(() => new Set());
@@ -47,7 +43,6 @@ export function useTaskMedia(task: Task, onLedger?: (ledger: TaskLedger) => void
     [],
   );
 
-  // A different task starts with no uploads, removals or open viewer from the last one.
   useEffect(() => {
     if (mediaTaskId.current === task.id) return;
     mediaTaskId.current = task.id;
@@ -61,9 +56,6 @@ export function useTaskMedia(task: Task, onLedger?: (ledger: TaskLedger) => void
     working.current = false;
   }, [task.id]);
 
-  // Removing is immediate: once the ledger changes there is nothing left to hide.
-  // The new list also settles a failed removal, an empty clear, or the same
-  // content-addressed id being added back after the last image was removed.
   const saved = task.attachments;
   const lastSaved = useRef(saved);
   useEffect(() => {

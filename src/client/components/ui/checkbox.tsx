@@ -1,10 +1,6 @@
 import type * as React from "react";
 import { cn } from "../../lib/utils";
 
-/**
- * A shadcn-style checkbox drawn as a toggle button, so it can sit inside a clickable row and
- * keep a plain "Done X" / "Reopen X" name.
- */
 function Checkbox({
   checked,
   className,

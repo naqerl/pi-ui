@@ -18,10 +18,9 @@ import type { Task, TaskLedger } from "../shared/types.js";
 import { MediaError, type MediaStore, validateAttachmentIds } from "./media.js";
 import { TaskError, type TaskStore } from "./tasks.js";
 
-/** The process-wide ledger and the hook that tells open browsers it changed. */
 export interface TaskBridge {
   readonly store: TaskStore;
-  /** Where task images live. Without it, task_view returns only the text. */
+
   readonly media?: MediaStore;
   publish(ledger: TaskLedger): void;
 }
@@ -207,10 +206,6 @@ async function changed(
   }
 }
 
-/**
- * The one propose_task definition, shared by the main chat and the planning agent.
- * A proposal is never open work until a human approves it.
- */
 export function createProposeTaskTool(bridge: TaskBridge): ToolRegistration {
   return defineTool({
     name: "propose_task",
@@ -231,7 +226,6 @@ export function createProposeTaskTool(bridge: TaskBridge): ToolRegistration {
   });
 }
 
-/** Tools for the same ledger the tasks page edits. Not deferred, so every turn offers them. */
 export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
   return [
     defineTool({

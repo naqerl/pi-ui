@@ -99,10 +99,6 @@ export interface QuestionAnswerResult {
   summary: string;
 }
 
-/**
- * The pending question set for one task. It lives in the task agent's directory, next to its
- * conversation, so a reload and a server restart both see the same unanswered questions.
- */
 export class TaskQuestionsStore {
   private state: StoredQuestions = { pending: null, answered: [] };
   private loading: Promise<void> | undefined;
@@ -112,7 +108,6 @@ export class TaskQuestionsStore {
 
   constructor(private readonly path: string) {}
 
-  /** The pending set changed (asked or answered), so a live plan frame can publish it. */
   subscribe(listener: () => void): () => void {
     this.changeListeners.add(listener);
     return () => {
@@ -188,7 +183,6 @@ export class TaskQuestionsStore {
     };
   }
 
-  /** Add questions, merging into the one pending set instead of replacing it. */
   async add(
     taskId: string,
     questions: readonly TaskQuestion[],
@@ -254,7 +248,6 @@ export class TaskQuestionsStore {
     });
   }
 
-  /** Record answers, clear the pending set, and keep a bounded history for replay. */
   async answer(setId: string, answers: unknown): Promise<QuestionAnswerResult> {
     const result = await this.mutate(() => {
       const pending = this.state.pending;
@@ -282,7 +275,6 @@ export class TaskQuestionsStore {
     return result;
   }
 
-  /** Drop a pending set without recording an answer, for a task that stopped planning. */
   async clearPending(): Promise<boolean> {
     const hadPending = await this.mutate(() => {
       const pending = this.state.pending !== null;
@@ -293,7 +285,6 @@ export class TaskQuestionsStore {
     return hadPending;
   }
 
-  /** Wake the tool that is waiting on this set, after its transcript row is committed. */
   resolve(setId: string, result: QuestionAnswerResult): void {
     const listeners = this.waiters.get(setId);
     if (listeners === undefined) return;
@@ -319,7 +310,6 @@ export type TaskQuestionAnswerEntryData = {
   createdAt: string;
 };
 
-/** The operator's choices, rendered in the planning transcript as a card (and never as JSON). */
 export const TaskQuestionAnswerEntry = defineEntry<TaskQuestionAnswerEntryData>(
   "ui.task-question-answers",
 );

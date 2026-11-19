@@ -6,13 +6,14 @@
   "description": "Minimal single-chat web UI for pi, installable as a PWA with a native share target",
   "scripts": {
     "dev": "concurrently -k -n server,client \"tsx watch src/server/index.ts\" \"vite\"",
-    "build": "vite build && tsc -p tsconfig.server.json",
+    "build": "npm run comments && vite build && tsc -p tsconfig.server.json",
     "start": "node --import tsx dist/server/index.js",
     "typecheck": "tsc --noEmit",
-    "lint": "biome check .",
+    "lint": "biome check . && npm run comments",
     "gate": "npm run typecheck && npm run lint && npm run build && npm test",
     "e2e": "e2e run",
     "icons": "node scripts/generate-icons.mjs",
+    "comments": "node scripts/no-comments.mjs",
     "test": "node scripts/run-tests.mjs",
     "durable:doctor": "node --import tsx dist/server/durable-doctor-cli.js"
   },
