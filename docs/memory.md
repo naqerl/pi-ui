@@ -74,19 +74,16 @@ for recall. `INDEX.md` is never indexed. A result is
 
 ## The loop
 
+Run a one-shot migration first, with a dry run before `--apply`. Then retrieve a body when the index
+is not enough. Consolidation emits one merge work item per target, each folded back through
+`memory_write` with one topic per call, and `--commit` closes the pass by archiving consumed daily
+logs and rebuilding the map.
+
 ```sh
-# 1. one-shot migration (dry-run first)
 npx tsx src/server/memory/migrate.ts --memory=data/memory
 npx tsx src/server/memory/migrate.ts --memory=data/memory --apply
-
-# 2. retrieve a body when the index is not enough
 npx tsx src/server/memory/find.ts --memory=data/memory "whichever terms you half-remember"
-
-# 3. consolidation: one merge work item per target
 npx tsx src/server/memory/dream.ts --memory=data/memory --emit .dream/merge
-#    fold each item back through memory_write (one topic per call)
-
-# 4. close the pass: archive consumed daily logs and rebuild the map
 npx tsx src/server/memory/dream.ts --memory=data/memory --commit
 ```
 

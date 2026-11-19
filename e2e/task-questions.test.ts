@@ -129,7 +129,6 @@ test("append_questions merges into the same persisted pending set", async () => 
   assert.equal(duplicate.isError, true);
   assert.match(duplicate.text, /already waiting/i);
 
-  // A fresh store reads the same pending set, as after a server restart.
   const reloaded = new TaskQuestionsStore(path);
   await reloaded.load();
   assert.deepEqual(await reloaded.pending(), merged);

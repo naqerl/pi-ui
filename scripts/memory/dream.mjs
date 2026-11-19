@@ -1,11 +1,5 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-// Prepare / commit a consolidation pass over the memory journal.
-//   node dream.mjs            → writes .dream/queue-YYYY-MM-DD.md
-//   node dream.mjs --commit   → archives consumed daily logs, updates state, rebuilds the map
-//
-// The point of the prepare step is not to summarise: it attaches every journalled line to the
-// topic file it most likely belongs to, so the merge is "edit these files" rather than "sort a pile".
 import fs from "node:fs";
 import path from "node:path";
 
@@ -47,7 +41,6 @@ const tok = (s) =>
     .map((w) => w.replace(/^[-./:]+|[-./:]+$/g, ""))
     .filter((w) => w.length > 1 && !STOP.has(w));
 
-// --- topic corpus (targets for the merge) --------------------------------
 const topicsDir = path.join(MEM, "topics");
 const topics = [];
 if (fs.existsSync(topicsDir)) {
@@ -97,7 +90,6 @@ const match = (text) => {
     .slice(0, 3);
 };
 
-// --- sources -------------------------------------------------------------
 const dailyDir = path.join(MEM, "daily");
 const daily = fs.existsSync(dailyDir)
   ? fs
@@ -108,7 +100,6 @@ const daily = fs.existsSync(dailyDir)
 const pending = daily.filter((f) => !consumed.has(f));
 const todayName = `${TODAY}.md`;
 
-// blocks = pi-memory stamp-delimited entries; each keeps its context
 const blocks = [];
 for (const f of pending) {
   const txt = fs.readFileSync(path.join(dailyDir, f), "utf8");
@@ -134,8 +125,7 @@ const openItems = fs.existsSync(pad)
       .map((l) => l.replace(/^\s*-\s*\[ \]\s*/, ""))
   : [];
 
-// --- attach blocks to topics --------------------------------------------
-const attached = new Map(); // rel → {topic, blocks}
+const attached = new Map();
 const unattached = [];
 for (const b of blocks) {
   const cands = match(`${b.heading}\n${b.text}`);
@@ -147,7 +137,6 @@ for (const b of blocks) {
   } else unattached.push(b);
 }
 
-// --- duplicate detection within an attachment group ----------------------
 const shingles = (s) => {
   const w = tok(s);
   const out = new Set();
@@ -173,7 +162,6 @@ for (const [rel, g] of attached) {
 const oversized = topics.filter((t) => t.bytes > 6000).sort((a, b) => b.bytes - a.bytes);
 const unindexed = topics.filter((t) => !t.indexed);
 
-// --- report --------------------------------------------------------------
 const out = [
   `# Dream queue — ${TODAY}`,
   "",
@@ -241,7 +229,6 @@ out.push(
 const report = `${out.join("\n")}\n`;
 
 if (EMIT) {
-  // one work item per merge target, so a single agent turn can fold one topic
   fs.mkdirSync(EMIT, { recursive: true });
   const emitted = [];
   for (const [rel, g] of groups) {

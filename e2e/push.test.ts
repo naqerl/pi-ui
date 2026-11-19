@@ -131,18 +131,15 @@ test("a run error pushes once, repeats inside the window coalesce, and a new mes
     assert.equal(sent[0]?.body, "the provider returned an empty answer");
     assert.equal(sent[0]?.url, PAGE_PATHS.chat);
 
-    // The same sequence is never announced twice, even when its detail changes.
     internal.noteRunError("ModelError", "the provider returned an empty answer", "more detail");
     await settlePush();
     assert.equal(sent.length, 1);
 
-    // A later run with the same text inside the window is still one notification.
     internal.clearRunError();
     internal.noteRunError("ModelError", "the provider returned an empty answer");
     await settlePush();
     assert.equal(sent.length, 1);
 
-    // Past the window, the same error is news again; a different one always is.
     now += RUN_ERROR_PUSH_WINDOW_MS;
     internal.clearRunError();
     internal.noteRunError("ModelError", "the provider returned an empty answer");
@@ -170,7 +167,6 @@ test("the same failure in a later turn is news again after the window", async ()
     await settlePush();
     assert.equal(sent.length, 1);
 
-    // The old header is still shown, but a new turn makes the same text a new failure.
     now += RUN_ERROR_PUSH_WINDOW_MS;
     internal.setRunState("running");
     internal.setRunState("idle");
@@ -206,7 +202,6 @@ test("a failure waits for its run to settle and a retried one never rings", asyn
     await settlePush();
     assert.equal(sent.length, 0, "a failure while running is not the turn's outcome yet");
 
-    // The retry clears it before the run ends, so it never becomes a phone notification.
     internal.clearRunError();
     internal.setRunState("idle");
     await settlePush();

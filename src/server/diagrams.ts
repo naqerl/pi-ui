@@ -5,23 +5,19 @@ import { render } from "pele";
 import { DIAGRAM_FORMAT, DIAGRAM_ID_PATTERN } from "../shared/diagrams.js";
 import type { DiagramRef } from "../shared/types.js";
 
-/** A diagram may be at most this much source, in UTF-8 bytes. */
 export const MAX_DIAGRAM_BYTES = 20 * 1024;
-/** Longest format name accepted on disk; an unknown one is shown as raw source by the client. */
 const MAX_FORMAT_LENGTH = 40;
 
 const ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
 const ID_BYTES = 7;
 const ID_LENGTH = 10;
 
-/** The file kept at `DATA_DIR/diagrams/<id>.json`. */
 export interface Diagram {
   id: string;
   format: string;
   source: string;
   createdAt: string;
   updatedAt: string;
-  /** Starts at 1 and increases on every replace. */
   revision: number;
 }
 
@@ -35,7 +31,6 @@ export class DiagramError extends Error {
   }
 }
 
-/** Crockford base32 in lowercase, truncated to a stable 10 characters. */
 export function encodeDiagramId(bytes: Uint8Array): string {
   let bits = 0;
   let value = 0;
@@ -52,7 +47,6 @@ export function encodeDiagramId(bytes: Uint8Array): string {
   return id.slice(0, ID_LENGTH);
 }
 
-/** A fresh id from the platform random source. */
 export function newDiagramId(): string {
   return encodeDiagramId(randomBytes(ID_BYTES));
 }
@@ -61,7 +55,6 @@ export function isDiagramId(id: string): boolean {
   return DIAGRAM_ID_PATTERN.test(id);
 }
 
-/** Trims nothing: source is kept exactly, but empty and oversized text is refused. */
 export function validateDiagramSource(source: unknown): string {
   if (typeof source !== "string") {
     throw new DiagramError("Diagram source must be text", 400);
@@ -78,10 +71,8 @@ export function validateDiagramSource(source: unknown): string {
   return source;
 }
 
-/** A parser failure from Pele: the text it printed, and where it gave up. */
 export interface DiagramParseProblem {
   message: string;
-  /** One-based line number; a source with no diagram type resolves to line 1. */
   line: number;
   column?: number;
 }
@@ -91,10 +82,6 @@ function numericField(record: Record<string, unknown>, key: string): number | un
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-/**
- * Parses Mermaid once with the same bundled renderer the client and server use. A tool can
- * therefore report a broken source before it claims the drawing was saved.
- */
 export function diagramParseProblem(source: string): DiagramParseProblem | undefined {
   try {
     render(source);
@@ -171,7 +158,6 @@ const UNSAFE_SVG_ELEMENT =
   /<\s*(?:script|iframe|object|embed|applet|link|meta|base|form|input|button|textarea|select|option|video|audio|source|track|template|handler|listener|discard|set|animate(?:motion|transform)?)\b/i;
 const EVENT_HANDLER = /(?:^|[\s"'<>/])on[a-z0-9_-]+\s*=/i;
 
-/** Stored SVG is only served after rejecting active content, event handlers and unsafe URLs. */
 export function safeSvgDocument(source: string): string | undefined {
   const trimmed = source.trim();
   if (!/^<svg(?:\s|>|\/)/i.test(trimmed)) return undefined;
@@ -196,10 +182,6 @@ function clone(diagram: Diagram): Diagram {
   return { ...diagram };
 }
 
-/**
- * Diagram files at `DATA_DIR/diagrams/<id>.json`. An in-memory copy serves reads; every write
- * goes through a temp file and a rename, and a replace bumps the revision.
- */
 export class DiagramStore {
   private readonly diagrams = new Map<string, Diagram>();
   private chain: Promise<void> = Promise.resolve();
@@ -235,7 +217,6 @@ export class DiagramStore {
     return diagram === undefined ? undefined : clone(diagram);
   }
 
-  /** The current `{id, revision}` for a diagram, for a transcript part. */
   ref(id: string): DiagramRef | undefined {
     const diagram = this.get(id);
     return diagram === undefined ? undefined : { id: diagram.id, revision: diagram.revision };
@@ -277,12 +258,7 @@ export class DiagramStore {
     return replaced;
   }
 
-  /**
-   * The drawing as SVG. The bundled renderer runs once on the server and the result is cached
-   * beside the diagram, keyed by revision; a replace therefore never serves the old drawing.
-   */
   async svg(diagram: Diagram): Promise<string | undefined> {
-    // A trusted SVG file is still checked for active content before the client sees it.
     if (diagram.format === "svg") return safeSvgDocument(diagram.source);
     if (diagram.format !== DIAGRAM_FORMAT) return undefined;
 
@@ -331,7 +307,6 @@ export class DiagramStore {
     await rm(this.svgPath(id, revision), { force: true });
   }
 
-  /** Serialises writes so two replaces cannot both read the same revision. */
   private commit(change: () => Diagram): Promise<Diagram> {
     const run = this.chain.then(async () => {
       const before = new Map(this.diagrams);

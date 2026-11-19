@@ -36,7 +36,6 @@ export interface UsageState {
   hits: Record<string, UsageEntry>;
 }
 
-/** One writer at a time: read-modify-write of a topic or the index cannot interleave. */
 export class SerialQueue {
   private tail: Promise<unknown> = Promise.resolve();
 
@@ -74,9 +73,7 @@ function unquote(value: string): string {
     try {
       const parsed: unknown = JSON.parse(value);
       if (typeof parsed === "string") return parsed;
-    } catch {
-      // keep the raw value; an old file may not have valid JSON quoting
-    }
+    } catch {}
   }
   return value;
 }
@@ -100,7 +97,6 @@ export function firstHeading(body: string): string | undefined {
   return heading !== undefined && heading.length > 0 ? heading : undefined;
 }
 
-/** Builds one dated block, using the body's first heading as its label. */
 export function topicAppendBlock(body: string, date = todayIso()): string {
   const cleanBody = body.trim();
   const headingMatch = /^#{1,3} (.+)$/m.exec(cleanBody);
@@ -133,7 +129,6 @@ function jsonString(value: string): string {
   return JSON.stringify(value);
 }
 
-/** A memory tree rooted at `<cwd>/data/memory/`. All writes go through one serial queue. */
 export class MemoryStore {
   readonly root: string;
   readonly memoryFile: string;
@@ -157,12 +152,10 @@ export class MemoryStore {
     this.stateFile = join(this.root, ".dream-state.json");
   }
 
-  /** Run one read-modify-write against the tree without interleaving another writer. */
   exclusive<T>(task: () => Promise<T>): Promise<T> {
     return this.queue.run(task);
   }
 
-  /** Monotonic counter bumped only by a long-term topic write. */
   get checkpoint(): number {
     return this.longTermRevision;
   }
@@ -294,7 +287,6 @@ export class MemoryStore {
     return topics;
   }
 
-  /** One dated append block, using the body's first heading as its label. */
   async appendTopic(
     rel: string,
     body: string,
@@ -356,10 +348,6 @@ export class MemoryStore {
     };
   }
 
-  /**
-   * The only topic write path: keep front matter, restamp `updated`, take the
-   * title from the body's first heading, sync the scope index, then temp+rename.
-   */
   async writeTopic(
     rel: string,
     body: string,
@@ -450,7 +438,6 @@ export class MemoryStore {
         current.length > 0 ? "\n" : ""
       }${block}`;
       await this.atomicWrite(file, next);
-      // A daily write is deliberately not a snapshot checkpoint.
     });
   }
 
@@ -639,7 +626,6 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-/** CLI helper: `--memory=<dir>` wins over PI_MEMORY_DIR, then `<cwd>/data/memory`. */
 export function rootFromArgs(argv: readonly string[]): string {
   const flag = argv.find((arg) => arg.startsWith("--memory="));
   if (flag !== undefined) return resolve(flag.slice("--memory=".length));

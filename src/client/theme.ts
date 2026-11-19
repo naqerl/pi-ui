@@ -2,7 +2,6 @@ import { manifestColor } from "../shared/color";
 import { themeTokens } from "../shared/theme";
 import type { ThemeColors } from "../shared/types";
 
-/** The document's runtime paint, chrome metas and installed-app manifest. */
 export function applyTheme(colors: ThemeColors): void {
   const root = document.documentElement;
   const pairs: Array<[string, string]> = [
@@ -23,8 +22,6 @@ export function applyTheme(colors: ThemeColors): void {
   root.style.backgroundColor = colors.background;
   root.style.color = colors.foreground;
   const chromeColor = manifestColor(colors.background) ?? colors.background;
-  // One unscoped theme-color drives the browser chrome and, in an installed app,
-  // the system status and navigation bars, so they repaint with every theme change.
   const metas = [...document.querySelectorAll('meta[name="theme-color"]')];
   const meta = metas[0] ?? document.head.appendChild(document.createElement("meta"));
   for (const extra of metas.slice(1)) extra.remove();
@@ -45,7 +42,6 @@ function manifestLink(): HTMLLinkElement | null {
   return document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
 }
 
-/** A cache-busting server URL, so the manifest's relative members stay relative to the app. */
 export function manifestHref(href: string, revision: number, base = "http://localhost/"): string {
   const url = new URL(href, base);
   url.searchParams.set("rev", String(revision));
@@ -56,7 +52,5 @@ function paintManifest(colors: ThemeColors): void {
   const link = manifestLink();
   if (link === null) return;
   if (manifestColor(colors.background) === null) return;
-  // Keep the server URL: a blob URL makes Chrome ignore start_url, scope, icons
-  // and share_target.action because those members are relative to the blob.
   link.href = manifestHref(link.href, ++manifestRevision, window.location.href);
 }

@@ -15,7 +15,6 @@ import {
   validateDiagramSource,
 } from "./diagrams.js";
 
-/** The diagram store and the hook that tells open browsers a drawing changed. */
 export interface DiagramBridge {
   readonly store: DiagramStore;
   publish(diagram: Diagram): void;
@@ -85,10 +84,6 @@ function drawParseFailure(
   return { ...parseFailure(diagram.id, problem), details: detailsOf(diagram, title) };
 }
 
-/**
- * Draws a diagram and revises one by id. The chat renders it from the stored source; only the
- * `{id, revision}` part goes into the transcript, so a replace updates the original message.
- */
 export function createDiagramTools(bridge: DiagramBridge): ToolRegistration[] {
   return [
     defineTool({

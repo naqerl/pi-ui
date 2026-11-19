@@ -52,7 +52,6 @@ function parseOptions(value: unknown, id: string): TaskQuestionOption[] | string
   return options;
 }
 
-/** Validate the model-supplied question list before it reaches the panel or the store. */
 export function parseTaskQuestions(value: unknown): QuestionParseResult {
   if (!Array.isArray(value) || value.length === 0) {
     return { ok: false, error: "questions must be a non-empty list" };
@@ -119,7 +118,6 @@ export function questionAnswerReady(
   return values.length > 0 || (question.allowOther === true && note.length > 0);
 }
 
-/** Validate submitted answers against the pending questions, preserving question order. */
 export function parseTaskQuestionAnswers(
   questions: readonly TaskQuestion[],
   value: unknown,
@@ -174,7 +172,6 @@ export function parseTaskQuestionAnswers(
   return { ok: true, answers };
 }
 
-/** Map answers to readable labels for the transcript block and the one-line summary. */
 export function questionAnswerItems(
   questions: readonly TaskQuestion[],
   answers: readonly TaskQuestionAnswer[],
@@ -197,7 +194,6 @@ export function questionAnswerItems(
   });
 }
 
-/** One line for the agent's tool result: what the operator chose. */
 export function taskQuestionAnswerSummary(items: readonly AnsweredQuestionItem[]): string {
   const count = items.length;
   const choices = items.map((item) => {
@@ -208,7 +204,6 @@ export function taskQuestionAnswerSummary(items: readonly AnsweredQuestionItem[]
   return line.replace(/\s+/g, " ").trim();
 }
 
-/** The JSON half of the tool result, kept separate so the summary stays one line. */
 export function taskQuestionAnswerPayload(
   items: readonly AnsweredQuestionItem[],
   answers: readonly TaskQuestionAnswer[],

@@ -117,6 +117,14 @@ PASS   screenshot dimensions          800x600
 topology: OK
 ```
 
+The launcher capture above includes the image's own comments. In `== pi ==`, the probe filters those
+comment lines before grepping, so `launcher --no-extensions no` is a measurement of the launcher
+script by itself. `--no-extensions` belongs to the caller: zeroshot passes it for contained
+placements to turn off discovery of ambient extensions, MCP servers, skills and project-local
+resources, while explicit `--extension PATH` arguments remain honoured. The launcher adds the
+image's own extensions as explicit `--extension` arguments and prepends them so they cannot be
+mistaken for the prompt, which zeroshot passes as a positional argument.
+
 ## What this rules out
 
 1. **A browser cache whose revision does not match the installed `playwright-core`.** The probe installs `playwright-core`, reads `node_modules/playwright-core/browsers.json`, asserts `chromium.revision` exists on disk, and prints required versus present side by side. Measured: required `1248`, present `chromium-1234` and `chromium-1248`; the assertion failed would exit non-zero. Commands: `npm i --silent --prefix /tmp/pwprobe playwright-core`, `node -e 'require("/tmp/pwprobe/node_modules/playwright-core/browsers.json")'`, `test -d "$PLAYWRIGHT_BROWSERS_PATH/chromium-$revision"`.

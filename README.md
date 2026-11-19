@@ -36,11 +36,10 @@ docker run -d --name pi-ui --restart unless-stopped \
 
 Open <http://localhost:8787>. The host working directory defaults to `~/pi-work`; create it first if `$HOME/pi-work` does not exist. The agent directory defaults to `~/.pi/agent`, which is the directory pi already uses on the host. Create the compression-state directory before the first run too: `mkdir -p ~/.local/share/billion-context`. Host networking and the read-only token mount are required for the hub MCP server; see [Why host networking](#why-host-networking).
 
-The compose file is the same setup with the paths and comments in one place. It uses `network_mode: host` and has no `ports:` mapping:
+The compose file is the same setup with the paths in one place. It uses `network_mode: host` and has no `ports:` mapping:
 
 ```sh
 docker compose up -d
-# or build the image locally instead of pulling it
 docker compose up -d --build
 ```
 

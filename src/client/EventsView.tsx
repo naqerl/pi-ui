@@ -9,8 +9,6 @@ function SubscriptionRow({ subscription }: { subscription: McpSubscriptionView }
   const warning = health === "stalled" || health === "recovering" || health === "dead";
   const reason =
     subscription.lastError ?? subscription.lastReconnectReason ?? subscription.endReason;
-  // The stable id is the cancellable identity. A title is only a friendlier
-  // label; without one the id itself must be visible here.
   const label = subscriptionLabel(subscription);
   return (
     <div
@@ -76,8 +74,6 @@ export function EventsView({
   const declared = config?.entries ?? [];
   const declaredLive = declared.filter((entry) => entry.state === "live").length;
   const declaredWaiting = declared.length - declaredLive;
-  // A declaration that is not live must not look healthy: give it the same
-  // recovering row the feed paints, with the reason the operator can act on.
   const feedStableIds = new Set(events.subscriptions.map((subscription) => subscription.stableId));
   const synthetic: McpSubscriptionView[] = declared
     .filter((entry) => entry.state !== "live" && !feedStableIds.has(entry.stableId))

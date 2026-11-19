@@ -216,8 +216,6 @@ server.setRequestHandler(
       return {};
     }
     if (params.name === "stub-hub") {
-      // A multiplexed stream, as a hub sends it: named after the stream, with
-      // the event's own kind in data.kind.
       setTimeout(() => {
         void notify("notifications/events/event", {
           eventId: "510",
@@ -228,7 +226,6 @@ server.setRequestHandler(
         });
         void notify("notifications/events/heartbeat", { cursor: "hub:510" });
       }, 100);
-      // Stays open like a real hub stream, until the client unsubscribes.
       await new Promise((resolve) => setTimeout(resolve, 120_000));
       return {};
     }

@@ -4,7 +4,6 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { deriveStableId } from "./mcp-subscriptions.js";
 
-/** Declared event streams live with mcp.json in the mounted agent dir. */
 export const MCP_SUBSCRIPTION_CONFIG_FILE = "subscriptions.json";
 export const MCP_SUBSCRIPTION_CONFIG_VERSION = 1;
 
@@ -32,7 +31,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The same agent dir `readServers()` uses for mcp.json. */
 export function resolveSubscriptionAgentDir(agentDir?: string): string {
   return resolve(
     agentDir?.trim() || process.env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent"),
@@ -43,7 +41,6 @@ export function subscriptionConfigPath(agentDir?: string): string {
   return resolve(resolveSubscriptionAgentDir(agentDir), MCP_SUBSCRIPTION_CONFIG_FILE);
 }
 
-/** `encodeURIComponent` is the stable-id boundary; a lone surrogate fails it. */
 function isStableIdComponent(value: string): boolean {
   try {
     encodeURIComponent(value);
@@ -74,7 +71,6 @@ function normalizeEntry(value: unknown): DeclaredSubscription | null {
   };
 }
 
-/** Membership only: no cursor, status, health or enabled flag ever leaves here. */
 function serializeEntry(entry: DeclaredSubscription): DeclaredSubscription {
   return {
     server: entry.server,
@@ -155,10 +151,6 @@ async function readText(path: string): Promise<string | null> {
   }
 }
 
-/**
- * Read the declarations. Never throws: a missing file is simply no streams,
- * while an unreadable or malformed file reports its error and no entries.
- */
 export async function readSubscriptionConfig(agentDir?: string): Promise<SubscriptionConfig> {
   const path = subscriptionConfigPath(agentDir);
   let text: string | null;
@@ -182,16 +174,13 @@ export async function readSubscriptionConfig(agentDir?: string): Promise<Subscri
   return { path, present: true, entries: parsed.value.entries };
 }
 
-/** A write refused because the file on disk did not parse. */
 class ConfigParseError extends Error {}
 
 interface WriteError {
   readonly message: string;
-  /** A parse failure is stale as soon as a later read parses the file. */
   readonly parse: boolean;
 }
 
-/** One serialized intent queue, so two writes cannot interleave. */
 let writeQueue: Promise<unknown> = Promise.resolve();
 const lastWriteErrors = new Map<string, WriteError>();
 
@@ -204,12 +193,10 @@ function enqueueWrite<T>(task: () => Promise<T>): Promise<T> {
   return run;
 }
 
-/** The last failure for this config path, cleared by a successful write. */
 export function subscriptionConfigWriteError(path: string): string | undefined {
   return lastWriteErrors.get(resolve(path))?.message;
 }
 
-/** A later read that parses the file retires only a stale parse refusal. */
 function clearParseWriteError(path: string): void {
   if (lastWriteErrors.get(path)?.parse === true) lastWriteErrors.delete(path);
 }
@@ -226,7 +213,6 @@ async function writeDocument(path: string, document: MutableDocument): Promise<v
   }
 }
 
-/** Re-read from disk, mutate only `subscriptions`, and skip a no-op write. */
 async function mutateConfig(
   agentDir: string | undefined,
   mutate: (entries: DeclaredSubscription[], document: MutableDocument) => DeclaredSubscription[],
@@ -241,8 +227,6 @@ async function mutateConfig(
       } else {
         const parsed = parseDocument(text, path);
         if (!parsed.ok) {
-          // Never overwrite a file that does not parse: the operator may be
-          // mid-edit, and losing a hand-written line is worse than a failed write.
           throw new ConfigParseError(parsed.error);
         }
         document = parsed.value.document;
@@ -272,7 +256,6 @@ async function mutateConfig(
   });
 }
 
-/** Replace the whole membership list, preserving the rest of the document. */
 export async function writeSubscriptionConfig(
   agentDir: string,
   entries: readonly DeclaredSubscription[],
@@ -280,7 +263,6 @@ export async function writeSubscriptionConfig(
   await mutateConfig(agentDir, () => [...entries]);
 }
 
-/** Add or update one declaration by stable id. A no-op write is skipped. */
 export async function upsertSubscriptionConfigEntry(
   agentDir: string | undefined,
   entry: DeclaredSubscription,
@@ -295,8 +277,6 @@ export async function upsertSubscriptionConfigEntry(
     if (index === -1) {
       next.push(serialized);
     } else {
-      // A re-subscribe from the adapter carries no title. The operator's
-      // existing title is configuration, not runtime state: keep it.
       const existing = next[index];
       next[index] =
         serialized.title === undefined && existing?.title !== undefined
@@ -307,7 +287,6 @@ export async function upsertSubscriptionConfigEntry(
   });
 }
 
-/** Remove one declaration by stable id. A no-op write is skipped. */
 export async function removeSubscriptionConfigEntry(
   agentDir: string | undefined,
   stableId: string,
@@ -319,7 +298,6 @@ export async function removeSubscriptionConfigEntry(
   );
 }
 
-/** Remove by the declaration's own identity, for callers that hold the entry. */
 export async function removeDeclaredSubscription(
   agentDir: string | undefined,
   entry: Pick<DeclaredSubscription, "server" | "name" | "arguments">,

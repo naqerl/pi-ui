@@ -18,7 +18,6 @@ const fixture = {
   usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 },
   context: { tokens: 0, window: null, percent: null },
   tasks: {
-    // Far ahead of the live server so its stream cannot replace this ledger.
     revision: 1_000_000,
     tasks: [
       {
@@ -55,14 +54,12 @@ const devices: Device[] = [
   { name: "phone", width: 390, height: 844, hasTouch: true },
 ];
 
-/** The built app registers /sw.js, and a worker's requests bypass Playwright routes. */
 async function openThread(
   app: { open: (path: string) => Promise<void> },
   browser: Browser,
   screen: Screen,
   device: Device,
 ) {
-  // The dock animation is part of the reported mechanism, so keep motion on.
   await browser.emulateMedia({ reducedMotion: "no-preference" });
   await browser.setViewport({ width: device.width, height: device.height });
   await browser.addInitScript(() => {
@@ -73,8 +70,6 @@ async function openThread(
     });
   });
   if (device.hasTouch) {
-    // The web engine has no context-level hasTouch option; expose the capability the
-    // phone case asks for so touch-only UI code sees a touch device.
     await browser.addInitScript(() => {
       Object.defineProperty(navigator, "maxTouchPoints", { configurable: true, value: 5 });
       Object.defineProperty(window, "ontouchstart", { configurable: true, value: null });
@@ -133,7 +128,6 @@ function describe(label: string, before: ReadingPosition | null, after: ReadingP
   return `${label}: before=${JSON.stringify(before)} after=${JSON.stringify(after)}`;
 }
 
-/** Let the 220 ms dock transition finish before measuring the settled position. */
 async function settleDock(browser: Browser) {
   await browser.evaluate(async () => {
     await new Promise<void>((resolve) => {

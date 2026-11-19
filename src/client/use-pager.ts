@@ -11,7 +11,6 @@ interface Gesture {
   id: number;
   x: number;
   y: number;
-  /** Last finger position. A cancelled touch can report clientX 0. */
   lastX: number;
   locked: "undecided" | "h" | "v" | "none";
   scroller: HTMLElement | null;
@@ -20,7 +19,6 @@ interface Gesture {
   page: number;
 }
 
-/** A box that can pan horizontally, independent of the DOM. */
 export interface ScrollBox {
   scrollLeft: number;
   clientWidth: number;
@@ -30,15 +28,11 @@ export interface ScrollBox {
 export type GestureOwner = "scroller" | "surface" | "pager";
 
 export interface PagerOptions {
-  /** This pager is a nested surface and renders the swipe protocol attributes. */
   nested?: boolean;
-  /** Alt+Arrow page changes. A nested pager must not double-fire with its host. */
   keyboard?: boolean;
-  /** Hand a gesture at this pager's edge to the next owner instead of rubber-banding. */
   yieldAtEdge?: boolean;
 }
 
-/** The element a nested pager owns. `data-swipe-can` lists the directions it can still take. */
 const SURFACE_SELECTOR = "[data-swipe-surface]";
 
 export function swipeCanAttribute(page: number, count: number): string {
@@ -48,11 +42,6 @@ export function swipeCanAttribute(page: number, count: number): string {
   return can.join(" ");
 }
 
-/**
- * A horizontal scroller is detected from behaviour, not from a class list. The
- * optional `data-hscroll` attribute is only a hint for custom scroll surfaces:
- * any value other than `false` marks one, while `false` opts an element out.
- */
 function isHorizontalScroller(element: Element): boolean {
   if (!(element instanceof HTMLElement)) return false;
   const hint = element.getAttribute("data-hscroll");
@@ -61,17 +50,10 @@ function isHorizontalScroller(element: Element): boolean {
   const overflowX = getComputedStyle(element).overflowX;
   return (
     (overflowX === "auto" || overflowX === "scroll") &&
-    // Ignore sub-pixel rounding: a card that overflows by one or two pixels
-    // cannot actually be panned and must not swallow the gesture.
     element.scrollWidth > element.clientWidth + 2
   );
 }
 
-/**
- * The nearest horizontally scrollable element between a gesture's origin and
- * the pager. The direction is decided on the first horizontal move, because
- * the same scroller may own one direction and not the other.
- */
 function horizontalScroller(target: EventTarget | null, root: HTMLElement): HTMLElement | null {
   if (!(target instanceof Element)) return null;
   let node: Element | null = target;
@@ -99,7 +81,6 @@ function scrollerBox(element: HTMLElement): ScrollBox & { hscroll: boolean } {
     scrollLeft: element.scrollLeft,
     clientWidth: element.clientWidth,
     scrollWidth: element.scrollWidth,
-    // A custom pan surface marked with `data-hscroll` always keeps the gesture.
     hscroll: element.getAttribute("data-hscroll") !== null,
   };
 }
@@ -115,14 +96,6 @@ function pageCanMove(page: number, count: number, direction: 1 | -1): boolean {
     .includes(direction === 1 ? "next" : "prev");
 }
 
-/**
- * Whether a scroller owns a horizontal gesture. `direction` is 1 when the
- * finger moves left (the content scrolls right) and -1 when it moves right. A
- * scroller keeps the gesture only while it can still move that way: leftward
- * only before its right edge, rightward only after its left edge. At either
- * edge the pager takes over. Custom pan surfaces marked with `data-hscroll`
- * always keep the gesture, edge or not.
- */
 export function scrollerCanPan(box: ScrollBox, hscroll: boolean, direction: 1 | -1): boolean {
   if (hscroll) return true;
   if (direction === 1) {
@@ -131,12 +104,6 @@ export function scrollerCanPan(box: ScrollBox, hscroll: boolean, direction: 1 | 
   return box.scrollLeft > 0;
 }
 
-/**
- * Who owns a horizontal gesture, first match wins: an inner horizontal scroller
- * that can still pan, then the nearest nested swipe surface that can still move,
- * then this pager. Both the host pager and the nested one run the same rule, so
- * exactly one of them claims the gesture.
- */
 export function gestureOwner(input: {
   scroller: (ScrollBox & { hscroll: boolean }) | null;
   surface: { canPrev: boolean; canNext: boolean } | null;
@@ -153,24 +120,16 @@ export function gestureOwner(input: {
   return "pager";
 }
 
-/**
- * Whether the scroller owns a horizontal gesture. Kept as the DOM-facing name
- * for `scrollerCanPan` so the touch, pointer and wheel paths share one rule.
- */
 function defersToScroller(element: HTMLElement, direction: 1 | -1): boolean {
   return scrollerCanPan(element, element.getAttribute("data-hscroll") !== null, direction);
 }
 
-/** An active grid gesture (drag or resize) owns the pointer; the pager stays out. */
 function lockedByChild(node: HTMLElement): boolean {
   return node.querySelector("[data-pager-lock]") !== null;
 }
 
-/** Stats, chat, and tasks share one horizontal pager. Touch swipes; a trackpad scrolls sideways. */
 export function usePager(count: number, initial = 0, options: PagerOptions = {}) {
   const { nested = false, keyboard = true, yieldAtEdge = false } = options;
-  // A nested surface always hands its edge to the host pager; a host keeps the
-  // rubber band it has always had.
   const yieldsAtEdge = nested || yieldAtEdge;
   const start = Math.max(0, Math.min(count - 1, initial));
   const [page, setPageState] = useState(start);
@@ -178,9 +137,6 @@ export function usePager(count: number, initial = 0, options: PagerOptions = {})
   const [dragging, setDragging] = useState(false);
   const pageRef = useRef(start);
   const gesture = useRef<Gesture | null>(null);
-  // Synthetic specs often dispatch a touch gesture and then its pointer
-  // counterpart. The touch path owns the page change; ignore that pointer echo
-  // so the same swipe cannot advance twice.
   const ignorePointerUntil = useRef(0);
   const suppressClick = useRef(false);
   const pagerRef = useRef<HTMLDivElement>(null);
@@ -199,7 +155,6 @@ export function usePager(count: number, initial = 0, options: PagerOptions = {})
   useEffect(() => {
     if (!keyboard) return;
     const onKey = (event: KeyboardEvent) => {
-      // IME candidate keys are text, not shortcuts.
       if (event.isComposing) return;
       if (!event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
       if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
@@ -207,14 +162,11 @@ export function usePager(count: number, initial = 0, options: PagerOptions = {})
         setPage(pageRef.current + (event.key === "ArrowRight" ? 1 : -1));
         return;
       }
-      // Use the physical digit so Alt+1 still pages when the layout makes the
-      // character "¡" (macOS and latin-american layouts).
       const match = /^(?:Digit|Numpad)([1-9])$/.exec(event.code);
       const digit = match?.[1] ?? (/^[1-9]$/.test(event.key) ? event.key : null);
       if (digit === null) return;
       const index = Number(digit) - 1;
       if (index >= count) return;
-      // preventDefault first: this key must never reach a focused composer.
       event.preventDefault();
       setPage(index);
     };
@@ -243,9 +195,6 @@ export function usePager(count: number, initial = 0, options: PagerOptions = {})
       }
       const touch = event.touches[0];
       if (touch === undefined) return;
-      // A real touch also emits pointer events. The touch listeners own the
-      // drag so the two paths cannot page twice; synthetic pointer-only tests
-      // still use the React handlers below.
       gesture.current = null;
       setDragging(false);
       setDragX(0);
@@ -253,8 +202,6 @@ export function usePager(count: number, initial = 0, options: PagerOptions = {})
         tracking = false;
         return;
       }
-      // Resolve the target now, but decide on the first move whether it can
-      // consume the gesture's direction.
       scroller = horizontalScroller(event.target, node);
       surface = nearestSurface(event.target, node);
       startX = touch.clientX;
@@ -266,14 +213,10 @@ export function usePager(count: number, initial = 0, options: PagerOptions = {})
       claimed = null;
       tracking = true;
     };
-    // Rightward movement is the browser's back gesture. preventDefault keeps
-    // that swipe on the pager so it can return from tasks to chat.
     const onMove = (event: TouchEvent) => {
       if (!tracking || event.touches.length !== 1) return;
       const touch = event.touches[0];
       if (touch === undefined) return;
-      // A dashboard drag or resize has taken this gesture. Suppress the native
-      // pan, but do not page.
       if (lockedByChild(node)) {
         if (event.cancelable) event.preventDefault();
         tracking = false;
@@ -297,27 +240,21 @@ export function usePager(count: number, initial = 0, options: PagerOptions = {})
           direction,
         });
         if (owner === "scroller") {
-          // Leave preventDefault off so the element's native panning works.
           tracking = false;
           return;
         }
         if (owner === "surface") {
-          // The nested pager owns this gesture; its own listener preventDefaults.
           tracking = false;
           setDragging(false);
           setDragX(0);
           return;
         }
         if (yieldsAtEdge && !pageCanMove(startPage, count, direction)) {
-          // This nested surface cannot move that way, so the host pager owns the
-          // drag. Bail before preventDefault and without starting a drag.
           tracking = false;
           setDragging(false);
           setDragX(0);
           return;
         }
-        // The pager has claimed this gesture, so keep claiming it even if the
-        // finger reverses direction.
         claimed = "pager";
       }
       if (!event.cancelable) {
@@ -380,13 +317,8 @@ export function usePager(count: number, initial = 0, options: PagerOptions = {})
       if (Math.abs(event.deltaX) < 24) return;
       if (Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
       const direction: 1 | -1 = event.deltaX > 0 ? 1 : -1;
-      // A horizontal trackpad gesture over a wide block scrolls the block
-      // while it can still move that way. At the block's left edge a further
-      // negative delta belongs to the pager.
       const scroller = horizontalScroller(event.target, node);
       if (scroller !== null && defersToScroller(scroller, direction)) return;
-      // Wheel events bubble from the nested pager to this one. When the inner
-      // surface can still move, its handler already turned the page.
       const surface = nearestSurface(event.target, node);
       if (surface !== null && surfaceCanMove(surface, direction)) return;
       if (yieldsAtEdge && !pageCanMove(pageRef.current, count, direction)) return;
@@ -446,7 +378,6 @@ export function usePager(count: number, initial = 0, options: PagerOptions = {})
         return;
       }
       if (yieldsAtEdge && !pageCanMove(current.page, count, direction)) {
-        // The host pager owns the drag; this nested surface must not rubber-band.
         current.locked = "none";
         return;
       }
@@ -454,9 +385,7 @@ export function usePager(count: number, initial = 0, options: PagerOptions = {})
       setDragging(true);
       try {
         event.currentTarget.setPointerCapture(event.pointerId);
-      } catch {
-        // Synthetic pointers in tests cannot be captured.
-      }
+      } catch {}
     }
     if (current.locked !== "h") return;
     let next = dx;

@@ -58,7 +58,6 @@ export function renderMap(scopes: readonly MapScope[]): string {
   return `${MAP_BEGIN}\n${lines.join("\n")}\n${MAP_END}`;
 }
 
-/** Replace only the bytes between the MAP markers; everything else is preserved verbatim. */
 export function replaceMap(text: string, map: string): string {
   const begin = text.indexOf(MAP_BEGIN);
   const end = text.indexOf(MAP_END);

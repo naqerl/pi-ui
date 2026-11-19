@@ -1,5 +1,12 @@
 # AGENTS.md
 
+## No comments
+
+No source or configuration file carries comments, including lint-rule suppressions. Make each site
+self-evident from its code. `npm run lint` and `npm run build` reject a comment. The file-level
+Biome overrides that replace retired suppressions, their cost, and the baseline that keeps their
+hidden diagnostics visible are in `docs/biome-overrides.md`.
+
 ## UI surfaces
 
 The main background of pi-ui is dynamic and changing, so plain text placed
@@ -11,7 +18,7 @@ card with a solid or blurred background until a task explicitly says otherwise.
 Every interactive control gets the global press feedback from `index.css`: it
 compresses on pointer-down and eases back on release. Do not disable it in a
 component unless the control owns its own pointer gesture; in that case add
-`data-no-press` and a comment explaining why. Reduced motion must always be
+`data-no-press`. Reduced motion must always be
 honoured.
 
 ## Spacing

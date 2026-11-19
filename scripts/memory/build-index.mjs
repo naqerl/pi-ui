@@ -1,7 +1,4 @@
 #!/usr/bin/env node
-// Regenerate the map section of MEMORY.md from topics/. Idempotent: everything
-// outside <!-- MAP:BEGIN --> … <!-- MAP:END --> is preserved.
-// Usage: node build-index.mjs [--apply]
 import fs from "node:fs";
 import path from "node:path";
 
@@ -58,7 +55,6 @@ const map = mapSection();
 if (text.includes(BEGIN) && text.includes(END)) {
   text = text.replace(new RegExp(`${BEGIN}[\\s\\S]*?${END}`), map);
 } else {
-  // first run: keep the title and the Standing rules section, then protocol + map
   const cut = text.indexOf("## ", text.indexOf("# MEMORY.md"));
   const second = text.indexOf("\n## ", cut + 1);
   const head = second > 0 ? text.slice(0, second) : text.slice(0, cut);

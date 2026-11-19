@@ -43,9 +43,7 @@ async function waitForHealth(url: string, app: App): Promise<void> {
     try {
       const response = await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(3_000) });
       if (response.ok) return;
-    } catch {
-      // The app is still booting.
-    }
+    } catch {}
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(`app did not answer within 120 seconds\n${app.logs()}`);
@@ -97,9 +95,7 @@ async function waitForFile(file: string, needle: string): Promise<void> {
   while (Date.now() < deadline) {
     try {
       if (readFileSync(file, "utf8").includes(needle)) return;
-    } catch {
-      // The marker is not there yet.
-    }
+    } catch {}
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(`${file} never contained ${needle}`);
@@ -149,8 +145,6 @@ test("a repeated client id and a restored marker never replay a delivered messag
     expect(queued.queued).toBe(true);
     expect(queued.queue.some((item) => item.key === queueKey)).toBe(true);
 
-    // Keep the pre-delivery marker: restoring it simulates a crash whose last write
-    // still listed an item durable had already handed to the model.
     const markerPath = join(dataDir, "run.json");
     await waitForFile(markerPath, secondText);
     const staleMarker = readFileSync(markerPath, "utf8");
@@ -182,7 +176,6 @@ test("a repeated client id and a restored marker never replay a delivered messag
 
     await expect.poll(counts).toEqual({ users: 1, answers: 1, queued: 0 });
 
-    // The same client id is the same message, even after it was placed.
     const duplicate = await browser.evaluate(
       async ({ text, key }: { text: string; key: string }) => {
         const response = await fetch("/api/message", {

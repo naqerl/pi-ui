@@ -13,11 +13,6 @@ interface HeldPosition {
   anchor: Anchor | null;
 }
 
-/**
- * Keep the transcript pinned to the end only while the reader is already there.
- * When detached, preserve the element at the top of the viewport while content
- * below it grows, shrinks, or re-renders.
- */
 export function useStickToBottom(dependency: unknown, options: { active?: boolean } = {}) {
   const active = options.active !== false;
   const containerRef = useRef<HTMLElement | null>(null);
@@ -47,12 +42,9 @@ export function useStickToBottom(dependency: unknown, options: { active?: boolea
       return;
     }
     const containerTop = container.getBoundingClientRect().top;
-    // Prefer the first element that starts inside the viewport: an element cut off at the top
-    // can still change height (its Markdown renders late), which must not move what is read.
     let partial: Anchor | null = null;
     for (const child of content.children) {
       if (!(child instanceof HTMLElement)) continue;
-      // Rows such as "Earlier messages" stay put while content lands next to them.
       if (child.dataset.stickSkip !== undefined) continue;
       const rect = child.getBoundingClientRect();
       if (rect.bottom <= containerTop + 1) continue;
@@ -69,7 +61,6 @@ export function useStickToBottom(dependency: unknown, options: { active?: boolea
 
   const sync = useCallback(() => {
     const container = containerRef.current;
-    // A hidden pane has no layout; the held position from before the switch is authoritative.
     if (!container || container.clientHeight === 0) return;
     const scrollHeight = container.scrollHeight;
     const clientHeight = container.clientHeight;
@@ -78,9 +69,6 @@ export function useStickToBottom(dependency: unknown, options: { active?: boolea
     lastScrollHeightRef.current = scrollHeight;
     lastClientHeightRef.current = clientHeight;
     if (attachedRef.current) {
-      // Content growth pins the end. So does a shrinking viewport: the expanding dock
-      // pushes the transcript up with it. A growing viewport is left alone, because the
-      // browser already clamps the old end offset as the dock collapses.
       const contentGrew = previousScrollHeight === null || scrollHeight > previousScrollHeight;
       const viewportShrank = previousClientHeight !== null && clientHeight < previousClientHeight;
       if (contentGrew || viewportShrank) {
@@ -96,8 +84,6 @@ export function useStickToBottom(dependency: unknown, options: { active?: boolea
           const target = container.scrollTop + delta;
           container.scrollTop = target;
           if (Math.abs(container.scrollTop - target) > 0.5) {
-            // The held position is still outside the current maximum while the dock
-            // resizes off-screen. Keep the target anchor and finish on the next sync.
             return;
           }
         }
@@ -114,11 +100,6 @@ export function useStickToBottom(dependency: unknown, options: { active?: boolea
     });
   }, [sync]);
 
-  /**
-   * Remember where the reader is before a navigation takes the transcript off-screen.
-   * The observers stay attached, so a message that lands below cannot move the row
-   * being held detached.
-   */
   const holdPosition = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -127,14 +108,9 @@ export function useStickToBottom(dependency: unknown, options: { active?: boolea
       scrollTop: container.scrollTop,
       anchor: anchorRef.current,
     };
-    // The programmatic move on the way back must not look like a reader scroll.
     lastScrollTopRef.current = container.scrollTop;
   }, []);
 
-  /**
-   * Put the held reading position back before paint. The page may be returning to a
-   * different viewport height, because the dock animated while it was away.
-   */
   const restorePosition = useCallback(() => {
     const container = containerRef.current;
     const held = heldRef.current;
@@ -142,13 +118,10 @@ export function useStickToBottom(dependency: unknown, options: { active?: boolea
     if (held.attached) {
       lastScrollTopRef.current = container.scrollHeight;
       container.scrollTop = container.scrollHeight;
-      // The browser clamps to the real maximum, which is what the next scroll event sees.
       lastScrollTopRef.current = container.scrollTop;
       updateAttached(true);
     } else {
       const anchor = held.anchor;
-      // A dock resize may have clamped scrollTop while the page was off-screen, so
-      // anchor from the current offset, not only the recorded one.
       let next = held.scrollTop;
       if (anchor?.element.isConnected) {
         const containerTop = container.getBoundingClientRect().top;
@@ -159,16 +132,11 @@ export function useStickToBottom(dependency: unknown, options: { active?: boolea
       container.scrollTop = next;
       lastScrollTopRef.current = container.scrollTop;
       updateAttached(false);
-      // The browser may clamp this while the returning dock still has the old height.
-      // Keep the held anchor as the target, so the following syncs finish the move.
       anchorRef.current = held.anchor;
     }
-    // Follow the rest of the dock transition with the normal pin / anchor correction.
     scheduleSync();
   }, [scheduleSync, updateAttached]);
 
-  // A tab switch hides the pane without unmounting it. Remember the position from before
-  // the hide (refs still hold it; sync skips a zero-height container) and restore before paint.
   useLayoutEffect(() => {
     if (wasActiveRef.current === active) return;
     wasActiveRef.current = active;
@@ -196,8 +164,6 @@ export function useStickToBottom(dependency: unknown, options: { active?: boolea
       if (distance <= NEAR_BOTTOM_PX) {
         updateAttached(true);
       } else if (previousScrollTop !== null && scrollTop < previousScrollTop - 0.5) {
-        // Only an upward scroll detaches. A shrinking viewport can make the distance
-        // temporarily grow before the next resize sync re-pins; that is not a reader move.
         updateAttached(false);
       }
       recordAnchor();
@@ -212,10 +178,6 @@ export function useStickToBottom(dependency: unknown, options: { active?: boolea
     recordAnchor();
   }, [recordAnchor, updateAttached]);
 
-  /**
-   * Detach and put `element`'s top `inset` px below the top of the scroller, then keep it
-   * there while content around it settles. The browser clamps at the end of the transcript.
-   */
   const revealTop = useCallback(
     (element: HTMLElement, inset: number) => {
       const container = containerRef.current;
@@ -235,9 +197,6 @@ export function useStickToBottom(dependency: unknown, options: { active?: boolea
     const content = contentRef.current;
     if (!container || !content) return;
 
-    // Content growth pins the end. The container observer also runs sync so a shrinking
-    // viewport can carry an attached reader with the expanding dock; a growing viewport
-    // only records the anchor and lets the browser clamp the old offset.
     const contentObserver = new ResizeObserver(sync);
     contentObserver.observe(content);
     const observeChildren = () => {
@@ -265,10 +224,7 @@ export function useStickToBottom(dependency: unknown, options: { active?: boolea
     };
   }, [handleScroll, scheduleSync, sync]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: dependency is only the trigger for a post-commit sync
   useLayoutEffect(() => {
-    // Correct before paint, so older messages loading above the reader never show a jump,
-    // then again next frame for anything that settles after layout.
     sync();
     scheduleSync();
   }, [dependency, sync, scheduleSync]);
