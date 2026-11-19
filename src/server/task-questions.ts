@@ -12,12 +12,37 @@ import type {
   AnsweredQuestionItem,
   TaskQuestion,
   TaskQuestionAnswerRecord,
-  TaskQuestionKind,
   TaskQuestionSet,
 } from "../shared/types.js";
 import { TaskError } from "./tasks.js";
 
 const MAX_ANSWERED_HISTORY = 20;
+/** The most questions one pending set may hold. */
+export const MAX_PENDING_QUESTIONS = 5;
+
+type TaskQuestionAnswerEntryItem = {
+  id: string;
+  prompt: string;
+  kind: "single" | "multi" | "text";
+  values: string[];
+  labels: string[];
+  text: string;
+  readonly [key: string]: string | string[];
+};
+
+/** The durable answer rows written before questions moved to the Plan tab. */
+export type TaskQuestionAnswerEntryData = {
+  setId: string;
+  taskId: string;
+  text: string;
+  answers: TaskQuestionAnswerEntryItem[];
+  createdAt: string;
+};
+
+/** Legacy answer entries stay readable so transcripts recorded before the Plan-tab move survive. */
+export const TaskQuestionAnswerEntry = defineEntry<TaskQuestionAnswerEntryData>(
+  "ui.task-question-answers",
+);
 
 interface StoredQuestions {
   pending: TaskQuestionSet | null;
@@ -107,21 +132,18 @@ export class TaskQuestionsStore {
   private state: StoredQuestions = { pending: null, answered: [] };
   private loading: Promise<void> | undefined;
   private lock: Promise<unknown> = Promise.resolve();
-  private readonly waiters = new Map<string, Set<(result: QuestionAnswerResult) => void>>();
-  private readonly changeListeners = new Set<() => void>();
 
-  constructor(private readonly path: string) {}
+  constructor(
+    private readonly path: string,
+    private readonly onChange?: () => void,
+  ) {}
 
-  /** The pending set changed (asked or answered), so a live plan frame can publish it. */
-  subscribe(listener: () => void): () => void {
-    this.changeListeners.add(listener);
-    return () => {
-      this.changeListeners.delete(listener);
-    };
-  }
-
-  private notifyChanged(): void {
-    for (const listener of this.changeListeners) listener();
+  private notifyChange(): void {
+    try {
+      this.onChange?.();
+    } catch (error) {
+      console.error("[task-questions] change listener failed", error);
+    }
   }
 
   load(): Promise<void> {
@@ -162,6 +184,11 @@ export class TaskQuestionsStore {
 
   async pending(): Promise<TaskQuestionSet | null> {
     await this.load();
+    return this.state.pending === null ? null : clone(this.state.pending);
+  }
+
+  /** The cached pending set, without touching disk, so a sync tasks payload can carry it. */
+  pendingSync(): TaskQuestionSet | null {
     return this.state.pending === null ? null : clone(this.state.pending);
   }
 
@@ -208,6 +235,13 @@ export class TaskQuestionsStore {
           throw new TaskError(`Question id "${question.id}" is already waiting`, 400);
         }
       }
+      const total = (current?.questions.length ?? 0) + questions.length;
+      if (total > MAX_PENDING_QUESTIONS) {
+        throw new TaskError(
+          `A question set may hold at most ${MAX_PENDING_QUESTIONS} questions`,
+          400,
+        );
+      }
       const set: TaskQuestionSet =
         current === null
           ? {
@@ -223,35 +257,8 @@ export class TaskQuestionsStore {
       this.state.pending = set;
       return { set: clone(set), added: questions.length };
     });
-    if (result.added > 0) this.notifyChanged();
+    this.notifyChange();
     return result;
-  }
-
-  async waitForAnswers(setId: string, signal?: AbortSignal): Promise<QuestionAnswerResult> {
-    await this.load();
-    const existing = this.state.answered.find((record) => record.setId === setId);
-    if (existing !== undefined) return this.result(existing);
-    return new Promise((resolve, reject) => {
-      const listeners = this.waiters.get(setId) ?? new Set();
-      const finish = (result: QuestionAnswerResult) => {
-        listeners.delete(finish);
-        if (listeners.size === 0) this.waiters.delete(setId);
-        signal?.removeEventListener("abort", abort);
-        resolve(result);
-      };
-      const abort = () => {
-        listeners.delete(finish);
-        if (listeners.size === 0) this.waiters.delete(setId);
-        reject(signal?.reason ?? new Error("Question wait aborted"));
-      };
-      if (signal?.aborted === true) {
-        abort();
-        return;
-      }
-      listeners.add(finish);
-      this.waiters.set(setId, listeners);
-      signal?.addEventListener("abort", abort, { once: true });
-    });
   }
 
   /** Record answers, clear the pending set, and keep a bounded history for replay. */
@@ -278,7 +285,7 @@ export class TaskQuestionsStore {
       }
       return this.result(record);
     });
-    this.notifyChanged();
+    this.notifyChange();
     return result;
   }
 
@@ -289,37 +296,21 @@ export class TaskQuestionsStore {
       this.state.pending = null;
       return pending;
     });
-    if (hadPending) this.notifyChanged();
+    if (hadPending) this.notifyChange();
     return hadPending;
   }
 
-  /** Wake the tool that is waiting on this set, after its transcript row is committed. */
-  resolve(setId: string, result: QuestionAnswerResult): void {
-    const listeners = this.waiters.get(setId);
-    if (listeners === undefined) return;
-    this.waiters.delete(setId);
-    for (const listener of [...listeners]) listener(result);
+  /** Clear the pending set because the operator asked the agent to decide it itself. */
+  async dismiss(setId: string): Promise<TaskQuestionSet> {
+    const result = await this.mutate(() => {
+      const pending = this.state.pending;
+      if (pending === null || pending.id !== setId) {
+        throw new TaskError("This question set is no longer waiting for answers", 409);
+      }
+      this.state.pending = null;
+      return clone(pending);
+    });
+    this.notifyChange();
+    return result;
   }
 }
-
-type QuestionAnswerEntryItem = {
-  id: string;
-  prompt: string;
-  kind: TaskQuestionKind;
-  values: string[];
-  labels: string[];
-  text: string;
-};
-
-export type TaskQuestionAnswerEntryData = {
-  setId: string;
-  taskId: string;
-  text: string;
-  answers: QuestionAnswerEntryItem[];
-  createdAt: string;
-};
-
-/** The operator's choices, rendered in the planning transcript as a card (and never as JSON). */
-export const TaskQuestionAnswerEntry = defineEntry<TaskQuestionAnswerEntryData>(
-  "ui.task-question-answers",
-);

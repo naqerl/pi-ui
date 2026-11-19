@@ -35,6 +35,7 @@ import {
   type OperatorNoticeRecord,
   operatorNoticeSummary,
   parseNotice,
+  type QuestionNoticeDetails,
   type TaskDecisionNoticeDetails,
   type TaskDecisionNoticeRecord,
   taskDecisionPrompt,
@@ -45,6 +46,7 @@ import { steerKeyFromEntryData } from "../shared/steers.js";
 import { toIsoTimestamp } from "../shared/time.js";
 import {
   type ActivityItem,
+  type AnsweredQuestionItem,
   type ChatMessage,
   type ContextUsage,
   type MediaRef,
@@ -167,6 +169,19 @@ const MemoryDeltaEntry = defineEntry<{
 export const MEMORY_DELTA_ENTRY_KIND = MemoryDeltaEntry.kind;
 
 /**
+ * The task's attached images. It carries the model message so the plan agent sees
+ * the screenshots before its first response, but no transcript row: `buildTranscript`
+ * ignores kinds it does not render, so the operator never gets a fake bubble.
+ */
+const TaskAttachmentsEntry = defineEntry<{
+  taskId: string;
+  ids: string[];
+  createdAt: string;
+}>("ui.task-attachments");
+
+export const TASK_ATTACHMENTS_ENTRY_KIND = TaskAttachmentsEntry.kind;
+
+/**
  * The automated idle prompt. It carries a model message so it starts a turn, but
  * the chat renders it as a notice chip rather than a user bubble.
  */
@@ -208,6 +223,34 @@ const TaskDecisionPromptEntry = defineEntry<{
 }>("ui.task-decision-prompt");
 
 export const TASK_DECISION_PROMPT_ENTRY_KIND = TaskDecisionPromptEntry.kind;
+
+/**
+ * The operator's answer to a plan-agent question set. It carries the model prompt, so an
+ * idle agent starts a run and a busy one reads it at its next boundary, and renders as a
+ * notice chip with the answers in its dialog.
+ */
+export type TaskQuestionPromptAnswer = {
+  id: string;
+  prompt: string;
+  kind: "single" | "multi" | "text";
+  values: string[];
+  labels: string[];
+  text: string;
+};
+
+export type TaskQuestionPromptData = {
+  setId: string;
+  taskId: string;
+  text: string;
+  answers: TaskQuestionPromptAnswer[];
+  createdAt: string;
+  dismissed?: boolean;
+};
+
+export const TaskQuestionPromptEntry =
+  defineEntry<TaskQuestionPromptData>("ui.task-question-prompt");
+
+export const TASK_QUESTION_PROMPT_ENTRY_KIND = TaskQuestionPromptEntry.kind;
 
 /** A notify_operator call. It carries no model message and shows as a chat chip. */
 const OperatorNoticeEntry = defineEntry<{
@@ -747,6 +790,9 @@ function messageAfter(message: Record<string, unknown>, startedAt: number): bool
   return typeof message.timestamp === "number" && message.timestamp > startedAt;
 }
 
+/** The note stored for a partial run that boot is resuming. */
+export const INTERRUPTED_RUN_RESTART_NOTE = "The previous run was interrupted by a server restart";
+
 export async function appendInterruptionNote(
   conversation: Conversation,
   marker: RunMarker,
@@ -758,12 +804,12 @@ export async function appendInterruptionNote(
   });
   if (alreadyRecorded) return;
 
-  // A run that left no reply and was not stopped has nothing to report. Only promise a
-  // resume for a partial run that was not stopped, which is the case boot resumes.
+  // A run that left no reply and was not stopped has nothing to report. A partial
+  // run that was not stopped gets a note, because boot resumes that run.
   const note = marker.stopRequested
     ? "The previous run was stopped before the server restarted. The last response may be partial."
     : marker.partialEntryId !== null
-      ? "The previous run was interrupted by a server restart. The last response is partial; pi is resuming the run."
+      ? INTERRUPTED_RUN_RESTART_NOTE
       : null;
   if (note === null) return;
 
@@ -852,6 +898,37 @@ interface DiagramSlot {
   message: ChatMessage;
   diagramId: string;
   revision: number;
+}
+
+/** Reads the answer rows a question entry stored, skipping malformed items. */
+function readAnsweredItems(value: unknown): AnsweredQuestionItem[] {
+  if (!Array.isArray(value)) return [];
+  const answers: AnsweredQuestionItem[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    const answerKind = item.kind;
+    if (
+      typeof item.id !== "string" ||
+      typeof item.prompt !== "string" ||
+      (answerKind !== "single" && answerKind !== "multi" && answerKind !== "text") ||
+      !Array.isArray(item.values) ||
+      !item.values.every((value) => typeof value === "string") ||
+      !Array.isArray(item.labels) ||
+      !item.labels.every((label) => typeof label === "string") ||
+      typeof item.text !== "string"
+    ) {
+      continue;
+    }
+    answers.push({
+      id: item.id,
+      prompt: item.prompt,
+      kind: answerKind,
+      values: item.values as string[],
+      labels: item.labels as string[],
+      text: item.text,
+    });
+  }
+  return answers;
 }
 
 /**
@@ -966,6 +1043,39 @@ export class TranscriptBuilder {
       });
       return;
     }
+    if (kind === TASK_QUESTION_PROMPT_ENTRY_KIND) {
+      if (
+        !isRecord(entry.data) ||
+        typeof entry.data.setId !== "string" ||
+        typeof entry.data.text !== "string" ||
+        !Array.isArray(entry.data.answers)
+      ) {
+        return;
+      }
+      const answers = readAnsweredItems(entry.data.answers);
+      const dismissed = entry.data.dismissed === true;
+      const count = answers.length;
+      const notice: QuestionNoticeDetails = {
+        kind: "questions",
+        setId: entry.data.setId,
+        count,
+        text: entry.data.text,
+        summary: dismissed
+          ? "Questions dismissed"
+          : `Answers sent · ${count} question${count === 1 ? "" : "s"}`,
+        answers,
+        ...(dismissed ? { dismissed: true } : {}),
+      };
+      this.emit({
+        id: entryMessageId(entry),
+        role: "system",
+        text: entry.data.text,
+        timestamp: entryTimestamp(entry.data),
+        order: entry.id * 10_000,
+        notice,
+      });
+      return;
+    }
     if (kind === TaskQuestionAnswerEntry.kind) {
       if (
         !isRecord(entry.data) ||
@@ -975,38 +1085,23 @@ export class TranscriptBuilder {
       ) {
         return;
       }
-      const answers: NonNullable<ChatMessage["questionAnswers"]>["answers"] = [];
-      for (const item of entry.data.answers) {
-        if (!isRecord(item)) continue;
-        const answerKind = item.kind;
-        if (
-          typeof item.id !== "string" ||
-          typeof item.prompt !== "string" ||
-          (answerKind !== "single" && answerKind !== "multi" && answerKind !== "text") ||
-          !Array.isArray(item.values) ||
-          !item.values.every((value) => typeof value === "string") ||
-          !Array.isArray(item.labels) ||
-          !item.labels.every((label) => typeof label === "string") ||
-          typeof item.text !== "string"
-        ) {
-          continue;
-        }
-        answers.push({
-          id: item.id,
-          prompt: item.prompt,
-          kind: answerKind,
-          values: item.values as string[],
-          labels: item.labels as string[],
-          text: item.text,
-        });
-      }
+      const answers = readAnsweredItems(entry.data.answers);
+      const count = answers.length;
+      const notice: QuestionNoticeDetails = {
+        kind: "questions",
+        setId: entry.data.setId,
+        count,
+        text: entry.data.text,
+        summary: `Answers recorded · ${count} question${count === 1 ? "" : "s"}`,
+        answers,
+      };
       this.emit({
-        id: `m-${entry.id}`,
+        id: entryMessageId(entry),
         role: "system",
         text: entry.data.text,
         timestamp: entryTimestamp(entry.data),
         order: entry.id * 10_000,
-        questionAnswers: { setId: entry.data.setId, answers },
+        notice,
       });
       return;
     }

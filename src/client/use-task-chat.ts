@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type {
   ActivityItem,
   ContextUsage,
@@ -7,8 +7,6 @@ import type {
   QueuedMessage,
   Snapshot,
   SubmitMessageResponse,
-  TaskQuestionAnswer,
-  TaskQuestionSet,
   UsageSummary,
 } from "../shared/types";
 import { subscribeTaskChatEvents, subscribeTaskChatLiveness } from "./task-chat-events";
@@ -34,7 +32,6 @@ interface TaskAgentSnapshot {
   run: Snapshot["run"];
   runError?: Snapshot["runError"];
   draft: { text: string; thinking: string; revision: number };
-  questions?: TaskQuestionSet | null;
   queue?: QueuedMessage[];
   steers?: QueuedMessage[];
   queueRevision?: number;
@@ -147,17 +144,13 @@ function createTaskStream(taskId: string): EventSource {
   return shim;
 }
 
-function createTaskTransport(
-  taskId: string,
-  onQuestions: (questions: TaskQuestionSet | null) => void,
-): ChatTransport {
+function createTaskTransport(taskId: string): ChatTransport {
   // The design fixture has no server conversation; keep its transcript local and silent.
   const fixture = taskId.startsWith("fixture-");
   const base = `/api/tasks/${encodeURIComponent(taskId)}/chat`;
   return {
     async readSnapshot() {
       if (fixture) {
-        onQuestions(null);
         return {
           snapshot: asSnapshot(taskId, {
             taskId,
@@ -165,7 +158,6 @@ function createTaskTransport(
             activity: [],
             run: "idle",
             draft: { text: "", thinking: "", revision: 0 },
-            questions: null,
           }),
           stale: false,
         };
@@ -173,7 +165,6 @@ function createTaskTransport(
       const response = await fetch(base, { cache: "no-store" });
       if (!response.ok) return null;
       const snapshot = (await response.json()) as TaskAgentSnapshot;
-      onQuestions(snapshot.questions ?? null);
       return { snapshot: asSnapshot(taskId, snapshot), stale: false };
     },
     async readHistory() {
@@ -270,22 +261,10 @@ function createTaskTransport(
 }
 
 export function useTaskChat(taskId: string, closed: boolean) {
-  const [questions, setQuestions] = useState<TaskQuestionSet | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const answeredSets = useRef(new Set<string>());
-  const applyQuestions = useCallback((next: TaskQuestionSet | null) => {
-    setQuestions(next !== null && answeredSets.current.has(next.id) ? null : next);
-  }, []);
-  const transport = useMemo(
-    () => createTaskTransport(taskId, applyQuestions),
-    [taskId, applyQuestions],
-  );
-  const chat = useChat({
-    transport,
-    onQuestions: applyQuestions,
-    publishLiveness: false,
-  });
-  const { refresh, dismissRunError } = chat;
+  const transport = useMemo(() => createTaskTransport(taskId), [taskId]);
+  const chat = useChat({ transport, publishLiveness: false });
+  const { dismissRunError } = chat;
 
   const send = useCallback(
     async (text: string, attachments: string[] = [], mode: MessageMode = "queue") => {
@@ -306,32 +285,6 @@ export function useTaskChat(taskId: string, closed: boolean) {
     await chat.stop();
   }, [chat, closed]);
 
-  const answerQuestions = useCallback(
-    async (setId: string, answers: TaskQuestionAnswer[]) => {
-      setError(null);
-      try {
-        const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/questions/answer`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ setId, answers }),
-        });
-        if (!response.ok) {
-          const message = (await response.text()).trim();
-          setError(message.length > 0 ? message : "Could not send the answers");
-          return false;
-        }
-        answeredSets.current.add(setId);
-        setQuestions(null);
-        await refresh();
-        return true;
-      } catch {
-        setError("Could not send the answers");
-        return false;
-      }
-    },
-    [refresh, taskId],
-  );
-
   const dismissError = useCallback(
     (id?: string) => {
       if (id === undefined) {
@@ -351,13 +304,11 @@ export function useTaskChat(taskId: string, closed: boolean) {
     interrupted: chat.interrupted,
     ready: chat.ready,
     runError: chat.runError,
-    questions,
     error,
     send,
     stop,
     cancelQueued: chat.cancelQueued,
     unsendSteer: chat.unsendSteer,
-    answerQuestions,
     dismissError,
   };
 }
