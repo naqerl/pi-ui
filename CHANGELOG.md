@@ -1,3 +1,10 @@
+## 1.11.1
+
+### Fixed
+
+- The composer dock's top line is swept when the page changes, so a dock that grew on the previous chat no longer leaves a cropped strip above the composer on the next one. (qmyd)
+- Plan-agent questions stay in the task body when the planner steps away: the answer is recorded without parking the plan agent, so a question asked mid-plan does not end the planning session. (fs6d)
+
 ## 1.11.0
 
 ### Added
