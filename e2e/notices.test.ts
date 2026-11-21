@@ -131,7 +131,10 @@ test("a notified job entry feeds the chip but keeps its model message out of the
   assert.equal(chip?.timestamp, createdAt);
   assert.equal(chip?.order, 104_467 * 10_000);
   assert.equal(chip?.notice?.kind, "job");
-  assert.equal(built.messages.some((message) => message.role === "user"), false);
+  assert.equal(
+    built.messages.some((message) => message.role === "user"),
+    false,
+  );
   assert.equal(built.activity.length, 1);
   assert.equal(built.activity[0]?.order, chip?.order);
   assert.equal(built.activity[0]?.timestamp, createdAt);
