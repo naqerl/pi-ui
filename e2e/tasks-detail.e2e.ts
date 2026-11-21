@@ -424,7 +424,7 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     const phone = await browser.evaluate(() => {
       const header = document.querySelector<HTMLElement>('[data-testid="task-header"]');
       const detail = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
-      // The plan pane starts at its first card, below the wrapper's pt-2 step.
+      // The plan pane starts at its first card, directly below the detail header.
       const plan = document.querySelector<HTMLElement>('[data-testid="task-detail-stack"]');
       if (header === null || detail === null || plan === null) return null;
       const h = header.getBoundingClientRect();
@@ -449,9 +449,151 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     expect(phone).not.toBeNull();
     expect(phone?.insideDetail).toBe(true);
     expect(phone?.within).toBe(true);
-    expect(phone?.headerPlanGap).toBe(8);
+    expect(phone?.headerPlanGap).toBe(0);
     expect(phone?.headerBeforePlan).toBe(true);
     expect(phone?.detailBeforePlan).toBe(true);
+    expect(await horizontalOverflow(browser)).toEqual([]);
+  });
+
+  test("on a phone the Plan tab slides the whole dock away and Chat brings it back", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    await openSnapshot(app, browser, snapshot, 390, 844);
+    await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
+    await expect(screen.getByTestId("task-detail")).toHaveAttribute("data-layout", "mobile");
+
+    const readPlan = () =>
+      browser.evaluate(() => {
+        const shell = document.querySelector<HTMLElement>('[data-testid="composer-dock-shell"]');
+        const dock = document.querySelector<HTMLElement>('[data-testid="composer-dock"]');
+        const input = document.querySelector<HTMLElement>('[data-testid="task-agent-input"]');
+        const body = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
+        const detail = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
+        const header = document.querySelector<HTMLElement>('[data-testid="task-header"]');
+        const plan = document.querySelector<HTMLElement>(
+          '[data-testid="task-detail"] section[aria-label="Plan"]',
+        );
+        const stack = document.querySelector<HTMLElement>('[data-testid="task-detail-stack"]');
+        if (
+          shell === null ||
+          dock === null ||
+          input === null ||
+          body === null ||
+          detail === null ||
+          header === null ||
+          plan === null ||
+          stack === null
+        ) {
+          return null;
+        }
+        const shellBox = shell.getBoundingClientRect();
+        const dockBox = dock.getBoundingClientRect();
+        const detailBox = detail.getBoundingClientRect();
+        const headerBox = header.getBoundingClientRect();
+        const planBox = plan.getBoundingClientRect();
+        const stackBox = stack.getBoundingClientRect();
+        return {
+          hidden: shell.getAttribute("data-hidden"),
+          shellHeight: shellBox.height,
+          dockHeight: dockBox.height,
+          dockInert: dock.closest("[inert]") !== null,
+          dockAriaHidden: dock.closest('[aria-hidden="true"]') !== null,
+          inputVisible:
+            getComputedStyle(input).visibility !== "hidden" && input.getClientRects().length > 0,
+          bodyHeight: body.getBoundingClientRect().height,
+          planBottom: planBox.bottom,
+          planHeight: planBox.height,
+          planTop: planBox.top,
+          headerBottom: headerBox.bottom,
+          planFlush:
+            Math.abs(planBox.left - detailBox.left) <= 1 &&
+            Math.abs(planBox.right - detailBox.right) <= 1,
+          stackFlush: Math.abs(stackBox.left - detailBox.left) <= 1,
+          viewportHeight: window.innerHeight,
+        };
+      });
+
+    await expect
+      .poll(
+        async () => {
+          const read = await readPlan();
+          if (read === null) return null;
+          const settled = Math.abs(read.shellHeight) <= 1 && !read.inputVisible;
+          return settled ? read.hidden : `${read.hidden}:${read.shellHeight}`;
+        },
+        { timeout: 1_500 },
+      )
+      .toBe("true");
+
+    const planOpen = await readPlan();
+    expect(planOpen).not.toBeNull();
+    expect(planOpen?.hidden).toBe("true");
+    expect(planOpen?.shellHeight ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(1);
+    expect(planOpen?.dockInert).toBe(true);
+    expect(planOpen?.dockAriaHidden).toBe(true);
+    expect(planOpen?.inputVisible).toBe(false);
+    expect(planOpen?.planTop ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(
+      (planOpen?.headerBottom ?? 0) + 1,
+    );
+    expect(planOpen?.planFlush).toBe(true);
+    expect(planOpen?.stackFlush).toBe(true);
+    expect(
+      Math.abs((planOpen?.planBottom ?? 0) - (planOpen?.viewportHeight ?? 0)),
+    ).toBeLessThanOrEqual(1);
+    await app.screenshot("task-plan-dock-hidden");
+
+    await screen.getByTestId("task-tab-chat").tap();
+    await expect
+      .poll(
+        () =>
+          browser.evaluate(
+            () =>
+              document
+                .querySelector('[data-testid="composer-dock-shell"]')
+                ?.getAttribute("data-hidden") ?? null,
+          ),
+        { timeout: 300 },
+      )
+      .toBe("false");
+    await expect
+      .poll(
+        async () => {
+          const read = await readPlan();
+          if (read === null) return null;
+          return Math.abs(read.shellHeight - read.dockHeight) <= 1;
+        },
+        { timeout: 1_500 },
+      )
+      .toBe(true);
+    const chatOpen = await readPlan();
+    expect(chatOpen?.hidden).toBe("false");
+    expect(chatOpen?.shellHeight ?? 0).toBeGreaterThan(0);
+    expect(chatOpen?.inputVisible).toBe(true);
+    expect(chatOpen?.bodyHeight ?? 0).toBeGreaterThan(0);
+    await expect(screen.getByTestId("page-dots")).toBeVisible();
+    await app.screenshot("task-chat-dock-visible");
+
+    await screen.getByTestId("task-tab-plan").tap();
+    expect((await readPlan())?.hidden).toBe("true");
+    await expect
+      .poll(
+        async () => {
+          const read = await readPlan();
+          if (read === null) return null;
+          const settled =
+            Math.abs(read.shellHeight) <= 1 && Math.abs(read.planBottom - read.viewportHeight) <= 1;
+          return settled ? read.hidden : `${read.hidden}:${read.shellHeight}`;
+        },
+        { timeout: 1_500 },
+      )
+      .toBe("true");
+    const planAgain = await readPlan();
+    expect(planAgain?.planHeight ?? 0).toBeGreaterThan(0);
+    expect(
+      Math.abs((planAgain?.planBottom ?? 0) - (planAgain?.viewportHeight ?? 0)),
+    ).toBeLessThanOrEqual(1);
     expect(await horizontalOverflow(browser)).toEqual([]);
   });
 

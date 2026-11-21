@@ -1961,15 +1961,18 @@ export function ChatView({
   );
   const [pageAnimating, setPageAnimating] = useState(false);
   const [taskSelection, setTaskSelection] = useState<{ id: string; request: number } | null>(null);
-  const [composerMode, setComposerMode] = useState<"create" | "task-chat" | "collapsed">("create");
+  const [composerMode, setComposerMode] = useState<
+    "create" | "task-chat" | "task-plan" | "collapsed"
+  >("create");
   const [planDraft, setPlanDraft] = useState(readPlanTaskDraft);
   const [taskDock, setTaskDock] = useState<TaskDockSession | null>(null);
   const [taskSurfaceStatus, setTaskSurfaceStatus] = useState<TaskSurfaceStatus | null>(null);
   const [taskRunError, setTaskRunError] = useState<TaskRunErrorSurface | null>(null);
-  const wantTaskDock = tasksPage && composerMode === "task-chat";
+  const dockHidden = tasksPage && composerMode === "task-plan";
+  const wantTaskDock = tasksPage && (composerMode === "task-chat" || composerMode === "task-plan");
   const dockToTask = wantTaskDock && taskDock !== null;
   const hideTasksComposer = statsPage || (tasksPage && composerMode === "collapsed");
-  const showPlanToggle = tasksPage && !wantTaskDock && !hideTasksComposer;
+  const showPlanToggle = tasksPage && !wantTaskDock && !hideTasksComposer && !dockHidden;
   const dockSurface = tasksPage ? (wantTaskDock ? "dock" : "create") : "chat";
   // Each surface speaks for itself: the open task's plan run on the tasks page,
   // the main conversation's run everywhere else. No task open means an empty slot.
@@ -2131,11 +2134,11 @@ export function ChatView({
   const footerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (!statsPage) return;
+    if (!statsPage && !dockHidden) return;
     const footer = footerRef.current;
     const active = document.activeElement;
     if (footer !== null && active instanceof HTMLElement && footer.contains(active)) active.blur();
-  }, [statsPage]);
+  }, [dockHidden, statsPage]);
 
   // Re-run the stick sync when the transcript changes. The scroller's own
   // ResizeObserver keeps the end pinned while the dock animates below it.
@@ -2422,6 +2425,10 @@ export function ChatView({
     window.requestAnimationFrame(focusComposer);
   };
 
+  const taskPlaceholder = wantTaskDock
+    ? (taskDock?.placeholder ?? "Ask the planning agent to help formulate this task.")
+    : undefined;
+
   const content = (
     <div className="chat-shell min-h-0" data-testid="chat-shell">
       {interrupted && (
@@ -2558,122 +2565,128 @@ export function ChatView({
         )}
       </div>
       <div
-        ref={footerRef}
-        data-testid="composer-dock"
-        data-transitioning={pager.dragging || pageAnimating ? "true" : undefined}
-        className="float-footer relative z-20 theme-radius"
+        data-testid="composer-dock-shell"
+        data-hidden={dockHidden ? "true" : "false"}
+        className="dock-shell"
+        aria-hidden={dockHidden || undefined}
+        inert={dockHidden || undefined}
       >
-        <div data-testid="composer-slide">
-          <div className="ink-line flex items-center gap-xl border-b py-md pr-md pl-2xl">
-            <div
-              data-testid="working-status"
-              data-open={statusRunning ? "true" : "false"}
-              className="flex min-w-0 flex-1 items-baseline gap-lg font-mono text-[11px] leading-4 text-muted-foreground"
-            >
-              <PlanTaskSwitch
-                present={dockScan.view.plan}
-                phase={dockScan.phase}
-                order={0}
-                swap={dockSwap}
-                pressed={planDraft}
-                onToggle={togglePlanDraft}
-              />
-              <DockStatusWord
-                word={dockScan.view.word}
-                running={dockScan.view.running}
-                quiet={dockScan.view.quiet}
-                surface={dockScan.view.surface}
-                phase={dockScan.phase}
-                order={1}
-                swap={dockSwap}
-              />
-              <BackgroundJobsCounts
-                jobs={jobs}
-                delegates={delegates ?? []}
-                onOpen={setJobsSheet}
-                visible={dockScan.view.jobs}
-                phase={dockScan.phase}
-                order={2}
-              />
-            </div>
-            <div
-              role="tablist"
-              aria-label="Pages"
-              data-testid="page-dots"
-              className="flex shrink-0 items-center justify-center"
-            >
-              {PAGES.map((item, index) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={pager.page === index}
-                  aria-label={item.label}
-                  data-testid={`page-dot-${item.id}`}
-                  className="grid h-6 w-6 place-items-center"
-                  onClick={() => selectPage(index)}
-                >
-                  <span
-                    className={cn(
-                      "block rounded-full transition-[width,height,border-radius] duration-200 ease-out motion-reduce:transition-none",
-                      pager.page === index
-                        ? "size-3 rounded-[4px] bg-foreground"
-                        : "size-1.5 bg-foreground/40",
-                    )}
-                  />
-                </button>
-              ))}
-            </div>
-            <PiMenu />
-          </div>
+        <div className="dock-slide">
           <div
-            data-testid="composer-body"
-            data-hidden={hideTasksComposer ? "true" : "false"}
-            data-collapsed={hideTasksComposer ? "true" : "false"}
-            aria-hidden={hideTasksComposer ? true : undefined}
-            inert={hideTasksComposer ? true : undefined}
-            className="composer-body"
+            ref={footerRef}
+            data-testid="composer-dock"
+            data-transitioning={pager.dragging || pageAnimating ? "true" : undefined}
+            className="float-footer relative z-20 theme-radius"
           >
-            <Composer
-              dockSwap={dockSwap}
-              dockPhase={dockScan.phase}
-              draftKey={
-                wantTaskDock
-                  ? taskDock !== null
-                    ? `task:${taskDock.taskId}`
-                    : "task:pending"
-                  : "main"
-              }
-              tasksPage={tasksPage && !wantTaskDock}
-              projectMentions={wantTaskDock ? true : undefined}
-              running={dockToTask ? taskDock.running : running}
-              send={
-                dockToTask
-                  ? async (text, mode, attachments) =>
-                      await Promise.resolve(taskDock.send(text, mode, attachments ?? []))
-                  : wantTaskDock
-                    ? async () => false
-                    : handleSend
-              }
-              stop={dockToTask ? () => Promise.resolve(taskDock.stop()) : stop}
-              unsendSteer={!tasksPage && pendingSteers > 0 ? unsendSteer : undefined}
-              addTask={addTask}
-              projects={projects}
-              error={dockToTask ? taskDock.error : composerError}
-              onDismissError={dockToTask ? taskDock.dismissError : () => setComposerError(null)}
-              planDraft={showPlanToggle ? planDraft : false}
-              clearDraft={draftClear}
-              textareaRef={composerRef}
-              inputTestId={wantTaskDock ? "task-agent-input" : undefined}
-              sendTestId={wantTaskDock ? "task-agent-send" : undefined}
-              attachTestId={wantTaskDock ? "task-agent-attach" : undefined}
-              inputLabel={wantTaskDock ? "Task message" : undefined}
-              placeholder={
-                wantTaskDock
-                  ? (taskDock?.placeholder ?? "Ask the planning agent to help formulate this task.")
-                  : undefined
-              }
-            />
+            <div data-testid="composer-slide">
+              <div className="ink-line flex items-center gap-xl border-b py-md pr-md pl-2xl">
+                <div
+                  data-testid="working-status"
+                  data-open={statusRunning ? "true" : "false"}
+                  className="flex min-w-0 flex-1 items-baseline gap-lg font-mono text-[11px] leading-4 text-muted-foreground"
+                >
+                  <PlanTaskSwitch
+                    present={dockScan.view.plan}
+                    phase={dockScan.phase}
+                    order={0}
+                    swap={dockSwap}
+                    pressed={planDraft}
+                    onToggle={togglePlanDraft}
+                  />
+                  <DockStatusWord
+                    word={dockScan.view.word}
+                    running={dockScan.view.running}
+                    quiet={dockScan.view.quiet}
+                    surface={dockScan.view.surface}
+                    phase={dockScan.phase}
+                    order={1}
+                    swap={dockSwap}
+                  />
+                  <BackgroundJobsCounts
+                    jobs={jobs}
+                    delegates={delegates ?? []}
+                    onOpen={setJobsSheet}
+                    visible={dockScan.view.jobs}
+                    phase={dockScan.phase}
+                    order={2}
+                  />
+                </div>
+                <div
+                  role="tablist"
+                  aria-label="Pages"
+                  data-testid="page-dots"
+                  className="flex shrink-0 items-center justify-center"
+                >
+                  {PAGES.map((item, index) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={pager.page === index}
+                      aria-label={item.label}
+                      data-testid={`page-dot-${item.id}`}
+                      className="grid h-6 w-6 place-items-center"
+                      onClick={() => selectPage(index)}
+                    >
+                      <span
+                        className={cn(
+                          "block rounded-full transition-[width,height,border-radius] duration-200 ease-out motion-reduce:transition-none",
+                          pager.page === index
+                            ? "size-3 rounded-[4px] bg-foreground"
+                            : "size-1.5 bg-foreground/40",
+                        )}
+                      />
+                    </button>
+                  ))}
+                </div>
+                <PiMenu />
+              </div>
+              <div
+                data-testid="composer-body"
+                data-hidden={hideTasksComposer ? "true" : "false"}
+                data-collapsed={hideTasksComposer ? "true" : "false"}
+                aria-hidden={hideTasksComposer ? true : undefined}
+                inert={hideTasksComposer ? true : undefined}
+                className="composer-body"
+              >
+                <Composer
+                  dockSwap={dockSwap}
+                  dockPhase={dockScan.phase}
+                  draftKey={
+                    wantTaskDock
+                      ? taskDock !== null
+                        ? `task:${taskDock.taskId}`
+                        : "task:pending"
+                      : "main"
+                  }
+                  tasksPage={tasksPage && !wantTaskDock}
+                  projectMentions={wantTaskDock ? true : undefined}
+                  running={dockToTask ? taskDock.running : running}
+                  send={
+                    dockToTask
+                      ? async (text, mode, attachments) =>
+                          await Promise.resolve(taskDock.send(text, mode, attachments ?? []))
+                      : wantTaskDock
+                        ? async () => false
+                        : handleSend
+                  }
+                  stop={dockToTask ? () => Promise.resolve(taskDock.stop()) : stop}
+                  unsendSteer={!tasksPage && pendingSteers > 0 ? unsendSteer : undefined}
+                  addTask={addTask}
+                  projects={projects}
+                  error={dockToTask ? taskDock.error : composerError}
+                  onDismissError={dockToTask ? taskDock.dismissError : () => setComposerError(null)}
+                  planDraft={showPlanToggle ? planDraft : false}
+                  clearDraft={draftClear}
+                  textareaRef={composerRef}
+                  inputTestId={wantTaskDock ? "task-agent-input" : undefined}
+                  sendTestId={wantTaskDock ? "task-agent-send" : undefined}
+                  attachTestId={wantTaskDock ? "task-agent-attach" : undefined}
+                  inputLabel={wantTaskDock ? "Task message" : undefined}
+                  placeholder={taskPlaceholder}
+                />
+              </div>
+            </div>
           </div>
         </div>
       </div>

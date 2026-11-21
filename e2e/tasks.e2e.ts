@@ -1,7 +1,7 @@
 import { type Browser, beforeEach, describe, test } from "@e2e-dev/web";
 import { expect } from "e2e";
 import { IdleNudge } from "../src/server/idle-nudge.js";
-import { backToTaskList, setPlanDraft } from "./tasks-helpers";
+import { backToTaskList, openTaskChatTab, setPlanDraft } from "./tasks-helpers";
 
 /** The built app registers /sw.js, and a worker's requests bypass Playwright routes. */
 async function disableServiceWorker(browser: Browser) {
@@ -167,6 +167,7 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
 
     // Park the same raw text in another target's draft: the task-chat composer.
     await screen.getByRole("button", { name: `Open ${existingTitle}` }).tap();
+    await openTaskChatTab(screen);
     const taskChat = screen.getByTestId("task-agent-input");
     await expect(taskChat).toBeVisible();
     const raw = `@draftproj${tag} Retry  draft ${tag} `;
@@ -213,6 +214,7 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
 
     // The unrelated draft survived the retry's cleanup.
     await screen.getByRole("button", { name: `Open ${existingTitle}` }).tap();
+    await openTaskChatTab(screen);
     await expect(screen.getByTestId("task-agent-input")).toHaveValue(raw);
   });
 
@@ -295,7 +297,7 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     await screen.getByTestId("add-task").tap();
 
     await expect(screen.getByTestId("task-detail")).toBeVisible();
-    await expect(screen.getByTestId("task-agent-input")).toBeVisible();
+    await expect(screen.getByTestId("composer-dock-shell")).toHaveAttribute("data-hidden", "true");
     const created = await browser.evaluate(async (needle) => {
       const ledger = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
         tasks: Array<{ id: string; title: string; status: string; body?: string }>;
