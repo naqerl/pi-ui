@@ -831,6 +831,35 @@ test("the plan-mode prompt forbids edits and names the edit_task tool", () => {
   assert.doesNotMatch(prompt, /task_working/);
 });
 
+test("the plan prompt fixes the body shape, Gherkin and architecture rules", () => {
+  const prompt = taskAgentInstructions("base prompt", {
+    id: "shape1",
+    title: "Shape the body",
+    project: "pi-ui",
+    body: "Plan it.",
+  });
+  const headings = ["## Goal", "## Requirements", "## Scenarios", "## Architecture"];
+  for (const heading of headings) assert.match(prompt, new RegExp(heading));
+  const order = headings.map((heading) => prompt.indexOf(heading));
+  assert.deepEqual(
+    order,
+    [...order].sort((a, b) => a - b),
+  );
+  assert.match(prompt, /one sentence/);
+  assert.match(prompt, /\*\.feature/);
+  assert.match(prompt, /gherkin/);
+  assert.match(prompt, /invariant/i);
+  assert.match(prompt, /one bullet per module/i);
+  assert.match(prompt, /its path and what changes in it/);
+  assert.doesNotMatch(prompt, /the problem and the proposed design/);
+  const shape = prompt.slice(
+    prompt.indexOf("- Write the body as a specification"),
+    prompt.indexOf("Current task:"),
+  );
+  assert.ok(shape.length > 0, "the body-shape block is missing");
+  assert.ok(shape.length <= 2_000, `the body-shape block costs ${shape.length} characters`);
+});
+
 test("edit_task updates this task's title, body and project", async () => {
   published = [];
   const ledger = await store.create("Draft the plan", null);

@@ -643,7 +643,7 @@ Your job is to help the operator formulate the task and propose a solution — a
 Plan mode only:
 ${memoryPolicy}
 - You may use the read and bash tools to inspect the repository.
-${look}- You have additional tools, edit_task, propose_task, ask_questions and append_questions. edit_task updates this task's title, markdown body and/or project. Use it to capture the formulated task: a clear title, a markdown body with the problem and the proposed design (mermaid fences are allowed), and a project when one fits.
+${look}- You have additional tools, edit_task, propose_task, ask_questions and append_questions. edit_task updates this task's title, markdown body and/or project. Use it to capture the formulated task: a clear title, a markdown body in the sections below, and a project when one fits.
 - Use propose_task to hand a follow-up task to the operator for approval. A proposal is not a task: only a human approving it creates work, so do not treat it as started or done. Do not propose a duplicate of the task you are planning; propose only distinct follow-up work.
 - Investigate before asking. Read the files, the task body, the docs and prior tasks with read/bash
   first; most questions answer themselves.
@@ -662,6 +662,24 @@ ${look}- You have additional tools, edit_task, propose_task, ask_questions and a
 - Never re-ask an answered question. If a set was dismissed, decide it yourself.
 - Do not change the task's status. The operator owns that.
 - Do not list or narrate your tool calls in the task body.
+- Write the body as a specification in four \`##\` sections, in this order: \`## Goal\`, \`## Requirements\`,
+  \`## Scenarios\`, \`## Architecture\`.
+- **Goal** — one sentence: the outcome the operator has when the work lands; no preamble, background,
+  file names or steps. If it needs two sentences, it is two tasks.
+- **Requirements** — a numbered list of invariants, not steps: guarantees the operator can check, each
+  naming the check that covers it when one exists (\`npm test\`, a test file, a command), what must not
+  change, and which wins when two conflict. A decision you made alone goes here with its reason.
+- **Scenarios** — Gherkin in one fenced \`\`\`gherkin block: \`Feature:\`, then \`Scenario:\` with
+  \`Given\`/\`When\`/\`Then\`; happy path, boundary, failure path. If the project has feature files
+  (\`find . -name '*.feature'\`), read the closest one first and reuse its \`Feature:\` name, step
+  vocabulary and tags, pasting only the scenarios that pin this change; with none, write them anyway —
+  they are how the implementer learns what done means.
+- **Architecture** — one bullet per module: its path and what changes in it
+  (\`src/server/task-agent.ts:601 — taskAgentInstructions gains this block\`); a \`mermaid\` fence only when
+  a picture saves a paragraph. No rewritten code, no whole files, no diff.
+- Do not invent requirements, scenarios, architecture or acceptance criteria the operator never implied;
+  anything undecided goes to ask_questions. Keep the body under ~8,000 characters (the cap is 20,000);
+  never paste logs, whole files or a diff. A one-line chore still gets all four headings.
 
 Current task:
 - id: ${task.id}
