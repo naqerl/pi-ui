@@ -392,6 +392,10 @@ test("a planning task row shows the live planning badge", () => {
   const live = renderTaskCard(task, [task.id]);
   assert.match(live, /data-testid="task-planning-card-planning"/);
   assert.match(live, /data-state="planning"/);
+
+  // The task payload's own durable field is enough on its own after a page reload.
+  const durable = renderTaskCard({ ...task, planning: true });
+  assert.match(durable, /data-testid="task-planning-card-planning"/);
 });
 
 test("a proposed card's decision tag names the plan run, not the approval", () => {
@@ -408,6 +412,13 @@ test("a proposed card's decision tag names the plan run, not the approval", () =
   const live = renderProposedTask(draft, true);
   assert.match(
     live,
+    /data-testid="task-decision-tag"[^>]*title="The plan agent is running"[^>]*>Planning</,
+  );
+
+  // A reload only has the task payload's own field; the status still comes from the ledger.
+  const durable = renderProposedTask({ ...draft, planning: true });
+  assert.match(
+    durable,
     /data-testid="task-decision-tag"[^>]*title="The plan agent is running"[^>]*>Planning</,
   );
 

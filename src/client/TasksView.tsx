@@ -1327,8 +1327,10 @@ export function TaskRow({
   const selected = selectedId === task.id;
   const trace = activity?.traces[task.id];
   const badge = history || (done && depth > 0) ? null : stateBadge(current, trace);
+  // The per-task field is the durable snapshot; the id set carries live broadcasts.
   const planningLive =
-    planning.has(task.id) && (isActiveStatus(task.status) || task.status === "planning");
+    (planning.has(task.id) || task.planning === true) &&
+    (isActiveStatus(task.status) || task.status === "planning");
   const questions = task.questions ?? null;
   const stale = current === "working" && isStaleWorking(task, activity);
   const note = rowNote(task, tasks, current, trace, activity?.traces ?? {}, index);
@@ -1555,6 +1557,8 @@ export function ProposedTask({
   /** The plan agent has a live run, so the decision tag is not yet the operator's turn. */
   planningLive?: boolean;
 }) {
+  // The task's own field is the durable plan-run state; the prop carries live broadcasts.
+  const live = planningLive || task.planning === true;
   return (
     <li
       data-testid={`${draft ? "draft" : "proposal"}-${task.id}`}
@@ -1589,18 +1593,18 @@ export function ProposedTask({
         <TaskCardMeta
           task={task}
           project={showProject ? task.project : undefined}
-          planning={planningLive || task.questions != null}
+          planning={live || task.questions != null}
         >
           <Badge
             variant="outline"
             data-testid="task-decision-tag"
             title={
-              planningLive
+              live
                 ? "The plan agent is running"
                 : "The plan agent finished — review the plan or answer its questions"
             }
           >
-            {planningLive ? "Planning" : "Waits approval"}
+            {live ? "Planning" : "Waits approval"}
           </Badge>
           {task.questions != null && (
             <TaskQuestionsBadge

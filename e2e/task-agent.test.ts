@@ -1897,6 +1897,8 @@ test("a restart restores only plan turns whose marker was live", async () => {
     const resumed = await manager.restore();
     assert.deepEqual(resumed.sort(), [id(titles.live), id(titles.other)].sort());
     assert.deepEqual(opened.sort(), [id(titles.live), id(titles.other)].sort());
+    // The durable markers are enough to report Planning before any browser asks.
+    assert.deepEqual(manager.planningTaskIds().sort(), [id(titles.live), id(titles.other)].sort());
     assert.equal(opened.includes(id(titles.stopped)), false);
     assert.equal(opened.includes(id(titles.done)), false);
     assert.equal(opened.includes(id(titles.unmarked)), false);
