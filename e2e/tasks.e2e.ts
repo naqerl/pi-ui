@@ -340,6 +340,14 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     await expect(decisionTag).toHaveText("Planning");
     await expect(decisionTag).toHaveAttribute("title", "The plan agent is running");
 
+    // A reload has no local run state to fall back on; the ledger must still say Planning.
+    await app.open("/?page=tasks");
+    const reloadedCard = screen.getByTestId(`draft-${created.id}`);
+    await expect(reloadedCard).toBeVisible();
+    const reloadedTag = reloadedCard.getByTestId("task-decision-tag");
+    await expect(reloadedTag).toHaveText("Planning");
+    await expect(reloadedTag).toHaveAttribute("title", "The plan agent is running");
+
     // Stopping the run leaves the draft waiting for a decision, not for the agent.
     await browser.evaluate(async (taskId) => {
       const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/chat/stop`, {
@@ -360,8 +368,8 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
         { timeout: 30_000 },
       )
       .toBe(false);
-    await expect(decisionTag).toHaveText("Waits approval");
-    await expect(decisionTag).toHaveAttribute(
+    await expect(reloadedTag).toHaveText("Waits approval");
+    await expect(reloadedTag).toHaveAttribute(
       "title",
       "The plan agent finished — review the plan or answer its questions",
     );
