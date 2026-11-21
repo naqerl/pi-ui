@@ -34,9 +34,12 @@ function BrailleSpinner({ running, quiet }: { running: boolean; quiet: boolean }
 
   useEffect(() => {
     if (!running || reducedMotion) return;
-    const timer = window.setInterval(() => {
-      setFrame((current) => (current + 1) % FRAMES.length);
-    }, quiet ? QUIET_FRAME_MS : FRAME_MS);
+    const timer = window.setInterval(
+      () => {
+        setFrame((current) => (current + 1) % FRAMES.length);
+      },
+      quiet ? QUIET_FRAME_MS : FRAME_MS,
+    );
     return () => window.clearInterval(timer);
   }, [reducedMotion, running, quiet]);
 
