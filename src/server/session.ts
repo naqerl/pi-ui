@@ -107,13 +107,16 @@ const VersionUpdateEntry = defineEntry<{
 }>("ui.version-update");
 
 /**
- * A background job result. The agent-visible result is placed as this entry through an input, so
- * its model message is unchanged; a cancelled or `notify: false` result has no `model` part and is
- * only recorded for the activity page.
+ * A background job result: a chip in the chat and a row on the activity page. The
+ * agent-visible result is placed as this entry through an input, so its model message is
+ * unchanged; a cancelled or `notify: false` result has no `model` part and is a chip and
+ * an activity row only.
  */
 const JobNoticeEntry = defineEntry<{
   text: string;
   createdAt: string;
+  /** The queued input's key, so the pending and placed chips share one message id. */
+  queueKey?: string;
 }>("ui.job-notice");
 
 /** The entry kind a job result is placed as; the chat never renders it as a user message. */
@@ -1016,12 +1019,22 @@ export class TranscriptBuilder {
       if (!isRecord(entry.data) || typeof entry.data.text !== "string") return;
       const notice = parseNotice(entry.data.text);
       if (notice === null || notice.kind !== "job") return;
+      const timestamp = entryTimestamp(entry.data);
+      const order = entry.id * 10_000;
+      this.emit({
+        id: entryMessageId(entry),
+        role: "system",
+        text: entry.data.text,
+        timestamp,
+        order,
+        notice,
+      });
       this.emitActivity({
         kind: "job",
         id: `j-${entry.id}`,
         notice,
-        timestamp: entryTimestamp(entry.data),
-        order: entry.id * 10_000,
+        timestamp,
+        order,
       });
       return;
     }
@@ -1289,8 +1302,8 @@ export class TranscriptBuilder {
       if (text.length > 0 || attachments.length > 0) {
         const notice = parseNotice(text);
         if (notice?.kind === "mcp") this.latestMcpNoticeText = text;
-        // Older conversations stored a job result as a normal user entry. Keep it out of the chat
-        // too, and show it where every other result of that run is shown.
+        // Older conversations stored a job result as a normal user entry. Keep it out of the chat;
+        // those entries predate the chip, so the activity row is their only surface.
         if (notice?.kind === "job") {
           this.emitActivity({
             kind: "job",

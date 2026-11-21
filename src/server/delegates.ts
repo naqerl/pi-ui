@@ -425,7 +425,7 @@ export class DelegateManager {
   /**
    * Deliver a finished job's notice to a live sub-agent turn. It never opens or
    * resumes a session and never starts a turn; a closed run falls back to the
-   * parent chat's activity row.
+   * parent chat's chip and activity row.
    */
   async submitJobNotice(id: string, text: string): Promise<boolean> {
     const run = this.runs.get(id.trim());

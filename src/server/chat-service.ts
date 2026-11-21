@@ -2755,8 +2755,8 @@ export class ChatService {
   }
 
   /**
-   * Records a job result the agent is not told about and shows it to open clients.
-   * It belongs to the activity page, so this never touches the chat draft.
+   * Records a job result the agent is not told about: a chat chip and an activity row.
+   * This never touches the chat draft.
    */
   async recordNotice(text: string): Promise<void> {
     const activity = await appendJobNotice(this.conversation, text);
@@ -3219,6 +3219,7 @@ export class ChatService {
           event.entry.kind === QUEUE_ENTRY_KIND ||
           event.entry.kind === MCP_NOTICE_ENTRY_KIND ||
           event.entry.kind === DELEGATE_NOTICE_ENTRY_KIND ||
+          event.entry.kind === JOB_NOTICE_ENTRY_KIND ||
           // legacy: read-only, existing transcripts only
           event.entry.kind === MEMORY_DELTA_ENTRY_KIND ||
           event.entry.kind === TASK_DECISION_ENTRY_KIND ||
@@ -3352,12 +3353,17 @@ export class ChatService {
 
       case "entry_appended":
         if (event.entry.kind === JOB_NOTICE_ENTRY_KIND) {
-          const activity = buildTranscript([event.entry]).activity[0];
+          const built = buildTranscript([event.entry], this.mediaRef, this.diagramRevision);
+          const activity = built.activity[0];
           if (activity !== undefined) {
             this.hub.broadcast({
               event: "activity",
               data: { activity } satisfies StreamActivity,
             });
+          }
+          const message = built.messages[0];
+          if (message !== undefined) {
+            this.hub.broadcast({ event: "notice", data: { message } satisfies StreamNotice });
           }
           return;
         }

@@ -1,8 +1,8 @@
 /**
  * Background job results and MCP events reach the transcript as messages the agent
- * already reads. These helpers recognise them: the activity page shows job results,
- * and the chat shows MCP events as a one-line notice instead of a bubble. The text
- * sent to the model is unchanged.
+ * already reads. These helpers recognise them: the chat shows both as a one-line
+ * notice instead of a bubble, while the activity page also keeps the job row. The
+ * text sent to the model is unchanged.
  */
 
 import { toIsoTimestamp } from "./time.js";

@@ -12,6 +12,7 @@ import { configurePush, resetPushServiceForTests } from "../src/server/push.js";
 import type { RunMarker } from "../src/server/run-marker.js";
 import {
   appendInterruptionNote,
+  appendJobNotice,
   appendMemoryWriteNotice,
   appendOperatorNotice,
   buildTranscript,
@@ -83,6 +84,57 @@ test("a job whose name differs from its command keeps the command", () => {
   assert.ok(notice?.kind === "job");
   assert.equal(notice.name, "tests: unit");
   assert.equal(notice.command, "npm run build");
+});
+
+test("a stored job notice is one chip in the chat and one activity row", async () => {
+  const { conversation, entries } = recordingConversation();
+  const text = jobNotice(job({ status: "failed", exitCode: 4 }), "boom\n");
+  const activity = await appendJobNotice(conversation, text);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.kind, "ui.job-notice");
+  assert.equal(activity?.kind, "job");
+  assert.equal(activity?.order, 10_000);
+
+  const built = buildTranscript(entries);
+  assert.equal(built.messages.length, 1);
+  const chip = built.messages[0];
+  assert.equal(chip?.role, "system");
+  assert.equal(chip?.text, text);
+  assert.equal(chip?.order, 10_000);
+  const notice = chip?.notice;
+  assert.ok(notice !== undefined && !isQueuedNotice(notice) && notice.kind === "job");
+  assert.equal(notice.summary, "job build failed ✗ exit 4 · 12s");
+  assert.equal(built.activity.length, 1);
+  assert.equal(built.activity[0]?.order, chip?.order);
+
+  // A reload rebuilds the same single chip from the stored entry.
+  const reloaded = buildTranscript(entries);
+  assert.deepEqual(reloaded.messages, built.messages);
+  assert.equal(reloaded.messages.filter((message) => message.notice?.kind === "job").length, 1);
+});
+
+test("a notified job entry feeds the chip but keeps its model message out of the chat", () => {
+  const text = jobNotice(job({}), "built in 3s\n");
+  const createdAt = "2026-11-21T13:27:01.126Z";
+  const entry = {
+    id: 104_467,
+    kind: "ui.job-notice",
+    data: { text, createdAt },
+    model: [{ role: "user", content: text, timestamp: Date.parse(createdAt) }],
+  } as unknown as EntryRecord;
+
+  const built = buildTranscript([entry]);
+  assert.equal(built.messages.length, 1);
+  const chip = built.messages[0];
+  assert.equal(chip?.role, "system");
+  assert.equal(chip?.text, text);
+  assert.equal(chip?.timestamp, createdAt);
+  assert.equal(chip?.order, 104_467 * 10_000);
+  assert.equal(chip?.notice?.kind, "job");
+  assert.equal(built.messages.some((message) => message.role === "user"), false);
+  assert.equal(built.activity.length, 1);
+  assert.equal(built.activity[0]?.order, chip?.order);
+  assert.equal(built.activity[0]?.timestamp, createdAt);
 });
 
 const EVENTS =

@@ -1273,8 +1273,8 @@ export class DurableTaskAgentSession implements TaskAgentSession {
 
     if (newEntries.length > 0) {
       const built = buildTranscript(newEntries, this.mediaRef);
-      // A job result belongs on the activity surface even while the run is live; durable
-      // committed it already, so the row matches the one a later snapshot will build.
+      // A job result rebuilds as its chip and its activity row; durable committed it already,
+      // so both match what a later snapshot builds.
       for (const activity of built.activity) {
         if (activity.kind === "job") {
           this.emit({ event: "activity", data: { activity } });
@@ -1743,7 +1743,7 @@ export class DurableTaskAgentSession implements TaskAgentSession {
           requestId: `queue:${key}`,
           entry: {
             kind: JOB_NOTICE_ENTRY_KIND,
-            data: { text, createdAt },
+            data: { text, createdAt, ...(startsRun ? {} : { queueKey: key }) },
           },
         },
         SESSION_CONTEXT,
@@ -2028,7 +2028,8 @@ export class TaskAgentManager {
 
   /**
    * Delivers a finished job's notice to a live plan session. It never opens a session:
-   * a notice for a closed plan pane becomes an activity row instead of a paid plan turn.
+   * a notice for a closed plan pane is recorded in the main chat as its chip and activity
+   * row instead of a paid plan turn.
    */
   async submitJobNotice(taskId: string, text: string): Promise<boolean> {
     const session = this.sessions.get(taskId);
