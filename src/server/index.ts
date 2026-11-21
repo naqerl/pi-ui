@@ -65,6 +65,7 @@ import {
   readPushSink,
   subscribePush,
   unsubscribePush,
+  withPushClient,
 } from "./push.js";
 import { retryBudgetMs } from "./retry.js";
 import { type DurableSessionOptions, openDurableSession, SESSION_CONTEXT } from "./session.js";
@@ -693,9 +694,9 @@ app.post("/api/push/subscribe", async (c) => {
   } catch {
     return c.text("Expected a JSON body", 400);
   }
-  const record = await subscribePush(body);
-  if (record === null) return c.text("endpoint and keys are required", 400);
-  return c.json({ ok: true });
+  const replaced = await subscribePush(withPushClient(body, c.req.header("user-agent")));
+  if (replaced === null) return c.text("endpoint and keys are required", 400);
+  return c.json({ ok: true, replaced });
 });
 
 app.delete("/api/push/subscribe", async (c) => {

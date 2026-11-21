@@ -116,6 +116,22 @@ function supported(): boolean {
   return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
 }
 
+/** The display mode the page reports: an installed app or an ordinary tab. */
+export function pushDisplayMode(): "app" | "browser" {
+  try {
+    const standalone =
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(display-mode: standalone)").matches;
+    const iosApp =
+      typeof navigator !== "undefined" &&
+      (navigator as Navigator & { readonly standalone?: boolean }).standalone === true;
+    return standalone || iosApp ? "app" : "browser";
+  } catch {
+    return "browser";
+  }
+}
+
 async function currentSubscription(): Promise<PushSubscription | null> {
   const registration = await navigator.serviceWorker.getRegistration();
   if (registration === undefined) return null;
@@ -193,7 +209,7 @@ export function PushSettings() {
       const posted = await fetch("/api/push/subscribe", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(subscription.toJSON()),
+        body: JSON.stringify({ ...subscription.toJSON(), client: { mode: pushDisplayMode() } }),
       });
       if (!posted.ok) throw new Error("could not store the push subscription");
       if (alive.current) setState("granted");

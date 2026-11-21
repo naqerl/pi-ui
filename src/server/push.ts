@@ -23,11 +23,36 @@ export interface PushSubscriptionKeys {
   readonly auth: string;
 }
 
+export const PUSH_CLIENT_DEVICES = ["mobile", "desktop"] as const;
+export type PushClientDevice = (typeof PUSH_CLIENT_DEVICES)[number];
+export const PUSH_CLIENT_MODES = ["app", "browser"] as const;
+export type PushClientMode = (typeof PUSH_CLIENT_MODES)[number];
+
+/** Who a subscription belongs to, so one device class can own its channel. */
+export interface PushClient {
+  readonly device: PushClientDevice;
+  readonly mode: PushClientMode;
+}
+
 export interface PushSubscriptionRecord {
   readonly endpoint: string;
   readonly keys: PushSubscriptionKeys;
   readonly createdAt: string;
   readonly lastOkAt: string | null;
+  /** Absent on records written before device classes existed. */
+  readonly client?: PushClient;
+}
+
+/** One registry row as `/api/push/status` reports it, never the endpoint or keys. */
+export interface PushStatusRecord {
+  readonly device: PushClientDevice | null;
+  readonly mode: PushClientMode | null;
+}
+
+export interface PushStatus {
+  readonly enabled: true;
+  readonly subscriptions: number;
+  readonly records: PushStatusRecord[];
 }
 
 export interface PushVapidKeys {
@@ -149,6 +174,50 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+export function isPushClientDevice(value: unknown): value is PushClientDevice {
+  return value === "mobile" || value === "desktop";
+}
+
+export function isPushClientMode(value: unknown): value is PushClientMode {
+  return value === "app" || value === "browser";
+}
+
+/** The phone/laptop split comes from the request so a client cannot spoof it. */
+export function pushDeviceFromUserAgent(userAgent: string | undefined | null): PushClientDevice {
+  return /Mobile|Android|iPhone|iPad/i.test(userAgent ?? "") ? "mobile" : "desktop";
+}
+
+/** Turns a stored `client` block into a valid one, or null when it is malformed. */
+export function normalizePushClient(value: unknown): PushClient | null {
+  if (!isRecord(value)) return null;
+  const device = value.device;
+  const mode = value.mode;
+  if (!isPushClientDevice(device) || !isPushClientMode(mode)) return null;
+  return { device, mode };
+}
+
+/** Reads the page's display mode from a request body without trusting its device. */
+export function pushClientFromRequest(
+  value: unknown,
+  userAgent: string | undefined | null,
+): PushClient | null {
+  if (!isRecord(value)) return null;
+  const mode = value.mode;
+  if (!isPushClientMode(mode)) return null;
+  return { device: pushDeviceFromUserAgent(userAgent), mode };
+}
+
+/**
+ * Adds the server-derived device to a subscribe body that names a valid mode.
+ * A body without a usable `client` block stays byte-for-byte as sent, which
+ * keeps the legacy fan-out path for fixtures and old clients.
+ */
+export function withPushClient(value: unknown, userAgent: string | undefined | null): unknown {
+  if (!isRecord(value)) return value;
+  const client = pushClientFromRequest(value.client, userAgent);
+  return client === null ? value : { ...value, client };
+}
+
 /** The lower-case host of an endpoint, or null when it is not a usable URL. */
 export function pushEndpointHost(endpoint: string): string | null {
   try {
@@ -198,12 +267,14 @@ function normalizeSubscription(value: unknown, now: string): PushSubscriptionRec
   const endpoint = typeof value.endpoint === "string" ? value.endpoint.trim() : "";
   const keys = normalizeKeys(value.keys);
   if (endpoint.length === 0 || keys === null) return null;
+  const client = normalizePushClient(value.client);
   return {
     endpoint,
     keys,
     createdAt:
       typeof value.createdAt === "string" && value.createdAt.length > 0 ? value.createdAt : now,
     lastOkAt: typeof value.lastOkAt === "string" ? value.lastOkAt : null,
+    ...(client === null ? {} : { client }),
   };
 }
 
@@ -271,24 +342,45 @@ export class PushSubscriptionStore {
     }
   }
 
-  /** Adds a subscription. The same endpoint replaces the earlier record. */
-  async subscribe(value: unknown): Promise<PushSubscriptionRecord | null> {
+  /**
+   * Adds a subscription and returns how many records it replaced. The same
+   * endpoint always replaces its earlier record. A record that carries a
+   * `client` block also evicts every other record of that device class and
+   * every unattributed record, because an old entry cannot be routed to a
+   * device. Without a `client` block the legacy fan-out registry is kept.
+   */
+  async subscribe(value: unknown): Promise<number | null> {
     if (this.closed) return null;
     await this.load();
     const record = subscriptionFrom(value, new Date(this.now()).toISOString());
     if (record === null) return null;
+    const replaced = this.evictFor(record);
     this.records.set(record.endpoint, record);
     this.dirty = true;
     await this.scheduleWrite();
-    return record;
+    return replaced;
   }
 
-  add(value: unknown): Promise<PushSubscriptionRecord | null> {
+  add(value: unknown): Promise<number | null> {
     return this.subscribe(value);
   }
 
-  upsert(value: unknown): Promise<PushSubscriptionRecord | null> {
+  upsert(value: unknown): Promise<number | null> {
     return this.subscribe(value);
+  }
+
+  private evictFor(record: PushSubscriptionRecord): number {
+    const incoming = record.client;
+    if (incoming === undefined) return 0;
+    let replaced = 0;
+    for (const [endpoint, existing] of this.records) {
+      if (endpoint === record.endpoint) continue;
+      if (existing.client === undefined || existing.client.device === incoming.device) {
+        this.records.delete(endpoint);
+        replaced += 1;
+      }
+    }
+    return replaced;
   }
 
   /** Removes an endpoint, returning whether it was present. Safe to repeat. */
@@ -619,11 +711,11 @@ export class PushService {
     return (await this.vapidKeys()).publicKey;
   }
 
-  async subscribe(value: unknown): Promise<PushSubscriptionRecord | null> {
+  async subscribe(value: unknown): Promise<number | null> {
     return this.store.subscribe(value);
   }
 
-  add(value: unknown): Promise<PushSubscriptionRecord | null> {
+  add(value: unknown): Promise<number | null> {
     return this.subscribe(value);
   }
 
@@ -631,8 +723,16 @@ export class PushService {
     await this.store.remove(endpoint);
   }
 
-  async status(): Promise<{ subscriptions: number; enabled: true }> {
-    return { subscriptions: (await this.store.read()).length, enabled: true };
+  async status(): Promise<PushStatus> {
+    const records = await this.store.read();
+    return {
+      enabled: true,
+      subscriptions: records.length,
+      records: records.map((record) => ({
+        device: record.client?.device ?? null,
+        mode: record.client?.mode ?? null,
+      })),
+    };
   }
 
   /**
@@ -727,7 +827,7 @@ export async function pushPublicKey(): Promise<string> {
   return getPushService().publicKey();
 }
 
-export function subscribePush(value: unknown): Promise<PushSubscriptionRecord | null> {
+export function subscribePush(value: unknown): Promise<number | null> {
   return getPushService().subscribe(value);
 }
 
@@ -735,7 +835,7 @@ export function unsubscribePush(endpoint: string): Promise<void> {
   return getPushService().unsubscribe(endpoint);
 }
 
-export function pushStatus(): Promise<{ subscriptions: number; enabled: true }> {
+export function pushStatus(): Promise<PushStatus> {
   return getPushService().status();
 }
 
