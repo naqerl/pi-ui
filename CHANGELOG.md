@@ -1,3 +1,12 @@
+## 1.12.1
+
+### Fixed
+
+- The dock's working braille no longer freezes after 150 s of silence on a live run: it keeps turning, slows to a 320 ms frame while the run is quiet, and keeps the steady glyph only for reduced motion. (rq8x)
+- Sending a message while a silent run is live answers 202 again instead of 500, so a slow turn no longer looks like a broken send. (rq8x follow-up)
+- The plan agent chat keeps its 16px end gap above the composer dock in every state, including a dead plan run's error banner. (uvd7)
+- `propose_task` takes a prompt with an optional project and attachments, and always starts a plan agent on the draft it creates. (5vwx)
+
 ## 1.12.0
 
 ### Added
