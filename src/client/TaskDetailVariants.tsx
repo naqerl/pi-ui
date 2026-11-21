@@ -350,6 +350,11 @@ function BodyField({ model, fill }: { model: TaskDetailModel; fill?: boolean }) 
     saveBody,
   } = model;
   const grow = fill === true;
+  // A wide plan card scrolls its own body; a narrow one leaves the body at its
+  // natural height so the detail pane stays the only scroll owner.
+  const bodyScroll = grow
+    ? cn("min-h-0 max-h-full flex-1 overflow-y-auto", SCROLLBAR_GUTTER)
+    : undefined;
   if (editingBody) {
     return (
       <div
@@ -432,13 +437,7 @@ function BodyField({ model, fill }: { model: TaskDetailModel; fill?: boolean }) 
         data-testid={task.body !== undefined && task.body.length > 0 ? "task-body" : undefined}
         className={cn(
           "min-w-0 cursor-text text-sm leading-5",
-          task.body !== undefined && task.body.length > 0
-            ? cn(
-                "overflow-y-auto",
-                SCROLLBAR_GUTTER,
-                grow ? "min-h-0 max-h-full flex-1" : "max-h-[min(60vh,40rem)]",
-              )
-            : QUIET,
+          task.body !== undefined && task.body.length > 0 ? bodyScroll : QUIET,
         )}
       >
         {task.body !== undefined && task.body.length > 0 ? (
