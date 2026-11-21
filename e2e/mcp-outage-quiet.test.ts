@@ -101,6 +101,38 @@ test("the timer re-reads the row and never escalates a live, fresh stream", () =
   assert.equal(feed.isOutageEscalated(stableId), false);
 });
 
+test("a reconnecting frame after fresh traffic still draws a chip and starts the clock", () => {
+  const { feed, now, advance } = trackedFeed(150);
+  const stableId = deriveStableId("hub", "hub", {});
+  const down = status([{ id: "s1", status: "reconnecting" }]);
+  const up = status([{ id: "s1", status: "active" }]);
+  feed.ingest({
+    customType: "mcp-events-traffic",
+    details: {
+      subscription_id: "s1",
+      server: "hub",
+      cursor: "hub:1",
+      timestamp: new Date(now()).toISOString(),
+    },
+  });
+
+  feed.ingest({
+    customType: "mcp-events-status",
+    details: JSON.parse(down.slice(MCP_STATUS_HEAD.length + 1)),
+  });
+  assert.equal(feed.filterStatusNotice(down).mode, "chip");
+  assert.equal(feed.isOutageEscalated(stableId), false);
+
+  advance(150);
+  assert.equal(feed.takeOutageEscalation(stableId), down, "fresh traffic cannot silence the clock");
+
+  feed.ingest({
+    customType: "mcp-events-status",
+    details: JSON.parse(up.slice(MCP_STATUS_HEAD.length + 1)),
+  });
+  assert.equal(feed.filterStatusNotice(up).mode, "deliver");
+});
+
 test("the quiet clock is per stable id, so a new adapter id does not restart it", () => {
   const quiet = new OutageQuiet(() => 0, 60_000);
   const stableId = deriveStableId("hub", "hub", {});
@@ -206,5 +238,44 @@ test("an escalated outage and its recovery keep the one durable chip", async () 
   assert.equal(transcript.messages.length, 1, "the full cycle leaves one chip");
   assert.equal(transcript.messages[0]?.text, up, "the one chip ends on active");
   assert.equal(transcript.messages[0]?.notice?.kind, "mcp");
+  await chat.close();
+});
+
+test("a second escalated outage and its recovery still keep the one chip", async () => {
+  const { feed, advance } = trackedFeed(150);
+  const stableId = deriveStableId("hub", "hub", {});
+  const down = status([{ id: "s1", status: "reconnecting" }]);
+  const up = status([{ id: "s1", status: "active" }]);
+  const downDetails = JSON.parse(down.slice(MCP_STATUS_HEAD.length + 1));
+  const upDetails = JSON.parse(up.slice(MCP_STATUS_HEAD.length + 1));
+  const { chat, entries } = statusChat(feed);
+
+  for (const cycle of [1, 2]) {
+    feed.ingest({ customType: "mcp-events-status", details: downDetails });
+    assert.equal(feed.filterStatusNotice(down).mode, "chip", `cycle ${cycle} starts a chip`);
+    advance(150);
+    const escalated = feed.takeOutageEscalation(stableId);
+    assert.equal(escalated, down, `cycle ${cycle} speaks once after the window`);
+    await chat.recordMcpStatusChip(down);
+    await chat.submitMcpEventNotice(escalated ?? "", undefined, { bypassGate: true });
+
+    feed.ingest({ customType: "mcp-events-status", details: upDetails });
+    assert.equal(feed.filterStatusNotice(up).mode, "deliver", `cycle ${cycle} recovery speaks`);
+    await chat.submitMcpDelivery({
+      id: `recovery-${cycle}`,
+      text: up,
+      at: new Date(Date.now() + cycle * 1_000).toISOString(),
+    });
+  }
+
+  const expectedId = `mcp/status#${stableId}`;
+  assert.equal(
+    entries.every((entry) => (entry.data as { noticeId?: string }).noticeId === expectedId),
+    true,
+    "the chip, both escalations and both recoveries name the same notice row",
+  );
+  const transcript = buildTranscript(entries);
+  assert.equal(transcript.messages.length, 1, "two full cycles leave one chip");
+  assert.equal(transcript.messages[0]?.text, up, "the one chip ends on active");
   await chat.close();
 });

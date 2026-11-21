@@ -222,10 +222,12 @@ function mcpStatusNotice(
   knownIdentities?: Array<{ stableId: string }>,
 ): { noticeId: string; key: string; label: string } {
   const identities = knownIdentities ?? eventFeed?.statusIdentities(text) ?? [];
-  const stableIds = [...new Set(identities.map((item) => item.stableId))].sort();
+  // The durable id is the chip identity, so a reconnect keeps updating one row
+  // even when the adapter mints a new connection id. A batch still names the
+  // subscription its first status belongs to.
+  const stableId = identities[0]?.stableId;
   return {
-    noticeId:
-      stableIds.length > 0 ? `mcp/status#${stableIds.join("|")}` : `mcp/status#${randomUUID()}`,
+    noticeId: stableId === undefined ? `mcp/status#${randomUUID()}` : `mcp/status#${stableId}`,
     key: "mcp/status",
     label: "MCP status",
   };

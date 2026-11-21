@@ -844,28 +844,6 @@ export class McpEventFeed {
     this.terminalReported.delete(view.stableId);
   }
 
-  private isTerminalStatus(status: string): boolean {
-    return (
-      status === "failed" ||
-      status === "ended" ||
-      status === "stopped" ||
-      status === "cancelled" ||
-      status === "stalled" ||
-      status === "dead"
-    );
-  }
-
-  /**
-   * A non-terminal stream end only says the adapter object stopped, not that
-   * delivery did: the replacement can announce itself within the heartbeat
-   * window. Keep the visible row healthy and stay silent until the silence is
-   * longer than the extension's own heartbeat timeout.
-   */
-  private isGenerationDeathWhileDelivering(view: McpSubscriptionView, status: string): boolean {
-    if (status === "active" || status === "opening" || this.isTerminalStatus(status)) return false;
-    return deliveryIsFresh(view);
-  }
-
   /**
    * Classify the health part of a status notice for the one intake gate. A down
    * frame is a chip; a recovery inside the quiet window is the same chip; an
@@ -876,15 +854,7 @@ export class McpEventFeed {
     const tracked = this.trackedStatusEntries(text, details);
     if (tracked.length === 0) return "deliver";
     const now = this.now();
-    // A frame the feed suppressed (a generation death while delivery is fresh)
-    // left the row unchanged. It is stale, not an outage, so it must not arm a
-    // quiet timer or draw a chip.
-    const entries = tracked.filter(
-      ({ view, status }) =>
-        this.liveStatus(view, status, now) || !this.isGenerationDeathWhileDelivering(view, status),
-    );
-    if (entries.length === 0) return "drop";
-    const observed = entries.map(({ view, status }) => ({
+    const observed = tracked.map(({ view, status }) => ({
       view,
       status: this.liveStatus(view, status, now) ? status : "down",
     }));
@@ -893,9 +863,20 @@ export class McpEventFeed {
       status,
       text,
     }));
-    const escalated = entries.some(({ view }) => this.outageQuiet.escalated(view.stableId));
+    const escalated = observed.some(({ view }) => this.outageQuiet.escalated(view.stableId));
     const healthy = observed.some(({ status }) => status === "active" || status === "opening");
+    const before = new Set(
+      observed
+        .filter(({ view }) => this.outageQuiet.escalated(view.stableId))
+        .map(({ view }) => view.stableId),
+    );
     const observation = this.outageQuiet.observe(views, now);
+    // The new episode has spoken: its previous delivery fingerprint is now
+    // history, so the recovery after this outage is allowed to speak too.
+    const justEscalated = observed
+      .map(({ view }) => view.stableId)
+      .filter((stableId) => !before.has(stableId) && this.outageQuiet.escalated(stableId));
+    if (justEscalated.length > 0) this.clearDeliveredStatus(justEscalated);
     if (escalated && healthy) return "deliver";
     if (observation.escalations.length > 0) return "deliver";
     if (observation.chips.length > 0) return "chip";
@@ -931,6 +912,20 @@ export class McpEventFeed {
   }
 
   /**
+   * Forget the last status a subscription delivered. An escalated outage is a
+   * new episode, so the recovery text may repeat the previous cycle's recovery
+   * and still be news.
+   */
+  private clearDeliveredStatus(stableIds: readonly string[]): void {
+    for (const stableId of stableIds) {
+      this.reportedStatus.delete(stableId);
+      for (const [adapterId, alias] of this.adapterAliases) {
+        if (alias === stableId) this.reportedStatus.delete(adapterId);
+      }
+    }
+  }
+
+  /**
    * The durable identities and states a status notice names as rows this feed
    * tracks. The cheap status chip uses this to keep one per stable id and to
    * arm the outage timer without parsing the notice a second time.
@@ -945,12 +940,6 @@ export class McpEventFeed {
     const now = this.now();
     for (const { view, status } of this.trackedStatusEntries(input.text, input.source)) {
       if (seen.has(view.stableId)) continue;
-      if (
-        !this.liveStatus(view, status, now) &&
-        this.isGenerationDeathWhileDelivering(view, status)
-      ) {
-        continue;
-      }
       seen.add(view.stableId);
       identities.push({
         stableId: view.stableId,
@@ -985,7 +974,9 @@ export class McpEventFeed {
       this.outageQuiet.recovered(stableId);
       return null;
     }
-    return this.outageQuiet.escalate(stableId, now);
+    const text = this.outageQuiet.escalate(stableId, now);
+    if (text !== null) this.clearDeliveredStatus([stableId]);
+    return text;
   }
 
   /** Traffic after an outage becomes the pending recovery for the next active status. */
@@ -1097,6 +1088,11 @@ export class McpEventFeed {
     if (kind !== undefined && kind !== "mcp-ui-status" && kind !== "mcp-events-status") {
       return false;
     }
+    // A notice that names a tracked id is authoritative. The server-attribution
+    // fallback is only for a prose line that names no generation at all;
+    // otherwise a fresh row's own reconnecting frame looks like a dead
+    // generation and its chip is lost.
+    if (ids.length > 0) return false;
     if (isTruncationWarning(text)) return false;
     const attribution = statusAttribution(text, source);
     if (attribution.server === undefined) return false;
@@ -2025,10 +2021,7 @@ export class McpEventFeed {
         incoming.status !== "opening" &&
         isLiveSubscription(current) &&
         deliveryIsFresh(current);
-      if (
-        current !== undefined &&
-        (freshDurableDeath || this.isGenerationDeathWhileDelivering(current, incoming.status))
-      ) {
+      if (current !== undefined && freshDurableDeath) {
         console.debug(
           `[mcp] kept ${current.stableId} healthy: its stream ended but delivery is still fresh`,
         );

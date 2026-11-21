@@ -721,17 +721,21 @@ function heartbeat(feed: McpEventFeed, id: string, at: string): void {
   });
 }
 
-test("a generation death is silent while the last heartbeat is inside the window", () => {
+test("a generation death with fresh delivery is a chip, not a turn", () => {
   const feed = new McpEventFeed();
   liveHubSubscription(feed, "b-live");
-  const { shim, submitted } = statusSink(feed);
+  const { shim, submitted, chips } = statusSink(feed);
   heartbeat(feed, "b-live", new Date().toISOString());
 
   shim.sendMessage(statusNotice("b-live", "reconnecting"));
-  shim.sendMessage(statusNotice("b-live", "active"));
+  assert.equal(feed.state.subscriptions[0]?.status, "reconnecting");
+  assert.equal(chips.length, 1, "fresh traffic still shows the cut as one chip");
+  assert.match(chips[0] ?? "", /reconnecting/);
 
-  assert.equal(feed.state.subscriptions[0]?.status, "active", "the row never flashes down");
-  assert.deepEqual(submitted, [], "a quick generation swap is not an outage");
+  shim.sendMessage(statusNotice("b-live", "active"));
+  assert.equal(feed.state.subscriptions[0]?.status, "active");
+  assert.equal(chips.length, 2, "the recovery updates that chip instead of staying down");
+  assert.deepEqual(submitted, [], "a quick generation swap is not a turn");
 });
 
 test("an id-less durable status reaches chat after real silence", () => {
