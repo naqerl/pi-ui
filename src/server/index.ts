@@ -71,7 +71,7 @@ import { type DurableSessionOptions, openDurableSession, SESSION_CONTEXT } from 
 import { StreamHub } from "./stream-hub.js";
 import { TaskActivityTracker } from "./task-activity.js";
 import { createPlanPromptBuilder, TaskAgentError, TaskAgentManager } from "./task-agent.js";
-import type { TaskBridge } from "./task-tools.js";
+import { createPlanDraft, type TaskBridge } from "./task-tools.js";
 import { TaskError, TaskStore, taskDurationStats, taskReopenStats } from "./tasks.js";
 import { liveDataDirInTestError } from "./test-mode.js";
 import { injectTheme, resolveTheme, themeManifest, writeThemeSlug } from "./themes.js";
@@ -467,6 +467,9 @@ const restoring = taskAgents.restore().catch((error: unknown) => {
 });
 planningTaskIds = () => taskAgents.planningTaskIds();
 pendingQuestionsFor = (taskId) => taskAgents.pendingQuestions(taskId);
+taskBridge.plan = async (taskId, body) => {
+  await taskAgents.submit(taskId, body);
+};
 function builtinJobs() {
   return jobs.list().map((job) => ({
     id: job.id,
@@ -1071,21 +1074,13 @@ app.post("/api/tasks", async (c) => {
       );
     }
     if (plan) {
-      const { ledger, task: created } = await taskStore.createWithResult(
+      await createPlanDraft(taskBridge, {
         title,
         parentId,
         attachments,
         project,
-        draftBody,
-        { status: "planning" },
-      );
-      publishTasks(ledger);
-      try {
-        await taskAgents.submit(created.id, created.body ?? title);
-      } catch (error) {
-        // The draft still exists; its chat shows the failed run instead of losing the task.
-        console.error(`[pi] could not start the plan run for ${created.id}`, error);
-      }
+        body: draftBody,
+      });
       return c.json(taskView(), 201);
     }
     return c.json(

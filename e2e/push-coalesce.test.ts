@@ -55,18 +55,28 @@ test("one task change pushes immediately", async (t) => {
 
 test("three changes in one burst push once", async (t) => {
   const { store, sent } = await temporaryStore(t);
+  const [alpha, beta, gamma] = await Promise.all([
+    store.create("Alpha", null),
+    store.create("Beta", null),
+    store.create("Gamma", null),
+  ]);
+  const alphaId = alpha.tasks.find((task) => task.title === "Alpha")?.id;
+  const betaId = beta.tasks.find((task) => task.title === "Beta")?.id;
+  const gammaId = gamma.tasks.find((task) => task.title === "Gamma")?.id;
+  assert.ok(alphaId && betaId && gammaId);
+
   await Promise.all([
-    store.propose("Alpha", RATIONALE),
-    store.propose("Beta", RATIONALE),
-    store.propose("Gamma", RATIONALE),
+    store.update(alphaId, { status: "done" }),
+    store.update(betaId, { status: "done" }),
+    store.update(gammaId, { status: "done" }),
   ]);
 
   await wait(250);
   assert.equal(sent.length, 1);
   assert.equal(sent[0]?.title, "3 tasks updated");
   assert.equal(sent[0]?.tag, "ledger");
-  assert.match(sent[0]?.body ?? "", /New proposal: Alpha/);
-  assert.match(sent[0]?.body ?? "", /New proposal: Gamma/);
+  assert.match(sent[0]?.body ?? "", /Task done: Alpha/);
+  assert.match(sent[0]?.body ?? "", /Task done: Gamma/);
 });
 
 test("a burst summary lists each task once with its final status", async (t) => {
@@ -118,9 +128,16 @@ test("a failing push does not fail the task write", async (t) => {
 
 test("a queued burst does not keep the process alive", async (t) => {
   const { store, sent } = await temporaryStore(t, { windowMs: 5_000 });
+  const [one, two] = await Promise.all([
+    store.create("Queued one", null),
+    store.create("Queued two", null),
+  ]);
+  const oneId = one.tasks.find((task) => task.title === "Queued one")?.id;
+  const twoId = two.tasks.find((task) => task.title === "Queued two")?.id;
+  assert.ok(oneId && twoId);
   await Promise.all([
-    store.propose("Queued one", RATIONALE),
-    store.propose("Queued two", RATIONALE),
+    store.update(oneId, { status: "done" }),
+    store.update(twoId, { status: "done" }),
   ]);
 
   const timer = (store as unknown as { flushTimer?: NodeJS.Timeout }).flushTimer;

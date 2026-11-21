@@ -45,6 +45,10 @@ open work: idle nudges ignore it, `task_working` refuses it, and it waits in the
 until a human approves it. The agent's `task_list` hides drafts unless it asks with
 `includePlanning: true`.
 
+`propose_task` stages the same draft when it is called with `plan: true`: the task is saved in
+`planning`, its plan run starts, and the operator approves the draft once the body is ready. With no
+plan runner the draft is still saved and the tool reports that the run did not start.
+
 ## Planning chat
 
 The list composer is gone. A plus-sign button in the dock creates an untitled

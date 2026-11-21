@@ -59,7 +59,7 @@ async function temporaryStore(options: TaskStoreOptions = {}) {
   const file = join(directory, "tasks.json");
   const store = new TaskStore(file, options);
   await store.load();
-  const bridge: TaskBridge = { store, publish() {} };
+  const bridge: TaskBridge = { store, plan: async () => {}, publish() {} };
   return { directory, file, store, bridge };
 }
 
@@ -561,6 +561,70 @@ test("propose_task requires a reason and keeps proposals out of task_list", asyn
     await store.remove(task.id);
     const withoutProposals = text(await call(bridge, "task_list", {}));
     assert.doesNotMatch(withoutProposals.text, /proposals:/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("propose_task can stage a plan draft and start its plan run", async () => {
+  const { directory, store, bridge } = await temporaryStore();
+  try {
+    const submitted: { id: string; body: string }[] = [];
+    bridge.plan = async (id, body) => {
+      submitted.push({ id, body });
+    };
+
+    const rationale = "The importer needs a specification before anyone can implement it.";
+    const staged = text(
+      await call(bridge, "propose_task", {
+        title: "Replace the importer",
+        rationale,
+        plan: true,
+      }),
+    );
+    assert.equal(staged.isError, false);
+    assert.match(staged.text, /plan run started/i);
+    assert.match(staged.text, /operator approves/i);
+
+    const draft = store.ledger().tasks.find((item) => item.title === "Replace the importer");
+    assert.ok(draft);
+    assert.equal(draft.status, "planning");
+    assert.equal(draft.rationale, undefined);
+    assert.equal(submitted.length, 1);
+    assert.equal(submitted[0]?.id, draft.id);
+    assert.equal(submitted[0]?.body, "Replace the importer");
+
+    const listed = text(await call(bridge, "task_list", {}));
+    assert.doesNotMatch(listed.text, /Replace the importer/);
+    assert.doesNotMatch(listed.text, /proposals:/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("propose_task saves a plan draft when no plan runner is available", async () => {
+  const { directory, store } = await temporaryStore();
+  const bridge: TaskBridge = { store, publish() {} };
+  try {
+    const rationale = "The importer needs a specification before anyone can implement it.";
+    const staged = text(
+      await call(bridge, "propose_task", {
+        title: "Replace the importer",
+        rationale,
+        plan: true,
+      }),
+    );
+    assert.equal(staged.isError, false);
+    assert.match(
+      staged.text,
+      /The draft is saved, but its plan run did not start: no plan runner is available/,
+    );
+    assert.doesNotMatch(staged.text, /operator approves/i);
+
+    const draft = store.ledger().tasks.find((item) => item.title === "Replace the importer");
+    assert.ok(draft);
+    assert.equal(draft.status, "planning");
+    assert.equal(draft.body, "Replace the importer");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
