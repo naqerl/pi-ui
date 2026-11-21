@@ -966,7 +966,7 @@ function DockStatusWord({
             tabIndex={leaving ? -1 : undefined}
             className={cn("flex min-w-0", textClass)}
           >
-            <WorkingIndicator running={!quiet} word={shown.word} />
+            <WorkingIndicator running={shown.running} quiet={quiet} word={shown.word} />
           </div>
         ) : (
           <span
