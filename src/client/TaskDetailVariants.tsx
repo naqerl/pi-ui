@@ -3,6 +3,7 @@ import {
   type ReactNode,
   type RefObject,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -100,6 +101,7 @@ export interface TaskDetailModel {
   projects: string[];
   onClose: () => void;
   onOpen: (id: string) => void;
+  onTabChange: (tab: "plan" | "chat") => void;
   onStatus: (task: Task, status: Task["status"]) => void;
   onApprove: () => void;
   onDismiss: () => void;
@@ -348,6 +350,11 @@ function BodyField({ model, fill }: { model: TaskDetailModel; fill?: boolean }) 
     saveBody,
   } = model;
   const grow = fill === true;
+  // A wide plan card scrolls its own body; a narrow one leaves the body at its
+  // natural height so the detail pane stays the only scroll owner.
+  const bodyScroll = grow
+    ? cn("min-h-0 max-h-full flex-1 overflow-y-auto", SCROLLBAR_GUTTER)
+    : undefined;
   if (editingBody) {
     return (
       <div
@@ -430,13 +437,7 @@ function BodyField({ model, fill }: { model: TaskDetailModel; fill?: boolean }) 
         data-testid={task.body !== undefined && task.body.length > 0 ? "task-body" : undefined}
         className={cn(
           "min-w-0 cursor-text text-sm leading-5",
-          task.body !== undefined && task.body.length > 0
-            ? cn(
-                "overflow-y-auto",
-                SCROLLBAR_GUTTER,
-                grow ? "min-h-0 max-h-full flex-1" : "max-h-[min(60vh,40rem)]",
-              )
-            : QUIET,
+          task.body !== undefined && task.body.length > 0 ? bodyScroll : QUIET,
         )}
       >
         {task.body !== undefined && task.body.length > 0 ? (
@@ -569,6 +570,7 @@ function Subtasks({ model, heading = true }: { model: TaskDetailModel; heading?:
           <RelationRow key={child.id} wide={model.wide} done={child.status === "done"}>
             <button
               type="button"
+              data-task-open={child.id}
               onClick={() => model.onOpen(child.id)}
               className="min-w-0 flex-1 text-left text-sm leading-5 [overflow-wrap:anywhere] underline-offset-4 hover:underline"
             >
@@ -1082,6 +1084,7 @@ const TAB_INDEX = { plan: 0, chat: 1 } as const;
 
 function MobileDetail({ model }: { model: TaskDetailModel }) {
   const [tab, setTab] = useState<"plan" | "chat">(() => linkedTab(model.task.id));
+  const { onTabChange } = model;
   // The same pager that drives the app's pages, nested in the detail body. It
   // owns the swipe-to-tab state machine; `tab` stays the label TabBar and the
   // hash link read.
@@ -1091,6 +1094,10 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
   useEffect(() => {
     setTab(tabs.page === TAB_INDEX.chat ? "chat" : "plan");
   }, [tabs.page]);
+
+  useLayoutEffect(() => {
+    onTabChange(tab);
+  }, [onTabChange, tab]);
 
   useEffect(() => {
     const sync = () => {
@@ -1149,7 +1156,7 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
           }}
         >
           <section
-            className="h-full min-w-0 shrink-0 grow-0 basis-full overflow-y-auto overflow-x-hidden px-xl pt-lg"
+            className="h-full min-w-0 shrink-0 grow-0 basis-full overflow-y-auto overflow-x-hidden safe-bottom"
             aria-label="Plan"
             aria-hidden={tab !== "plan"}
             inert={tab !== "plan" || undefined}
@@ -1157,7 +1164,7 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
             <PlanSections model={model} />
           </section>
           <section
-            className="flex h-full min-h-0 min-w-0 shrink-0 grow-0 basis-full flex-col px-xl"
+            className="flex h-full min-h-0 min-w-0 shrink-0 grow-0 basis-full flex-col"
             aria-label="Chat"
             aria-hidden={tab !== "chat"}
             inert={tab !== "chat" || undefined}

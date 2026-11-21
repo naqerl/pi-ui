@@ -1046,7 +1046,8 @@ test("stats transitions sweep the top line and reduced motion drops the leaving 
       },
       { id: doneId },
     );
-    await expect(screen.getByTestId("composer-body")).toHaveAttribute("data-collapsed", "true");
+    await expect(screen.getByTestId("composer-dock-shell")).toHaveAttribute("data-hidden", "true");
+    await expect(screen.getByTestId("composer-body")).toHaveAttribute("data-collapsed", "false");
     await expect(screen.getByTestId("plan-task-toggle")).toHaveCount(0);
 
     const doneToCreate = await browser.evaluate(() => {

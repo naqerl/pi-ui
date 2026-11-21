@@ -65,7 +65,9 @@ import { ChipButton, NoticeLine } from "./NoticeView";
 import { PiMenu } from "./PiMenu";
 import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
 import { RunErrorHeader } from "./RunErrorHeader";
+import { rememberRecentTask } from "./recent-tasks";
 import type { ChatStats } from "./StatsView";
+import { TaskCycleHud } from "./TaskCycleHud";
 import { createTask } from "./task-client";
 import {
   TaskDockComposerProvider,
@@ -85,6 +87,7 @@ import { type DockPhase, useDockScan } from "./use-dock-scan";
 import { usePager } from "./use-pager";
 import { type PresenceState, usePresence, useReducedMotion } from "./use-presence";
 import { useStickToBottom } from "./use-stick-to-bottom";
+import { type TaskCycleHint, useTaskCycle } from "./use-task-cycle";
 import { WorkingIndicator } from "./WorkingIndicator";
 import { workingWord } from "./working-state";
 
@@ -150,6 +153,8 @@ const TASKS_PAGE = 2;
 const PAGE_SETTLE_MS = 320;
 // A fast snapshot should never flash a loading card; a slow one gets an honest placeholder.
 const TRANSCRIPT_LOADING_DELAY_MS = 180;
+// The task-cycle HUD is a glance, not a notification; the last press owns its timer.
+const TASK_CYCLE_HINT_MS = 1400;
 
 function pageFromLocation(): number {
   // A task-plan push opens the tasks page and the detail itself; the hash route
@@ -1961,15 +1966,18 @@ export function ChatView({
   );
   const [pageAnimating, setPageAnimating] = useState(false);
   const [taskSelection, setTaskSelection] = useState<{ id: string; request: number } | null>(null);
-  const [composerMode, setComposerMode] = useState<"create" | "task-chat" | "collapsed">("create");
+  const [composerMode, setComposerMode] = useState<
+    "create" | "task-chat" | "task-plan" | "collapsed"
+  >("create");
   const [planDraft, setPlanDraft] = useState(readPlanTaskDraft);
   const [taskDock, setTaskDock] = useState<TaskDockSession | null>(null);
   const [taskSurfaceStatus, setTaskSurfaceStatus] = useState<TaskSurfaceStatus | null>(null);
   const [taskRunError, setTaskRunError] = useState<TaskRunErrorSurface | null>(null);
-  const wantTaskDock = tasksPage && composerMode === "task-chat";
+  const dockHidden = tasksPage && composerMode === "task-plan";
+  const wantTaskDock = tasksPage && (composerMode === "task-chat" || composerMode === "task-plan");
   const dockToTask = wantTaskDock && taskDock !== null;
   const hideTasksComposer = statsPage || (tasksPage && composerMode === "collapsed");
-  const showPlanToggle = tasksPage && !wantTaskDock && !hideTasksComposer;
+  const showPlanToggle = tasksPage && !wantTaskDock && !hideTasksComposer && !dockHidden;
   const dockSurface = tasksPage ? (wantTaskDock ? "dock" : "create") : "chat";
   // Each surface speaks for itself: the open task's plan run on the tasks page,
   // the main conversation's run everywhere else. No task open means an empty slot.
@@ -2010,6 +2018,57 @@ export function ChatView({
     );
     return painted.length === 0 ? tasks : [...tasks, ...painted.map((item) => item.task)];
   }, [tasks, optimisticTasks]);
+
+  // The detail TasksView reports as open. It clears on close, so a new burst starts from
+  // the most recent ring entry instead of advancing from a detail that is no longer up.
+  const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+  const ledgerTasksRef = useRef(tasks);
+  ledgerTasksRef.current = tasks;
+  const [cycleHint, setCycleHint] = useState<TaskCycleHint | null>(null);
+  const cycleHintTimer = useRef<number | null>(null);
+  const rememberOpenedTask = useCallback((id: string) => {
+    rememberRecentTask(id, ledgerTasksRef.current);
+    setOpenTaskId(id);
+  }, []);
+  const openCycledTask = useCallback(
+    (id: string) => {
+      // The detail learns the open through TasksView as well; doing it here keeps the
+      // ring and the cycle position current even if the ledger is not ready to paint yet.
+      rememberOpenedTask(id);
+      pager.setPage(TASKS_PAGE);
+      setTaskSelection((current) => ({ id, request: (current?.request ?? 0) + 1 }));
+    },
+    [pager.setPage, rememberOpenedTask],
+  );
+  const showCycleHint = useCallback((hint: TaskCycleHint) => {
+    haptic();
+    setCycleHint(hint);
+    if (cycleHintTimer.current !== null) window.clearTimeout(cycleHintTimer.current);
+    cycleHintTimer.current = window.setTimeout(() => {
+      cycleHintTimer.current = null;
+      setCycleHint(null);
+    }, TASK_CYCLE_HINT_MS);
+  }, []);
+  const resetTaskCycle = useTaskCycle({
+    tasks,
+    currentId: openTaskId,
+    onOpen: openCycledTask,
+    onHint: showCycleHint,
+  });
+  const handleTaskDetailChange = useCallback(
+    (id: string | null) => {
+      setOpenTaskId(id);
+      // A closed detail is not a position in the ring; the next press starts from the front.
+      if (id === null) resetTaskCycle();
+    },
+    [resetTaskCycle],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (cycleHintTimer.current !== null) window.clearTimeout(cycleHintTimer.current);
+    };
+  }, []);
 
   // A task event can land before the create response. Retire the painted card as soon as
   // a row that was not already in the ledger at paint time carries the same title.
@@ -2131,11 +2190,11 @@ export function ChatView({
   const footerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (!statsPage) return;
+    if (!statsPage && !dockHidden) return;
     const footer = footerRef.current;
     const active = document.activeElement;
     if (footer !== null && active instanceof HTMLElement && footer.contains(active)) active.blur();
-  }, [statsPage]);
+  }, [dockHidden, statsPage]);
 
   // Re-run the stick sync when the transcript changes. The scroller's own
   // ResizeObserver keeps the end pinned while the dock animates below it.
@@ -2217,10 +2276,14 @@ export function ChatView({
 
   const openTaskFromChat = useCallback(
     (id: string) => {
+      // A hand-picked task ends the current burst; the next Ctrl+Tab starts from it.
+      resetTaskCycle();
+      // Remember it now so a press before the task page paints still starts from this task.
+      rememberOpenedTask(id);
       pager.setPage(TASKS_PAGE);
       setTaskSelection((current) => ({ id, request: (current?.request ?? 0) + 1 }));
     },
-    [pager.setPage],
+    [pager.setPage, rememberOpenedTask, resetTaskCycle],
   );
 
   const clearComposerDraft = useCallback(
@@ -2422,6 +2485,10 @@ export function ChatView({
     window.requestAnimationFrame(focusComposer);
   };
 
+  const taskPlaceholder = wantTaskDock
+    ? (taskDock?.placeholder ?? "Ask the planning agent to help formulate this task.")
+    : undefined;
+
   const content = (
     <div className="chat-shell min-h-0" data-testid="chat-shell">
       {interrupted && (
@@ -2528,6 +2595,8 @@ export function ChatView({
                   footerClearance={0}
                   onLedger={applyTasks}
                   selection={taskSelection}
+                  onOpenTask={rememberOpenedTask}
+                  onTaskDetailChange={handleTaskDetailChange}
                   onComposerMode={setComposerMode}
                   createFailures={createFailures}
                 />
@@ -2535,6 +2604,11 @@ export function ChatView({
             </section>
           </div>
         </div>
+        {cycleHint !== null && (
+          <div className="pointer-events-none absolute inset-x-0 top-lg z-30 flex justify-center px-2xl">
+            <TaskCycleHud hint={cycleHint} />
+          </div>
+        )}
         {ready && groups.length === 0 && pager.page === CHAT_PAGE && (
           <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center px-2xl">
             <EmptyCaption mono>Send a message to start.</EmptyCaption>
@@ -2558,122 +2632,128 @@ export function ChatView({
         )}
       </div>
       <div
-        ref={footerRef}
-        data-testid="composer-dock"
-        data-transitioning={pager.dragging || pageAnimating ? "true" : undefined}
-        className="float-footer relative z-20 theme-radius"
+        data-testid="composer-dock-shell"
+        data-hidden={dockHidden ? "true" : "false"}
+        className="dock-shell"
+        aria-hidden={dockHidden || undefined}
+        inert={dockHidden || undefined}
       >
-        <div data-testid="composer-slide">
-          <div className="ink-line flex items-center gap-xl border-b py-md pr-md pl-2xl">
-            <div
-              data-testid="working-status"
-              data-open={statusRunning ? "true" : "false"}
-              className="flex min-w-0 flex-1 items-baseline gap-lg font-mono text-[11px] leading-4 text-muted-foreground"
-            >
-              <PlanTaskSwitch
-                present={dockScan.view.plan}
-                phase={dockScan.phase}
-                order={0}
-                swap={dockSwap}
-                pressed={planDraft}
-                onToggle={togglePlanDraft}
-              />
-              <DockStatusWord
-                word={dockScan.view.word}
-                running={dockScan.view.running}
-                quiet={dockScan.view.quiet}
-                surface={dockScan.view.surface}
-                phase={dockScan.phase}
-                order={1}
-                swap={dockSwap}
-              />
-              <BackgroundJobsCounts
-                jobs={jobs}
-                delegates={delegates ?? []}
-                onOpen={setJobsSheet}
-                visible={dockScan.view.jobs}
-                phase={dockScan.phase}
-                order={2}
-              />
-            </div>
-            <div
-              role="tablist"
-              aria-label="Pages"
-              data-testid="page-dots"
-              className="flex shrink-0 items-center justify-center"
-            >
-              {PAGES.map((item, index) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={pager.page === index}
-                  aria-label={item.label}
-                  data-testid={`page-dot-${item.id}`}
-                  className="grid h-6 w-6 place-items-center"
-                  onClick={() => selectPage(index)}
-                >
-                  <span
-                    className={cn(
-                      "block rounded-full transition-[width,height,border-radius] duration-200 ease-out motion-reduce:transition-none",
-                      pager.page === index
-                        ? "size-3 rounded-[4px] bg-foreground"
-                        : "size-1.5 bg-foreground/40",
-                    )}
-                  />
-                </button>
-              ))}
-            </div>
-            <PiMenu />
-          </div>
+        <div className="dock-slide">
           <div
-            data-testid="composer-body"
-            data-hidden={hideTasksComposer ? "true" : "false"}
-            data-collapsed={hideTasksComposer ? "true" : "false"}
-            aria-hidden={hideTasksComposer ? true : undefined}
-            inert={hideTasksComposer ? true : undefined}
-            className="composer-body"
+            ref={footerRef}
+            data-testid="composer-dock"
+            data-transitioning={pager.dragging || pageAnimating ? "true" : undefined}
+            className="float-footer relative z-20 theme-radius"
           >
-            <Composer
-              dockSwap={dockSwap}
-              dockPhase={dockScan.phase}
-              draftKey={
-                wantTaskDock
-                  ? taskDock !== null
-                    ? `task:${taskDock.taskId}`
-                    : "task:pending"
-                  : "main"
-              }
-              tasksPage={tasksPage && !wantTaskDock}
-              projectMentions={wantTaskDock ? true : undefined}
-              running={dockToTask ? taskDock.running : running}
-              send={
-                dockToTask
-                  ? async (text, mode, attachments) =>
-                      await Promise.resolve(taskDock.send(text, mode, attachments ?? []))
-                  : wantTaskDock
-                    ? async () => false
-                    : handleSend
-              }
-              stop={dockToTask ? () => Promise.resolve(taskDock.stop()) : stop}
-              unsendSteer={!tasksPage && pendingSteers > 0 ? unsendSteer : undefined}
-              addTask={addTask}
-              projects={projects}
-              error={dockToTask ? taskDock.error : composerError}
-              onDismissError={dockToTask ? taskDock.dismissError : () => setComposerError(null)}
-              planDraft={showPlanToggle ? planDraft : false}
-              clearDraft={draftClear}
-              textareaRef={composerRef}
-              inputTestId={wantTaskDock ? "task-agent-input" : undefined}
-              sendTestId={wantTaskDock ? "task-agent-send" : undefined}
-              attachTestId={wantTaskDock ? "task-agent-attach" : undefined}
-              inputLabel={wantTaskDock ? "Task message" : undefined}
-              placeholder={
-                wantTaskDock
-                  ? (taskDock?.placeholder ?? "Ask the planning agent to help formulate this task.")
-                  : undefined
-              }
-            />
+            <div data-testid="composer-slide">
+              <div className="ink-line flex items-center gap-xl border-b py-md pr-md pl-2xl">
+                <div
+                  data-testid="working-status"
+                  data-open={statusRunning ? "true" : "false"}
+                  className="flex min-w-0 flex-1 items-baseline gap-lg font-mono text-[11px] leading-4 text-muted-foreground"
+                >
+                  <PlanTaskSwitch
+                    present={dockScan.view.plan}
+                    phase={dockScan.phase}
+                    order={0}
+                    swap={dockSwap}
+                    pressed={planDraft}
+                    onToggle={togglePlanDraft}
+                  />
+                  <DockStatusWord
+                    word={dockScan.view.word}
+                    running={dockScan.view.running}
+                    quiet={dockScan.view.quiet}
+                    surface={dockScan.view.surface}
+                    phase={dockScan.phase}
+                    order={1}
+                    swap={dockSwap}
+                  />
+                  <BackgroundJobsCounts
+                    jobs={jobs}
+                    delegates={delegates ?? []}
+                    onOpen={setJobsSheet}
+                    visible={dockScan.view.jobs}
+                    phase={dockScan.phase}
+                    order={2}
+                  />
+                </div>
+                <div
+                  role="tablist"
+                  aria-label="Pages"
+                  data-testid="page-dots"
+                  className="flex shrink-0 items-center justify-center"
+                >
+                  {PAGES.map((item, index) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={pager.page === index}
+                      aria-label={item.label}
+                      data-testid={`page-dot-${item.id}`}
+                      className="grid h-6 w-6 place-items-center"
+                      onClick={() => selectPage(index)}
+                    >
+                      <span
+                        className={cn(
+                          "block rounded-full transition-[width,height,border-radius] duration-200 ease-out motion-reduce:transition-none",
+                          pager.page === index
+                            ? "size-3 rounded-[4px] bg-foreground"
+                            : "size-1.5 bg-foreground/40",
+                        )}
+                      />
+                    </button>
+                  ))}
+                </div>
+                <PiMenu />
+              </div>
+              <div
+                data-testid="composer-body"
+                data-hidden={hideTasksComposer ? "true" : "false"}
+                data-collapsed={hideTasksComposer ? "true" : "false"}
+                aria-hidden={hideTasksComposer ? true : undefined}
+                inert={hideTasksComposer ? true : undefined}
+                className="composer-body"
+              >
+                <Composer
+                  dockSwap={dockSwap}
+                  dockPhase={dockScan.phase}
+                  draftKey={
+                    wantTaskDock
+                      ? taskDock !== null
+                        ? `task:${taskDock.taskId}`
+                        : "task:pending"
+                      : "main"
+                  }
+                  tasksPage={tasksPage && !wantTaskDock}
+                  projectMentions={wantTaskDock ? true : undefined}
+                  running={dockToTask ? taskDock.running : running}
+                  send={
+                    dockToTask
+                      ? async (text, mode, attachments) =>
+                          await Promise.resolve(taskDock.send(text, mode, attachments ?? []))
+                      : wantTaskDock
+                        ? async () => false
+                        : handleSend
+                  }
+                  stop={dockToTask ? () => Promise.resolve(taskDock.stop()) : stop}
+                  unsendSteer={!tasksPage && pendingSteers > 0 ? unsendSteer : undefined}
+                  addTask={addTask}
+                  projects={projects}
+                  error={dockToTask ? taskDock.error : composerError}
+                  onDismissError={dockToTask ? taskDock.dismissError : () => setComposerError(null)}
+                  planDraft={showPlanToggle ? planDraft : false}
+                  clearDraft={draftClear}
+                  textareaRef={composerRef}
+                  inputTestId={wantTaskDock ? "task-agent-input" : undefined}
+                  sendTestId={wantTaskDock ? "task-agent-send" : undefined}
+                  attachTestId={wantTaskDock ? "task-agent-attach" : undefined}
+                  inputLabel={wantTaskDock ? "Task message" : undefined}
+                  placeholder={taskPlaceholder}
+                />
+              </div>
+            </div>
           </div>
         </div>
       </div>

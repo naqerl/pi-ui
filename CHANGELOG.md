@@ -1,3 +1,9 @@
+## 1.12.0
+
+### Added
+
+- Ctrl+Tab and Ctrl+Shift+Tab cycle the tasks opened in this browser, with Ctrl+I and Ctrl+O as forward and backward aliases in a plain browser tab. Each press opens the next ring entry at once and a small pill says where it landed; the ring survives a reload, caps at 12 ids and never includes a task this browser did not open. (nhpw)
+
 ## 1.11.1
 
 ### Fixed

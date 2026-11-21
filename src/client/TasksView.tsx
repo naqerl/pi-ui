@@ -69,6 +69,7 @@ const STATS_SECTION_TITLE =
   "text-[11px] tracking-wide text-muted-foreground [overflow-wrap:anywhere]";
 /** Reserve the scrollbar's gutter so content never reflows or slides under the thumb. */
 const SCROLLBAR_GUTTER = "[scrollbar-gutter:stable]";
+const NOOP_TAB_CHANGE = () => {};
 
 /** A painted create whose request failed: the row stays until Retry succeeds. */
 export interface TaskCreateFailure {
@@ -87,10 +88,14 @@ interface TasksViewProps {
   onLedger: (ledger: TaskLedger) => void;
   /** A task id another page asked to open, with a request count so repeats still open it. */
   selection?: { id: string; request: number } | null;
+  /** Called on every open, including a deep link and a row a page asked to show. */
+  onOpenTask?: (id: string) => void;
+  /** Called when the open detail changes, including its close. */
+  onTaskDetailChange?: (id: string | null) => void;
   /** True while a task detail covers the mobile list, so the page composer can hide. */
   onMobileDetailChange?: (open: boolean) => void;
   /** Which composer belongs in the shared float footer on the Tasks page. */
-  onComposerMode?: (mode: "create" | "task-chat" | "collapsed") => void;
+  onComposerMode?: (mode: "create" | "task-chat" | "task-plan" | "collapsed") => void;
   /** Failed optimistic creates keyed by their client task id. */
   createFailures?: Record<string, TaskCreateFailure>;
 }
@@ -326,6 +331,8 @@ function TasksViewImpl({
   ready,
   onLedger,
   selection = null,
+  onOpenTask,
+  onTaskDetailChange,
   onMobileDetailChange,
   onComposerMode,
   createFailures,
@@ -341,6 +348,18 @@ function TasksViewImpl({
   const [statusPending, setStatusPending] = useState<Record<string, boolean>>({});
   const [openTaskId, setOpenTaskId] = useState<string | null>(() =>
     fixtureOn ? FIXTURE_PLAN_ID : (linkedTask.current?.id ?? null),
+  );
+  const [detailTabByTask, setDetailTabByTask] = useState<{
+    taskId: string | null;
+    tab: "plan" | "chat";
+  }>(() => ({
+    taskId: openTaskId,
+    tab: linkedTask.current?.id === openTaskId ? (linkedTask.current?.tab ?? "plan") : "plan",
+  }));
+  const detailTab = detailTabByTask.taskId === openTaskId ? detailTabByTask.tab : "plan";
+  const setDetailTab = useCallback(
+    (tab: "plan" | "chat") => setDetailTabByTask({ taskId: openTaskId, tab }),
+    [openTaskId],
   );
   const [reopenTaskId, setReopenTaskId] = useState<string | null>(null);
   const [dayLimit, setDayLimit] = useState(DAY_PAGE);
@@ -474,12 +493,21 @@ function TasksViewImpl({
     openTaskId === null || createFailures?.[openTaskId] !== undefined
       ? undefined
       : tasks.find((task) => task.id === openTaskId);
+  const detailTaskId = openTask?.id ?? null;
   const reopenTask =
     reopenTaskId === null ? undefined : tasks.find((task) => task.id === reopenTaskId);
   // A narrow detail is a history entry of its own, so the OS back gesture closes
   // it. Replacing an open detail keeps one entry, not a stack of them.
   const openDetail = useCallback(
     (id: string) => {
+      // Every fresh open starts on its linked tab, or Plan. The tab a previous
+      // visit left behind must not decide what the footer does on this one.
+      if (openTaskIdRef.current !== id) {
+        setDetailTabByTask({
+          taskId: id,
+          tab: linkedTask.current?.id === id ? (linkedTask.current?.tab ?? "plan") : "plan",
+        });
+      }
       if (!wide) {
         const page = pageRef.current;
         // Only the list -> detail step owns a return position. Opening a child
@@ -513,10 +541,18 @@ function TasksViewImpl({
           window.history.pushState(next, "", window.location.href);
         }
       }
+      onOpenTask?.(id);
       setOpenTaskId(id);
     },
-    [wide],
+    [onOpenTask, wide],
   );
+
+  // A deep link starts as open-task state rather than going through openDetail; it is
+  // still a task the operator opened here, so the recent ring learns it too.
+  useEffect(() => {
+    const link = linkedTask.current;
+    if (link !== null) onOpenTask?.(link.id);
+  }, [onOpenTask]);
 
   // The chat asks for a task by id after moving the pager to this page. The request count
   // lets the same id open again without the wide layout's first-row default replacing it.
@@ -530,6 +566,10 @@ function TasksViewImpl({
     onMobileDetailChange?.(!wide && openTaskId !== null);
     return () => onMobileDetailChange?.(false);
   }, [onMobileDetailChange, openTaskId, wide]);
+
+  useEffect(() => {
+    onTaskDetailChange?.(detailTaskId);
+  }, [detailTaskId, onTaskDetailChange]);
 
   const closeDetail = useCallback(() => {
     if (!wide && taskDetailHistory()?.piTaskDetailId !== undefined) {
@@ -813,6 +853,7 @@ function TasksViewImpl({
         notice={problem?.id === openTask.id && menu === null ? problem.message : null}
         onClose={closeDetail}
         onOpen={openDetail}
+        onTabChange={setDetailTab}
         onStatus={setStatus}
         onApprove={() => approve(openTask)}
         onDismiss={() => dismiss(openTask)}
@@ -826,8 +867,15 @@ function TasksViewImpl({
       />
     );
 
-  const composerMode: "create" | "task-chat" | "collapsed" =
-    openTask === undefined ? "create" : openTask.status === "done" ? "collapsed" : "task-chat";
+  const mobilePlan = !wide && openTask !== undefined && detailTab === "plan";
+  const composerMode: "create" | "task-chat" | "task-plan" | "collapsed" =
+    openTask === undefined
+      ? "create"
+      : mobilePlan
+        ? "task-plan"
+        : openTask.status === "done"
+          ? "collapsed"
+          : "task-chat";
 
   const detailOpen = openTaskId !== null;
 
@@ -902,7 +950,7 @@ function TasksViewImpl({
         }
         style={{
           paddingTop: !wide && openTask !== undefined ? 0 : 16,
-          paddingBottom: !wide && openTask !== undefined ? 12 : 16,
+          paddingBottom: !wide && openTask !== undefined ? 0 : 16,
         }}
         data-tasks-split={wide ? (openTask !== undefined ? "open" : "closed") : undefined}
       >
@@ -1660,6 +1708,7 @@ export function TaskDetail({
   notice,
   onClose,
   onOpen,
+  onTabChange,
   onStatus,
   onApprove,
   onDismiss,
@@ -1677,6 +1726,7 @@ export function TaskDetail({
   notice: string | null;
   onClose: () => void;
   onOpen: (id: string) => void;
+  onTabChange?: (tab: "plan" | "chat") => void;
   onStatus: (task: Task, status: Task["status"]) => void;
   onApprove: () => void;
   onDismiss: () => void;
@@ -1953,6 +2003,7 @@ export function TaskDetail({
       projects,
       onClose,
       onOpen,
+      onTabChange: onTabChange ?? NOOP_TAB_CHANGE,
       onStatus,
       onApprove,
       onDismiss,
