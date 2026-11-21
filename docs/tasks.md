@@ -42,8 +42,9 @@ The create composer's status row has a `Plan task` toggle, on by default and rem
 the browser session when the operator turns it off. With it on, submitting creates the task in the
 `planning` state and starts its plan run with the composer text as the task body. The draft is not
 open work: idle nudges ignore it, `task_working` refuses it, and it waits in the Drafts section
-until a human approves it. The agent's `task_list` hides drafts unless it asks with
-`includePlanning: true`.
+until a human approves it. Its list card says `Planning` while the plan agent is live and
+`Waits approval` once the run stops, so the tag never claims the operator's turn during a run. The
+agent's `task_list` hides drafts unless it asks with `includePlanning: true`.
 
 `propose_task` takes one `prompt` and always stages the same draft: the prompt is saved as the
 draft's title and body, its plan run starts, and the operator approves the draft once the body is

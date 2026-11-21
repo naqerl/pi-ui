@@ -331,6 +331,41 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
       )
       .toBe(true);
 
+    // The list card says which side of the run the draft is on; the detail's
+    // own planning badge and the chip-free card stay otherwise unchanged.
+    await backToTaskList(screen);
+    const draftCard = screen.getByTestId(`draft-${created.id}`);
+    await expect(draftCard).toBeVisible();
+    const decisionTag = draftCard.getByTestId("task-decision-tag");
+    await expect(decisionTag).toHaveText("Planning");
+    await expect(decisionTag).toHaveAttribute("title", "The plan agent is running");
+
+    // Stopping the run leaves the draft waiting for a decision, not for the agent.
+    await browser.evaluate(async (taskId) => {
+      const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/chat/stop`, {
+        method: "POST",
+      });
+      if (!response.ok) throw new Error(`stop failed: ${response.status}`);
+      return null;
+    }, created.id);
+    await expect
+      .poll(
+        () =>
+          browser.evaluate(async (id) => {
+            const ledger = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
+              planning?: string[];
+            };
+            return (ledger.planning ?? []).includes(id);
+          }, created.id),
+        { timeout: 30_000 },
+      )
+      .toBe(false);
+    await expect(decisionTag).toHaveText("Waits approval");
+    await expect(decisionTag).toHaveAttribute(
+      "title",
+      "The plan agent finished — review the plan or answer its questions",
+    );
+
     try {
       expect(
         await browser.evaluate(async (taskId) => {
