@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { ChatService } from "../src/server/chat-service.js";
 import { DurableExtensionShim } from "../src/server/durable-extensions.js";
 import { McpEventFeed } from "../src/server/mcp-events.js";
+import { MCP_OUTAGE_NOTIFY_MS } from "../src/server/mcp-outage-quiet.js";
 import { startMcpRuntime } from "../src/server/mcp-runtime.js";
 import {
   readSubscriptionConfig,
@@ -594,18 +595,32 @@ function batchStatusNotice(ids: readonly string[], status = "failed") {
 }
 
 /** The index sink: ingest through the observer, filter untracked/superseded statuses. */
-function statusSink(feed: McpEventFeed) {
+function statusSink(feed: McpEventFeed, escalate = false) {
   const submitted: string[] = [];
+  const chips: string[] = [];
   const shim = new DurableExtensionShim();
   shim.setObserver((notice) => {
     feed.ingest(notice);
   });
   shim.setMessageSink((text, options) => {
-    const filtered = feed.filterStatusNotice(text, options.details, options.customType);
-    if (filtered === null) return;
-    submitted.push(filtered);
+    const gate = feed.filterStatusNotice(text, options.details, options.customType);
+    if (gate.mode === "deliver") submitted.push(gate.text);
+    if (gate.mode === "chip") {
+      chips.push(gate.text);
+      if (!escalate) return;
+      // These identity tests are not about the clock: model the quiet timer
+      // firing after the window so their old "speaks once" assertions still
+      // exercise the delivery path.
+      for (const { stableId } of feed.statusIdentities(gate.text)) {
+        const escalation = feed.takeOutageEscalation(
+          stableId,
+          Date.now() + MCP_OUTAGE_NOTIFY_MS + 1,
+        );
+        if (escalation !== null) submitted.push(escalation);
+      }
+    }
   });
-  return { shim, submitted };
+  return { shim, submitted, chips };
 }
 
 /** Bind only the immediate status path to a fake chat and capture its turns. */
@@ -636,7 +651,7 @@ test("the immediate chat path drops JSON and prose status for an untracked id", 
   assert.equal(feed.state.subscriptions[0]?.id, "b-live");
 });
 
-test("the immediate chat path keeps a tracked failure but silences a healthy status", async () => {
+test("the immediate chat path never turns a tracked status into a prompt", async () => {
   const feed = new McpEventFeed();
   liveHubSubscription(feed, "b-live");
   const chat = immediateChat(feed);
@@ -644,9 +659,10 @@ test("the immediate chat path keeps a tracked failure but silences a healthy sta
   await chat.submit(statusNotice("b-live", "active").content);
   assert.deepEqual(chat.submitted, [], "a healthy stream needs no chat turn");
 
-  await chat.submit(statusNotice("b-live", "failed").content);
-  assert.equal(chat.submitted.length, 1, "the tracked stream's failure still speaks once");
-  assert.match(chat.submitted[0] ?? "", /b-live is failed/);
+  const down = statusNotice("b-live", "failed");
+  feed.ingest(down);
+  assert.equal(feed.filterStatusNotice(down.content, down.details).mode, "chip");
+  assert.deepEqual(chat.submitted, [], "a status transition is a chip, not a turn");
 });
 
 test("the immediate chat path drops an attributed failure while the stream is live", async () => {
@@ -664,7 +680,7 @@ test("the immediate chat path drops an attributed failure while the stream is li
 test("a durable id with a live sibling stays silent but its own id still speaks", () => {
   const feed = new McpEventFeed();
   liveHubSubscription(feed, "b-live");
-  const { shim, submitted } = statusSink(feed);
+  const { shim, submitted, chips } = statusSink(feed);
   const stableId = deriveStableId("hub", "hub", {});
   heartbeat(feed, "b-live", new Date().toISOString());
 
@@ -679,8 +695,9 @@ test("a durable id with a live sibling stays silent but its own id still speaks"
   });
 
   assert.deepEqual(submitted, [], "a live sibling makes the durable-id status noise");
+  assert.deepEqual(chips, [], "and a status the feed suppressed is not even a chip");
 
-  // Naming the live generation itself is authoritative and still reaches chat.
+  // Naming the live generation itself is authoritative and reaches the chip.
   shim.sendMessage({
     customType: "mcp-events-status",
     content: `${MCP_STATUS_HEAD}\n${JSON.stringify({
@@ -691,9 +708,10 @@ test("a durable id with a live sibling stays silent but its own id still speaks"
     },
   });
 
-  assert.equal(submitted.length, 1, "the live id's failure is news once");
-  assert.match(submitted[0] ?? "", /b-live/);
-  assert.match(submitted[0] ?? "", new RegExp(stableId));
+  assert.equal(chips.length, 1, "the live id's failure is visible once");
+  assert.match(chips[0] ?? "", /b-live/);
+  assert.match(chips[0] ?? "", new RegExp(stableId));
+  assert.deepEqual(submitted, [], "a failure is still not a turn before the window");
 });
 
 function heartbeat(feed: McpEventFeed, id: string, at: string): void {
@@ -719,7 +737,7 @@ test("a generation death is silent while the last heartbeat is inside the window
 test("an id-less durable status reaches chat after real silence", () => {
   const feed = new McpEventFeed();
   liveHubSubscription(feed, "b-live");
-  const { shim, submitted } = statusSink(feed);
+  const { shim, submitted, chips } = statusSink(feed);
   const stableId = deriveStableId("hub", "hub", {});
   heartbeat(feed, "b-live", new Date(Date.now() - 70_000).toISOString());
 
@@ -734,21 +752,23 @@ test("an id-less durable status reaches chat after real silence", () => {
   });
 
   assert.equal(feed.state.subscriptions[0]?.status, "reconnecting");
-  assert.equal(submitted.length, 1, "real silence is an outage even without an adapter id");
-  assert.match(submitted[0] ?? "", new RegExp(stableId));
+  assert.equal(chips.length, 1, "real silence is visible even without an adapter id");
+  assert.match(chips[0] ?? "", new RegExp(stableId));
+  assert.deepEqual(submitted, [], "the model hears only after the quiet window");
 });
 
 test("a generation death speaks once the heartbeat window has passed", () => {
   const feed = new McpEventFeed();
   liveHubSubscription(feed, "b-live");
-  const { shim, submitted } = statusSink(feed);
+  const { shim, submitted, chips } = statusSink(feed);
   heartbeat(feed, "b-live", new Date(Date.now() - 70_000).toISOString());
 
   shim.sendMessage(statusNotice("b-live", "reconnecting"));
 
   assert.equal(feed.state.subscriptions[0]?.status, "reconnecting");
-  assert.equal(submitted.length, 1, "real silence is the fault the user needs");
-  assert.match(submitted[0] ?? "", /reconnecting/);
+  assert.equal(chips.length, 1, "real silence is the fault the user needs");
+  assert.match(chips[0] ?? "", /reconnecting/);
+  assert.deepEqual(submitted, [], "one chip first; the window decides when it becomes a turn");
 });
 
 test("a prose generation death is silent while the live stream is heartbeat-fresh", () => {
@@ -798,22 +818,23 @@ test("a terminal status for a superseded generation leaves the live row and is n
   assert.deepEqual(submitted, [], "the live sibling makes the dead generation noise");
 });
 
-test("a terminal status for the live id itself is submitted exactly once", () => {
+test("a terminal status for the live id itself is chipped exactly once", () => {
   const feed = new McpEventFeed();
   liveHubSubscription(feed, "b-live");
-  const { shim, submitted } = statusSink(feed);
+  const { shim, submitted, chips } = statusSink(feed);
 
   shim.sendMessage(statusNotice("b-live", "failed"));
 
   assert.equal(feed.state.subscriptions[0]?.id, "b-live");
   assert.equal(feed.state.subscriptions[0]?.status, "failed");
-  assert.equal(submitted.length, 1, "the user must hear about their own stream failing");
+  assert.equal(chips.length, 1, "the user sees their own stream failing");
+  assert.deepEqual(submitted, [], "the model waits for the quiet window");
 });
 
 test("an exact duplicate status for a tracked id does not produce a second chip", () => {
   const feed = new McpEventFeed();
   liveHubSubscription(feed, "b-live");
-  const { shim, submitted } = statusSink(feed);
+  const { shim, submitted } = statusSink(feed, true);
   const notice = statusNotice("b-live", "failed");
 
   shim.sendMessage(notice);
@@ -838,7 +859,7 @@ test("a status for an id this feed never tracked is dropped and leaves no row", 
 test("a mixed batch keeps the tracked item and drops the untracked one", () => {
   const feed = new McpEventFeed();
   liveHubSubscription(feed, "b-live");
-  const { shim, submitted } = statusSink(feed);
+  const { shim, submitted } = statusSink(feed, true);
 
   shim.sendMessage(batchStatusNotice(["b-live", "a-dead"]));
 
@@ -862,7 +883,7 @@ test("a mixed batch keeps the tracked item and drops the untracked one", () => {
 test("a mixed batch drops an item that names only an untracked stable id", () => {
   const feed = new McpEventFeed();
   liveHubSubscription(feed, "b-live");
-  const { shim, submitted } = statusSink(feed);
+  const { shim, submitted } = statusSink(feed, true);
   const ghost = deriveStableId("hub", "ghost", {});
   const ghostSnake = deriveStableId("hub", "ghost-snake", {});
   const subscriptions: Array<Record<string, string>> = [
@@ -927,7 +948,7 @@ function realisticBatch(subscriptions: Array<Record<string, string>>) {
 test("healthy statuses stay silent after a recovery as the cursor advances", () => {
   const feed = new McpEventFeed();
   liveHubSubscription(feed, "b-live");
-  const { shim, submitted } = statusSink(feed);
+  const { shim, submitted } = statusSink(feed, true);
 
   shim.sendMessage(realisticStatus("b-live", "reconnecting", "hub:10"));
   shim.sendMessage(realisticStatus("b-live", "active", "hub:11"));
@@ -956,7 +977,7 @@ test("a killed tracked stream speaks once and its re-subscribe resumes at the ol
       },
     },
   });
-  const { shim, submitted } = statusSink(feed);
+  const { shim, submitted } = statusSink(feed, true);
 
   // The stream dies and the extension reports the same outage twice.
   shim.sendMessage(realisticStatus("b-live", "reconnecting", "hub:867"));
@@ -1005,7 +1026,7 @@ test("a mixed recovery and healthy batch still speaks the recovery once", () => 
       },
     });
   }
-  const { shim, submitted } = statusSink(feed);
+  const { shim, submitted } = statusSink(feed, true);
 
   shim.sendMessage(realisticStatus("a-live", "reconnecting", "a:1", "a"));
   shim.sendMessage(
@@ -1024,7 +1045,7 @@ test("a mixed recovery and healthy batch still speaks the recovery once", () => 
 test("an opening status after an outage does not add a second recovery notice", () => {
   const feed = new McpEventFeed();
   liveHubSubscription(feed, "b-live");
-  const { shim, submitted } = statusSink(feed);
+  const { shim, submitted } = statusSink(feed, true);
 
   shim.sendMessage(realisticStatus("b-live", "reconnecting", "hub:30"));
   shim.sendMessage(realisticStatus("b-live", "opening", "hub:31"));
@@ -1038,7 +1059,7 @@ test("an opening status after an outage does not add a second recovery notice", 
 test("a recovery after a terminal failure still speaks once", () => {
   const feed = new McpEventFeed();
   liveHubSubscription(feed, "b-live");
-  const { shim, submitted } = statusSink(feed);
+  const { shim, submitted } = statusSink(feed, true);
 
   shim.sendMessage(realisticStatus("b-live", "failed", "hub:20"));
   shim.sendMessage(realisticStatus("b-live", "active", "hub:21"));
@@ -1052,7 +1073,7 @@ test("a recovery after a terminal failure still speaks once", () => {
 test("a tracked outage speaks once and its recovery speaks once", () => {
   const feed = new McpEventFeed();
   liveHubSubscription(feed, "b-live");
-  const { shim, submitted } = statusSink(feed);
+  const { shim, submitted } = statusSink(feed, true);
 
   shim.sendMessage(statusNotice("b-live", "reconnecting"));
   shim.sendMessage(statusNotice("b-live", "active"));
@@ -1066,28 +1087,30 @@ test("a tracked outage speaks once and its recovery speaks once", () => {
 test("a tracked id that recovers and fails again is news a second time", () => {
   const feed = new McpEventFeed();
   liveHubSubscription(feed, "b-live");
-  const { shim, submitted } = statusSink(feed);
+  const { shim, submitted } = statusSink(feed, true);
   const failure = statusNotice("b-live", "failed");
 
   shim.sendMessage(failure);
-  liveHubSubscription(feed, "b-live");
+  shim.sendMessage(statusNotice("b-live", "active"));
   shim.sendMessage(failure);
 
-  assert.equal(submitted.length, 2, "recovery clears the duplicate fingerprint");
+  assert.equal(submitted.length, 3, "the outage, its recovery and the next outage are each news");
+  assert.match(submitted[0] ?? "", /b-live is failed/);
+  assert.match(submitted[2] ?? "", /b-live is failed/);
 });
 
 test("a mixed batch repeats after recovery when its tracked id fails again", () => {
   const feed = new McpEventFeed();
   liveHubSubscription(feed, "b-live");
-  const { shim, submitted } = statusSink(feed);
+  const { shim, submitted } = statusSink(feed, true);
   const failure = batchStatusNotice(["b-live", "a-dead"]);
 
   shim.sendMessage(failure);
-  liveHubSubscription(feed, "b-live");
+  shim.sendMessage(statusNotice("b-live", "active"));
   shim.sendMessage(failure);
 
-  assert.equal(submitted.length, 2, "the untracked sibling must not pin the old fingerprint");
-  for (const text of submitted) {
+  assert.equal(submitted.length, 3, "the untracked sibling must not pin the old fingerprint");
+  for (const text of [submitted[0] ?? "", submitted[2] ?? ""]) {
     const payload = JSON.parse(text.slice(text.indexOf("{"))) as {
       subscriptions: Array<{ id: string }>;
     };
@@ -1128,7 +1151,7 @@ test("the prose status shape obeys the same untracked-id rule as the JSON payloa
 test("a prose status still names the tracked subscription that failed", () => {
   const feed = new McpEventFeed();
   liveHubSubscription(feed, "b-live");
-  const { shim, submitted } = statusSink(feed);
+  const { shim, submitted } = statusSink(feed, true);
 
   shim.sendMessage(proseStatus("b-live", "failed"));
 
@@ -1213,7 +1236,7 @@ test("live activity on the owning id keeps a later dead generation silent", () =
 test("the live id's own reconnecting notice is the only one for its generation", () => {
   const feed = new McpEventFeed();
   liveHubSubscription(feed, "b-live");
-  const { shim, submitted } = statusSink(feed);
+  const { shim, submitted } = statusSink(feed, true);
 
   shim.sendMessage(statusNotice("a-dead", "failed"));
   shim.sendMessage(statusNotice("b-live", "reconnecting"));
@@ -1228,7 +1251,7 @@ test("the live id's own reconnecting notice is the only one for its generation",
 test("the current id's failure is the only notice when an older generation fails later", () => {
   const feed = new McpEventFeed();
   liveHubSubscription(feed, "b-live");
-  const { shim, submitted } = statusSink(feed);
+  const { shim, submitted } = statusSink(feed, true);
 
   shim.sendMessage(statusNotice("b-live", "failed"));
   shim.sendMessage(statusNotice("a-dead", "failed"));
