@@ -35,3 +35,12 @@ session, separate from the main chat:
 
 The task body is ordinary markdown. Fenced `mermaid` (or `pele`) blocks use the
 same diagram renderer as the main chat.
+
+## Body shape
+
+A planned body is a specification in four sections, in this order: `## Goal` (one sentence — the
+outcome), `## Requirements` (numbered invariants, each naming the check that covers it),
+`## Scenarios` (Gherkin — copied from the project's `features/*.feature` vocabulary when it has one,
+written out when it does not) and `## Architecture` (one bullet per module: path and what changes).
+The plan prompt states the rule and `e2e/task-agent.test.ts` pins it; `edit_task` accepts any body,
+because a plan saves skeletons on the way to the shape.
