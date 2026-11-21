@@ -3,6 +3,7 @@ import {
   type ReactNode,
   type RefObject,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -100,6 +101,7 @@ export interface TaskDetailModel {
   projects: string[];
   onClose: () => void;
   onOpen: (id: string) => void;
+  onTabChange: (tab: "plan" | "chat") => void;
   onStatus: (task: Task, status: Task["status"]) => void;
   onApprove: () => void;
   onDismiss: () => void;
@@ -1082,6 +1084,7 @@ const TAB_INDEX = { plan: 0, chat: 1 } as const;
 
 function MobileDetail({ model }: { model: TaskDetailModel }) {
   const [tab, setTab] = useState<"plan" | "chat">(() => linkedTab(model.task.id));
+  const { onTabChange } = model;
   // The same pager that drives the app's pages, nested in the detail body. It
   // owns the swipe-to-tab state machine; `tab` stays the label TabBar and the
   // hash link read.
@@ -1091,6 +1094,10 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
   useEffect(() => {
     setTab(tabs.page === TAB_INDEX.chat ? "chat" : "plan");
   }, [tabs.page]);
+
+  useLayoutEffect(() => {
+    onTabChange(tab);
+  }, [onTabChange, tab]);
 
   useEffect(() => {
     const sync = () => {
@@ -1149,7 +1156,7 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
           }}
         >
           <section
-            className="h-full min-w-0 shrink-0 grow-0 basis-full overflow-y-auto overflow-x-hidden px-xl pt-lg"
+            className="h-full min-w-0 shrink-0 grow-0 basis-full overflow-y-auto overflow-x-hidden safe-bottom"
             aria-label="Plan"
             aria-hidden={tab !== "plan"}
             inert={tab !== "plan" || undefined}
@@ -1157,7 +1164,7 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
             <PlanSections model={model} />
           </section>
           <section
-            className="flex h-full min-h-0 min-w-0 shrink-0 grow-0 basis-full flex-col px-xl"
+            className="flex h-full min-h-0 min-w-0 shrink-0 grow-0 basis-full flex-col"
             aria-label="Chat"
             aria-hidden={tab !== "chat"}
             inert={tab !== "chat" || undefined}
