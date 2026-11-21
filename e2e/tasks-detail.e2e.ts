@@ -144,6 +144,49 @@ async function horizontalOverflow(browser: Browser) {
   });
 }
 
+async function paneSteps(browser: Browser) {
+  return browser.evaluate(() => {
+    const side = document.querySelector<HTMLElement>('[data-col="side"]');
+    const mid = document.querySelector<HTMLElement>('[data-testid="tasks-mid-col"]');
+    const chat = document.querySelector<HTMLElement>('[data-testid="tasks-chat-col"]');
+    const bar = document.querySelector<HTMLElement>('[data-testid="task-details-bar"]');
+    const detail = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
+    const openTrigger = document.querySelector<HTMLElement>(
+      '[data-testid="task-section-active"] > button',
+    );
+    const firstCard = document.querySelector<HTMLElement>(
+      '[data-testid="task-section-active"] [data-task-card]',
+    );
+    if (
+      side === null ||
+      mid === null ||
+      chat === null ||
+      bar === null ||
+      detail === null ||
+      openTrigger === null ||
+      firstCard === null
+    ) {
+      return null;
+    }
+    const sideBox = side.getBoundingClientRect();
+    const midBox = mid.getBoundingClientRect();
+    const chatBox = chat.getBoundingClientRect();
+    const barBox = bar.getBoundingClientRect();
+    const detailBox = detail.getBoundingClientRect();
+    const openBox = openTrigger.getBoundingClientRect();
+    const cardBox = firstCard.getBoundingClientRect();
+    return {
+      sideToDetail: Math.round(midBox.left - sideBox.right),
+      detailToChat: Math.round(chatBox.left - midBox.right),
+      barToDetail: Math.round(detailBox.top - barBox.bottom),
+      openToCard: Math.round(cardBox.top - openBox.bottom),
+      sideWidth: Math.round(sideBox.width),
+      detailTop: Math.round(detailBox.top),
+      chatTop: Math.round(chatBox.top),
+    };
+  });
+}
+
 async function expectProjectAboveBody(browser: Browser) {
   const projectAboveBody = await browser.evaluate(() => {
     const detail = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
@@ -219,14 +262,29 @@ describe("task detail against a mocked state route", { serial: true }, () => {
       const pane = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
       const bar = document.querySelector<HTMLElement>('[data-testid="task-details-bar"]');
       const description = document.querySelector<HTMLElement>('[data-testid="task-body-section"]');
-      if (pane === null || bar === null || description === null) {
+      const openTrigger = document.querySelector<HTMLElement>(
+        '[data-testid="task-section-active"] > button',
+      );
+      const firstCard = document.querySelector<HTMLElement>(
+        '[data-testid="task-section-active"] [data-task-card]',
+      );
+      if (
+        pane === null ||
+        bar === null ||
+        description === null ||
+        openTrigger === null ||
+        firstCard === null
+      ) {
         return null;
       }
       const paneBox = pane.getBoundingClientRect();
       const barBox = bar.getBoundingClientRect();
       return {
         barAbovePane: barBox.bottom <= paneBox.top,
-        barGap: paneBox.top - barBox.bottom,
+        barGap: Math.round(paneBox.top - barBox.bottom),
+        listStep: Math.round(
+          firstCard.getBoundingClientRect().top - openTrigger.getBoundingClientRect().bottom,
+        ),
         label: (bar.textContent ?? "").includes("Task details"),
         hasTitle: document.querySelector('[data-testid="task-title"]') !== null,
         hasMeta: document.querySelector('[data-testid="task-header-meta"]') !== null,
@@ -238,8 +296,11 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     });
     expect(contentTop).not.toBeNull();
     expect(contentTop?.barAbovePane).toBe(true);
-    // The header-to-pane step is the same 8px rhythm as every other stack.
-    expect(contentTop?.barGap).toBe(8);
+    // The section step under the bar and under the list's "Open" header is one 8px value.
+    expect({ barGap: contentTop?.barGap, listStep: contentTop?.listStep }).toEqual({
+      barGap: 8,
+      listStep: 8,
+    });
     expect(contentTop?.label).toBe(true);
     expect(contentTop?.hasTitle).toBe(false);
     expect(contentTop?.hasMeta).toBe(false);
@@ -327,12 +388,34 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     expect(wide?.planWidth ?? 0).toBeLessThanOrEqual(400);
     expect(await horizontalOverflow(browser)).toEqual([]);
 
+    // 16px only at the list↔details boundary; the body↔chat pane gap is 8px.
+    const steps = await paneSteps(browser);
+    expect(steps).not.toBeNull();
+    expect(steps?.sideToDetail).toBe(16);
+    expect(steps?.detailToChat).toBe(8);
+    expect(steps?.barToDetail).toBe(8);
+    expect(steps?.openToCard).toBe(8);
+    expect(steps?.sideWidth).toBe(320);
+    expect(steps?.detailTop).toBe(steps?.chatTop);
+
     // The reporter judges the layout by eye, so keep the wide frame as evidence.
     await app.screenshot("tasks-wide");
 
     await browser.setViewport({ width: 1280, height: 800 });
     await expect(screen.getByTestId("tasks-page")).toHaveAttribute("data-layout", "split");
     expect(await horizontalOverflow(browser)).toEqual([]);
+    const steps1280 = await paneSteps(browser);
+    expect(steps1280?.sideToDetail).toBe(16);
+    expect(steps1280?.detailToChat).toBe(8);
+    expect(steps1280?.sideWidth).toBe(320);
+    expect(steps1280?.detailTop).toBe(steps1280?.chatTop);
+
+    await browser.setViewport({ width: 1024, height: 800 });
+    await expect(screen.getByTestId("tasks-page")).toHaveAttribute("data-layout", "split");
+    expect(await horizontalOverflow(browser)).toEqual([]);
+    const steps1024 = await paneSteps(browser);
+    expect(steps1024?.sideToDetail).toBe(16);
+    expect(steps1024?.detailToChat).toBe(8);
 
     await openSnapshot(app, browser, snapshot, 390, 844);
     await screen.getByRole("button", { name: "Open Ship the modal" }).tap();

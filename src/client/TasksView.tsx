@@ -39,7 +39,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./component
 import { EmptyCaption } from "./EmptyCaption";
 import { haptic } from "./haptics";
 import { RefreshIcon } from "./icons";
-import { STACK_8 } from "./lib/spacing";
+import { SECTION_STEP, STACK_8 } from "./lib/spacing";
 import { cn } from "./lib/utils";
 import { InlineMarkdown, plainInline } from "./markdown";
 import { projectSuggestions } from "./ProjectSuggestions";
@@ -259,7 +259,9 @@ function Section({
             </span>
           )}
         </CollapsibleTrigger>
-        <CollapsibleContent className={`${TASK_STACK} pt-lg`}>{children}</CollapsibleContent>
+        <CollapsibleContent className={`${TASK_STACK} ${SECTION_STEP}`}>
+          {children}
+        </CollapsibleContent>
       </Collapsible>
     );
   }
@@ -268,7 +270,7 @@ function Section({
       <Heading count={count} dark={dark}>
         {title}
       </Heading>
-      <div className={`${TASK_STACK} pt-lg`}>{children}</div>
+      <div className={`${TASK_STACK} ${SECTION_STEP}`}>{children}</div>
     </section>
   );
 }
@@ -888,10 +890,11 @@ function TasksViewImpl({
       data-layout={wide ? "split" : "stack"}
       ref={pageRef}
     >
+      {/* Pane step is 8px; the list's mr-lg leaves 16px only at the section boundary. */}
       <div
         className={
           wide
-            ? "tasks-split grid h-full min-h-0 w-full grid-cols-[minmax(260px,320px)_minmax(280px,1fr)_minmax(300px,400px)] grid-rows-[auto_minmax(0,1fr)] gap-x-2xl gap-y-lg px-2xl"
+            ? "tasks-split grid h-full min-h-0 w-full grid-cols-[minmax(268px,328px)_minmax(280px,1fr)_minmax(300px,400px)] grid-rows-[auto_minmax(0,1fr)] gap-x-lg gap-y-lg px-2xl"
             : cn(
                 "mx-auto flex h-full min-h-0 w-full max-w-[72ch] flex-col",
                 openTask === undefined ? "gap-2xl px-2xl" : "overflow-hidden",
@@ -905,7 +908,7 @@ function TasksViewImpl({
       >
         {wide ? (
           <>
-            <div data-col="side" className="row-span-2 flex h-full min-h-0 min-w-0 flex-col">
+            <div data-col="side" className="row-span-2 mr-lg flex h-full min-h-0 min-w-0 flex-col">
               <div
                 className={cn(
                   "min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain",
@@ -1033,7 +1036,9 @@ function Group({
           </>
         )}
       </CollapsibleTrigger>
-      <CollapsibleContent className={`${TASK_STACK} pt-lg`}>{children}</CollapsibleContent>
+      <CollapsibleContent className={`${TASK_STACK} ${SECTION_STEP}`}>
+        {children}
+      </CollapsibleContent>
     </Collapsible>
   );
 }
