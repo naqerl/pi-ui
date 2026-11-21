@@ -18,10 +18,17 @@ import {
   createPushService,
   loadOrCreateVapidKeys,
   MAX_BODY_CHARS,
+  normalizePushClient,
+  type PushClient,
+  type PushClientDevice,
+  type PushClientMode,
   type PushNotification,
   type PushSubscriptionRecord,
   PushSubscriptionStore,
+  pushClientFromRequest,
+  pushDeviceFromUserAgent,
   resetPushServiceForTests,
+  withPushClient,
 } from "../src/server/push.js";
 import {
   RUN_ERROR_PUSH_BODY_CHARS,
@@ -53,6 +60,10 @@ function subscription(endpoint = "https://push.example/one"): PushSubscriptionRe
     createdAt: "2026-10-30T10:00:00.000Z",
     lastOkAt: null,
   };
+}
+
+function client(device: PushClientDevice, mode: PushClientMode): PushClient {
+  return { device, mode };
 }
 
 type ErrorChat = {
@@ -374,6 +385,171 @@ test("a corrupt registry logs one line, starts empty and is rewritten on the nex
   await store.close();
 });
 
+test("a client subscribe replaces its device class and leaves the other class alone", async (t) => {
+  const dir = await tempDir(t);
+  const store = new PushSubscriptionStore(dir, { throttleMs: 0 });
+  assert.equal(
+    await store.subscribe({
+      ...subscription("https://push.example/phone-app"),
+      client: client("mobile", "app"),
+    }),
+    0,
+  );
+  assert.equal(
+    await store.subscribe({
+      ...subscription("https://push.example/laptop"),
+      client: client("desktop", "browser"),
+    }),
+    0,
+  );
+  assert.equal(
+    await store.subscribe({
+      ...subscription("https://push.example/phone-tab"),
+      client: client("mobile", "browser"),
+    }),
+    1,
+  );
+
+  const records = await store.read();
+  assert.deepEqual(records.map((record) => record.endpoint).sort(), [
+    "https://push.example/laptop",
+    "https://push.example/phone-tab",
+  ]);
+  const phone = records.find((record) => record.client?.device === "mobile");
+  assert.deepEqual(phone?.client, { device: "mobile", mode: "browser" });
+  await store.close();
+});
+
+test("a client subscribe collapses unattributed records into one device class", async (t) => {
+  const dir = await tempDir(t);
+  const file = join(dir, "push-subscriptions.json");
+  const store = new PushSubscriptionStore(dir, { throttleMs: 0 });
+  await store.subscribe(subscription("https://push.example/old-brave"));
+  await store.subscribe(subscription("https://push.example/old-app"));
+
+  assert.equal(
+    await store.subscribe({
+      ...subscription("https://push.example/new-app"),
+      client: client("mobile", "app"),
+    }),
+    2,
+  );
+  const records = await store.read();
+  assert.equal(records.length, 1);
+  assert.equal(records[0]?.endpoint, "https://push.example/new-app");
+  assert.deepEqual(records[0]?.client, { device: "mobile", mode: "app" });
+
+  await store.flush();
+  const saved = JSON.parse(await readFile(file, "utf8")) as {
+    version: number;
+    subscriptions: PushSubscriptionRecord[];
+  };
+  assert.equal(saved.version, 1);
+  assert.equal(saved.subscriptions.length, 1);
+  await store.close();
+});
+
+test("a legacy body without a client block keeps every endpoint and fans out", async (t) => {
+  const dir = await tempDir(t);
+  const sent: string[] = [];
+  const service = createPushService({
+    dataDir: dir,
+    throttleMs: 0,
+    send: async (target) => {
+      sent.push(target.endpoint);
+      return { statusCode: 201 };
+    },
+  });
+  await service.subscribe(subscription("https://push.example/legacy-one"));
+  await service.subscribe(subscription("https://push.example/legacy-two"));
+  assert.equal((await service.status()).subscriptions, 2);
+
+  await service.notify({ title: "New message", url: "/" });
+  assert.deepEqual(sent.sort(), [
+    "https://push.example/legacy-one",
+    "https://push.example/legacy-two",
+  ]);
+  await service.close();
+});
+
+test("the registry keeps records whose client block is malformed", async (t) => {
+  const dir = await tempDir(t);
+  const file = join(dir, "push-subscriptions.json");
+  await writeFile(
+    file,
+    JSON.stringify({
+      version: 1,
+      subscriptions: [
+        subscription("https://push.example/legacy"),
+        {
+          ...subscription("https://push.example/tablet"),
+          client: { device: "tablet", mode: "app" },
+        },
+        { ...subscription("https://push.example/no-device"), client: { mode: "app" } },
+        { ...subscription("https://push.example/no-mode"), client: { device: "mobile" } },
+      ],
+    }),
+    "utf8",
+  );
+  const store = new PushSubscriptionStore(dir, { throttleMs: 0 });
+  const records = await store.read();
+  assert.equal(records.length, 4);
+  assert.ok(records.every((record) => record.client === undefined));
+  await store.close();
+});
+
+test("status lists device and mode but never an endpoint or key", async (t) => {
+  const dir = await tempDir(t);
+  const service = createPushService({ dataDir: dir, throttleMs: 0 });
+  await service.subscribe({
+    ...subscription("https://push.example/phone"),
+    client: client("mobile", "app"),
+  });
+  await service.subscribe({
+    ...subscription("https://push.example/laptop"),
+    client: client("desktop", "browser"),
+  });
+
+  const status = await service.status();
+  assert.equal(status.enabled, true);
+  assert.equal(status.subscriptions, 2);
+  assert.deepEqual(status.records, [
+    { device: "mobile", mode: "app" },
+    { device: "desktop", mode: "browser" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(status), /endpoint|p256dh|auth-secret/);
+  await service.close();
+});
+
+test("the subscribe body gets a server-derived device and only a valid mode", () => {
+  const body = { ...subscription("https://push.example/phone"), client: { mode: "app" } };
+  assert.deepEqual(withPushClient(body, "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)"), {
+    ...body,
+    client: { device: "mobile", mode: "app" },
+  });
+  assert.deepEqual(withPushClient(body, "Mozilla/5.0 (X11; Linux x86_64)"), {
+    ...body,
+    client: { device: "desktop", mode: "app" },
+  });
+
+  const legacy = subscription("https://push.example/legacy");
+  assert.equal(withPushClient(legacy, "Mozilla/5.0 (X11; Linux x86_64)"), legacy);
+  const malformed = { ...legacy, client: { mode: "window" } };
+  assert.equal(withPushClient(malformed, "Mozilla/5.0 (X11; Linux x86_64)"), malformed);
+
+  assert.equal(pushDeviceFromUserAgent("Mozilla/5.0 (Android 15; Mobile)"), "mobile");
+  assert.equal(pushDeviceFromUserAgent("Mozilla/5.0 (iPad; CPU OS 18_0)"), "mobile");
+  assert.equal(pushDeviceFromUserAgent("Mozilla/5.0 (Macintosh)"), "desktop");
+  assert.equal(pushDeviceFromUserAgent(undefined), "desktop");
+  assert.deepEqual(pushClientFromRequest({ mode: "browser" }, "Mozilla/5.0 (Linux; Android 15)"), {
+    device: "mobile",
+    mode: "browser",
+  });
+  assert.equal(pushClientFromRequest({ mode: "standalone" }, "Mozilla/5.0"), null);
+  assert.equal(normalizePushClient({ device: "mobile", mode: "app" })?.mode, "app");
+  assert.equal(normalizePushClient({ device: "watch", mode: "app" }), null);
+});
+
 test("notify marks a delivered subscription and drops an endpoint the push service says is gone", async (t) => {
   const dir = await tempDir(t);
   const lines: string[] = [];
@@ -644,6 +820,20 @@ async function deliverPush(push: (event: PushEvent) => void, payload: unknown): 
   assert.ok(pending);
   await pending;
 }
+
+test("the service worker shows a push once and carries no messaging SDK", async () => {
+  const source = await readFile(new URL("../public/sw.js", import.meta.url), "utf8");
+  assert.equal(source.match(/showNotification\(/g)?.length, 1);
+  assert.doesNotMatch(source, /importScripts\s*\(/);
+  assert.doesNotMatch(source, /onBackgroundMessage/);
+
+  const pushHandler = source.indexOf('addEventListener("push"');
+  const notification = source.indexOf("showNotification(");
+  const clickHandler = source.indexOf('addEventListener("notificationclick"');
+  assert.ok(pushHandler >= 0);
+  assert.ok(notification > pushHandler);
+  assert.ok(notification < clickHandler);
+});
 
 test("a run-error push stays silent while a client is focused", async () => {
   const payload = runErrorNotification({ message: "the provider refused the request" });
