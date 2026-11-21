@@ -183,7 +183,8 @@ export function TaskAgentChat({
           "[scrollbar-gutter:stable]",
         )}
       >
-        <div ref={stick.contentRef} className="flex min-h-0 flex-col gap-xl">
+        {/* A shrinking flex item would hide the scroller's end padding from scrollHeight. */}
+        <div ref={stick.contentRef} className="flex shrink-0 flex-col gap-xl">
           {groups.length === 0 ? (
             <div className="flex min-h-0 flex-1 items-center justify-center">
               <EmptyCaption>
