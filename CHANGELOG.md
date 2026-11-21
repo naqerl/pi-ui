@@ -3,6 +3,13 @@
 ### Added
 
 - Ctrl+Tab and Ctrl+Shift+Tab cycle the tasks opened in this browser, with Ctrl+I and Ctrl+O as forward and backward aliases in a plain browser tab. Each press opens the next ring entry at once and a small pill says where it landed; the ring survives a reload, caps at 12 ids and never includes a task this browser did not open. (nhpw)
+- The plan agent is told what a task body is for: one goal line, requirements, Gherkin scenarios and the architecture it must fit, so a proposed draft reads as a specification instead of an essay. (dq3h)
+- `propose_task` asks the planner for a draft: the draft is created through the same helper the composer uses, so it opens in the plan chat under one shared code path. (j6n7)
+
+### Fixed
+
+- The step between the task body and its chat is 8px, and the 16px gap sits only between the list and the details column, so a wide layout no longer opens a hole under the header. (ct9c)
+- On the Plan tab the whole composer dock slides out of the way instead of leaving its top line behind, and the mobile detail pane owns the plan body's scroll again, so a long plan scrolls inside the pane rather than pushing the page. (pgco)
 
 ## 1.11.1
 
