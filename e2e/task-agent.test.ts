@@ -841,7 +841,10 @@ test("the plan prompt fixes the body shape, Gherkin and architecture rules", () 
   const headings = ["## Goal", "## Requirements", "## Scenarios", "## Architecture"];
   for (const heading of headings) assert.match(prompt, new RegExp(heading));
   const order = headings.map((heading) => prompt.indexOf(heading));
-  assert.deepEqual(order, [...order].sort((a, b) => a - b));
+  assert.deepEqual(
+    order,
+    [...order].sort((a, b) => a - b),
+  );
   assert.match(prompt, /one sentence/);
   assert.match(prompt, /\*\.feature/);
   assert.match(prompt, /gherkin/);
