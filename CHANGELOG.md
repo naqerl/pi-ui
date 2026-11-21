@@ -10,6 +10,7 @@
 
 - The composer dock's top line is swept when the page changes, so a dock that grew on the previous chat no longer leaves a cropped strip above the composer on the next one. (qmyd)
 - Plan-agent questions stay in the task body when the planner steps away: the answer is recorded without parking the plan agent, so a question asked mid-plan does not end the planning session. (fs6d)
+- MCP subscription status is a chip until an outage has been down for 60 s. A hub blip shows one `MCP status` row that goes reconnecting → active without starting a model turn or entering the durable outbox; only an outage that outlives `PI_UI_MCP_OUTAGE_NOTIFY_MS` (60 s by default) speaks once, and its recovery keeps the existing single notice.
 
 ## 1.11.0
 

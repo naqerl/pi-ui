@@ -203,7 +203,7 @@ const toolIdle = (browser: Page) =>
     };
   });
 
-test("a cut stream resumes at its last cursor without a status notice", {
+test("a cut stream resumes at its last cursor with one status chip", {
   timeout: 240_000,
 }, async ({ app, browser }) => {
   const spawned = await startEventDropApp("event-cut");
@@ -252,7 +252,13 @@ test("a cut stream resumes at its last cursor without a status notice", {
     const statuses = (state.messages ?? [])
       .map((message) => message.text ?? "")
       .filter((text) => text.startsWith(MCP_STATUS_HEAD));
-    expect(statuses).toEqual([]);
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0]).toContain("drop-stream");
+    expect(statuses[0]).toContain("active");
+    const statusTurns = (state.messages ?? []).filter(
+      (message) => message.role === "assistant" && (message.text ?? "").startsWith(MCP_STATUS_HEAD),
+    );
+    expect(statusTurns).toEqual([]);
     expect(lines(spawned.statePath)).not.toContain("stream:drop-stream:drop:0");
   } finally {
     await spawned.stop();
