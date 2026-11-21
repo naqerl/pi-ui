@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { ToolExecutionResult } from "@earendil-works/pi-durable";
+import type { ToolExecutionResult, ToolPark } from "@earendil-works/pi-durable";
 import {
   createOperatorTools,
   NOTIFY_OPERATOR_RATE_LIMIT_MS,
@@ -16,7 +16,7 @@ import {
 } from "../src/server/push.js";
 import type { OperatorNoticeRecord } from "../src/shared/notices.js";
 
-function result(result: ToolExecutionResult): { text: string; isError: boolean } {
+function result(result: ToolExecutionResult | ToolPark): { text: string; isError: boolean } {
   const part = result.output?.find((item) => item.type === "text");
   return {
     text: part !== undefined && part.type === "text" ? part.text : "",

@@ -1,3 +1,12 @@
+## 1.12.2
+
+### Changed
+
+- The pi family moves from 1.5.0 to 1.6.0 together: `@earendil-works/pi-ai`, `@earendil-works/pi-codemode`, `@earendil-works/pi-coding-agent` and `@earendil-works/pi-durable` are pinned at 1.6.0, and `@earendil-works/chord` is now a direct dependency at 1.6.0 so the tree holds one copy of each.
+- A tool result's `durationMs` now spans from the tool task's first run to its result, including hooks, parks, crash downtime and reruns, instead of the last attempt. Activity rows therefore get longer after a server restart, and a result that never executed has a duration too.
+- A model request that was in flight when the host died is no longer resent on open: the attempt is charged to `settings.retry`, and with no retry left the run ends with `pi.live.runFailure` reason `interrupted` instead of being resumed.
+- A task that hits `settings.restartLimit` now ends instead of parking, surfacing as a tool error result, a compaction failure, a run failure reason `restart_limit`, or a `task_interrupted` report.
+
 ## 1.12.1
 
 ### Fixed

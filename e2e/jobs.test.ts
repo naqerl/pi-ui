@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import type { ToolExecutionResult, ToolRegistration } from "@earendil-works/pi-durable";
+import type { ToolExecutionResult, ToolPark, ToolRegistration } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createReadTool } from "@earendil-works/pi-durable/tools";
 import { createJobTools } from "../src/server/job-tools.js";
@@ -68,24 +68,26 @@ function jobToolMap(jobs: JobManager): Map<string, ToolRegistration> {
   return new Map(createJobTools(jobs).map((tool) => [tool.name, tool]));
 }
 
+type ToolResult = ToolExecutionResult | ToolPark;
+
 async function runJobTool(
   tools: Map<string, ToolRegistration>,
   name: string,
   args: Record<string, unknown>,
-): Promise<ToolExecutionResult> {
+): Promise<ToolResult> {
   const tool = tools.get(name);
   assert.ok(tool);
   const api = { env: new NodeExecutionEnv({ cwd }) };
   return tool.execute(args as never, api as never, {} as never);
 }
 
-function resultText(result: ToolExecutionResult): string {
+function resultText(result: ToolResult): string {
   return (result.output ?? [])
     .flatMap((item) => (item.type === "text" ? [item.text] : []))
     .join("\n");
 }
 
-function diagnosticText(result: ToolExecutionResult): string {
+function diagnosticText(result: ToolResult): string {
   return (result.diagnostics ?? []).map((diagnostic) => diagnostic.message).join("\n");
 }
 

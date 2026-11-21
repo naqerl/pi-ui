@@ -17,10 +17,11 @@
     "durable:doctor": "node --import tsx dist/server/durable-doctor-cli.js"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "1.5.0",
-    "@earendil-works/pi-codemode": "1.5.0",
-    "@earendil-works/pi-coding-agent": "1.5.0",
-    "@earendil-works/pi-durable": "1.5.0",
+    "@earendil-works/chord": "1.6.0",
+    "@earendil-works/pi-ai": "1.6.0",
+    "@earendil-works/pi-codemode": "1.6.0",
+    "@earendil-works/pi-coding-agent": "1.6.0",
+    "@earendil-works/pi-durable": "1.6.0",
     "@hono/node-server": "2.1.5",
     "@modelcontextprotocol/client": "2.0.0",
     "@paper-design/shaders-react": "0.0.82",

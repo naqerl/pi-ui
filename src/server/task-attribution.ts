@@ -34,7 +34,8 @@ export function noteLegacyTaskId(args: unknown): void {
 /**
  * Keep accepting the old `piuiTaskId` argument without advertising it. It is removed before the
  * tool's own argument repair and before validation, so a strict schema still accepts the call;
- * the tool itself never sees it. The warning is emitted once per conversation.
+ * the tool itself never sees it. The warning is emitted once per conversation. The base call's
+ * return value is forwarded untouched, so a park stays a park.
  */
 export function withTaskParam(tool: ToolRegistration): ToolRegistration {
   const prepare = tool.prepareArguments?.bind(tool);

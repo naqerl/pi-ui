@@ -1,3 +1,4 @@
+import type { JsonValue } from "@earendil-works/chord/json";
 import {
   defineTool,
   type ToolExecutionResult,
@@ -7,12 +8,17 @@ import { createReadTool } from "@earendil-works/pi-durable/tools";
 import { Type } from "typebox";
 import { describeJob, JobError, type JobManager } from "./jobs.js";
 
-function text(value: string, isError = false): ToolExecutionResult {
+function text<TDetails extends JsonValue = JsonValue>(
+  value: string,
+  isError = false,
+): ToolExecutionResult<TDetails> {
   return { output: [{ type: "text", text: value }], ...(isError ? { isError: true } : {}) };
 }
 
-function failure(error: unknown): ToolExecutionResult {
-  return text(
+function failure<TDetails extends JsonValue = JsonValue>(
+  error: unknown,
+): ToolExecutionResult<TDetails> {
+  return text<TDetails>(
     error instanceof JobError ? error.message : `Job tool failed: ${String(error)}`,
     true,
   );
@@ -21,7 +27,9 @@ function failure(error: unknown): ToolExecutionResult {
 /** The read tool's text semantics, with a job id in place of a path. */
 const read = createReadTool();
 
-function noOutput(value: string): ToolExecutionResult {
+function noOutput<TDetails extends JsonValue = JsonValue>(
+  value: string,
+): ToolExecutionResult<TDetails> {
   return { output: [{ type: "text", text: value }], structuredOutput: "" };
 }
 
@@ -71,8 +79,9 @@ export function createJobTools(jobs: JobManager): ToolRegistration[] {
     }),
     defineTool({
       ...read,
-      // The read tool's repair, if any, expects a path; job_output takes an id.
+      // The read tool's repair and cancel, if any, expect a path; job_output takes an id.
       prepareArguments: undefined,
+      cancel: undefined,
       name: "job_output",
       description:
         "Read a background job's log — everything the command wrote to stdout and stderr — exactly like the read tool, but by job id instead of a path. `offset` is a 1-indexed line, `limit` caps the lines returned, and the text truncates at 2000 lines or 50 KB with the offset that continues. The log grows while the job runs and stays after it ends; output survives a server restart. Use job_list for status and exit code.",
@@ -101,6 +110,11 @@ export function createJobTools(jobs: JobManager): ToolRegistration[] {
             api,
             context,
           );
+          // `read` never parks; a park carries no result fields, so report it rather than
+          // spreading it and answering with an empty output.
+          if ("sleep" in result || "wait" in result) {
+            return failure(new JobError(`Job ${id}: reading its log did not return a result.`));
+          }
           return (result.output ?? []).length === 0
             ? { ...result, ...noOutput(`Job ${id} has no output yet.`) }
             : result;
