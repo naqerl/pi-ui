@@ -500,8 +500,7 @@ describe("task detail against a mocked state route", { serial: true }, () => {
           const read = await readPlan();
           if (read === null) return null;
           const settled =
-            Math.abs(read.shellHeight) <= 1 &&
-            Math.abs(read.planBottom - read.viewportHeight) <= 1;
+            Math.abs(read.shellHeight) <= 1 && Math.abs(read.planBottom - read.viewportHeight) <= 1;
           return settled ? read.hidden : `${read.hidden}:${read.shellHeight}`;
         },
         { timeout: 1_500 },
