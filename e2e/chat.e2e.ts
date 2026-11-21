@@ -17,7 +17,11 @@ async function openChat(
   await app.open(path);
 }
 
-/** Clears the previous member's routes and gives the shared app a desktop viewport. */
+/**
+ * Gives the shared app a desktop viewport. A test that stubs /api/message
+ * unroutes it before it ends: the fixture only knows the routes this test
+ * registered, so one left behind by an earlier member would still answer.
+ */
 async function resetSharedChat(browser: Browser) {
   await browser.unrouteAll();
   await browser.setViewport({ width: 1280, height: 900 });
@@ -84,6 +88,7 @@ describe("chat message lifecycle against one shared app", { serial: true }, () =
 
     const after = await composer.boundingBox();
     expect(after?.height ?? 0).toBeCloseTo(before?.height ?? 0, 0);
+    await browser.unroute("**/api/message");
   });
 
   test("paints the pending bubble before the message request returns", async ({
@@ -125,6 +130,7 @@ describe("chat message lifecycle against one shared app", { serial: true }, () =
     });
     await expect(browser.locator('[data-pending-send="true"]')).toHaveCount(0);
     await expect(browser.locator('[data-role="user"]').filter({ hasText: text })).toHaveCount(1);
+    await browser.unroute("**/api/message");
   });
 
   test("restores a rejected draft with the caret at the end", async ({ app, browser, screen }) => {
@@ -155,6 +161,7 @@ describe("chat message lifecycle against one shared app", { serial: true }, () =
     expect(state?.selectionStart).toBe(text.length);
     expect(state?.selectionEnd).toBe(text.length);
     expect(state?.focused).toBe(true);
+    await browser.unroute("**/api/message");
   });
 
   test("slows a silent live run's spinner instead of stopping it", async ({
