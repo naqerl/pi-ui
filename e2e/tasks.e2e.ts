@@ -297,7 +297,10 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     await screen.getByTestId("add-task").tap();
 
     await expect(screen.getByTestId("task-detail")).toBeVisible();
-    await expect(screen.getByTestId("composer-dock-shell")).toHaveAttribute("data-hidden", "true");
+    await expect(screen.getByTestId("composer-dock-shell")).toBeVisible();
+    await expect(screen.getByTestId("composer-dock-shell")).toHaveAttribute("data-overlay", "true");
+    await expect(screen.getByTestId("composer-body")).toHaveAttribute("data-collapsed", "true");
+    await expect(screen.getByTestId("task-agent-input")).toBeHidden();
     const created = await browser.evaluate(async (needle) => {
       const ledger = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
         tasks: Array<{ id: string; title: string; status: string; body?: string }>;

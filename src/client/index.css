@@ -210,6 +210,7 @@
      the dock grows below it, so a composer animation resizes the scroll viewport
      instead of relaying out every message. */
   .chat-shell {
+    position: relative;
     display: flex;
     flex-direction: column;
     height: 100dvh;
@@ -254,37 +255,26 @@
     transition: none;
   }
 
-  /* The composer dock is a full row while visible and a clipped zero-height
-     row while a narrow Plan tab owns the page. The slide keeps its natural
-     height (align-self: start), so translateY(100%) is a real slide rather
-     than a percentage of the collapsing row. */
+  /* The composer dock owns a full row on every surface except a narrow task
+     detail's Plan tab. There it floats over the plan pane, so the body keeps
+     the full height and scrolls behind the translucent bar. */
   .dock-shell {
     position: relative;
     z-index: 20;
     display: grid;
     flex: 0 0 auto;
     grid-template-rows: 1fr;
-    transition: grid-template-rows 220ms ease;
   }
 
-  .dock-shell[data-hidden="true"] {
-    grid-template-rows: 0fr;
-    overflow: clip;
+  .chat-shell[data-dock-overlay="true"] .dock-shell {
+    position: absolute;
+    inset-inline: 0;
+    bottom: 0;
   }
 
   .dock-slide {
     align-self: start;
     min-height: 0;
-    transition:
-      transform 220ms ease,
-      opacity 220ms ease,
-      visibility 220ms ease;
-  }
-
-  .dock-shell[data-hidden="true"] .dock-slide {
-    transform: translateY(100%);
-    opacity: 0;
-    visibility: hidden;
   }
 
   .glass-caption {
@@ -436,8 +426,6 @@
 
   @media (prefers-reduced-motion: reduce) {
     .float-footer,
-    .dock-shell,
-    .dock-slide,
     .composer-body,
     .composer-body[data-hidden="true"],
     .composer-body[data-collapsed="true"] {

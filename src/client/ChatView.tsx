@@ -1973,11 +1973,12 @@ export function ChatView({
   const [taskDock, setTaskDock] = useState<TaskDockSession | null>(null);
   const [taskSurfaceStatus, setTaskSurfaceStatus] = useState<TaskSurfaceStatus | null>(null);
   const [taskRunError, setTaskRunError] = useState<TaskRunErrorSurface | null>(null);
-  const dockHidden = tasksPage && composerMode === "task-plan";
+  const dockOverlay = tasksPage && composerMode === "task-plan";
   const wantTaskDock = tasksPage && (composerMode === "task-chat" || composerMode === "task-plan");
   const dockToTask = wantTaskDock && taskDock !== null;
-  const hideTasksComposer = statsPage || (tasksPage && composerMode === "collapsed");
-  const showPlanToggle = tasksPage && !wantTaskDock && !hideTasksComposer && !dockHidden;
+  const hideTasksComposer =
+    statsPage || (tasksPage && (composerMode === "collapsed" || composerMode === "task-plan"));
+  const showPlanToggle = tasksPage && !wantTaskDock && !hideTasksComposer;
   const dockSurface = tasksPage ? (wantTaskDock ? "dock" : "create") : "chat";
   // Each surface speaks for itself: the open task's plan run on the tasks page,
   // the main conversation's run everywhere else. No task open means an empty slot.
@@ -2188,13 +2189,28 @@ export function ChatView({
   const hydrating = !ready && !running && groups.length === 0;
   const showTranscriptLoading = useDelayedFlag(hydrating, TRANSCRIPT_LOADING_DELAY_MS);
   const footerRef = useRef<HTMLDivElement | null>(null);
+  const [dockClearance, setDockClearance] = useState(0);
+
+  useLayoutEffect(() => {
+    if (!dockOverlay) {
+      setDockClearance(0);
+      return;
+    }
+    const footer = footerRef.current;
+    if (footer === null) return;
+    const measure = () => setDockClearance(footer.getBoundingClientRect().height);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(footer, { box: "border-box" });
+    return () => observer.disconnect();
+  }, [dockOverlay]);
 
   useEffect(() => {
-    if (!statsPage && !dockHidden) return;
+    if (!statsPage && !hideTasksComposer) return;
     const footer = footerRef.current;
     const active = document.activeElement;
     if (footer !== null && active instanceof HTMLElement && footer.contains(active)) active.blur();
-  }, [dockHidden, statsPage]);
+  }, [hideTasksComposer, statsPage]);
 
   // Re-run the stick sync when the transcript changes. The scroller's own
   // ResizeObserver keeps the end pinned while the dock animates below it.
@@ -2490,7 +2506,11 @@ export function ChatView({
     : undefined;
 
   const content = (
-    <div className="chat-shell min-h-0" data-testid="chat-shell">
+    <div
+      className="chat-shell min-h-0"
+      data-testid="chat-shell"
+      data-dock-overlay={dockOverlay ? "true" : undefined}
+    >
       {interrupted && (
         <div
           role="status"
@@ -2592,7 +2612,7 @@ export function ChatView({
                   planning={planning}
                   activity={taskActivity}
                   ready={ready}
-                  footerClearance={0}
+                  footerClearance={dockOverlay ? dockClearance : 0}
                   onLedger={applyTasks}
                   selection={taskSelection}
                   onOpenTask={rememberOpenedTask}
@@ -2633,10 +2653,8 @@ export function ChatView({
       </div>
       <div
         data-testid="composer-dock-shell"
-        data-hidden={dockHidden ? "true" : "false"}
+        data-overlay={dockOverlay ? "true" : undefined}
         className="dock-shell"
-        aria-hidden={dockHidden || undefined}
-        inert={dockHidden || undefined}
       >
         <div className="dock-slide">
           <div
