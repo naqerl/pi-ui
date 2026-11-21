@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ChatService } from "../src/server/chat-service.js";
-import { TASK_DECISION_ENTRY_KIND } from "../src/server/session.js";
+import { JOB_NOTICE_ENTRY_KIND, TASK_DECISION_ENTRY_KIND } from "../src/server/session.js";
 import type { DurableRunFacts } from "../src/shared/run-health.js";
-import type { StreamMessageDone } from "../src/shared/types.js";
+import type { StreamActivity, StreamMessageDone, StreamNotice } from "../src/shared/types.js";
 
 type InternalChat = {
   runState: string;
@@ -113,6 +113,79 @@ test("an approval chip is pushed when its entry is placed, before the run ends",
     assert.equal(message?.notice?.kind, "decision");
     const notice = message?.notice as { proposalId?: string } | undefined;
     assert.equal(notice?.proposalId, "p1");
+  } finally {
+    await chat.close();
+  }
+});
+
+test("a recorded job notice pushes its chat chip next to its activity row", async () => {
+  const { chat, internal, frames } = makeChat({ run: false, inbox: 0, submitting: 0 });
+  try {
+    const entry = {
+      id: 104_467,
+      conversationId: 1,
+      kind: JOB_NOTICE_ENTRY_KIND,
+      data: {
+        text: "[background job j12 finished] j12 exited 0 after 12s: build",
+        createdAt: "2026-11-21T13:27:01.126Z",
+      },
+    };
+    await (internal as unknown as { handleEvent(event: unknown): Promise<void> }).handleEvent({
+      type: "entry_appended",
+      entry,
+    });
+
+    const pushedNotice = frames.find((frame) => frame.event === "notice");
+    assert.ok(pushedNotice);
+    const message = (pushedNotice.data as StreamNotice).message;
+    assert.equal(message.role, "system");
+    assert.equal(message.order, 104_467 * 10_000);
+    assert.equal(message.timestamp, "2026-11-21T13:27:01.126Z");
+    const notice = message.notice as { kind?: string; summary?: string } | undefined;
+    assert.equal(notice?.kind, "job");
+    assert.equal(notice?.summary, "job build finished ✓ 12s");
+
+    const pushedActivity = frames.find((frame) => frame.event === "activity");
+    assert.ok(pushedActivity);
+    const activity = (pushedActivity.data as StreamActivity).activity;
+    assert.equal(activity.kind, "job");
+    assert.equal(activity.order, message.order);
+    assert.equal(activity.id, "j-104467");
+  } finally {
+    await chat.close();
+  }
+});
+
+test("a placed job notice pushes one chip and never a user bubble", async () => {
+  const { chat, internal, frames } = makeChat({ run: true, inbox: 0, submitting: 0 });
+  try {
+    const text = "[background job j12 finished] j12 exited 0 after 12s: build";
+    const entry = {
+      id: 104_467,
+      conversationId: 1,
+      kind: JOB_NOTICE_ENTRY_KIND,
+      data: { text, createdAt: "2026-11-21T13:27:01.126Z" },
+      model: [{ role: "user", content: text, timestamp: 1_795_274_821_126 }],
+    };
+    await (internal as unknown as { handleEvent(event: unknown): Promise<void> }).handleEvent({
+      type: "message_end",
+      entry,
+    });
+
+    const pushed = frames.filter(
+      (frame) =>
+        frame.event === "message.done" && (frame.data as StreamMessageDone).message !== null,
+    );
+    assert.equal(pushed.length, 1);
+    const done = pushed.at(0);
+    assert.ok(done);
+    const message = (done.data as StreamMessageDone).message;
+    assert.equal(message?.role, "system");
+    assert.equal(message?.notice?.kind, "job");
+    assert.equal(
+      frames.some((frame) => frame.event === "notice"),
+      false,
+    );
   } finally {
     await chat.close();
   }

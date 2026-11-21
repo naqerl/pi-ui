@@ -1210,8 +1210,10 @@ async function nextRunState(
 class FakeCancelConversation {
   private calls = 0;
   private readonly waiters = new Map<number, (value: unknown) => void>();
+  readonly submissions: unknown[] = [];
 
-  async submit() {
+  async submit(payload: unknown) {
+    this.submissions.push(payload);
     const id = ++this.calls;
     const wait = new Promise((resolve) => this.waiters.set(id, resolve));
     return {
@@ -1286,6 +1288,15 @@ test("a busy plan keeps job notices as chips and merges consecutive ones", async
   const groups = mergeQueuedNotices(queue);
   assert.equal(groups.length, 1);
   assert.equal(groups[0]?.count, 2);
+
+  // The pending chip and the placed transcript entry must share the same key.
+  const notices = conversation.submissions.slice(1) as Array<{
+    entry?: { data?: { queueKey?: string } };
+  }>;
+  assert.deepEqual(
+    notices.map((payload) => payload.entry?.data?.queueKey),
+    queue.map((item) => item.key),
+  );
 
   conversation.settle(2, { type: "input", status: "done", entry: 2 });
   conversation.settle(3, { type: "input", status: "done", entry: 3 });

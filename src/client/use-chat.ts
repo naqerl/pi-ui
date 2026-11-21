@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyTaskToolResult, sameActivity } from "../shared/activity-optimistic";
 import type { BuiltinJob, DashboardState } from "../shared/dashboard";
-import { isQueuedNotice, queuedMessageId } from "../shared/queue";
+import { queuedMessageId } from "../shared/queue";
 import {
   acceptDeltaRevision,
   adoptSnapshotRevision,
@@ -83,33 +83,7 @@ function parseEvent<T>(event: MessageEvent<string>): T | null {
   }
 }
 
-/**
- * Job results belong on the activity page. Older servers still send them as user messages, so
- * move those out of the chat before the transcript reaches the view.
- */
-function separateJobResults(messages: ChatMessage[]): {
-  messages: ChatMessage[];
-  activity: ActivityItem[];
-} {
-  const kept: ChatMessage[] = [];
-  const activity: ActivityItem[] = [];
-  for (const message of messages) {
-    const notice = message.notice;
-    if (notice !== undefined && !isQueuedNotice(notice) && notice.kind === "job") {
-      activity.push({
-        kind: "job",
-        id: `j-${message.id}`,
-        notice,
-        timestamp: message.timestamp,
-        order: message.order,
-      });
-    } else {
-      kept.push(message);
-    }
-  }
-  return { messages: kept, activity };
-}
-
+/** Adds job rows from the activity stream, keeping the first copy of each id. */
 function addJobActivity(current: ActivityItem[], extra: ActivityItem[]): ActivityItem[] {
   if (extra.length === 0) return current;
   const held = new Set(current.map((item) => item.id));
@@ -526,11 +500,9 @@ export function useChat(options: UseChatOptions = {}) {
         hasEarlierRef.current = snapshot.hasEarlier === true;
         setHasEarlier(hasEarlierRef.current);
       }
-      const fresh = separateJobResults(snapshot.messages);
-      const freshActivity = [...snapshot.activity, ...fresh.activity].sort(
-        (a, b) => a.order - b.order,
-      );
-      const snapshotResetRow = fresh.messages.find((message) => message.kind === "session-reset");
+      const freshMessages = snapshot.messages;
+      const freshActivity = [...snapshot.activity].sort((a, b) => a.order - b.order);
+      const snapshotResetRow = freshMessages.find((message) => message.kind === "session-reset");
       if (snapshotResetRow !== undefined && newerReset(snapshot.resetAt, resetAt.current)) {
         resetAt.current = snapshot.resetAt ?? null;
         resetOrder.current = snapshotResetRow.order;
@@ -543,7 +515,7 @@ export function useChat(options: UseChatOptions = {}) {
           mergeWindow(
             floor === null ? current : current.filter((message) => message.order >= floor),
             snapshotFrom,
-            fresh.messages,
+            freshMessages,
             sameMessage,
           ),
         );
@@ -556,7 +528,7 @@ export function useChat(options: UseChatOptions = {}) {
           ),
         );
       } else {
-        setMessages(fresh.messages);
+        setMessages(freshMessages);
         setActivity(freshActivity);
       }
       const persistedActivityIds = new Set(snapshot.activity.map((item) => item.id));
@@ -642,12 +614,12 @@ export function useChat(options: UseChatOptions = {}) {
       if (windowFrom.current !== before) return;
       windowFrom.current = page.from;
       hasEarlierRef.current = page.hasEarlier;
-      const older = separateJobResults(page.messages);
-      setMessages((current) => prependPage(current, older.messages));
+      const olderMessages = page.messages;
+      setMessages((current) => prependPage(current, olderMessages));
       setActivity((current) =>
         prependPage(
           current,
-          [...page.activity, ...older.activity].sort((a, b) => a.order - b.order),
+          [...page.activity].sort((a, b) => a.order - b.order),
         ),
       );
       setHasEarlier(page.hasEarlier);
@@ -873,18 +845,14 @@ export function useChat(options: UseChatOptions = {}) {
       const data = parseEvent<StreamMessageDone>(event as MessageEvent<string>);
       markActivity();
       if (data?.message) {
-        const { messages, activity: jobActivity } = separateJobResults([data.message]);
-        const message = messages[0];
-        if (message !== undefined) {
-          setMessages((current) =>
-            current.some((item) => item.id === message.id) ? current : [...current, message],
-          );
-          setOptimistic((current) => current.filter((item) => !confirmedOptimistic(item, message)));
-          if (message.steerKey !== undefined) {
-            setSteers((current) => consumeSteer(current, message.steerKey));
-          }
+        const message = data.message;
+        setMessages((current) =>
+          current.some((item) => item.id === message.id) ? current : [...current, message],
+        );
+        setOptimistic((current) => current.filter((item) => !confirmedOptimistic(item, message)));
+        if (message.steerKey !== undefined) {
+          setSteers((current) => consumeSteer(current, message.steerKey));
         }
-        if (jobActivity.length > 0) setActivity((current) => addJobActivity(current, jobActivity));
         draftBatch.clear();
         setDraftText("");
         setDraftThinking("");
@@ -896,16 +864,12 @@ export function useChat(options: UseChatOptions = {}) {
       const data = parseEvent<StreamNotice>(event as MessageEvent<string>);
       if (!data) return;
       markActivity();
-      const { messages, activity: jobActivity } = separateJobResults([data.message]);
-      const message = messages[0];
-      if (message !== undefined) {
-        setMessages((current) =>
-          current.some((item) => item.id === message.id)
-            ? current.map((item) => (item.id === message.id ? message : item))
-            : [...current, message],
-        );
-      }
-      if (jobActivity.length > 0) setActivity((current) => addJobActivity(current, jobActivity));
+      const message = data.message;
+      setMessages((current) =>
+        current.some((item) => item.id === message.id)
+          ? current.map((item) => (item.id === message.id ? message : item))
+          : [...current, message],
+      );
     });
 
     source.addEventListener("activity", (event) => {
@@ -1100,17 +1064,11 @@ export function useChat(options: UseChatOptions = {}) {
           setLiveTools([]);
         }
         if (!data.queued && data.placed) {
-          const { messages, activity: jobActivity } = separateJobResults([data.message]);
-          const message = messages[0];
-          if (message !== undefined) {
-            setMessages((current) =>
-              current.some((item) => item.id === message.id) ? current : [...current, message],
-            );
-          }
-          if (jobActivity.length > 0) {
-            setActivity((current) => addJobActivity(current, jobActivity));
-          }
-          if (message !== undefined && message.steerKey !== undefined) {
+          const message = data.message;
+          setMessages((current) =>
+            current.some((item) => item.id === message.id) ? current : [...current, message],
+          );
+          if (message.steerKey !== undefined) {
             setSteers((current) => consumeSteer(current, message.steerKey));
           }
         }

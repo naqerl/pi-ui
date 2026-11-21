@@ -60,7 +60,7 @@ describe("notice policy against one shared app", { serial: true }, () => {
     await browser.unrouteAll();
   });
 
-  test("a finished job shows only on the activity page with its details", async ({
+  test("a finished job shows a chat chip and its activity row", async ({
     app,
     browser,
     screen,
@@ -82,10 +82,36 @@ describe("notice policy against one shared app", { serial: true }, () => {
       )
       .toBe(true);
 
-    // The result never becomes a chat notice or a user message.
+    // The stored entry also feeds one chat chip where the notice woke the agent, and the
+    // result is never a user bubble.
     await app.open("/");
-    await expect.poll(() => jobNotice(browser), { timeout: 10_000 }).toBe(false);
+    await expect.poll(() => jobNotice(browser), { timeout: 10_000 }).toBe(true);
     expect(await rawBubbles(browser)).toBe(0);
+    const jobChips = await notices(browser);
+    expect(jobChips.filter((notice) => notice.kind === "job")).toHaveLength(1);
+    const chip = jobChips.find((notice) => notice.kind === "job");
+    expect(chip?.role).toBe("system");
+    expect(chip?.summary ?? "").toContain(marker);
+    expect(chip?.summary ?? "").toContain("failed ✗ exit 4");
+    const state: ChatState = await chatState(browser);
+    expect(
+      (state.messages ?? []).filter(
+        (message) => message.notice?.kind === "job" && (message.text ?? "").includes(marker),
+      ),
+    ).toHaveLength(1);
+
+    // The chip opens the same job details as its activity row.
+    await browser.evaluate(() => {
+      document
+        .querySelector<HTMLElement>('[data-testid="chat-notice"][data-notice-kind="job"]')
+        ?.click();
+      return null;
+    });
+    await expect.poll(() => dialogText(browser)).not.toBeNull();
+    const chipDialog = await dialogText(browser);
+    expect(chipDialog).toMatch(/Exit code\s*4/);
+    expect(chipDialog).toMatch(new RegExp(`Command\\s*sleep 1; echo ${marker}; exit 4`));
+    expect(chipDialog).toMatch(new RegExp(`Last output[\\s\\S]*${marker}`));
 
     await app.open("/activity");
     await expect

@@ -530,7 +530,7 @@ jobs.setNotifier((job, tail) => {
     void delegates
       .submitJobNotice(job.owner.runId, text)
       .then((delivered) => {
-        // A run that already ended is not woken for a job result; the activity row remains.
+        // A run that already ended is not woken for a job result; its chip and row remain.
         if (!delivered) return chat.recordNotice(text);
       })
       .catch((error: unknown) => {
@@ -542,7 +542,7 @@ jobs.setNotifier((job, tail) => {
     void taskAgents
       .submitJobNotice(job.owner.taskId, text)
       .then((delivered) => {
-        // A closed plan pane is not woken for a job result; the activity row remains.
+        // A closed plan pane is not woken for a job result; its chip and row remain.
         if (!delivered) return chat.recordNotice(text);
       })
       .catch((error: unknown) => {

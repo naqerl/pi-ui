@@ -243,7 +243,7 @@ export interface ThinkingActivity {
   usage?: TokenSpend;
 }
 
-/** A background job result. It belongs on the activity page, not in the chat. */
+/** A background job result: one activity row, fed by the same entry as the chat chip. */
 export interface JobActivity {
   kind: "job";
   id: string;
