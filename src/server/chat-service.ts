@@ -211,6 +211,26 @@ function filterStatusIdentityForDelivery(
   return eventFeed.filterStatusIdentityNotice(text);
 }
 
+/**
+ * One durable id for a status episode. The chip written at intake and the
+ * escalated/recovery deliveries name the same row, so the transcript updates
+ * that chip instead of leaving a stale down chip beside a second one.
+ */
+function mcpStatusNotice(
+  eventFeed: McpEventFeed | undefined,
+  text: string,
+  knownIdentities?: Array<{ stableId: string }>,
+): { noticeId: string; key: string; label: string } {
+  const identities = knownIdentities ?? eventFeed?.statusIdentities(text) ?? [];
+  const stableIds = [...new Set(identities.map((item) => item.stableId))].sort();
+  return {
+    noticeId:
+      stableIds.length > 0 ? `mcp/status#${stableIds.join("|")}` : `mcp/status#${randomUUID()}`,
+    key: "mcp/status",
+    label: "MCP status",
+  };
+}
+
 interface SubmitOptions {
   /** Durable deduplication key, used by recovery and queue restoration. */
   requestId?: string;
@@ -2455,14 +2475,20 @@ export class ChatService {
       if (delivered === null) return;
       const at = new Date().toISOString();
       const status = delivered.startsWith(MCP_STATUS_HEAD);
-      const kind = status ? "status" : "notice";
+      const notice = status
+        ? mcpStatusNotice(this.eventFeed, delivered)
+        : {
+            noticeId: `mcp/notice#${randomUUID()}`,
+            key: "mcp/notice",
+            label: "MCP notice",
+          };
       await this.submit(delivered, deliverAs === "steer" ? "steer" : "queue", {
         entry: {
           kind: MCP_NOTICE_ENTRY_KIND,
-          label: status ? "MCP status" : "MCP notice",
+          label: notice.label,
           data: {
-            noticeId: `mcp/${kind}#${randomUUID()}`,
-            key: `mcp/${kind}`,
+            noticeId: notice.noticeId,
+            key: notice.key,
             text: delivered,
             at,
             createdAt: at,
@@ -2594,16 +2620,20 @@ export class ChatService {
       const delivered = filterStatusIdentityForDelivery(this.eventFeed, text);
       if (delivered === null) continue;
       const identity = texts.length === 1 ? base : `${base}:${index}`;
+      const status = delivered.startsWith(MCP_STATUS_HEAD);
+      const notice = status
+        ? mcpStatusNotice(this.eventFeed, delivered)
+        : { noticeId: identity, key: identity, label: "MCP events" };
       this.lastMcpNoticeText = delivered;
       await this.submit(delivered, "queue", {
         requestId: identity,
         queueKey: identity,
         entry: {
           kind: MCP_NOTICE_ENTRY_KIND,
-          label: "MCP events",
+          label: notice.label,
           data: {
-            noticeId: identity,
-            key: identity,
+            noticeId: notice.noticeId,
+            key: notice.key,
             text: delivered,
             at: item.at,
             createdAt: item.at,
@@ -2659,13 +2689,11 @@ export class ChatService {
         this.armMcpOutageTimer(stableId);
       }
     }
-    const stableIds = [...new Set(identities.map((item) => item.stableId))].sort();
-    const noticeId =
-      stableIds.length > 0 ? `mcp/status#${stableIds.join("|")}` : `mcp/status#${randomUUID()}`;
+    const notice = mcpStatusNotice(this.eventFeed, text, identities);
     const at = new Date().toISOString();
     const entry = await appendMcpNotice(this.conversation, {
-      noticeId,
-      key: "mcp/status",
+      noticeId: notice.noticeId,
+      key: notice.key,
       text,
       at,
     });
@@ -2673,7 +2701,7 @@ export class ChatService {
     // other MCP notice update; a reload reads the same durable row.
     if (typeof this.conversation.entries === "function") await this.syncTranscript();
     this.noteEntry(entry);
-    const message = this.transcript.mcpChip(noticeId);
+    const message = this.transcript.mcpChip(notice.noticeId);
     if (message !== undefined) {
       this.hub.broadcast({ event: "notice", data: { message } satisfies StreamNotice });
     }
