@@ -749,6 +749,7 @@ function TasksViewImpl({
         key={task.id}
         task={task}
         draft={task.status === "planning"}
+        planningLive={planning.has(task.id)}
         showProject={showProject}
         selected={openTaskId === task.id}
         notice={problem?.id === task.id ? problem.message : null}
@@ -1535,13 +1536,14 @@ export function TaskRow({
   );
 }
 
-function ProposedTask({
+export function ProposedTask({
   task,
   showProject,
   selected,
   notice,
   onOpen,
   draft = false,
+  planningLive = false,
 }: {
   task: Task;
   showProject: boolean;
@@ -1550,6 +1552,8 @@ function ProposedTask({
   onOpen: () => void;
   /** A plan draft is approved into open work, not a proposed idea. */
   draft?: boolean;
+  /** The plan agent has a live run, so the decision tag is not yet the operator's turn. */
+  planningLive?: boolean;
 }) {
   return (
     <li
@@ -1585,10 +1589,18 @@ function ProposedTask({
         <TaskCardMeta
           task={task}
           project={showProject ? task.project : undefined}
-          planning={task.questions != null}
+          planning={planningLive || task.questions != null}
         >
-          <Badge variant="outline" data-testid="task-decision-tag">
-            {draft ? "Draft" : "Needs you"}
+          <Badge
+            variant="outline"
+            data-testid="task-decision-tag"
+            title={
+              planningLive
+                ? "The plan agent is running"
+                : "The plan agent finished — review the plan or answer its questions"
+            }
+          >
+            {planningLive ? "Planning" : "Waits approval"}
           </Badge>
           {task.questions != null && (
             <TaskQuestionsBadge

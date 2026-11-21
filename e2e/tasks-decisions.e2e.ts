@@ -314,7 +314,7 @@ describe("task decisions against one shared app", { serial: true }, () => {
 
       const card = screen.getByTestId(`proposal-${proposal.id}`);
       await expect(card).toBeVisible();
-      await expect(card.getByTestId("task-decision-tag")).toHaveText("Needs you");
+      await expect(card.getByTestId("task-decision-tag")).toHaveText("Waits approval");
       await expect(card.getByRole("button", { name: /approve/i })).toHaveCount(0);
       await expect(card.getByRole("button", { name: /dismiss/i })).toHaveCount(0);
 

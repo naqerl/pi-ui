@@ -15,6 +15,7 @@ import {
   doneDayLabel,
   groupByDay,
   groupByProject,
+  ProposedTask,
   TaskDetail,
   TaskRow,
   TaskTimes,
@@ -90,6 +91,20 @@ function renderTaskCard(task: Task, planning: readonly string[] = []) {
       problem: null,
       menuTaskId: null,
       onOpenMenu: () => {},
+      onOpen: () => {},
+    }),
+  );
+}
+
+function renderProposedTask(task: Task, planningLive = false) {
+  return renderToStaticMarkup(
+    createElement(ProposedTask, {
+      task,
+      draft: task.status === "planning",
+      planningLive,
+      showProject: false,
+      selected: false,
+      notice: null,
       onOpen: () => {},
     }),
   );
@@ -377,6 +392,74 @@ test("a planning task row shows the live planning badge", () => {
   const live = renderTaskCard(task, [task.id]);
   assert.match(live, /data-testid="task-planning-card-planning"/);
   assert.match(live, /data-state="planning"/);
+});
+
+test("a proposed card's decision tag names the plan run, not the approval", () => {
+  const draft: Task = {
+    id: "card-draft-tag",
+    title: "Specify the launch",
+    status: "planning",
+    parentId: null,
+    blockedBy: [],
+    createdAt: "2026-01-01T12:00:00.000Z",
+    completedAt: null,
+    completion: null,
+  };
+  const live = renderProposedTask(draft, true);
+  assert.match(
+    live,
+    /data-testid="task-decision-tag"[^>]*title="The plan agent is running"[^>]*>Planning</,
+  );
+
+  const stopped = renderProposedTask(draft);
+  assert.match(
+    stopped,
+    /data-testid="task-decision-tag"[^>]*title="The plan agent finished — review the plan or answer its questions"[^>]*>Waits approval</,
+  );
+  assert.doesNotMatch(stopped, />Draft</);
+  assert.doesNotMatch(stopped, />Needs you</);
+  assert.match(stopped, /data-state="planning"/);
+  assert.match(stopped, /aria-label="Open draft Specify the launch"/);
+
+  const proposal: Task = {
+    ...draft,
+    id: "card-proposal-tag",
+    title: "Propose the launch",
+    status: "proposed",
+  };
+  const proposed = renderProposedTask(proposal);
+  assert.match(proposed, /data-testid="task-decision-tag"[^>]*>Waits approval</);
+  assert.match(proposed, /data-state="proposed"/);
+  assert.match(proposed, /aria-label="Open proposal Propose the launch"/);
+});
+
+test("a stopped draft with questions keeps Waits approval and names the reason", () => {
+  const task: Task = {
+    id: "card-draft-questions",
+    title: "Specify the launch",
+    status: "planning",
+    parentId: null,
+    blockedBy: [],
+    createdAt: "2026-01-01T12:00:00.000Z",
+    completedAt: null,
+    completion: null,
+    questions: {
+      id: "set-1",
+      taskId: "card-draft-questions",
+      createdAt: "2026-01-01T12:05:00.000Z",
+      questions: [
+        { id: "q1", prompt: "Which launch?", kind: "text" },
+        { id: "q2", prompt: "Which region?", kind: "text" },
+      ],
+    },
+  };
+  const markup = renderProposedTask(task);
+  assert.match(
+    markup,
+    /data-testid="task-decision-tag"[^>]*title="The plan agent finished — review the plan or answer its questions"[^>]*>Waits approval</,
+  );
+  assert.match(markup, /data-testid="task-questions-card-draft-questions"[^>]*>Questions 2</);
+  assert.match(markup, /data-testid="task-card-meta"[^>]*flex-nowrap/);
 });
 
 test("a done task card shows the created and closed times", () => {
