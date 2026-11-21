@@ -1,7 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { Context } from "@earendil-works/chord";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import {
   AssistantEntry,
@@ -677,7 +676,7 @@ async function writeCurrentConversationId(
 
 /**
  * A process that died mid-turn reopens with live durable work. pi-durable owns
- * resuming that work from its last checkpoint, so leave it pending. A stop
+ * recovering that work from its last checkpoint, so leave it pending. A stop
  * requested before the restart is the exception: settle it once and keep the
  * partial answer instead of replaying the request.
  */
@@ -805,7 +804,8 @@ export async function appendInterruptionNote(
   if (alreadyRecorded) return;
 
   // A run that left no reply and was not stopped has nothing to report. A partial
-  // run that was not stopped gets a note, because boot resumes that run.
+  // run that was not stopped gets a note, because boot recovers that run, and may
+  // end it interrupted when the in-flight request left no retry.
   const note = marker.stopRequested
     ? "The previous run was stopped before the server restarted. The last response may be partial."
     : marker.partialEntryId !== null
