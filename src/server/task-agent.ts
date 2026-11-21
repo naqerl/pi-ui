@@ -644,7 +644,7 @@ Plan mode only:
 ${memoryPolicy}
 - You may use the read and bash tools to inspect the repository.
 ${look}- You have additional tools, edit_task, propose_task, ask_questions and append_questions. edit_task updates this task's title, markdown body and/or project. Use it to capture the formulated task: a clear title, a markdown body in the sections below, and a project when one fits.
-- Use propose_task to hand a follow-up task to the operator for approval. A proposal is not a task: only a human approving it creates work, so do not treat it as started or done. Do not propose a duplicate of the task you are planning; propose only distinct follow-up work.
+- Use propose_task with the prompt for a follow-up task. It saves a planning draft whose title and body are that prompt and starts its own plan agent; the operator approves the draft when its body is ready. There is no rationale or flag to pass. Do not propose a duplicate of the task you are planning; propose only distinct follow-up work.
 - Investigate before asking. Read the files, the task body, the docs and prior tasks with read/bash
   first; most questions answer themselves.
 - Decide alone: naming, file layout, data shape, library choice, UI micro-layout, defaults, test
@@ -2408,13 +2408,7 @@ export class TaskAgentManager {
     registry.install(
       defineExtension({
         name: "task-agent-propose-tool",
-        tools: [
-          createProposeTaskTool({
-            store: this.options.store,
-            media: this.options.media,
-            publish: this.options.publish,
-          }),
-        ],
+        tools: [this.proposeTool()],
       }),
     );
     registry.install(
@@ -2511,6 +2505,18 @@ export class TaskAgentManager {
     );
     await session.start();
     return session;
+  }
+
+  /** The plan agent's propose_task, with this manager as the submitter of the new draft's run. */
+  proposeTool(): ToolRegistration {
+    return createProposeTaskTool({
+      store: this.options.store,
+      media: this.options.media,
+      plan: async (id, body) => {
+        await this.submit(id, body);
+      },
+      publish: this.options.publish,
+    });
   }
 
   /** The plan keeps its own snapshot cache for instructions while tools share the chat's cache. */

@@ -124,10 +124,11 @@ test("agent tools take an optional project and show it", async () => {
     await store.load();
     const published: TaskLedger[] = [];
     const tools = new Map(
-      createTaskTools({ store, publish: (ledger) => published.push(ledger) }).map((tool) => [
-        tool.name,
-        tool,
-      ]),
+      createTaskTools({
+        store,
+        plan: async () => {},
+        publish: (ledger) => published.push(ledger),
+      }).map((tool) => [tool.name, tool]),
     );
     const call = async (name: string, args: Record<string, unknown>) => {
       const result = await tools.get(name)?.execute(args as never, {} as never, {} as never);
@@ -141,13 +142,11 @@ test("agent tools take an optional project and show it", async () => {
       /@citydiff Fix the build/,
     );
     assert.match(await call("task_view", { id }), /project=citydiff/);
-    await call("propose_task", {
-      title: "Trim logs",
-      rationale: "Logs fill the disk every week on the box.",
-      project: "pi-ui",
-    });
-    assert.equal(store.ledger().tasks.find((task) => task.title === "Trim logs")?.project, "pi-ui");
-    assert.match(await call("task_proposals", {}), /@pi-ui Trim logs/);
+    await call("propose_task", { prompt: "Trim logs", project: "pi-ui" });
+    const draft = store.ledger().tasks.find((task) => task.title === "Trim logs");
+    assert.equal(draft?.status, "planning");
+    assert.equal(draft?.project, "pi-ui");
+    assert.match(await call("task_list", { includePlanning: true }), /@pi-ui Trim logs/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

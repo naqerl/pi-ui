@@ -6,6 +6,10 @@
 - The plan agent is told what a task body is for: one goal line, requirements, Gherkin scenarios and the architecture it must fit, so a proposed draft reads as a specification instead of an essay. (dq3h)
 - `propose_task` asks the planner for a draft: the draft is created through the same helper the composer uses, so it opens in the plan chat under one shared code path. (j6n7)
 
+### Changed
+
+- `propose_task` takes a single `prompt` with optional `project` and `attachments`, and always starts the plan agent on a new planning draft whose title and body are that prompt. The proposal-only `title`, `rationale`, `body` and `plan` parameters are gone, a plan agent's follow-up starts its own plan run, and a draft created by the tool is attributed to the agent.
+
 ### Fixed
 
 - The step between the task body and its chat is 8px, and the 16px gap sits only between the list and the details column, so a wide layout no longer opens a hole under the header. (ct9c)
