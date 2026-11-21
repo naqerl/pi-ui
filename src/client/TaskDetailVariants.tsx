@@ -51,6 +51,7 @@ export interface TaskDetailModel {
   state: TaskState;
   trace: TaskTrace | undefined;
   wide: boolean;
+  dockClearance: number;
   /** This task's plan agent currently has a live run. */
   planning: boolean;
   statusPending: boolean;
@@ -1160,6 +1161,7 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
             aria-label="Plan"
             aria-hidden={tab !== "plan"}
             inert={tab !== "plan" || undefined}
+            style={{ paddingBottom: model.dockClearance > 0 ? model.dockClearance : undefined }}
           >
             <PlanSections model={model} />
           </section>

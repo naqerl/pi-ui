@@ -329,6 +329,7 @@ function TasksViewImpl({
   planning: planningIds = [],
   activity,
   ready,
+  footerClearance,
   onLedger,
   selection = null,
   onOpenTask,
@@ -846,6 +847,7 @@ function TasksViewImpl({
         state={state(openTask)}
         trace={activity?.traces[openTask.id]}
         wide={wide}
+        dockClearance={footerClearance}
         planning={
           planning.has(openTask.id) &&
           (isActiveStatus(openTask.status) || openTask.status === "planning")
@@ -1719,6 +1721,7 @@ export function TaskDetail({
   state,
   trace,
   wide,
+  dockClearance = 0,
   planning = false,
   statusPending = false,
   notice,
@@ -1736,6 +1739,8 @@ export function TaskDetail({
   state: TaskState;
   trace: TaskTrace | undefined;
   wide: boolean;
+  /** Bottom clearance for the plan scroller while the dock floats over it. */
+  dockClearance?: number;
   /** This task's plan agent currently has a live run. */
   planning?: boolean;
   statusPending?: boolean;
@@ -1970,6 +1975,7 @@ export function TaskDetail({
       state,
       trace,
       wide,
+      dockClearance,
       planning,
       statusPending,
       notice,
