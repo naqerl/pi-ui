@@ -569,6 +569,7 @@ function Subtasks({ model, heading = true }: { model: TaskDetailModel; heading?:
           <RelationRow key={child.id} wide={model.wide} done={child.status === "done"}>
             <button
               type="button"
+              data-task-open={child.id}
               onClick={() => model.onOpen(child.id)}
               className="min-w-0 flex-1 text-left text-sm leading-5 [overflow-wrap:anywhere] underline-offset-4 hover:underline"
             >

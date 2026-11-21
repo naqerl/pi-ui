@@ -64,9 +64,11 @@ import { useMediaPicker } from "./media-picker";
 import { ChipButton, NoticeLine } from "./NoticeView";
 import { PiMenu } from "./PiMenu";
 import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
+import { rememberRecentTask } from "./recent-tasks";
 import { RunErrorHeader } from "./RunErrorHeader";
 import type { ChatStats } from "./StatsView";
 import { createTask } from "./task-client";
+import { TaskCycleHud } from "./TaskCycleHud";
 import {
   TaskDockComposerProvider,
   type TaskDockSession,
@@ -85,6 +87,7 @@ import { type DockPhase, useDockScan } from "./use-dock-scan";
 import { usePager } from "./use-pager";
 import { type PresenceState, usePresence, useReducedMotion } from "./use-presence";
 import { useStickToBottom } from "./use-stick-to-bottom";
+import { type TaskCycleHint, useTaskCycle } from "./use-task-cycle";
 import { WorkingIndicator } from "./WorkingIndicator";
 import { workingWord } from "./working-state";
 
@@ -150,6 +153,8 @@ const TASKS_PAGE = 2;
 const PAGE_SETTLE_MS = 320;
 // A fast snapshot should never flash a loading card; a slow one gets an honest placeholder.
 const TRANSCRIPT_LOADING_DELAY_MS = 180;
+// The task-cycle HUD is a glance, not a notification; the last press owns its timer.
+const TASK_CYCLE_HINT_MS = 1400;
 
 function pageFromLocation(): number {
   // A task-plan push opens the tasks page and the detail itself; the hash route
@@ -2011,6 +2016,57 @@ export function ChatView({
     return painted.length === 0 ? tasks : [...tasks, ...painted.map((item) => item.task)];
   }, [tasks, optimisticTasks]);
 
+  // The detail TasksView reports as open. It clears on close, so a new burst starts from
+  // the most recent ring entry instead of advancing from a detail that is no longer up.
+  const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+  const ledgerTasksRef = useRef(tasks);
+  ledgerTasksRef.current = tasks;
+  const [cycleHint, setCycleHint] = useState<TaskCycleHint | null>(null);
+  const cycleHintTimer = useRef<number | null>(null);
+  const rememberOpenedTask = useCallback((id: string) => {
+    rememberRecentTask(id, ledgerTasksRef.current);
+    setOpenTaskId(id);
+  }, []);
+  const openCycledTask = useCallback(
+    (id: string) => {
+      // The detail learns the open through TasksView as well; doing it here keeps the
+      // ring and the cycle position current even if the ledger is not ready to paint yet.
+      rememberOpenedTask(id);
+      pager.setPage(TASKS_PAGE);
+      setTaskSelection((current) => ({ id, request: (current?.request ?? 0) + 1 }));
+    },
+    [pager.setPage, rememberOpenedTask],
+  );
+  const showCycleHint = useCallback((hint: TaskCycleHint) => {
+    haptic();
+    setCycleHint(hint);
+    if (cycleHintTimer.current !== null) window.clearTimeout(cycleHintTimer.current);
+    cycleHintTimer.current = window.setTimeout(() => {
+      cycleHintTimer.current = null;
+      setCycleHint(null);
+    }, TASK_CYCLE_HINT_MS);
+  }, []);
+  const resetTaskCycle = useTaskCycle({
+    tasks,
+    currentId: openTaskId,
+    onOpen: openCycledTask,
+    onHint: showCycleHint,
+  });
+  const handleTaskDetailChange = useCallback(
+    (id: string | null) => {
+      setOpenTaskId(id);
+      // A closed detail is not a position in the ring; the next press starts from the front.
+      if (id === null) resetTaskCycle();
+    },
+    [resetTaskCycle],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (cycleHintTimer.current !== null) window.clearTimeout(cycleHintTimer.current);
+    };
+  }, []);
+
   // A task event can land before the create response. Retire the painted card as soon as
   // a row that was not already in the ledger at paint time carries the same title.
   useEffect(() => {
@@ -2217,10 +2273,14 @@ export function ChatView({
 
   const openTaskFromChat = useCallback(
     (id: string) => {
+      // A hand-picked task ends the current burst; the next Ctrl+Tab starts from it.
+      resetTaskCycle();
+      // Remember it now so a press before the task page paints still starts from this task.
+      rememberOpenedTask(id);
       pager.setPage(TASKS_PAGE);
       setTaskSelection((current) => ({ id, request: (current?.request ?? 0) + 1 }));
     },
-    [pager.setPage],
+    [pager.setPage, rememberOpenedTask, resetTaskCycle],
   );
 
   const clearComposerDraft = useCallback(
@@ -2528,6 +2588,8 @@ export function ChatView({
                   footerClearance={0}
                   onLedger={applyTasks}
                   selection={taskSelection}
+                  onOpenTask={rememberOpenedTask}
+                  onTaskDetailChange={handleTaskDetailChange}
                   onComposerMode={setComposerMode}
                   createFailures={createFailures}
                 />
@@ -2535,6 +2597,11 @@ export function ChatView({
             </section>
           </div>
         </div>
+        {cycleHint !== null && (
+          <div className="pointer-events-none absolute inset-x-0 top-lg z-30 flex justify-center px-2xl">
+            <TaskCycleHud hint={cycleHint} />
+          </div>
+        )}
         {ready && groups.length === 0 && pager.page === CHAT_PAGE && (
           <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center px-2xl">
             <EmptyCaption mono>Send a message to start.</EmptyCaption>
