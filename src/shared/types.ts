@@ -478,7 +478,7 @@ export interface Task {
   title: string;
   status: TaskStatus;
   parentId: string | null;
-  /** Other task ids. A done blocker no longer keeps this task blocked. */
+  /** Other task ids this task depends on. Done, backlog, proposed and missing ids do not gate. */
   blockedBy: string[];
   createdAt: string;
   /** When this task was proposed, or null once a human approved it. */

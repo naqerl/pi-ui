@@ -144,6 +144,10 @@ test("blocked only by open blockers, and a failed run outranks a blocker", () =>
   assert.equal(taskState([a, blocker], a, activity()), "blocked");
   const closed = task("b", { status: "done" });
   assert.equal(taskState([a, closed], a, activity()), "ready");
+  const planning = task("b", { status: "planning" });
+  assert.equal(taskState([a, planning], a, activity()), "blocked");
+  const parked = task("b", { status: "backlog" });
+  assert.equal(taskState([a, parked], a, activity()), "ready");
   const failed = activity({
     traces: { a: trace({ lastRun: { id: "r1", outcome: "error", at: NOW } }) },
   });

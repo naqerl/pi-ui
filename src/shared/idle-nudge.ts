@@ -1,5 +1,5 @@
 import { STALE_WORKING_MS } from "./task-status.js";
-import { isActiveStatus, isReleasedTask } from "./tasks.js";
+import { isActiveStatus, isPendingStatus, isReleasedTask } from "./tasks.js";
 import type { Task, TaskActivity } from "./types.js";
 
 /**
@@ -172,11 +172,13 @@ export function staleRunTaskIds(
 ): string[] {
   if (activity === undefined || !activity.running || activity.runId === null) return [];
   if (windowMs <= 0) return [];
-  const open = new Set(tasks.filter((task) => isActiveStatus(task.status)).map((task) => task.id));
+  const pending = new Set(
+    tasks.filter((task) => isPendingStatus(task.status)).map((task) => task.id),
+  );
   const ids: string[] = [];
   for (const task of tasks) {
     if (!isActiveStatus(task.status)) continue;
-    if ((task.blockedBy ?? []).some((id) => open.has(id))) continue;
+    if ((task.blockedBy ?? []).some((id) => pending.has(id))) continue;
     const trace = activity.traces[task.id];
     const run = trace?.lastRun;
     if (run?.outcome !== "running" || run.id !== activity.runId) continue;
@@ -203,18 +205,11 @@ export function staleRunNudgeText(taskIds: readonly string[]): string {
 }
 
 /**
- * Open tasks that are ready to pick. A blocker blocks only while it is itself
- * open; a done, proposed, or missing blocker id is no longer a gate.
+ * Open tasks that are ready to pick. A dependency gates while it is open, working
+ * or planning; done, backlog, proposed and missing ids are not gates.
  */
 export function openTaskIds(tasks: readonly IdleTask[]): string[] {
-  const live = new Set(
-    tasks
-      .filter((task) => {
-        const state = taskState(task);
-        return state === "open" || state === "working";
-      })
-      .map((task) => task.id),
-  );
+  const live = liveOpenIds(tasks);
   return tasks
     .filter((task) => taskState(task) === "open")
     .filter((task) => !(task.blockedBy ?? []).some((id) => live.has(id)))
@@ -231,14 +226,7 @@ export function workingTaskIds(tasks: readonly IdleTask[]): string[] {
 }
 
 function liveOpenIds(tasks: readonly IdleTask[]): Set<string> {
-  return new Set(
-    tasks
-      .filter((task) => {
-        const state = taskState(task);
-        return state === "open" || state === "working";
-      })
-      .map((task) => task.id),
-  );
+  return new Set(tasks.filter((task) => isPendingStatus(task.status)).map((task) => task.id));
 }
 
 /** A task-id to open-blocker-ids map that also offers the familiar Map accessors. */
@@ -253,8 +241,8 @@ export type WaitingOn = Record<string, string[]> & {
 };
 
 /**
- * For each open task that still has open blockers, the ids of those blockers.
- * Missing, done and proposed blocker ids are not waiting on anything.
+ * For each open task that still has pending dependencies, the ids of those
+ * dependencies. Missing, done, backlog and proposed ids are not waiting on anything.
  */
 export function waitingOn(tasks: readonly IdleTask[]): WaitingOn {
   const live = liveOpenIds(tasks);

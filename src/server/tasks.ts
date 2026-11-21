@@ -5,7 +5,7 @@ import type { TaskDecisionNoticeRecord } from "../shared/notices.js";
 import { PAGE_PATHS } from "../shared/pages.js";
 import { normalizeProject, PROJECT_MAX_LENGTH, sameProject } from "../shared/project.js";
 import {
-  blockerClosesCycle,
+  dependencyCyclePath,
   descendantIds,
   hasOpenDescendant,
   isActiveStatus,
@@ -1037,7 +1037,10 @@ function normalizeBlockers(
     // A proposal is not work, so it can never gate another task.
     if (blocker.status === "proposed") continue;
     if (next.includes(entry)) continue;
-    if (blockerClosesCycle(tasks, id, entry)) throw new TaskError("Blockers would cycle", 409);
+    const cycle = dependencyCyclePath(tasks, id, entry);
+    if (cycle.length > 0) {
+      throw new TaskError(`Blockers would cycle: ${cycle.join(" → ")}`, 409);
+    }
     next.push(entry);
   }
   return next;

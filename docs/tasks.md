@@ -52,6 +52,40 @@ body or flag to pass. A follow-up proposed by a plan agent becomes its own plann
 own plan agent. If the plan run fails to start, the draft is still saved and the tool reports that
 the run did not start.
 
+## Depends on
+
+A task's dependencies are its `blockedBy` ids. The relation is printed as `depends-on=` in
+the ledger and in every task tool: the ledger line shows every stored dependency, with `(done)`
+marking a satisfied one, and `task_view` shows both directions as `depends-on=` and `required-by=`
+with id, status and title. There is no separate reverse field; "required by" is derived.
+
+A dependency gates while its status is `open`, `working` or `planning`. `done`, `backlog`,
+`proposed` and a missing id are not gates, and one predicate in `src/shared/tasks.ts` keeps the
+ledger, task state, index and idle nudges in agreement. `task_depends` replaces a task's whole
+dependency list (an empty list clears it) and refuses an unknown id, a self-dependency, a proposed
+or backlog dependency, and any cycle with 409 and nothing written. A cycle message names the path,
+for example `Blockers would cycle: a1 → b2 → a1`. `task_block` still creates a new task that gates
+an existing one.
+
+Starting a task with a pending dependency is refused before any write. The refusal states the law —
+a task may only start after every task it depends on is implemented and marked done — then lists
+each pending dependency as `id status title`, notes when one is still being planned and waiting for
+approval, and names the two ways forward: implement and `task_done` those ids first, or correct the
+order with `task_depends`. A satisfied dependency never refuses, and `task_done` is never gated:
+dependencies gate starting, not finishing.
+
+The plan agent reads before it designs. It lists the other tasks in its project with `task_list`,
+opens related ones with `task_view`, and aligns by naming the shared module, API or type and the
+order in which both tasks land instead of designing a second mechanism. It records a real ordering
+with `task_depends` in one direction only; a task still in `planning` is read to avoid conflict, not
+treated as approved work whose outcome the design can assume.
+
+Plan sessions install one scoped `createTaskTools` factory. With a scope, `task_list` lists every
+task in the planned task's project, including planning drafts and proposed ideas marked "not
+approved"; when the planned task has no project it lists every project and names the project on
+each line. Scoped `task_view` refuses ids outside that project, and scoped `task_depends` accepts
+only an ordering that involves the planned task in either direction.
+
 ## Planning chat
 
 The list composer is gone. A plus-sign button in the dock creates an untitled

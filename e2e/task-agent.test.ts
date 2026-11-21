@@ -68,7 +68,7 @@ after(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
-test("task agents may only call bash, read, edit_task, propose_task, the question tools and memory", () => {
+test("task agents may only call bash, read, edit_task, the task-ledger tools, the question tools and memory", () => {
   const coding = (createCodingTools().tools ?? []).map((tool) => ({ name: tool.name }));
   const memory = createMemoryTools({} as never).map((tool) => ({ name: tool.name }));
   const jobTools = createJobTools({} as never).map((tool) => ({ name: tool.name }));
@@ -78,6 +78,9 @@ test("task agents may only call bash, read, edit_task, propose_task, the questio
     ...jobTools,
     { name: "edit_task" },
     { name: "propose_task" },
+    { name: "task_list" },
+    { name: "task_view" },
+    { name: "task_depends" },
     { name: "ask_questions" },
     { name: "append_questions" },
     { name: "write" },
@@ -95,7 +98,7 @@ test("task agents may only call bash, read, edit_task, propose_task, the questio
       .sort(),
     [...TASK_AGENT_TOOL_NAMES].sort(),
   );
-  assert.equal(TASK_AGENT_TOOL_NAMES.length, 14);
+  assert.equal(TASK_AGENT_TOOL_NAMES.length, 17);
   assert.deepEqual([...TASK_AGENT_TOOL_NAMES].sort(), [
     "append_questions",
     "ask_questions",
@@ -111,6 +114,9 @@ test("task agents may only call bash, read, edit_task, propose_task, the questio
     "memory_write",
     "propose_task",
     "read",
+    "task_depends",
+    "task_list",
+    "task_view",
   ]);
   assert.deepEqual([...TASK_AGENT_MEMORY_TOOL_NAMES].sort(), [
     "memory_find",
@@ -126,6 +132,9 @@ test("task agents may only call bash, read, edit_task, propose_task, the questio
     [...TASK_AGENT_MEMORY_TOOL_NAMES].sort(),
   );
   assert.ok(TASK_AGENT_TOOL_NAMES.includes("propose_task"));
+  assert.ok(TASK_AGENT_TOOL_NAMES.includes("task_list"));
+  assert.ok(TASK_AGENT_TOOL_NAMES.includes("task_view"));
+  assert.ok(TASK_AGENT_TOOL_NAMES.includes("task_depends"));
   assert.equal(TASK_AGENT_TOOL_NAMES.includes("memory_write"), true);
   assert.deepEqual(
     selectTaskAgentTools([{ name: "memory_write" }]).map((tool) => tool.name),
@@ -826,6 +835,12 @@ test("the plan-mode prompt forbids edits and names the edit_task tool", () => {
   assert.match(prompt, /starts its own plan agent/i);
   assert.match(prompt, /no rationale or flag/i);
   assert.match(prompt, /duplicate of the task/i);
+  assert.match(prompt, /task_list/);
+  assert.match(prompt, /task_view/);
+  assert.match(prompt, /task_depends/);
+  assert.match(prompt, /one direction only and never both/i);
+  assert.match(prompt, /still in planning is not approved work/i);
+  assert.match(prompt, /shared module, API or type/i);
   assert.match(prompt, /abcd/);
   assert.match(prompt, /Ship the release/);
   assert.doesNotMatch(prompt, /task_working/);

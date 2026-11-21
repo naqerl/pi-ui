@@ -1,12 +1,11 @@
+import { isPendingStatus } from "./tasks.js";
 import type { Task } from "./types.js";
 
 /** Immutable per-ledger facts. State precedence remains owned by taskState. */
 export function indexTasks(tasks: readonly Task[]) {
   const byId = new Map(tasks.map((task) => [task.id, task]));
-  const active = new Set(
-    tasks
-      .filter((task) => task.status === "open" || task.status === "working")
-      .map((task) => task.id),
+  const pending = new Set(
+    tasks.filter((task) => isPendingStatus(task.status)).map((task) => task.id),
   );
   const children = new Map<string, Task[]>();
   const blockers = new Map<string, string[]>();
@@ -14,7 +13,7 @@ export function indexTasks(tasks: readonly Task[]) {
   for (const task of tasks) {
     blockers.set(
       task.id,
-      task.blockedBy.filter((id) => active.has(id)),
+      task.blockedBy.filter((id) => pending.has(id)),
     );
     if (task.parentId !== null) {
       const group = children.get(task.parentId);

@@ -54,6 +54,7 @@ test("task tools list, mark done, and create a blocker", async () => {
       "task_list",
       "task_proposals",
       "task_view",
+      "task_depends",
       "task_done",
       "task_reopen",
       "task_working",
@@ -86,11 +87,11 @@ test("task tools list, mark done, and create a blocker", async () => {
     ?.trim()
     .split(" ")[0];
   assert.ok(blockerId);
-  assert.match(blocked.text, new RegExp(`${parent.id} open blocked-by=${blockerId}`));
+  assert.match(blocked.text, new RegExp(`${parent.id} open depends-on=${blockerId}`));
 
   const again = text(await call("task_block", { id: parent.id, title: "Check the types" }));
   assert.equal(again.isError, false);
-  assert.match(again.text, new RegExp(`${parent.id} open blocked-by=${blockerId},`));
+  assert.match(again.text, new RegExp(`${parent.id} open depends-on=${blockerId},`));
 
   const missing = text(await call("task_block", { id: "missing", title: "Nope" }));
   assert.equal(missing.isError, true);
@@ -412,4 +413,280 @@ test("task_release parks a working task and refuses everything else", async () =
   );
   assert.equal(refusedDone.isError, true);
   assert.match(refusedDone.text, /Task is done/);
+});
+
+test("task_depends records the ordering in both views and a done dependency stops gating", async () => {
+  const base = (await bridge.store.create("Implement the base layer", null)).tasks.find(
+    (task) => task.title === "Implement the base layer",
+  );
+  const dependent = (await bridge.store.create("Build on the base layer", null)).tasks.find(
+    (task) => task.title === "Build on the base layer",
+  );
+  assert.ok(base);
+  assert.ok(dependent);
+
+  const related = text(await call("task_depends", { id: dependent.id, dependsOn: [base.id] }));
+  assert.equal(related.isError, false);
+  assert.match(related.text, new RegExp(`${dependent.id} open depends-on=${base.id}`));
+  assert.doesNotMatch(related.text, /blocked-by=/);
+
+  const dependentView = text(await call("task_view", { id: dependent.id }));
+  assert.match(
+    dependentView.text,
+    new RegExp(`depends-on=${base.id} open Implement the base layer`),
+  );
+  const baseView = text(await call("task_view", { id: base.id }));
+  assert.match(
+    baseView.text,
+    new RegExp(`required-by=${dependent.id} open Build on the base layer`),
+  );
+
+  const before = bridge.store.ledger().tasks.find((task) => task.id === dependent.id);
+  const refused = text(await call("task_working", { id: dependent.id, note: "start" }));
+  assert.equal(refused.isError, true);
+  assert.match(refused.text, /implemented and marked done/);
+  assert.match(refused.text, new RegExp(`${base.id} open Implement the base layer`));
+  const untouched = bridge.store.ledger().tasks.find((task) => task.id === dependent.id);
+  assert.equal(untouched?.status, "open");
+  assert.equal(untouched?.workingSince, before?.workingSince);
+  assert.equal(untouched?.lastWorkedAt, before?.lastWorkedAt);
+
+  assert.equal(
+    text(await call("task_done", { id: base.id, evidence: "e2e/task-tools.test.ts base" })).isError,
+    false,
+  );
+  const ledger = text(await call("task_list", {}));
+  assert.match(ledger.text, new RegExp(`${dependent.id} open depends-on=${base.id}\\(done\\)`));
+  assert.equal(
+    text(await call("task_working", { id: dependent.id, note: "the base is done" })).isError,
+    false,
+  );
+
+  const finishing = (await bridge.store.create("Finish despite the ordering", null)).tasks.find(
+    (task) => task.title === "Finish despite the ordering",
+  );
+  const pending = (await bridge.store.create("Still pending work", null)).tasks.find(
+    (task) => task.title === "Still pending work",
+  );
+  assert.ok(finishing);
+  assert.ok(pending);
+  assert.equal(
+    text(await call("task_depends", { id: finishing.id, dependsOn: [pending.id] })).isError,
+    false,
+  );
+  const done = text(
+    await call("task_done", { id: finishing.id, evidence: "e2e/task-tools.test.ts ungated" }),
+  );
+  assert.equal(done.isError, false, "task_done is never gated by a pending dependency");
+  assert.match(done.text, new RegExp(`${finishing.id} done`));
+});
+
+test("a planning draft still gates and the refusal names it", async () => {
+  const draft = (
+    await bridge.store.create(
+      "Draft the shared importer",
+      null,
+      [],
+      "pi-ui",
+      "Plan the importer.",
+      { status: "planning" },
+    )
+  ).tasks.find((task) => task.title === "Draft the shared importer");
+  const waiting = (await bridge.store.create("Wire the shared importer", null)).tasks.find(
+    (task) => task.title === "Wire the shared importer",
+  );
+  assert.ok(draft);
+  assert.ok(waiting);
+
+  assert.equal(
+    text(await call("task_depends", { id: waiting.id, dependsOn: [draft.id] })).isError,
+    false,
+  );
+  const refused = text(await call("task_working", { id: waiting.id, note: "start" }));
+  assert.equal(refused.isError, true);
+  assert.match(refused.text, new RegExp(`${draft.id} planning Draft the shared importer`));
+  assert.match(refused.text, /still being planned and waiting for approval/);
+  assert.equal(bridge.store.ledger().tasks.find((task) => task.id === waiting.id)?.status, "open");
+});
+
+test("task_depends refuses unknown, self, unapproved and cyclic orderings without a write", async () => {
+  const first = (await bridge.store.create("First ordered task", null)).tasks.find(
+    (task) => task.title === "First ordered task",
+  );
+  const second = (await bridge.store.create("Second ordered task", null)).tasks.find(
+    (task) => task.title === "Second ordered task",
+  );
+  assert.ok(first);
+  assert.ok(second);
+  assert.equal(
+    text(await call("task_depends", { id: first.id, dependsOn: [second.id] })).isError,
+    false,
+  );
+
+  const cycle = text(await call("task_depends", { id: second.id, dependsOn: [first.id] }));
+  assert.equal(cycle.isError, true);
+  assert.match(cycle.text, new RegExp(`${first.id} → ${second.id} → ${first.id}`));
+  assert.deepEqual(
+    bridge.store.ledger().tasks.find((task) => task.id === second.id)?.blockedBy,
+    [],
+  );
+  assert.deepEqual(bridge.store.ledger().tasks.find((task) => task.id === first.id)?.blockedBy, [
+    second.id,
+  ]);
+
+  const self = text(await call("task_depends", { id: first.id, dependsOn: [first.id] }));
+  assert.equal(self.isError, true);
+  assert.match(self.text, /cycle/i);
+
+  const unknown = text(await call("task_depends", { id: first.id, dependsOn: ["missing-task"] }));
+  assert.equal(unknown.isError, true);
+  assert.match(unknown.text, /Unknown dependency missing-task/);
+  assert.deepEqual(bridge.store.ledger().tasks.find((task) => task.id === first.id)?.blockedBy, [
+    second.id,
+  ]);
+
+  await bridge.store.propose(
+    "Maybe a cache",
+    "Not approved yet, so it cannot gate another task.",
+    [],
+    "pi-ui",
+  );
+  const proposal = bridge.store.ledger().tasks.find((task) => task.title === "Maybe a cache");
+  assert.ok(proposal);
+  const proposed = text(await call("task_depends", { id: first.id, dependsOn: [proposal.id] }));
+  assert.equal(proposed.isError, true);
+  assert.match(proposed.text, /proposed and is not approved work/);
+
+  const parked = (
+    await bridge.store.create("Parked idea", null, [], undefined, undefined, true)
+  ).tasks.find((task) => task.title === "Parked idea");
+  assert.ok(parked);
+  const backlog = text(await call("task_depends", { id: first.id, dependsOn: [parked.id] }));
+  assert.equal(backlog.isError, true);
+  assert.match(backlog.text, /backlog and is not approved work/);
+  assert.deepEqual(
+    bridge.store.ledger().tasks.find((task) => task.id === first.id)?.blockedBy,
+    [second.id],
+    "no refused call changed the stored dependencies",
+  );
+
+  const cleared = text(await call("task_depends", { id: first.id, dependsOn: [] }));
+  assert.equal(cleared.isError, false);
+  assert.doesNotMatch(cleared.text, new RegExp(`${first.id} open depends-on=`));
+  assert.deepEqual(bridge.store.ledger().tasks.find((task) => task.id === first.id)?.blockedBy, []);
+});
+
+test("plan-scoped task tools list the project, refuse another project and allow only its ordering", async () => {
+  const plan = (
+    await bridge.store.create(
+      "Plan the scoped relation",
+      null,
+      [],
+      "pi-ui",
+      "Plan the shared factory.",
+      { status: "planning" },
+    )
+  ).tasks.find((task) => task.title === "Plan the scoped relation");
+  const sameProject = (
+    await bridge.store.create("Share the factory", null, [], "pi-ui")
+  ).tasks.find((task) => task.title === "Share the factory");
+  const sibling = (await bridge.store.create("Another pi-ui task", null, [], "pi-ui")).tasks.find(
+    (task) => task.title === "Another pi-ui task",
+  );
+  const elsewhere = (await bridge.store.create("Website task", null, [], "website")).tasks.find(
+    (task) => task.title === "Website task",
+  );
+  assert.ok(plan);
+  assert.ok(sameProject);
+  assert.ok(sibling);
+  assert.ok(elsewhere);
+  await bridge.store.propose("Maybe a scoped draft", "Read it to avoid conflict.", [], "pi-ui");
+  const proposal = bridge.store
+    .ledger()
+    .tasks.find((task) => task.title === "Maybe a scoped draft");
+  assert.ok(proposal);
+
+  const scoped = new Map(
+    createTaskTools(bridge, { scope: { taskId: plan.id } }).map((tool) => [tool.name, tool]),
+  );
+  const scopedCall = async (name: string, args: Record<string, unknown>) => {
+    const tool = scoped.get(name);
+    assert.ok(tool);
+    return tool.execute(args as never, {} as never, {} as never);
+  };
+
+  const listed = text(await scopedCall("task_list", {}));
+  assert.match(listed.text, new RegExp(`${plan.id} planning .*Plan the scoped relation`));
+  assert.match(listed.text, new RegExp(`${sameProject.id} open .*Share the factory`));
+  assert.match(listed.text, new RegExp(`${proposal.id} proposed .*not approved`));
+  assert.doesNotMatch(listed.text, new RegExp(elsewhere.id));
+
+  await bridge.store.update(elsewhere.id, { status: "done" });
+  assert.equal(
+    text(await scopedCall("task_depends", { id: plan.id, dependsOn: [elsewhere.id] })).isError,
+    false,
+    "the planned task may depend on a task in another project",
+  );
+  const crossProject = text(await scopedCall("task_list", {}));
+  assert.match(
+    crossProject.text,
+    new RegExp(`${plan.id} planning depends-on=${elsewhere.id}\\(done\\)`),
+    "a satisfied cross-project dependency keeps its done marker in the scoped list",
+  );
+
+  const outside = text(await scopedCall("task_view", { id: elsewhere.id }));
+  assert.equal(outside.isError, true);
+  assert.match(outside.text, /outside this plan's project/);
+  assert.equal(text(await scopedCall("task_view", { id: sameProject.id })).isError, false);
+
+  const unrelated = text(
+    await scopedCall("task_depends", { id: sibling.id, dependsOn: [sameProject.id] }),
+  );
+  assert.equal(unrelated.isError, true);
+  assert.match(unrelated.text, /may only change an ordering that involves/);
+  assert.deepEqual(
+    bridge.store.ledger().tasks.find((task) => task.id === sibling.id)?.blockedBy,
+    [],
+  );
+
+  const mixed = text(
+    await scopedCall("task_depends", { id: sibling.id, dependsOn: [plan.id, sameProject.id] }),
+  );
+  assert.equal(mixed.isError, true);
+  assert.match(mixed.text, /may only change an ordering that involves/);
+  assert.deepEqual(
+    bridge.store.ledger().tasks.find((task) => task.id === sibling.id)?.blockedBy,
+    [],
+    "an unrelated id bundled with the planned task is still refused",
+  );
+
+  assert.equal(
+    text(await scopedCall("task_depends", { id: plan.id, dependsOn: [sameProject.id] })).isError,
+    false,
+  );
+  assert.match(
+    text(await scopedCall("task_view", { id: sameProject.id })).text,
+    new RegExp(`required-by=${plan.id} planning Plan the scoped relation`),
+  );
+  assert.equal(
+    text(await scopedCall("task_depends", { id: sibling.id, dependsOn: [plan.id] })).isError,
+    false,
+    "the planned task may also be the dependency in the other direction",
+  );
+
+  const unprojected = (
+    await bridge.store.create("Plan without a project", null, [], undefined, "Pick a project.", {
+      status: "planning",
+    })
+  ).tasks.find((task) => task.title === "Plan without a project");
+  assert.ok(unprojected);
+  const unscopedProject = createTaskTools(bridge, { scope: { taskId: unprojected.id } });
+  const listTool = new Map(unscopedProject.map((tool) => [tool.name, tool])).get("task_list");
+  assert.ok(listTool);
+  const everyProject = await listTool.execute({} as never, {} as never, {} as never);
+  const everyProjectText =
+    everyProject.output?.find((part) => part.type === "text")?.type === "text"
+      ? (everyProject.output.find((part) => part.type === "text") as { text: string }).text
+      : "";
+  assert.match(everyProjectText, new RegExp(`${elsewhere.id} done @website Website task`));
 });

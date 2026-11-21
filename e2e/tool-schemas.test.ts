@@ -123,6 +123,23 @@ test("propose_task takes exactly a prompt, a project and attachments", () => {
   assert.deepEqual(findSchemaViolations("propose_task", schema), []);
 });
 
+test("task_depends takes one task id and a plain array of dependency ids", () => {
+  const tool = collectAgentTools().find((item) => item.name === "task_depends");
+  assert.ok(tool);
+  const schema = tool.parameters as unknown as JsonSchema & {
+    properties?: Record<string, JsonSchema>;
+    required?: unknown;
+  };
+  assert.deepEqual(Object.keys(schema.properties ?? {}).sort(), ["dependsOn", "id"]);
+  assert.deepEqual(schema.required, ["id", "dependsOn"]);
+  const dependsOn = schema.properties?.dependsOn;
+  assert.equal(dependsOn?.type, "array");
+  const items = dependsOn?.items as JsonSchema | undefined;
+  assert.equal(items?.type, "string");
+  assert.equal(Array.isArray(items), false);
+  assert.deepEqual(findSchemaViolations("task_depends", schema), []);
+});
+
 const REQUIRED_APP_TOOLS = [
   "read",
   "write",
@@ -131,6 +148,7 @@ const REQUIRED_APP_TOOLS = [
   "task_list",
   "task_proposals",
   "task_view",
+  "task_depends",
   "task_done",
   "task_working",
   "task_release",

@@ -11,7 +11,7 @@ test("indexed facts preserve every existing state and ordering, including Workin
     seed = (seed * 16807) % 2147483647;
     return seed % n;
   };
-  const statuses = ["open", "working", "done", "proposed", "backlog"] as const;
+  const statuses = ["open", "working", "planning", "done", "proposed", "backlog"] as const;
   for (let iteration = 0; iteration < 30; iteration++) {
     const tasks: Task[] = Array.from({ length: 100 }, (_, i) => ({
       id: `t${i}`,

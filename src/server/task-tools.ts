@@ -4,8 +4,10 @@ import {
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
+import { sameProject } from "../shared/project.js";
 import {
   compareTasks,
+  dependencyCyclePath,
   liveBlockerIds,
   parseCompletion,
   parseReleaseReason,
@@ -38,6 +40,11 @@ export interface PlanDraftInput {
   readonly project?: string | null;
   readonly attachments?: readonly string[];
   readonly createdBy?: NonNullable<Task["createdBy"]>;
+}
+
+/** Narrows the shared task tools to the planning agent's project and task. */
+export interface TaskToolOptions {
+  readonly scope?: { readonly taskId: string };
 }
 
 export interface PlanDraft {
@@ -100,6 +107,13 @@ const blockSchema = Type.Object({
       description:
         "Project of the new blocker. Defaults to the gated task's project; pass it only when the blocker belongs elsewhere.",
     }),
+  ),
+});
+
+const dependsSchema = Type.Object({
+  id: Type.String({ description: "Task id whose dependencies are being set." }),
+  dependsOn: Type.Array(
+    Type.String({ description: "Task id that must be implemented and marked done first." }),
   ),
 });
 
@@ -177,6 +191,40 @@ function workingNote(value: unknown): string | undefined {
   return note.length === 0 ? undefined : note;
 }
 
+function titleOf(task: Task): string {
+  return task.title.replace(/\s+/g, " ").trim();
+}
+
+/** `depends-on=id[,id(done)]`, naming every stored dependency. */
+function dependencyToken(task: Task, byId: ReadonlyMap<string, Task>): string {
+  if (task.blockedBy.length === 0) return "";
+  const ids = task.blockedBy.map((id) => (byId.get(id)?.status === "done" ? `${id}(done)` : id));
+  return ` depends-on=${ids.join(",")}`;
+}
+
+function relationLine(label: string, tasks: readonly Task[]): string {
+  if (tasks.length === 0) return "";
+  return `${label}=${tasks.map((task) => `${task.id} ${task.status} ${titleOf(task)}`).join("; ")}`;
+}
+
+function formatScopedLedger(ledger: TaskLedger, project: string | undefined): string {
+  const tasks = ledger.tasks.filter(
+    (task) =>
+      project === undefined || (task.project !== undefined && sameProject(task.project, project)),
+  );
+  const byId = new Map(ledger.tasks.map((task) => [task.id, task]));
+  const lines = [`revision ${ledger.revision}`];
+  if (tasks.length === 0) lines.push("(empty)");
+  for (const task of [...tasks].sort((a, b) => compareTasks(tasks, a, b))) {
+    const dependency = dependencyToken(task, byId);
+    const projectTag =
+      project === undefined && task.project !== undefined ? ` @${task.project}` : "";
+    const approval = task.status === "proposed" ? " (not approved)" : "";
+    lines.push(`${task.id} ${task.status}${dependency}${projectTag}${approval} ${titleOf(task)}`);
+  }
+  return lines.join("\n");
+}
+
 function formatLedger(ledger: TaskLedger, includePlanning = false): string {
   const lines = [`revision ${ledger.revision}`];
   const active = ledger.tasks.filter(
@@ -186,15 +234,15 @@ function formatLedger(ledger: TaskLedger, includePlanning = false): string {
       (includePlanning || task.status !== "planning"),
   );
   const ids = new Set(active.map((task) => task.id));
+  const byId = new Map(ledger.tasks.map((task) => [task.id, task]));
   const write = (task: Task, depth: number) => {
-    const live = liveBlockerIds(ledger.tasks, task);
-    const blocked = live.length > 0 ? ` blocked-by=${live.join(",")}` : "";
-    const title = task.title.replace(/\s+/g, " ").trim();
+    const dependency = dependencyToken(task, byId);
+    const title = titleOf(task);
     const count = task.attachments?.length ?? 0;
     const images = count > 0 ? ` images=${count}` : "";
     const project = task.project === undefined ? "" : ` @${task.project}`;
     lines.push(
-      `${"  ".repeat(depth)}${task.id} ${task.status}${blocked}${images}${project} ${title}`,
+      `${"  ".repeat(depth)}${task.id} ${task.status}${dependency}${images}${project} ${title}`,
     );
     const children = active
       .filter((item) => item.parentId === task.id)
@@ -304,13 +352,48 @@ function planDraftText(draft: PlanDraft): string {
   return `Draft ${draft.task.id} is saved, but its plan run did not start. Edit the body on the tasks page and approve it there.`;
 }
 
+/** Refuse a dependency list before a write: unknown, self, unapproved and cyclic ids. */
+function validateDependencies(ledger: TaskLedger, id: string, dependsOn: readonly string[]): void {
+  const byId = new Map(ledger.tasks.map((task) => [task.id, task]));
+  for (const dependencyId of dependsOn) {
+    if (dependencyId === id) {
+      const path = dependencyCyclePath(ledger.tasks, id, dependencyId);
+      throw new TaskError(`Blockers would cycle: ${path.join(" → ")}`, 409);
+    }
+    const dependency = byId.get(dependencyId);
+    if (dependency === undefined) {
+      throw new TaskError(`Unknown dependency ${dependencyId}`, 409);
+    }
+    if (dependency.status === "proposed" || dependency.status === "backlog") {
+      throw new TaskError(
+        `${dependencyId} is ${dependency.status} and is not approved work, so it cannot gate a task`,
+        409,
+      );
+    }
+    const cycle = dependencyCyclePath(ledger.tasks, id, dependencyId);
+    if (cycle.length > 0) {
+      throw new TaskError(`Blockers would cycle: ${cycle.join(" → ")}`, 409);
+    }
+  }
+}
+
 /** Tools for the same ledger the tasks page edits. Not deferred, so every turn offers them. */
-export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
+export function createTaskTools(
+  bridge: TaskBridge,
+  options: TaskToolOptions = {},
+): ToolRegistration[] {
+  const scope = options.scope;
+  const scopeProject = (): string | undefined => {
+    if (scope === undefined) return undefined;
+    return bridge.store.ledger().tasks.find((task) => task.id === scope.taskId)?.project;
+  };
   return [
     defineTool({
       name: "task_list",
       description:
-        "List the shared todo ledger: id, status, live blockers, attached image count, @project when set, and title. Ready tasks come first, then blocked, then done. A done blocker is omitted. Proposals and backlog tasks are not work: proposals appear only as a waiting count; use task_proposals to read them. Planning drafts are still being specified and must not be executed yet; they are hidden unless includePlanning is true. Use task_view to see a task's images.",
+        scope === undefined
+          ? "List the shared todo ledger: id, status, depends-on, attached image count, @project when set, and title. Ready tasks come first, then blocked, then done. Every stored dependency is shown; a done dependency is marked (done). Proposals and backlog tasks are not work: proposals appear only as a waiting count; use task_proposals to read them. Planning drafts are still being specified and must not be executed yet; they are hidden unless includePlanning is true. Use task_view to see a task's images."
+          : "List the tasks in this plan's project: id, status, depends-on and title, including planning drafts and proposed ideas marked not approved. With no project set, lists every project and names it on each line.",
       parameters: Type.Object({
         includePlanning: Type.Optional(
           Type.Boolean({
@@ -320,11 +403,15 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
         ),
       }),
       async execute(args) {
+        const ledger = bridge.store.ledger();
         return {
           output: [
             {
               type: "text",
-              text: formatLedger(bridge.store.ledger(), args.includePlanning === true),
+              text:
+                scope === undefined
+                  ? formatLedger(ledger, args.includePlanning === true)
+                  : formatScopedLedger(ledger, scopeProject()),
             },
           ],
         };
@@ -342,18 +429,33 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
     defineTool({
       name: "task_view",
       description:
-        "Show one task in full: its title, status, blockers, project, and the images currently attached to it.",
+        "Show one task in full: its title, status, depends-on and required-by relations, project, and the images currently attached to it.",
       parameters: idSchema,
       async execute(args) {
-        const task = bridge.store.ledger().tasks.find((item) => item.id === args.id);
+        const ledger = bridge.store.ledger();
+        const task = ledger.tasks.find((item) => item.id === args.id);
         if (task === undefined || task.status === "backlog") {
           return failure(new TaskError("Unknown task", 404));
         }
+        const project = scopeProject();
+        if (
+          scope !== undefined &&
+          project !== undefined &&
+          (task.project === undefined || !sameProject(task.project, project))
+        ) {
+          return failure(new TaskError("Task is outside this plan's project", 403));
+        }
+        const byId = new Map(ledger.tasks.map((item) => [item.id, item]));
+        const dependsOn = task.blockedBy
+          .map((id) => byId.get(id))
+          .filter((item): item is Task => item !== undefined);
+        const requiredBy = ledger.tasks.filter((item) => item.blockedBy.includes(task.id));
         const ids = task.attachments ?? [];
         const completion = task.status === "done" ? (task.completion ?? null) : null;
         const header = [
           `${task.id} ${task.status}${task.parentId === null ? "" : ` parent=${task.parentId}`}`,
-          task.blockedBy.length > 0 ? `blocked-by=${task.blockedBy.join(",")}` : "",
+          relationLine("depends-on", dependsOn),
+          relationLine("required-by", requiredBy),
           task.project === undefined ? "" : `project=${task.project}`,
           task.title,
           ...(task.body === undefined ? [] : [task.body]),
@@ -383,6 +485,50 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
           }
         }
         return { output };
+      },
+    }),
+    defineTool({
+      name: "task_depends",
+      description:
+        'Set the whole "Depends on" list for one task. Pass every task id that must be implemented and marked done first, or an empty list to clear the ordering. An unknown id, a task depending on itself, a proposed or backlog dependency, and any cycle are refused without a write. Use task_block to create a new task that gates this one.',
+      parameters: dependsSchema,
+      async execute(args) {
+        const ledger = bridge.store.ledger();
+        const task = ledger.tasks.find((item) => item.id === args.id);
+        if (task === undefined || task.status === "backlog") {
+          return failure(new TaskError("Unknown task", 404));
+        }
+        if (
+          scope !== undefined &&
+          args.id !== scope.taskId &&
+          (args.dependsOn.length === 0 ||
+            !args.dependsOn.every((dependencyId) => dependencyId === scope.taskId))
+        ) {
+          return failure(
+            new TaskError(
+              `task_depends in a plan may only change an ordering that involves ${scope.taskId}`,
+              409,
+            ),
+          );
+        }
+        try {
+          validateDependencies(ledger, args.id, args.dependsOn);
+          const next = await bridge.store.update(args.id, { blockedBy: [...args.dependsOn] });
+          bridge.publish(next);
+          return {
+            output: [
+              {
+                type: "text",
+                text:
+                  scope === undefined
+                    ? formatLedger(next)
+                    : formatScopedLedger(next, scopeProject()),
+              },
+            ],
+          };
+        } catch (error) {
+          return failure(error);
+        }
       },
     }),
     defineTool({
@@ -448,7 +594,7 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
     defineTool({
       name: "task_working",
       description:
-        "Mark one task working before starting it. Sets its status to working, records when the work began and stamps lastWorkedAt. Pass an optional short note about what you are doing; it is echoed back but not stored. A proposal or backlog task cannot be marked working, and a done task must be reopened with task_reopen first.",
+        "Mark one task working before starting it. Sets its status to working, records when the work began and stamps lastWorkedAt. Pass an optional short note about what you are doing; it is echoed back but not stored. A task may only start after every task it depends on is implemented and marked done; a pending dependency refuses the call without changing anything. A proposal or backlog task cannot be marked working, and a done task must be reopened with task_reopen first.",
       parameters: workingSchema,
       async execute(args) {
         const current = bridge.store.ledger().tasks.find((task) => task.id === args.id);
@@ -467,6 +613,34 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
           return failure(
             new TaskError("Task is still being planned; approve it before marking it working", 409),
           );
+        }
+        const ledger = bridge.store.ledger();
+        const pending = liveBlockerIds(ledger.tasks, current);
+        if (pending.length > 0) {
+          const byId = new Map(ledger.tasks.map((task) => [task.id, task]));
+          const lines = [
+            `${current.id} cannot start: it depends on tasks that are not done.`,
+            "",
+            "A task may only start after every task it depends on is implemented and marked done.",
+            "Pending dependencies:",
+          ];
+          for (const dependencyId of pending) {
+            const dependency = byId.get(dependencyId);
+            if (dependency === undefined) {
+              lines.push(`- ${dependencyId} missing`);
+              continue;
+            }
+            const planning =
+              dependency.status === "planning"
+                ? " (still being planned and waiting for approval)"
+                : "";
+            lines.push(`- ${dependency.id} ${dependency.status} ${titleOf(dependency)}${planning}`);
+          }
+          lines.push(
+            "",
+            "Implement and mark those tasks done with task_done first, or correct the order with task_depends.",
+          );
+          return { output: [{ type: "text", text: lines.join("\n") }], isError: true };
         }
         let note: string | undefined;
         try {
@@ -571,7 +745,7 @@ export function createTaskTools(bridge: TaskBridge): ToolRegistration[] {
     defineTool({
       name: "task_block",
       description:
-        "Create a new open task and make it a blocker for the given task. Existing blockers stay. A done blocker no longer blocks. This cannot create a task that does not block something.",
+        "Create a new open task and make the given task depend on it. Existing dependencies stay. This cannot create a task that does not gate something.",
       parameters: blockSchema,
       async execute(args) {
         const current = bridge.store.ledger().tasks.find((task) => task.id === args.id);

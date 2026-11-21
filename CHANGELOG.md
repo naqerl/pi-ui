@@ -1,5 +1,9 @@
 ## 1.12.1
 
+### Added
+
+- Tasks now show and enforce their "Depends on" relation: every task tool prints `depends-on=`, `task_depends` replaces an existing task's dependency list with cycle paths in its 409, `task_working` refuses a pending dependency before writing, and the plan agent reads its project's other tasks and records the ordering it finds. (ez3w)
+
 ### Fixed
 
 - The dock's working braille no longer freezes after 150 s of silence on a live run: it keeps turning, slows to a 320 ms frame while the run is quiet, and keeps the steady glyph only for reduced motion. (rq8x)

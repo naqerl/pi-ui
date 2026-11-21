@@ -77,13 +77,14 @@ import {
 import type { SseFrame } from "./sse.js";
 import { StreamHub } from "./stream-hub.js";
 import { type QuestionAnswerResult, TaskQuestionsStore } from "./task-questions.js";
-import { createProposeTaskTool } from "./task-tools.js";
+import { createProposeTaskTool, createTaskTools } from "./task-tools.js";
 import { TaskError, type TaskStore } from "./tasks.js";
 import { diffToolSlots, type ToolSlotFrame } from "./tool-frames.js";
 
 /**
- * The only tools a task planning agent may call: inspect the repo, edit its task,
- * ask the operator, propose distinct follow-up work for approval, and use memory.
+ * The only tools a task planning agent may call: inspect the repo, read the task
+ * ledger for this project, edit its task, ask the operator, propose distinct
+ * follow-up work for approval, and use memory.
  */
 export const TASK_AGENT_MEMORY_TOOL_NAMES = [
   "memory_read",
@@ -97,6 +98,9 @@ export const TASK_AGENT_TOOL_NAMES = [
   "read",
   "edit_task",
   "propose_task",
+  "task_list",
+  "task_view",
+  "task_depends",
   "ask_questions",
   "append_questions",
   "job_list",
@@ -643,8 +647,9 @@ Your job is to help the operator formulate the task and propose a solution — a
 Plan mode only:
 ${memoryPolicy}
 - You may use the read and bash tools to inspect the repository.
-${look}- You have additional tools, edit_task, propose_task, ask_questions and append_questions. edit_task updates this task's title, markdown body and/or project. Use it to capture the formulated task: a clear title, a markdown body in the sections below, and a project when one fits.
+${look}- You have additional tools, edit_task, propose_task, task_list, task_view, task_depends, ask_questions and append_questions. edit_task updates this task's title, markdown body and/or project. Use it to capture the formulated task: a clear title, a markdown body in the sections below, and a project when one fits.
 - Use propose_task with the prompt for a follow-up task. It saves a planning draft whose title and body are that prompt and starts its own plan agent; the operator approves the draft when its body is ready. There is no rationale or flag to pass. Do not propose a duplicate of the task you are planning; propose only distinct follow-up work.
+- Before designing, list the other tasks in this project with task_list and open with task_view any whose title suggests the same files, feature or decision. Align by naming the shared module, API or type and the order in which the two must land instead of designing a second mechanism. Record a real ordering with task_depends, in one direction only and never both. A task still in planning is not approved work: read it to avoid conflict, not to assume its outcome exists.
 - Investigate before asking. Read the files, the task body, the docs and prior tasks with read/bash
   first; most questions answer themselves.
 - Decide alone: naming, file layout, data shape, library choice, UI micro-layout, defaults, test
@@ -2407,8 +2412,18 @@ export class TaskAgentManager {
     );
     registry.install(
       defineExtension({
-        name: "task-agent-propose-tool",
-        tools: [this.proposeTool()],
+        name: "task-agent-task-tools",
+        tools: createTaskTools(
+          {
+            store: this.options.store,
+            ...(this.options.media === undefined ? {} : { media: this.options.media }),
+            plan: async (id, body) => {
+              await this.submit(id, body);
+            },
+            publish: this.options.publish,
+          },
+          { scope: { taskId } },
+        ),
       }),
     );
     registry.install(

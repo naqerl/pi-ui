@@ -896,7 +896,7 @@ test("proposed tasks cannot block and do not keep a parent open", async () => {
     const after = updated.tasks.find((task) => task.id === target.id);
     assert.deepEqual(after?.blockedBy, []);
     assert.deepEqual(liveBlockerIds(updated.tasks, after as Task), []);
-    assert.doesNotMatch(text(await call(bridge, "task_list", {})).text, /blocked-by=/);
+    assert.doesNotMatch(text(await call(bridge, "task_list", {})).text, /depends-on=/);
 
     const parent: Task = {
       ...target,

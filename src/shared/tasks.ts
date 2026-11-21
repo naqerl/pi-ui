@@ -46,6 +46,14 @@ export function isActiveStatus(status: string): boolean {
 }
 
 /**
+ * True when a dependency still gates a task: `open`, `working` or `planning`.
+ * Done, backlog, proposed and missing ids are not gates.
+ */
+export function isPendingStatus(status: string): boolean {
+  return status === "open" || status === "working" || status === "planning";
+}
+
+/**
  * True when the task's last ledger transition was a release back to open. A released task is
  * open work, but it is not working: its old activity stamps must not revive the badge.
  */
@@ -59,15 +67,55 @@ export function isReleasedTask(task: {
   );
 }
 
-/** Active tasks in `blockedBy`. A done blocker does not keep the task blocked. */
+/** Pending tasks in `blockedBy`. A done, backlog or proposed dependency does not gate. */
 export function liveBlockerIds(tasks: readonly Task[], task: Task): string[] {
-  const open = new Set(tasks.filter((item) => isActiveStatus(item.status)).map((item) => item.id));
-  return task.blockedBy.filter((id) => open.has(id));
+  const pending = new Set(
+    tasks.filter((item) => isPendingStatus(item.status)).map((item) => item.id),
+  );
+  return task.blockedBy.filter((id) => pending.has(id));
 }
 
 export function hasOpenDescendant(tasks: readonly Task[], id: string): boolean {
   const descendants = descendantIds(tasks, id);
   return tasks.some((task) => descendants.has(task.id) && isActiveStatus(task.status));
+}
+
+/**
+ * The dependency path that adding `taskId` → `blockerId` would close, starting at
+ * `blockerId` and ending at `blockerId` again. Empty when the edge is safe.
+ */
+export function dependencyCyclePath(
+  tasks: readonly Task[],
+  taskId: string,
+  blockerId: string,
+): string[] {
+  if (taskId === blockerId) return [taskId, blockerId];
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const previous = new Map<string, string>();
+  const seen = new Set<string>();
+  const stack = [blockerId];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (current === undefined || seen.has(current)) continue;
+    if (current === taskId) {
+      const path = [current];
+      let step = previous.get(current);
+      while (step !== undefined) {
+        path.unshift(step);
+        step = previous.get(step);
+      }
+      return [...path, blockerId];
+    }
+    seen.add(current);
+    const task = byId.get(current);
+    if (task === undefined) continue;
+    for (const upstream of task.blockedBy) {
+      if (seen.has(upstream)) continue;
+      if (!previous.has(upstream)) previous.set(upstream, current);
+      stack.push(upstream);
+    }
+  }
+  return [];
 }
 
 /**
@@ -79,20 +127,7 @@ export function blockerClosesCycle(
   taskId: string,
   blockerId: string,
 ): boolean {
-  if (taskId === blockerId) return true;
-  const byId = new Map(tasks.map((task) => [task.id, task]));
-  const seen = new Set<string>();
-  const stack = [blockerId];
-  while (stack.length > 0) {
-    const current = stack.pop();
-    if (current === undefined || seen.has(current)) continue;
-    if (current === taskId) return true;
-    seen.add(current);
-    const task = byId.get(current);
-    if (task === undefined) continue;
-    for (const upstream of task.blockedBy) stack.push(upstream);
-  }
-  return false;
+  return dependencyCyclePath(tasks, taskId, blockerId).length > 0;
 }
 
 /** Proposals first, then ready work, then blocked, then done, with parked backlog last. */
