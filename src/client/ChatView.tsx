@@ -64,11 +64,11 @@ import { useMediaPicker } from "./media-picker";
 import { ChipButton, NoticeLine } from "./NoticeView";
 import { PiMenu } from "./PiMenu";
 import { ProjectSuggestions, projectSuggestions } from "./ProjectSuggestions";
-import { rememberRecentTask } from "./recent-tasks";
 import { RunErrorHeader } from "./RunErrorHeader";
+import { rememberRecentTask } from "./recent-tasks";
 import type { ChatStats } from "./StatsView";
-import { createTask } from "./task-client";
 import { TaskCycleHud } from "./TaskCycleHud";
+import { createTask } from "./task-client";
 import {
   TaskDockComposerProvider,
   type TaskDockSession,
