@@ -41,7 +41,6 @@ import {
   taskAgentProjectInstructions,
   visibleTaskAgentMessages,
 } from "../src/server/task-agent.js";
-import { createProposeTaskTool, createTaskTools } from "../src/server/task-tools.js";
 import { TaskStore } from "../src/server/tasks.js";
 import { mergeQueuedNotices } from "../src/shared/queue.js";
 import { runErrorFromUnanswered, runErrorMatchesDismissal } from "../src/shared/run-error.js";
@@ -823,8 +822,9 @@ test("the plan-mode prompt forbids edits and names the edit_task tool", () => {
   assert.match(prompt, /must not edit/i);
   assert.match(prompt, /edit_task/);
   assert.match(prompt, /propose_task/);
-  assert.match(prompt, /proposal is not a task/i);
-  assert.match(prompt, /human approving it creates work/i);
+  assert.match(prompt, /planning draft/i);
+  assert.match(prompt, /starts its own plan agent/i);
+  assert.match(prompt, /no rationale or flag/i);
   assert.match(prompt, /duplicate of the task/i);
   assert.match(prompt, /abcd/);
   assert.match(prompt, /Ship the release/);
@@ -924,88 +924,75 @@ test("edit_task cannot target another task and rejects an empty patch", async ()
   assert.equal(store.ledger().tasks.find((item) => item.id === task.id)?.title, "Stay put");
 });
 
-test("the planning agent's propose_task adds one proposal and no work", async () => {
+test("the planning agent's propose_task creates a planning draft and starts its plan run", async () => {
   published = [];
-  const proposalsBefore = store.ledger().tasks.filter((task) => task.status === "proposed").length;
-  const tasksBefore = store.ledger().tasks.length;
-  const bridge = {
+  const sessions = new Map<string, FakeSession>();
+  const manager = new TaskAgentManager({
+    dataDir: directory,
+    cwd: directory,
+    models: {} as never,
+    model: undefined,
     store,
-    publish: (ledger: TaskLedger) => {
+    publish: (ledger) => {
       published.push(ledger);
     },
-  };
-  const planTools = selectTaskAgentTools([
-    ...createTaskTools(bridge),
-    createTaskEditTool({ taskId: "unused", store, publish: () => undefined }),
-  ]);
-  assert.deepEqual(planTools.map((tool) => tool.name).sort(), ["edit_task", "propose_task"]);
-  const propose = planTools.find((tool) => tool.name === "propose_task");
-  assert.ok(propose);
-
-  const title = `Follow up the ledger ${Date.now()}`;
-  const rationale = "A separate follow-up keeps the current plan focused and reviewable.";
-  const result = await propose.execute(
-    { title, rationale, project: "pi-ui" } as never,
-    {} as never,
-    {} as never,
-  );
+    baseInstructions: "base",
+    openSession: async (taskId) => {
+      const session = new FakeSession(taskId);
+      sessions.set(taskId, session);
+      return session;
+    },
+  });
+  const prompt = `Follow up the ledger ${Date.now()}`;
+  const result = await manager
+    .proposeTool()
+    .execute({ prompt, project: "pi-ui" } as never, {} as never, {} as never);
   assert.equal(result.isError === true, false);
-  const proposals = store.ledger().tasks.filter((task) => task.status === "proposed");
-  assert.equal(proposals.length, proposalsBefore + 1);
-  assert.equal(store.ledger().tasks.length, tasksBefore + 1);
-  const proposal = proposals.find((task) => task.title === title);
-  assert.ok(proposal);
-  assert.equal(proposal.rationale, rationale);
-  assert.equal(proposal.project, "pi-ui");
+
+  const draft = store.ledger().tasks.find((task) => task.title === prompt);
+  assert.ok(draft);
+  assert.equal(draft.status, "planning");
+  assert.equal(draft.body, prompt);
+  assert.equal(draft.project, "pi-ui");
+  assert.equal(draft.createdBy, "agent");
+  assert.equal(draft.rationale, undefined);
+
+  const session = sessions.get(draft.id);
+  assert.ok(session, "the plan runner opened the new draft's plan session");
+  assert.deepEqual(session.submitted, [prompt]);
   assert.equal(published.length, 1);
+  const text = result.output?.find((part) => part.type === "text");
+  assert.ok(text && text.type === "text");
+  assert.match(text.text, /plan run started/i);
 
-  const main = new Map(createTaskTools(bridge).map((tool) => [tool.name, tool]));
-  const listed = main.get("task_proposals");
-  const ledgerTool = main.get("task_list");
-  assert.ok(listed && ledgerTool);
-  const proposalText = await listed.execute({} as never, {} as never, {} as never);
-  const listedText = proposalText.output?.find((part) => part.type === "text");
-  assert.ok(listedText && listedText.type === "text");
-  assert.match(listedText.text, new RegExp(title));
-  assert.match(listedText.text, new RegExp(rationale));
-  const work = await ledgerTool.execute({} as never, {} as never, {} as never);
-  const workText = work.output?.find((part) => part.type === "text");
-  assert.ok(workText && workText.type === "text");
-  assert.doesNotMatch(workText.text, new RegExp(title));
-
-  await store.remove(proposal.id);
+  await manager.remove(draft.id);
+  await store.remove(draft.id);
+  await manager.close();
 });
 
-test("the planning agent's propose_task rejects malformed calls without creating anything", async () => {
-  const bridge = {
+test("the planning agent's propose_task rejects a blank prompt without creating anything", async () => {
+  let opened = 0;
+  const manager = new TaskAgentManager({
+    dataDir: directory,
+    cwd: directory,
+    models: {} as never,
+    model: undefined,
     store,
     publish: () => undefined,
-  };
-  const tools = new Map(
-    selectTaskAgentTools([createProposeTaskTool(bridge)]).map((tool) => [tool.name, tool]),
-  );
-  const propose = tools.get("propose_task");
-  assert.ok(propose);
+    baseInstructions: "base",
+    openSession: async (taskId) => {
+      opened += 1;
+      return new FakeSession(taskId);
+    },
+  });
+  const propose = manager.proposeTool();
   const tasksBefore = store.ledger().tasks.length;
-  const proposalsBefore = store.ledger().tasks.filter((task) => task.status === "proposed").length;
 
-  const emptyTitle = await propose.execute(
-    { title: "   ", rationale: "This rationale is long enough to pass the minimum." } as never,
-    {} as never,
-    {} as never,
-  );
-  assert.equal(emptyTitle.isError, true);
-  const shortRationale = await propose.execute(
-    { title: `Too vague ${Date.now()}`, rationale: "It would be nice." } as never,
-    {} as never,
-    {} as never,
-  );
-  assert.equal(shortRationale.isError, true);
+  const blank = await propose.execute({ prompt: "   " } as never, {} as never, {} as never);
+  assert.equal(blank.isError, true);
   assert.equal(store.ledger().tasks.length, tasksBefore);
-  assert.equal(
-    store.ledger().tasks.filter((task) => task.status === "proposed").length,
-    proposalsBefore,
-  );
+  assert.equal(opened, 0, "a refused prompt never starts a plan run");
+  await manager.close();
 });
 
 test("the first message on a placeholder task sets the title and strips @project", () => {

@@ -479,7 +479,10 @@ export class TaskStore {
     attachments: readonly string[] = [],
     project?: string | null,
     body?: string | null,
-    mode?: TaskStatus | { status?: TaskStatus; backlog?: boolean } | boolean,
+    mode?:
+      | TaskStatus
+      | { status?: TaskStatus; backlog?: boolean; createdBy?: NonNullable<Task["createdBy"]> }
+      | boolean,
   ): Promise<{ ledger: TaskLedger; task: Task }> {
     let status: TaskStatus;
     try {
@@ -487,9 +490,11 @@ export class TaskStore {
     } catch (error) {
       return Promise.reject(error);
     }
+    const createdBy =
+      typeof mode === "object" && mode !== null ? (mode.createdBy ?? "operator") : "operator";
     return this.insertTaskResult(title, parentId, attachments, project, body, {
       status,
-      createdBy: "operator",
+      createdBy,
     });
   }
 
@@ -994,7 +999,11 @@ export class TaskStore {
 
 /** Resolve the create API's status, `backlog` boolean, or options object. */
 function createStatus(
-  mode: TaskStatus | { status?: TaskStatus; backlog?: boolean } | boolean | undefined,
+  mode:
+    | TaskStatus
+    | { status?: TaskStatus; backlog?: boolean; createdBy?: NonNullable<Task["createdBy"]> }
+    | boolean
+    | undefined,
 ): TaskStatus {
   const status =
     mode === undefined

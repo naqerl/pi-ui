@@ -35,6 +35,7 @@ before(async () => {
   bridge = {
     store,
     media: new MediaStore(join(directory, "media")),
+    plan: async () => {},
     publish(ledger) {
       published.push(ledger);
     },
@@ -239,27 +240,24 @@ test("task_edit replaces images with named unknown ids, a cap and an empty clear
   );
 });
 
-test("agent task tools set and edit a body without touching the rationale", async () => {
-  const rationale = "A body keeps the plan next to the task instead of in a chat message.";
-  const proposed = text(
-    await call("propose_task", {
-      title: "Write the plan down",
-      rationale,
-      body: "# Plan\n\nFirst **step**.",
-    }),
-  );
-  assert.equal(proposed.isError, false);
-  const task = bridge.store.ledger().tasks.find((item) => item.title === "Write the plan down");
+test("agent task tools create a planning draft and edit its body", async () => {
+  const prompt = "Write the plan down";
+  const staged = text(await call("propose_task", { prompt }));
+  assert.equal(staged.isError, false);
+  assert.match(staged.text, /plan run started/i);
+  const task = bridge.store.ledger().tasks.find((item) => item.title === prompt);
   assert.ok(task);
-  assert.equal(task.body, "# Plan\n\nFirst **step**.");
-  assert.equal(task.rationale, rationale);
-  assert.match(text(await call("task_view", { id: task.id })).text, /First \*\*step\*\*/);
+  assert.equal(task.status, "planning");
+  assert.equal(task.body, prompt);
+  assert.equal(task.rationale, undefined);
+  assert.equal(task.createdBy, "agent");
+  assert.match(text(await call("task_view", { id: task.id })).text, /Write the plan down/);
 
   const edited = text(await call("task_edit", { id: task.id, body: "## Later\n\nSecond step." }));
   assert.equal(edited.isError, false);
   const changed = bridge.store.ledger().tasks.find((item) => item.id === task.id);
   assert.equal(changed?.body, "## Later\n\nSecond step.");
-  assert.equal(changed?.rationale, rationale);
+  assert.equal(changed?.rationale, undefined);
 
   const cleared = text(await call("task_edit", { id: task.id, body: "" }));
   assert.equal(cleared.isError, false);
@@ -267,6 +265,36 @@ test("agent task tools set and edit a body without touching the rationale", asyn
   const blankTitle = text(await call("task_edit", { id: task.id, title: "   " }));
   assert.equal(blankTitle.isError, true);
   assert.match(blankTitle.text, /title/i);
+});
+
+test("propose_task validates its prompt and attachments", async () => {
+  const media = bridge.media;
+  assert.ok(media);
+  const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  const image = await media.save(Uint8Array.from([...signature, 9, 9]), "image/png");
+  const prompt = `Plan the image resize ${Date.now()}`;
+  const staged = text(
+    await call("propose_task", { prompt, project: "pi-ui", attachments: [image.id] }),
+  );
+  assert.equal(staged.isError, false);
+  const draft = bridge.store.ledger().tasks.find((item) => item.title === prompt);
+  assert.ok(draft);
+  assert.equal(draft.status, "planning");
+  assert.equal(draft.project, "pi-ui");
+  assert.deepEqual(draft.attachments, [image.id]);
+
+  const before = bridge.store.ledger().tasks.length;
+  const unknownId = `${"e".repeat(32)}.png`;
+  const unknown = text(
+    await call("propose_task", { prompt: "Unknown image", attachments: [unknownId] }),
+  );
+  assert.equal(unknown.isError, true);
+  assert.match(unknown.text, new RegExp(`Unknown attachment ${unknownId}`));
+
+  const blank = text(await call("propose_task", { prompt: "   " }));
+  assert.equal(blank.isError, true);
+  assert.match(blank.text, /Task title is required/);
+  assert.equal(bridge.store.ledger().tasks.length, before);
 });
 
 test("task_reopen needs a reason, only reopens done work, and counts each reopen", async () => {

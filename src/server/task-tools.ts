@@ -37,6 +37,7 @@ export interface PlanDraftInput {
   readonly body?: string | null;
   readonly project?: string | null;
   readonly attachments?: readonly string[];
+  readonly createdBy?: NonNullable<Task["createdBy"]>;
 }
 
 export interface PlanDraft {
@@ -60,7 +61,7 @@ export async function createPlanDraft(
     input.attachments ?? [],
     input.project,
     input.body ?? input.title,
-    { status: "planning" },
+    { status: "planning", createdBy: input.createdBy ?? "operator" },
   );
   bridge.publish(ledger);
   if (bridge.plan === undefined) return { ledger, task, started: false };
@@ -103,22 +104,15 @@ const blockSchema = Type.Object({
 });
 
 const proposeSchema = Type.Object({
-  title: Type.String({ description: "Title of the proposed task." }),
-  rationale: Type.String({
-    description:
-      "Why this task is worth doing, in one or two sentences. At least 20 characters; a human uses it to decide.",
+  prompt: Type.String({
+    description: `The work to plan, written as one prompt. It becomes the draft's title and body, up to ${TASK_BODY_MAX_LENGTH} characters.`,
   }),
-  body: bodySchema,
-  plan: Type.Optional(
-    Type.Boolean({
-      description:
-        "Stage this as a planning draft and start the plan agent that writes its body, instead of recording a proposal. The operator approves the draft when the body is ready. Default false.",
+  project: projectSchema,
+  attachments: Type.Optional(
+    Type.Array(Type.String({ description: "Media id to attach to the draft." }), {
+      maxItems: TASK_ATTACHMENTS_MAX,
     }),
   ),
-  attachments: Type.Optional(
-    Type.Array(Type.String({ description: "Media id to attach to the proposal." })),
-  ),
-  project: projectSchema,
 });
 
 const editSchema = Type.Object({
@@ -262,38 +256,43 @@ async function changed(
 
 /**
  * The one propose_task definition, shared by the main chat and the planning agent.
- * A proposal is never open work until a human approves it. With plan: true the
- * caller gets a planning draft instead, so the plan agent writes the body first.
+ * It always saves a planning draft whose title and body are the prompt and starts its
+ * plan run, so the plan agent writes the body before the operator approves it.
  */
 export function createProposeTaskTool(bridge: TaskBridge): ToolRegistration {
   return defineTool({
     name: "propose_task",
     description:
-      "Propose a task for human approval. A proposal is not a task: it does not appear in task_list and cannot be worked on until a human approves it. Pass plan: true to stage the work as a planning draft and start the plan agent that writes its body.",
+      "Propose work by describing it as one prompt. Saves a planning draft whose title and body are the prompt, then starts the plan agent that writes its body. The operator approves the draft on the tasks page when it is ready. There is no rationale or flag to pass.",
     parameters: proposeSchema,
     async execute(args) {
-      if (args.plan === true) {
+      let attachments: string[] | undefined;
+      if (args.attachments !== undefined) {
+        if (bridge.media === undefined) {
+          return failure(new TaskError("Task images are unavailable", 500));
+        }
         try {
-          const draft = await createPlanDraft(bridge, {
-            title: args.title,
-            body: args.body,
-            project: args.project,
-            attachments: args.attachments,
-          });
-          return { output: [{ type: "text", text: planDraftText(draft) }] };
+          attachments = await validateAttachmentIds(
+            bridge.media,
+            args.attachments,
+            TASK_ATTACHMENTS_MAX,
+          );
         } catch (error) {
-          return failure(error);
+          return failure(error instanceof MediaError ? new TaskError(error.message, 400) : error);
         }
       }
-      return changed(bridge, () =>
-        bridge.store.propose(
-          args.title,
-          args.rationale,
-          args.attachments ?? [],
-          args.project,
-          args.body,
-        ),
-      );
+      try {
+        const draft = await createPlanDraft(bridge, {
+          title: args.prompt,
+          body: args.prompt,
+          project: args.project,
+          attachments,
+          createdBy: "agent",
+        });
+        return { output: [{ type: "text", text: planDraftText(draft) }] };
+      } catch (error) {
+        return failure(error);
+      }
     },
   });
 }
@@ -302,7 +301,7 @@ function planDraftText(draft: PlanDraft): string {
   if (draft.started) {
     return `Draft ${draft.task.id} saved and its plan run started. The plan agent drafts the body; the operator approves it on the tasks page when it is ready.`;
   }
-  return "The draft is saved, but its plan run did not start: no plan runner is available. Edit the body on the tasks page and approve it there.";
+  return `Draft ${draft.task.id} is saved, but its plan run did not start. Edit the body on the tasks page and approve it there.`;
 }
 
 /** Tools for the same ledger the tasks page edits. Not deferred, so every turn offers them. */

@@ -45,9 +45,12 @@ open work: idle nudges ignore it, `task_working` refuses it, and it waits in the
 until a human approves it. The agent's `task_list` hides drafts unless it asks with
 `includePlanning: true`.
 
-`propose_task` stages the same draft when it is called with `plan: true`: the task is saved in
-`planning`, its plan run starts, and the operator approves the draft once the body is ready. With no
-plan runner the draft is still saved and the tool reports that the run did not start.
+`propose_task` takes one `prompt` and always stages the same draft: the prompt is saved as the
+draft's title and body, its plan run starts, and the operator approves the draft once the body is
+ready. An optional `project` and existing image `attachments` carry over. There is no rationale,
+body or flag to pass. A follow-up proposed by a plan agent becomes its own planning draft with its
+own plan agent. If the plan run fails to start, the draft is still saved and the tool reports that
+the run did not start.
 
 ## Planning chat
 

@@ -107,6 +107,22 @@ function collectAgentTools(): ToolRegistration[] {
   ];
 }
 
+test("propose_task takes exactly a prompt, a project and attachments", () => {
+  const tool = collectAgentTools().find((item) => item.name === "propose_task");
+  assert.ok(tool);
+  const schema = tool.parameters as unknown as JsonSchema & {
+    properties?: Record<string, unknown>;
+    required?: unknown;
+  };
+  assert.deepEqual(Object.keys(schema.properties ?? {}).sort(), [
+    "attachments",
+    "project",
+    "prompt",
+  ]);
+  assert.deepEqual(schema.required, ["prompt"]);
+  assert.deepEqual(findSchemaViolations("propose_task", schema), []);
+});
+
 const REQUIRED_APP_TOOLS = [
   "read",
   "write",

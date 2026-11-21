@@ -21,7 +21,8 @@ import {
 } from "../src/client/TasksView.js";
 import { gestureOwner, scrollerCanPan, swipeCanAttribute } from "../src/client/use-pager.js";
 import type { PushNotification } from "../src/server/push.js";
-import { createTaskTools, type TaskBridge } from "../src/server/task-tools.js";
+import { TaskActivityTracker } from "../src/server/task-activity.js";
+import { createPlanDraft, createTaskTools, type TaskBridge } from "../src/server/task-tools.js";
 import { TaskStore, type TaskStoreOptions, taskReopenStats } from "../src/server/tasks.js";
 import type { OperatorNoticeRecord } from "../src/shared/notices.js";
 import {
@@ -520,53 +521,7 @@ test("a human can close a task without evidence, and old completion records load
   }
 });
 
-test("propose_task requires a reason and keeps proposals out of task_list", async () => {
-  const { directory, store, bridge } = await temporaryStore();
-  try {
-    const short = text(
-      await call(bridge, "propose_task", {
-        title: "Tidy the ledger",
-        rationale: "It would be nice.",
-      }),
-    );
-    assert.equal(short.isError, true);
-    assert.match(short.text, /rationale|reason/i);
-    assert.equal(store.ledger().tasks.length, 0);
-
-    const rationale = "This removes repeated work and makes the ledger easier to review.";
-    const proposed = text(
-      await call(bridge, "propose_task", { title: "Tidy the ledger", rationale }),
-    );
-    assert.equal(proposed.isError, false);
-    assert.doesNotMatch(proposed.text, /Tidy the ledger/);
-    assert.match(proposed.text, /^proposals: 1 waiting for approval$/m);
-
-    const task = store.ledger().tasks.find((item) => item.title === "Tidy the ledger");
-    assert.ok(task);
-    assert.equal(task.status, "proposed");
-    assert.equal(task.parentId, null);
-    assert.deepEqual(task.blockedBy, []);
-    assert.equal(task.rationale, rationale);
-    assert.match(task.proposedAt ?? "", /^\d{4}-\d{2}-\d{2}T/);
-
-    const listed = text(await call(bridge, "task_list", {}));
-    assert.doesNotMatch(listed.text, /Tidy the ledger/);
-    assert.equal(listed.text.split("\n").at(-1), "proposals: 1 waiting for approval");
-
-    await store.create("A real task", null);
-    const withWork = text(await call(bridge, "task_list", {}));
-    assert.match(withWork.text, /A real task/);
-    assert.equal(withWork.text.split("\n").at(-1), "proposals: 1 waiting for approval");
-
-    await store.remove(task.id);
-    const withoutProposals = text(await call(bridge, "task_list", {}));
-    assert.doesNotMatch(withoutProposals.text, /proposals:/);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
-test("propose_task can stage a plan draft and start its plan run", async () => {
+test("propose_task saves a planning draft from its prompt and starts the plan run", async () => {
   const { directory, store, bridge } = await temporaryStore();
   try {
     const submitted: { id: string; body: string }[] = [];
@@ -574,57 +529,65 @@ test("propose_task can stage a plan draft and start its plan run", async () => {
       submitted.push({ id, body });
     };
 
-    const rationale = "The importer needs a specification before anyone can implement it.";
-    const staged = text(
-      await call(bridge, "propose_task", {
-        title: "Replace the importer",
-        rationale,
-        plan: true,
-      }),
-    );
+    const prompt = "Replace the importer with a streaming parser";
+    const staged = text(await call(bridge, "propose_task", { prompt, project: "pi-ui" }));
     assert.equal(staged.isError, false);
     assert.match(staged.text, /plan run started/i);
-    assert.match(staged.text, /operator approves/i);
 
-    const draft = store.ledger().tasks.find((item) => item.title === "Replace the importer");
+    const draft = store.ledger().tasks.find((item) => item.title === prompt);
     assert.ok(draft);
     assert.equal(draft.status, "planning");
+    assert.equal(draft.body, prompt);
+    assert.equal(draft.project, "pi-ui");
     assert.equal(draft.rationale, undefined);
-    assert.equal(submitted.length, 1);
-    assert.equal(submitted[0]?.id, draft.id);
-    assert.equal(submitted[0]?.body, "Replace the importer");
+    assert.match(staged.text, new RegExp(draft.id));
+    assert.deepEqual(submitted, [{ id: draft.id, body: prompt }]);
 
     const listed = text(await call(bridge, "task_list", {}));
-    assert.doesNotMatch(listed.text, /Replace the importer/);
+    assert.doesNotMatch(listed.text, new RegExp(prompt));
     assert.doesNotMatch(listed.text, /proposals:/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("propose_task saves a plan draft when no plan runner is available", async () => {
-  const { directory, store } = await temporaryStore();
-  const bridge: TaskBridge = { store, publish() {} };
+test("a draft from propose_task records the agent as its creator", async () => {
+  const { directory, store, bridge } = await temporaryStore();
   try {
-    const rationale = "The importer needs a specification before anyone can implement it.";
-    const staged = text(
-      await call(bridge, "propose_task", {
-        title: "Replace the importer",
-        rationale,
-        plan: true,
-      }),
-    );
-    assert.equal(staged.isError, false);
-    assert.match(
-      staged.text,
-      /The draft is saved, but its plan run did not start: no plan runner is available/,
-    );
-    assert.doesNotMatch(staged.text, /operator approves/i);
+    const agentPrompt = "Split the importer";
+    await call(bridge, "propose_task", { prompt: agentPrompt });
+    await createPlanDraft(bridge, { title: "Composer draft", body: "Composer draft" });
 
-    const draft = store.ledger().tasks.find((item) => item.title === "Replace the importer");
+    const tracker = new TaskActivityTracker(undefined);
+    tracker.observeLedger(store.ledger().tasks);
+    const view = tracker.view();
+    const agentDraft = store.ledger().tasks.find((item) => item.title === agentPrompt);
+    const composerDraft = store.ledger().tasks.find((item) => item.title === "Composer draft");
+    assert.ok(agentDraft);
+    assert.ok(composerDraft);
+    assert.equal(view.traces[agentDraft.id]?.history.at(-1)?.text, "Created by the agent");
+    assert.equal(view.traces[composerDraft.id]?.history.at(-1)?.text, "Created by the operator");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("propose_task saves the draft when the plan runner fails", async () => {
+  const { directory, store, bridge } = await temporaryStore();
+  try {
+    bridge.plan = async () => {
+      throw new Error("model is down");
+    };
+    const prompt = "Replace the importer";
+    const staged = text(await call(bridge, "propose_task", { prompt }));
+    assert.equal(staged.isError, false);
+    assert.match(staged.text, /plan run did not start/i);
+    assert.doesNotMatch(staged.text, /no plan runner is available/i);
+
+    const draft = store.ledger().tasks.find((item) => item.title === prompt);
     assert.ok(draft);
     assert.equal(draft.status, "planning");
-    assert.equal(draft.body, "Replace the importer");
+    assert.equal(draft.body, prompt);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -634,7 +597,7 @@ test("task_proposals lists proposals and task_done refuses them", async () => {
   const { directory, store, bridge } = await temporaryStore();
   try {
     const rationale = "Reviewing this now avoids a larger migration later.";
-    await call(bridge, "propose_task", { title: "Plan the migration", rationale });
+    await store.propose("Plan the migration", rationale);
     const proposal = store.ledger().tasks[0];
     assert.ok(proposal);
 
