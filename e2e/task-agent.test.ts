@@ -944,11 +944,9 @@ test("the planning agent's propose_task creates a planning draft and starts its 
     },
   });
   const prompt = `Follow up the ledger ${Date.now()}`;
-  const result = await manager.proposeTool().execute(
-    { prompt, project: "pi-ui" } as never,
-    {} as never,
-    {} as never,
-  );
+  const result = await manager
+    .proposeTool()
+    .execute({ prompt, project: "pi-ui" } as never, {} as never, {} as never);
   assert.equal(result.isError === true, false);
 
   const draft = store.ledger().tasks.find((task) => task.title === prompt);
