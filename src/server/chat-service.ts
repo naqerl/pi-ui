@@ -84,6 +84,7 @@ import {
 } from "./idle-nudge.js";
 import { NoticeCoalescer } from "./mcp-event-policy.js";
 import type { McpEventFeed } from "./mcp-events.js";
+import { MCP_OUTAGE_NOTIFY_MS } from "./mcp-outage-quiet.js";
 import { registerMcpQueueMerger, unregisterMcpQueueMerger } from "./mcp-queue-merge.js";
 import { MEDIA_TYPES, MediaError, type MediaStore } from "./media.js";
 import type { MemoryWriteRecord } from "./memory/tools.js";
@@ -191,7 +192,10 @@ interface QueuedRun {
  */
 function filterStatusForChat(eventFeed: McpEventFeed | undefined, text: string): string | null {
   if (eventFeed === undefined || !text.startsWith(MCP_STATUS_HEAD)) return text;
-  return eventFeed.filterStatusNotice(text, undefined, undefined, { markReported: false });
+  const gate = eventFeed.filterStatusNotice(text, undefined, undefined, { markReported: false });
+  // A chip is recorded by the intake. This path starts a turn, so only a
+  // delivery may pass; re-gating here must not turn a chip into a prompt.
+  return gate.mode === "deliver" ? gate.text : null;
 }
 
 /**
@@ -205,6 +209,28 @@ function filterStatusIdentityForDelivery(
 ): string | null {
   if (eventFeed === undefined || !text.startsWith(MCP_STATUS_HEAD)) return text;
   return eventFeed.filterStatusIdentityNotice(text);
+}
+
+/**
+ * One durable id for a status episode. The chip written at intake and the
+ * escalated/recovery deliveries name the same row, so the transcript updates
+ * that chip instead of leaving a stale down chip beside a second one.
+ */
+function mcpStatusNotice(
+  eventFeed: McpEventFeed | undefined,
+  text: string,
+  knownIdentities?: Array<{ stableId: string }>,
+): { noticeId: string; key: string; label: string } {
+  const identities = knownIdentities ?? eventFeed?.statusIdentities(text) ?? [];
+  // The durable id is the chip identity, so a reconnect keeps updating one row
+  // even when the adapter mints a new connection id. A batch still names the
+  // subscription its first status belongs to.
+  const stableId = identities[0]?.stableId;
+  return {
+    noticeId: stableId === undefined ? `mcp/status#${randomUUID()}` : `mcp/status#${stableId}`,
+    key: "mcp/status",
+    label: "MCP status",
+  };
 }
 
 interface SubmitOptions {
@@ -616,6 +642,8 @@ export class ChatService {
   private submitting = 0;
   private watchdog: ReturnType<typeof setInterval> | undefined;
   private idleNudgeTimer: ReturnType<typeof setInterval> | undefined;
+  /** One quiet-window timer per durable MCP subscription, so a reconnect cannot restart it. */
+  private readonly mcpOutageTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly idleNudge: IdleNudge;
   private readonly staleRunNudge: StaleRunNudge;
   private readonly idleTasks: IdleTaskSource;
@@ -808,6 +836,7 @@ export class ChatService {
     unregisterMcpQueueMerger(this.conversation.id, this.mergeMcpQueue);
     if (this.watchdog !== undefined) clearInterval(this.watchdog);
     if (this.idleNudgeTimer !== undefined) clearInterval(this.idleNudgeTimer);
+    this.clearMcpOutageTimers();
     await this.flushMarkerState();
     await this.stream?.stop();
   }
@@ -2436,21 +2465,32 @@ export class ChatService {
   async submitMcpEventNotice(
     text: string,
     deliverAs?: "steer" | "followUp" | "nextTurn",
+    options: { readonly bypassGate?: boolean } = {},
   ): Promise<void> {
     const envelope = mcpEventEnvelope(text);
     if (envelope === null) {
-      const delivered = filterStatusForChat(this.eventFeed, text);
+      // The quiet timer already decided this outage is news. Re-running the
+      // health gate here would see the same down row and classify it as a chip
+      // again, so that one stored escalation enters the turn path directly.
+      const delivered =
+        options.bypassGate === true ? text : filterStatusForChat(this.eventFeed, text);
       if (delivered === null) return;
       const at = new Date().toISOString();
       const status = delivered.startsWith(MCP_STATUS_HEAD);
-      const kind = status ? "status" : "notice";
+      const notice = status
+        ? mcpStatusNotice(this.eventFeed, delivered)
+        : {
+            noticeId: `mcp/notice#${randomUUID()}`,
+            key: "mcp/notice",
+            label: "MCP notice",
+          };
       await this.submit(delivered, deliverAs === "steer" ? "steer" : "queue", {
         entry: {
           kind: MCP_NOTICE_ENTRY_KIND,
-          label: status ? "MCP status" : "MCP notice",
+          label: notice.label,
           data: {
-            noticeId: `mcp/${kind}#${randomUUID()}`,
-            key: `mcp/${kind}`,
+            noticeId: notice.noticeId,
+            key: notice.key,
             text: delivered,
             at,
             createdAt: at,
@@ -2582,16 +2622,20 @@ export class ChatService {
       const delivered = filterStatusIdentityForDelivery(this.eventFeed, text);
       if (delivered === null) continue;
       const identity = texts.length === 1 ? base : `${base}:${index}`;
+      const status = delivered.startsWith(MCP_STATUS_HEAD);
+      const notice = status
+        ? mcpStatusNotice(this.eventFeed, delivered)
+        : { noticeId: identity, key: identity, label: "MCP events" };
       this.lastMcpNoticeText = delivered;
       await this.submit(delivered, "queue", {
         requestId: identity,
         queueKey: identity,
         entry: {
           kind: MCP_NOTICE_ENTRY_KIND,
-          label: "MCP events",
+          label: notice.label,
           data: {
-            noticeId: identity,
-            key: identity,
+            noticeId: notice.noticeId,
+            key: notice.key,
             text: delivered,
             at: item.at,
             createdAt: item.at,
@@ -2630,6 +2674,84 @@ export class ChatService {
         data: { text, createdAt: new Date().toISOString() },
       },
     });
+  }
+
+  /**
+   * Shows one MCP status transition as a durable chat chip. The first unhealthy
+   * frame arms the quiet timer for that durable id; a live frame clears it. The
+   * chip id is stable per subscription, so `reconnecting` later reads `active`
+   * as the same row and the model context is never touched.
+   */
+  async recordMcpStatusChip(text: string): Promise<void> {
+    const identities = this.eventFeed?.statusIdentities(text) ?? [];
+    for (const { stableId, status } of identities) {
+      if (status === "active" || status === "opening") {
+        this.clearMcpOutageTimer(stableId);
+      } else {
+        this.armMcpOutageTimer(stableId);
+      }
+    }
+    const notice = mcpStatusNotice(this.eventFeed, text, identities);
+    const at = new Date().toISOString();
+    const entry = await appendMcpNotice(this.conversation, {
+      noticeId: notice.noticeId,
+      key: notice.key,
+      text,
+      at,
+    });
+    // Fold the row into the live transcript before broadcasting, like every
+    // other MCP notice update; a reload reads the same durable row.
+    if (typeof this.conversation.entries === "function") await this.syncTranscript();
+    this.noteEntry(entry);
+    const message = this.transcript.mcpChip(notice.noticeId);
+    if (message !== undefined) {
+      this.hub.broadcast({ event: "notice", data: { message } satisfies StreamNotice });
+    }
+  }
+
+  /** Arm the one quiet timer for this durable id; a second down frame leaves it alone. */
+  private armMcpOutageTimer(stableId: string): void {
+    if (
+      this.closed ||
+      this.mcpOutageTimers.has(stableId) ||
+      this.eventFeed?.isOutageEscalated(stableId) === true
+    ) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.mcpOutageTimers.delete(stableId);
+      void this.deliverMcpOutage(stableId);
+    }, MCP_OUTAGE_NOTIFY_MS);
+    timer.unref?.();
+    this.mcpOutageTimers.set(stableId, timer);
+  }
+
+  private clearMcpOutageTimer(stableId: string): void {
+    const timer = this.mcpOutageTimers.get(stableId);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    this.mcpOutageTimers.delete(stableId);
+  }
+
+  private clearMcpOutageTimers(): void {
+    for (const timer of this.mcpOutageTimers.values()) clearTimeout(timer);
+    this.mcpOutageTimers.clear();
+  }
+
+  /**
+   * The window expired for this durable id. Re-read the feed row first: a
+   * recovery that arrived without a status frame must not escalate, and a row
+   * that is still down delivers the stored text exactly once.
+   */
+  private async deliverMcpOutage(stableId: string): Promise<void> {
+    if (this.closed) return;
+    const text = this.eventFeed?.takeOutageEscalation(stableId);
+    if (text === null || text === undefined) return;
+    try {
+      await this.submitMcpEventNotice(text, undefined, { bypassGate: true });
+    } catch (error) {
+      console.error("[pi] MCP outage notice failed", error);
+    }
   }
 
   /**

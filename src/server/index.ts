@@ -643,10 +643,18 @@ boot.mcp.setSubmit((text, options) => {
     // when it is the same stream. With no id to attribute, the existing
     // `(server, name)` supersession rule still decides. Only authentic notices
     // reach the outbox.
-    const delivered = acceptMcpStatusNotice(events, text, options.details, options.customType);
-    if (delivered === null) return;
+    const gate = acceptMcpStatusNotice(events, text, options.details, options.customType);
+    if (gate.mode === "drop") return;
+    if (gate.mode === "chip") {
+      // A status transition is display-only. It never enters the durable
+      // outbox: a restart must not replay yesterday's blip into the prompt.
+      void chat.recordMcpStatusChip(gate.text).catch((error: unknown) => {
+        console.error("[pi] MCP status chip failed", error);
+      });
+      return;
+    }
     mcpIntake.enqueue(async () => {
-      await mcpOutbox.enqueue(delivered);
+      await mcpOutbox.enqueue(gate.text);
       mcpOutbox.start();
     });
   } else {
