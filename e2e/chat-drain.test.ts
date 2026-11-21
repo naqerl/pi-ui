@@ -177,10 +177,15 @@ test("a placed job notice pushes one chip and never a user bubble", async () => 
         frame.event === "message.done" && (frame.data as StreamMessageDone).message !== null,
     );
     assert.equal(pushed.length, 1);
-    const message = (pushed[0]?.data as StreamMessageDone).message;
+    const done = pushed.at(0);
+    assert.ok(done);
+    const message = (done.data as StreamMessageDone).message;
     assert.equal(message?.role, "system");
     assert.equal(message?.notice?.kind, "job");
-    assert.equal(frames.some((frame) => frame.event === "notice"), false);
+    assert.equal(
+      frames.some((frame) => frame.event === "notice"),
+      false,
+    );
   } finally {
     await chat.close();
   }

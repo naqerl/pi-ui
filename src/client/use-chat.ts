@@ -617,7 +617,10 @@ export function useChat(options: UseChatOptions = {}) {
       const olderMessages = page.messages;
       setMessages((current) => prependPage(current, olderMessages));
       setActivity((current) =>
-        prependPage(current, [...page.activity].sort((a, b) => a.order - b.order)),
+        prependPage(
+          current,
+          [...page.activity].sort((a, b) => a.order - b.order),
+        ),
       );
       setHasEarlier(page.hasEarlier);
     } catch {
