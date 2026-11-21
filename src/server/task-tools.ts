@@ -18,12 +18,59 @@ import type { Task, TaskLedger } from "../shared/types.js";
 import { MediaError, type MediaStore, validateAttachmentIds } from "./media.js";
 import { TaskError, type TaskStore } from "./tasks.js";
 
+/** Starts the plan run that writes a draft's body. The main chat injects the plan agent here. */
+export type PlanSubmitter = (taskId: string, body: string) => Promise<void>;
+
 /** The process-wide ledger and the hook that tells open browsers it changed. */
 export interface TaskBridge {
   readonly store: TaskStore;
   /** Where task images live. Without it, task_view returns only the text. */
   readonly media?: MediaStore;
+  /** Starts a planning draft's plan run. Without it the draft is saved but stays unplanned. */
+  plan?: PlanSubmitter;
   publish(ledger: TaskLedger): void;
+}
+
+export interface PlanDraftInput {
+  readonly title: string;
+  readonly parentId?: string | null;
+  readonly body?: string | null;
+  readonly project?: string | null;
+  readonly attachments?: readonly string[];
+}
+
+export interface PlanDraft {
+  readonly ledger: TaskLedger;
+  readonly task: Task;
+  readonly started: boolean;
+}
+
+/**
+ * Saves a task in the planning state and starts the plan run that writes its body.
+ * A missing or failing runner leaves the draft in place for the operator to finish.
+ * This is the one plan-draft path: the create route and propose_task both call it.
+ */
+export async function createPlanDraft(
+  bridge: TaskBridge,
+  input: PlanDraftInput,
+): Promise<PlanDraft> {
+  const { ledger, task } = await bridge.store.createWithResult(
+    input.title,
+    input.parentId ?? null,
+    input.attachments ?? [],
+    input.project,
+    input.body ?? input.title,
+    { status: "planning" },
+  );
+  bridge.publish(ledger);
+  if (bridge.plan === undefined) return { ledger, task, started: false };
+  try {
+    await bridge.plan(task.id, task.body ?? task.title);
+    return { ledger, task, started: true };
+  } catch (error) {
+    console.error(`[pi] could not start the plan run for ${task.id}`, error);
+    return { ledger, task, started: false };
+  }
 }
 
 const idSchema = Type.Object({
@@ -62,6 +109,12 @@ const proposeSchema = Type.Object({
       "Why this task is worth doing, in one or two sentences. At least 20 characters; a human uses it to decide.",
   }),
   body: bodySchema,
+  plan: Type.Optional(
+    Type.Boolean({
+      description:
+        "Stage this as a planning draft and start the plan agent that writes its body, instead of recording a proposal. The operator approves the draft when the body is ready. Default false.",
+    }),
+  ),
   attachments: Type.Optional(
     Type.Array(Type.String({ description: "Media id to attach to the proposal." })),
   ),
@@ -209,15 +262,29 @@ async function changed(
 
 /**
  * The one propose_task definition, shared by the main chat and the planning agent.
- * A proposal is never open work until a human approves it.
+ * A proposal is never open work until a human approves it. With plan: true the
+ * caller gets a planning draft instead, so the plan agent writes the body first.
  */
 export function createProposeTaskTool(bridge: TaskBridge): ToolRegistration {
   return defineTool({
     name: "propose_task",
     description:
-      "Propose a task for human approval. A proposal is not a task: it does not appear in task_list and cannot be worked on until a human approves it.",
+      "Propose a task for human approval. A proposal is not a task: it does not appear in task_list and cannot be worked on until a human approves it. Pass plan: true to stage the work as a planning draft and start the plan agent that writes its body.",
     parameters: proposeSchema,
     async execute(args) {
+      if (args.plan === true) {
+        try {
+          const draft = await createPlanDraft(bridge, {
+            title: args.title,
+            body: args.body,
+            project: args.project,
+            attachments: args.attachments,
+          });
+          return { output: [{ type: "text", text: planDraftText(draft) }] };
+        } catch (error) {
+          return failure(error);
+        }
+      }
       return changed(bridge, () =>
         bridge.store.propose(
           args.title,
@@ -229,6 +296,13 @@ export function createProposeTaskTool(bridge: TaskBridge): ToolRegistration {
       );
     },
   });
+}
+
+function planDraftText(draft: PlanDraft): string {
+  if (draft.started) {
+    return `Draft ${draft.task.id} saved and its plan run started. The plan agent drafts the body; the operator approves it on the tasks page when it is ready.`;
+  }
+  return "The draft is saved, but its plan run did not start: no plan runner is available. Edit the body on the tasks page and approve it there.";
 }
 
 /** Tools for the same ledger the tasks page edits. Not deferred, so every turn offers them. */
