@@ -24,6 +24,33 @@ const DOCK_HEIGHT = 90;
 const COMPOSER_HEIGHT = 48;
 const TOP_LINE_HEIGHT = 41;
 
+interface PlanEndGap {
+  /** The last row's bottom to the dock's top, with the transcript at its end. */
+  gap: number;
+  /** The scroller's own end padding, the single source of the gutter. */
+  paddingBottom: number;
+}
+
+/** Measure the plan transcript at its end and its scroller's end padding. */
+function readPlanEndGap(browser: Browser): Promise<PlanEndGap | null> {
+  return browser.evaluate(async () => {
+    const transcript = document.querySelector<HTMLElement>('[data-testid="task-agent-transcript"]');
+    const dock = document.querySelector<HTMLElement>('[data-testid="composer-dock"]');
+    if (transcript === null || dock === null) return null;
+    const rows = transcript.querySelectorAll<HTMLElement>("[data-message-id]");
+    const last = rows[rows.length - 1];
+    if (last === undefined) return null;
+    transcript.scrollTop = transcript.scrollHeight;
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+    return {
+      gap: dock.getBoundingClientRect().top - last.getBoundingClientRect().bottom,
+      paddingBottom: Number.parseFloat(getComputedStyle(transcript).paddingBottom),
+    };
+  });
+}
+
 /** During a sweep the exit leg is 90 ms, delayed by the node's slot. */
 function expectSweepExit(
   node: Pick<
@@ -1179,7 +1206,9 @@ test("a plan run that dies without an answer shows a dismissible error", {
         ?.getBoundingClientRect().top ?? null,
   );
   const input = screen.getByTestId("task-agent-input");
-  await input.fill("DELEGATE_FAIL");
+  // A transcript with spare room below the last row would measure that empty
+  // space, not the scroller's end padding; fill it so the row sits at the end.
+  await input.fill(`DELEGATE_FAIL ${"filler ".repeat(1000)}`);
   await screen.getByTestId("task-agent-send").tap();
 
   const header = screen.getByTestId("run-error-header");
@@ -1192,6 +1221,15 @@ test("a plan run that dies without an answer shows a dismissible error", {
   await expect(screen.getByTestId("composer-error")).toHaveCount(0);
   await expect(screen.getByTestId("run-error-class")).toHaveText("ModelError");
   await expect(screen.getByTestId("run-error-message")).toContainText(/delegate failure/i);
+
+  // Chromium rounds scrollHeight to an integer, so a correct 16px end gutter can
+  // measure just under 16 at max scroll; the computed padding pins the token.
+  const phoneEnd = await readPlanEndGap(browser);
+  expect(phoneEnd).not.toBeNull();
+  expect(phoneEnd?.paddingBottom).toBe(16);
+  expect(phoneEnd?.gap ?? 0).toBeGreaterThanOrEqual(15.5);
+  // The phone has no page inset, so the gutter is the scroller's padding alone.
+  expect(Math.abs((phoneEnd?.gap ?? 0) - (phoneEnd?.paddingBottom ?? 0))).toBeLessThanOrEqual(1);
 
   const planPlacement = await browser.evaluate(() => {
     const element = document.querySelector<HTMLElement>('[data-testid="run-error-header"]');
@@ -1210,6 +1248,12 @@ test("a plan run that dies without an answer shows a dismissible error", {
   // The same single host survives the wide layout.
   await browser.setViewport({ width: 1280, height: 900 });
   await expect.poll(async () => screen.getByTestId("run-error-header").count()).toBe(1);
+
+  // The wide split keeps the same end gutter above the dock.
+  const wideEnd = await readPlanEndGap(browser);
+  expect(wideEnd).not.toBeNull();
+  expect(wideEnd?.paddingBottom).toBe(16);
+  expect(wideEnd?.gap ?? 0).toBeGreaterThanOrEqual(15.5);
 
   await expect
     .poll(async () =>
@@ -1302,6 +1346,16 @@ test("a plan run that dies without an answer shows a dismissible error", {
     timeout: 30_000,
   });
   await expect(screen.getByTestId("task-agent-status")).toHaveCount(0);
+
+  // The retry adds a row to the overflowing transcript; only subpixel rounding
+  // may move the measured gutter, never a fixed band appearing below it.
+  await expect
+    .poll(async () => {
+      const end = await readPlanEndGap(browser);
+      if (end === null || wideEnd === null) return Number.POSITIVE_INFINITY;
+      return Math.abs(end.gap - wideEnd.gap);
+    })
+    .toBeLessThanOrEqual(1);
 
   await removeTasks(browser, [title]);
 });

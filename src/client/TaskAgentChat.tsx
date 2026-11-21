@@ -177,9 +177,9 @@ export function TaskAgentChat({
         ref={stick.containerRef}
         data-testid="task-agent-transcript"
         className={cn(
-          // The gap above the first row belongs inside the scroller so it scrolls
-          // away with the transcript; padding on the pane would leave a fixed band.
-          "flex min-h-0 flex-1 flex-col overflow-y-auto px-xl pt-xl pb-xl",
+          // Both end gutters belong inside the scroller so they scroll away with the
+          // transcript; padding on the pane would leave a fixed band at the end.
+          "flex min-h-0 flex-1 flex-col overflow-y-auto px-xl pt-xl pb-2xl",
           "[scrollbar-gutter:stable]",
         )}
       >
