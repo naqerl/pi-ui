@@ -156,6 +156,59 @@ describe("chat message lifecycle against one shared app", { serial: true }, () =
     expect(state?.selectionEnd).toBe(text.length);
     expect(state?.focused).toBe(true);
   });
+
+  test("slows a silent live run's spinner instead of stopping it", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    await browser.emulateMedia({ reducedMotion: "no-preference" });
+    await openChat(app, browser);
+    const status = await browser.evaluate(async () => {
+      const response = await fetch("/api/message", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "SLOW keep working" }),
+      });
+      return response.status;
+    });
+    expect(status).toBe(202);
+
+    const spinner = screen.getByTestId("working-spinner");
+    await expect(spinner).toBeVisible({ timeout: 15_000 });
+    await expect(screen.getByTestId("header-activity")).toHaveText("working");
+    // PI_RETRY_BUDGET_MS=1000 in e2e/backend.mjs; the client checks it once a second.
+    await expect(spinner).toHaveAttribute("data-motion", "quiet", { timeout: 15_000 });
+
+    const quietFrames = await browser.evaluate(async () => {
+      const frames = new Set<string>();
+      const deadline = performance.now() + 1_200;
+      while (performance.now() < deadline) {
+        const node = document.querySelector<HTMLElement>('[data-testid="working-spinner"]');
+        const frame = node?.getAttribute("data-frame");
+        if (frame != null) frames.add(frame);
+        await new Promise((resolve) => window.setTimeout(resolve, 40));
+      }
+      return { frames: [...frames] };
+    });
+    expect(quietFrames.frames.length).toBeGreaterThanOrEqual(2);
+
+    await browser.emulateMedia({ reducedMotion: "reduce" });
+    await expect(spinner).toHaveAttribute("data-motion", "reduced");
+    const reduced = await browser.evaluate(async () => {
+      const glyphs = new Set<string>();
+      const deadline = performance.now() + 1_200;
+      while (performance.now() < deadline) {
+        const node = document.querySelector<HTMLElement>('[data-testid="working-spinner"]');
+        if (node?.textContent != null) glyphs.add(node.textContent);
+        await new Promise((resolve) => window.setTimeout(resolve, 40));
+      }
+      return [...glyphs];
+    });
+    expect(reduced).toEqual(["⠿"]);
+
+    await screen.getByRole("button", "Stop").tap();
+  });
 });
 
 // This test patches `window.fetch` for the whole page to hold one response. An
