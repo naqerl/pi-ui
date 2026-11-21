@@ -2189,7 +2189,9 @@ export function ChatView({
   const hydrating = !ready && !running && groups.length === 0;
   const showTranscriptLoading = useDelayedFlag(hydrating, TRANSCRIPT_LOADING_DELAY_MS);
   const footerRef = useRef<HTMLDivElement | null>(null);
+  const composerBodyRef = useRef<HTMLDivElement | null>(null);
   const [dockClearance, setDockClearance] = useState(0);
+  const [dockFloor, setDockFloor] = useState(0);
 
   useLayoutEffect(() => {
     if (!dockOverlay) {
@@ -2203,6 +2205,42 @@ export function ChatView({
     const observer = new ResizeObserver(measure);
     observer.observe(footer, { box: "border-box" });
     return () => observer.disconnect();
+  }, [dockOverlay]);
+
+  // The plan overlay folds the composer body to zero height, which would also
+  // shrink the dock's own box by the body's height. Keep the dock at the height
+  // the create surface measures: the collapsed body still reports its content
+  // height through scrollHeight, so the body's box can stay out of the layout
+  // without the bar moving.
+  useLayoutEffect(() => {
+    if (!dockOverlay) {
+      setDockFloor(0);
+      return;
+    }
+    const footer = footerRef.current;
+    const body = composerBodyRef.current;
+    if (footer === null || body === null) return;
+    const footerHeight = footer.getBoundingClientRect().height;
+    const bodyHeight = body.getBoundingClientRect().height;
+    setDockFloor(footerHeight - bodyHeight + body.scrollHeight);
+  }, [dockOverlay]);
+
+  // The plan overlay folds the composer body to zero height, but the dock is
+  // measured as one box on the create/list surface. Leaving the overlay must
+  // hand the body its full height back on the swap frame itself, not 220 ms
+  // later, or the dock reads 48 px short while the action lanes sweep.
+  const wasDockOverlay = useRef(dockOverlay);
+  useLayoutEffect(() => {
+    const leftOverlay = wasDockOverlay.current && !dockOverlay;
+    wasDockOverlay.current = dockOverlay;
+    if (!leftOverlay) return;
+    const body = composerBodyRef.current;
+    if (body === null) return;
+    body.style.transition = "none";
+    // Resolve the restored height while the transition is suppressed. Restoring
+    // the property afterwards changes no value, so no animation starts late.
+    void body.getBoundingClientRect();
+    body.style.transition = "";
   }, [dockOverlay]);
 
   useEffect(() => {
@@ -2662,6 +2700,7 @@ export function ChatView({
             data-testid="composer-dock"
             data-transitioning={pager.dragging || pageAnimating ? "true" : undefined}
             className="float-footer relative z-20 theme-radius"
+            style={{ minHeight: dockOverlay && dockFloor > 0 ? dockFloor : undefined }}
           >
             <div data-testid="composer-slide">
               <div className="ink-line flex items-center gap-xl border-b py-md pr-md pl-2xl">
@@ -2727,6 +2766,7 @@ export function ChatView({
                 <PiMenu />
               </div>
               <div
+                ref={composerBodyRef}
                 data-testid="composer-body"
                 data-hidden={hideTasksComposer ? "true" : "false"}
                 data-collapsed={hideTasksComposer ? "true" : "false"}

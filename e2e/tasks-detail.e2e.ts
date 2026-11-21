@@ -612,9 +612,7 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     expect(chatOpen?.shellHeight ?? 0).toBeGreaterThan(0);
     expect(chatOpen?.inputVisible).toBe(true);
     expect(chatOpen?.bodyHeight ?? 0).toBeGreaterThan(0);
-    expect(
-      Math.abs((chatOpen?.planBottom ?? 0) - (chatOpen?.dockTop ?? 0)),
-    ).toBeLessThanOrEqual(1);
+    expect(Math.abs((chatOpen?.planBottom ?? 0) - (chatOpen?.dockTop ?? 0))).toBeLessThanOrEqual(1);
     await expect(screen.getByTestId("page-dots")).toBeVisible();
     await app.screenshot("task-chat-dock-visible");
 
