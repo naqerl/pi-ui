@@ -189,6 +189,32 @@ protocol connection also clears every stale boot failure for that server, so
 availability is recomputed from the latest observation rather than a
 write-once list.
 
+### A blip is not news
+
+A subscription's status is display state, not a chat turn. The first unhealthy
+frame for a durable `stableId` (`reconnecting`, `opening` on a dead row,
+`failed`, `ended` or `stalled`) draws one chat chip and starts a quiet clock.
+More frames update that same chip without restarting the clock. If an `active`
+frame arrives inside the window the chip reads recovered and no model turn
+starts; a quick loss and return is therefore one chip and no prompt. The client
+SSE connection chip and the `ConnectionError` run-error header keep their own,
+separate rules.
+
+When the window expires without a live, fresh `active` the outage becomes news
+once: the stored status text is delivered to the model through the normal MCP
+notice path, and the recovery after it speaks exactly as it did before. Terminal
+states follow the same rule — a real loss is one notice after the window, never
+one notice per retry attempt. The clock is keyed by `stableId`, never the
+adapter `id`, because the extension mints a new adapter id per connection.
+
+The window defaults to 60 seconds and can be shortened for a test or a small
+deployment with `PI_UI_MCP_OUTAGE_NOTIFY_MS`, in the same style as
+`PI_UI_QUIET_AFTER_MS`. It is deliberately separate from
+`MCP_STREAM_HEARTBEAT_TIMEOUT_MS` (65 s): one decides whether delivery is still
+fresh, the other decides when the model should hear about an outage. Chip-only
+statuses never enter `DATA_DIR/mcp-outbox.json`, so a restart cannot replay an
+old blip into the prompt.
+
 ### Reliable event delivery
 
 Event IDs, not `replayed` provenance, determine novelty. Age is a separate

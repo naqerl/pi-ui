@@ -11,6 +11,7 @@ import {
 } from "../src/server/chat-service.js";
 import { DurableExtensionShim } from "../src/server/durable-extensions.js";
 import { McpEventFeed } from "../src/server/mcp-events.js";
+import { OutageQuiet } from "../src/server/mcp-outage-quiet.js";
 import {
   MAX_SEEN_PER_STABLE_ID,
   type McpDelivery,
@@ -604,7 +605,12 @@ test("a status notice waits beside an event batch without corrupting it", async 
 test("outbox delivery keeps the recovery the intake already accepted", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "pi-outbox-recovery-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  const feed = new McpEventFeed();
+  let clock = 1_000;
+  const now = () => clock;
+  const feed = new McpEventFeed(undefined, {
+    now,
+    outageQuiet: new OutageQuiet(now, 1_000),
+  });
   feed.ingest({
     customType: "mcp-events-tool",
     details: {
@@ -629,8 +635,8 @@ test("outbox delivery keeps the recovery the intake already accepted", async (t)
     feed.ingest(notice);
   });
   shim.setMessageSink((text, options) => {
-    const filtered = feed.filterStatusNotice(text, options.details, options.customType);
-    if (filtered !== null) queued.push(outbox.enqueue(filtered));
+    const gate = feed.filterStatusNotice(text, options.details, options.customType);
+    if (gate.mode === "deliver") queued.push(outbox.enqueue(gate.text));
   });
   const notice = (status: string) => ({
     customType: "mcp-events-status",
@@ -647,6 +653,13 @@ test("outbox delivery keeps the recovery the intake already accepted", async (t)
   };
 
   try {
+    shim.sendMessage(notice("reconnecting"));
+    await Promise.all(queued.splice(0));
+    assert.equal(queued.length, 0, "a chip never enters the durable outbox");
+    assert.equal(submitted.length, 0, "and it never starts a turn");
+
+    // The window expires with the row still down: now the intake accepts.
+    clock += 1_000;
     shim.sendMessage(notice("reconnecting"));
     await Promise.all(queued.splice(0));
     outbox.start();
