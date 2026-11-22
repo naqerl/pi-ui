@@ -654,7 +654,7 @@ test("a notice queued before the sink is observed without being submitted", () =
     return true;
   });
   assert.equal(seen.length, 1, "attaching the observer replays a queued notice");
-  assert.deepEqual(submitted, [], "observation does not need a chat sink");
+  assert.equal(submitted.length, 0, "observation does not need a chat sink");
 
   shim.setMessageSink((text) => submitted.push(text));
   assert.deepEqual(submitted, [queued.content], "the queued notice is still submitted once");
