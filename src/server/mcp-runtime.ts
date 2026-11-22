@@ -463,6 +463,11 @@ function webAccessServer(agentDir: string): HostManagedMcpServer | undefined {
 }
 
 const LIVE_ADAPTER_STATUS = new Set(["opening", "active", "reconnecting"]);
+/** A declared stream that ended is reopened; a cancellation is not. */
+const TERMINAL_SUBSCRIPTION_STATUS = new Set(["ended", "failed", "stopped"]);
+/** Bounded reopens: 1s, 2s, 5s, then 15s for the final attempts. */
+const SUBSCRIPTION_REOPEN_DELAYS_MS = [1_000, 2_000, 5_000, 15_000] as const;
+const MAX_SUBSCRIPTION_REOPEN_ATTEMPTS = 5;
 
 function isLiveAdapterStatus(value: unknown): boolean {
   return typeof value === "string" && LIVE_ADAPTER_STATUS.has(value);
@@ -1508,6 +1513,10 @@ export class McpRuntime {
   private readonly adapterStableIds = new Map<string, string>();
   /** Declared stable ids that currently have a live adapter stream. */
   private readonly declaredLive = new Set<string>();
+  /** Pending cursor reopen per durable subscription. */
+  private readonly reopenTimers = new Map<string, NodeJS.Timeout>();
+  private readonly reopenAttempts = new Map<string, number>();
+  private readonly reopenInFlight = new Set<string>();
   /** Brand-new declarations must skip the probe on every retry until they open. */
   private readonly skipProbeRestores = new Set<string>();
   /** Unknown unsubscribe ids already logged, so a retry does not spam. */
@@ -1870,15 +1879,69 @@ export class McpRuntime {
         details !== undefined && isRecord(details.subscription) ? details.subscription : {};
       const id = typeof raw.id === "string" ? raw.id : (record.id ?? undefined);
       const generation = await this.generationFor(record.server, id);
-      return {
+      const reopened = {
         ...(id === undefined ? {} : { id }),
         ...(generation === undefined ? {} : { generation }),
         cursor: positionCursor(raw.cursor, sent),
         status: typeof raw.status === "string" ? raw.status : "active",
         ...(typeof raw.endReason === "string" ? { endReason: raw.endReason } : {}),
       };
+      this.adoptReopenedSubscription(record, reopened);
+      return reopened;
     }
-    return this.reopenDirect(record, sent);
+    const reopened = await this.reopenDirect(record, sent);
+    this.adoptReopenedSubscription(record, reopened);
+    return reopened;
+  }
+
+  /**
+   * Persist the stream the reopen produced and retire the dead adapter id.
+   * Without this a replacement kept the old id in `restored`/`adapterStableIds`
+   * and late traffic from the old stream could cancel the new reopen timer.
+   */
+  private adoptReopenedSubscription(
+    record: McpSubscriptionRecord,
+    reopened: {
+      readonly id?: string;
+      readonly generation?: string;
+      readonly cursor: string | null;
+      readonly status: string;
+      readonly endReason?: string;
+    },
+  ): void {
+    const stableId = recordStableId(record);
+    this.declaredLive.add(stableId);
+    if (reopened.id === undefined) return;
+    this.claimAdapterId(stableId, reopened.id);
+    // An event can arrive while the subscribe call is in flight. The feed has
+    // already written that newer position and delivered set; adopting the
+    // response blindly would let the next reopen replay it.
+    const saved = this.subscriptionStore?.findByStableId(stableId);
+    const advanced =
+      saved !== undefined && hasPosition(saved.cursor) && saved.cursor !== record.cursor;
+    const cursor = advanced && saved !== undefined ? saved.cursor : reopened.cursor;
+    const status = advanced && saved !== undefined ? saved.status : reopened.status;
+    const updated: McpSubscriptionRecord = {
+      ...record,
+      stableId,
+      id: reopened.id,
+      cursor,
+      status,
+      enabled: subscriptionEnabled(status),
+      endReason: reopened.endReason,
+      ...(saved?.deliveredEventIds === undefined
+        ? {}
+        : { deliveredEventIds: saved.deliveredEventIds }),
+      ...(saved?.lastEventAt === undefined ? {} : { lastEventAt: saved.lastEventAt }),
+      ...(saved?.lastHeartbeatAt === undefined
+        ? {}
+        : { lastHeartbeatAt: saved.lastHeartbeatAt }),
+      ...(saved?.lastPollAt === undefined ? {} : { lastPollAt: saved.lastPollAt }),
+      updatedAt: new Date().toISOString(),
+      ...(reopened.generation === undefined ? {} : { generation: reopened.generation }),
+    };
+    this.restored.set(reopened.id, updated);
+    void this.subscriptionStore?.record(updated).catch(() => {});
   }
 
   private async reopenDirect(
@@ -2059,6 +2122,7 @@ export class McpRuntime {
             // and watchdog subscribes use callTool() and never reach this path.
             const enriched = withDeclaredTitle(notice, this.subscriptionConfig?.entries ?? []);
             void this.noteToolResult(enriched);
+            this.observeSubscriptionNotices(enriched);
             return observer(enriched);
           },
     );
@@ -2067,11 +2131,274 @@ export class McpRuntime {
     // /api/state has the real subscription ids and stored cursors immediately.
     for (const notice of this.pendingNotices.splice(0)) {
       try {
+        this.observeSubscriptionNotices(notice);
         observer(notice);
       } catch (error) {
         console.error("[mcp] restored subscription notice failed", error);
       }
     }
+  }
+
+  /**
+   * A declared stream that ends is reopened at the cursor the registry already
+   * owns. The extension keeps its own retry schedule for transient transport
+   * errors; this scheduler covers the terminal status it reports after giving
+   * up, and is bounded so a dead server cannot create a reconnect storm.
+   */
+  private observeSubscriptionNotices(notice: ExtensionNotice): void {
+    const details = isRecord(notice.details) ? notice.details : undefined;
+    if (notice.customType === "mcp-events-traffic") {
+      const id =
+        details !== undefined && typeof details.subscription_id === "string"
+          ? details.subscription_id
+          : undefined;
+      const stableId = id === undefined ? undefined : this.stableIdForAdapterId(id);
+      if (stableId !== undefined) this.clearSubscriptionReopen(stableId);
+      return;
+    }
+    if (notice.customType === "mcp-events") {
+      if (details === undefined || !Array.isArray(details.events)) return;
+      for (const item of details.events) {
+        const id =
+          isRecord(item) && typeof item.subscription_id === "string"
+            ? item.subscription_id
+            : undefined;
+        const stableId = id === undefined ? undefined : this.stableIdForAdapterId(id);
+        if (stableId !== undefined) this.clearSubscriptionReopen(stableId);
+      }
+      return;
+    }
+    if (notice.customType === "mcp-events-tool") {
+      const args = details !== undefined && isRecord(details.args) ? details.args : undefined;
+      const result = details !== undefined && isRecord(details.result) ? details.result : undefined;
+      const subscription = isRecord(result?.subscription) ? result.subscription : undefined;
+      if (args?.action !== "subscribe" || subscription === undefined) return;
+      if (details !== undefined && details.isError === true) return;
+      if (result !== undefined && result.isError === true) return;
+      const stableId = this.stableIdForStatus(subscription);
+      if (stableId !== undefined) this.clearSubscriptionReopen(stableId);
+      return;
+    }
+    if (notice.customType !== "mcp-events-status" && notice.customType !== "mcp-ui-status") return;
+    for (const item of this.statusItems(details)) {
+      const status = typeof item.status === "string" ? item.status : undefined;
+      const stableId = this.stableIdForStatus(item);
+      if (status === undefined || stableId === undefined) continue;
+      if (TERMINAL_SUBSCRIPTION_STATUS.has(status)) {
+        if (this.isDeclaredStableId(stableId)) this.scheduleSubscriptionReopen(stableId);
+      } else if (status === "active" || status === "opening") {
+        this.clearSubscriptionReopen(stableId);
+      }
+    }
+  }
+
+  private statusItems(details: Record<string, unknown> | undefined): Record<string, unknown>[] {
+    if (details === undefined) return [];
+    if (Array.isArray(details.subscriptions)) return details.subscriptions.filter(isRecord);
+    // The prose status channel carries one subscription in its details.
+    if (typeof details.status === "string") return [details];
+    return [];
+  }
+
+  private stableIdForAdapterId(id: string): string | undefined {
+    const mapped = this.adapterStableIds.get(id);
+    if (mapped !== undefined) return mapped;
+    const restored = this.restored.get(id);
+    return restored === undefined ? undefined : recordStableId(restored);
+  }
+
+  /**
+   * Resolve a status row without letting an id that the runtime no longer owns
+   * speak for the durable subscription. A stale generation must not clear or
+   * replace the replacement stream's timer.
+   */
+  private stableIdForStatus(item: Record<string, unknown>): string | undefined {
+    const adapterIds: string[] = [];
+    for (const value of [item.id, item.subscription_id]) {
+      if (typeof value !== "string" || value.length === 0) continue;
+      adapterIds.push(value);
+      const mapped = this.stableIdForAdapterId(value);
+      if (mapped !== undefined) return mapped;
+      // A status may name the stable id itself, or a live id recorded before
+      // the adapter map was hydrated.
+      if (this.isDeclaredStableId(value)) return value;
+    }
+    if (adapterIds.length > 0) return undefined;
+    if (typeof item.stableId === "string" && item.stableId.length > 0) return item.stableId;
+    const server = typeof item.server === "string" ? item.server : undefined;
+    const name = typeof item.name === "string" ? item.name : undefined;
+    if (server === undefined || name === undefined) return undefined;
+    for (const record of this.restored.values()) {
+      if (record.server === server && record.name === name) return recordStableId(record);
+    }
+    for (const record of this.pendingRestore.values()) {
+      if (record.server === server && record.name === name) return recordStableId(record);
+    }
+    const entry = this.subscriptionConfig?.entries.find(
+      (candidate) => candidate.server === server && candidate.name === name,
+    );
+    return entry === undefined
+      ? undefined
+      : deriveStableId(entry.server, entry.name, entry.arguments);
+  }
+
+  private isDeclaredStableId(stableId: string): boolean {
+    return (this.subscriptionConfig?.entries ?? []).some(
+      (entry) => deriveStableId(entry.server, entry.name, entry.arguments) === stableId,
+    );
+  }
+
+  private recordForStableId(stableId: string): McpSubscriptionRecord | undefined {
+    const saved = this.subscriptionStore?.findByStableId(stableId);
+    if (saved?.status === "cancelled") return undefined;
+    let restored: McpSubscriptionRecord | undefined;
+    for (const record of this.restored.values()) {
+      if (recordStableId(record) === stableId) {
+        restored = record;
+        break;
+      }
+    }
+    if (restored === undefined) {
+      for (const record of this.pendingRestore.values()) {
+        if (recordStableId(record) === stableId) {
+          restored = record;
+          break;
+        }
+      }
+    }
+    const entry = this.subscriptionConfig?.entries.find(
+      (candidate) =>
+        deriveStableId(candidate.server, candidate.name, candidate.arguments) === stableId,
+    );
+    if (saved === undefined && restored === undefined && entry === undefined) return undefined;
+    const base = saved ?? restored;
+    const cursor = hasPosition(saved?.cursor)
+      ? saved.cursor
+      : hasPosition(restored?.cursor)
+        ? restored.cursor
+        : null;
+    return {
+      server: base?.server ?? entry?.server ?? "",
+      name: base?.name ?? entry?.name ?? "",
+      stableId,
+      arguments: base?.arguments ?? entry?.arguments ?? {},
+      cursor,
+      status: base?.status ?? "active",
+      ...(restored?.id === undefined && saved?.id === undefined
+        ? {}
+        : { id: restored?.id ?? saved?.id }),
+      ...(restored?.title === undefined && saved?.title === undefined
+        ? {}
+        : { title: restored?.title ?? saved?.title }),
+      ...(saved?.deliveredEventIds === undefined && restored?.deliveredEventIds === undefined
+        ? {}
+        : { deliveredEventIds: saved?.deliveredEventIds ?? restored?.deliveredEventIds }),
+      ...(saved?.lastEventAt === undefined && restored?.lastEventAt === undefined
+        ? {}
+        : { lastEventAt: saved?.lastEventAt ?? restored?.lastEventAt }),
+      ...(saved?.lastHeartbeatAt === undefined && restored?.lastHeartbeatAt === undefined
+        ? {}
+        : { lastHeartbeatAt: saved?.lastHeartbeatAt ?? restored?.lastHeartbeatAt }),
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * The replacement id is the only id for this durable subscription now. Drop
+   * the old adapter id from both maps so late traffic from the dead stream
+   * cannot clear the new stream's reopen timer.
+   */
+  private claimAdapterId(stableId: string, id: string): void {
+    for (const [other, mapped] of [...this.adapterStableIds]) {
+      if (mapped === stableId && other !== id) this.adapterStableIds.delete(other);
+    }
+    for (const [other, record] of [...this.restored]) {
+      if (recordStableId(record) === stableId && other !== id) this.restored.delete(other);
+    }
+    this.adapterStableIds.set(id, stableId);
+  }
+
+  private scheduleSubscriptionReopen(stableId: string): void {
+    if (this.closed || this.dropped.has(stableId)) return;
+    if (!this.isDeclaredStableId(stableId)) return;
+    if (this.reopenTimers.has(stableId)) return;
+    const attempt = this.reopenAttempts.get(stableId) ?? 0;
+    if (attempt >= MAX_SUBSCRIPTION_REOPEN_ATTEMPTS) return;
+    const index = Math.min(attempt, SUBSCRIPTION_REOPEN_DELAYS_MS.length - 1);
+    const delay = SUBSCRIPTION_REOPEN_DELAYS_MS[index] ?? 15_000;
+    const timer = setTimeout(() => {
+      this.reopenTimers.delete(stableId);
+      void this.runSubscriptionReopen(stableId);
+    }, delay);
+    timer.unref();
+    this.reopenTimers.set(stableId, timer);
+  }
+
+  private clearSubscriptionReopen(stableId: string): void {
+    const timer = this.reopenTimers.get(stableId);
+    if (timer !== undefined) clearTimeout(timer);
+    this.reopenTimers.delete(stableId);
+    this.reopenAttempts.delete(stableId);
+  }
+
+  private async runSubscriptionReopen(stableId: string): Promise<void> {
+    if (this.closed || this.dropped.has(stableId)) return;
+    if (!this.isDeclaredStableId(stableId) || this.reopenInFlight.has(stableId)) return;
+    const record = this.recordForStableId(stableId);
+    if (record === undefined) return;
+    this.reopenInFlight.add(stableId);
+    try {
+      // Passing no cursor lets reopenSubscription use the registry's newest
+      // position, which is the authority the feed already delivered.
+      const reopened = await this.reopenSubscription(record, undefined);
+      // An unsubscribe status for the dead stream can arrive while the
+      // replacement is opening and arm a timer of its own.
+      this.clearSubscriptionReopen(stableId);
+      console.log(
+        `mcp: reopened subscription ${record.server}/${record.name} at ${
+          reopened.cursor ?? "null"
+        }`,
+      );
+    } catch (error) {
+      if (isUnknownSubscriptionError(error)) {
+        await this.dropSubscription(record, stableId, errorText(error));
+        return;
+      }
+      const attempt = (this.reopenAttempts.get(stableId) ?? 0) + 1;
+      this.reopenAttempts.set(stableId, attempt);
+      if (attempt < MAX_SUBSCRIPTION_REOPEN_ATTEMPTS) {
+        this.scheduleSubscriptionReopen(stableId);
+      } else {
+        console.warn(
+          `mcp: could not reopen subscription ${record.server}/${record.name} after ${attempt} attempts: ${errorText(error)}`,
+        );
+      }
+    } finally {
+      this.reopenInFlight.delete(stableId);
+    }
+  }
+
+  private async dropSubscription(
+    record: McpSubscriptionRecord,
+    stableId: string,
+    reason: string,
+    key = recordKey(record),
+  ): Promise<void> {
+    this.clearSubscriptionReopen(stableId);
+    this.dropped.add(key);
+    this.dropped.add(stableId);
+    this.declaredLive.delete(stableId);
+    this.pendingRestore.delete(key);
+    this.skipProbeRestores.delete(key);
+    for (const [id, mapped] of [...this.adapterStableIds]) {
+      if (mapped === stableId) this.adapterStableIds.delete(id);
+    }
+    for (const [id, restored] of [...this.restored]) {
+      if (recordStableId(restored) === stableId) this.restored.delete(id);
+    }
+    await this.subscriptionStore?.cancel(stableId).catch(() => {});
+    this.liveIdCancelled?.(stableId);
+    console.warn(`mcp: dropped subscription ${record.server}/${record.name}: ${reason}`);
   }
 
   /** Broadcast after a declaration write, once the feed exists. */
@@ -2158,7 +2485,7 @@ export class McpRuntime {
       typeof value.stableId === "string" && value.stableId.length > 0
         ? value.stableId
         : deriveStableId(server, name, isRecord(value.arguments) ? value.arguments : {});
-    this.adapterStableIds.set(value.id, stableId);
+    this.claimAdapterId(stableId, value.id);
   }
 
   private async writeDeclaration(write: () => Promise<boolean>): Promise<void> {
@@ -2371,14 +2698,7 @@ export class McpRuntime {
     key: string,
     reason: string,
   ): Promise<void> {
-    const stableId = recordStableId(record);
-    this.dropped.add(key);
-    this.dropped.add(stableId);
-    this.declaredLive.delete(stableId);
-    this.pendingRestore.delete(key);
-    this.skipProbeRestores.delete(key);
-    await this.subscriptionStore?.cancel(stableId).catch(() => {});
-    console.warn(`mcp: dropped restored subscription ${record.server}/${record.name}: ${reason}`);
+    await this.dropSubscription(record, recordStableId(record), reason, key);
   }
 
   /**
@@ -2496,9 +2816,9 @@ export class McpRuntime {
         enabled: subscriptionEnabled(subscription.status),
         updatedAt: new Date().toISOString(),
       };
+      this.claimAdapterId(stableId, subscription.id);
       this.restored.set(subscription.id, restored);
       this.declaredLive.add(stableId);
-      this.adapterStableIds.set(subscription.id, stableId);
       this.pendingRestore.delete(key);
       this.skipProbeRestores.delete(key);
       console.log(
@@ -2916,6 +3236,8 @@ export class McpRuntime {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    for (const timer of this.reopenTimers.values()) clearTimeout(timer);
+    this.reopenTimers.clear();
     await this.shim.dispatch("session_shutdown").catch(() => {});
     for (const session of this.pollSessions.values()) session.close();
     this.pollSessions.clear();

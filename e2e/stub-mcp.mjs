@@ -4,6 +4,9 @@ import { Server } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
 
+let cutStarted = false;
+let cutClosedCleanly = false;
+
 const server = new Server(
   { name: "stub-mcp", version: "1.0.0" },
   { capabilities: { tools: {}, experimental: { events: {} } } },
@@ -84,6 +87,17 @@ server.setRequestHandler(
         delivery: ["push"],
         description: "A burst whose first subject updates before the queued run is placed.",
       },
+      {
+        name: "stub-cut",
+        delivery: ["push"],
+        description:
+          "Two events, a cut stream, a clean close with no events, then a third event.",
+      },
+      {
+        name: "stub-silent",
+        delivery: ["push"],
+        description: "A declared stream that stays open without sending an event.",
+      },
     ],
   }),
 );
@@ -129,6 +143,40 @@ server.setRequestHandler(
         ? params.arguments.prefix
         : fallback;
     const hold = () => new Promise((resolve) => setTimeout(resolve, 120_000));
+    if (params.name === "stub-silent") {
+      await hold();
+      return {};
+    }
+    if (params.name === "stub-cut") {
+      // One real loss, then a clean close that has no event of its own. The
+      // third subscribe only sends cut:3 when the cursor is still cut:2; a
+      // null cursor would be visible as cut:0 instead of a silent replay.
+      if (!cutStarted) {
+        cutStarted = true;
+        setTimeout(() => {
+          wave("stub-cut", "cut", 1, 2);
+          setTimeout(() => {
+            void notify("notifications/events/terminated", {
+              error: { message: "stub cut finished" },
+            });
+          }, 100);
+        }, 100);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        return {};
+      }
+      if (params.cursor !== "cut:2") {
+        setTimeout(() => wave("stub-cut", "cut-unexpected", 0, 0), 100);
+        await hold();
+        return {};
+      }
+      if (!cutClosedCleanly) {
+        cutClosedCleanly = true;
+        return {};
+      }
+      setTimeout(() => wave("stub-cut", "cut", 3, 3), 100);
+      await hold();
+      return {};
+    }
     if (params.name === "stub-burst") {
       setTimeout(() => wave("stub-burst", prefix("burst"), 1, 3), 100);
       await hold();
