@@ -1517,6 +1517,10 @@ export class McpRuntime {
   private readonly reopenTimers = new Map<string, NodeJS.Timeout>();
   private readonly reopenAttempts = new Map<string, number>();
   private readonly reopenInFlight = new Set<string>();
+  /** A terminal status that arrived while its replacement was being opened. */
+  private readonly terminalDuringReopen = new Set<string>();
+  /** Adapter ids whose status already said terminal; late frames cannot revive them. */
+  private readonly deadAdapterIds = new Map<string, Set<string>>();
   /** Brand-new declarations must skip the probe on every retry until they open. */
   private readonly skipProbeRestores = new Set<string>();
   /** Unknown unsubscribe ids already logged, so a retry does not spam. */
@@ -1911,6 +1915,13 @@ export class McpRuntime {
   ): void {
     const stableId = recordStableId(record);
     this.declaredLive.add(stableId);
+    // The replacement's subscribe call runs while the old stream can still
+    // report its clean close. Capture that before reviving the stable id, or
+    // the next reopen loses the only evidence it needs to re-arm.
+    if (this.reopenInFlight.has(stableId) && this.deadAdapterIds.has(stableId)) {
+      this.terminalDuringReopen.add(stableId);
+    }
+    this.reviveAdapter(stableId);
     if (reopened.id === undefined) return;
     this.claimAdapterId(stableId, reopened.id);
     // An event can arrive while the subscribe call is in flight. The feed has
@@ -2112,21 +2123,12 @@ export class McpRuntime {
   /** Observes MCP event batches and mcp_events tool results. Never includes secrets. */
   setObserver(observer: Parameters<DurableExtensionShim["setObserver"]>[0]): void {
     this.observer = observer;
-    this.shim.setObserver(
-      observer === undefined
-        ? undefined
-        : (notice) => {
-            // The shim's registerTool wrapper sees only model/tool calls. Restore
-            // and watchdog subscribes use callTool() and never reach this path.
-            const enriched = withDeclaredTitle(notice, this.subscriptionConfig?.entries ?? []);
-            void this.noteToolResult(enriched);
-            this.observeSubscriptionNotices(enriched);
-            return observer(enriched);
-          },
-    );
-    if (observer === undefined) return;
-    // Restore runs before the feed exists. Replay its subscribe results now so
-    // /api/state has the real subscription ids and stored cursors immediately.
+    if (observer === undefined) {
+      this.shim.setObserver(undefined);
+      return;
+    }
+    // Restore runs before the feed exists. Replay its subscribe results first so
+    // the feed knows the adapter ids before the queued event batches arrive.
     for (const notice of this.pendingNotices.splice(0)) {
       try {
         this.observeSubscriptionNotices(notice);
@@ -2135,6 +2137,17 @@ export class McpRuntime {
         console.error("[mcp] restored subscription notice failed", error);
       }
     }
+    // The shim may already hold notices from a stream that delivered during
+    // boot. Installing the observer replays them, so the feed sees those
+    // events even when no submit sink is attached yet.
+    this.shim.setObserver((notice) => {
+      // The shim's registerTool wrapper sees only model/tool calls. Restore
+      // and watchdog subscribes use callTool() and never reach this path.
+      const enriched = withDeclaredTitle(notice, this.subscriptionConfig?.entries ?? []);
+      void this.noteToolResult(enriched);
+      this.observeSubscriptionNotices(enriched);
+      return observer(enriched);
+    });
   }
 
   /**
@@ -2151,7 +2164,8 @@ export class McpRuntime {
           ? details.subscription_id
           : undefined;
       const stableId = id === undefined ? undefined : this.stableIdForAdapterId(id);
-      if (stableId !== undefined) this.clearSubscriptionReopen(stableId);
+      if (stableId !== undefined && !this.adapterIsDead(stableId, id))
+        this.clearSubscriptionReopen(stableId);
       return;
     }
     if (notice.customType === "mcp-events") {
@@ -2162,7 +2176,8 @@ export class McpRuntime {
             ? item.subscription_id
             : undefined;
         const stableId = id === undefined ? undefined : this.stableIdForAdapterId(id);
-        if (stableId !== undefined) this.clearSubscriptionReopen(stableId);
+        if (stableId !== undefined && !this.adapterIsDead(stableId, id))
+          this.clearSubscriptionReopen(stableId);
       }
       return;
     }
@@ -2174,7 +2189,10 @@ export class McpRuntime {
       if (details !== undefined && details.isError === true) return;
       if (result !== undefined && result.isError === true) return;
       const stableId = this.stableIdForStatus(subscription);
-      if (stableId !== undefined) this.clearSubscriptionReopen(stableId);
+      if (stableId !== undefined) {
+        this.reviveAdapter(stableId);
+        this.clearSubscriptionReopen(stableId);
+      }
       return;
     }
     if (notice.customType !== "mcp-events-status" && notice.customType !== "mcp-ui-status") return;
@@ -2183,11 +2201,39 @@ export class McpRuntime {
       const stableId = this.stableIdForStatus(item);
       if (status === undefined || stableId === undefined) continue;
       if (TERMINAL_SUBSCRIPTION_STATUS.has(status)) {
-        if (this.isDeclaredStableId(stableId)) this.scheduleSubscriptionReopen(stableId);
+        if (!this.isDeclaredStableId(stableId)) continue;
+        this.markAdapterDead(stableId, item);
+        this.scheduleSubscriptionReopen(stableId);
       } else if (status === "active" || status === "opening") {
+        this.reviveAdapter(stableId);
         this.clearSubscriptionReopen(stableId);
       }
     }
+  }
+
+  /** Remember that a terminal status spoke for these adapter ids. */
+  private markAdapterDead(stableId: string, item: Record<string, unknown>): void {
+    const ids: string[] = [];
+    for (const value of [item.id, item.subscription_id]) {
+      if (typeof value === "string" && value.length > 0 && value !== stableId) ids.push(value);
+    }
+    // A status that names no generation (only server/name) cannot identify
+    // which stream it speaks for; do not retire a live id on that evidence.
+    if (ids.length === 0) return;
+    let dead = this.deadAdapterIds.get(stableId);
+    if (dead === undefined) {
+      dead = new Set<string>();
+      this.deadAdapterIds.set(stableId, dead);
+    }
+    for (const id of ids) dead.add(id);
+  }
+
+  private adapterIsDead(stableId: string, id: string | undefined): boolean {
+    return id !== undefined && this.deadAdapterIds.get(stableId)?.has(id) === true;
+  }
+
+  private reviveAdapter(stableId: string): void {
+    this.deadAdapterIds.delete(stableId);
   }
 
   private statusItems(details: Record<string, unknown> | undefined): Record<string, unknown>[] {
@@ -2345,6 +2391,10 @@ export class McpRuntime {
     const record = this.recordForStableId(stableId);
     if (record === undefined) return;
     this.reopenInFlight.add(stableId);
+    this.terminalDuringReopen.delete(stableId);
+    // The terminal status that triggered this attempt is being acted on now;
+    // only a close reported while the subscribe is in flight may re-arm it.
+    this.reviveAdapter(stableId);
     try {
       // Passing no cursor lets reopenSubscription use the registry's newest
       // position, which is the authority the feed already delivered.
@@ -2352,6 +2402,13 @@ export class McpRuntime {
       // An unsubscribe status for the dead stream can arrive while the
       // replacement is opening and arm a timer of its own.
       this.clearSubscriptionReopen(stableId);
+      // A clean close reports a terminal status too. If it already arrived
+      // while the subscribe was in flight the timer is gone, so arm the next
+      // attempt from the adopted status; a later notice no-ops on the timer.
+      const closed =
+        TERMINAL_SUBSCRIPTION_STATUS.has(reopened.status) ||
+        this.terminalDuringReopen.delete(stableId);
+      if (closed) this.scheduleSubscriptionReopen(stableId);
       console.log(
         `mcp: reopened subscription ${record.server}/${record.name} at ${
           reopened.cursor ?? "null"
@@ -2372,6 +2429,7 @@ export class McpRuntime {
         );
       }
     } finally {
+      this.terminalDuringReopen.delete(stableId);
       this.reopenInFlight.delete(stableId);
     }
   }
@@ -2383,6 +2441,7 @@ export class McpRuntime {
     key = recordKey(record),
   ): Promise<void> {
     this.clearSubscriptionReopen(stableId);
+    this.reviveAdapter(stableId);
     this.dropped.add(key);
     this.dropped.add(stableId);
     this.declaredLive.delete(stableId);
@@ -3236,6 +3295,8 @@ export class McpRuntime {
     this.closed = true;
     for (const timer of this.reopenTimers.values()) clearTimeout(timer);
     this.reopenTimers.clear();
+    this.terminalDuringReopen.clear();
+    this.deadAdapterIds.clear();
     await this.shim.dispatch("session_shutdown").catch(() => {});
     for (const session of this.pollSessions.values()) session.close();
     this.pollSessions.clear();

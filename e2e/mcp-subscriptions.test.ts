@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { ChatService } from "../src/server/chat-service.js";
 import { DurableExtensionShim } from "../src/server/durable-extensions.js";
-import { McpEventFeed } from "../src/server/mcp-events.js";
+import { type ExtensionNotice, McpEventFeed } from "../src/server/mcp-events.js";
 import { MCP_OUTAGE_NOTIFY_MS } from "../src/server/mcp-outage-quiet.js";
 import { startMcpRuntime } from "../src/server/mcp-runtime.js";
 import {
@@ -638,6 +638,28 @@ function immediateChat(feed: McpEventFeed) {
       ChatService.prototype.submitMcpEventNotice.call(fake as unknown as ChatService, text),
   };
 }
+
+test("a notice queued before the sink is observed without being submitted", () => {
+  const shim = new DurableExtensionShim();
+  const seen: ExtensionNotice[] = [];
+  const submitted: string[] = [];
+  const queued = statusNotice("cut-1", "failed");
+
+  shim.sendMessage(queued);
+  assert.deepEqual(seen, [], "no observer is attached yet");
+  assert.deepEqual(submitted, [], "no sink is attached yet");
+
+  shim.setObserver((notice) => {
+    seen.push(notice);
+    return true;
+  });
+  assert.equal(seen.length, 1, "attaching the observer replays a queued notice");
+  assert.deepEqual(submitted, [], "observation does not need a chat sink");
+
+  shim.setMessageSink((text) => submitted.push(text));
+  assert.deepEqual(submitted, [queued.content], "the queued notice is still submitted once");
+  assert.equal(seen.length, 1, "the queued notice is not observed twice");
+});
 
 test("the immediate chat path drops JSON and prose status for an untracked id", async () => {
   const feed = new McpEventFeed();

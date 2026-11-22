@@ -103,6 +103,17 @@ function messageText(message: DurableExtensionMessage): string {
 }
 
 /**
+ * A notice that arrived before its sink: observation is independent, so an
+ * observer attached later still sees it, and the sink only decides submission.
+ */
+interface EarlyExtensionMessage {
+  readonly message: DurableExtensionMessage;
+  readonly options: DurableSendOptions;
+  observed: boolean;
+  deliver: boolean;
+}
+
+/**
  * A deliberately small ExtensionAPI stand-in. It exposes only registration,
  * an event bus, handler hooks, and durable message submission.
  */
@@ -117,10 +128,19 @@ export class DurableExtensionShim implements DurableExtensionApi {
     | ((notice: ExtensionNotice) => ExtensionNotice | Promise<ExtensionNotice>)
     | undefined;
   private closed = false;
-  private readonly earlyMessages: Array<[DurableExtensionMessage, DurableSendOptions]> = [];
+  private readonly earlyMessages: EarlyExtensionMessage[] = [];
 
   setObserver(observer: ((notice: ExtensionNotice) => unknown) | undefined): void {
     this.observer = observer;
+    if (observer === undefined) return;
+    // A stream can deliver before the feed exists (boot-time restore is the
+    // usual case). Observe those queued notices now; the sink still owns
+    // submission and may arrive much later, or never.
+    for (const queued of this.earlyMessages) {
+      if (queued.observed) continue;
+      queued.deliver = this.observeNotice(queued.message);
+      queued.observed = true;
+    }
   }
 
   /** Add runtime-only metadata to a tool notice before it reaches the feed. */
@@ -136,9 +156,17 @@ export class DurableExtensionShim implements DurableExtensionApi {
 
   setMessageSink(sink: DurableExtensionSink | undefined): void {
     this.sink = sink;
-    if (sink !== undefined) {
-      for (const [message, options] of this.earlyMessages.splice(0))
-        this.sendMessage(message, options);
+    if (sink === undefined) return;
+    for (const queued of this.earlyMessages.splice(0)) {
+      if (!queued.observed) {
+        queued.deliver = this.observeNotice(queued.message);
+        queued.observed = true;
+      }
+      if (!queued.deliver) {
+        console.log(`[mcp] ${queued.message.customType ?? "message"} notice skipped: no new data`);
+        continue;
+      }
+      this.submitNotice(queued.message, queued.options);
     }
   }
 
@@ -228,26 +256,43 @@ export class DurableExtensionShim implements DurableExtensionApi {
     options: DurableSendOptions = {},
   ): void => {
     const kind = message.customType ?? "message";
-    if (!this.closed && this.sink === undefined) {
-      this.earlyMessages.push([message, options]);
-      return;
-    }
     if (this.closed) {
       console.warn(`[mcp] ${kind} notice dropped: extension API is closed`);
       return;
     }
     console.log(`[mcp] ${kind} notice${noticeSummary(message.details)}`);
-    let deliver = true;
-    try {
-      deliver =
-        this.observer?.({ customType: message.customType, details: message.details }) !== false;
-    } catch (error) {
-      console.error(`[mcp] ${kind} notice observer failed`, error);
+    if (this.sink === undefined) {
+      // Observation and submission are separate: a feed attached before the
+      // session's submit sink must still receive this notice.
+      const observed = this.observer !== undefined;
+      this.earlyMessages.push({
+        message,
+        options,
+        observed,
+        deliver: observed ? this.observeNotice(message) : true,
+      });
+      return;
     }
-    if (!deliver) {
+    if (!this.observeNotice(message)) {
       console.log(`[mcp] ${kind} notice skipped: no new data`);
       return;
     }
+    this.submitNotice(message, options);
+  };
+
+  /** Run the installed observer, treating a throw as "deliverable". */
+  private observeNotice(message: DurableExtensionMessage): boolean {
+    if (this.observer === undefined) return true;
+    try {
+      return this.observer({ customType: message.customType, details: message.details }) !== false;
+    } catch (error) {
+      console.error(`[mcp] ${message.customType ?? "message"} notice observer failed`, error);
+      return true;
+    }
+  }
+
+  private submitNotice(message: DurableExtensionMessage, options: DurableSendOptions): void {
+    const kind = message.customType ?? "message";
     const text = messageText(message);
     if (text.length === 0) return;
     if (this.sink === undefined) {
@@ -263,7 +308,7 @@ export class DurableExtensionShim implements DurableExtensionApi {
     } catch (error) {
       console.error(`[mcp] ${kind} notice submit failed`, error);
     }
-  };
+  }
 
   install(registry: Registry<ToolRegistration>): void {
     // Install even when empty: a reload may have removed the last server, and
