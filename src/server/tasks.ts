@@ -286,7 +286,7 @@ export interface TaskStoreOptions {
   readonly workingBlocker?: (taskId: string) => string | null;
 }
 
-type PendingTaskKind = "proposal" | "done" | "approved" | "declined";
+type PendingTaskKind = "proposal" | "done" | "working" | "approved" | "declined";
 
 interface PendingTaskChange {
   readonly task: Task;
@@ -299,6 +299,8 @@ function pushTitle(kind: PendingTaskKind): string {
       return "New proposal";
     case "done":
       return "Task done";
+    case "working":
+      return "Task started";
     case "approved":
       return "Proposal approved";
     case "declined":
@@ -307,8 +309,8 @@ function pushTitle(kind: PendingTaskKind): string {
 }
 
 /** A decision is shown in the chat but never rings the operator's phone. */
-function pushes(kind: PendingTaskKind): kind is "proposal" | "done" {
-  return kind === "proposal" || kind === "done";
+function pushes(kind: PendingTaskKind): kind is "proposal" | "done" | "working" {
+  return kind === "proposal" || kind === "done" || kind === "working";
 }
 
 const defaultTaskNotifier: TaskNotifier = async (notification) => {
@@ -817,9 +819,9 @@ export class TaskStore {
   }
 
   /**
-   * One push when a proposal appears or a task moves to done. Approving or
-   * declining a proposal records the chat notice only. A repeat write, or
-   * deleting anything that was not a proposal, stays quiet.
+   * One push when a proposal appears, a task starts working or a task moves to
+   * done. Approving or declining a proposal records the chat notice only. A
+   * repeat write, or deleting anything that was not a proposal, stays quiet.
    */
   private async announce(previous: readonly Task[], next: readonly Task[]): Promise<void> {
     const before = new Map(previous.map((task) => [task.id, task]));
@@ -834,6 +836,8 @@ export class TaskStore {
         changes.push({ task, kind: "proposal" });
       } else if (task.status === "done" && old !== undefined && old.status !== "done") {
         changes.push({ task, kind: "done" });
+      } else if (task.status === "working" && old !== undefined && old.status !== "working") {
+        changes.push({ task, kind: "working" });
       } else if (
         old !== undefined &&
         old.status !== task.status &&
