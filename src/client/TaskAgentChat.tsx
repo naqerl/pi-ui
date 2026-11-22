@@ -3,6 +3,7 @@ import { DEFAULT_NEW_TASK_TITLE, isActiveStatus } from "../shared/tasks";
 import type { ChatMessage, MessageMode, Task } from "../shared/types";
 import { ActivityDialog, Composer, TranscriptRows } from "./ChatView";
 import type { TimelineItem } from "./chat-timeline";
+import { composerCommands } from "./composer-commands";
 import { EmptyCaption } from "./EmptyCaption";
 import { NoticeIcon } from "./icons";
 import { cn } from "./lib/utils";
@@ -26,6 +27,7 @@ export function TaskAgentChat({
   composerTarget = "local",
   active = true,
   onShowPlan,
+  onRemove,
 }: {
   task: Task;
   projects: string[];
@@ -37,6 +39,8 @@ export function TaskAgentChat({
   active?: boolean;
   /** Switch to the Plan tab, where the pending question set lives. */
   onShowPlan?: () => void;
+  /** Delete this task from the composer's `/remove` command. */
+  onRemove?: () => Promise<string | null> | void;
 }) {
   const done = task.status === "done";
   const chat = useTaskChat(task.id, done);
@@ -102,6 +106,21 @@ export function TaskAgentChat({
     [sendMessage],
   );
 
+  const commands = useMemo(
+    () =>
+      onRemove === undefined
+        ? undefined
+        : composerCommands({
+            task: { id: task.id, title: task.title },
+            remove: async () => {
+              if (onRemove === undefined) return null;
+              const outcome = await onRemove();
+              return typeof outcome === "string" ? outcome : null;
+            },
+          }),
+    [onRemove, task.id, task.title],
+  );
+
   const session = useMemo((): TaskDockSession | null => {
     if (!dock || done) return null;
     return {
@@ -165,6 +184,7 @@ export function TaskAgentChat({
       attachTestId="task-agent-attach"
       inputLabel="Task message"
       placeholder={placeholderIdle}
+      commands={commands}
     />
   );
 

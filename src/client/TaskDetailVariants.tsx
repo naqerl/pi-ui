@@ -106,7 +106,7 @@ export interface TaskDetailModel {
   onStatus: (task: Task, status: Task["status"]) => void;
   onApprove: () => void;
   onDismiss: () => void;
-  onRemove: () => void;
+  onRemove: () => Promise<string | null> | void;
   onLedger?: (ledger: TaskLedger) => void;
 }
 
@@ -726,17 +726,9 @@ export function TaskActionsMenu({
           >
             Remove
           </DropdownMenuItem>
-        ) : proposed ? (
-          <DropdownMenuItem
-            disabled={statusPending}
-            data-testid="task-detail-backlog"
-            onSelect={() => onStatus(task, parked ? "open" : "backlog")}
-          >
-            {backlogLabel}
-          </DropdownMenuItem>
         ) : (
           <>
-            {!done && (
+            {(!done || proposed) && (
               <DropdownMenuItem
                 disabled={statusPending}
                 data-testid="task-detail-backlog"
@@ -745,17 +737,19 @@ export function TaskActionsMenu({
                 {backlogLabel}
               </DropdownMenuItem>
             )}
-            <DropdownMenuItem
-              data-testid="task-detail-status"
-              disabled={openChildren && !done}
-              title={openChildren && !done ? "Finish open subtasks first" : undefined}
-              onSelect={() => {
-                if (openChildren && !done) return;
-                onStatus(task, done ? "open" : "done");
-              }}
-            >
-              {done ? "Reopen…" : "Mark done"}
-            </DropdownMenuItem>
+            {!proposed && (
+              <DropdownMenuItem
+                data-testid="task-detail-status"
+                disabled={openChildren && !done}
+                title={openChildren && !done ? "Finish open subtasks first" : undefined}
+                onSelect={() => {
+                  if (openChildren && !done) return;
+                  onStatus(task, done ? "open" : "done");
+                }}
+              >
+                {done ? "Reopen…" : "Mark done"}
+              </DropdownMenuItem>
+            )}
             <DropdownMenuSeparator />
             <DropdownMenuItem
               variant="destructive"
@@ -1178,6 +1172,7 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
               variant="pane"
               composerTarget="dock"
               active={tab === "chat"}
+              onRemove={model.onRemove}
               onShowPlan={() => {
                 setTab("plan");
                 tabs.setPage(TAB_INDEX.plan);

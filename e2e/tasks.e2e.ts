@@ -650,6 +650,74 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     }
   });
 
+  test("the slash palette removes the open task and leaves plain messages alone", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    const title = `Palette remove ${Date.now()}`;
+    await app.open("/?page=tasks");
+    const id = await createReopenTask(browser, title);
+    expect(id).not.toBe("");
+    let sent = 0;
+    let sentText: string | null = null;
+    const readSentText = (): string | null => sentText;
+    await browser.route("**/api/message", async (route) => {
+      sent += 1;
+      sentText = (JSON.parse(route.request.postData ?? "{}") as { text?: string }).text ?? null;
+      await route.fulfill({
+        status: 202,
+        json: {
+          message: {},
+          mode: "queue",
+          queued: true,
+          placed: false,
+          queue: [],
+          queueRevision: 1,
+        },
+      });
+    });
+
+    try {
+      await app.open("/?page=tasks");
+      await screen.getByRole("button", { name: `Open ${title}` }).tap();
+      await expect(screen.getByTestId("task-detail")).toBeVisible();
+      await openTaskChatTab(screen);
+      const composer = screen.getByTestId("task-agent-input");
+      await expect(composer).toBeVisible();
+      await composer.fill("/");
+
+      const palette = screen.getByTestId("composer-palette");
+      await expect(palette).toBeVisible();
+      await expect(palette).toContainText("/remove");
+      await expect(palette).toContainText("delete the open task");
+      await browser.keyboard.press("Tab");
+      await expect(screen.getByTestId("composer-command-remove")).toHaveAttribute(
+        "data-active",
+        "true",
+      );
+
+      await browser.keyboard.press("Enter");
+      await expect.poll(async () => await readReopenTask(browser, id)).toBeNull();
+      await expect(screen.getByTestId("task-detail")).toHaveCount(0);
+      expect(sent).toBe(0);
+
+      const plain = `palette sends plain text ${Date.now()}`;
+      await app.open("/");
+      const message = screen.getByRole("textbox", "Message");
+      await message.fill(plain);
+      await message.press("Enter");
+      await expect.poll(() => sent).toBe(1);
+      // The route callback assigns it, so the declaration's `null` is still the
+      // narrowed type at this point; read it through a call to get the union.
+      expect(readSentText()).toBe(plain);
+      await expect(message).toHaveValue("");
+    } finally {
+      await browser.unroute("**/api/message");
+      await deleteReopenTasks(browser, [title]);
+    }
+  });
+
   test("reopens a done task with a reason and keeps the old completion", async ({
     app,
     browser,

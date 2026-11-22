@@ -42,8 +42,15 @@ import {
   type BackgroundJobsKind,
   BackgroundJobsSheet,
 } from "./BackgroundJobs";
+import { ComposerPalette } from "./ComposerPalette";
 import { Button } from "./components/ui/button";
 import { Textarea } from "./components/ui/textarea";
+import {
+  type ComposerCommand,
+  commandQuery,
+  composerCommands,
+  matchCommands,
+} from "./composer-commands";
 import { readPlanTaskDraft, writePlanTaskDraft } from "./composer-preferences";
 import { DiagramPart } from "./DiagramPart";
 import { EmptyCaption } from "./EmptyCaption";
@@ -68,7 +75,7 @@ import { RunErrorHeader } from "./RunErrorHeader";
 import { rememberRecentTask } from "./recent-tasks";
 import type { ChatStats } from "./StatsView";
 import { TaskCycleHud } from "./TaskCycleHud";
-import { createTask } from "./task-client";
+import { createTask, removeTask } from "./task-client";
 import {
   TaskDockComposerProvider,
   type TaskDockSession,
@@ -1265,6 +1272,7 @@ export function Composer({
   planDraft = false,
   dockSwap = true,
   dockPhase = "settled",
+  commands,
 }: {
   tasksPage: boolean;
   /** When set, @project suggestions work even if this is not the create-task composer. */
@@ -1299,6 +1307,8 @@ export function Composer({
   dockSwap?: boolean;
   /** The top-line sweep phase; the action lanes share the cell's third slot. */
   dockPhase?: DockPhase;
+  /** Slash commands drawn as ghost text in the composer's own space. */
+  commands?: ComposerCommand[];
   /** A successful Retry consumes the exact draft that was restored for its failed row. */
   clearDraft?: {
     key: string;
@@ -1318,6 +1328,12 @@ export function Composer({
   const [caret, setCaret] = useState<number | null>(null);
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [commandIndex, setCommandIndex] = useState(0);
+  const [commandIndexQuery, setCommandIndexQuery] = useState<string | null>(null);
+  const [commandDismissed, setCommandDismissed] = useState<string | null>(null);
+  const [commandError, setCommandError] = useState<string | null>(null);
+  const paletteRef = useRef<HTMLDivElement>(null);
+  const commandPaletteOpen = useRef(false);
   const [backlog, setBacklog] = useState(false);
   const backlogPress = useRef<{ timer: number; x: number; y: number } | null>(null);
   const suppressAddClick = useRef(false);
@@ -1328,6 +1344,23 @@ export function Composer({
   const suggestions = mention === null ? [] : projectSuggestions(projects, mention.query);
   const suggesting = mention !== null && dismissedAt !== mention.start && suggestions.length > 0;
   const active = suggesting ? Math.min(activeIndex, suggestions.length - 1) : -1;
+  const query = commands === undefined ? null : commandQuery(value);
+  const commandMatches = useMemo(
+    () => (commands === undefined || query === null ? null : matchCommands(commands, query)),
+    [commands, query],
+  );
+  const commandOpen =
+    query !== null &&
+    commandMatches !== null &&
+    commandMatches.matches.length > 0 &&
+    commandDismissed !== query;
+  const commandActive =
+    commandOpen && commandMatches !== null
+      ? commandIndexQuery === query
+        ? Math.min(Math.max(commandIndex, 0), commandMatches.matches.length - 1)
+        : commandMatches.index
+      : -1;
+  const shownError = error ?? commandError;
   const attachments = useAttachments();
   const attachmentsRef = useRef(attachments.items);
   attachmentsRef.current = attachments.items;
@@ -1464,6 +1497,32 @@ export function Composer({
     if (element.value.length === 0) element.setSelectionRange(0, 0);
   }, [value, resizeTextarea]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: value and matches drive the autosize and palette growth
+  useLayoutEffect(() => {
+    const element = textareaRef.current;
+    const wasOpen = commandPaletteOpen.current;
+    commandPaletteOpen.current = commandOpen;
+    resizeTextarea();
+    if (!commandOpen || commandActive < 0) {
+      // The overlay can make the composer taller than its text; restore the text height.
+      if (wasOpen && element !== null) {
+        element.style.height = "";
+        resizeTextarea();
+      }
+      return;
+    }
+    const overlay = paletteRef.current;
+    if (element === null || overlay === null) return;
+    const style = getComputedStyle(element);
+    const borderY =
+      (Number.parseFloat(style.borderTopWidth) || 0) +
+      (Number.parseFloat(style.borderBottomWidth) || 0);
+    const needed = overlay.scrollHeight + borderY;
+    const current = Number.parseFloat(element.style.height) || 0;
+    if (needed > current) element.style.height = `${needed}px`;
+    element.style.overflowY = "hidden";
+  }, [commandActive, commandMatches, commandOpen, resizeTextarea, value]);
+
   useEffect(() => {
     const row = rowRef.current;
     if (!row) return;
@@ -1543,6 +1602,24 @@ export function Composer({
     if (backlog) setBacklog(false);
   };
 
+  const runCommand = async (command: ComposerCommand) => {
+    if (command.unavailable !== null) return;
+    const outcome = await command.run();
+    if (outcome !== null) {
+      setCommandError(outcome);
+      return;
+    }
+    setCommandError(null);
+    draftRevision.current += 1;
+    setValue("");
+    const element = textareaRef.current;
+    if (element === null) return;
+    element.value = "";
+    resizeTextarea();
+    element.focus({ preventScroll: true });
+    element.setSelectionRange(0, 0);
+  };
+
   const accept = (name: string) => {
     if (mention === null) return;
     const next = acceptMention(value, mention, name);
@@ -1588,14 +1665,14 @@ export function Composer({
           onAccept={(item) => accept(item.name)}
         />
       )}
-      {error !== null && (
+      {shownError !== null && (
         <p
           id="composer-error"
           role="alert"
           data-testid="composer-error"
           className="px-xl pt-md font-mono text-[11px] leading-4 text-destructive"
         >
-          {error}
+          {shownError}
         </p>
       )}
       <AttachmentStrip items={attachments.items} onRemove={removeAttachment} />
@@ -1614,96 +1691,137 @@ export function Composer({
             <PlusIcon />
           </Button>
         </div>
-        <Textarea
-          ref={textareaRef}
-          data-testid={inputTestId}
-          aria-invalid={error !== null ? true : undefined}
-          aria-errormessage={error !== null ? "composer-error" : undefined}
-          aria-label={inputLabel ?? (tasksPage ? "New task" : "Message")}
-          rows={1}
-          className={cn("bg-transparent", backlog && "placeholder:text-muted-foreground/60")}
-          value={value}
-          aria-autocomplete={mentions ? "list" : undefined}
-          aria-controls={suggesting ? "project-suggestions" : undefined}
-          aria-activedescendant={suggesting ? `project-suggestion-${active}` : undefined}
-          onSelect={(event) => {
-            if (mentions) setCaret(event.currentTarget.selectionStart);
-          }}
-          onBlur={() => setCaret(null)}
-          placeholder={
-            placeholder ?? (tasksPage ? (backlog ? "New backlog task" : "New task") : "Message pi")
-          }
-          onChange={(event) => {
-            draftRevision.current += 1;
-            setValue(event.target.value);
-            if (mentions) {
-              setCaret(event.target.selectionStart);
-              setActiveIndex(0);
-              setDismissedAt(null);
+        <div className="relative min-w-0 flex-1">
+          <Textarea
+            ref={textareaRef}
+            data-testid={inputTestId}
+            aria-invalid={shownError !== null ? true : undefined}
+            aria-errormessage={shownError !== null ? "composer-error" : undefined}
+            aria-label={inputLabel ?? (tasksPage ? "New task" : "Message")}
+            rows={1}
+            className={cn("bg-transparent", backlog && "placeholder:text-muted-foreground/60")}
+            value={value}
+            aria-autocomplete={mentions ? "list" : undefined}
+            aria-controls={suggesting ? "project-suggestions" : undefined}
+            aria-activedescendant={suggesting ? `project-suggestion-${active}` : undefined}
+            onSelect={(event) => {
+              if (mentions) setCaret(event.currentTarget.selectionStart);
+            }}
+            onBlur={() => setCaret(null)}
+            placeholder={
+              placeholder ??
+              (tasksPage ? (backlog ? "New backlog task" : "New task") : "Message pi")
             }
-            if (error !== null) onDismissError();
-          }}
-          onPaste={(event) => {
-            const files = [...event.clipboardData.files].filter((file) =>
-              file.type.startsWith("image/"),
-            );
-            if (files.length === 0) return;
-            event.preventDefault();
-            addAttachments(files);
-          }}
-          onKeyDown={(event) => {
-            if (suggesting && !event.nativeEvent.isComposing) {
-              const count = suggestions.length;
-              if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-                event.preventDefault();
-                setActiveIndex((active + (event.key === "ArrowDown" ? 1 : count - 1)) % count);
-                return;
+            onChange={(event) => {
+              draftRevision.current += 1;
+              setValue(event.target.value);
+              setCommandDismissed(null);
+              setCommandIndexQuery(null);
+              if (commandError !== null) setCommandError(null);
+              if (mentions) {
+                setCaret(event.target.selectionStart);
+                setActiveIndex(0);
+                setDismissedAt(null);
               }
-              if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
-                event.preventDefault();
-                const item = suggestions[active];
-                if (item !== undefined) accept(item.name);
-                return;
-              }
-              if (event.key === "Escape") {
-                event.preventDefault();
-                event.stopPropagation();
-                setDismissedAt(mention?.start ?? null);
-                return;
-              }
-            }
-            // ArrowUp in an empty composer takes back the newest steer the run has not reached.
-            if (
-              event.key === "ArrowUp" &&
-              unsendSteer !== undefined &&
-              value.length === 0 &&
-              attachments.items.length === 0 &&
-              !event.shiftKey &&
-              !event.altKey &&
-              !event.metaKey &&
-              !event.ctrlKey &&
-              !event.nativeEvent.isComposing
-            ) {
+              if (error !== null) onDismissError();
+            }}
+            onPaste={(event) => {
+              const files = [...event.clipboardData.files].filter((file) =>
+                file.type.startsWith("image/"),
+              );
+              if (files.length === 0) return;
               event.preventDefault();
-              void unsendSteer().then((steer) => {
-                if (steer === null) return;
-                draftRevision.current += 1;
-                setValue(steer.text);
-                if (steer.attachments !== undefined) attachments.restore(steer.attachments);
-                const element = textareaRef.current;
-                if (element === null) return;
-                requestAnimationFrame(() =>
-                  element.setSelectionRange(steer.text.length, steer.text.length),
-                );
-              });
-              return;
-            }
-            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-              event.preventDefault();
-              void submit(running ? "steer" : "queue");
-            }
-          }}
-        />
+              addAttachments(files);
+            }}
+            onKeyDown={(event) => {
+              if (commandOpen && commandMatches !== null && !event.nativeEvent.isComposing) {
+                const count = commandMatches.matches.length;
+                if (event.key === "Tab" || event.key === "ArrowDown" || event.key === "ArrowUp") {
+                  event.preventDefault();
+                  const step =
+                    event.key === "ArrowUp" || (event.key === "Tab" && event.shiftKey) ? -1 : 1;
+                  const next = (commandActive + step + count) % count;
+                  setCommandIndex(next);
+                  setCommandIndexQuery(query);
+                  return;
+                }
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  const selected: ComposerCommand | undefined =
+                    commandMatches.matches[commandActive]?.command;
+                  if (selected !== undefined && selected.unavailable === null) {
+                    void runCommand(selected);
+                  }
+                  return;
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setCommandDismissed(query);
+                  return;
+                }
+              }
+              if (suggesting && !event.nativeEvent.isComposing) {
+                const count = suggestions.length;
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setActiveIndex((active + (event.key === "ArrowDown" ? 1 : count - 1)) % count);
+                  return;
+                }
+                if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
+                  event.preventDefault();
+                  const item = suggestions[active];
+                  if (item !== undefined) accept(item.name);
+                  return;
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setDismissedAt(mention?.start ?? null);
+                  return;
+                }
+              }
+              // ArrowUp in an empty composer takes back the newest steer the run has not reached.
+              if (
+                event.key === "ArrowUp" &&
+                unsendSteer !== undefined &&
+                value.length === 0 &&
+                attachments.items.length === 0 &&
+                !event.shiftKey &&
+                !event.altKey &&
+                !event.metaKey &&
+                !event.ctrlKey &&
+                !event.nativeEvent.isComposing
+              ) {
+                event.preventDefault();
+                void unsendSteer().then((steer) => {
+                  if (steer === null) return;
+                  draftRevision.current += 1;
+                  setValue(steer.text);
+                  if (steer.attachments !== undefined) attachments.restore(steer.attachments);
+                  const element = textareaRef.current;
+                  if (element === null) return;
+                  requestAnimationFrame(() =>
+                    element.setSelectionRange(steer.text.length, steer.text.length),
+                  );
+                });
+                return;
+              }
+              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                void submit(running ? "steer" : "queue");
+              }
+            }}
+          />
+          {commandOpen && query !== null && commandMatches !== null && (
+            <ComposerPalette
+              ref={paletteRef}
+              value={value}
+              matches={commandMatches.matches}
+              active={commandActive}
+            />
+          )}
+        </div>
         <div className="dock-stack h-9 w-9 shrink-0 items-stretch">
           <DockAction present={tasksPage} phase={dockPhase} order={3} swap={dockSwap}>
             <Button
@@ -2058,6 +2176,31 @@ export function ChatView({
       if (id === null) resetTaskCycle();
     },
     [resetTaskCycle],
+  );
+  const commandTaskId = tasksPage
+    ? wantTaskDock
+      ? (taskDock?.taskId ?? openTaskId)
+      : openTaskId
+    : null;
+  const commandTask = useMemo(() => {
+    const task =
+      commandTaskId === null ? undefined : shownTasks.find((item) => item.id === commandTaskId);
+    return task === undefined ? null : { id: task.id, title: task.title };
+  }, [commandTaskId, shownTasks]);
+  const removeOpenTask = useCallback(
+    async (id: string) => {
+      const outcome = await removeTask(id);
+      if (!outcome.ok) return outcome.error;
+      applyTasks(outcome.ledger);
+      setOpenTaskId(null);
+      resetTaskCycle();
+      return null;
+    },
+    [applyTasks, resetTaskCycle],
+  );
+  const commands = useMemo(
+    () => composerCommands({ task: commandTask, remove: removeOpenTask }),
+    [commandTask, removeOpenTask],
   );
 
   useEffect(() => {
@@ -2796,6 +2939,7 @@ export function ChatView({
                   attachTestId={wantTaskDock ? "task-agent-attach" : undefined}
                   inputLabel={wantTaskDock ? "Task message" : undefined}
                   placeholder={taskPlaceholder}
+                  commands={commands}
                 />
               </div>
             </div>

@@ -352,6 +352,38 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     await expect(screen.getByTestId("task-detail-empty")).toBeVisible();
   });
 
+  test("the actions menu removes proposed and done tasks", async ({ app, browser, screen }) => {
+    await openSnapshot(app, browser, snapshot, 1280, 800);
+
+    await screen.getByRole("button", { name: "Open proposal Clean the cache" }).tap();
+    await expect(screen.getByTestId("task-detail")).toHaveAttribute(
+      "aria-label",
+      "Clean the cache",
+    );
+    await screen.getByTestId("task-detail-menu").tap();
+    const remove = screen.getByTestId("task-detail-remove");
+    await expect(remove).toBeEnabled();
+    await expect(remove).toHaveAttribute("aria-label", "Remove Clean the cache task");
+    await browser.keyboard.press("Escape");
+    await expect(screen.getByTestId("task-detail-menu-content")).toHaveCount(0);
+
+    const doneDay = screen.getByTestId("task-day-2026-01-01");
+    await expect(doneDay).toHaveCount(1);
+    if ((await doneDay.getAttribute("data-open")) !== "true") {
+      await doneDay.getByRole("button").tap();
+    }
+    await expect(doneDay).toHaveAttribute("data-open", "true");
+
+    await screen.getByRole("button", { name: "Open Review the details" }).tap();
+    await expect(screen.getByTestId("task-detail")).toHaveAttribute(
+      "aria-label",
+      "Review the details",
+    );
+    await screen.getByTestId("task-detail-menu").tap();
+    await expect(remove).toBeEnabled();
+    await expect(remove).toHaveAttribute("aria-label", "Remove Review the details task");
+  });
+
   test("on a wide screen the detail header spans the detail and plan columns", async ({
     app,
     browser,

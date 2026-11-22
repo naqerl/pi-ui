@@ -453,7 +453,7 @@ function TasksViewImpl({
     id: string,
     outcome: Promise<TaskOutcome>,
     optimistic?: (task: Task) => Task | null,
-  ) => {
+  ): Promise<string | null> => {
     haptic();
     const sequence = (optimisticSequence.current[id] ?? 0) + 1;
     optimisticSequence.current[id] = sequence;
@@ -465,7 +465,7 @@ function TasksViewImpl({
     }
     const next = await outcome;
     // A newer action for this row owns the result now.
-    if (optimisticSequence.current[id] !== sequence) return;
+    if (optimisticSequence.current[id] !== sequence) return null;
     setOptimisticTasks((current) => {
       if (!(id in current)) return current;
       const copy = { ...current };
@@ -474,10 +474,11 @@ function TasksViewImpl({
     });
     if (!next.ok) {
       setProblem({ id, message: next.error });
-      return;
+      return next.error;
     }
     setProblem((current) => (current?.id === id ? null : current));
     onLedger(next.ledger);
+    return null;
   };
 
   const approve = (task: Task) =>
@@ -860,9 +861,7 @@ function TasksViewImpl({
         onStatus={setStatus}
         onApprove={() => approve(openTask)}
         onDismiss={() => dismiss(openTask)}
-        onRemove={() => {
-          void apply(openTask.id, removeTask(openTask.id));
-        }}
+        onRemove={() => apply(openTask.id, removeTask(openTask.id))}
         onLedger={(ledger) => {
           setProblem((current) => (current?.id === openTask.id ? null : current));
           onLedger(ledger);
@@ -983,6 +982,7 @@ function TasksViewImpl({
                     projects={projectsOf(tasks.filter((item) => isActiveStatus(item.status)))}
                     variant="pane"
                     composerTarget="dock"
+                    onRemove={() => apply(openTask.id, removeTask(openTask.id))}
                   />
                 </div>
               </>
@@ -1751,7 +1751,7 @@ export function TaskDetail({
   onStatus: (task: Task, status: Task["status"]) => void;
   onApprove: () => void;
   onDismiss: () => void;
-  onRemove: () => void;
+  onRemove: () => Promise<string | null> | void;
   /** Called after an inline edit saves, so the tasks page takes the new ledger. */
   onLedger?: (ledger: TaskLedger) => void;
 }) {
