@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { ChatService } from "../src/server/chat-service.js";
 import { DurableExtensionShim } from "../src/server/durable-extensions.js";
-import { McpEventFeed } from "../src/server/mcp-events.js";
+import { type ExtensionNotice, McpEventFeed } from "../src/server/mcp-events.js";
 import { MCP_OUTAGE_NOTIFY_MS } from "../src/server/mcp-outage-quiet.js";
 import { startMcpRuntime } from "../src/server/mcp-runtime.js";
 import {
@@ -638,6 +638,28 @@ function immediateChat(feed: McpEventFeed) {
       ChatService.prototype.submitMcpEventNotice.call(fake as unknown as ChatService, text),
   };
 }
+
+test("a notice queued before the sink is observed without being submitted", () => {
+  const shim = new DurableExtensionShim();
+  const seen: ExtensionNotice[] = [];
+  const submitted: string[] = [];
+  const queued = statusNotice("cut-1", "failed");
+
+  shim.sendMessage(queued);
+  assert.equal(seen.length, 0, "no observer is attached yet");
+  assert.equal(submitted.length, 0, "no sink is attached yet");
+
+  shim.setObserver((notice) => {
+    seen.push(notice);
+    return true;
+  });
+  assert.equal(seen.length, 1, "attaching the observer replays a queued notice");
+  assert.equal(submitted.length, 0, "observation does not need a chat sink");
+
+  shim.setMessageSink((text) => submitted.push(text));
+  assert.deepEqual(submitted, [queued.content], "the queued notice is still submitted once");
+  assert.equal(seen.length, 1, "the queued notice is not observed twice");
+});
 
 test("the immediate chat path drops JSON and prose status for an untracked id", async () => {
   const feed = new McpEventFeed();
@@ -2833,4 +2855,161 @@ test("a declaration with an unpaired surrogate is skipped instead of throwing", 
   // The same malformed component can reach the identity helper from an
   // adapter result; it must stay total rather than throwing a URIError.
   assert.doesNotThrow(() => deriveStableId(loneSurrogate, "hub", {}));
+});
+
+/** Deliver one adapter status frame through the runtime's installed observer. */
+function notifyStatus(
+  runtime: Awaited<ReturnType<typeof startMcpRuntime>>,
+  subscription: Record<string, unknown>,
+): void {
+  const shim = runtime.shim as unknown as { observer?: (value: unknown) => unknown };
+  assert.ok(shim.observer, "the runtime must install its observer");
+  shim.observer({
+    customType: "mcp-events-status",
+    details: { subscriptions: [subscription] },
+  });
+}
+
+test("a cut declared stream reopens at its recorded cursor without replay", async (t) => {
+  const dataDir = await tempDir(t);
+  await withAgentConfig(t, {
+    mcpServers: {
+      stub: { command: process.execPath, args: [resolve("e2e/stub-mcp.mjs")] },
+    },
+    web: { command: process.execPath, disabled: true },
+  });
+  await declareSubscriptions([{ server: "stub", name: "stub-cut", arguments: {} }]);
+
+  const runtime = await startMcpRuntime({ dataDir });
+  const feed = new McpEventFeed(runtime.subscriptionRegistry);
+  await feed.hydrate();
+  runtime.setObserver((notice) => feed.ingest(notice));
+  const stableId = deriveStableId("stub", "stub-cut", {});
+  try {
+    // Two real events land and the cursor is committed before the stream cut.
+    await waitFor(
+      () => feed.findByStableId(stableId)?.cursor === "cut:2",
+      "the second cut event and its cursor",
+    );
+    assert.equal(
+      runtime.subscriptionRegistry?.findByStableId(stableId)?.cursor,
+      "cut:2",
+      "the registry owns the cursor the reopen will use",
+    );
+    const first = runtime.restoredSubscriptions.find((record) => record.stableId === stableId);
+    assert.ok(first);
+    assert.ok(first.id);
+    assert.equal(feed.state.events.filter((event) => event.id.startsWith("cut-")).length, 2);
+
+    // The fixture's notifications/events/terminated is the only trigger: the
+    // runtime must turn that terminal status into a reopen at cut:2.
+    await waitFor(
+      () =>
+        runtime.restoredSubscriptions.some(
+          (record) => record.stableId === stableId && record.id !== first.id,
+        ),
+      "the first reopen after the terminated stream",
+    );
+    const second = runtime.restoredSubscriptions.find((record) => record.stableId === stableId);
+    assert.ok(second);
+    assert.equal(second.cursor, "cut:2", "the clean close keeps the previous cursor");
+
+    // The replacement closes cleanly with no event of its own. Its lifecycle
+    // also comes from the fixture: reopening again must still send cut:2; the
+    // fixture would emit an unexpected event for null.
+    await waitFor(
+      () => feed.findByStableId(stableId)?.cursor === "cut:3",
+      "cut:3 delivered from the reopened stream",
+    );
+
+    const ids = feed.state.events
+      .map((event) => event.id)
+      .filter((id) => id.startsWith("cut-"))
+      .sort();
+    assert.deepEqual(ids, ["cut-1", "cut-2", "cut-3"]);
+    assert.equal(new Set(ids).size, ids.length, "no event was replayed");
+    assert.equal(runtime.subscriptionRegistry?.findByStableId(stableId)?.cursor, "cut:3");
+
+    const rows = runtime.restoredSubscriptions.filter((record) => record.stableId === stableId);
+    assert.equal(rows.length, 1, "the dead adapter id was retired");
+    assert.notEqual(rows[0]?.id, first.id);
+    assert.deepEqual(rows[0]?.arguments, {}, "the reopen kept the declared arguments");
+    const internals = runtime as unknown as {
+      adapterStableIds: Map<string, string>;
+    };
+    assert.equal(
+      internals.adapterStableIds.get(first.id),
+      undefined,
+      "late traffic from the dead id is ignored",
+    );
+  } finally {
+    runtime.setObserver(undefined);
+    await runtime.close();
+  }
+});
+
+test("a declared stream the server no longer knows is dropped instead of retried", async (t) => {
+  const dataDir = await tempDir(t);
+  await withAgentConfig(t, {
+    mcpServers: {
+      stub: { command: process.execPath, args: [resolve("e2e/stub-mcp.mjs")] },
+    },
+    web: { command: process.execPath, disabled: true },
+  });
+  await declareSubscriptions([{ server: "stub", name: "stub-silent", arguments: {} }]);
+
+  const runtime = await startMcpRuntime({ dataDir });
+  runtime.setObserver(() => undefined);
+  const stableId = deriveStableId("stub", "stub-silent", {});
+  const first = runtime.restoredSubscriptions.find((record) => record.stableId === stableId);
+  assert.ok(first);
+  let subscribes = 0;
+  const original = runtime.shim.callTool.bind(runtime.shim);
+  runtime.shim.callTool = async (name, params, signal) => {
+    if (
+      name === "mcp_events" &&
+      typeof params === "object" &&
+      params !== null &&
+      (params as { action?: unknown }).action === "subscribe"
+    ) {
+      subscribes += 1;
+      return {
+        content: [],
+        isError: true,
+        details: { error: "unknown subscription: expired" },
+      } as never;
+    }
+    return original(name, params, signal);
+  };
+  try {
+    // The silent fixture sends no traffic that could clear the reopen timer,
+    // so this terminal status deterministically exercises the drop path.
+    notifyStatus(runtime, {
+      id: first.id,
+      stableId,
+      server: "stub",
+      name: "stub-silent",
+      status: "ended",
+    });
+    await waitFor(
+      () => runtime.isSubscriptionDropped(stableId),
+      "the rejected subscription to be dropped",
+    );
+    assert.equal(subscribes, 1);
+    await waitFor(
+      () => runtime.subscriptionRegistry?.findByStableId(stableId)?.status === "cancelled",
+      "the dropped record to be cancelled",
+    );
+
+    // Long enough for the next 2 s retry. A dropped identity must not try it.
+    await new Promise((resolve) => setTimeout(resolve, 2_200));
+    assert.equal(subscribes, 1, "a rejected subscription is not retried");
+    assert.deepEqual(
+      runtime.restoredSubscriptions.filter((record) => record.stableId === stableId),
+      [],
+    );
+  } finally {
+    runtime.setObserver(undefined);
+    await runtime.close();
+  }
 });

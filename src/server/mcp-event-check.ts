@@ -11,7 +11,8 @@ import { hasPosition } from "./mcp-subscriptions.js";
  * pi-mcp-events is about to reject. Event frames are never changed or
  * dropped: the server is the one to fix. The one edit is on the adapter's own
  * cursor bookkeeping — heartbeat/active frames cannot advance an established
- * subscription past the last event this process actually received.
+ * subscription past the last event this process actually received, and cannot
+ * erase the position a resumed stream was opened at.
  */
 
 const EVENT_METHOD = "notifications/events/event";
@@ -70,6 +71,14 @@ export function checkEventNotifications(
   const streams = new Map<string, string>();
   /** Last event cursor actually delivered for a subscription, never a heartbeat. */
   const deliveredCursor = new Map<string, string>();
+  /**
+   * Position an `events/stream` request resumed from, keyed by that request's
+   * id: a stream's adapter id is the id of the request that opened it (the
+   * same id `streams` holds), so this is the id a frame's `_meta` names. It
+   * outlives the request: a clean close answers the request and announces
+   * `active` with no position right after, and that ack must not erase it.
+   */
+  const requestedCursor = new Map<string, string>();
   const reported = new Set<string>();
 
   transport.onmessage = (message, extra) => {
@@ -103,6 +112,8 @@ export function checkEventNotifications(
                   : undefined;
             if (cursor !== undefined) {
               deliveredCursor.set(subscriptionId, cursor);
+              // The delivered event is now the better position for this id.
+              requestedCursor.delete(subscriptionId);
               frame.params.cursor = cursor;
             }
           }
@@ -115,9 +126,12 @@ export function checkEventNotifications(
           // re-subscribe. A heartbeat or a re-activation may be ahead of the
           // last event pi-ui was handed, so resuming from it silently skips
           // that event. Pin an established subscription to its last delivered
-          // event, while a brand-new stream (no event yet) keeps the cursor the
-          // server announced.
-          const last = deliveredCursor.get(subscriptionId);
+          // event. A stream opened at a stored position has no delivered event
+          // yet, and a re-activation without a position of its own (a clean
+          // close announces `null`) would erase that position; keep the
+          // position the stream resumed from. A stream opened from "now" has
+          // nothing to keep and stays where the server announced it.
+          const last = deliveredCursor.get(subscriptionId) ?? requestedCursor.get(subscriptionId);
           if (last !== undefined) frame.params.cursor = last;
         }
         if (observe !== undefined && frame.method === HEARTBEAT_METHOD) {
@@ -149,11 +163,20 @@ export function checkEventNotifications(
               typeof message.params.name === "string"
             ) {
               streams.set(message.id, message.params.name);
+              const cursor = message.params.cursor;
+              if (typeof cursor === "string" && hasPosition(cursor)) {
+                requestedCursor.set(message.id, cursor);
+              } else {
+                // A stream opened from "now" has no position to keep, even if
+                // an earlier request reused this id.
+                requestedCursor.delete(message.id);
+              }
             } else if (
               message.method === "notifications/cancelled" &&
               typeof message.params.requestId === "string"
             ) {
               streams.delete(message.params.requestId);
+              requestedCursor.delete(message.params.requestId);
             }
           }
           return (target.send as (m: unknown, o?: unknown) => Promise<void>).call(

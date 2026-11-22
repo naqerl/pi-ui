@@ -172,6 +172,57 @@ test("a payload cursor pins reconnects and a rejected event never becomes one", 
   assert.equal(activeParams?.cursor, "hub:2", "an active ack keeps the last delivered event");
 });
 
+test("a resumed stream keeps its position when activated without one", async () => {
+  const { transport, raw } = fakeTransport();
+  const checked = checkEventNotifications(transport, "zeroshot", () => {});
+  const received: Array<Record<string, unknown>> = [];
+  checked.onmessage = (message) => received.push(message as Record<string, unknown>);
+  const meta = (id: string) => ({ _meta: { [SUBSCRIPTION_META]: id } });
+  const stream = (id: string, cursor: string | null) => ({
+    jsonrpc: "2.0" as const,
+    id,
+    method: "events/stream",
+    params: { name: "cut", ...(cursor === null ? {} : { cursor }) },
+  });
+  const paramsOf = (index: number) =>
+    received[index]?.params as { cursor?: string | null } | undefined;
+
+  // A cut stream is re-opened at its recorded cursor. The server closes it
+  // cleanly, answering the request, and only then acknowledges the stream with
+  // no position of its own. pi-mcp-events would store `null` and the next
+  // re-subscribe would ask for the stream from now.
+  await checked.send(stream("sub-1", "cut:2"));
+  raw.onmessage?.({ jsonrpc: "2.0", id: "sub-1", result: {} });
+  raw.onmessage?.({
+    jsonrpc: "2.0",
+    method: "notifications/events/active",
+    params: { ...meta("sub-1"), cursor: null },
+  });
+  assert.equal(
+    paramsOf(1)?.cursor,
+    "cut:2",
+    "an activation without a position cannot erase the resume cursor",
+  );
+
+  // A heartbeat behind that position must not move the adapter backwards
+  // either. The clean close of the replacement stream is exactly this case.
+  raw.onmessage?.({
+    jsonrpc: "2.0",
+    method: "notifications/events/heartbeat",
+    params: { ...meta("sub-1"), cursor: "cut:1" },
+  });
+  assert.equal(paramsOf(2)?.cursor, "cut:2", "a heartbeat cannot move before the resume cursor");
+
+  // A stream opened from "now" has no position to keep.
+  await checked.send(stream("sub-2", null));
+  raw.onmessage?.({
+    jsonrpc: "2.0",
+    method: "notifications/events/active",
+    params: { ...meta("sub-2"), cursor: null },
+  });
+  assert.equal(paramsOf(3)?.cursor, null, "a stream opened from now stays at now");
+});
+
 test("the shim's sendMessage is bound and survives a throwing observer", () => {
   const shim = new DurableExtensionShim();
   const seen: ExtensionNotice[] = [];
