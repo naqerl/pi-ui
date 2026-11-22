@@ -1933,9 +1933,7 @@ export class McpRuntime {
         ? {}
         : { deliveredEventIds: saved.deliveredEventIds }),
       ...(saved?.lastEventAt === undefined ? {} : { lastEventAt: saved.lastEventAt }),
-      ...(saved?.lastHeartbeatAt === undefined
-        ? {}
-        : { lastHeartbeatAt: saved.lastHeartbeatAt }),
+      ...(saved?.lastHeartbeatAt === undefined ? {} : { lastHeartbeatAt: saved.lastHeartbeatAt }),
       ...(saved?.lastPollAt === undefined ? {} : { lastPollAt: saved.lastPollAt }),
       updatedAt: new Date().toISOString(),
       ...(reopened.generation === undefined ? {} : { generation: reopened.generation }),

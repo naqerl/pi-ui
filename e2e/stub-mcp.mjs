@@ -90,8 +90,7 @@ server.setRequestHandler(
       {
         name: "stub-cut",
         delivery: ["push"],
-        description:
-          "Two events, a cut stream, a clean close with no events, then a third event.",
+        description: "Two events, a cut stream, a clean close with no events, then a third event.",
       },
       {
         name: "stub-silent",
