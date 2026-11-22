@@ -661,6 +661,7 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     expect(id).not.toBe("");
     let sent = 0;
     let sentText: string | null = null;
+    const readSentText = (): string | null => sentText;
     await browser.route("**/api/message", async (route) => {
       sent += 1;
       sentText = (JSON.parse(route.request.postData ?? "{}") as { text?: string }).text ?? null;
@@ -707,7 +708,9 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
       await message.fill(plain);
       await message.press("Enter");
       await expect.poll(() => sent).toBe(1);
-      expect(sentText).toBe(plain);
+      // The route callback assigns it, so the declaration's `null` is still the
+      // narrowed type at this point; read it through a call to get the union.
+      expect(readSentText()).toBe(plain);
       await expect(message).toHaveValue("");
     } finally {
       await browser.unroute("**/api/message");
