@@ -9,36 +9,36 @@ git push origin <sha>:refs/heads/<branch>
 
 Base: `main` at `bae8b535123feb3041b245b1d700ed8a6d16049f` when the list was taken. 264 heads retired:
 
-| Status | Count |
-| --- | --- |
-| already in main (tip is an ancestor) | 23 |
-| landed in main by a squash/cherry-pick (no patch missing) | 120 |
-| unmerged and unreferenced by an open PR | 118 |
-| stacked PR head merged in this commit | 3 |
+| Status                                                    | Count |
+| --------------------------------------------------------- | ----- |
+| already in main (tip is an ancestor)                      | 23    |
+| landed in main by a squash/cherry-pick (no patch missing) | 120   |
+| unmerged and unreferenced by an open PR                   | 118   |
+| stacked PR head merged in this commit                     | 3     |
 
 ## stacked PR head merged in this commit — 3
 
-| Branch | Tip |
-| --- | --- |
+| Branch                             | Tip                                                                                              |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------ |
 | `zeroshot/v2-404e1794665ae9938d9d` | `147b4fa4e140e490b8ddf2c991e23a0ddbb1e08a` #122 (cumulative head, landed as one squashed commit) |
-| `zeroshot/v2-bdf09145d2973186ef43` | `568e5d9e3705301acdb4f01f563ba474c5474152` #120 (stacked base, closed with #122) |
-| `zeroshot/v2-d35b53bd5f1c54e076e5` | `9482afca7869dc18b34eb655f85cbe20e12cfdfc` #121 (stacked on #120, closed with #122) |
+| `zeroshot/v2-bdf09145d2973186ef43` | `568e5d9e3705301acdb4f01f563ba474c5474152` #120 (stacked base, closed with #122)                 |
+| `zeroshot/v2-d35b53bd5f1c54e076e5` | `9482afca7869dc18b34eb655f85cbe20e12cfdfc` #121 (stacked on #120, closed with #122)              |
 
 ## already in main (tip is an ancestor) — 23
 
-| Branch | Tip |
-| --- | --- |
-| `eval/o57b-candidate` | `92091aa4314c355722b05e90ab013f274cf4878b` |
-| `eval/wv3b-candidate` | `92091aa4314c355722b05e90ab013f274cf4878b` |
-| `fix/mcp-zombie` | `6ed72ab0abb9209876cac9e102ec6a68493c687e` |
-| `fix/restore-replay-bound` | `7452b858fe23335dc5e9ec064c6994c31e3a6df1` |
-| `fix/zf4j-icons` | `c9f6d503220a5e032bb051010b42e69c192f703d` |
-| `merge-all-pending` | `dfa5716ebfba73424deb0167a0cbc00d990fe233` |
-| `merge/2co6` | `334993dfae54b84d2a1f035cb12cd5aa5dd74820` |
-| `merge/batch5` | `e465c0342b40d552180bf747eff9a736600db7c2` |
-| `merge/batch6` | `640eae22dc88a9312f0142e2cf197f1c546df848` |
-| `rel-1110` | `1b83be79a2a5c59e6f5e2ebfb93b16450759cc8a` |
-| `salvage/4odz-wip` | `eaa4f84cf3d1b10c0564cd8d1865b717faa3bf01` |
+| Branch                             | Tip                                        |
+| ---------------------------------- | ------------------------------------------ |
+| `eval/o57b-candidate`              | `92091aa4314c355722b05e90ab013f274cf4878b` |
+| `eval/wv3b-candidate`              | `92091aa4314c355722b05e90ab013f274cf4878b` |
+| `fix/mcp-zombie`                   | `6ed72ab0abb9209876cac9e102ec6a68493c687e` |
+| `fix/restore-replay-bound`         | `7452b858fe23335dc5e9ec064c6994c31e3a6df1` |
+| `fix/zf4j-icons`                   | `c9f6d503220a5e032bb051010b42e69c192f703d` |
+| `merge-all-pending`                | `dfa5716ebfba73424deb0167a0cbc00d990fe233` |
+| `merge/2co6`                       | `334993dfae54b84d2a1f035cb12cd5aa5dd74820` |
+| `merge/batch5`                     | `e465c0342b40d552180bf747eff9a736600db7c2` |
+| `merge/batch6`                     | `640eae22dc88a9312f0142e2cf197f1c546df848` |
+| `rel-1110`                         | `1b83be79a2a5c59e6f5e2ebfb93b16450759cc8a` |
+| `salvage/4odz-wip`                 | `eaa4f84cf3d1b10c0564cd8d1865b717faa3bf01` |
 | `zeroshot/v2-0f8f917012e6b88e9f8a` | `b78cfd75c9463f7242f6bb5131cebee780f4736a` |
 | `zeroshot/v2-1222f96875dad89ea6e9` | `97ca7e167364eebf11a47b94d1b7b874fbb0a8e5` |
 | `zeroshot/v2-2aa01f1af2f7e59f07bf` | `c2ce35ac4855fbfc375d3206fb6e5e65590e85f7` |
@@ -54,11 +54,11 @@ Base: `main` at `bae8b535123feb3041b245b1d700ed8a6d16049f` when the list was tak
 
 ## landed in main by a squash/cherry-pick (no patch missing) — 120
 
-| Branch | Tip |
-| --- | --- |
-| `feat/memory-tooling` | `05e306ad417f1fa3ab354951d8bfb040468262a7` |
-| `rescue/candidate-7ac7c2ea` | `3891c3c9033e52f802bc46a907862a8770ddc794` |
-| `rescue/candidate-r5-wv3b` | `aecfa299c9f54c9912282b66dd0458fa04314c66` |
+| Branch                             | Tip                                        |
+| ---------------------------------- | ------------------------------------------ |
+| `feat/memory-tooling`              | `05e306ad417f1fa3ab354951d8bfb040468262a7` |
+| `rescue/candidate-7ac7c2ea`        | `3891c3c9033e52f802bc46a907862a8770ddc794` |
+| `rescue/candidate-r5-wv3b`         | `aecfa299c9f54c9912282b66dd0458fa04314c66` |
 | `zeroshot/v2-0064cee8e23d6d3ad662` | `fc9114ad26b38884c887a2b332173f922eda62d7` |
 | `zeroshot/v2-00b83194ba936297669e` | `bffec15ab7382f13e99b25c7cb33de0bc597cb32` |
 | `zeroshot/v2-03946c229aea1f79c304` | `de9e724c98ef148fb0cc9c2ce6c2be21b893b70a` |
@@ -179,27 +179,27 @@ Base: `main` at `bae8b535123feb3041b245b1d700ed8a6d16049f` when the list was tak
 
 ## unmerged and unreferenced by an open PR — 118
 
-| Branch | Tip |
-| --- | --- |
-| `feat/bili-bridge` | `6bc67c4da7308382b0241a4df3962290e5a2dd47` |
-| `feat/bridge-pins` | `87a95dc3bb61baaeff434236a565628b19721d73` |
-| `feat/composer-ux` | `9b9f773b7e9a5c45764e34f5d1fd8157b97b6109` |
-| `feat/composer-ux2` | `6c3ae426d4769c40ec39327cafa7753d626e9a51` |
-| `feat/docker-release` | `2f6a42ead316739d5f7c312bc6266ae21bef35e5` |
-| `feat/durability-e2e-md` | `44a2fa1cd5a4ee5745707732c900730a989a3675` |
-| `feat/durable-host` | `2f6a42ead316739d5f7c312bc6266ae21bef35e5` |
-| `feat/footer-surface` | `607b8504f0922a162a371373eae07886c2dcc27c` |
-| `feat/markdown-whitespace` | `9b9f773b7e9a5c45764e34f5d1fd8157b97b6109` |
-| `feat/mcp-bridge` | `9b9f773b7e9a5c45764e34f5d1fd8157b97b6109` |
-| `feat/mcp-runtime-contract` | `4633fe47170028bedf496cba115877e76945e913` |
-| `feat/surface-backdrop` | `06ea6214956f62ed3249883fd9805fbcbd3638bc` |
-| `feat/ux-working-indicator` | `6bc67c4da7308382b0241a4df3962290e5a2dd47` |
-| `feat/web-bridge` | `4d3ade0640f598ff07e668b39bb3542719abe8e8` |
-| `rescue/candidate-2d130205` | `fc4971548dd2502f018bd452b54f413b940a4391` |
-| `rescue/candidate-610b99a9` | `cfd34670a2e26d743020c87dc1a769ca862229e8` |
-| `rescue/candidate-cfbd3352` | `66766f42cfb3db6e6e5b6605ee8a5d9321697330` |
-| `rescue/candidate-r5-o57b` | `6779fe362c6c83ec537f34010e34257749bc8a22` |
-| `rescue/prep-20261119` | `7a33914e2ffdcd03301ef0418a526e1ebb9a52dc` |
+| Branch                             | Tip                                        |
+| ---------------------------------- | ------------------------------------------ |
+| `feat/bili-bridge`                 | `6bc67c4da7308382b0241a4df3962290e5a2dd47` |
+| `feat/bridge-pins`                 | `87a95dc3bb61baaeff434236a565628b19721d73` |
+| `feat/composer-ux`                 | `9b9f773b7e9a5c45764e34f5d1fd8157b97b6109` |
+| `feat/composer-ux2`                | `6c3ae426d4769c40ec39327cafa7753d626e9a51` |
+| `feat/docker-release`              | `2f6a42ead316739d5f7c312bc6266ae21bef35e5` |
+| `feat/durability-e2e-md`           | `44a2fa1cd5a4ee5745707732c900730a989a3675` |
+| `feat/durable-host`                | `2f6a42ead316739d5f7c312bc6266ae21bef35e5` |
+| `feat/footer-surface`              | `607b8504f0922a162a371373eae07886c2dcc27c` |
+| `feat/markdown-whitespace`         | `9b9f773b7e9a5c45764e34f5d1fd8157b97b6109` |
+| `feat/mcp-bridge`                  | `9b9f773b7e9a5c45764e34f5d1fd8157b97b6109` |
+| `feat/mcp-runtime-contract`        | `4633fe47170028bedf496cba115877e76945e913` |
+| `feat/surface-backdrop`            | `06ea6214956f62ed3249883fd9805fbcbd3638bc` |
+| `feat/ux-working-indicator`        | `6bc67c4da7308382b0241a4df3962290e5a2dd47` |
+| `feat/web-bridge`                  | `4d3ade0640f598ff07e668b39bb3542719abe8e8` |
+| `rescue/candidate-2d130205`        | `fc4971548dd2502f018bd452b54f413b940a4391` |
+| `rescue/candidate-610b99a9`        | `cfd34670a2e26d743020c87dc1a769ca862229e8` |
+| `rescue/candidate-cfbd3352`        | `66766f42cfb3db6e6e5b6605ee8a5d9321697330` |
+| `rescue/candidate-r5-o57b`         | `6779fe362c6c83ec537f34010e34257749bc8a22` |
+| `rescue/prep-20261119`             | `7a33914e2ffdcd03301ef0418a526e1ebb9a52dc` |
 | `zeroshot/v2-040e9a37d2e1aae11c81` | `6779fe362c6c83ec537f34010e34257749bc8a22` |
 | `zeroshot/v2-05aa5cc271084186e656` | `66766f42cfb3db6e6e5b6605ee8a5d9321697330` |
 | `zeroshot/v2-08e60a2d471f73dd840b` | `254da37ea3ba450416f909eaceb481f0fe7cdb8e` |
