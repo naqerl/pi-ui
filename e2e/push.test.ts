@@ -758,6 +758,56 @@ test("marking a task done sends one push only on the transition", async (t) => {
   }
 });
 
+test("marking a task working sends one push only on the transition", async (t) => {
+  const dir = await tempDir(t);
+  const sent: string[] = [];
+  const service = configurePush({
+    dataDir: dir,
+    throttleMs: 0,
+    send: async (_target, payload) => {
+      sent.push(payload);
+      return { statusCode: 201 };
+    },
+  });
+  await service.subscribe(subscription());
+
+  try {
+    const store = new TaskStore(join(dir, "tasks.json"));
+    await store.load();
+    const task = (await store.create("Ship the modal", null)).tasks[0];
+    assert.ok(task);
+
+    await store.update(task.id, { status: "working" });
+    assert.equal(sent.length, 1);
+    const payload = JSON.parse(sent[0] ?? "{}") as Record<string, unknown>;
+    assert.equal(payload.title, "Task started");
+    assert.equal(payload.body, "Ship the modal");
+    assert.equal(payload.tag, task.id);
+    assert.equal(payload.url, PAGE_PATHS.tasks);
+    assert.equal(pageIdFromPath(String(payload.url)), "tasks");
+    assert.ok(String(payload.body).length <= MAX_BODY_CHARS);
+
+    await store.update(task.id, { status: "working" });
+    assert.equal(sent.length, 1);
+
+    await store.update(task.id, { title: "Ship the modal, redesigned" });
+    assert.equal(sent.length, 1);
+
+    const dependency = (await store.create("Follow-up", null)).tasks.find(
+      (item) => item.title === "Follow-up",
+    );
+    assert.ok(dependency);
+    await store.update(task.id, { blockedBy: [dependency.id] });
+    assert.equal(sent.length, 1);
+
+    await store.update(task.id, { status: "working", title: "Ship the modal again" });
+    assert.equal(sent.length, 1);
+  } finally {
+    await service.close();
+    resetPushServiceForTests();
+  }
+});
+
 test("the worker stays quiet only while a client is focused", async () => {
   const source = await readFile(new URL("../public/sw.js", import.meta.url), "utf8");
   const sandbox = {

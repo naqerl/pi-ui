@@ -79,6 +79,55 @@ test("three changes in one burst push once", async (t) => {
   assert.match(sent[0]?.body ?? "", /Task done: Gamma/);
 });
 
+test("a start replaced by its finish inside one burst rings once as Task done", async (t) => {
+  const { store, sent } = await temporaryStore(t);
+  const { task } = await store.createWithResult("Ship the modal", null);
+
+  await Promise.all([
+    store.update(task.id, { status: "working" }),
+    store.update(task.id, { status: "done" }),
+  ]);
+  await wait(250);
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]?.title, "Task done");
+  assert.equal(sent[0]?.body, "Ship the modal");
+  assert.equal(sent[0]?.tag, task.id);
+});
+
+test("a start released before the burst flushes rings nothing", async (t) => {
+  const { store, sent } = await temporaryStore(t);
+  const { task } = await store.createWithResult("Park the work", null);
+
+  await Promise.all([
+    store.update(task.id, { status: "working" }),
+    store.update(task.id, { status: "open", releaseReason: "Waiting for capacity" }),
+  ]);
+  await wait(250);
+
+  assert.deepEqual(sent, []);
+});
+
+test("two tasks starting in one burst push one summary with both starts", async (t) => {
+  const { store, sent } = await temporaryStore(t);
+  const { task: alpha } = await store.createWithResult("Alpha", null);
+  const { task: beta } = await store.createWithResult("Beta", null);
+
+  await Promise.all([
+    store.update(alpha.id, { status: "working" }),
+    store.update(beta.id, { status: "working" }),
+  ]);
+  await wait(250);
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]?.title, "2 tasks updated");
+  assert.equal(sent[0]?.tag, "ledger");
+  const body = sent[0]?.body ?? "";
+  assert.match(body, /Task started: Alpha/);
+  assert.match(body, /Task started: Beta/);
+  assert.doesNotMatch(body, /Task done/);
+});
+
 test("a burst summary lists each task once with its final status", async (t) => {
   const { store, sent } = await temporaryStore(t);
   const [otherLedger, tidyLedger] = await Promise.all([
@@ -121,6 +170,15 @@ test("a failing push does not fail the task write", async (t) => {
     assert.equal(ledger.tasks.find((item) => item.id === task.id)?.status, "done");
     assert.equal(errors.length, 1);
     assert.match(String(errors[0]?.[0]), /\[pi\] task push failed for/);
+
+    const started = (await store.create("Start despite the push", null)).tasks.find(
+      (item) => item.title === "Start despite the push",
+    );
+    assert.ok(started);
+    const working = await store.update(started.id, { status: "working" });
+    assert.equal(working.tasks.find((item) => item.id === started.id)?.status, "working");
+    assert.equal(errors.length, 2);
+    assert.match(String(errors[1]?.[0]), /\[pi\] task push failed for/);
   } finally {
     console.error = original;
   }
