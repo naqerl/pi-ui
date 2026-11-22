@@ -42,6 +42,7 @@ import {
   type BackgroundJobsKind,
   BackgroundJobsSheet,
 } from "./BackgroundJobs";
+import { ComposerPalette } from "./ComposerPalette";
 import { Button } from "./components/ui/button";
 import { Textarea } from "./components/ui/textarea";
 import {
@@ -51,7 +52,6 @@ import {
   matchCommands,
 } from "./composer-commands";
 import { readPlanTaskDraft, writePlanTaskDraft } from "./composer-preferences";
-import { ComposerPalette } from "./ComposerPalette";
 import { DiagramPart } from "./DiagramPart";
 import { EmptyCaption } from "./EmptyCaption";
 import { haptic } from "./haptics";
