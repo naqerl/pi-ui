@@ -646,8 +646,8 @@ test("a notice queued before the sink is observed without being submitted", () =
   const queued = statusNotice("cut-1", "failed");
 
   shim.sendMessage(queued);
-  assert.deepEqual(seen, [], "no observer is attached yet");
-  assert.deepEqual(submitted, [], "no sink is attached yet");
+  assert.equal(seen.length, 0, "no observer is attached yet");
+  assert.equal(submitted.length, 0, "no sink is attached yet");
 
   shim.setObserver((notice) => {
     seen.push(notice);
