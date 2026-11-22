@@ -45,7 +45,7 @@ export const ComposerPalette = forwardRef<HTMLDivElement, ComposerPaletteProps>(
                     (!available || !isSelected) && "text-muted-foreground",
                   )}
                 >
-                  {match.suffix}
+                  {index === 0 ? match.suffix : `/${match.command.name}`}
                 </span>
                 <span className="text-muted-foreground">{detailText}</span>
               </Fragment>
