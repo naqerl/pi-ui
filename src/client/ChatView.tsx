@@ -240,9 +240,9 @@ function useDelayedFlag(active: boolean, delayMs: number): boolean {
 }
 
 /**
- * The transcript's placeholder while the first snapshot is in flight. It fills the reading
- * area so hydration replaces it in place instead of letting the composer move, and it is
- * only mounted when the transcript has no live rows of its own.
+ * The transcript's single placeholder while the first snapshot is in flight. It is only
+ * mounted when the transcript has no live rows of its own, and the reserved reading area
+ * keeps the composer in place when hydration replaces it with the transcript.
  */
 function TranscriptLoadingCard() {
   return (
@@ -250,14 +250,9 @@ function TranscriptLoadingCard() {
       data-testid="chat-loading"
       role="status"
       aria-live="polite"
-      className="theme-radius flex min-h-40 flex-1 flex-col justify-center gap-xl border border-border bg-surface/90 px-2xl py-2xl shadow-sm backdrop-blur-md"
+      className="theme-radius w-fit max-w-full self-center border border-border bg-surface/90 px-2xl py-xl shadow-sm backdrop-blur-md"
     >
       <span className="font-mono text-xs text-muted-foreground">Loading…</span>
-      <div aria-hidden="true" className="flex flex-col gap-lg">
-        <span className="h-2.5 w-2/3 animate-pulse rounded-sm bg-muted motion-reduce:animate-none" />
-        <span className="h-2.5 w-5/6 animate-pulse rounded-sm bg-muted [animation-delay:120ms] motion-reduce:animate-none" />
-        <span className="h-2.5 w-1/2 animate-pulse rounded-sm bg-muted [animation-delay:240ms] motion-reduce:animate-none" />
-      </div>
     </div>
   );
 }
@@ -2747,21 +2742,13 @@ export function ChatView({
                   data-hydrating={hydrating ? "true" : undefined}
                   className={cn(
                     "mx-auto flex w-full max-w-[72ch] flex-col gap-2xl px-2xl",
-                    hydrating && "min-h-full",
+                    hydrating && "min-h-full justify-center",
                   )}
                   style={{
                     paddingTop: TRANSCRIPT_END_GAP,
                     paddingBottom: TRANSCRIPT_END_GAP,
                   }}
                 >
-                  {!ready && !showTranscriptLoading && (
-                    <p
-                      data-testid="chat-loading"
-                      className="theme-radius w-fit self-center border border-border bg-surface/90 px-xl py-md font-mono text-xs text-muted-foreground shadow-sm backdrop-blur-md"
-                    >
-                      Loading…
-                    </p>
-                  )}
                   {showTranscriptLoading && <TranscriptLoadingCard />}
                   {history?.hasEarlier === true && (
                     <EarlierMessages
