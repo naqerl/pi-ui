@@ -1,3 +1,9 @@
+## 1.13.1
+
+### Fixed
+
+- An adapter status line that names no subscription (for example `ntfy-mcp: MCP request stream ended without a final response`) is now a chip keyed by its server instead of a chat turn, so a reconnect no longer wakes the model; gap, restore and truncation notices still reach the conversation. (m2eg)
+
 ## 1.13.0
 
 ### Added
