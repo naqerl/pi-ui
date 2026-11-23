@@ -9,6 +9,10 @@
 
 - A plan conversation is bounded by pi-durable's compaction instead of billion-context: the thresholds follow the plan model's context window, the summary replaces only the old prefix, the newest turns stay verbatim, and a failed compaction leaves the log on its old head. No plan request carries a billion-context conversation id — not the task's own, not the chat's, and not `current.json` — so no plan turn is ever asked to call compress. (plan-context)
 
+### Fixed
+
+- An adapter status line that names no subscription (for example `ntfy-mcp: MCP request stream ended without a final response`) is now a chip keyed by its server instead of a chat turn, so a reconnect no longer wakes the model; gap, restore and truncation notices still reach the conversation. (m2eg)
+
 ## 1.13.0
 
 ### Added
