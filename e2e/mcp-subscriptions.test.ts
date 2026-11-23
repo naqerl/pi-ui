@@ -1396,6 +1396,20 @@ async function declareSubscriptions(
   );
 }
 
+/** Make the supervisor testable without waiting for the production 30 s/5 s cadence. */
+function withFastSupervision(t: { after: (fn: () => Promise<void>) => void }): void {
+  const interval = process.env.PI_UI_MCP_SUPERVISE_MS;
+  const retries = process.env.PI_UI_MCP_SUPERVISE_RETRY_MS;
+  process.env.PI_UI_MCP_SUPERVISE_MS = "40";
+  process.env.PI_UI_MCP_SUPERVISE_RETRY_MS = "20,20,20,20,20";
+  t.after(async () => {
+    if (interval === undefined) delete process.env.PI_UI_MCP_SUPERVISE_MS;
+    else process.env.PI_UI_MCP_SUPERVISE_MS = interval;
+    if (retries === undefined) delete process.env.PI_UI_MCP_SUPERVISE_RETRY_MS;
+    else process.env.PI_UI_MCP_SUPERVISE_RETRY_MS = retries;
+  });
+}
+
 test("restores a persisted active subscription from its acknowledged cursor", async (t) => {
   const dataDir = await tempDir(t);
   await withAgentConfig(t, {
@@ -2944,6 +2958,186 @@ test("a cut declared stream reopens at its recorded cursor without replay", asyn
     );
   } finally {
     runtime.setObserver(undefined);
+    await runtime.close();
+  }
+});
+
+test("a declared stream that exhausts its supervised retry budget stays stalled", async (t) => {
+  withFastSupervision(t);
+  const dataDir = await tempDir(t);
+  await withAgentConfig(t, {
+    mcpServers: {
+      stub: { command: process.execPath, args: [resolve("e2e/stub-mcp.mjs")] },
+    },
+    web: { command: process.execPath, disabled: true },
+  });
+  await declareSubscriptions([{ server: "stub", name: "stub-cut", arguments: {} }]);
+
+  const runtime = await startMcpRuntime({ dataDir });
+  const feed = new McpEventFeed(runtime.subscriptionRegistry);
+  await feed.hydrate();
+  const notices: string[] = [];
+  runtime.setObserver((notice) => {
+    feed.ingest(notice);
+  });
+  runtime.setSubmit((text, options) => {
+    if (options.customType === "mcp-recovery" && text.startsWith(MCP_STATUS_HEAD)) {
+      notices.push(text);
+    }
+  });
+  const stableId = deriveStableId("stub", "stub-cut", {});
+  const original = runtime.shim.callTool.bind(runtime.shim);
+  let subscribes = 0;
+  runtime.shim.callTool = async (name, params, signal) => {
+    const action =
+      typeof params === "object" && params !== null
+        ? (params as { action?: unknown }).action
+        : undefined;
+    if (name === "mcp_events" && action === "subscribe") {
+      subscribes += 1;
+      // The boot subscribe is real; every supervised reopen fails so the
+      // five-attempt budget is spent against a server that stays down.
+      if (subscribes > 1) {
+        return {
+          content: [],
+          isError: true,
+          details: { error: "temporary stream cut" },
+        } as never;
+      }
+    }
+    return original(name, params, signal);
+  };
+  try {
+    await waitFor(
+      () => feed.findByStableId(stableId)?.cursor === "cut:2",
+      "the cut stream's recorded cursor",
+    );
+    await waitFor(
+      () =>
+        runtime.subscriptionRegistry?.findByStableId(stableId)?.state === "stalled" &&
+        notices.some((text) => /is stalled/.test(text)),
+      "the exhausted supervised stream to be stalled and announced",
+    );
+    const saved = runtime.subscriptionRegistry?.findByStableId(stableId);
+    assert.equal(saved?.status, "failed");
+    assert.equal(saved?.state, "stalled");
+    assert.equal(saved?.enabled, false);
+    assert.equal(saved?.recoveryFailures, 5, "five failed attempts exhaust the episode");
+    const internals = runtime as unknown as {
+      supervision: Map<string, { attempts: number; terminal: boolean }>;
+    };
+    assert.equal(internals.supervision.get(stableId)?.attempts, 5);
+    assert.equal(internals.supervision.get(stableId)?.terminal, true);
+
+    const stalled = notices.filter((text) => /is stalled/.test(text));
+    assert.equal(stalled.length, 1, "the terminal episode is announced exactly once");
+    assert.match(stalled[0] ?? "", /stub\/stub-cut/);
+    assert.match(stalled[0] ?? "", /temporary stream cut/);
+    assert.match(stalled[0] ?? "", /since /);
+
+    const afterTerminal = subscribes;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(subscribes, afterTerminal, "a stalled episode is not retried");
+    assert.equal(
+      notices.filter((text) => /is stalled/.test(text)).length,
+      1,
+      "later supervisor ticks do not repeat the terminal notice",
+    );
+  } finally {
+    runtime.setObserver(undefined);
+    runtime.setSubmit(undefined);
+    await runtime.close();
+  }
+});
+
+test("reload resets a stalled episode and announces one recovery", async (t) => {
+  withFastSupervision(t);
+  const dataDir = await tempDir(t);
+  await withAgentConfig(t, {
+    mcpServers: {
+      stub: { command: process.execPath, args: [resolve("e2e/stub-mcp.mjs")] },
+    },
+    web: { command: process.execPath, disabled: true },
+  });
+  await declareSubscriptions([{ server: "stub", name: "stub-cut", arguments: {} }]);
+
+  const runtime = await startMcpRuntime({ dataDir });
+  const feed = new McpEventFeed(runtime.subscriptionRegistry);
+  await feed.hydrate();
+  const notices: string[] = [];
+  runtime.setObserver((notice) => {
+    feed.ingest(notice);
+  });
+  runtime.setSubmit((text, options) => {
+    if (options.customType === "mcp-recovery" && text.startsWith(MCP_STATUS_HEAD)) {
+      notices.push(text);
+    }
+  });
+  const stableId = deriveStableId("stub", "stub-cut", {});
+  const original = runtime.shim.callTool.bind(runtime.shim);
+  let subscribes = 0;
+  let failSubscribes = true;
+  runtime.shim.callTool = async (name, params, signal) => {
+    const action =
+      typeof params === "object" && params !== null
+        ? (params as { action?: unknown }).action
+        : undefined;
+    if (name === "mcp_events" && action === "subscribe") {
+      subscribes += 1;
+      if (failSubscribes && subscribes > 1) {
+        return {
+          content: [],
+          isError: true,
+          details: { error: "temporary stream cut" },
+        } as never;
+      }
+    }
+    return original(name, params, signal);
+  };
+  try {
+    await waitFor(
+      () =>
+        runtime.subscriptionRegistry?.findByStableId(stableId)?.state === "stalled" &&
+        notices.some((text) => /is stalled/.test(text)),
+      "the exhausted supervised stream to be stalled and announced",
+    );
+    const beforeReload = subscribes;
+    assert.equal(
+      notices.filter((text) => /is stalled/.test(text)).length,
+      1,
+      "one terminal notice precedes the reset",
+    );
+
+    failSubscribes = false;
+    await runtime.reload("subscriptions");
+    await waitFor(
+      () => notices.some((text) => /is active again/.test(text)),
+      "the first successful reopen after the reset",
+    );
+    assert.ok(subscribes > beforeReload, "the reset allows another attempt");
+    assert.equal(
+      notices.filter((text) => /is stalled/.test(text)).length,
+      1,
+      "the old terminal notice is not repeated",
+    );
+    const recovered = notices.filter((text) => /is active again/.test(text));
+    assert.equal(recovered.length, 1, "recovery is announced exactly once");
+    assert.match(recovered[0] ?? "", /stub\/stub-cut/);
+    assert.equal(
+      runtime.subscriptionRegistry?.findByStableId(stableId)?.state,
+      "active",
+      "the recovered row is no longer stalled",
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(
+      notices.filter((text) => /is active again/.test(text)).length,
+      1,
+      "later healthy ticks do not repeat the recovery",
+    );
+  } finally {
+    runtime.setObserver(undefined);
+    runtime.setSubmit(undefined);
     await runtime.close();
   }
 });
