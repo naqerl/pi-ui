@@ -83,7 +83,7 @@ import {
   workingTaskIds,
 } from "./idle-nudge.js";
 import { NoticeCoalescer } from "./mcp-event-policy.js";
-import type { McpEventFeed } from "./mcp-events.js";
+import { type McpEventFeed, unattributedStatusKey } from "./mcp-events.js";
 import { MCP_OUTAGE_NOTIFY_MS } from "./mcp-outage-quiet.js";
 import { registerMcpQueueMerger, unregisterMcpQueueMerger } from "./mcp-queue-merge.js";
 import { MEDIA_TYPES, MediaError, type MediaStore } from "./media.js";
@@ -220,12 +220,14 @@ function mcpStatusNotice(
   eventFeed: McpEventFeed | undefined,
   text: string,
   knownIdentities?: Array<{ stableId: string }>,
+  fallbackId?: string,
 ): { noticeId: string; key: string; label: string } {
   const identities = knownIdentities ?? eventFeed?.statusIdentities(text) ?? [];
   // The durable id is the chip identity, so a reconnect keeps updating one row
   // even when the adapter mints a new connection id. A batch still names the
-  // subscription its first status belongs to.
-  const stableId = identities[0]?.stableId;
+  // subscription its first status belongs to; unattributed prose falls back to
+  // its server key before a random id.
+  const stableId = identities[0]?.stableId ?? fallbackId;
   return {
     noticeId: stableId === undefined ? `mcp/status#${randomUUID()}` : `mcp/status#${stableId}`,
     key: "mcp/status",
@@ -2691,7 +2693,8 @@ export class ChatService {
         this.armMcpOutageTimer(stableId);
       }
     }
-    const notice = mcpStatusNotice(this.eventFeed, text, identities);
+    const fallbackId = identities.length === 0 ? unattributedStatusKey(text) : undefined;
+    const notice = mcpStatusNotice(this.eventFeed, text, identities, fallbackId);
     const at = new Date().toISOString();
     const entry = await appendMcpNotice(this.conversation, {
       noticeId: notice.noticeId,

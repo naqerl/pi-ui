@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import { ChatService } from "../src/server/chat-service.js";
-import { McpEventFeed } from "../src/server/mcp-events.js";
+import { McpEventFeed, unattributedStatusKey } from "../src/server/mcp-events.js";
 import { OutageQuiet, type StatusView } from "../src/server/mcp-outage-quiet.js";
 import { deriveStableId } from "../src/server/mcp-subscriptions.js";
 import { buildTranscript } from "../src/server/session.js";
@@ -12,7 +12,11 @@ function status(subs: Array<{ id: string; status: string }>): string {
   return `${MCP_STATUS_HEAD}\n${JSON.stringify({ subscriptions: subs })}`;
 }
 
-function trackedFeed(windowMs: number): {
+function trackedFeed(
+  windowMs: number,
+  server = "hub",
+  name = "hub",
+): {
   feed: McpEventFeed;
   now: () => number;
   advance: (ms: number) => void;
@@ -27,7 +31,7 @@ function trackedFeed(windowMs: number): {
     customType: "mcp-events-tool",
     details: {
       args: { action: "subscribe" },
-      result: { subscription: { id: "s1", server: "hub", name: "hub", status: "active" } },
+      result: { subscription: { id: "s1", server, name, status: "active" } },
     },
   });
   return { feed, now, advance: (ms) => (clock += ms) };
@@ -143,8 +147,13 @@ test("the quiet clock is per stable id, so a new adapter id does not restart it"
   assert.equal(quiet.escalated(stableId), true);
 });
 
-function statusChat(feed: McpEventFeed): { chat: ChatService; entries: EntryRecord[] } {
+function statusChat(feed: McpEventFeed): {
+  chat: ChatService;
+  entries: EntryRecord[];
+  submitted: string[];
+} {
   const entries: EntryRecord[] = [];
+  const submitted: string[] = [];
   let nextId = 1;
   const append = (kind: string, data: unknown) => {
     const entry = { id: nextId++, conversationId: 1, kind, data };
@@ -192,11 +201,12 @@ function statusChat(feed: McpEventFeed): { chat: ChatService; entries: EntryReco
         options?: { entry?: { kind: string; data: unknown } },
       ) => Promise<unknown>;
     }
-  ).submit = async (_text, _mode, options) => {
+  ).submit = async (text, _mode, options) => {
+    submitted.push(text);
     if (options?.entry !== undefined) append(options.entry.kind, options.entry.data);
     return {};
   };
-  return { chat, entries };
+  return { chat, entries, submitted };
 }
 
 test("an escalated outage and its recovery keep the one durable chip", async () => {
@@ -278,4 +288,72 @@ test("a second escalated outage and its recovery still keep the one chip", async
   assert.equal(transcript.messages.length, 1, "two full cycles leave one chip");
   assert.equal(transcript.messages[0]?.text, up, "the one chip ends on active");
   await chat.close();
+});
+
+test("repeated adapter prose is a chip and never starts a turn", async () => {
+  const { feed, advance } = trackedFeed(60_000, "ntfy-mcp", "ntfy-mcp");
+  const prose = `${MCP_STATUS_HEAD}\nntfy-mcp: MCP request stream ended without a final response`;
+  assert.equal(unattributedStatusKey(prose), "unattributed:ntfy-mcp");
+  assert.equal(
+    unattributedStatusKey(`${MCP_STATUS_HEAD}\nntfy-mcp/topic: MCP request stream ended`),
+    "unattributed:ntfy-mcp/topic",
+  );
+  const { chat, entries, submitted } = statusChat(feed);
+
+  for (let repeat = 0; repeat < 3; repeat++) {
+    const gate = feed.filterStatusNotice(prose, undefined, "mcp-ui-status");
+    assert.equal(gate.mode, "chip", `repeat ${repeat + 1} is display history`);
+    assert.equal(gate.text, prose);
+    await chat.recordMcpStatusChip(gate.text);
+    advance(10_000);
+  }
+
+  assert.deepEqual(submitted, [], "adapter prose never becomes a model turn");
+  assert.deepEqual(
+    entries.map((entry) => (entry.data as { noticeId?: string }).noticeId),
+    Array.from({ length: 3 }, () => "mcp/status#unattributed:ntfy-mcp"),
+    "every repeat updates the one unattributed row",
+  );
+  const transcript = buildTranscript(entries);
+  assert.equal(transcript.messages.length, 1, "three repeats leave one visible chip");
+  assert.equal(transcript.messages[0]?.text, prose);
+  await chat.close();
+});
+
+test("a restore gap still reaches the model", () => {
+  const { feed } = trackedFeed(60_000);
+  const text = `${MCP_STATUS_HEAD}\nSome events were missed while pi was not running (from hub:1 since 2026-11-21T13:27:01.126Z).`;
+  const gate = feed.filterStatusNotice(
+    text,
+    { kind: "restore-gap", server: "hub", name: "hub", count: 0 },
+    "mcp-events-gap",
+  );
+
+  assert.equal(gate.mode, "deliver");
+  assert.equal(gate.text, text);
+  assert.equal(
+    feed.filterStatusNotice(text).mode,
+    "deliver",
+    "gap prose needs no metadata to deliver",
+  );
+});
+
+test("exhaustion prose for an untracked server is still dropped", () => {
+  const { feed } = trackedFeed(60_000);
+  const gate = feed.filterStatusNotice(
+    `${MCP_STATUS_HEAD}\nzeroshot: Reconnect attempts exhausted: MCP connection or session ended`,
+    undefined,
+    "mcp-ui-status",
+  );
+
+  assert.equal(gate.mode, "drop");
+});
+
+test("a non-status notice passes through unchanged", () => {
+  const { feed } = trackedFeed(60_000);
+  const text = "a plain notice without a status head";
+  const gate = feed.filterStatusNotice(text);
+
+  assert.equal(gate.mode, "deliver");
+  assert.equal(gate.text, text);
 });
