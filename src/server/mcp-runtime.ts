@@ -1893,12 +1893,14 @@ export class McpRuntime {
    * Stop the dead adapter stream and subscribe again at the hub cursor. The
    * normal path is the mcp_events tool, so the extension keeps owning the
    * replacement stream. A direct protocol session is used only when that tool
-   * is not registered.
+   * is not registered. `stopFirst: false` is for the supervisor, which has
+   * already established that no live adapter row is left to stop.
    */
   async reopenSubscription(
     record: McpSubscriptionRecord,
     cursor: string | null | undefined,
     canAdopt?: () => boolean,
+    options: { readonly stopFirst?: boolean } = {},
   ): Promise<{
     id?: string;
     generation?: string;
@@ -1920,7 +1922,12 @@ export class McpRuntime {
       cursor === null || cursor === undefined ? fallback : hasPosition(cursor) ? cursor : null;
     logStartFromNow(record, sent);
     if (this.toolNames.includes("mcp_events")) {
-      if (record.id !== null && record.id !== undefined && record.id.length > 0) {
+      // The supervisor only reopens a declaration whose adapter row is not
+      // live: the tick skips live rows and the attempt re-checks liveness just
+      // before subscribing. Nothing is left running to stop, and an extra
+      // unsubscribe would make the adapter announce a second termination for a
+      // generation the durable row is already replacing.
+      if (options.stopFirst !== false && typeof record.id === "string" && record.id.length > 0) {
         await this.shim
           .callTool("mcp_events", { action: "unsubscribe", subscription_id: record.id })
           .catch(() => {});
@@ -2640,8 +2647,20 @@ export class McpRuntime {
             state.noticeOutstanding = false;
           }
           if (state !== undefined) {
-            if (state.timer !== undefined) clearTimeout(state.timer);
-            if (!state.inFlight) {
+            if (state.timer !== undefined) {
+              clearTimeout(state.timer);
+              state.timer = undefined;
+            }
+            // A live row means the adapter still owns a stream for this
+            // declaration, so no attempt may run while it lasts. `active` is
+            // authoritative health and ends the episode. `opening` and
+            // `reconnecting` are the adapter's own retries: the episode keeps
+            // the budget it already spent and waits, so the bounded schedule
+            // resumes if that retry dies instead of starting over every tick.
+            if (
+              !state.inFlight &&
+              (row.status === "active" || state.attempts === 0 || state.terminal)
+            ) {
               this.clearSubscriptionReopen(stableId);
               this.supervision.delete(stableId);
             }
@@ -2727,6 +2746,35 @@ export class McpRuntime {
     );
   }
 
+  /** The declaration this stable id belongs to, when it is still configured. */
+  private declaredFor(stableId: string): DeclaredSubscription | undefined {
+    return (this.subscriptionConfig?.entries ?? []).find(
+      (candidate) =>
+        deriveStableId(candidate.server, candidate.name, candidate.arguments) === stableId,
+    );
+  }
+
+  /**
+   * True while the adapter lists a live stream for this declaration. A tick can
+   * see a declaration dead and the adapter can reconnect while that backoff
+   * runs; subscribing then would leave two streams owning one declaration.
+   */
+  private async supervisedRowIsLive(stableId: string): Promise<boolean> {
+    const entry = this.declaredFor(stableId);
+    if (entry === undefined || !this.toolNames.includes("mcp_events")) return false;
+    try {
+      const result = await this.shim.callTool("mcp_events", { action: "list" });
+      if (result.isError === true) return false;
+      const details = isRecord(result.details) ? result.details : undefined;
+      const listed = details?.subscriptions;
+      if (!Array.isArray(listed)) return false;
+      const row = this.supervisionRow(entry, stableId, listed.filter(isRecord));
+      return row !== undefined && isLiveAdapterStatus(row.status);
+    } catch {
+      return false;
+    }
+  }
+
   private scheduleSupervisionAttempt(stableId: string, state: SubscriptionSupervision): void {
     if (this.closed || state.terminal || state.timer !== undefined) return;
     if (state.attempts >= MCP_SUPERVISE_MAX_ATTEMPTS) return;
@@ -2756,6 +2804,16 @@ export class McpRuntime {
     if (this.restoringAll || this.restoring.size > 0 || this.reloading !== undefined) {
       return;
     }
+    // Re-check liveness immediately before subscribing: a live row is the
+    // adapter's own stream for this declaration, and a second subscribe on top
+    // of it would duplicate the stream this runtime is supposed to own.
+    if (await this.supervisedRowIsLive(stableId)) return;
+    // That await can span a reload or a close, so the guards that make this
+    // attempt still ours are read again before the adapter is touched.
+    if (this.closed || epoch !== this.supervisionEpoch) return;
+    if (this.supervision.get(stableId) !== state) return;
+    if (state.terminal || state.inFlight) return;
+    if (this.dropped.has(stableId) || !this.isDeclaredStableId(stableId)) return;
     const record = this.recordForStableId(stableId);
     if (record === undefined) return;
     const key = recordKey(record);
@@ -2767,8 +2825,11 @@ export class McpRuntime {
     this.terminalDuringReopen.delete(stableId);
     this.reviveAdapter(stableId);
     try {
-      const reopened = await this.reopenSubscription(record, undefined, () =>
-        this.canAdoptSupervised(epoch, stableId, state),
+      const reopened = await this.reopenSubscription(
+        record,
+        undefined,
+        () => this.canAdoptSupervised(epoch, stableId, state),
+        { stopFirst: false },
       );
       if (epoch !== this.supervisionEpoch || this.closed) return;
       if (
