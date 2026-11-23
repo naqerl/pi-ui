@@ -95,6 +95,7 @@ import { usePager } from "./use-pager";
 import { type PresenceState, usePresence, useReducedMotion } from "./use-presence";
 import { useStickToBottom } from "./use-stick-to-bottom";
 import { type TaskCycleHint, useTaskCycle } from "./use-task-cycle";
+import { useWide } from "./use-wide";
 import { WorkingIndicator } from "./WorkingIndicator";
 import { workingWord } from "./working-state";
 
@@ -1273,6 +1274,8 @@ export function Composer({
   dockSwap = true,
   dockPhase = "settled",
   commands,
+  fullscreen = false,
+  onExitFullscreen,
 }: {
   tasksPage: boolean;
   /** When set, @project suggestions work even if this is not the create-task composer. */
@@ -1309,6 +1312,10 @@ export function Composer({
   dockPhase?: DockPhase;
   /** Slash commands drawn as ghost text in the composer's own space. */
   commands?: ComposerCommand[];
+  /** The tasks page is showing the open task's body at full width. */
+  fullscreen?: boolean;
+  /** Escape in the dock leaves full screen instead of touching the draft. */
+  onExitFullscreen?: () => void;
   /** A successful Retry consumes the exact draft that was restored for its failed row. */
   clearDraft?: {
     key: string;
@@ -1781,6 +1788,13 @@ export function Composer({
                   return;
                 }
               }
+              // The palette and the mentions above own Escape first; only then does it leave
+              // full screen, so one press never dismisses two surfaces.
+              if (event.key === "Escape" && fullscreen) {
+                event.preventDefault();
+                onExitFullscreen?.();
+                return;
+              }
               // ArrowUp in an empty composer takes back the newest steer the run has not reached.
               if (
                 event.key === "ArrowUp" &&
@@ -2042,6 +2056,7 @@ export function ChatView({
 }: ChatViewProps) {
   useViewportHeight();
   const pager = usePager(PAGES.length, pageFromLocation());
+  const wide = useWide();
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const [jobsSheet, setJobsSheet] = useState<BackgroundJobsKind | null>(null);
   const closeJobsSheet = useCallback(() => {
@@ -2136,6 +2151,7 @@ export function ChatView({
   // The detail TasksView reports as open. It clears on close, so a new burst starts from
   // the most recent ring entry instead of advancing from a detail that is no longer up.
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+  const [fullscreen, setFullscreen] = useState(false);
   const ledgerTasksRef = useRef(tasks);
   ledgerTasksRef.current = tasks;
   const [cycleHint, setCycleHint] = useState<TaskCycleHint | null>(null);
@@ -2199,9 +2215,22 @@ export function ChatView({
     [applyTasks, resetTaskCycle],
   );
   const commands = useMemo(
-    () => composerCommands({ task: commandTask, remove: removeOpenTask }),
-    [commandTask, removeOpenTask],
+    () =>
+      composerCommands({
+        task: commandTask,
+        desktop: wide,
+        fullscreen,
+        remove: removeOpenTask,
+        toggleFullscreen: () => setFullscreen((current) => !current),
+      }),
+    [commandTask, fullscreen, removeOpenTask, wide],
   );
+
+  // Full screen only exists over an open detail on the wide tasks page. A task change
+  // alone keeps it, so Ctrl+Tab shows the next body at the same width.
+  useEffect(() => {
+    if (openTaskId === null || pager.page !== TASKS_PAGE || !wide) setFullscreen(false);
+  }, [openTaskId, pager.page, wide]);
 
   useEffect(() => {
     return () => {
@@ -2787,6 +2816,8 @@ export function ChatView({
                   onTaskDetailChange={handleTaskDetailChange}
                   onComposerMode={setComposerMode}
                   createFailures={createFailures}
+                  fullscreen={fullscreen}
+                  onFullscreenChange={setFullscreen}
                 />
               </Suspense>
             </section>
@@ -2940,6 +2971,8 @@ export function ChatView({
                   inputLabel={wantTaskDock ? "Task message" : undefined}
                   placeholder={taskPlaceholder}
                   commands={commands}
+                  fullscreen={fullscreen}
+                  onExitFullscreen={() => setFullscreen(false)}
                 />
               </div>
             </div>

@@ -98,6 +98,9 @@ interface TasksViewProps {
   onComposerMode?: (mode: "create" | "task-chat" | "task-plan" | "collapsed") => void;
   /** Failed optimistic creates keyed by their client task id. */
   createFailures?: Record<string, TaskCreateFailure>;
+  /** The open task's body owns the page width; the list and chat stay mounted but hidden. */
+  fullscreen?: boolean;
+  onFullscreenChange?: (next: boolean) => void;
 }
 
 /** Root tasks split into one group per project, A–Z, with "No project" (null) last. */
@@ -337,6 +340,8 @@ function TasksViewImpl({
   onMobileDetailChange,
   onComposerMode,
   createFailures,
+  fullscreen = false,
+  onFullscreenChange,
 }: TasksViewProps) {
   const wide = useWide();
   const fixtureOn = useTaskDetailFixture();
@@ -370,6 +375,8 @@ function TasksViewImpl({
   const cardClickGuard = useRef<CardClickGuard>({ pointer: null, ignore: null, timer: null });
   const lastSelectionRequest = useRef<number | null>(null);
   const pageRef = useRef<HTMLDivElement | null>(null);
+  const sideScrollerRef = useRef<HTMLDivElement | null>(null);
+  const sideScrollTop = useRef(0);
   const returnTo = useRef<{ id: string | null; offset: number; top: number } | null>(null);
   const openTaskIdRef = useRef(openTaskId);
   openTaskIdRef.current = openTaskId;
@@ -495,6 +502,9 @@ function TasksViewImpl({
     openTaskId === null || createFailures?.[openTaskId] !== undefined
       ? undefined
       : tasks.find((task) => task.id === openTaskId);
+  // A close clears the mode through ChatView on the next effect; do not paint the
+  // empty page in a single column for that frame.
+  const fullscreenOpen = fullscreen && openTask !== undefined;
   const detailTaskId = openTask?.id ?? null;
   const reopenTask =
     reopenTaskId === null ? undefined : tasks.find((task) => task.id === reopenTaskId);
@@ -677,11 +687,23 @@ function TasksViewImpl({
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       const target = event.target;
-      // Title, body, and other fields use Escape to cancel an edit.
       if (
         target instanceof HTMLElement &&
         target.closest("input, textarea, select, [contenteditable='true']") !== null
       ) {
+        // Every field cancels its own edit, except this one on desktop: the dock
+        // composer hands Escape to the page so the press after leaving full screen
+        // closes the detail from where the operator typed. The palette and the @
+        // suggestions dismiss themselves in React first.
+        const dockEscape =
+          target.closest('[data-testid="task-agent-input"]') !== null &&
+          document.querySelector(
+            '[data-testid="composer-palette"], [data-testid="project-suggestions"]',
+          ) === null;
+        if (!wide || !dockEscape) return;
+      }
+      // A native dialog (the media viewer included) owns Escape through its cancel event.
+      if (document.querySelector("dialog[open], [data-testid='media-viewer']") !== null) {
         return;
       }
       // Capture while a portaled menu still exists so Escape closes the menu,
@@ -693,11 +715,16 @@ function TasksViewImpl({
       ) {
         return;
       }
+      // The top layer first: full screen leaves before the detail it is showing.
+      if (fullscreen) {
+        onFullscreenChange?.(false);
+        return;
+      }
       closeDetail();
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  }, [closeDetail, openTaskId, menu]);
+  }, [closeDetail, fullscreen, menu, onFullscreenChange, openTaskId, wide]);
 
   const openMenu = (id: string, x: number, y: number) => {
     if (createFailures?.[id] !== undefined) return;
@@ -848,6 +875,8 @@ function TasksViewImpl({
         state={state(openTask)}
         trace={activity?.traces[openTask.id]}
         wide={wide}
+        fullscreen={fullscreenOpen}
+        onExitFullscreen={() => onFullscreenChange?.(false)}
         dockClearance={footerClearance}
         planning={
           planning.has(openTask.id) &&
@@ -910,6 +939,18 @@ function TasksViewImpl({
     return () => window.cancelAnimationFrame(frame);
   }, [detailOpen]);
 
+  // The list is hidden, not unmounted. A display:none scroller reports 0, so its own
+  // scroll events keep the last visible position and the layout effect puts it back.
+  useLayoutEffect(() => {
+    const element = sideScrollerRef.current;
+    if (element === null) return;
+    if (fullscreen) {
+      if (element.scrollTop > 0) sideScrollTop.current = element.scrollTop;
+      return;
+    }
+    element.scrollTop = sideScrollTop.current;
+  }, [fullscreen]);
+
   // The browser keeps its own scroll for a history entry. A narrow detail owns
   // the scroll while it is present, so stop the back navigation from fighting it.
   useEffect(() => {
@@ -944,7 +985,12 @@ function TasksViewImpl({
       <div
         className={
           wide
-            ? "tasks-split grid h-full min-h-0 w-full grid-cols-[minmax(268px,328px)_minmax(280px,1fr)_minmax(300px,400px)] grid-rows-[auto_minmax(0,1fr)] gap-x-lg gap-y-lg px-2xl"
+            ? cn(
+                "tasks-split grid h-full min-h-0 w-full grid-rows-[auto_minmax(0,1fr)] gap-x-lg gap-y-lg px-2xl",
+                fullscreenOpen
+                  ? "grid-cols-[minmax(0,1fr)]"
+                  : "grid-cols-[minmax(268px,328px)_minmax(280px,1fr)_minmax(300px,400px)]",
+              )
             : cn(
                 "mx-auto flex h-full min-h-0 w-full max-w-[72ch] flex-col",
                 openTask === undefined ? "gap-2xl px-2xl" : "overflow-hidden",
@@ -955,11 +1001,25 @@ function TasksViewImpl({
           paddingBottom: !wide && openTask !== undefined ? 0 : 16,
         }}
         data-tasks-split={wide ? (openTask !== undefined ? "open" : "closed") : undefined}
+        data-fullscreen={wide && fullscreenOpen ? "true" : undefined}
       >
         {wide ? (
           <>
-            <div data-col="side" className="row-span-2 mr-lg flex h-full min-h-0 min-w-0 flex-col">
+            <div
+              data-col="side"
+              hidden={fullscreenOpen || undefined}
+              inert={fullscreenOpen || undefined}
+              className={cn(
+                "row-span-2 mr-lg h-full min-h-0 min-w-0 flex-col",
+                fullscreenOpen ? "hidden" : "flex",
+              )}
+            >
               <div
+                ref={sideScrollerRef}
+                onScroll={(event) => {
+                  if (fullscreenOpen) return;
+                  sideScrollTop.current = event.currentTarget.scrollTop;
+                }}
                 className={cn(
                   "min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain",
                   SCROLLBAR_GUTTER,
@@ -974,7 +1034,12 @@ function TasksViewImpl({
                 <div
                   data-col="chat"
                   data-testid="tasks-chat-col"
-                  className="flex h-full min-h-0 min-w-0 flex-col"
+                  hidden={fullscreenOpen || undefined}
+                  inert={fullscreenOpen || undefined}
+                  className={cn(
+                    "h-full min-h-0 min-w-0 flex-col",
+                    fullscreenOpen ? "hidden" : "flex",
+                  )}
                 >
                   <TaskAgentChat
                     key={openTask.id}
@@ -982,6 +1047,9 @@ function TasksViewImpl({
                     projects={projectsOf(tasks.filter((item) => isActiveStatus(item.status)))}
                     variant="pane"
                     composerTarget="dock"
+                    active={!fullscreenOpen}
+                    fullscreen={fullscreenOpen}
+                    onExitFullscreen={() => onFullscreenChange?.(false)}
                     onRemove={() => apply(openTask.id, removeTask(openTask.id))}
                   />
                 </div>
@@ -1721,6 +1789,8 @@ export function TaskDetail({
   state,
   trace,
   wide,
+  fullscreen = false,
+  onExitFullscreen,
   dockClearance = 0,
   planning = false,
   statusPending = false,
@@ -1739,6 +1809,9 @@ export function TaskDetail({
   state: TaskState;
   trace: TaskTrace | undefined;
   wide: boolean;
+  /** The body owns the page width; the details bar's cross leaves the mode. */
+  fullscreen?: boolean;
+  onExitFullscreen?: () => void;
   /** Bottom clearance for the plan scroller while the dock floats over it. */
   dockClearance?: number;
   /** This task's plan agent currently has a live run. */
@@ -1975,6 +2048,8 @@ export function TaskDetail({
       state,
       trace,
       wide,
+      fullscreen,
+      onExitFullscreen: onExitFullscreen ?? (() => undefined),
       dockClearance,
       planning,
       statusPending,

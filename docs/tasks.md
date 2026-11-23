@@ -36,6 +36,28 @@ Ctrl+O before the page sees it, so Ctrl+O is the less reliable backward alias.
 With fewer than two ring entries, and when the ring would only wrap back to the
 open task, all four keys stay with the browser.
 
+## Full screen
+
+`/fullscreen` in the task composer hides the task list and the planning chat so the
+open task's body owns the page width. It only exists on a wide viewport (1024 px
+and up) with a detail open; elsewhere the palette still lists it, dimmed with
+`desktop only` or `no task open`, and Enter runs nothing. An unavailable command
+leaves the typed text in the composer, and the browser's own full-screen API is
+never called. The mode is a layout state: no URL, no history entry, no stored
+preference.
+
+The side list and the chat column stay mounted and are hidden with `hidden` and
+`inert`, so the planning session, its scroll position and the task dock keep
+their state; the list's scroll position is restored when it returns. On a
+narrow viewport the split is a stack and the command is unavailable.
+
+Three things leave the mode: Escape, the cross in the details bar, and the same
+command again. Escape is layered — the composer palette, an open menu or dialog,
+and an inline title or body edit each consume it first — so one press never
+closes two things. Leaving full screen keeps the detail open; the next Escape
+closes it. The corner cross becomes the exit control while the mode is on, and
+switching tasks with Ctrl+Tab keeps the body at full width.
+
 ## Draft planning
 
 The create composer's status row has a `Plan task` toggle, on by default and remembered for

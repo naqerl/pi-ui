@@ -487,6 +487,120 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     expect(await horizontalOverflow(browser)).toEqual([]);
   });
 
+  test("full screen hands the width to the open task and gives it back", async ({
+    app,
+    browser,
+    screen,
+  }) => {
+    await openSnapshot(app, browser, snapshot, 1280, 800);
+    const sent: string[] = [];
+    // The mocked ledger has no server task, so the dock's POST is answered here: the
+    // assertion is that the hidden chat column still sends for the open task.
+    await browser.route("**/api/tasks/t1/chat", async (route) => {
+      if (route.request.method !== "POST") {
+        await route.continue();
+        return;
+      }
+      const body = JSON.parse(route.request.postData ?? "{}") as { text?: string };
+      const text = body.text ?? "";
+      sent.push(text);
+      const message = { id: "sent-1", role: "user", text, timestamp: at(30), order: 1 };
+      await route.fulfill({
+        json: { message, mode: "queue", queued: false, placed: true, queue: [] },
+      });
+    });
+    await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
+    await expect(screen.getByTestId("task-detail")).toHaveAttribute("aria-label", "Ship the modal");
+
+    const readLayout = () =>
+      browser.evaluate(() => {
+        const grid = document.querySelector<HTMLElement>('[data-tasks-split="open"]');
+        const page = document.querySelector<HTMLElement>('[data-testid="tasks-page"]');
+        const side = document.querySelector<HTMLElement>('[data-col="side"]');
+        const chat = document.querySelector<HTMLElement>('[data-testid="tasks-chat-col"]');
+        const detail = document.querySelector<HTMLElement>('[data-testid="tasks-mid-col"]');
+        const header = document.querySelector<HTMLElement>('[data-testid="task-header"]');
+        if (
+          grid === null ||
+          page === null ||
+          side === null ||
+          chat === null ||
+          detail === null ||
+          header === null
+        ) {
+          return null;
+        }
+        const detailBox = detail.getBoundingClientRect();
+        const headerBox = header.getBoundingClientRect();
+        return {
+          fullscreen: grid.getAttribute("data-fullscreen"),
+          columns: getComputedStyle(grid).gridTemplateColumns.split(" ").length,
+          sideDisplay: getComputedStyle(side).display,
+          chatDisplay: getComputedStyle(chat).display,
+          chatMounted: chat.querySelector('[data-testid="task-agent-transcript"]') !== null,
+          chatInert: chat.hasAttribute("inert"),
+          detailWidth: Math.round(detailBox.width),
+          headerWidth: Math.round(headerBox.width),
+          contentWidth: Math.round(page.getBoundingClientRect().width) - 32,
+          headerStartsAtDetail: Math.round(headerBox.left - detailBox.left),
+        };
+      });
+
+    const input = screen.getByTestId("task-agent-input");
+    await input.fill("/full");
+    await expect(screen.getByTestId("composer-command-fullscreen")).toBeVisible();
+    await input.press("Enter");
+
+    await expect(input).toHaveValue("");
+    await expect(screen.getByTestId("task-detail-fullscreen-exit")).toBeVisible();
+    await expect(screen.getByTestId("task-detail-back")).toHaveCount(0);
+    const full = await readLayout();
+    expect(full).toMatchObject({
+      fullscreen: "true",
+      columns: 1,
+      sideDisplay: "none",
+      chatDisplay: "none",
+      chatInert: true,
+      headerStartsAtDetail: 0,
+    });
+    expect(full?.chatMounted).toBe(true);
+    expect(full?.detailWidth).toBe(full?.contentWidth);
+    expect(full?.headerWidth).toBe(full?.contentWidth);
+    expect(await horizontalOverflow(browser)).toEqual([]);
+    // Enter ran the command; it did not send the text to the task agent.
+    expect(sent).toEqual([]);
+
+    // Escape leaves full screen and keeps the detail open; nothing was sent.
+    await input.press("Escape");
+    await expect(screen.getByTestId("task-detail-back")).toBeVisible();
+    await expect(screen.getByTestId("task-detail")).toHaveAttribute("aria-label", "Ship the modal");
+    const restored = await readLayout();
+    expect(restored).toMatchObject({ fullscreen: null, columns: 3, sideDisplay: "flex" });
+    expect(restored?.chatDisplay).not.toBe("none");
+
+    // The dock still has focus, so the next Escape closes the detail from there.
+    await input.press("Escape");
+    await expect(screen.getByTestId("task-detail")).toHaveCount(0);
+    expect(sent).toEqual([]);
+    await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
+    await expect(screen.getByTestId("task-detail")).toBeVisible();
+
+    // The corner cross is the other way out, and the dock keeps its task session.
+    await input.fill("/full");
+    await expect(screen.getByTestId("composer-command-fullscreen")).toBeVisible();
+    await input.press("Enter");
+    await expect(screen.getByTestId("task-detail-fullscreen-exit")).toBeVisible();
+    await screen.getByTestId("task-detail-fullscreen-exit").tap();
+    await expect(screen.getByTestId("task-detail-back")).toBeVisible();
+    await expect(screen.getByTestId("task-detail-fullscreen-exit")).toHaveCount(0);
+    await expect(screen.getByTestId("task-detail")).toHaveAttribute("aria-label", "Ship the modal");
+
+    await input.fill("Plan the cache");
+    await input.press("Enter");
+    await expect(screen.getByTestId("task-agent-chat")).toContainText("Plan the cache");
+    expect(sent).toEqual(["Plan the cache"]);
+  });
+
   test("on a phone the Plan tab keeps the dock bar over the scrolling body", async ({
     app,
     browser,

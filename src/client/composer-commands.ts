@@ -1,6 +1,12 @@
 export interface ComposerCommandContext {
+  /** The task this composer speaks for; null off the tasks page or with no detail open. */
   task: { id: string; title: string } | null;
+  /** `useWide()` for the caller: the desktop-only commands read it, not the window. */
+  desktop: boolean;
+  /** The tasks page is showing the body at full width. */
+  fullscreen: boolean;
   remove: (id: string) => Promise<string | null>;
+  toggleFullscreen: () => void;
 }
 
 export interface ComposerCommand {
@@ -21,6 +27,11 @@ export interface ComposerCommandMatches {
 }
 
 export function composerCommands(context: ComposerCommandContext): ComposerCommand[] {
+  const unavailable = !context.desktop
+    ? "desktop only"
+    : context.task === null
+      ? "no task open"
+      : null;
   return [
     {
       name: "remove",
@@ -29,6 +40,18 @@ export function composerCommands(context: ComposerCommandContext): ComposerComma
       run: async () => {
         if (context.task === null) return null;
         return context.remove(context.task.id);
+      },
+    },
+    {
+      name: "fullscreen",
+      summary: context.fullscreen
+        ? "show the list and chat again"
+        : "read the task body at full width",
+      unavailable,
+      run: async () => {
+        if (unavailable !== null) return null;
+        context.toggleFullscreen();
+        return null;
       },
     },
   ];
