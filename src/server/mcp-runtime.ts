@@ -465,6 +465,10 @@ function webAccessServer(agentDir: string): HostManagedMcpServer | undefined {
 }
 
 const LIVE_ADAPTER_STATUS = new Set(["opening", "active", "reconnecting"]);
+/** Only `active` is the adapter's assertion that it owns a working stream. */
+const ACTIVE_ADAPTER_STATUS = "active";
+/** `opening`/`reconnecting` are the adapter's own retries against a server that may stay down. */
+const ADAPTER_RETRY_STATUS = new Set(["opening", "reconnecting"]);
 /** A declared stream that ended is reopened; a cancellation is not. */
 const TERMINAL_SUBSCRIPTION_STATUS = new Set(["ended", "failed", "stopped"]);
 /** Bounded reopens: 1s, 2s, 5s, then 15s for the final attempts. */
@@ -504,6 +508,14 @@ function isMissingSubscriptionError(error: unknown): boolean {
 
 function isLiveAdapterStatus(value: unknown): boolean {
   return typeof value === "string" && LIVE_ADAPTER_STATUS.has(value);
+}
+
+function isActiveAdapterStatus(value: unknown): boolean {
+  return value === ACTIVE_ADAPTER_STATUS;
+}
+
+function isAdapterRetryStatus(value: unknown): boolean {
+  return typeof value === "string" && ADAPTER_RETRY_STATUS.has(value);
 }
 
 /** The membership line an agent subscribe declares, without any cursor/health. */
@@ -962,6 +974,8 @@ interface SubscriptionSupervision {
   inFlight: boolean;
   terminal: boolean;
   noticeOutstanding: boolean;
+  /** When the adapter's own opening/reconnecting row was first seen for this episode. */
+  adapterRetrySince?: number;
 }
 
 interface RestoreProbe {
@@ -1893,8 +1907,9 @@ export class McpRuntime {
    * Stop the dead adapter stream and subscribe again at the hub cursor. The
    * normal path is the mcp_events tool, so the extension keeps owning the
    * replacement stream. A direct protocol session is used only when that tool
-   * is not registered. `stopFirst: false` is for the supervisor, which has
-   * already established that no live adapter row is left to stop.
+   * is not registered. The supervisor passes `stopFirst: true` because an
+   * `opening`/`reconnecting` adapter row may be a half-open retry that would
+   * otherwise duplicate the stream the supervision attempt subscribes.
    */
   async reopenSubscription(
     record: McpSubscriptionRecord,
@@ -1922,11 +1937,10 @@ export class McpRuntime {
       cursor === null || cursor === undefined ? fallback : hasPosition(cursor) ? cursor : null;
     logStartFromNow(record, sent);
     if (this.toolNames.includes("mcp_events")) {
-      // The supervisor only reopens a declaration whose adapter row is not
-      // live: the tick skips live rows and the attempt re-checks liveness just
-      // before subscribing. Nothing is left running to stop, and an extra
-      // unsubscribe would make the adapter announce a second termination for a
-      // generation the durable row is already replacing.
+      // The supervisor acts only after its grace window, so an adapter row for
+      // this declaration is either absent or a half-open retry; stopping it
+      // first is what prevents a duplicate stream. A `stopFirst: false` caller
+      // has already stopped the previous generation itself.
       if (options.stopFirst !== false && typeof record.id === "string" && record.id.length > 0) {
         await this.shim
           .callTool("mcp_events", { action: "unsubscribe", subscription_id: record.id })
@@ -2635,7 +2649,7 @@ export class McpRuntime {
         if (this.dropped.has(stableId) || !configured.has(entry.server)) continue;
         const row = this.supervisionRow(entry, stableId, rows);
         const state = this.supervision.get(stableId);
-        if (row !== undefined && isLiveAdapterStatus(row.status)) {
+        if (row !== undefined && isActiveAdapterStatus(row.status)) {
           if (state?.noticeOutstanding === true) {
             this.emitSupervisionRecovery(entry, stableId, state, {
               ...(typeof row.id === "string" ? { id: row.id } : {}),
@@ -2651,20 +2665,42 @@ export class McpRuntime {
               clearTimeout(state.timer);
               state.timer = undefined;
             }
-            // A live row means the adapter still owns a stream for this
-            // declaration, so no attempt may run while it lasts. `active` is
-            // authoritative health and ends the episode. `opening` and
-            // `reconnecting` are the adapter's own retries: the episode keeps
-            // the budget it already spent and waits, so the bounded schedule
-            // resumes if that retry dies instead of starting over every tick.
-            if (
-              !state.inFlight &&
-              (row.status === "active" || state.attempts === 0 || state.terminal)
-            ) {
+            // `active` is authoritative health and ends the episode. A pending
+            // attempt still owns the row until it settles, so it is not deleted.
+            if (!state.inFlight) {
               this.clearSubscriptionReopen(stableId);
               this.supervision.delete(stableId);
             }
           }
+          continue;
+        }
+        if (row !== undefined && isAdapterRetryStatus(row.status)) {
+          // The adapter is retrying the cut stream itself. That is not health: a
+          // server that stays down leaves the row `opening`/`reconnecting`
+          // forever, so the supervisor must still spend its own bounded budget.
+          // One supervision interval of grace lets the adapter's retry land, and
+          // the attempt counter survives these ticks instead of restarting.
+          if (state?.terminal === true) continue;
+          const episode =
+            state ??
+            ({
+              attempts: 0,
+              since: new Date().toISOString(),
+              inFlight: false,
+              terminal: false,
+              noticeOutstanding: false,
+            } satisfies SubscriptionSupervision);
+          if (state === undefined) {
+            this.clearSubscriptionReopen(stableId);
+            this.supervision.set(stableId, episode);
+          }
+          if (episode.inFlight || episode.timer !== undefined) continue;
+          if (episode.attempts === 0) {
+            episode.adapterRetrySince ??= Date.now();
+            if (Date.now() - episode.adapterRetrySince < this.supervisionIntervalMs) continue;
+          }
+          this.clearSubscriptionReopen(stableId);
+          this.scheduleSupervisionAttempt(stableId, episode);
           continue;
         }
         if (state?.inFlight === true || state?.terminal === true || state?.timer !== undefined) {
@@ -2699,6 +2735,7 @@ export class McpRuntime {
       state.attempts = 0;
       state.lastReason = undefined;
       state.terminal = false;
+      state.adapterRetrySince = undefined;
       // An outstanding terminal notice belongs to the episode that reload is
       // resetting. The next healthy reopen is still exactly one recovery.
     }
@@ -2755,11 +2792,14 @@ export class McpRuntime {
   }
 
   /**
-   * True while the adapter lists a live stream for this declaration. A tick can
-   * see a declaration dead and the adapter can reconnect while that backoff
-   * runs; subscribing then would leave two streams owning one declaration.
+   * True while the adapter reports an `active` stream for this declaration. A
+   * tick can see a declaration dead and the adapter can finish its own
+   * reconnect while the supervision backoff runs; subscribing over that stream
+   * would leave two streams owning one declaration. `opening`/`reconnecting`
+   * do not count: those are the adapter's retries, and the supervised attempt
+   * stops that half-open row before subscribing its own stream.
    */
-  private async supervisedRowIsLive(stableId: string): Promise<boolean> {
+  private async supervisedRowIsActive(stableId: string): Promise<boolean> {
     const entry = this.declaredFor(stableId);
     if (entry === undefined || !this.toolNames.includes("mcp_events")) return false;
     try {
@@ -2769,7 +2809,7 @@ export class McpRuntime {
       const listed = details?.subscriptions;
       if (!Array.isArray(listed)) return false;
       const row = this.supervisionRow(entry, stableId, listed.filter(isRecord));
-      return row !== undefined && isLiveAdapterStatus(row.status);
+      return row !== undefined && isActiveAdapterStatus(row.status);
     } catch {
       return false;
     }
@@ -2804,10 +2844,10 @@ export class McpRuntime {
     if (this.restoringAll || this.restoring.size > 0 || this.reloading !== undefined) {
       return;
     }
-    // Re-check liveness immediately before subscribing: a live row is the
-    // adapter's own stream for this declaration, and a second subscribe on top
-    // of it would duplicate the stream this runtime is supposed to own.
-    if (await this.supervisedRowIsLive(stableId)) return;
+    // Re-check liveness immediately before subscribing: an active row means the
+    // adapter finished its own reconnect for this declaration, and a second
+    // subscribe on top of it would duplicate the stream this runtime owns.
+    if (await this.supervisedRowIsActive(stableId)) return;
     // That await can span a reload or a close, so the guards that make this
     // attempt still ours are read again before the adapter is touched.
     if (this.closed || epoch !== this.supervisionEpoch) return;
@@ -2829,7 +2869,7 @@ export class McpRuntime {
         record,
         undefined,
         () => this.canAdoptSupervised(epoch, stableId, state),
-        { stopFirst: false },
+        { stopFirst: true },
       );
       if (epoch !== this.supervisionEpoch || this.closed) return;
       if (
