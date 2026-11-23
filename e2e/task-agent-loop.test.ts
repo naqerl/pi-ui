@@ -258,14 +258,16 @@ test("no plan request carries a billion-context id, even with a chat identity se
     withoutConversationIdentity(() => {
       scoped.push(bili.currentConversationId());
     });
-    assert.deepEqual(scoped, [undefined]);
+    assert.equal(scoped.length, 1);
+    assert.equal(scoped[0], undefined);
 
     // `current.json` alone must not leak either: that fallback is the whole trap.
     bili.setConversationIdentity(undefined);
     withoutConversationIdentity(() => {
       scoped.push(bili.currentConversationId());
     });
-    assert.deepEqual(scoped, [undefined, undefined]);
+    assert.equal(scoped.length, 2);
+    assert.equal(scoped[1], undefined);
 
     const seen: Array<{ url: string; init?: RequestInit }> = [];
     const underlying = (async (input: unknown, init?: RequestInit) => {
