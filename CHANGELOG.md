@@ -1,4 +1,14 @@
-## 1.12.2
+## 1.13.0
+
+### Added
+
+- A declared MCP event stream that is cut or lost reopens at the cursor of the last event the client actually received, so the gap is one notice instead of a silent hole, and the events already delivered are not replayed. (fars)
+- Declared event streams are supervised: a stream that keeps failing is retried after 5s, 10s, 20s, 40s and 60s under one shared budget, then shown as one `stalled` row with one notice naming the server, the stream and the failure; a reload restarts the episode and speaks one recovery notice, and a terminal stream is never retried again. (fars)
+- `/fullscreen` opens the task body at the page width on desktop, and the command is offered in the composer palette beside the other actions. (f6pk)
+- The composer has a slash-command palette over the task's own commands, and Remove is offered in every task state instead of only on a draft. (uwna)
+- A task that starts working sends one "Task started" push, coalesced with the existing burst rules so a start-and-done burst still rings once. (ariz)
+- Tasks show and enforce their "Depends on" relation: every task tool prints `depends-on=`, `task_depends` replaces an existing task's dependency list with cycle paths in its 409, and `task_working` refuses a pending dependency before writing. (ez3w)
+- Task cards label a plan draft as Planning or Waits approval, so a draft that is still being written is not mistaken for one that is ready. (kjrq)
 
 ### Changed
 
@@ -7,11 +17,14 @@
 - A model request that was in flight when the host died is no longer resent on open: the attempt is charged to `settings.retry`, and with no retry left the run ends with `pi.live.runFailure` reason `interrupted` instead of being resumed.
 - A task that hits `settings.restartLimit` now ends instead of parking, surfacing as a tool error result, a compaction failure, a run failure reason `restart_limit`, or a `task_interrupted` report.
 
+### Fixed
+
+- A cold start shows one loading card instead of a skeleton that redraws the transcript as it hydrates. (6scm)
+- A finished background job renders as one chip and one activity row, not a pair of each. (77b6e9c2)
+- On a phone the dock bar stays on the Plan tab and the plan body scrolls behind it, instead of the body pushing the page. (7d71c00b)
+- One push banner per event: each device keeps a single subscription and the newest wins, so a coalesced burst no longer rings twice. (8c144d2e)
+
 ## 1.12.1
-
-### Added
-
-- Tasks now show and enforce their "Depends on" relation: every task tool prints `depends-on=`, `task_depends` replaces an existing task's dependency list with cycle paths in its 409, `task_working` refuses a pending dependency before writing, and the plan agent reads its project's other tasks and records the ordering it finds. (ez3w)
 
 ### Fixed
 
