@@ -691,6 +691,9 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
       await expect(palette).toBeVisible();
       await expect(palette).toContainText("/remove");
       await expect(palette).toContainText("delete the open task");
+      // A second command now follows /remove in the cycle, so narrow the query
+      // back to Remove before Tab: Enter still deletes, not toggles full screen.
+      await composer.fill("/rem");
       await browser.keyboard.press("Tab");
       await expect(screen.getByTestId("composer-command-remove")).toHaveAttribute(
         "data-active",

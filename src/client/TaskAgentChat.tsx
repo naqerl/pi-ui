@@ -18,6 +18,7 @@ import {
 import { groupTimeline } from "./timeline-groups";
 import { useStickToBottom } from "./use-stick-to-bottom";
 import { useTaskChat } from "./use-task-chat";
+import { useWide } from "./use-wide";
 import { taskStatusWord } from "./working-state";
 
 export function TaskAgentChat({
@@ -26,8 +27,10 @@ export function TaskAgentChat({
   variant = "pane",
   composerTarget = "local",
   active = true,
+  fullscreen = false,
   onShowPlan,
   onRemove,
+  onExitFullscreen,
 }: {
   task: Task;
   projects: string[];
@@ -41,8 +44,12 @@ export function TaskAgentChat({
   onShowPlan?: () => void;
   /** Delete this task from the composer's `/remove` command. */
   onRemove?: () => Promise<string | null> | void;
+  /** The tasks page is showing the body at full width; a local composer toggles it back. */
+  fullscreen?: boolean;
+  onExitFullscreen?: () => void;
 }) {
   const done = task.status === "done";
+  const wide = useWide();
   const chat = useTaskChat(task.id, done);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [activityRun, setActivityRun] = useState<string | null | undefined>(undefined);
@@ -112,13 +119,16 @@ export function TaskAgentChat({
         ? undefined
         : composerCommands({
             task: { id: task.id, title: task.title },
+            desktop: wide,
+            fullscreen,
             remove: async () => {
               if (onRemove === undefined) return null;
               const outcome = await onRemove();
               return typeof outcome === "string" ? outcome : null;
             },
+            toggleFullscreen: () => onExitFullscreen?.(),
           }),
-    [onRemove, task.id, task.title],
+    [fullscreen, onExitFullscreen, onRemove, task.id, task.title, wide],
   );
 
   const session = useMemo((): TaskDockSession | null => {

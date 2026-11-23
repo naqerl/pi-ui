@@ -51,6 +51,9 @@ export interface TaskDetailModel {
   state: TaskState;
   trace: TaskTrace | undefined;
   wide: boolean;
+  /** The body owns the page width; the details bar's cross leaves the mode. */
+  fullscreen: boolean;
+  onExitFullscreen: () => void;
   dockClearance: number;
   /** This task's plan agent currently has a live run. */
   planning: boolean;
@@ -841,7 +844,10 @@ function TitleCard({
 
   if (model.wide) {
     return (
-      <header data-testid="task-header" className={cn("col-start-2 col-span-2 min-w-0", STACK_8)}>
+      <header
+        data-testid="task-header"
+        className={cn("min-w-0", STACK_8, !model.fullscreen && "col-start-2 col-span-2")}
+      >
         <SectionBar
           testId="task-details-bar"
           actions={
@@ -863,9 +869,9 @@ function TitleCard({
               <button
                 type="button"
                 className={SECTION_BAR_ICON_BUTTON}
-                data-testid="task-detail-back"
-                aria-label="Close"
-                onClick={model.onClose}
+                data-testid={model.fullscreen ? "task-detail-fullscreen-exit" : "task-detail-back"}
+                aria-label={model.fullscreen ? "Exit full screen" : "Close"}
+                onClick={model.fullscreen ? model.onExitFullscreen : model.onClose}
               >
                 <CloseIcon size={12} />
               </button>
