@@ -479,6 +479,8 @@ const MCP_SUPERVISE_DEFAULT_MS = 30_000;
 /** Supervisor reopens back off; five failures make the stall terminal. */
 const MCP_SUPERVISE_RETRY_DELAYS_MS = [5_000, 10_000, 20_000, 40_000, 60_000] as const;
 const MCP_SUPERVISE_MAX_ATTEMPTS = MCP_SUPERVISE_RETRY_DELAYS_MS.length;
+/** Let a restored stream's first event batch land before its boot stream is stopped. */
+const MCP_SUPERVISE_BOOT_GRACE_MS = 1_000;
 
 function positiveDurationMs(value: string | undefined): number | undefined {
   if (value === undefined || value.trim().length === 0) return undefined;
@@ -2792,26 +2794,25 @@ export class McpRuntime {
   }
 
   /**
-   * True while the adapter reports an `active` stream for this declaration. A
-   * tick can see a declaration dead and the adapter can finish its own
-   * reconnect while the supervision backoff runs; subscribing over that stream
-   * would leave two streams owning one declaration. `opening`/`reconnecting`
-   * do not count: those are the adapter's retries, and the supervised attempt
-   * stops that half-open row before subscribing its own stream.
+   * The adapter's current row for a declaration. A tick can see a declaration
+   * dead and the adapter can finish its own reconnect while the supervision
+   * backoff runs; subscribing over an active row would leave two streams
+   * owning one declaration. The row's cursor is also fresher than the durable
+   * record when the boot stream has delivered events but the feed has not yet
+   * persisted its batch.
    */
-  private async supervisedRowIsActive(stableId: string): Promise<boolean> {
+  private async supervisedRow(stableId: string): Promise<Record<string, unknown> | undefined> {
     const entry = this.declaredFor(stableId);
-    if (entry === undefined || !this.toolNames.includes("mcp_events")) return false;
+    if (entry === undefined || !this.toolNames.includes("mcp_events")) return undefined;
     try {
       const result = await this.shim.callTool("mcp_events", { action: "list" });
-      if (result.isError === true) return false;
+      if (result.isError === true) return undefined;
       const details = isRecord(result.details) ? result.details : undefined;
       const listed = details?.subscriptions;
-      if (!Array.isArray(listed)) return false;
-      const row = this.supervisionRow(entry, stableId, listed.filter(isRecord));
-      return row !== undefined && isActiveAdapterStatus(row.status);
+      if (!Array.isArray(listed)) return undefined;
+      return this.supervisionRow(entry, stableId, listed.filter(isRecord));
     } catch {
-      return false;
+      return undefined;
     }
   }
 
@@ -2846,8 +2847,12 @@ export class McpRuntime {
     }
     // Re-check liveness immediately before subscribing: an active row means the
     // adapter finished its own reconnect for this declaration, and a second
-    // subscribe on top of it would duplicate the stream this runtime owns.
-    if (await this.supervisedRowIsActive(stableId)) return;
+    // subscribe on top of it would duplicate the stream this runtime owns. The
+    // row may have advanced its cursor even when the durable record still says
+    // null; reopening from that stale record would start the replacement at
+    // now and lose the events the boot stream already delivered.
+    const liveRow = await this.supervisedRow(stableId);
+    if (liveRow !== undefined && isActiveAdapterStatus(liveRow.status)) return;
     // That await can span a reload or a close, so the guards that make this
     // attempt still ours are read again before the adapter is touched.
     if (this.closed || epoch !== this.supervisionEpoch) return;
@@ -2856,6 +2861,15 @@ export class McpRuntime {
     if (this.dropped.has(stableId) || !this.isDeclaredStableId(stableId)) return;
     const record = this.recordForStableId(stableId);
     if (record === undefined) return;
+    // A restored stream starts with no position until its first event batch is
+    // persisted. Stopping it before then would unsubscribe the only stream that
+    // can still deliver those events and reopen from `now`, so give the boot
+    // subscribe a bounded window to settle its position first.
+    if (!hasPosition(record.cursor)) {
+      const waitedMs = Date.now() - Date.parse(state.since);
+      const settleMs = Math.max(this.supervisionIntervalMs, MCP_SUPERVISE_BOOT_GRACE_MS);
+      if (!Number.isFinite(waitedMs) || waitedMs < settleMs) return;
+    }
     const key = recordKey(record);
     if (this.restoring.has(key) || this.reopenInFlight.has(stableId)) return;
     this.clearSubscriptionReopen(stableId);
@@ -2865,9 +2879,15 @@ export class McpRuntime {
     this.terminalDuringReopen.delete(stableId);
     this.reviveAdapter(stableId);
     try {
+      const adapterCursor =
+        !hasPosition(record.cursor) &&
+        typeof liveRow?.cursor === "string" &&
+        hasPosition(liveRow.cursor)
+          ? liveRow.cursor
+          : undefined;
       const reopened = await this.reopenSubscription(
         record,
-        undefined,
+        adapterCursor,
         () => this.canAdoptSupervised(epoch, stableId, state),
         { stopFirst: true },
       );
