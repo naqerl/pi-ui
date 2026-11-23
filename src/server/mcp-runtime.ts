@@ -465,14 +465,59 @@ function webAccessServer(agentDir: string): HostManagedMcpServer | undefined {
 }
 
 const LIVE_ADAPTER_STATUS = new Set(["opening", "active", "reconnecting"]);
+/** Only `active` is the adapter's assertion that it owns a working stream. */
+const ACTIVE_ADAPTER_STATUS = "active";
+/** `opening`/`reconnecting` are the adapter's own retries against a server that may stay down. */
+const ADAPTER_RETRY_STATUS = new Set(["opening", "reconnecting"]);
 /** A declared stream that ended is reopened; a cancellation is not. */
 const TERMINAL_SUBSCRIPTION_STATUS = new Set(["ended", "failed", "stopped"]);
 /** Bounded reopens: 1s, 2s, 5s, then 15s for the final attempts. */
 const SUBSCRIPTION_REOPEN_DELAYS_MS = [1_000, 2_000, 5_000, 15_000] as const;
 const MAX_SUBSCRIPTION_REOPEN_ATTEMPTS = 5;
+/** The supervisor compares declarations with the adapter's own list this often. */
+const MCP_SUPERVISE_DEFAULT_MS = 30_000;
+/** Supervisor reopens back off; five failures make the stall terminal. */
+const MCP_SUPERVISE_RETRY_DELAYS_MS = [5_000, 10_000, 20_000, 40_000, 60_000] as const;
+const MCP_SUPERVISE_MAX_ATTEMPTS = MCP_SUPERVISE_RETRY_DELAYS_MS.length;
+/** Let a restored stream's first event batch land before its boot stream is stopped. */
+const MCP_SUPERVISE_BOOT_GRACE_MS = 1_000;
+
+function positiveDurationMs(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim().length === 0) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
+}
+
+function superviseRetryDelays(): readonly number[] {
+  const raw = process.env.PI_UI_MCP_SUPERVISE_RETRY_MS;
+  if (raw === undefined) return MCP_SUPERVISE_RETRY_DELAYS_MS;
+  const parsed = raw
+    .split(",")
+    .map((part) => positiveDurationMs(part))
+    .filter((part): part is number => part !== undefined);
+  return parsed.length > 0 ? parsed : MCP_SUPERVISE_RETRY_DELAYS_MS;
+}
+
+/** A missing stream is not transient: the declaration itself cannot be opened. */
+function isMissingSubscriptionError(error: unknown): boolean {
+  if (isUnknownSubscriptionError(error)) return true;
+  const text = errorText(error);
+  if (/-32023\b/.test(text)) return true;
+  return /(?:not in|missing from)\s+the\s+server\s+catalog|(?:event|stream)\s+[^\n]*\b(?:unknown|not found)\b/i.test(
+    text,
+  );
+}
 
 function isLiveAdapterStatus(value: unknown): boolean {
   return typeof value === "string" && LIVE_ADAPTER_STATUS.has(value);
+}
+
+function isActiveAdapterStatus(value: unknown): boolean {
+  return value === ACTIVE_ADAPTER_STATUS;
+}
+
+function isAdapterRetryStatus(value: unknown): boolean {
+  return typeof value === "string" && ADAPTER_RETRY_STATUS.has(value);
 }
 
 /** The membership line an agent subscribe declares, without any cursor/health. */
@@ -921,6 +966,18 @@ export interface McpRuntimeOptions {
 
 export interface RestoredMcpSubscription extends McpSubscriptionRecord {
   readonly id: string;
+}
+
+interface SubscriptionSupervision {
+  attempts: number;
+  readonly since: string;
+  lastReason?: string;
+  timer?: NodeJS.Timeout;
+  inFlight: boolean;
+  terminal: boolean;
+  noticeOutstanding: boolean;
+  /** When the adapter's own opening/reconnecting row was first seen for this episode. */
+  adapterRetrySince?: number;
 }
 
 interface RestoreProbe {
@@ -1545,6 +1602,15 @@ export class McpRuntime {
   /** Called after a declaration write or reload so the server can broadcast. */
   private subscriptionConfigListener: (() => void) | undefined;
   private readonly restoring = new Set<string>();
+  /** True for the whole restore pass, including its config read and probes. */
+  private restoringAll = false;
+  /** One supervision episode per stable id, kept in-process until boot/reload. */
+  private readonly supervision = new Map<string, SubscriptionSupervision>();
+  private supervisionTimer: NodeJS.Timeout | undefined;
+  private supervisionIntervalMs = MCP_SUPERVISE_DEFAULT_MS;
+  private supervisionRetryDelaysMs: readonly number[] = MCP_SUPERVISE_RETRY_DELAYS_MS;
+  private supervisionTickInFlight = false;
+  private supervisionEpoch = 0;
   /** Stable ids that already announced the backlog they did not replay. */
   private readonly restoreGaps = new Set<string>();
   /** Direct fallback streams, used only when the mcp_events tool is not registered. */
@@ -1674,6 +1740,7 @@ export class McpRuntime {
     await Promise.all([...runtime.channels.values()].map((channel) => channel.initialize()));
 
     await runtime.restoreSubscriptions();
+    runtime.startSubscriptionSupervisor();
     return runtime;
   }
 
@@ -1842,11 +1909,15 @@ export class McpRuntime {
    * Stop the dead adapter stream and subscribe again at the hub cursor. The
    * normal path is the mcp_events tool, so the extension keeps owning the
    * replacement stream. A direct protocol session is used only when that tool
-   * is not registered.
+   * is not registered. The supervisor passes `stopFirst: true` because an
+   * `opening`/`reconnecting` adapter row may be a half-open retry that would
+   * otherwise duplicate the stream the supervision attempt subscribes.
    */
   async reopenSubscription(
     record: McpSubscriptionRecord,
     cursor: string | null | undefined,
+    canAdopt?: () => boolean,
+    options: { readonly stopFirst?: boolean } = {},
   ): Promise<{
     id?: string;
     generation?: string;
@@ -1868,7 +1939,11 @@ export class McpRuntime {
       cursor === null || cursor === undefined ? fallback : hasPosition(cursor) ? cursor : null;
     logStartFromNow(record, sent);
     if (this.toolNames.includes("mcp_events")) {
-      if (record.id !== null && record.id !== undefined && record.id.length > 0) {
+      // The supervisor acts only after its grace window, so an adapter row for
+      // this declaration is either absent or a half-open retry; stopping it
+      // first is what prevents a duplicate stream. A `stopFirst: false` caller
+      // has already stopped the previous generation itself.
+      if (options.stopFirst !== false && typeof record.id === "string" && record.id.length > 0) {
         await this.shim
           .callTool("mcp_events", { action: "unsubscribe", subscription_id: record.id })
           .catch(() => {});
@@ -1899,12 +1974,36 @@ export class McpRuntime {
         status: typeof raw.status === "string" ? raw.status : "active",
         ...(typeof raw.endReason === "string" ? { endReason: raw.endReason } : {}),
       };
+      if (canAdopt !== undefined && !canAdopt()) {
+        await this.abandonReopenedSubscription(id);
+        throw new Error("reopen superseded before adoption");
+      }
       this.adoptReopenedSubscription(record, reopened);
       return reopened;
     }
     const reopened = await this.reopenDirect(record, sent);
+    if (canAdopt !== undefined && !canAdopt()) {
+      await this.abandonReopenedSubscription(reopened.id);
+      throw new Error("reopen superseded before adoption");
+    }
     this.adoptReopenedSubscription(record, reopened);
     return reopened;
+  }
+
+  /** Close a replacement stream that a reload made stale before it was adopted. */
+  private async abandonReopenedSubscription(id: string | undefined): Promise<void> {
+    if (id === undefined) return;
+    if (this.toolNames.includes("mcp_events")) {
+      await this.shim
+        .callTool("mcp_events", { action: "unsubscribe", subscription_id: id })
+        .catch(() => {});
+      return;
+    }
+    const direct = this.directSubscriptions.get(id);
+    if (direct === undefined) return;
+    await direct.cancel(id).catch(() => {});
+    direct.close();
+    this.directSubscriptions.delete(id);
   }
 
   /**
@@ -2373,6 +2472,9 @@ export class McpRuntime {
 
   private scheduleSubscriptionReopen(stableId: string): void {
     if (this.closed || this.dropped.has(stableId)) return;
+    // The supervisor owns supervised ids until its episode ends; letting the
+    // transient terminal-status ladder race it would break the one-attempt rule.
+    if (this.supervision.has(stableId)) return;
     if (!this.isDeclaredStableId(stableId)) return;
     if (this.reopenTimers.has(stableId)) return;
     const attempt = this.reopenAttempts.get(stableId) ?? 0;
@@ -2394,8 +2496,18 @@ export class McpRuntime {
     this.reopenAttempts.delete(stableId);
   }
 
+  private clearPendingRestore(stableId: string): void {
+    for (const [key, record] of [...this.pendingRestore]) {
+      if (recordStableId(record) === stableId) {
+        this.pendingRestore.delete(key);
+        this.skipProbeRestores.delete(key);
+      }
+    }
+  }
+
   private async runSubscriptionReopen(stableId: string): Promise<void> {
     if (this.closed || this.dropped.has(stableId)) return;
+    if (this.supervision.has(stableId)) return;
     if (!this.isDeclaredStableId(stableId) || this.reopenInFlight.has(stableId)) return;
     const record = this.recordForStableId(stableId);
     if (record === undefined) return;
@@ -2465,6 +2577,531 @@ export class McpRuntime {
     await this.subscriptionStore?.cancel(stableId).catch(() => {});
     this.liveIdCancelled?.(stableId);
     console.warn(`mcp: dropped subscription ${record.server}/${record.name}: ${reason}`);
+  }
+
+  /**
+   * Watch declared streams against the adapter's own live list. The adapter can
+   * silently forget a subscription (for example after a session shutdown), so
+   * the declaration file is the membership truth and `mcp_events list` is the
+   * liveness truth. Every reopen goes through `reopenSubscription`, which uses
+   * the mediated connection the adapter already owns for that server.
+   */
+  startSubscriptionSupervisor(): void {
+    if (this.closed || this.supervisionTimer !== undefined) return;
+    this.supervisionIntervalMs =
+      positiveDurationMs(process.env.PI_UI_MCP_SUPERVISE_MS) ?? MCP_SUPERVISE_DEFAULT_MS;
+    this.supervisionRetryDelaysMs = superviseRetryDelays();
+    const timer = setInterval(() => {
+      void this.superviseSubscriptions();
+    }, this.supervisionIntervalMs);
+    timer.unref();
+    this.supervisionTimer = timer;
+  }
+
+  /** One comparison pass. Exposed so tests can drive it without real timers. */
+  async superviseSubscriptions(): Promise<void> {
+    if (
+      this.closed ||
+      this.supervisionTickInFlight ||
+      this.restoringAll ||
+      this.restoring.size > 0 ||
+      this.reloading !== undefined
+    ) {
+      return;
+    }
+    // Without the events tool there is no truth to compare against. Skipping
+    // must not spend an attempt: the next tick can still supervise.
+    if (!this.toolNames.includes("mcp_events")) return;
+    const config = this.subscriptionConfig;
+    if (config === undefined || config.error !== undefined || config.entries.length === 0) return;
+    const declared = new Set(
+      config.entries.map((entry) => deriveStableId(entry.server, entry.name, entry.arguments)),
+    );
+    for (const [stableId, state] of [...this.supervision]) {
+      if (declared.has(stableId)) continue;
+      if (state.timer !== undefined) clearTimeout(state.timer);
+      this.supervision.delete(stableId);
+    }
+    this.supervisionTickInFlight = true;
+    const epoch = this.supervisionEpoch;
+    try {
+      let result: AgentToolResult;
+      try {
+        result = await this.shim.callTool("mcp_events", { action: "list" });
+      } catch {
+        return;
+      }
+      if (
+        this.closed ||
+        result.isError === true ||
+        epoch !== this.supervisionEpoch ||
+        this.restoringAll ||
+        this.reloading !== undefined
+      ) {
+        return;
+      }
+      const details = isRecord(result.details) ? result.details : undefined;
+      if (details === undefined) return;
+      const listed = details.subscriptions;
+      if (!Array.isArray(listed)) return;
+      const rows = listed.filter(isRecord);
+      const configured = new Set(this.currentNames);
+      for (const entry of config.entries) {
+        const stableId = deriveStableId(entry.server, entry.name, entry.arguments);
+        if (this.dropped.has(stableId) || !configured.has(entry.server)) continue;
+        const row = this.supervisionRow(entry, stableId, rows);
+        const state = this.supervision.get(stableId);
+        if (row !== undefined && isActiveAdapterStatus(row.status)) {
+          if (state?.noticeOutstanding === true) {
+            this.emitSupervisionRecovery(entry, stableId, state, {
+              ...(typeof row.id === "string" ? { id: row.id } : {}),
+              ...(typeof row.cursor === "string" || row.cursor === null
+                ? { cursor: row.cursor }
+                : {}),
+              ...(typeof row.status === "string" ? { status: row.status } : {}),
+            });
+            state.noticeOutstanding = false;
+          }
+          if (state !== undefined) {
+            if (state.timer !== undefined) {
+              clearTimeout(state.timer);
+              state.timer = undefined;
+            }
+            // `active` is authoritative health and ends the episode. A pending
+            // attempt still owns the row until it settles, so it is not deleted.
+            if (!state.inFlight) {
+              this.clearSubscriptionReopen(stableId);
+              this.supervision.delete(stableId);
+            }
+          }
+          continue;
+        }
+        if (row !== undefined && isAdapterRetryStatus(row.status)) {
+          // The adapter is retrying the cut stream itself. That is not health: a
+          // server that stays down leaves the row `opening`/`reconnecting`
+          // forever, so the supervisor must still spend its own bounded budget.
+          // One supervision interval of grace lets the adapter's retry land, and
+          // the attempt counter survives these ticks instead of restarting.
+          if (state?.terminal === true) continue;
+          const episode =
+            state ??
+            ({
+              attempts: 0,
+              since: new Date().toISOString(),
+              inFlight: false,
+              terminal: false,
+              noticeOutstanding: false,
+            } satisfies SubscriptionSupervision);
+          if (state === undefined) {
+            this.clearSubscriptionReopen(stableId);
+            this.supervision.set(stableId, episode);
+          }
+          if (episode.inFlight || episode.timer !== undefined) continue;
+          if (episode.attempts === 0) {
+            episode.adapterRetrySince ??= Date.now();
+            if (Date.now() - episode.adapterRetrySince < this.supervisionIntervalMs) continue;
+          }
+          this.clearSubscriptionReopen(stableId);
+          this.scheduleSupervisionAttempt(stableId, episode);
+          continue;
+        }
+        if (state?.inFlight === true || state?.terminal === true || state?.timer !== undefined) {
+          continue;
+        }
+        const episode =
+          state ??
+          ({
+            attempts: 0,
+            since: new Date().toISOString(),
+            inFlight: false,
+            terminal: false,
+            noticeOutstanding: false,
+          } satisfies SubscriptionSupervision);
+        // Once an episode owns this stable id, its bounded schedule replaces the
+        // transient terminal-status ladder so the two cannot race.
+        this.clearSubscriptionReopen(stableId);
+        this.supervision.set(stableId, episode);
+        this.scheduleSupervisionAttempt(stableId, episode);
+      }
+    } finally {
+      this.supervisionTickInFlight = false;
+    }
+  }
+
+  private resetSupervisionEpisodes(): void {
+    this.supervisionEpoch += 1;
+    for (const [stableId, state] of this.supervision) {
+      if (state.timer !== undefined) clearTimeout(state.timer);
+      this.clearSubscriptionReopen(stableId);
+      state.timer = undefined;
+      state.attempts = 0;
+      state.lastReason = undefined;
+      state.terminal = false;
+      state.adapterRetrySince = undefined;
+      // An outstanding terminal notice belongs to the episode that reload is
+      // resetting. The next healthy reopen is still exactly one recovery.
+    }
+  }
+
+  private supervisionRow(
+    entry: DeclaredSubscription,
+    stableId: string,
+    rows: readonly Record<string, unknown>[],
+  ): Record<string, unknown> | undefined {
+    const sameName = (this.subscriptionConfig?.entries ?? []).filter(
+      (candidate) => candidate.server === entry.server && candidate.name === entry.name,
+    ).length;
+    const matches = rows.filter((row) => {
+      const rowStableId =
+        typeof row.stableId === "string"
+          ? row.stableId
+          : typeof row.stable_id === "string"
+            ? row.stable_id
+            : undefined;
+      if (rowStableId === stableId) return true;
+      const id = typeof row.id === "string" ? row.id : undefined;
+      if (id !== undefined && this.adapterStableIds.get(id) === stableId) return true;
+      if (row.server !== entry.server || row.name !== entry.name) return false;
+      if (isRecord(row.arguments)) {
+        return deriveStableId(entry.server, entry.name, row.arguments) === stableId;
+      }
+      // Older list rows omit arguments. When the name is unambiguous that is
+      // still the same declaration; a second argument set would not be.
+      return sameName === 1;
+    });
+    return matches.find((row) => isLiveAdapterStatus(row.status)) ?? matches[0];
+  }
+
+  private canAdoptSupervised(
+    epoch: number,
+    stableId: string,
+    state: SubscriptionSupervision,
+  ): boolean {
+    return (
+      !this.closed &&
+      epoch === this.supervisionEpoch &&
+      this.supervision.get(stableId) === state &&
+      this.isDeclaredStableId(stableId)
+    );
+  }
+
+  /** The declaration this stable id belongs to, when it is still configured. */
+  private declaredFor(stableId: string): DeclaredSubscription | undefined {
+    return (this.subscriptionConfig?.entries ?? []).find(
+      (candidate) =>
+        deriveStableId(candidate.server, candidate.name, candidate.arguments) === stableId,
+    );
+  }
+
+  /**
+   * The adapter's current row for a declaration. A tick can see a declaration
+   * dead and the adapter can finish its own reconnect while the supervision
+   * backoff runs; subscribing over an active row would leave two streams
+   * owning one declaration. The row's cursor is also fresher than the durable
+   * record when the boot stream has delivered events but the feed has not yet
+   * persisted its batch.
+   */
+  private async supervisedRow(stableId: string): Promise<Record<string, unknown> | undefined> {
+    const entry = this.declaredFor(stableId);
+    if (entry === undefined || !this.toolNames.includes("mcp_events")) return undefined;
+    try {
+      const result = await this.shim.callTool("mcp_events", { action: "list" });
+      if (result.isError === true) return undefined;
+      const details = isRecord(result.details) ? result.details : undefined;
+      const listed = details?.subscriptions;
+      if (!Array.isArray(listed)) return undefined;
+      return this.supervisionRow(entry, stableId, listed.filter(isRecord));
+    } catch {
+      return undefined;
+    }
+  }
+
+  private scheduleSupervisionAttempt(stableId: string, state: SubscriptionSupervision): void {
+    if (this.closed || state.terminal || state.timer !== undefined) return;
+    if (state.attempts >= MCP_SUPERVISE_MAX_ATTEMPTS) return;
+    const index = Math.min(state.attempts, this.supervisionRetryDelaysMs.length - 1);
+    const delay = this.supervisionRetryDelaysMs[index] ?? 60_000;
+    const epoch = this.supervisionEpoch;
+    const timer = setTimeout(() => {
+      state.timer = undefined;
+      void this.runSupervisionAttempt(stableId, state, epoch);
+    }, delay);
+    timer.unref();
+    state.timer = timer;
+  }
+
+  private async runSupervisionAttempt(
+    stableId: string,
+    state: SubscriptionSupervision,
+    epoch: number,
+  ): Promise<void> {
+    if (this.closed || epoch !== this.supervisionEpoch) return;
+    if (this.supervision.get(stableId) !== state) return;
+    if (state.terminal || state.inFlight) return;
+    if (this.dropped.has(stableId) || !this.isDeclaredStableId(stableId)) return;
+    // An unavailable events tool is not evidence against the stream. Return
+    // without counting; the next supervisor tick schedules the same attempt.
+    if (!this.toolNames.includes("mcp_events")) return;
+    if (this.restoringAll || this.restoring.size > 0 || this.reloading !== undefined) {
+      return;
+    }
+    // Re-check liveness immediately before subscribing: an active row means the
+    // adapter finished its own reconnect for this declaration, and a second
+    // subscribe on top of it would duplicate the stream this runtime owns. The
+    // row may have advanced its cursor even when the durable record still says
+    // null; reopening from that stale record would start the replacement at
+    // now and lose the events the boot stream already delivered.
+    const liveRow = await this.supervisedRow(stableId);
+    if (liveRow !== undefined && isActiveAdapterStatus(liveRow.status)) return;
+    // That await can span a reload or a close, so the guards that make this
+    // attempt still ours are read again before the adapter is touched.
+    if (this.closed || epoch !== this.supervisionEpoch) return;
+    if (this.supervision.get(stableId) !== state) return;
+    if (state.terminal || state.inFlight) return;
+    if (this.dropped.has(stableId) || !this.isDeclaredStableId(stableId)) return;
+    const record = this.recordForStableId(stableId);
+    if (record === undefined) return;
+    // A restored stream starts with no position until its first event batch is
+    // persisted. Stopping it before then would unsubscribe the only stream that
+    // can still deliver those events and reopen from `now`, so give the boot
+    // subscribe a bounded window to settle its position first.
+    if (!hasPosition(record.cursor)) {
+      const waitedMs = Date.now() - Date.parse(state.since);
+      const settleMs = Math.max(this.supervisionIntervalMs, MCP_SUPERVISE_BOOT_GRACE_MS);
+      if (!Number.isFinite(waitedMs) || waitedMs < settleMs) return;
+    }
+    const key = recordKey(record);
+    if (this.restoring.has(key) || this.reopenInFlight.has(stableId)) return;
+    this.clearSubscriptionReopen(stableId);
+    state.inFlight = true;
+    this.restoring.add(key);
+    this.reopenInFlight.add(stableId);
+    this.terminalDuringReopen.delete(stableId);
+    this.reviveAdapter(stableId);
+    try {
+      const adapterCursor =
+        !hasPosition(record.cursor) &&
+        typeof liveRow?.cursor === "string" &&
+        hasPosition(liveRow.cursor)
+          ? liveRow.cursor
+          : undefined;
+      const reopened = await this.reopenSubscription(
+        record,
+        adapterCursor,
+        () => this.canAdoptSupervised(epoch, stableId, state),
+        { stopFirst: true },
+      );
+      if (epoch !== this.supervisionEpoch || this.closed) return;
+      if (
+        TERMINAL_SUBSCRIPTION_STATUS.has(reopened.status) ||
+        this.terminalDuringReopen.delete(stableId)
+      ) {
+        await this.recordSupervisionFailure(
+          record,
+          stableId,
+          state,
+          reopened.endReason ?? `subscription reported ${reopened.status}`,
+          epoch,
+        );
+        return;
+      }
+      state.attempts = 0;
+      state.terminal = false;
+      state.lastReason = undefined;
+      await this.markSupervisionRecovered(record, stableId, reopened);
+      if (state.noticeOutstanding) {
+        this.emitSupervisionRecovery(record, stableId, state, {
+          id: reopened.id,
+          cursor: reopened.cursor,
+          status: reopened.status,
+        });
+        state.noticeOutstanding = false;
+      }
+      console.log(
+        `mcp: supervised subscription ${record.server}/${record.name} at ${
+          reopened.cursor ?? "null"
+        }`,
+      );
+    } catch (error) {
+      if (!this.canAdoptSupervised(epoch, stableId, state)) return;
+      await this.recordSupervisionFailure(record, stableId, state, errorText(error), epoch);
+    } finally {
+      state.inFlight = false;
+      this.restoring.delete(key);
+      this.reopenInFlight.delete(stableId);
+      this.terminalDuringReopen.delete(stableId);
+      if (
+        !state.terminal &&
+        !state.noticeOutstanding &&
+        state.timer === undefined &&
+        state.attempts === 0 &&
+        this.supervision.get(stableId) === state
+      ) {
+        this.supervision.delete(stableId);
+      }
+    }
+  }
+
+  private async recordSupervisionFailure(
+    record: McpSubscriptionRecord,
+    stableId: string,
+    state: SubscriptionSupervision,
+    reason: string,
+    epoch: number,
+  ): Promise<void> {
+    if (epoch !== this.supervisionEpoch) return;
+    state.attempts += 1;
+    state.lastReason = reason;
+    if (state.attempts < MCP_SUPERVISE_MAX_ATTEMPTS && !isMissingSubscriptionError(reason)) {
+      this.scheduleSupervisionAttempt(stableId, state);
+      return;
+    }
+    state.terminal = true;
+    if (state.timer !== undefined) clearTimeout(state.timer);
+    state.timer = undefined;
+    await this.markSupervisionStalled(record, stableId, state, reason);
+    if (!state.noticeOutstanding) {
+      this.emitSupervisionTerminal(record, stableId, state, reason);
+      state.noticeOutstanding = true;
+    }
+    console.warn(
+      `mcp: supervised subscription ${record.server}/${record.name} is stalled after ${state.attempts} attempt(s): ${reason}`,
+    );
+  }
+
+  private async markSupervisionStalled(
+    record: McpSubscriptionRecord,
+    stableId: string,
+    state: SubscriptionSupervision,
+    reason: string,
+  ): Promise<void> {
+    const saved = this.subscriptionStore?.findByStableId(stableId);
+    const updatedAt = new Date().toISOString();
+    const stalled: McpSubscriptionRecord = {
+      ...(saved ?? record),
+      stableId,
+      cursor: saved?.cursor ?? record.cursor,
+      status: "failed",
+      state: "stalled",
+      enabled: false,
+      recoveryFailures: state.attempts,
+      recoveryPending: false,
+      lastError: reason,
+      lastErrorAt: updatedAt,
+      endReason: reason,
+      updatedAt,
+    };
+    this.declaredLive.delete(stableId);
+    this.clearPendingRestore(stableId);
+    for (const [id, entry] of [...this.restored]) {
+      if (recordStableId(entry) === stableId) this.restored.set(id, { ...entry, ...stalled });
+    }
+    await this.subscriptionStore?.record(stalled).catch(() => {});
+  }
+
+  private async markSupervisionRecovered(
+    record: McpSubscriptionRecord,
+    stableId: string,
+    reopened: { id?: string; cursor: string | null; status: string },
+  ): Promise<void> {
+    const saved = this.subscriptionStore?.findByStableId(stableId);
+    const recovered: McpSubscriptionRecord = {
+      ...(saved ?? record),
+      stableId,
+      ...(reopened.id === undefined ? {} : { id: reopened.id }),
+      cursor: saved?.cursor ?? reopened.cursor,
+      status: reopened.status,
+      state: "active",
+      enabled: true,
+      recoveryFailures: 0,
+      recoveryPending: false,
+      lastError: undefined,
+      lastErrorAt: undefined,
+      endReason: undefined,
+      updatedAt: new Date().toISOString(),
+    };
+    this.clearPendingRestore(stableId);
+    for (const [id, entry] of [...this.restored]) {
+      if (recordStableId(entry) === stableId) this.restored.set(id, { ...entry, ...recovered });
+    }
+    await this.subscriptionStore?.record(recovered).catch(() => {});
+  }
+
+  private emitSupervisionTerminal(
+    record: McpSubscriptionRecord,
+    stableId: string,
+    state: SubscriptionSupervision,
+    reason: string,
+  ): void {
+    const id = this.supervisionAdapterId(record, stableId);
+    const text = `${record.server}/${record.name} is stalled: ${reason} (since ${state.since})`;
+    this.notifyChannel(text, {
+      server: record.server,
+      name: record.name,
+      stableId,
+      reason,
+      since: state.since,
+      subscriptions: [
+        {
+          ...(id === undefined ? {} : { id }),
+          stableId,
+          server: record.server,
+          name: record.name,
+          status: "failed",
+          state: "stalled",
+          reason,
+          since: state.since,
+        },
+      ],
+    });
+  }
+
+  private emitSupervisionRecovery(
+    entry: Pick<McpSubscriptionRecord, "server" | "name">,
+    stableId: string,
+    state: SubscriptionSupervision,
+    reopened: { id?: string; cursor?: string | null; status?: string },
+  ): void {
+    const id = reopened.id ?? this.supervisionAdapterId(entry, stableId);
+    const text = `${entry.server}/${entry.name} is active again at ${
+      reopened.cursor ?? "now"
+    } (recovered after stall since ${state.since})`;
+    this.notifyChannel(text, {
+      server: entry.server,
+      name: entry.name,
+      stableId,
+      cursor: reopened.cursor ?? null,
+      since: state.since,
+      recovered: true,
+      subscriptions: [
+        {
+          ...(id === undefined ? {} : { id }),
+          stableId,
+          server: entry.server,
+          name: entry.name,
+          status: "active",
+          state: "active",
+          cursor: reopened.cursor ?? null,
+          since: state.since,
+        },
+      ],
+    });
+  }
+
+  private supervisionAdapterId(
+    record: Pick<McpSubscriptionRecord, "server" | "name"> & { readonly id?: string | null },
+    stableId: string,
+  ): string | undefined {
+    const saved = this.subscriptionStore?.findByStableId(stableId);
+    if (typeof saved?.id === "string" && saved.id.length > 0) return saved.id;
+    if (typeof record.id === "string" && record.id.length > 0) return record.id;
+    for (const [id, entry] of this.restored) {
+      if (recordStableId(entry) === stableId) return id;
+    }
+    for (const [id, mapped] of this.adapterStableIds) {
+      if (mapped === stableId) return id;
+    }
+    return undefined;
   }
 
   /** Broadcast after a declaration write, once the feed exists. */
@@ -2575,6 +3212,17 @@ export class McpRuntime {
    * the server answers.
    */
   async restoreSubscriptions(): Promise<RestoredMcpSubscription[]> {
+    if (this.restoringAll) return this.restoredSubscriptions;
+    this.restoringAll = true;
+    try {
+      return await this.restoreSubscriptionsInner();
+    } finally {
+      this.restoringAll = false;
+    }
+  }
+
+  private async restoreSubscriptionsInner(): Promise<RestoredMcpSubscription[]> {
+    this.resetSupervisionEpisodes();
     const config = await this.refreshSubscriptionConfig();
     if (config.error !== undefined) {
       console.warn(`mcp: ${config.error}; live event streams kept`);
@@ -2928,7 +3576,16 @@ export class McpRuntime {
   private async restorePendingFor(server: string): Promise<void> {
     for (const record of [...this.pendingRestore.values()]) {
       if (record.server !== server) continue;
-      if (this.isSubscriptionDropped(recordStableId(record))) {
+      const stableId = recordStableId(record);
+      const supervised = this.supervision.get(stableId);
+      if (supervised !== undefined) {
+        // The supervisor owns this declaration. A terminal episode may never
+        // be revived by a boot-deferred restore; a live episode will reopen it
+        // on its own bounded schedule.
+        if (supervised.terminal) this.clearPendingRestore(stableId);
+        continue;
+      }
+      if (this.isSubscriptionDropped(stableId)) {
         this.pendingRestore.delete(recordKey(record));
         continue;
       }
@@ -3326,6 +3983,14 @@ export class McpRuntime {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    if (this.supervisionTimer !== undefined) {
+      clearInterval(this.supervisionTimer);
+      this.supervisionTimer = undefined;
+    }
+    for (const state of this.supervision.values()) {
+      if (state.timer !== undefined) clearTimeout(state.timer);
+    }
+    this.supervision.clear();
     for (const timer of this.reopenTimers.values()) clearTimeout(timer);
     this.reopenTimers.clear();
     this.terminalDuringReopen.clear();
