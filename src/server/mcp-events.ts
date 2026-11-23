@@ -517,6 +517,18 @@ function statusAttribution(text: string, details: unknown): { server?: string; n
   return single?.[1] === undefined ? {} : { server: single[1] };
 }
 
+/**
+ * The stable row id for adapter prose that names no tracked subscription. A
+ * colon cannot appear in a real stable id, so this never collides with one.
+ */
+export function unattributedStatusKey(text: string): string | undefined {
+  const attribution = statusAttribution(text, undefined);
+  if (attribution.server === undefined) return undefined;
+  return attribution.name === undefined
+    ? `unattributed:${attribution.server}`
+    : `unattributed:${attribution.server}/${attribution.name}`;
+}
+
 /** The first prose line after the status head, or null for a JSON-only notice. */
 function statusProseLine(text: string): string | null {
   const body = text.startsWith(MCP_STATUS_HEAD) ? text.slice(MCP_STATUS_HEAD.length) : text;
@@ -850,9 +862,29 @@ export class McpEventFeed {
    * active after an escalated outage is the existing recovery notice. Only an
    * episode that crosses the window becomes a model turn.
    */
-  private statusMode(text: string, details: unknown): "deliver" | "chip" | "drop" {
+  private statusMode(
+    text: string,
+    details: unknown,
+    customType?: string,
+  ): "deliver" | "chip" | "drop" {
     const tracked = this.trackedStatusEntries(text, details);
-    if (tracked.length === 0) return "deliver";
+    if (tracked.length === 0) {
+      // Adapter retry chatter with no tracked identity is display history. The
+      // supervisor owns outage escalation, so this frame must not start a turn.
+      // Gap/restore notices and truncation warnings still belong to the model.
+      const gap =
+        customType === "mcp-events-gap" ||
+        (isRecord(details) && details.kind === "restore-gap") ||
+        /\bevents were missed while pi was not running\b/i.test(text);
+      const adapterProse =
+        !gap &&
+        text.startsWith(MCP_STATUS_HEAD) &&
+        !isTruncationWarning(text) &&
+        (customType === undefined ||
+          customType === "mcp-ui-status" ||
+          customType === "mcp-events-status");
+      return adapterProse ? "chip" : "deliver";
+    }
     const now = this.now();
     const observed = tracked.map(({ view, status }) => ({
       view,
@@ -1157,7 +1189,7 @@ export class McpEventFeed {
     }
     // Health observes the same text the user will see, so an escalation stored
     // for the quiet timer can never reintroduce an untracked sibling.
-    const mode = this.statusMode(filtered.text, input.source);
+    const mode = this.statusMode(filtered.text, input.source, customType ?? input.customType);
     // The quiet window only dedupes a model turn. A chip keeps its stable id so
     // a repeated frame updates the same row instead of speaking again.
     if (mode === "deliver" && !this.markDeliveredStatus(filtered.text, input.source, options)) {
