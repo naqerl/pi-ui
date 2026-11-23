@@ -99,11 +99,35 @@ let installed: BillionContextInline | undefined;
  * the parent's, or billion-context could compress the child with the parent's
  * state. The in-process delegate wraps its run in this scope.
  */
-const conversationScope = new AsyncLocalStorage<string>();
+const conversationScope = new AsyncLocalStorage<string | typeof NO_IDENTITY>();
+
+/**
+ * The plan lane compacts with pi-durable, so its requests carry no
+ * billion-context identity at all. A private sentinel is the difference between
+ * "this run was asked for no identity" and "nothing set one": `undefined` in the
+ * scope would fall through to the chat's override or `current.json` and hand the
+ * plan turn the chat's conversation to compress.
+ */
+const NO_IDENTITY = Symbol("pi-ui.no-conversation-identity");
 
 export function withConversationIdentity<T>(conversationId: string | undefined, run: () => T): T {
   if (conversationId === undefined || conversationId.length === 0) return run();
   return conversationScope.run(conversationId, run);
+}
+
+/**
+ * Run a plan-lane submit with no billion-context identity: the fetch wrapper emits
+ * no plugin headers and no plugin model metadata, so the inline engine never sees
+ * the request and cannot inject a compress instruction. The durable compaction
+ * policy is the only thing that bounds a plan conversation.
+ */
+export function withoutConversationIdentity<T>(run: () => T): T {
+  return conversationScope.run(NO_IDENTITY, run);
+}
+
+/** Whether the current async scope is the plan lane's identity-free scope. */
+export function conversationIdentitySuppressed(): boolean {
+  return conversationScope.getStore() === NO_IDENTITY;
 }
 
 /**
@@ -162,11 +186,18 @@ export async function installBillionContextInline(
   // misattribute concurrent conversations. The override is the head-scoped
   // billion-context id; it must not be written into current.json, which is a
   // durable conversation pointer and has to stay a positive integer.
-  const currentConversationId = (): string | undefined =>
-    conversationScope.getStore() ??
-    overrideConversationId ??
-    readConversationId(options.currentPath) ??
-    fallbackConversationId;
+  const currentConversationId = (): string | undefined => {
+    // Read the scope once and narrow it: the sentinel means "no identity for this
+    // run", and it must not fall through to the override or `current.json`.
+    const scoped = conversationScope.getStore();
+    if (scoped === NO_IDENTITY) return undefined;
+    return (
+      scoped ??
+      overrideConversationId ??
+      readConversationId(options.currentPath) ??
+      fallbackConversationId
+    );
+  };
 
   const observed: ObservedRequest[] = [];
   const modelMetadata: { model?: string; contextWindow?: number; maxOutput?: number } = {};
@@ -314,7 +345,10 @@ function createDisabled(hadChain: boolean, currentPath: string): BillionContextI
     hadChain,
     observed: [],
     fetch: globalThis.fetch,
-    currentConversationId: () => overrideConversationId ?? readConversationId(currentPath),
+    currentConversationId: () =>
+      conversationIdentitySuppressed()
+        ? undefined
+        : (overrideConversationId ?? readConversationId(currentPath)),
     setModelMetadata: () => {
       // The engine is disabled, so there is nothing to size.
     },
@@ -378,7 +412,7 @@ async function importPiNativeAndCaptureInlineFetch(): Promise<typeof globalThis.
   return inlineFetch;
 }
 
-function createIdentityFetch(
+export function createIdentityFetch(
   inlineFetch: typeof globalThis.fetch,
   currentConversationId: () => string | undefined,
   observed: ObservedRequest[],
@@ -395,6 +429,10 @@ function createIdentityFetch(
     const inline = url.startsWith(`${BILLION_CONTEXT_INLINE_ORIGIN}/`);
     const model = !inline && isModelApiUrl(url);
     if (!inline && !model) return inlineFetch(input, init);
+
+    // The plan lane owns its context with pi-durable's compaction. Forwarding an
+    // un-stamped request is what keeps the engine out of it entirely.
+    if (conversationIdentitySuppressed()) return inlineFetch(input, init);
 
     const conversationId = currentConversationId();
     const identity: Record<string, string> = {

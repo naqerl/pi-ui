@@ -1,5 +1,14 @@
 ## 1.13.1
 
+### Added
+
+- A plan run stops repeating one tool call: the third identical call warns, the fifth is refused before it runs naming the tool, the count and the tools the plan model can actually call, and the run then ends with a pi-ui reason that says to send a message. A call that ran five seconds or more was a wait or a poll, so it resets the count. (plan-loop)
+- A provider loop guard no longer reaches the operator as its own sentence: the run error and the transcript row both say what pi-ui stopped and how to continue, instead of pointing at a "Settings › Models › Replies" control that pi-ui does not have. (plan-loop)
+
+### Changed
+
+- A plan conversation is bounded by pi-durable's compaction instead of billion-context: the thresholds follow the plan model's context window, the summary replaces only the old prefix, the newest turns stay verbatim, and a failed compaction leaves the log on its old head. No plan request carries a billion-context conversation id — not the task's own, not the chat's, and not `current.json` — so no plan turn is ever asked to call compress. (plan-context)
+
 ### Fixed
 
 - An adapter status line that names no subscription (for example `ntfy-mcp: MCP request stream ended without a final response`) is now a chip keyed by its server instead of a chat turn, so a reconnect no longer wakes the model; gap, restore and truncation notices still reach the conversation. (m2eg)

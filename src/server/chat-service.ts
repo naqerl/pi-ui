@@ -24,6 +24,7 @@ import {
   type ToolSlot,
   UserEntry,
 } from "@earendil-works/pi-durable";
+import { annotateProviderLoopGuard, isProviderLoopGuard } from "../shared/loop-guard.js";
 import { parseMemoryToolDetails } from "../shared/memory.js";
 import {
   boundMcpEventBatch,
@@ -3638,10 +3639,15 @@ export class ChatService {
       cost: number(message.usage?.cost?.total),
     });
     if (message.stopReason === "error") {
-      const errorText =
+      const rawErrorText =
         typeof message.errorMessage === "string" && message.errorMessage.length > 0
           ? message.errorMessage
           : "model error";
+      // pi-ui owns the explanation: the provider's loop guard points at a settings
+      // menu this app does not have, and never says how to continue the chat.
+      const errorText = isProviderLoopGuard(rawErrorText)
+        ? annotateProviderLoopGuard(rawErrorText)
+        : rawErrorText;
       tracker.runFailed("error", errorText);
       // The failed attempt pi-durable commits before retrying is not a finished
       // run; only a failure with no retry in flight is the turn's outcome.
