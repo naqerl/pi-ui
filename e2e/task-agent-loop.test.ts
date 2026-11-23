@@ -24,9 +24,9 @@ import {
   canonicalArguments,
   DurableTaskAgentSession,
   planCompactionPolicy,
-  repetitionFingerprint,
   RepetitionGuard,
   type RepetitionStop,
+  repetitionFingerprint,
   repetitionStopText,
   repetitionWarning,
   TaskAgentManager,
@@ -358,7 +358,7 @@ test("a repeated-call stop ends the plan run with a pi-ui error and a transcript
     conversation as never,
   );
   const guard = new RepetitionGuard();
-  session.useRepetitionGuard(guard);
+  session.attachRepetitionGuard(guard);
 
   await session.send("start the loop");
   assert.equal(session.running(), true);
@@ -599,12 +599,11 @@ test("a scripted plan model loops four times, is stopped by pi-ui, and continues
     leaked.push(url);
     return new Response("{}", { status: 200 });
   };
-  globalThis.fetch = createIdentityFetch(
-    engineFetch,
-    () => "chat-conversation-1",
-    identitySeen,
-    { model: "loop/loop-model", contextWindow: 200_000, maxOutput: 1_024 },
-  );
+  globalThis.fetch = createIdentityFetch(engineFetch, () => "chat-conversation-1", identitySeen, {
+    model: "loop/loop-model",
+    contextWindow: 200_000,
+    maxOutput: 1_024,
+  });
   // Control: outside the plan scope the same wrapper stamps and redirects, so the empty
   // `leaked` asserted after the run cannot pass because the wrapper is inert.
   await withConversationIdentity("chat-conversation-1", () =>
@@ -680,10 +679,14 @@ test("a scripted plan model loops four times, is stopped by pi-ui, and continues
     assert.ok(send !== undefined, "a durable plan session has the shared chat core's send");
     await send("repeat the same call until pi-ui stops you", [], "queue");
 
-    const stopped = await eventually(async () => {
-      const snapshot = await session.snapshot();
-      return (snapshot.runError ?? null) === null ? null : snapshot;
-    }, "the pi-ui repetition stop", 1_500);
+    const stopped = await eventually(
+      async () => {
+        const snapshot = await session.snapshot();
+        return (snapshot.runError ?? null) === null ? null : snapshot;
+      },
+      "the pi-ui repetition stop",
+      1_500,
+    );
 
     assert.equal(stopped.runError?.class, "RunError");
     assert.match(stopped.runError?.message ?? "", /pi-ui stopped this run: bash was called 5/);
@@ -724,13 +727,17 @@ test("a scripted plan model loops four times, is stopped by pi-ui, and continues
     // "Send a message to continue" is true: the same conversation runs again.
     model.answerWithText();
     await send("what now?", [], "queue");
-    const answered = await eventually(async () => {
-      const snapshot = await session.snapshot();
-      return (snapshot.runError ?? null) === null &&
-        snapshot.messages.some((message) => message.text.includes("this is a normal answer"))
-        ? snapshot
-        : null;
-    }, "the continued turn", 1_500);
+    const answered = await eventually(
+      async () => {
+        const snapshot = await session.snapshot();
+        return (snapshot.runError ?? null) === null &&
+          snapshot.messages.some((message) => message.text.includes("this is a normal answer"))
+          ? snapshot
+          : null;
+      },
+      "the continued turn",
+      1_500,
+    );
     assert.equal(answered.run, "idle");
     assert.ok(answered.messages.some((message) => message.text.includes("pi-ui stopped this run")));
   } finally {
@@ -820,13 +827,17 @@ test("a plan conversation that crosses the window compacts with pi-durable", asy
 
     for (let turn = 1; turn <= 6; turn += 1) {
       await send(`QUESTION-${turn} plan the next step`, [], "queue");
-      await eventually(async () => {
-        const snapshot = await session.snapshot();
-        return snapshot.run === "idle" &&
-          snapshot.messages.some((message) => message.text.includes(`QUESTION-${turn}`))
-          ? snapshot
-          : null;
-      }, `turn ${turn}`, 2_000);
+      await eventually(
+        async () => {
+          const snapshot = await session.snapshot();
+          return snapshot.run === "idle" &&
+            snapshot.messages.some((message) => message.text.includes(`QUESTION-${turn}`))
+            ? snapshot
+            : null;
+        },
+        `turn ${turn}`,
+        2_000,
+      );
     }
 
     const snapshot = await session.snapshot();

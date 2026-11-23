@@ -27,10 +27,10 @@ import {
   type LiveState,
   type ModelRef,
   type Submission,
-  ToolTask,
   type ToolExecutionResult,
   type ToolHookCall,
   type ToolRegistration,
+  ToolTask,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -1498,7 +1498,7 @@ export class DurableTaskAgentSession implements TaskAgentSession {
   }
 
   /** Attach this conversation's loop guard and give it the lane's stop hook. */
-  useRepetitionGuard(guard: RepetitionGuard): void {
+  attachRepetitionGuard(guard: RepetitionGuard): void {
     this.repetitionGuard = guard;
     // The guard calls this from inside the refused tool call. It must return
     // immediately: aborting or committing on a busy conversation can wait for the very
@@ -1932,7 +1932,9 @@ export class DurableTaskAgentSession implements TaskAgentSession {
       if (this.repetitionStopped) return;
       if (this.closed) return;
       const errorId = `${this.taskId}:${submission.id}`;
-      const runError = annotateRunError(runErrorFromUnanswered(final.reason, final.detail, errorId));
+      const runError = annotateRunError(
+        runErrorFromUnanswered(final.reason, final.detail, errorId),
+      );
       const cancelledFollowUp = !startsRun && runError === null;
       if (!cancelledFollowUp) {
         if (runError !== null) {
@@ -2888,7 +2890,7 @@ export class TaskAgentManager {
       markerStore,
       imagesInContext,
     );
-    session.useRepetitionGuard(repetitionGuard);
+    session.attachRepetitionGuard(repetitionGuard);
     await session.start();
     return session;
   }
