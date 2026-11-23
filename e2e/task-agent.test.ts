@@ -817,7 +817,13 @@ test("the plan harness opens with the main chat retry policy", () => {
     baseDelayMs: 125,
     maxAgentDelayMs: 750,
   });
-  assert.deepEqual(settings.compaction, { enabled: false });
+  // The plan lane compacts with pi-durable: billion-context is not in its request path.
+  assert.deepEqual(settings.compaction, {
+    enabled: true,
+    reserveTokens: 16_384,
+    keepRecentTokens: 20_000,
+    backgroundTokens: 0,
+  });
 });
 
 test("the plan-mode prompt forbids edits and names the edit_task tool", () => {

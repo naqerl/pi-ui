@@ -21,6 +21,7 @@ import {
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { diagramPartFromDetails, parseDiagramDetails } from "../shared/diagrams.js";
+import { loopGuardText } from "../shared/loop-guard.js";
 import { parseMemoryToolDetails } from "../shared/memory.js";
 import {
   isMcpEventEcho,
@@ -1358,13 +1359,13 @@ export class TranscriptBuilder {
         }
       }
       const visible = text.length > 0 || errorText.length > 0;
-      const echo =
-        visible && isMcpEventEcho(text.length > 0 ? text : errorText, this.latestMcpNoticeText);
+      const shown = text.length > 0 ? text : loopGuardText(errorText);
+      const echo = visible && isMcpEventEcho(shown, this.latestMcpNoticeText);
       if (visible && !echo) {
         this.emit({
           id: `m-${entry.id}`,
           role: "assistant",
-          text: text.length > 0 ? text : errorText,
+          text: shown,
           timestamp: timestampOf(message),
           order: entry.id * 10_000 + 5_000,
           isError: errorText.length > 0,
@@ -1673,6 +1674,9 @@ export function assistantMessageFromEntry(entry: EntryRecord): ChatMessage | nul
       ? message.errorMessage
       : "";
   if (text.length === 0 && errorText.length === 0) return null;
+  // A provider's loop guard names a settings control pi-ui does not have; the row says
+  // what pi-ui did and how to continue instead.
+  const shown = text.length > 0 ? text : loopGuardText(errorText);
   const blocks = contentBlocks(message.content);
   const hasThinking = blocks.some(
     (block) =>
@@ -1687,7 +1691,7 @@ export function assistantMessageFromEntry(entry: EntryRecord): ChatMessage | nul
   return {
     id: `m-${entry.id}`,
     role: "assistant",
-    text: text.length > 0 ? text : errorText,
+    text: shown,
     timestamp: timestampOf(message),
     order: entry.id * 10_000 + 5_000,
     isError: errorText.length > 0,

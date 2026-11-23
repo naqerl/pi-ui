@@ -19,18 +19,28 @@ import {
   defineTool,
   type EntryDraft,
   type EntryRecord,
+  type Extension,
   type Harness,
   Harness as HarnessImpl,
   type HarnessSettings,
+  hook,
   type LiveState,
   type ModelRef,
   type Submission,
+  ToolTask,
+  type ToolExecutionResult,
+  type ToolHookCall,
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createCodingTools, createReadTool } from "@earendil-works/pi-durable/tools";
 import { Type } from "typebox";
+import {
+  annotateProviderLoopGuard,
+  isProviderLoopGuard,
+  rephraseLoopGuardMessage,
+} from "../shared/loop-guard.js";
 import { parseProjectToken, projectsOf, sameProject } from "../shared/project.js";
 import { parseTaskQuestions, taskQuestionAnswerPayload } from "../shared/questions.js";
 import { PENDING_QUEUE_ORDER, QUEUE_ENTRY_KIND, queuedNoticeIcon } from "../shared/queue.js";
@@ -53,7 +63,7 @@ import {
   type TaskQuestionSet,
 } from "../shared/types.js";
 import { createTimedBashTool } from "./bash-tool.js";
-import { withConversationIdentity } from "./billion-context.js";
+import { withoutConversationIdentity } from "./billion-context.js";
 import { createJobTools } from "./job-tools.js";
 import type { JobManager } from "./jobs.js";
 import type { MediaStore } from "./media.js";
@@ -66,6 +76,7 @@ import { retrySettings } from "./retry.js";
 import { type RunMarker, RunMarkerStore } from "./run-marker.js";
 import { RunErrorNotifier, type RunErrorPushInput, type RunErrorPushSender } from "./run-push.js";
 import {
+  appendAssistantError,
   buildTranscript,
   JOB_NOTICE_ENTRY_KIND,
   SESSION_CONTEXT,
@@ -127,6 +138,243 @@ export class TaskAgentError extends Error {
     super(message);
     this.name = "TaskAgentError";
   }
+}
+
+// A plan run must not pay for the same tool call forever: the guard below counts
+// identical calls in the plan lane only, warns once, then refuses and stops the run.
+
+/** Identical calls allowed before the result carries a warning. */
+export const REPETITION_WARN_AT = 3;
+/** The identical call that is refused before it runs; the lane then ends the run. */
+export const REPETITION_REFUSE_AT = 5;
+/** A call that took this long was real work — a wait or a poll — not a loop. */
+export const REPETITION_RESET_MS = 5_000;
+
+export interface RepetitionStop {
+  readonly toolName: string;
+  readonly count: number;
+  /** The pi-ui sentence that ends the run and is recorded in the transcript. */
+  readonly message: string;
+}
+
+export interface RepetitionGuardOptions {
+  /**
+   * Called before the refused call is answered, so the owning lane can end its run.
+   * The guard itself never stops a run: it does not know how its lane aborts.
+   */
+  readonly onStop?: (stop: RepetitionStop) => void | Promise<void>;
+  /** Injected clock, for tests that need a five-second call without waiting. */
+  readonly now?: () => number;
+  readonly warnAt?: number;
+  readonly refuseAt?: number;
+  readonly resetAfterMs?: number;
+}
+
+/**
+ * JSON with object keys sorted at every depth, so two calls that differ only in key
+ * order are one fingerprint. Cycles and non-JSON values are rendered instead of
+ * thrown: a fingerprint must never fail a tool call.
+ */
+export function canonicalArguments(value: unknown): string {
+  return JSON.stringify(canonicalValue(value, new Set()));
+}
+
+function canonicalValue(value: unknown, seen: Set<object>): unknown {
+  if (value === null || typeof value !== "object") {
+    if (typeof value === "bigint") return value.toString();
+    if (typeof value === "undefined") return null;
+    if (typeof value === "function") return "[function]";
+    return value;
+  }
+  if (seen.has(value)) return "[circular]";
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) return value.map((item) => canonicalValue(item, seen));
+    const record = value as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(record).sort()) sorted[key] = canonicalValue(record[key], seen);
+    return sorted;
+  } finally {
+    seen.delete(value);
+  }
+}
+
+/** What makes two calls the same: the tool name and its arguments, not their order. */
+export function repetitionFingerprint(toolName: string, args: unknown): string {
+  return `${toolName}\u0000${canonicalArguments(args)}`;
+}
+
+/** Appended to the third identical result, before the call is ever refused. */
+export function repetitionWarning(toolName: string, warnAt = REPETITION_WARN_AT): string {
+  return (
+    `[pi-ui] This is the ${ordinal(warnAt)} identical ${toolName} call in a row. ` +
+    "If the same arguments repeat, pi-ui will refuse the call and stop this run; " +
+    "change the arguments or answer with what you have."
+  );
+}
+
+/** The reason the run stops; it names the tool, the count and the tools that do exist. */
+export function repetitionStopText(
+  toolName: string,
+  count: number,
+  tools: readonly string[],
+): string {
+  const available =
+    tools.length === 0 ? "no other tools are available" : `tools available: ${tools.join(", ")}`;
+  return (
+    `pi-ui stopped this run: ${toolName} was called ${count} times in a row with the same ` +
+    `arguments, so another identical call cannot make progress (${available}). ` +
+    "Send a message to continue."
+  );
+}
+
+function ordinal(value: number): string {
+  const rest = value % 100;
+  if (rest >= 11 && rest <= 13) return `${value}th`;
+  const suffix = value % 10 === 1 ? "st" : value % 10 === 2 ? "nd" : value % 10 === 3 ? "rd" : "th";
+  return `${value}${suffix}`;
+}
+
+/**
+ * One guard per conversation. It remembers the last call, not a log: a different
+ * call, a real wait or a new run all start the count again.
+ *
+ * The counting happens in the harness's own tool hooks rather than in a wrapped
+ * `execute`, because a tool's result may omit `output` and stream it instead
+ * (`bash` does): only the settled result the hook receives carries the retained
+ * text, so only there can a warning be appended without dropping it. A park
+ * passes through the hooks untouched, and a refused call is blocked before it
+ * runs instead of being answered with a fabricated result.
+ */
+export class RepetitionGuard {
+  private availableNames: string[] | undefined;
+  private readonly now: () => number;
+  private readonly warnAt: number;
+  private readonly refuseAt: number;
+  private readonly resetAfterMs: number;
+  private stopHandler: ((stop: RepetitionStop) => void | Promise<void>) | undefined;
+  private fingerprint: string | undefined;
+  private count = 0;
+  private warned = false;
+  private lastDurationMs = 0;
+  private readonly calls = new Map<
+    string,
+    { readonly fingerprint: string; readonly ordinal: number; readonly startedAt: number }
+  >();
+  private readonly blocked = new Set<string>();
+
+  constructor(options: RepetitionGuardOptions = {}) {
+    this.now = options.now ?? Date.now;
+    this.warnAt = options.warnAt ?? REPETITION_WARN_AT;
+    this.refuseAt = options.refuseAt ?? REPETITION_REFUSE_AT;
+    this.resetAfterMs = options.resetAfterMs ?? REPETITION_RESET_MS;
+    this.stopHandler = options.onStop;
+  }
+
+  /**
+   * The extension the plan lane installs: one hook pair on the built-in tool task, so
+   * every model-issued and nested call goes through this guard and nothing else in the
+   * lane changes.
+   */
+  extension(): Extension<ToolRegistration> {
+    return defineExtension({
+      name: "task-agent-repetition-guard",
+      hooks: [
+        hook(ToolTask, {
+          beforeTool: (call) => this.beforeTool(call),
+          afterTool: (call, result) => this.afterTool(call, result),
+        }),
+      ],
+    });
+  }
+
+  /** Late binding: the plan session does not exist yet when its registry does. */
+  setStopHandler(handler: (stop: RepetitionStop) => void | Promise<void>): void {
+    this.stopHandler = handler;
+  }
+
+  /**
+   * The tools the model can actually call. The lane filters the registry down to a plan
+   * tool set, so the installed set is wider than what a plan turn can reach and a
+   * refusal must never advertise a tool the model has never been offered.
+   */
+  setAvailable(names: readonly string[]): void {
+    this.availableNames = [...new Set(names)].sort();
+  }
+
+  /** The refusal's list: the lane's own tool set, or nothing before it is set. */
+  available(): string[] {
+    return this.availableNames ?? [];
+  }
+
+  /** Start every new run from a clean count. */
+  reset(): void {
+    this.fingerprint = undefined;
+    this.count = 0;
+    this.warned = false;
+    this.lastDurationMs = 0;
+    this.calls.clear();
+    this.blocked.clear();
+  }
+
+  /**
+   * Count the call before it runs. A park's call phase runs again, so a call still in
+   * flight is not counted twice; a refused call is blocked here, before any work.
+   */
+  beforeTool(call: ToolHookCall): { block: string } | undefined {
+    if (this.calls.has(call.id)) return undefined;
+    const fingerprint = repetitionFingerprint(call.name, call.arguments);
+    // A call that ran for five seconds was a wait or a poll: it did work, so the next
+    // identical call is the first of a new run, not the third of a loop.
+    if (fingerprint === this.fingerprint && this.lastDurationMs >= this.resetAfterMs) {
+      this.reset();
+    }
+    if (fingerprint === this.fingerprint) {
+      this.count += 1;
+    } else {
+      this.fingerprint = fingerprint;
+      this.count = 1;
+      this.warned = false;
+      this.lastDurationMs = 0;
+    }
+    if (this.count >= this.refuseAt) {
+      const message = repetitionStopText(call.name, this.count, this.available());
+      this.lastDurationMs = 0;
+      this.blocked.add(call.id);
+      void this.stopHandler?.({ toolName: call.name, count: this.count, message });
+      return { block: message };
+    }
+    this.calls.set(call.id, { fingerprint, ordinal: this.count, startedAt: this.now() });
+    return undefined;
+  }
+
+  /** Append the third call's warning to the settled result, keeping its retained output. */
+  afterTool(call: ToolHookCall, result: ToolExecutionResult): ToolExecutionResult | undefined {
+    if (this.blocked.delete(call.id)) return undefined;
+    const pending = this.calls.get(call.id);
+    this.calls.delete(call.id);
+    if (pending === undefined) return undefined;
+    const duration = this.now() - pending.startedAt;
+    if (pending.fingerprint === this.fingerprint) this.lastDurationMs = duration;
+    // A call that took five seconds was real work: it never warns, and the lane's next
+    // identical call starts the count over in `beforeTool`.
+    if (duration >= this.resetAfterMs) return undefined;
+    if (pending.ordinal !== this.warnAt || this.warned) return undefined;
+    this.warned = true;
+    return {
+      ...result,
+      output: [...(result.output ?? []), { type: "text", text: repetitionWarning(call.name) }],
+    };
+  }
+}
+
+/** A provider loop guard must never reach the operator as raw provider text. */
+function annotateRunError(error: RunError | null): RunError | null {
+  if (error === null) return null;
+  const text = `${error.message}\n${error.detail ?? ""}`;
+  if (!isProviderLoopGuard(text)) return error;
+  const annotated = annotateProviderLoopGuard(text);
+  return { ...error, message: annotated, detail: annotated };
 }
 
 export interface TaskAgentChatSnapshot {
@@ -432,16 +680,62 @@ export function derivePlanningTaskIds(
  * without turning user notices into bubbles. Never tool-call lists.
  */
 export function visibleTaskAgentMessages(messages: readonly ChatMessage[]): ChatMessage[] {
-  return messages.filter((message) => {
-    if (message.notice !== undefined && message.role !== "system") return false;
-    return message.role === "user" || message.role === "assistant" || message.role === "system";
-  });
+  return messages
+    .filter((message) => {
+      if (message.notice !== undefined && message.role !== "system") return false;
+      return message.role === "user" || message.role === "assistant" || message.role === "system";
+    })
+    .map(rephraseLoopGuardMessage);
+}
+
+/** Compaction headroom for a plan conversation, in the shape the chat lane already uses. */
+export interface PlanCompactionPolicy {
+  readonly enabled: true;
+  readonly reserveTokens: number;
+  readonly keepRecentTokens: number;
+  readonly backgroundTokens: number;
+}
+
+/** The chat lane's own numbers, used when the plan model's window is unknown. */
+const CHAT_RESERVE_TOKENS = 16_384;
+const CHAT_KEEP_RECENT_TOKENS = 20_000;
+
+/**
+ * The plan lane compacts with pi-durable, never with billion-context. Reserve one
+ * reply's worth of room and keep the newest turns verbatim, both derived from the
+ * plan model's context window so a small window still leaves a usable tail. A
+ * window too small for both keeps whatever room is left rather than a tail that
+ * can never be compacted.
+ */
+export function planCompactionPolicy(contextWindow?: number): PlanCompactionPolicy {
+  const window =
+    typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0
+      ? Math.floor(contextWindow)
+      : undefined;
+  if (window === undefined) {
+    return {
+      enabled: true,
+      reserveTokens: CHAT_RESERVE_TOKENS,
+      keepRecentTokens: CHAT_KEEP_RECENT_TOKENS,
+      backgroundTokens: 0,
+    };
+  }
+  const reserveTokens = Math.max(256, Math.min(CHAT_RESERVE_TOKENS, Math.floor(window / 8)));
+  const keepRecentTokens = Math.max(
+    0,
+    Math.min(CHAT_KEEP_RECENT_TOKENS, Math.floor(window / 4), window - reserveTokens - 256),
+  );
+  return { enabled: true, reserveTokens, keepRecentTokens, backgroundTokens: 0 };
 }
 
 /** The harness policy the plan agent opens with, so retries behave like the main chat. */
-export function taskAgentHarnessSettings(env: NodeJS.ProcessEnv = process.env): HarnessSettings {
+export function taskAgentHarnessSettings(
+  env: NodeJS.ProcessEnv = process.env,
+  contextWindow?: number,
+): HarnessSettings {
   return {
-    compaction: { enabled: false },
+    // The plan lane owns its context here; billion-context is not in this request path.
+    compaction: planCompactionPolicy(contextWindow),
     retry: retrySettings(env),
     steeringMode: "all",
   };
@@ -1006,6 +1300,10 @@ export class DurableTaskAgentSession implements TaskAgentSession {
   private markerWrites: Promise<void> = Promise.resolve();
   /** True while shutting down, so an idle state cannot clear the marker being flushed. */
   private shuttingDown = false;
+  /** This plan conversation's same-call loop guard, reset when a run starts. */
+  private repetitionGuard: RepetitionGuard | undefined;
+  /** True once the guard stopped this run, so a second refusal cannot record twice. */
+  private repetitionStopped = false;
 
   constructor(
     readonly taskId: string,
@@ -1148,6 +1446,8 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     );
     if (startsRun) {
       this.stopRequested = false;
+      this.repetitionGuard?.reset();
+      this.repetitionStopped = false;
       this.setRunState("running", null);
     }
     const notice: QueuedNotice = {
@@ -1190,10 +1490,64 @@ export class DurableTaskAgentSession implements TaskAgentSession {
   }
 
   private identity<T>(run: () => T): T {
-    // The numeric conversation id is unique only inside this task's
-    // sqlite file. billion-context keys sessions process-wide, so stamp a
-    // name that cannot collide with the main chat or another task.
-    return withConversationIdentity(`task-agent:${this.taskId}`, run);
+    // The plan lane compacts with pi-durable. Every model request it makes must be
+    // free of a billion-context identity, or the inline engine would attach this
+    // task's turn to the main chat's conversation and inject its compress
+    // instruction. The sentinel, not `undefined`, is what overrides `current.json`.
+    return withoutConversationIdentity(run);
+  }
+
+  /** Attach this conversation's loop guard and give it the lane's stop hook. */
+  useRepetitionGuard(guard: RepetitionGuard): void {
+    this.repetitionGuard = guard;
+    // The guard calls this from inside the refused tool call. It must return
+    // immediately: aborting or committing on a busy conversation can wait for the very
+    // turn that is calling it, and awaiting that here would deadlock the stop.
+    guard.setStopHandler((stop) => {
+      void this.stopRepeatedCalls(stop).catch((error: unknown) => {
+        console.error(
+          `[task-agent] could not stop the repeated-call run for ${this.taskId}`,
+          error,
+        );
+      });
+    });
+  }
+
+  /**
+   * The repetition guard refused a call, so this run ends here with pi-ui's own reason.
+   * The abort is deliberately not awaited and the reason does not wait on the settle:
+   * a resumed run has no submission to carry it, and a busy conversation would make the
+   * stop wait on its own turn. The abort settles as a silent `aborted`, so the error
+   * written here is the only thing the operator sees.
+   */
+  async stopRepeatedCalls(stop: RepetitionStop): Promise<void> {
+    if (this.closed || this.repetitionStopped) return;
+    this.repetitionStopped = true;
+    this.identity(() => this.conversation.abort(SESSION_CONTEXT)).catch((error: unknown) => {
+      console.error(`[task-agent] could not end the repeated-call run for ${this.taskId}`, error);
+    });
+    const stopError: RunError = {
+      id: `${this.taskId}:repetition:${stop.count}`,
+      class: "RunError",
+      message: stop.message,
+      detail: stop.message,
+      at: new Date().toISOString(),
+    };
+    this.setRunState(this.runState === "running" ? "idle" : this.runState, stopError);
+    await this.announceRunError(stopError);
+    await this.recordRepetitionStop(stop);
+  }
+
+  /** Put the stop in the transcript, so the reason survives a reload or a dismissal. */
+  private async recordRepetitionStop(stop: RepetitionStop): Promise<void> {
+    try {
+      await appendAssistantError(this.conversation, stop.message);
+    } catch (error) {
+      console.error(
+        `[task-agent] could not record the repeated-call stop for ${this.taskId}`,
+        error,
+      );
+    }
   }
 
   async start(): Promise<void> {
@@ -1221,6 +1575,8 @@ export class DurableTaskAgentSession implements TaskAgentSession {
       this.identity(() => this.harness.resume());
       const inspection = await this.harness.inspect(SESSION_CONTEXT);
       if (inspection.tasks.length > 0 || inspection.submissions.length > 0) {
+        this.repetitionGuard?.reset();
+        this.repetitionStopped = false;
         this.setRunState("running");
       }
     }
@@ -1571,9 +1927,12 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     // still live. It must not turn that run idle or hand it a run error. The submission that
     // started the run still ends it normally (including a deliberate stop).
     if (final !== undefined && final.status === "unanswered") {
+      // A stop the guard decided is already written and framed as the run error; its
+      // abort settles as a silent `aborted`, so this path must not overwrite it.
+      if (this.repetitionStopped) return;
       if (this.closed) return;
       const errorId = `${this.taskId}:${submission.id}`;
-      const runError = runErrorFromUnanswered(final.reason, final.detail, errorId);
+      const runError = annotateRunError(runErrorFromUnanswered(final.reason, final.detail, errorId));
       const cancelledFollowUp = !startsRun && runError === null;
       if (!cancelledFollowUp) {
         if (runError !== null) {
@@ -1655,12 +2014,13 @@ export class DurableTaskAgentSession implements TaskAgentSession {
       // The hint must be on disk before durable admits the turn: a process that dies
       // after the submission is placed must still leave enough behind to resume it.
       await this.flushMarkerState();
+      this.repetitionGuard?.reset();
+      this.repetitionStopped = false;
       this.setRunState("running", null);
     }
     let submission: Submission;
-    // Model requests go through billion-context; they must carry this
-    // conversation's id, not the main chat's, or the turn can hang or
-    // attach itself to the parent session.
+    // The plan lane compacts with pi-durable: the identity scope keeps these model
+    // requests away from billion-context entirely, including `current.json`.
     try {
       submission = await this.identity(() =>
         this.conversation.submit(
@@ -1756,6 +2116,8 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     );
     if (startsRun) {
       this.stopRequested = false;
+      this.repetitionGuard?.reset();
+      this.repetitionStopped = false;
       this.setRunState("running", null);
     }
     const id = String(submission.id);
@@ -2378,6 +2740,10 @@ export class TaskAgentManager {
     const questions = await this.ensureQuestionStore(taskId);
     const storage = await openNodeSqliteStorage(databasePath);
     const registry = createRegistry<ToolRegistration>();
+    // One guard for this plan conversation, installed as the harness's own tool hooks
+    // so it sees every model-issued and nested call without wrapping a single tool.
+    const repetitionGuard = new RepetitionGuard();
+    registry.install(repetitionGuard.extension());
     const coding =
       this.options.jobs === undefined
         ? (createCodingTools().tools ?? []).filter(
@@ -2443,6 +2809,9 @@ export class TaskAgentManager {
         .tools()
         .map(({ tool }) => tool),
     );
+    // The guard can only name tools the plan model is actually offered; the registry
+    // also holds job and memory tools that `selectTaskAgentTools` filters out.
+    repetitionGuard.setAvailable(tools.map((tool) => tool.name));
     const model: ModelRef | undefined =
       this.options.model === undefined
         ? undefined
@@ -2453,7 +2822,7 @@ export class TaskAgentManager {
         models: this.options.models as unknown as Parameters<typeof HarnessImpl.open>[1]["models"],
         registry,
         env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? this.options.cwd }),
-        settings: taskAgentHarnessSettings(),
+        settings: taskAgentHarnessSettings(process.env, this.options.model?.contextWindow),
         onReport: (report) =>
           console.error(`[task-agent] harness report (${report.kind})`, report.error),
       },
@@ -2519,6 +2888,7 @@ export class TaskAgentManager {
       markerStore,
       imagesInContext,
     );
+    session.useRepetitionGuard(repetitionGuard);
     await session.start();
     return session;
   }

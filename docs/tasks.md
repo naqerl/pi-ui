@@ -133,6 +133,35 @@ session, separate from the main chat:
 The task body is ordinary markdown. Fenced `mermaid` (or `pele`) blocks use the
 same diagram renderer as the main chat.
 
+### Plan context, compaction and loops
+
+A plan conversation is bounded by pi-durable, not by billion-context. Its
+harness opens with `compaction.enabled` and thresholds derived from the plan
+model's context window (`planCompactionPolicy`): the summary replaces only the
+transcript prefix before `keepRecentTokens`, the newest turns stay verbatim, and
+the durable log keeps its own head, so a failed compaction leaves the
+conversation it had. No plan request carries a billion-context identity — not
+the task's own, not the main chat's, and not `current.json` — so the inline
+engine never sees the request and never injects a compress instruction into a
+plan turn. The plan transcript therefore shrinks the way the main chat's does:
+the same builder drops the compacted prefix and keeps the recent turns, and the
+operator can keep planning in the same task.
+
+A plan run also stops repeating the same tool call instead of paying for it
+forever. The plan harness installs `RepetitionGuard` as its own tool hooks — a
+`beforeTool`/`afterTool` pair on the built-in tool task — so every model-issued
+and nested call is counted, keyed by the tool name and its arguments with object
+keys sorted (so the same call with a different key order is the same call). The
+third identical call in a row gets a warning appended to its result, not built
+over it, so a result that streams its text keeps that text. The fifth is blocked
+before it runs, naming the tool, the count and the tools that are actually
+available. The run then ends with a pi-ui run error — and an assistant row in
+the transcript — that says "Send a message to continue". A call that ran for
+five seconds or more (a wait or a poll) resets the count. When the provider's
+own loop guard fires instead, its "Settings › …" text is never shown as it
+stands: the run error and the transcript row both carry the same pi-ui
+sentence, so the way out is a message, not a settings menu.
+
 ## Body shape
 
 A planned body is a specification in four sections, in this order: `## Goal` (one sentence — the
