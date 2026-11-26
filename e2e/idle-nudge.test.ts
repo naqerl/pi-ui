@@ -366,10 +366,11 @@ test("a task re-marked working after a release is named at once", () => {
 test("leftWorking names only the ids whose published status stopped being working", () => {
   const ledgerTask = (id: string, status: Task["status"]) => ({ id, status }) as Task;
   assert.deepEqual(
-    leftWorking(
-      { a1: "working", b2: "open", c3: "done" },
-      [ledgerTask("a1", "open"), ledgerTask("b2", "open"), ledgerTask("c3", "done")],
-    ),
+    leftWorking({ a1: "working", b2: "open", c3: "done" }, [
+      ledgerTask("a1", "open"),
+      ledgerTask("b2", "open"),
+      ledgerTask("c3", "done"),
+    ]),
     ["a1"],
   );
   assert.deepEqual(leftWorking({}, [ledgerTask("a1", "open")]), []);
@@ -1077,8 +1078,7 @@ test("nothing working and nothing to pick submits nothing and writes no entry", 
     };
 
     driven.idleNudge.noteActivity(0);
-    (driven.idleNudge as unknown as { lastActivityAt: number }).lastActivityAt =
-      Date.now() - 1_001;
+    (driven.idleNudge as unknown as { lastActivityAt: number }).lastActivityAt = Date.now() - 1_001;
     await driven.checkIdleNudge();
     assert.equal(kinds.length, 0, "no prompt is submitted");
     assert.equal(
