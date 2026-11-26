@@ -1333,8 +1333,9 @@ function WidgetFullscreen({
   onClose,
 }: {
   widget: Widget;
-  view: WidgetView | undefined;
-  value: WidgetValue | undefined;
+  /** Absent when the widget has no value yet; `resolveWidgetValue` omits these keys. */
+  view?: WidgetView | undefined;
+  value?: WidgetValue | undefined;
   onClose: () => void;
 }) {
   const minimizeRef = useRef<HTMLButtonElement | null>(null);
