@@ -698,8 +698,8 @@ function namedSeries(raw: unknown, path: string): SparklineSeries[] {
       return {
         key,
         points: value
-          .map(asNumber)
-          .filter((point): point is number => point !== undefined)
+          .map((point: unknown) => (point === null ? null : asNumber(point)))
+          .filter((point): point is number | null => point !== undefined)
           .slice(-MAX_ROWS),
       };
     });

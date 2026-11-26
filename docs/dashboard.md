@@ -91,7 +91,7 @@ in `dashboard_upsert`.
 | `stat`      | `value`*, `label`, `delta` (number or `+3`, draws a trend arrow), `unit`, `progress` (0 to 100 meter)                                                                                                                         |
 | `list`      | `items`* (array), `key`, `label`, `value` (relative to each item), `empty`                                                                                                                                                    |
 | `table`     | `columns`* (`{"Header": "path"}`), `rows` (array; column paths are then relative to each row), `empty`                                                                                                                        |
-| `sparkline` | `value` (a number; its history is drawn) or `series` (a number array, an object of named number arrays, or `[{key, label?, points: (number \| null)[]}]`), `labels` (optional x tick labels), `label`; optional `chart` below |
+| `sparkline` | `value` (a number; its history is drawn) or `series` (a number array, an object of named number arrays where `null` is a gap, or `[{key, label?, points: (number \| null)[]}]`), `labels` (optional x tick labels), `label`; optional `chart` below |
 | `markdown`  | `text`* (raw HTML shows as text)                                                                                                                                                                                              |
 | `status`    | `items` with `label`, `state`, `detail`, `key`; or one `state`* and `label`. `ok`/`running`/`up` are green, `warn`/`off`/`starting` amber, anything else red.                                                                 |
 
@@ -178,7 +178,10 @@ The sparkline mapping reads any of these:
 }
 ```
 
-`null` draws a gap. Use mapping `{ "series": "series", "labels": "labels" }`
+`null` draws a gap, in both the declared points array and the object of named
+arrays. A series given as an object of named arrays accepts `null` for a gap,
+so a projection can be padded with `null` up to today instead of shortened.
+Use mapping `{ "series": "series", "labels": "labels" }`
 to pass the named shapes through; the legacy `{ "series": "values" }` number
 array keeps working.
 
