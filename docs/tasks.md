@@ -69,11 +69,16 @@ until a human approves it. Its list card says `Planning` while the plan agent is
 agent's `task_list` hides drafts unless it asks with `includePlanning: true`.
 
 `propose_task` takes one `prompt` and always stages the same draft: the prompt is saved as the
-draft's title and body, its plan run starts, and the operator approves the draft once the body is
-ready. An optional `project` and existing image `attachments` carry over. There is no rationale,
-body or flag to pass. A follow-up proposed by a plan agent becomes its own planning draft with its
-own plan agent. If the plan run fails to start, the draft is still saved and the tool reports that
-the run did not start.
+draft's body and its plan run starts, but the draft is inserted once with the placeholder title
+`Proposed <id>`. Its plan agent names it by calling `edit_task` with one line of at most 120
+characters; until then the placeholder stays visible, and the operator can name it with the
+detail header's inline title editor. The operator approves the draft once the body is ready. A
+draft the operator creates with the composer's `Plan task` toggle is different: it keeps the text
+the operator typed as its title, and its plan agent is not asked to rename it. An optional
+`project` and existing image `attachments` carry over. There is no rationale, body or flag to
+pass. A follow-up proposed by a plan agent becomes its own planning draft with its own plan
+agent. If the plan run fails to start, the draft is still saved as `Proposed <id>` and the tool
+reports that the run did not start and the operator should name it.
 
 ## Depends on
 

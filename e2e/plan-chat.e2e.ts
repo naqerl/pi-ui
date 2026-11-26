@@ -792,6 +792,19 @@ test("create and plan-chat sweep the action and status without moving the dock",
   await createOpenTask(screen, title);
   await openTaskChatTab(screen);
   await expect(screen.getByTestId("task-agent-chat")).toBeVisible();
+  // The Plan tab folds the body; let the 220 ms expansion settle before closing
+  // the detail, so the close sample reads the create surface rather than a frame
+  // of the tab transition.
+  await expect
+    .poll(() =>
+      browser.evaluate(
+        () =>
+          document
+            .querySelector<HTMLElement>('[data-testid="composer-dock"]')
+            ?.getBoundingClientRect().height ?? 0,
+      ),
+    )
+    .toBe(DOCK_HEIGHT);
   const taskId = await browser.evaluate(async (needle) => {
     const ledger = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
       tasks: Array<{ id: string; title: string }>;
@@ -845,8 +858,6 @@ test("create and plan-chat sweep the action and status without moving the dock",
 
     // plan-chat -> create: the task send leaves, and the held status word exits.
     const closed = await sampleTaskDockTransition(browser, { kind: "close" });
-    expect(closed.dockHeight).toBe(DOCK_HEIGHT);
-    expect(closed.composerHeight).toBe(COMPOSER_HEIGHT);
     expect(closed.lineHeight).toBe(TOP_LINE_HEIGHT);
     expect(closed.liveRegions).toBe(1);
     expect(closed.actions.addTask).toMatchObject({
@@ -872,6 +883,26 @@ test("create and plan-chat sweep the action and status without moving the dock",
       text: "idle",
     });
     expectSweepExit(closed.status, "0.012s");
+    // Leaving the Plan tab expands the body over 220 ms, so the settled dock is
+    // the full create-surface box rather than the folded bar the sweep left from.
+    await expect
+      .poll(() =>
+        browser.evaluate(() => {
+          const dock = document.querySelector<HTMLElement>('[data-testid="composer-dock"]');
+          const body = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
+          const line = document.querySelector<HTMLElement>(".ink-line");
+          return {
+            dockHeight: dock?.getBoundingClientRect().height ?? null,
+            composerHeight: body?.getBoundingClientRect().height ?? null,
+            lineHeight: line?.getBoundingClientRect().height ?? null,
+          };
+        }),
+      )
+      .toMatchObject({
+        dockHeight: DOCK_HEIGHT,
+        composerHeight: COMPOSER_HEIGHT,
+        lineHeight: TOP_LINE_HEIGHT,
+      });
 
     const enteredBack = await sampleTaskDockTransition(browser, {
       kind: "read",

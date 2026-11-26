@@ -292,10 +292,11 @@
     padding-bottom: 0;
   }
 
-  /* The stats page keeps the dock chrome but collapses the composer body. The
-     body owns the whole height change, so the navigation row above it arrives
-     with the movement instead of snapping when a timer releases it. Visibility
-     flips at the end of the collapse, so the body is not blank while it shrinks. */
+  /* The stats page and a narrow task detail's Plan tab keep the dock chrome but
+     collapse the composer body. The body owns the whole height change, so the
+     navigation row above it arrives with the movement instead of snapping when
+     a timer releases it. Visibility flips at the end of the collapse, so the
+     body is not blank while it shrinks. */
   .composer-body {
     height: auto;
     overflow: clip;
@@ -355,6 +356,7 @@
     animation: dock-text-in 160ms ease-out;
   }
 
+  /* Both folded surfaces share the same collapsed geometry. */
   .composer-body[data-hidden="true"] {
     opacity: 0;
   }
