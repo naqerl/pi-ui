@@ -228,6 +228,56 @@ test("sparkline mappings render legacy, named and gapped series with labels", ()
       value: "3",
     },
   );
+  const dayLabels = Array.from({ length: 30 }, (_, index) => `Nov ${index + 1}`);
+  const actualSeries: (number | null)[] = [
+    ...Array.from({ length: 26 }, (_, index) => index + 1),
+    null,
+    null,
+    null,
+    null,
+  ];
+  const projectionSeries: (number | null)[] = [
+    ...Array.from({ length: 25 }, () => null),
+    101,
+    102,
+    103,
+    104,
+    105,
+  ];
+  assert.deepEqual(
+    renderWidget(widget({ kind: "sparkline", mapping: { series: "series", labels: "labels" } }), {
+      series: { actual: actualSeries, projection: projectionSeries },
+      labels: dayLabels,
+    }),
+    {
+      kind: "sparkline",
+      labels: dayLabels,
+      series: [
+        { key: "actual", points: actualSeries },
+        { key: "projection", points: projectionSeries },
+      ],
+      value: "26",
+    },
+  );
+  assert.deepEqual(
+    renderWidget(widget({ kind: "sparkline", mapping: { series: "series" } }), {
+      series: { actual: [1, "n/a", 3, null] },
+    }),
+    { kind: "sparkline", series: [{ key: "actual", points: [1, 3, null] }], value: "3" },
+  );
+  assert.deepEqual(
+    renderWidget(widget({ kind: "sparkline", mapping: { series: "series" } }), {
+      series: { actual: [1, 2, 3], projection: [null, null, null] },
+    }),
+    {
+      kind: "sparkline",
+      series: [
+        { key: "actual", points: [1, 2, 3] },
+        { key: "projection", points: [null, null, null] },
+      ],
+      value: "3",
+    },
+  );
 });
 
 test("sparkline headlines can be mapped explicitly or suppressed", () => {
