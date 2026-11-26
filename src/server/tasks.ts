@@ -401,10 +401,13 @@ export class TaskStore {
       status: TaskStatus;
       rationale?: string;
       createdBy: NonNullable<Task["createdBy"]>;
+      titleFromId?: (id: string) => string;
     },
   ): Promise<{ ledger: TaskLedger; task: Task }> {
     const text = title.trim();
-    if (text.length === 0) return Promise.reject(new TaskError("Task title is required", 400));
+    if (options.titleFromId === undefined && text.length === 0) {
+      return Promise.reject(new TaskError("Task title is required", 400));
+    }
     let content: string | undefined;
     try {
       content = body === undefined || body === null ? undefined : normalizeBody(body);
@@ -435,9 +438,10 @@ export class TaskStore {
       const now = new Date().toISOString();
       const proposed = options.status === "proposed";
       const name = chooseProject(project, tasks, proposed ? undefined : parent?.project);
+      const id = newId(new Set(tasks.map((item) => item.id)));
       const task: Task = {
-        id: newId(new Set(tasks.map((item) => item.id))),
-        title: text,
+        id,
+        title: options.titleFromId === undefined ? text : options.titleFromId(id),
         status: options.status,
         parentId: proposed ? null : parentId,
         blockedBy: [],
@@ -483,7 +487,12 @@ export class TaskStore {
     body?: string | null,
     mode?:
       | TaskStatus
-      | { status?: TaskStatus; backlog?: boolean; createdBy?: NonNullable<Task["createdBy"]> }
+      | {
+          status?: TaskStatus;
+          backlog?: boolean;
+          createdBy?: NonNullable<Task["createdBy"]>;
+          titleFromId?: (id: string) => string;
+        }
       | boolean,
   ): Promise<{ ledger: TaskLedger; task: Task }> {
     let status: TaskStatus;
@@ -494,9 +503,11 @@ export class TaskStore {
     }
     const createdBy =
       typeof mode === "object" && mode !== null ? (mode.createdBy ?? "operator") : "operator";
+    const titleFromId = typeof mode === "object" && mode !== null ? mode.titleFromId : undefined;
     return this.insertTaskResult(title, parentId, attachments, project, body, {
       status,
       createdBy,
+      ...(titleFromId === undefined ? {} : { titleFromId }),
     });
   }
 

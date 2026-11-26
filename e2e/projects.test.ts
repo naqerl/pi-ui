@@ -143,10 +143,14 @@ test("agent tools take an optional project and show it", async () => {
     );
     assert.match(await call("task_view", { id }), /project=citydiff/);
     await call("propose_task", { prompt: "Trim logs", project: "pi-ui" });
-    const draft = store.ledger().tasks.find((task) => task.title === "Trim logs");
+    const draft = store.ledger().tasks.find((task) => task.body === "Trim logs");
+    assert.equal(draft?.title, `Proposed ${draft?.id}`);
     assert.equal(draft?.status, "planning");
     assert.equal(draft?.project, "pi-ui");
-    assert.match(await call("task_list", { includePlanning: true }), /@pi-ui Trim logs/);
+    assert.match(
+      await call("task_list", { includePlanning: true }),
+      new RegExp(`@pi-ui Proposed ${draft?.id}`),
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

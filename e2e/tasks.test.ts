@@ -628,8 +628,11 @@ test("propose_task saves a planning draft from its prompt and starts the plan ru
     assert.equal(staged.isError, false);
     assert.match(staged.text, /plan run started/i);
 
-    const draft = store.ledger().tasks.find((item) => item.title === prompt);
+    const draft = store
+      .ledger()
+      .tasks.find((item) => item.title === `Proposed ${item.id}` && item.body === prompt);
     assert.ok(draft);
+    assert.equal(draft.title, `Proposed ${draft.id}`);
     assert.equal(draft.status, "planning");
     assert.equal(draft.body, prompt);
     assert.equal(draft.project, "pi-ui");
@@ -655,7 +658,7 @@ test("a draft from propose_task records the agent as its creator", async () => {
     const tracker = new TaskActivityTracker(undefined);
     tracker.observeLedger(store.ledger().tasks);
     const view = tracker.view();
-    const agentDraft = store.ledger().tasks.find((item) => item.title === agentPrompt);
+    const agentDraft = store.ledger().tasks.find((item) => item.body === agentPrompt);
     const composerDraft = store.ledger().tasks.find((item) => item.title === "Composer draft");
     assert.ok(agentDraft);
     assert.ok(composerDraft);
@@ -678,10 +681,15 @@ test("propose_task saves the draft when the plan runner fails", async () => {
     assert.match(staged.text, /plan run did not start/i);
     assert.doesNotMatch(staged.text, /no plan runner is available/i);
 
-    const draft = store.ledger().tasks.find((item) => item.title === prompt);
+    const draft = store
+      .ledger()
+      .tasks.find((item) => item.title === `Proposed ${item.id}` && item.body === prompt);
     assert.ok(draft);
+    assert.equal(draft.title, `Proposed ${draft.id}`);
     assert.equal(draft.status, "planning");
     assert.equal(draft.body, prompt);
+    assert.match(staged.text, new RegExp(draft.title));
+    assert.match(staged.text, /name the draft/i);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

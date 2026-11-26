@@ -9,6 +9,16 @@ export const TASK_ATTACHMENTS_MAX = 12;
 /** Placeholder title for a task created from the plus button, until the first message or the task agent names it. */
 export const DEFAULT_NEW_TASK_TITLE = "New task";
 
+/** Placeholder title for an agent-proposed draft, until its plan agent names it. */
+export function proposedDraftTitle(id: string): string {
+  return `Proposed ${id}`;
+}
+
+/** True when a title is still the placeholder an agent-proposed draft starts with. */
+export function isProposedDraftTitle(title: string): boolean {
+  return /^Proposed [abcdefghijkmnopqrstuvwxyz23456789]{4,8}$/.test(title);
+}
+
 export function descendantIds(tasks: readonly Task[], id: string): Set<string> {
   const children = new Map<string, string[]>();
   for (const task of tasks) {

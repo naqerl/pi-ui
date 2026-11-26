@@ -246,8 +246,11 @@ test("agent task tools create a planning draft and edit its body", async () => {
   const staged = text(await call("propose_task", { prompt }));
   assert.equal(staged.isError, false);
   assert.match(staged.text, /plan run started/i);
-  const task = bridge.store.ledger().tasks.find((item) => item.title === prompt);
+  const task = bridge.store
+    .ledger()
+    .tasks.find((item) => item.title === `Proposed ${item.id}` && item.body === prompt);
   assert.ok(task);
+  assert.equal(task.title, `Proposed ${task.id}`);
   assert.equal(task.status, "planning");
   assert.equal(task.body, prompt);
   assert.equal(task.rationale, undefined);
@@ -278,13 +281,17 @@ test("propose_task validates its prompt and attachments", async () => {
     await call("propose_task", { prompt, project: "pi-ui", attachments: [image.id] }),
   );
   assert.equal(staged.isError, false);
-  const draft = bridge.store.ledger().tasks.find((item) => item.title === prompt);
+  const draft = bridge.store
+    .ledger()
+    .tasks.find((item) => item.title === `Proposed ${item.id}` && item.body === prompt);
   assert.ok(draft);
+  assert.equal(draft.title, `Proposed ${draft.id}`);
   assert.equal(draft.status, "planning");
   assert.equal(draft.project, "pi-ui");
   assert.deepEqual(draft.attachments, [image.id]);
 
   const before = bridge.store.ledger().tasks.length;
+  const publishedBefore = published.length;
   const unknownId = `${"e".repeat(32)}.png`;
   const unknown = text(
     await call("propose_task", { prompt: "Unknown image", attachments: [unknownId] }),
@@ -294,8 +301,9 @@ test("propose_task validates its prompt and attachments", async () => {
 
   const blank = text(await call("propose_task", { prompt: "   " }));
   assert.equal(blank.isError, true);
-  assert.match(blank.text, /Task title is required/);
+  assert.match(blank.text, /prompt must not be empty/);
   assert.equal(bridge.store.ledger().tasks.length, before);
+  assert.equal(published.length, publishedBefore);
 });
 
 test("task_reopen needs a reason, only reopens done work, and counts each reopen", async () => {
