@@ -1164,8 +1164,7 @@ function resolveWidgetValue(
 
 function widgetPlaceholder(widget: Widget, error: string | undefined): string {
   return (
-    error ??
-    (widget.source.type === "static" ? "waiting for data" : "waiting for the first poll")
+    error ?? (widget.source.type === "static" ? "waiting for data" : "waiting for the first poll")
   );
 }
 

@@ -462,9 +462,7 @@ test("maximizes a widget to the viewport and closes from minimize, Escape and ba
   await browser.keyboard.press("Escape");
   await expect(screen.getByTestId("widget-context-fullscreen")).toHaveCount(0);
   await expect
-    .poll(() =>
-      browser.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? null),
-    )
+    .poll(() => browser.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? null))
     .toBe("widget-context-maximize");
   expect(await overlayHistoryId(browser)).toBeNull();
   expect(await gridSnapshot(browser)).toEqual(before);
