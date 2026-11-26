@@ -1,15 +1,23 @@
-/** `PI_UI_MCP_OUTAGE_NOTIFY_MS` shortens the quiet window for a test or small deployment. */
-export const MCP_OUTAGE_NOTIFY_MS = positiveEnv("PI_UI_MCP_OUTAGE_NOTIFY_MS") ?? 60_000;
+import {
+  MCP_RETRY_BUDGET_MS,
+  MCP_SUPERVISE_DEFAULT_MS,
+  positiveDurationMs,
+} from "./mcp-retry-budget.js";
+
+/**
+ * The quiet window is the supervisor's whole retry ladder plus one interval of
+ * adapter-retry grace on each side: the supervisor notices the dead row on its
+ * next tick, waits one interval before spending 5+10+20+40+60 s, and a retry
+ * that lands on the final attempt still needs the tick that sees it. Shorter
+ * than the ladder and the model hears about an outage the runtime was already
+ * healing. `PI_UI_MCP_OUTAGE_NOTIFY_MS` stays an absolute override.
+ */
+export const MCP_OUTAGE_NOTIFY_MS =
+  positiveDurationMs(process.env.PI_UI_MCP_OUTAGE_NOTIFY_MS) ??
+  MCP_RETRY_BUDGET_MS + 2 * MCP_SUPERVISE_DEFAULT_MS;
 
 /** The statuses that prove a subscription is carrying traffic again. */
 const LIVE_STATUS = new Set(["active", "opening"]);
-
-function positiveEnv(name: string): number | undefined {
-  const raw = process.env[name];
-  if (raw === undefined || raw.trim().length === 0) return undefined;
-  const value = Number(raw);
-  return Number.isFinite(value) && value > 0 ? value : undefined;
-}
 
 /** One status frame as the quiet window sees it, after identity was resolved. */
 export interface StatusView {
@@ -18,6 +26,8 @@ export interface StatusView {
   readonly status: string;
   /** The frame's own text, so a chip shows the adapter's words verbatim. */
   readonly text?: string;
+  /** The subscription state the frame carries; `stalled` means the ladder is spent. */
+  readonly state?: string;
 }
 
 export interface OutageObservation {
@@ -42,6 +52,10 @@ interface Outage {
  * Once the window expires the outage is news exactly once, and the recovery
  * after it is the existing single recovery notice.
  *
+ * A frame whose state is `stalled` is an exhausted ladder, not a retry, so it
+ * escalates immediately even inside the window — otherwise a permanently dead
+ * stream would never reach the model on a window longer than the ladder.
+ *
  * Adapter ids change on every reconnect, so this is keyed by `stableId`; an
  * outage never restarts its own timer just because a replacement connection
  * announced itself.
@@ -60,7 +74,8 @@ export class OutageQuiet {
    * Apply one status observation. A down frame draws a chip and keeps the
    * original `since`; a live frame clears the episode and, when it was not
    * escalated, draws the recovery chip. An episode that crossed the window on
-   * this observation is returned once as an escalation.
+   * this observation, or arrived already `stalled`, is returned once as an
+   * escalation.
    */
   observe(views: readonly StatusView[], now: number = this.now()): OutageObservation {
     const chips: string[] = [];
@@ -73,15 +88,17 @@ export class OutageQuiet {
         if (previous !== undefined && !previous.escalated) chips.push(text);
         continue;
       }
+      const stalled = view.state === "stalled";
       const current = this.outages.get(view.stableId);
       if (current === undefined) {
-        this.outages.set(view.stableId, { since: now, text, escalated: false });
+        this.outages.set(view.stableId, { since: now, text, escalated: stalled });
         chips.push(text);
+        if (stalled) escalations.push(text);
         continue;
       }
       current.text = text;
       chips.push(text);
-      if (!current.escalated && now - current.since >= this.windowMs) {
+      if (!current.escalated && (stalled || now - current.since >= this.windowMs)) {
         current.escalated = true;
         escalations.push(text);
       }

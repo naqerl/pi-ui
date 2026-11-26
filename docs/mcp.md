@@ -202,18 +202,37 @@ separate rules.
 
 When the window expires without a live, fresh `active` the outage becomes news
 once: the stored status text is delivered to the model through the normal MCP
-notice path, and the recovery after it speaks exactly as it did before. Terminal
-states follow the same rule — a real loss is one notice after the window, never
-one notice per retry attempt. The clock is keyed by `stableId`, never the
-adapter `id`, because the extension mints a new adapter id per connection.
+notice path, and the recovery after it speaks exactly as it did before. The
+window is the supervisor's own retry ladder — 5, 10, 20, 40 and 60 seconds,
+135 s in total — plus one 30 s supervise interval on each side, 195 s by
+default. Shorter than the ladder and the model hears about an outage the
+runtime is still healing. A frame whose `state` is `stalled` is an exhausted
+ladder rather than a retry, so it speaks immediately even inside the window;
+the chat timer afterwards is idempotent, so the episode still speaks only once.
+The clock is keyed by `stableId`, never the adapter `id`, because the extension
+mints a new adapter id per connection.
 
-The window defaults to 60 seconds and can be shortened for a test or a small
-deployment with `PI_UI_MCP_OUTAGE_NOTIFY_MS`, in the same style as
-`PI_UI_QUIET_AFTER_MS`. It is deliberately separate from
-`MCP_STREAM_HEARTBEAT_TIMEOUT_MS` (65 s): one decides whether delivery is still
-fresh, the other decides when the model should hear about an outage. Chip-only
+`PI_UI_MCP_OUTAGE_NOTIFY_MS` stays an absolute override for a test or a small
+deployment, in the same style as `PI_UI_QUIET_AFTER_MS`. It is deliberately
+separate from `MCP_STREAM_HEARTBEAT_TIMEOUT_MS` (65 s): one decides whether
+delivery is still fresh, the other decides when the model should hear about an
+outage. The default arithmetic reads the built-in ladder; a deployment that
+shortens the ladder with `PI_UI_MCP_SUPERVISE_RETRY_MS` must set
+`PI_UI_MCP_OUTAGE_NOTIFY_MS` to its shortened budget plus the same two 30 s
+intervals, or the window will outlive the ladder it is waiting on. Chip-only
 statuses never enter `DATA_DIR/mcp-outbox.json`, so a restart cannot replay an
 old blip into the prompt.
+
+When no tracked subscription owns a status notice, the model-delivery list is
+closed and content-first: a restore gap (`mcp-events-gap`,
+`details.kind === "restore-gap"`, or the "events were missed while pi was not
+running" phrasing), a truncation warning, the `mcp-events` envelope, and any
+notice without the status head still reach the model; `mcp-ui-status`,
+`mcp-events-status`, unattributed text behind the head, and the runtime's own
+`mcp-recovery` prose do not. `mcp-recovery` is never dropped by the
+supersession check: a self-healed reconnect that still made the runtime
+re-initialise the session folds into one `mcp/status#unattributed:<server>`
+chip.
 
 ### Reliable event delivery
 

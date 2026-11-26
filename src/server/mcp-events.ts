@@ -371,6 +371,7 @@ interface StatusView {
   id?: string;
   stableId?: string;
   status?: string;
+  state?: string;
   server?: string;
   name?: string;
   arguments?: Record<string, unknown>;
@@ -393,6 +394,7 @@ function collectStatusViews(value: unknown, views: StatusView[], depth = 0): voi
         ? value.stable_id
         : undefined;
   const status = typeof value.status === "string" ? value.status : undefined;
+  const state = typeof value.state === "string" ? value.state : undefined;
   const server = typeof value.server === "string" ? value.server : undefined;
   const name = typeof value.name === "string" ? value.name : undefined;
   const args = isRecord(value.arguments) ? value.arguments : undefined;
@@ -401,6 +403,7 @@ function collectStatusViews(value: unknown, views: StatusView[], depth = 0): voi
       ...(id === undefined ? {} : { id }),
       ...(stableId === undefined ? {} : { stableId }),
       ...(status === undefined ? {} : { status }),
+      ...(state === undefined ? {} : { state }),
       ...(server === undefined ? {} : { server }),
       ...(name === undefined ? {} : { name }),
       ...(args === undefined ? {} : { arguments: args }),
@@ -509,6 +512,15 @@ function statusAttribution(text: string, details: unknown): { server?: string; n
   if (server !== undefined) return { server, ...(name === undefined ? {} : { name }) };
   const line = statusProseLine(text);
   if (line === null) return {};
+  // The runtime prefixes its own notices with `mcp <server>: `, which is not a
+  // stable id but is a complete attribution for the chip identity.
+  const prefixed = /^\s*mcp\s+([A-Za-z0-9_.-]+)(?:\/([A-Za-z0-9_.-]+))?:\s+/.exec(line);
+  if (prefixed?.[1] !== undefined) {
+    return {
+      server: prefixed[1],
+      ...(prefixed[2] === undefined ? {} : { name: prefixed[2] }),
+    };
+  }
   const pair = /^\s*([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+):\s+/.exec(line);
   if (pair?.[1] !== undefined && pair[2] !== undefined) {
     return { server: pair[1], name: pair[2] };
@@ -779,18 +791,28 @@ export class McpEventFeed {
    * is still noise while the row is live or reconnecting.
    */
   private isSupersededStatusInput(text: string, details: unknown): boolean {
-    const incoming: Array<StatusView & { stableId?: string }> = [];
+    const incoming: Array<StatusView & { stableId?: string; namesDurable?: boolean }> = [];
     for (const item of statusViews(text, details)) {
       if (item.id === undefined && item.stableId === undefined && item.server === undefined) {
         continue;
       }
       const stableId = this.statusStableId(item);
-      incoming.push({ ...item, ...(stableId === undefined ? {} : { stableId }) });
+      // Prose that names the durable id itself (`hub/hub is stalled`) describes
+      // the row, not one generation of it. The row's current adapter id may be
+      // different, so supersession must not turn the runtime's stall/recovery
+      // into noise after the replacement connection comes up.
+      const namesDurable = item.id !== undefined && item.id === stableId;
+      incoming.push({
+        ...item,
+        ...(stableId === undefined ? {} : { stableId }),
+        ...(namesDurable ? { namesDurable } : {}),
+      });
     }
     if (incoming.length === 0) return false;
     const known = [...this.subscriptions.values()];
-    return incoming.every((item) =>
-      known.some((view) => {
+    return incoming.every((item) => {
+      if (item.namesDurable === true) return false;
+      return known.some((view) => {
         // A notice that names the current adapter id itself is authoritative.
         if (item.id !== undefined && view.id === item.id) return false;
         if (item.stableId !== undefined) {
@@ -805,8 +827,8 @@ export class McpEventFeed {
         if (item.server === undefined || view.server !== item.server) return false;
         if (item.name !== undefined && view.name !== item.name) return false;
         return isLiveSubscription(view);
-      }),
-    );
+      });
+    });
   }
 
   /**
@@ -826,8 +848,8 @@ export class McpEventFeed {
   private trackedStatusEntries(
     text: string,
     details: unknown,
-  ): Array<{ view: McpSubscriptionView; status: string }> {
-    const entries: Array<{ view: McpSubscriptionView; status: string }> = [];
+  ): Array<{ view: McpSubscriptionView; status: string; state?: string }> {
+    const entries: Array<{ view: McpSubscriptionView; status: string; state?: string }> = [];
     const seen = new Set<string>();
     for (const item of statusViews(text, details)) {
       if (item.status === undefined) continue;
@@ -841,7 +863,11 @@ export class McpEventFeed {
       const key = `${tracked.stableId}\u0000${item.status}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      entries.push({ view: tracked, status: item.status });
+      entries.push({
+        view: tracked,
+        status: item.status,
+        ...(item.state === undefined ? {} : { state: item.state }),
+      });
     }
     return entries;
   }
@@ -869,31 +895,32 @@ export class McpEventFeed {
   ): "deliver" | "chip" | "drop" {
     const tracked = this.trackedStatusEntries(text, details);
     if (tracked.length === 0) {
-      // Adapter retry chatter with no tracked identity is display history. The
-      // supervisor owns outage escalation, so this frame must not start a turn.
-      // Gap/restore notices and truncation warnings still belong to the model.
+      // Only a closed list of notices still talks to the model when no tracked
+      // subscription owns them. `markDeliveredStatus` cannot dedupe an
+      // unattributed delivery, so anything else would speak on every repeat.
+      // Gap/restore notices and truncation warnings must never be swallowed;
+      // the `mcp-events` envelope is a batch, not a status transition.
+      if (!text.startsWith(MCP_STATUS_HEAD)) return "deliver";
       const gap =
         customType === "mcp-events-gap" ||
         (isRecord(details) && details.kind === "restore-gap") ||
         /\bevents were missed while pi was not running\b/i.test(text);
-      const adapterProse =
-        !gap &&
-        text.startsWith(MCP_STATUS_HEAD) &&
-        !isTruncationWarning(text) &&
-        (customType === undefined ||
-          customType === "mcp-ui-status" ||
-          customType === "mcp-events-status");
-      return adapterProse ? "chip" : "deliver";
+      if (gap) return "deliver";
+      if (isTruncationWarning(text)) return "deliver";
+      if (customType === "mcp-events") return "deliver";
+      return "chip";
     }
     const now = this.now();
-    const observed = tracked.map(({ view, status }) => ({
+    const observed = tracked.map(({ view, status, state }) => ({
       view,
       status: this.liveStatus(view, status, now) ? status : "down",
+      state: this.outageFrameState(view, status, state),
     }));
-    const views: OutageStatusView[] = observed.map(({ view, status }) => ({
+    const views: OutageStatusView[] = observed.map(({ view, status, state }) => ({
       stableId: view.stableId,
       status,
       text,
+      ...(state === undefined ? {} : { state }),
     }));
     const escalated = observed.some(({ view }) => this.outageQuiet.escalated(view.stableId));
     const healthy = observed.some(({ status }) => status === "active" || status === "opening");
@@ -913,6 +940,23 @@ export class McpEventFeed {
     if (observation.escalations.length > 0) return "deliver";
     if (observation.chips.length > 0) return "chip";
     return "drop";
+  }
+
+  /**
+   * Exhaustion is the frame's own `stalled` state. The tracked row's state is
+   * a fallback only when this frame did not derive it: an adapter `failed`
+   * status derives `stalled` in the row, but that is the adapter's terminal
+   * frame, not proof that the supervisor's ladder is spent, so it stays a chip.
+   * The supervisor's own stall notice always carries `state` explicitly.
+   */
+  private outageFrameState(
+    view: McpSubscriptionView,
+    status: string,
+    frameState?: string,
+  ): string | undefined {
+    if (frameState !== undefined) return frameState;
+    if (view.state !== "stalled" || status === "failed") return undefined;
+    return "stalled";
   }
 
   /**
@@ -1095,6 +1139,12 @@ export class McpEventFeed {
     const input = statusInput(textOrDetails, details);
     const text = input.text;
     const source = input.source;
+    const kind = customType ?? input.customType;
+    // The runtime's own stall/recovery prose carries the durable id next to the
+    // replacement connection. The live row still owns the old adapter id, so
+    // the supersession check would drop the one recovery after an escalation.
+    // It is never noise on that channel, so it also never drops here.
+    if (kind === "mcp-recovery") return false;
     const ids = statusNoticeIds(text, source);
     if (ids.length > 0 && ids.every((id) => !this.tracksStatusId(id))) {
       console.debug(`[mcp] dropped status notice for untracked subscription ${ids.join(", ")}`);
@@ -1116,7 +1166,6 @@ export class McpEventFeed {
     }
     // A gap or channel notice is not a subscription status even though it uses
     // the status head. Only the adapter's prose channel may fall back to server.
-    const kind = customType ?? input.customType;
     if (kind !== undefined && kind !== "mcp-ui-status" && kind !== "mcp-events-status") {
       return false;
     }
