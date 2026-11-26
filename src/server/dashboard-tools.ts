@@ -27,7 +27,7 @@ const KINDS_DOC = `Kinds and their mapping fields (* required):
 - stat: value*, label, delta (number or "+3"; shows a trend arrow), unit, progress (0-100 meter)
 - list: items* (array), key, label, value (paths relative to each item)
 - table: columns* ({"Header": "path"}), rows (array; column paths are then relative to each row; without rows, column paths are absolute arrays zipped together)
-- sparkline: value (a number; its poll/push history is drawn) or series (an array of numbers, an object of named number arrays, or [{key, label?, points: (number|null)[]}]), labels (optional x tick labels), label. Optional chart below; it leaves the data mapping unchanged and cannot run code.
+- sparkline: value (a number; its poll/push history is drawn) or series (an array of numbers, an object of named number arrays, or [{key, label?, points: (number|null)[]}]), labels (optional x tick labels), label. A series given as an object of named arrays accepts null for a gap, so a projection can be padded with null up to today instead of shortened. Optional chart below; it leaves the data mapping unchanged and cannot run code.
 - markdown: text* (markdown; raw HTML is shown as text)
 - status: items (array) with label, state, detail, key per item; or a single state* and label. States: ok/running/up/healthy… = green, warn/starting/off/pending… = amber, anything else = red.
 list, table and status also take empty (text shown when there are no items).`;
