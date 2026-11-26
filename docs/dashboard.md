@@ -86,14 +86,14 @@ value. A value starting with `=` is a literal: `"label": "=servers"`. A path
 that matches nothing is an error, with a sample of the data, so a typo shows up
 in `dashboard_upsert`.
 
-| Kind        | Fields (* required)                                                                                                                                                                                                           |
-| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `stat`      | `value`*, `label`, `delta` (number or `+3`, draws a trend arrow), `unit`, `progress` (0 to 100 meter)                                                                                                                         |
-| `list`      | `items`* (array), `key`, `label`, `value` (relative to each item), `empty`                                                                                                                                                    |
-| `table`     | `columns`* (`{"Header": "path"}`), `rows` (array; column paths are then relative to each row), `empty`                                                                                                                        |
+| Kind        | Fields (* required)                                                                                                                                                                                                                                 |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stat`      | `value`*, `label`, `delta` (number or `+3`, draws a trend arrow), `unit`, `progress` (0 to 100 meter)                                                                                                                                               |
+| `list`      | `items`* (array), `key`, `label`, `value` (relative to each item), `empty`                                                                                                                                                                          |
+| `table`     | `columns`* (`{"Header": "path"}`), `rows` (array; column paths are then relative to each row), `empty`                                                                                                                                              |
 | `sparkline` | `value` (a number; its history is drawn) or `series` (a number array, an object of named number arrays where `null` is a gap, or `[{key, label?, points: (number \| null)[]}]`), `labels` (optional x tick labels), `label`; optional `chart` below |
-| `markdown`  | `text`* (raw HTML shows as text)                                                                                                                                                                                              |
-| `status`    | `items` with `label`, `state`, `detail`, `key`; or one `state`* and `label`. `ok`/`running`/`up` are green, `warn`/`off`/`starting` amber, anything else red.                                                                 |
+| `markdown`  | `text`* (raw HTML shows as text)                                                                                                                                                                                                                    |
+| `status`    | `items` with `label`, `state`, `detail`, `key`; or one `state`* and `label`. `ok`/`running`/`up` are green, `warn`/`off`/`starting` amber, anything else red.                                                                                       |
 
 A sparkline also takes an optional data-only `chart` block. The original
 five-key shape (`type`, `color`, `height`, `yDomain`, `showTooltip`) still works
