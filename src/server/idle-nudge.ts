@@ -516,6 +516,29 @@ export class IdleNudge {
     }
   }
 
+  /**
+   * Forget the persisted naming memory for these tasks. A release or closure makes the
+   * old row wrong, and keeping it would hold a re-marked working task back for an hour.
+   * Closed ids, the nudge time and the rows of every other task stay as they are, and
+   * nothing is written when no id has a row.
+   */
+  forgetTasks(ids: readonly string[]): void {
+    const record = this.record;
+    if (record?.tasks === undefined) return;
+    const forgotten = ids.filter((id) => record.tasks?.[id] !== undefined);
+    if (forgotten.length === 0) return;
+    const tasks = { ...record.tasks };
+    for (const id of forgotten) delete tasks[id];
+    const next: IdleNudgeRecord = { ...record, tasks };
+    this.record = next;
+    if (this.storage === undefined) return;
+    try {
+      writeIdleNudgeRecord(this.storage, next);
+    } catch (error) {
+      console.error("[pi] could not rewrite the idle nudge record", error);
+    }
+  }
+
   /** Any user message, steer, run start or run end starts a fresh idle period. */
   noteActivity(at: number = Date.now()): void {
     this.lastActivityAt = at;
@@ -697,6 +720,8 @@ export class IdleNudge {
       withStaleRequest(idleDecisionNudgeText(visibleOpen, visibleWorking, open.length), stale),
       closures,
     );
+    // An empty composition is silence: no submission, no chip and no new record row.
+    if (text.length === 0) return null;
     this.markAttempt(closures, at);
     this.record = {
       hash,

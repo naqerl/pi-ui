@@ -13,8 +13,10 @@ import {
   DEFAULT_IDLE_NUDGE_MS,
   IDLE_STATUS_INTERVAL_MS,
   IdleNudge,
+  type IdleTask,
   type IdleTaskStatus,
   idleBlockedNudgeText,
+  idleDecisionNudgeText,
   idleNudgeMs,
   idleNudgeText,
   openTaskIds,
@@ -24,8 +26,12 @@ import {
   workingTaskIds,
 } from "../src/server/idle-nudge.js";
 import { buildTranscript, IDLE_NUDGE_ENTRY_KIND } from "../src/server/session.js";
+import { createTaskTools } from "../src/server/task-tools.js";
+import { TaskStore } from "../src/server/tasks.js";
 import { parseNotice } from "../src/shared/notices.js";
 import { isQueuedNotice } from "../src/shared/queue.js";
+import { leftWorking } from "../src/shared/tasks.js";
+import type { Task, TaskLedger } from "../src/shared/types.js";
 
 const nothing = { active: false, queued: 0, openTaskIds: [] as string[] };
 const task = (id: string, status: IdleTaskStatus = "open", blockedBy: string[] = []) => ({
@@ -36,6 +42,55 @@ const task = (id: string, status: IdleTaskStatus = "open", blockedBy: string[] =
 
 async function temporaryDataDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "pi-idle-nudge-"));
+}
+
+/** A ChatService wired to a task source, with the private idle entry points exposed. */
+function idleChat(directory: string, tasks: () => readonly Task[]) {
+  const chat = new ChatService(
+    {} as never,
+    {} as never,
+    { broadcast() {} } as never,
+    undefined,
+    false,
+    { clear: async () => undefined, write: async () => undefined } as never,
+    undefined,
+    { servers: [], unavailable: [] },
+    {} as never,
+    undefined,
+    {} as never,
+    {} as never,
+    async () => undefined,
+    () => undefined,
+    tasks,
+    directory,
+  );
+  const driven = chat as unknown as {
+    idleNudge: IdleNudge;
+    checkIdleNudge(): Promise<void>;
+    setRunState(state: "idle" | "running"): void;
+    submit(
+      text: string,
+      mode: "queue" | "steer",
+      options?: { entry?: { kind: string } },
+    ): Promise<unknown>;
+  };
+  return { chat, driven };
+}
+
+/** Run a task tool from the shared tool set against the store. */
+function taskToolCall(store: TaskStore, chat: ChatService) {
+  const bridge = {
+    store,
+    publish(ledger: TaskLedger) {
+      chat.observeTaskLedger(ledger.tasks);
+    },
+  };
+  const tools = new Map(createTaskTools(bridge).map((tool) => [tool.name, tool]));
+  return async (name: string, args: Record<string, unknown>) => {
+    const tool = tools.get(name);
+    assert.ok(tool, `missing tool ${name}`);
+    return tool.execute(args as never, {} as never, {} as never);
+  };
 }
 
 test("the idle window defaults to twenty minutes and zero disables it", () => {
@@ -176,6 +231,149 @@ test("a released task is not stale-working", () => {
     "an open task released after its last call is not a stale working badge",
   );
   assert.deepEqual(workingTaskIds([released]), []);
+});
+
+test("selection reads the ledger status, and a released task is parked", () => {
+  assert.deepEqual(
+    workingTaskIds([{ id: "a1", status: "open", state: "working" }]),
+    [],
+    "a derived state never promotes an open task into the working list",
+  );
+  assert.deepEqual(openTaskIds([{ id: "a1", status: "open", state: "working" }]), ["a1"]);
+  // A run that ended ok leaves the task open, so it is open work, not a working claim.
+  assert.deepEqual(workingTaskIds([{ id: "c3", status: "open" }]), []);
+  assert.deepEqual(openTaskIds([{ id: "c3", status: "open" }]), ["c3"]);
+
+  const released = {
+    id: "b2",
+    status: "open" as const,
+    blockedBy: [],
+    releasedAt: "2026-10-31T10:00:00.000Z",
+    releaseReason: "Parked behind the next build slot",
+  };
+  const waiting = { ...released, id: "c3", blockedBy: ["w1"] };
+  assert.deepEqual(openTaskIds([released]), []);
+  assert.deepEqual(workingTaskIds([released]), []);
+  assert.deepEqual(waitingOn([released]), {});
+  assert.deepEqual(
+    waitingOn([task("w1"), waiting]),
+    {},
+    "a released task does not wait on anything",
+  );
+
+  // One task is still working: the status check names only that task.
+  const working = { id: "a1", status: "working" as const, blockedBy: [] };
+  const text = idleNudgeText([working, released]);
+  assert.match(text, /Status check for tasks marked working: a1\./);
+  assert.doesNotMatch(text, /b2/);
+
+  // A reopened ledger row is open with no release fields; it is live open work again.
+  const reopened: IdleTask = { id: "r1", status: "open", blockedBy: [] };
+  assert.deepEqual(openTaskIds([reopened]), ["r1"]);
+  assert.deepEqual(workingTaskIds([reopened]), []);
+  assert.deepEqual(waitingOn([reopened]), {});
+  assert.match(idleNudgeText([reopened]), /open: r1\./);
+});
+
+test("an empty composition is silence, never a zero-task prompt", async () => {
+  assert.equal(idleDecisionNudgeText([], [], 0), "");
+  assert.equal(idleNudgeText([]), "");
+  assert.equal(idleNudgeText([], waitingOn([])), "");
+
+  const directory = await temporaryDataDir();
+  try {
+    const nudge = new IdleNudge(1_000, 0, directory);
+    const released = {
+      id: "a1",
+      status: "open" as const,
+      blockedBy: [],
+      releasedAt: "2026-10-31T10:00:00.000Z",
+      releaseReason: "Parked behind the next build slot",
+    };
+    assert.equal(
+      nudge.maybeNudge({ ...nothing, tasks: [released, { ...released, id: "b2" }] }, 5_000),
+      null,
+    );
+    assert.equal(
+      existsSync(join(directory, "idle-nudge.json")),
+      false,
+      "no prompt means no record row and no entry",
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("forgetTasks drops the named rows and keeps the rest of the record", async () => {
+  const directory = await temporaryDataDir();
+  try {
+    const file = join(directory, "idle-nudge.json");
+    const original = JSON.stringify({
+      hash: taskSetHash(["a1", "b2"]),
+      nudgedAt: "2026-10-31T12:00:00.000Z",
+      closed: ["z9"],
+      tasks: {
+        a1: { named: 2, lastNamedAt: "2026-10-31T11:00:00.000Z", state: "working", silent: 0 },
+        b2: { named: 1, lastNamedAt: "2026-10-31T11:30:00.000Z", state: "open", silent: 0 },
+      },
+    });
+    await writeFile(file, original, "utf8");
+    const nudge = new IdleNudge(1_000, 0, directory);
+
+    nudge.forgetTasks(["missing"]);
+    assert.equal(await readFile(file, "utf8"), original, "nothing matched, so nothing is written");
+
+    nudge.forgetTasks(["a1"]);
+    assert.equal(nudge.nudgedTasks.a1, undefined);
+    const record = JSON.parse(await readFile(file, "utf8")) as {
+      hash: string;
+      nudgedAt: string;
+      closed: string[];
+      tasks: Record<string, { named: number }>;
+    };
+    assert.equal(record.tasks.a1, undefined, "the forgotten row is gone");
+    assert.equal(record.tasks.b2?.named, 1, "the other row is untouched");
+    assert.deepEqual(record.closed, ["z9"]);
+    assert.equal(record.nudgedAt, "2026-10-31T12:00:00.000Z");
+    assert.equal(record.hash, taskSetHash(["a1", "b2"]));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a task re-marked working after a release is named at once", () => {
+  const now = Date.parse("2026-10-31T12:00:00.000Z");
+  const nudge = new IdleNudge(1_000, 0, "");
+  const working = [task("a1", "working")];
+  assert.match(
+    nudge.maybeNudge({ ...nothing, tasks: working }, now) ?? "",
+    /Status check for tasks marked working: a1/,
+  );
+
+  // Without forgetting the row, the hourly interval holds the same working task back.
+  nudge.noteActivity(now + 1_000);
+  assert.equal(nudge.maybeNudge({ ...nothing, tasks: working }, now + 2_000), null);
+
+  // task_release forgot the row, so task_working names the task at once.
+  nudge.forgetTasks(["a1"]);
+  nudge.noteActivity(now + 3_000);
+  assert.match(
+    nudge.maybeNudge({ ...nothing, tasks: working }, now + 4_000) ?? "",
+    /Status check for tasks marked working: a1/,
+  );
+});
+
+test("leftWorking names only the ids whose published status stopped being working", () => {
+  const ledgerTask = (id: string, status: Task["status"]) => ({ id, status }) as Task;
+  assert.deepEqual(
+    leftWorking(
+      { a1: "working", b2: "open", c3: "done" },
+      [ledgerTask("a1", "open"), ledgerTask("b2", "open"), ledgerTask("c3", "done")],
+    ),
+    ["a1"],
+  );
+  assert.deepEqual(leftWorking({}, [ledgerTask("a1", "open")]), []);
+  assert.deepEqual(leftWorking({ a1: "working" }, [ledgerTask("a1", "working")]), []);
 });
 
 test("an hour-stale working task is actualized and a freshly worked one is not", () => {
@@ -768,6 +966,126 @@ test("the nudge's own run re-arms, so a new task set fires again", async () => {
     await driven.checkIdleNudge();
     assert.equal(seen.length, 2, "a new task set after the nudge's run fires again");
     assert.match(seen[1]?.text ?? "", /^You have been idle for 20 minutes/);
+  } finally {
+    if (previous === undefined) delete process.env.PI_IDLE_NUDGE_MS;
+    else process.env.PI_IDLE_NUDGE_MS = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("the ledger drops a released task on the very next window", async () => {
+  const previous = process.env.PI_IDLE_NUDGE_MS;
+  process.env.PI_IDLE_NUDGE_MS = "1000";
+  const directory = await temporaryDataDir();
+  try {
+    const store = new TaskStore(join(directory, "tasks.json"));
+    await store.load();
+    const { chat, driven } = idleChat(directory, () => store.ledger().tasks);
+    const call = taskToolCall(store, chat);
+
+    const a1 = (await store.createWithResult("Park this work", null)).task;
+    const b2 = (await store.createWithResult("Keep this work", null)).task;
+    chat.observeTaskLedger(store.ledger().tasks);
+    for (const id of [a1.id, b2.id]) {
+      const marked = await call("task_working", { id });
+      assert.notEqual(marked.isError, true, `task_working ${id}`);
+    }
+
+    const submitted: { text: string; kind: string | undefined }[] = [];
+    driven.submit = async (text, _mode, options) => {
+      submitted.push({ text, kind: options?.entry?.kind });
+      driven.setRunState("running");
+      driven.setRunState("idle");
+      return {};
+    };
+
+    const nudgeClock = driven.idleNudge as unknown as { lastActivityAt: number };
+    driven.idleNudge.noteActivity(0);
+    nudgeClock.lastActivityAt = Date.now() - 1_001;
+    await driven.checkIdleNudge();
+    assert.equal(submitted.length, 1, "the first window asks for both working tasks");
+    assert.equal(submitted[0]?.kind, IDLE_NUDGE_ENTRY_KIND);
+    assert.match(
+      submitted[0]?.text ?? "",
+      new RegExp(`Status check for tasks marked working: ${a1.id}, ${b2.id}\\.`),
+    );
+    assert.equal(parseNotice(submitted[0]?.text ?? "")?.kind, "idle");
+
+    const recordPath = join(directory, "idle-nudge.json");
+    const released = await call("task_release", {
+      id: a1.id,
+      reason: "Parked behind the next build slot",
+    });
+    assert.notEqual(released.isError, true, "task_release records the parked work");
+    const afterRelease = JSON.parse(await readFile(recordPath, "utf8")) as {
+      tasks: Record<string, unknown>;
+    };
+    assert.equal(afterRelease.tasks[a1.id], undefined, "the release forgets the row at once");
+    assert.ok(afterRelease.tasks[b2.id], "the other task keeps its row");
+
+    // New work opens the next window; the released id must not come back with it.
+    const c3 = (await store.createWithResult("Fresh work", null)).task;
+    chat.observeTaskLedger(store.ledger().tasks);
+    nudgeClock.lastActivityAt = Date.now() - 1_001;
+    await driven.checkIdleNudge();
+    assert.equal(submitted.length, 2, "new work opens a fresh window");
+    assert.match(submitted[1]?.text ?? "", new RegExp(`open: ${c3.id}\\.`));
+    const next = parseNotice(submitted[1]?.text ?? "");
+    assert.equal(next?.kind, "idle");
+    assert.ok(
+      next !== undefined && !next.taskIds.includes(a1.id),
+      "the released id is never named",
+    );
+
+    const afterWindow = JSON.parse(await readFile(recordPath, "utf8")) as {
+      tasks: Record<string, { named: number }>;
+    };
+    assert.equal(afterWindow.tasks[a1.id], undefined, "no sentence can name the released task");
+    assert.equal(afterWindow.tasks[b2.id]?.named, 1);
+  } finally {
+    if (previous === undefined) delete process.env.PI_IDLE_NUDGE_MS;
+    else process.env.PI_IDLE_NUDGE_MS = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("nothing working and nothing to pick submits nothing and writes no entry", async () => {
+  const previous = process.env.PI_IDLE_NUDGE_MS;
+  process.env.PI_IDLE_NUDGE_MS = "1000";
+  const directory = await temporaryDataDir();
+  try {
+    const store = new TaskStore(join(directory, "tasks.json"));
+    await store.load();
+    const { chat, driven } = idleChat(directory, () => store.ledger().tasks);
+    const call = taskToolCall(store, chat);
+
+    const a1 = (await store.createWithResult("Park one", null)).task;
+    const b2 = (await store.createWithResult("Park two", null)).task;
+    chat.observeTaskLedger(store.ledger().tasks);
+    for (const id of [a1.id, b2.id]) {
+      assert.notEqual((await call("task_working", { id })).isError, true);
+      const released = await call("task_release", { id, reason: "Parked behind the next slot" });
+      assert.notEqual(released.isError, true);
+    }
+
+    const kinds: string[] = [];
+    driven.submit = async (_text, _mode, options) => {
+      kinds.push(options?.entry?.kind ?? "none");
+      driven.setRunState("running");
+      driven.setRunState("idle");
+      return {};
+    };
+
+    driven.idleNudge.noteActivity(0);
+    (driven.idleNudge as unknown as { lastActivityAt: number }).lastActivityAt =
+      Date.now() - 1_001;
+    await driven.checkIdleNudge();
+    assert.equal(kinds.length, 0, "no prompt is submitted");
+    assert.equal(
+      existsSync(join(directory, "idle-nudge.json")),
+      false,
+      "no idle-nudge entry is written, so no chip can render",
+    );
   } finally {
     if (previous === undefined) delete process.env.PI_IDLE_NUDGE_MS;
     else process.env.PI_IDLE_NUDGE_MS = previous;

@@ -45,6 +45,7 @@ import {
   reconcileRunState,
 } from "../shared/run-health.js";
 import { steerDropReason, steerFromInboxItem } from "../shared/steers.js";
+import { leftWorking } from "../shared/tasks.js";
 import {
   type ChatMessage,
   type ContextUsage,
@@ -68,6 +69,7 @@ import {
   type StreamTextDelta,
   type StreamToolEnd,
   type StreamToolStart,
+  type Task,
   type ToolActivity,
   type TranscriptHistory,
 } from "../shared/types.js";
@@ -623,6 +625,8 @@ export class ChatService {
   private toolsRevision = 0;
   private eventFeed: McpEventFeed | undefined;
   private taskActivity: TaskActivityTracker | undefined;
+  /** The statuses of the last published ledger, so a task that left working forgets its row. */
+  private taskLedgerStatuses: Record<string, string> = {};
   private readonly mcpNotices = new NoticeCoalescer();
   /** Events shown by each open notice window, so an update carries the full text. */
   private readonly mcpNoticeEvents = new Map<string, unknown[]>();
@@ -891,6 +895,8 @@ export class ChatService {
       ...(activity === undefined ? {} : { activity }),
     });
     if (text === null) return;
+    // An empty composition is never a prompt; no entry, so no chip can render.
+    if (text.length === 0) return;
     this.checkingIdleNudge = true;
     const createdAt = new Date().toISOString();
     try {
@@ -1118,6 +1124,18 @@ export class ChatService {
   setTaskActivity(tracker: TaskActivityTracker): void {
     this.taskActivity = tracker;
     if (this.runState === "running") tracker.runStarted();
+  }
+
+  /**
+   * Follow the ledger's statuses so a task that stopped working forgets its idle-nudge
+   * row at once. Boot calls this once and every publish calls it beside the activity
+   * tracker; the nudge still reads the ledger itself at decision time.
+   */
+  observeTaskLedger(tasks: readonly Task[]): void {
+    const previous = this.taskLedgerStatuses;
+    this.taskLedgerStatuses = Object.fromEntries(tasks.map((task) => [task.id, task.status]));
+    const left = leftWorking(previous, tasks);
+    if (left.length > 0) this.idleNudge.forgetTasks(left);
   }
 
   mcpEventsState(): McpEventsState {

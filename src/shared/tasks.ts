@@ -54,8 +54,8 @@ export function isPendingStatus(status: string): boolean {
 }
 
 /**
- * True when the task's last ledger transition was a release back to open. A released task is
- * open work, but it is not working: its old activity stamps must not revive the badge.
+ * True when the task's last ledger transition was a release back to open. The idle nudge treats
+ * a released task as parked: the release's old activity stamps and naming row must not revive it.
  */
 export function isReleasedTask(task: {
   status: string;
@@ -65,6 +65,19 @@ export function isReleasedTask(task: {
   return (
     task.status === "open" && (task.releasedAt !== undefined || task.releaseReason !== undefined)
   );
+}
+
+/**
+ * The ids whose published status was `working` and whose current ledger status is not.
+ * A release, a closure and a reopen all invalidate the nudge's naming row for the task.
+ */
+export function leftWorking(
+  previous: Readonly<Record<string, string>>,
+  tasks: readonly Task[],
+): string[] {
+  return tasks
+    .filter((task) => previous[task.id] === "working" && task.status !== "working")
+    .map((task) => task.id);
 }
 
 /** Pending tasks in `blockedBy`. A done, backlog or proposed dependency does not gate. */
