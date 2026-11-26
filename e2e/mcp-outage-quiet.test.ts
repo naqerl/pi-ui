@@ -8,10 +8,7 @@ import {
   OutageQuiet,
   type StatusView,
 } from "../src/server/mcp-outage-quiet.js";
-import {
-  MCP_RETRY_BUDGET_MS,
-  MCP_SUPERVISE_DEFAULT_MS,
-} from "../src/server/mcp-retry-budget.js";
+import { MCP_RETRY_BUDGET_MS, MCP_SUPERVISE_DEFAULT_MS } from "../src/server/mcp-retry-budget.js";
 import { deriveStableId } from "../src/server/mcp-subscriptions.js";
 import { buildTranscript } from "../src/server/session.js";
 import { MCP_STATUS_HEAD } from "../src/shared/notices.js";
@@ -560,9 +557,7 @@ test("the outbox identity pass keeps the runtime's stall and recovery", () => {
   const recovered = `${MCP_STATUS_HEAD}\nhub/hub is active again at hub:9 (recovered after stall since t0)`;
   feed.ingest({
     customType: "mcp-events-status",
-    details: JSON.parse(
-      status([{ id: "s2", status: "active" }]).slice(MCP_STATUS_HEAD.length + 1),
-    ),
+    details: JSON.parse(status([{ id: "s2", status: "active" }]).slice(MCP_STATUS_HEAD.length + 1)),
   });
   assert.equal(
     feed.filterStatusIdentityNotice(recovered),
