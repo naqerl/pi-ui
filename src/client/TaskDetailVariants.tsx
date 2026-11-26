@@ -54,7 +54,6 @@ export interface TaskDetailModel {
   /** The body owns the page width; the details bar's cross leaves the mode. */
   fullscreen: boolean;
   onExitFullscreen: () => void;
-  dockClearance: number;
   /** This task's plan agent currently has a live run. */
   planning: boolean;
   statusPending: boolean;
@@ -1157,11 +1156,11 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
           }}
         >
           <section
-            className="h-full min-w-0 shrink-0 grow-0 basis-full overflow-y-auto overflow-x-hidden safe-bottom"
+            className="h-full min-w-0 shrink-0 grow-0 basis-full overflow-y-auto overflow-x-hidden"
             aria-label="Plan"
             aria-hidden={tab !== "plan"}
             inert={tab !== "plan" || undefined}
-            style={{ paddingBottom: model.dockClearance > 0 ? model.dockClearance : undefined }}
+            style={{ paddingBottom: "var(--dock-clearance, 0px)" }}
           >
             <PlanSections model={model} />
           </section>
