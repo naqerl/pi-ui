@@ -6,6 +6,7 @@ import {
   AssistantEntry,
   type Conversation,
   type ConversationId,
+  type Cursor,
   defineEntry,
   type EntryRecord,
   type Harness,
@@ -75,6 +76,62 @@ import type { TaskBridge } from "./task-tools.js";
 import { pendingVersionNotice, writeLastSeenVersion } from "./version-notice.js";
 
 export const SESSION_CONTEXT: Context = BACKGROUND_CONTEXT;
+
+/** The page size the chat core uses when it replays the durable log. */
+const TRANSCRIPT_PAGE = 256;
+
+/**
+ * The rows `conversation.context()` would return, oldest first, read from the durable log.
+ * `context()` is the model-facing view and settles with the live turn, so a snapshot built
+ * from it cannot paint a row that was placed while a provider stream is still open. The
+ * chat core reads the log itself for exactly that reason; the plan pane uses the same path.
+ */
+export async function readTranscriptEntries(
+  conversation: Conversation,
+): Promise<readonly EntryRecord[]> {
+  // A conversation without a log reader still has the model-facing view.
+  if (typeof conversation.entries !== "function") {
+    return (await conversation.context(SESSION_CONTEXT)).entries;
+  }
+  const entries: EntryRecord[] = [];
+  let cursor: Cursor | undefined;
+  for (;;) {
+    const page = await conversation.entries(
+      { order: "ascending" },
+      TRANSCRIPT_PAGE,
+      cursor,
+      SESSION_CONTEXT,
+    );
+    entries.push(...page.items);
+    if (page.next === undefined) break;
+    cursor = page.next;
+  }
+  // The newest compaction head is where the model-facing transcript starts. Keep the same
+  // rows: the plan transcript must not resurrect a prefix the model no longer sees, and the
+  // attachment diff must re-seed images a moved head took out of that view.
+  let head: EntryRecord["id"] | undefined;
+  for (const entry of entries) {
+    if (entry.head !== undefined) head = entry.head;
+  }
+  return head === undefined ? entries : entries.filter((entry) => entry.id >= head);
+}
+
+/** One row by id, without replaying the rest of the log. */
+export async function readTranscriptEntry(
+  conversation: Conversation,
+  id: EntryRecord["id"],
+): Promise<EntryRecord | undefined> {
+  if (typeof conversation.entries !== "function") {
+    return (await conversation.context(SESSION_CONTEXT)).entries.find((entry) => entry.id === id);
+  }
+  const page = await conversation.entries(
+    { minEntryId: id, maxEntryId: id, order: "ascending" },
+    1,
+    undefined,
+    SESSION_CONTEXT,
+  );
+  return page.items[0];
+}
 
 /**
  * Durable compaction is off until the chat has a head, or the log is still small.

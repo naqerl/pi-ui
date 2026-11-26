@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { createModels } from "@earendil-works/pi-ai";
-import type { EntryRecord, SubmissionDraft } from "@earendil-works/pi-durable";
+import {
+  CompactionEntry,
+  type EntryRecord,
+  type SubmissionDraft,
+  UserEntry,
+} from "@earendil-works/pi-durable";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { createJobTools } from "../src/server/job-tools.js";
 import { MediaStore } from "../src/server/media.js";
@@ -1318,6 +1323,97 @@ class FakeCancelConversation {
     return this.calls;
   }
 }
+
+/**
+ * A plan run still held by its provider: the placed row is in the log, and the
+ * model-facing context never settles. A snapshot must read the log, as the chat core does.
+ */
+class HeldPlanConversation {
+  readonly reads = { context: 0, entries: [] as unknown[] };
+
+  constructor(
+    private readonly log: EntryRecord[] = [
+      {
+        id: 7,
+        conversationId: 1,
+        kind: UserEntry.kind,
+        model: [{ role: "user", content: "hello", timestamp: 1 }],
+      } as unknown as EntryRecord,
+    ],
+  ) {}
+
+  async submit() {
+    return {
+      id: 1,
+      status: async () => ({ id: 1, type: "input", status: "placed", entry: 7 }),
+      wait: () => new Promise(() => undefined),
+    };
+  }
+
+  async context(): Promise<never> {
+    this.reads.context += 1;
+    throw new Error("a live snapshot must read the log, not the model-facing context");
+  }
+
+  async entries(query: {
+    minEntryId?: number;
+    maxEntryId?: number;
+    order?: "ascending" | "descending";
+  }) {
+    this.reads.entries.push(query);
+    const min = query.minEntryId ?? 0;
+    const max = query.maxEntryId ?? Number.MAX_SAFE_INTEGER;
+    return {
+      items: this.log.filter((entry) => {
+        const id = Number(entry.id);
+        return id >= min && id <= max;
+      }),
+    };
+  }
+}
+
+test("a held plan run renders its placed row without reading the model context", async () => {
+  const conversation = new HeldPlanConversation();
+  const session = new DurableTaskAgentSession("taskheld", {} as never, conversation as never);
+
+  const snapshot = await session.submit("hello");
+
+  assert.equal(conversation.reads.context, 0, "no model-facing read on the create path");
+  assert.deepEqual(
+    snapshot.messages.map((message) => [message.role, message.text]),
+    [["user", "hello"]],
+  );
+  assert.deepEqual(conversation.reads.entries, [
+    { minEntryId: 7, maxEntryId: 7, order: "ascending" },
+    { order: "ascending" },
+  ]);
+});
+
+test("a held plan snapshot keeps the compacted prefix out of its transcript", async () => {
+  const conversation = new HeldPlanConversation([
+    {
+      id: 3,
+      conversationId: 1,
+      kind: UserEntry.kind,
+      model: [{ role: "user", content: "old question", timestamp: 1 }],
+    },
+    { id: 5, conversationId: 1, kind: CompactionEntry.kind, head: 4 },
+    {
+      id: 7,
+      conversationId: 1,
+      kind: UserEntry.kind,
+      model: [{ role: "user", content: "hello", timestamp: 2 }],
+    },
+  ] as unknown as EntryRecord[]);
+  const session = new DurableTaskAgentSession("taskheld", {} as never, conversation as never);
+
+  const snapshot = await session.submit("hello");
+
+  assert.deepEqual(
+    snapshot.messages.map((message) => [message.role, message.text]),
+    [["user", "hello"]],
+  );
+});
 
 test("cancelling a queued follow-up does not end the live plan run", async () => {
   const conversation = new FakeCancelConversation();

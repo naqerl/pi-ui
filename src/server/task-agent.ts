@@ -84,6 +84,8 @@ import {
   appendAssistantError,
   buildTranscript,
   JOB_NOTICE_ENTRY_KIND,
+  readTranscriptEntries,
+  readTranscriptEntry,
   SESSION_CONTEXT,
   TASK_ATTACHMENTS_ENTRY_KIND,
   TASK_QUESTION_PROMPT_ENTRY_KIND,
@@ -839,9 +841,9 @@ export async function syncTaskAttachments(
 ): Promise<void> {
   await withAttachmentSync(conversation, async () => {
     const pending = await livePendingAttachmentWrites(conversation);
-    const context = await conversation.context(SESSION_CONTEXT);
+    const entries = await readTranscriptEntries(conversation);
     let previous: string[] | undefined;
-    for (const entry of context.entries) {
+    for (const entry of entries) {
       if (entry.kind !== TASK_ATTACHMENTS_ENTRY_KIND) continue;
       if (!isRecord(entry.data) || !Array.isArray(entry.data.ids)) continue;
       previous = entry.data.ids.filter((id): id is string => typeof id === "string");
@@ -1395,8 +1397,8 @@ export class DurableTaskAgentSession implements TaskAgentSession {
   }
 
   async snapshot(): Promise<TaskAgentChatSnapshot> {
-    const context = await this.conversation.context(SESSION_CONTEXT);
-    const built = buildTranscript(context.entries, this.mediaRef);
+    const entries = await readTranscriptEntries(this.conversation);
+    const built = buildTranscript(entries, this.mediaRef);
     return {
       taskId: this.taskId,
       messages: visibleTaskAgentMessages(built.messages),
@@ -1854,8 +1856,7 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     const placed = record === undefined || record.status === "placed" || record.status === "done";
     const entryId = record?.entry;
     if (entryId !== undefined) {
-      const context = await this.conversation.context(SESSION_CONTEXT);
-      const entry = context.entries.find((candidate) => candidate.id === entryId);
+      const entry = await readTranscriptEntry(this.conversation, entryId as EntryRecord["id"]);
       if (entry !== undefined) {
         const message = buildTranscript([entry], this.mediaRef).messages[0];
         if (message !== undefined) {
@@ -1993,8 +1994,7 @@ export class DurableTaskAgentSession implements TaskAgentSession {
 
   /** Reads a done submission's entry and consumes the pending steer it placed. */
   private async consumeSteerEntry(entryId: number, submissionId: string): Promise<boolean> {
-    const context = await this.conversation.context(SESSION_CONTEXT);
-    const entry = context.entries.find((candidate) => candidate.id === entryId);
+    const entry = await readTranscriptEntry(this.conversation, entryId as EntryRecord["id"]);
     if (entry === undefined) return false;
     const message = buildTranscript([entry], this.mediaRef).messages[0];
     return message === undefined ? false : this.takeTrackedSteer(message, submissionId);
