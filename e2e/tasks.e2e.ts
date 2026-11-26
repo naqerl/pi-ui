@@ -223,7 +223,9 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     browser,
     screen,
   }) => {
-    const title = `SLOW plan the launch ${Date.now()}`;
+    // The fake model holds a HOLD turn open without a clock, so this run stays live until
+    // the stop at the end of the test; SLOW would end it on the provider's timer mid-test.
+    const title = `HOLD plan the launch ${Date.now()}`;
     await browser.setViewport({ width: 390, height: 844 });
     await app.open("/?page=tasks");
     await browser.evaluate(() => {

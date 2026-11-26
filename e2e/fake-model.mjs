@@ -369,6 +369,21 @@ export function startFakeModelServer() {
       res.end();
       return;
     }
+    if (prompt.includes("HOLD")) {
+      // No provider clock: the stream stays open until the app aborts it, so a spec can
+      // keep a run live and then stop it without waiting for SLOW_HOLD_MS to expire.
+      writeEvent(res, chunkFor("Holding the plan run open"));
+      const heartbeat = setInterval(() => res.write(": keepalive\n\n"), 10_000);
+      heartbeat.unref();
+      const release = () => {
+        clearInterval(heartbeat);
+        if (res.writableEnded || res.destroyed) return;
+        res.end();
+      };
+      req.on("close", release);
+      res.on("close", release);
+      return;
+    }
     if (prompt.includes("SLOW")) {
       writeEvent(res, chunkFor("Working on it"));
       const heartbeat = setInterval(() => res.write(": keepalive\n\n"), 10_000);
