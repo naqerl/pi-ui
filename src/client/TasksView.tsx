@@ -84,7 +84,6 @@ interface TasksViewProps {
   planning?: readonly string[];
   activity?: TaskActivity;
   ready: boolean;
-  footerClearance: number;
   onLedger: (ledger: TaskLedger) => void;
   /** A task id another page asked to open, with a request count so repeats still open it. */
   selection?: { id: string; request: number } | null;
@@ -332,7 +331,6 @@ function TasksViewImpl({
   planning: planningIds = [],
   activity,
   ready,
-  footerClearance,
   onLedger,
   selection = null,
   onOpenTask,
@@ -877,7 +875,6 @@ function TasksViewImpl({
         wide={wide}
         fullscreen={fullscreenOpen}
         onExitFullscreen={() => onFullscreenChange?.(false)}
-        dockClearance={footerClearance}
         planning={
           planning.has(openTask.id) &&
           (isActiveStatus(openTask.status) || openTask.status === "planning")
@@ -1791,7 +1788,6 @@ export function TaskDetail({
   wide,
   fullscreen = false,
   onExitFullscreen,
-  dockClearance = 0,
   planning = false,
   statusPending = false,
   notice,
@@ -1812,8 +1808,6 @@ export function TaskDetail({
   /** The body owns the page width; the details bar's cross leaves the mode. */
   fullscreen?: boolean;
   onExitFullscreen?: () => void;
-  /** Bottom clearance for the plan scroller while the dock floats over it. */
-  dockClearance?: number;
   /** This task's plan agent currently has a live run. */
   planning?: boolean;
   statusPending?: boolean;
@@ -2050,7 +2044,6 @@ export function TaskDetail({
       wide,
       fullscreen,
       onExitFullscreen: onExitFullscreen ?? (() => undefined),
-      dockClearance,
       planning,
       statusPending,
       notice,

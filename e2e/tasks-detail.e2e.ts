@@ -607,6 +607,9 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     screen,
   }) => {
     await openSnapshot(app, browser, snapshot, 390, 844);
+    // The one-row dock is geometry, not a motion test, but the mid-flight sample
+    // below needs the existing 220 ms collapse instead of reduced motion.
+    await browser.emulateMedia({ reducedMotion: "no-preference" });
     await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
     await expect(screen.getByTestId("task-detail")).toHaveAttribute("data-layout", "mobile");
 
@@ -616,6 +619,7 @@ describe("task detail against a mocked state route", { serial: true }, () => {
         const dock = document.querySelector<HTMLElement>('[data-testid="composer-dock"]');
         const input = document.querySelector<HTMLElement>('[data-testid="task-agent-input"]');
         const body = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
+        const line = document.querySelector<HTMLElement>(".ink-line");
         const detail = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
         const header = document.querySelector<HTMLElement>('[data-testid="task-header"]');
         const plan = document.querySelector<HTMLElement>(
@@ -627,6 +631,7 @@ describe("task detail against a mocked state route", { serial: true }, () => {
           dock === null ||
           input === null ||
           body === null ||
+          line === null ||
           detail === null ||
           header === null ||
           plan === null ||
@@ -653,6 +658,7 @@ describe("task detail against a mocked state route", { serial: true }, () => {
           inputInert: input.closest("[inert]") !== null,
           bodyCollapsed: body.getAttribute("data-collapsed"),
           bodyHeight: body.getBoundingClientRect().height,
+          lineHeight: line.getBoundingClientRect().height,
           planBottom: planBox.bottom,
           planHeight: planBox.height,
           planTop: planBox.top,
@@ -692,6 +698,13 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     ).toBeLessThanOrEqual(1);
     expect(planOpen?.bodyCollapsed).toBe("true");
     expect(planOpen?.bodyHeight ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(1);
+    expect(planOpen?.lineHeight ?? 0).toBeGreaterThan(0);
+    expect(Math.abs((planOpen?.dockHeight ?? 0) - (planOpen?.lineHeight ?? 0))).toBeLessThanOrEqual(
+      1,
+    );
+    // The create-surface dock is 90 px; the Plan tab must be one line tall, not
+    // that full box with an empty row under the bar.
+    expect(planOpen?.dockHeight ?? Number.POSITIVE_INFINITY).toBeLessThan(90);
     expect(planOpen?.inputVisible).toBe(false);
     expect(planOpen?.inputInert).toBe(true);
     expect(planOpen?.planTop ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(
@@ -737,6 +750,33 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     );
     expect(await horizontalOverflow(browser)).toEqual([]);
 
+    // Record every frame across the tap so the expansion cannot be missed by a
+    // round trip: the body must grow through the existing 220 ms curve.
+    await browser.evaluate(() => {
+      const body = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
+      const dock = document.querySelector<HTMLElement>('[data-testid="composer-dock"]');
+      if (body === null || dock === null) return null;
+      const samples: Array<{ bodyHeight: number; dockHeight: number }> = [];
+      let running = true;
+      const sample = () => {
+        if (!running) return;
+        samples.push({
+          bodyHeight: body.getBoundingClientRect().height,
+          dockHeight: dock.getBoundingClientRect().height,
+        });
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+      (
+        window as Window & {
+          __dockFlight?: {
+            samples: Array<{ bodyHeight: number; dockHeight: number }>;
+            stop: () => void;
+          };
+        }
+      ).__dockFlight = { samples, stop: () => (running = false) };
+      return null;
+    });
     await screen.getByTestId("task-tab-chat").tap();
     await expect
       .poll(
@@ -753,11 +793,35 @@ describe("task detail against a mocked state route", { serial: true }, () => {
       )
       .toBe(null);
     const chatOpen = await readPlan();
+    const flight = await browser.evaluate(() => {
+      const recorder = (
+        window as Window & {
+          __dockFlight?: {
+            samples: Array<{ bodyHeight: number; dockHeight: number }>;
+            stop: () => void;
+          };
+        }
+      ).__dockFlight;
+      recorder?.stop();
+      return recorder?.samples ?? [];
+    });
+    const fullBodyHeight = chatOpen?.bodyHeight ?? 0;
+    expect(fullBodyHeight).toBeGreaterThan(0);
+    const firstMoved = flight.find((sample) => sample.bodyHeight > 1);
+    expect(firstMoved?.bodyHeight ?? Number.POSITIVE_INFINITY).toBeLessThan(fullBodyHeight);
+    expect(firstMoved?.dockHeight ?? Number.POSITIVE_INFINITY).toBeLessThan(
+      chatOpen?.dockHeight ?? 0,
+    );
     expect(chatOpen?.overlay).toBe(null);
     expect(chatOpen?.bodyCollapsed).toBe("false");
     expect(chatOpen?.shellHeight ?? 0).toBeGreaterThan(0);
     expect(chatOpen?.inputVisible).toBe(true);
     expect(chatOpen?.bodyHeight ?? 0).toBeGreaterThan(0);
+    expect(
+      Math.abs(
+        (chatOpen?.dockHeight ?? 0) - ((chatOpen?.lineHeight ?? 0) + (chatOpen?.bodyHeight ?? 0)),
+      ),
+    ).toBeLessThanOrEqual(1);
     expect(Math.abs((chatOpen?.planBottom ?? 0) - (chatOpen?.dockTop ?? 0))).toBeLessThanOrEqual(1);
     await expect(screen.getByTestId("page-dots")).toBeVisible();
     await app.screenshot("task-chat-dock-visible");
@@ -782,6 +846,12 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     expect(planAgain?.planHeight ?? 0).toBeGreaterThan(0);
     expect(
       Math.abs((planAgain?.planBottom ?? 0) - (planAgain?.viewportHeight ?? 0)),
+    ).toBeLessThanOrEqual(1);
+    expect(
+      Math.abs((planAgain?.dockHeight ?? 0) - (planAgain?.lineHeight ?? 0)),
+    ).toBeLessThanOrEqual(1);
+    expect(
+      Math.abs((planAgain?.planPaddingBottom ?? 0) - (planAgain?.dockHeight ?? 0)),
     ).toBeLessThanOrEqual(1);
     expect(await horizontalOverflow(browser)).toEqual([]);
   });
