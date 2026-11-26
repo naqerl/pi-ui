@@ -12,6 +12,7 @@ import {
   parseCompletion,
   parseReleaseReason,
   parseReopenReason,
+  proposedDraftTitle,
   TASK_ATTACHMENTS_MAX,
   TASK_BODY_MAX_LENGTH,
 } from "../shared/tasks.js";
@@ -35,6 +36,7 @@ export interface TaskBridge {
 
 export interface PlanDraftInput {
   readonly title: string;
+  readonly titleFromId?: (id: string) => string;
   readonly parentId?: string | null;
   readonly body?: string | null;
   readonly project?: string | null;
@@ -68,7 +70,11 @@ export async function createPlanDraft(
     input.attachments ?? [],
     input.project,
     input.body ?? input.title,
-    { status: "planning", createdBy: input.createdBy ?? "operator" },
+    {
+      status: "planning",
+      createdBy: input.createdBy ?? "operator",
+      ...(input.titleFromId === undefined ? {} : { titleFromId: input.titleFromId }),
+    },
   );
   bridge.publish(ledger);
   if (bridge.plan === undefined) return { ledger, task, started: false };
@@ -119,7 +125,7 @@ const dependsSchema = Type.Object({
 
 const proposeSchema = Type.Object({
   prompt: Type.String({
-    description: `The work to plan, written as one prompt. It becomes the draft's title and body, up to ${TASK_BODY_MAX_LENGTH} characters.`,
+    description: `The work to plan, written as one prompt. It becomes the draft's body, up to ${TASK_BODY_MAX_LENGTH} characters; the draft is titled \`Proposed <id>\` until its plan agent names it.`,
   }),
   project: projectSchema,
   attachments: Type.Optional(
@@ -304,16 +310,20 @@ async function changed(
 
 /**
  * The one propose_task definition, shared by the main chat and the planning agent.
- * It always saves a planning draft whose title and body are the prompt and starts its
- * plan run, so the plan agent writes the body before the operator approves it.
+ * It always saves a planning draft whose body is the prompt, titled `Proposed <id>` until
+ * its plan agent names it, and starts its plan run so the agent writes the body before
+ * the operator approves it.
  */
 export function createProposeTaskTool(bridge: TaskBridge): ToolRegistration {
   return defineTool({
     name: "propose_task",
     description:
-      "Propose work by describing it as one prompt. Saves a planning draft whose title and body are the prompt, then starts the plan agent that writes its body. The operator approves the draft on the tasks page when it is ready. There is no rationale or flag to pass.",
+      "Propose work by describing it as one prompt. Saves a planning draft whose body is the prompt, titled `Proposed <id>` until its plan agent names it, then starts the plan agent that writes its body. The operator approves the draft on the tasks page when it is ready. There is no rationale or flag to pass.",
     parameters: proposeSchema,
     async execute(args) {
+      if (args.prompt.trim().length === 0) {
+        return failure(new TaskError("prompt must not be empty", 400));
+      }
       let attachments: string[] | undefined;
       if (args.attachments !== undefined) {
         if (bridge.media === undefined) {
@@ -332,6 +342,7 @@ export function createProposeTaskTool(bridge: TaskBridge): ToolRegistration {
       try {
         const draft = await createPlanDraft(bridge, {
           title: args.prompt,
+          titleFromId: proposedDraftTitle,
           body: args.prompt,
           project: args.project,
           attachments,
@@ -347,9 +358,9 @@ export function createProposeTaskTool(bridge: TaskBridge): ToolRegistration {
 
 function planDraftText(draft: PlanDraft): string {
   if (draft.started) {
-    return `Draft ${draft.task.id} saved and its plan run started. The plan agent drafts the body; the operator approves it on the tasks page when it is ready.`;
+    return `Draft ${draft.task.id} saved as "${draft.task.title}" and its plan run started. The plan agent names the draft and writes the body; the operator approves it on the tasks page when it is ready.`;
   }
-  return `Draft ${draft.task.id} is saved, but its plan run did not start. Edit the body on the tasks page and approve it there.`;
+  return `Draft ${draft.task.id} is saved as "${draft.task.title}", but its plan run did not start. The operator should name the draft and edit the body on the tasks page before approving it.`;
 }
 
 /** Refuse a dependency list before a write: unknown, self, unapproved and cyclic ids. */

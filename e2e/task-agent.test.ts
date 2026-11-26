@@ -881,6 +881,32 @@ test("the plan prompt fixes the body shape, Gherkin and architecture rules", () 
   assert.ok(shape.length <= 2_000, `the body-shape block costs ${shape.length} characters`);
 });
 
+test("the plan prompt asks for a name only while the draft is a proposal placeholder", () => {
+  const proposed = taskAgentInstructions("base prompt", {
+    id: "m2eg",
+    title: "Proposed m2eg",
+    project: "pi-ui",
+    body: "A long prompt.",
+  });
+  assert.match(proposed, /Name this draft/);
+  assert.match(proposed, /at most 120 characters/);
+  assert.match(proposed, /body is that prompt/);
+  assert.match(proposed, /title stays `Proposed <id>`/);
+  assert.doesNotMatch(proposed, /title and body are that prompt/);
+  assert.ok(
+    proposed.indexOf("Name this draft") < proposed.indexOf("- Write the body as a specification"),
+    "the naming bullet comes before the body-shape block",
+  );
+
+  const titled = taskAgentInstructions("base prompt", {
+    id: "m2eg",
+    title: "Design the inbox",
+    project: "pi-ui",
+    body: "A long prompt.",
+  });
+  assert.doesNotMatch(titled, /Name this draft/);
+});
+
 test("edit_task updates this task's title, body and project", async () => {
   published = [];
   const ledger = await store.create("Draft the plan", null);
@@ -921,6 +947,47 @@ test("edit_task updates this task's title, body and project", async () => {
   assert.equal(published.length, 1);
   assert.equal(store.ledger().tasks.find((item) => item.id === other.id)?.title, "Leave me alone");
   assert.equal(store.ledger().tasks.find((item) => item.id === other.id)?.project, "other");
+});
+
+test("edit_task collapses a title to one line and refuses more than 120 characters", async () => {
+  published = [];
+  const task = (await store.create("Keep the old title", null)).tasks.find(
+    (item) => item.title === "Keep the old title",
+  );
+  assert.ok(task);
+  const tool = createTaskEditTool({
+    taskId: task.id,
+    store,
+    publish: (next) => {
+      published.push(next);
+    },
+  });
+
+  const oneLine = await tool.execute(
+    { title: "  Chip   unattributed\nMCP\tstatus   notices  " } as never,
+    {} as never,
+    {} as never,
+  );
+  assert.equal(oneLine.isError === true, false);
+  assert.equal(
+    store.ledger().tasks.find((item) => item.id === task.id)?.title,
+    "Chip unattributed MCP status notices",
+  );
+  assert.equal(published.length, 1);
+
+  const before = store.ledger().tasks.find((item) => item.id === task.id)?.title;
+  const essay = await tool.execute(
+    { title: `${"A".repeat(400)}\nand a second line` } as never,
+    {} as never,
+    {} as never,
+  );
+  assert.equal(essay.isError, true);
+  const essayText = essay.output?.find((part) => part.type === "text");
+  assert.ok(essayText && essayText.type === "text");
+  assert.match(essayText.text, /one line/i);
+  assert.match(essayText.text, /120/);
+  assert.equal(store.ledger().tasks.find((item) => item.id === task.id)?.title, before);
+  assert.equal(published.length, 1, "a refused title is not published");
 });
 
 test("edit_task cannot target another task and rejects an empty patch", async () => {
@@ -970,8 +1037,11 @@ test("the planning agent's propose_task creates a planning draft and starts its 
     .execute({ prompt, project: "pi-ui" } as never, {} as never, {} as never);
   assert.equal(result.isError === true, false);
 
-  const draft = store.ledger().tasks.find((task) => task.title === prompt);
+  const draft = store
+    .ledger()
+    .tasks.find((task) => task.title === `Proposed ${task.id}` && task.body === prompt);
   assert.ok(draft);
+  assert.equal(draft.title, `Proposed ${draft.id}`);
   assert.equal(draft.status, "planning");
   assert.equal(draft.body, prompt);
   assert.equal(draft.project, "pi-ui");
@@ -1011,6 +1081,9 @@ test("the planning agent's propose_task rejects a blank prompt without creating 
 
   const blank = await propose.execute({ prompt: "   " } as never, {} as never, {} as never);
   assert.equal(blank.isError, true);
+  const blankText = blank.output?.find((part) => part.type === "text");
+  assert.ok(blankText && blankText.type === "text");
+  assert.match(blankText.text, /prompt must not be empty/);
   assert.equal(store.ledger().tasks.length, tasksBefore);
   assert.equal(opened, 0, "a refused prompt never starts a plan run");
   await manager.close();

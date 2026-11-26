@@ -46,7 +46,12 @@ import { parseTaskQuestions, taskQuestionAnswerPayload } from "../shared/questio
 import { PENDING_QUEUE_ORDER, QUEUE_ENTRY_KIND, queuedNoticeIcon } from "../shared/queue.js";
 import { runErrorFromUnanswered } from "../shared/run-error.js";
 import { steerDropReason } from "../shared/steers.js";
-import { DEFAULT_NEW_TASK_TITLE, isActiveStatus, TASK_BODY_MAX_LENGTH } from "../shared/tasks.js";
+import {
+  DEFAULT_NEW_TASK_TITLE,
+  isActiveStatus,
+  isProposedDraftTitle,
+  TASK_BODY_MAX_LENGTH,
+} from "../shared/tasks.js";
 import {
   type ActivityItem,
   type ChatMessage,
@@ -918,6 +923,9 @@ export function taskAgentInstructions(
     imagesInContext && attachmentCount > 0
       ? "- **Look before you ask — investigate first.** Images attached to this task are already in your context as the opening user message; describe what you actually see (layout, states, visible text, what looks wrong) before you ask the operator anything. Never ask a question an attached image or the repository already answers: read the code first (`read`, `bash`), then ask only what is genuinely undecidable. If an image is unreadable, say which one and what it should show.\n"
       : "";
+  const nameDraft = isProposedDraftTitle(task.title)
+    ? `- **Name this draft.** Its title is still ${task.title}. Call edit_task with one line, at most 120 characters, no markdown and no trailing period, naming the outcome (for example \`Chip unattributed MCP status notices instead of delivering them\`). Never leave the placeholder and never move the prompt into the title.\n`
+    : "";
   const memoryPolicy = memoryEnabled
     ? `- You must not edit, write, create or delete any workspace files, and you must not run commands that change the workspace. The memory_write tool is the one write you may make, and it only touches the memory store.
 
@@ -942,7 +950,7 @@ Plan mode only:
 ${memoryPolicy}
 - You may use the read and bash tools to inspect the repository.
 ${look}- You have additional tools, edit_task, propose_task, task_list, task_view, task_depends, ask_questions and append_questions. edit_task updates this task's title, markdown body and/or project. Use it to capture the formulated task: a clear title, a markdown body in the sections below, and a project when one fits.
-- Use propose_task with the prompt for a follow-up task. It saves a planning draft whose title and body are that prompt and starts its own plan agent; the operator approves the draft when its body is ready. There is no rationale or flag to pass. Do not propose a duplicate of the task you are planning; propose only distinct follow-up work.
+- Use propose_task with the prompt for a follow-up task. It saves a planning draft whose body is that prompt and whose title stays \`Proposed <id>\` until its own plan agent names it; it starts its own plan agent, and the operator approves the draft when its body is ready. There is no rationale or flag to pass. Do not propose a duplicate of the task you are planning; propose only distinct follow-up work.
 - Before designing, list the other tasks in this project with task_list and open with task_view any whose title suggests the same files, feature or decision. Align by naming the shared module, API or type and the order in which the two must land instead of designing a second mechanism. Record a real ordering with task_depends, in one direction only and never both. A task still in planning is not approved work: read it to avoid conflict, not to assume its outcome exists.
 - Investigate before asking. Read the files, the task body, the docs and prior tasks with read/bash
   first; most questions answer themselves.
@@ -961,7 +969,7 @@ ${look}- You have additional tools, edit_task, propose_task, task_list, task_vie
 - Never re-ask an answered question. If a set was dismissed, decide it yourself.
 - Do not change the task's status. The operator owns that.
 - Do not list or narrate your tool calls in the task body.
-- Write the body as a specification in four \`##\` sections, in this order: \`## Goal\`, \`## Requirements\`,
+${nameDraft}- Write the body as a specification in four \`##\` sections, in this order: \`## Goal\`, \`## Requirements\`,
   \`## Scenarios\`, \`## Architecture\`.
 - **Goal** — one sentence: the outcome the operator has when the work lands; no preamble, background,
   file names or steps. If it needs two sentences, it is two tasks.
@@ -989,7 +997,12 @@ ${body}`;
 }
 
 const editSchema = Type.Object({
-  title: Type.Optional(Type.String({ description: "New title; it must not be empty." })),
+  title: Type.Optional(
+    Type.String({
+      description:
+        "New title; it is collapsed to one line of at most 120 characters and must not be empty.",
+    }),
+  ),
   body: Type.Optional(
     Type.String({
       description: `Free markdown description shown under the title, up to ${TASK_BODY_MAX_LENGTH} characters. Pass an empty string to clear it.`,
@@ -1002,6 +1015,17 @@ const editSchema = Type.Object({
   ),
 });
 
+/** The one-line title budget for the plan agent; the operator's own title paths keep their rules. */
+const TASK_TITLE_MAX_LENGTH = 120;
+
+function normalizeTaskTitle(value: string): string {
+  const title = value.replace(/\s+/g, " ").trim();
+  if (title.length > TASK_TITLE_MAX_LENGTH) {
+    throw new TaskError("A task title must be one line of at most 120 characters", 400);
+  }
+  return title;
+}
+
 /** The one task-edit tool bound to a single task. It cannot target any other task. */
 export function createTaskEditTool(options: {
   taskId: string;
@@ -1011,7 +1035,7 @@ export function createTaskEditTool(options: {
   return defineTool({
     name: "edit_task",
     description:
-      "Update this task's title, markdown body and/or project. The body is shown under the title on the tasks page; pass an empty string to clear it. A title cannot be empty. This cannot change status.",
+      "Update this task's title, markdown body and/or project. The title is collapsed to one line of at most 120 characters. The body is shown under the title on the tasks page; pass an empty string to clear it. A title cannot be empty. This cannot change status.",
     parameters: editSchema,
     async execute(args) {
       const current = options.store.ledger().tasks.find((task) => task.id === options.taskId);
@@ -1028,10 +1052,10 @@ export function createTaskEditTool(options: {
         };
       }
       const patch: { title?: string; body?: string; project?: string | null } = {};
-      if (args.title !== undefined) patch.title = args.title;
       if (args.body !== undefined) patch.body = args.body;
       if (args.project !== undefined) patch.project = args.project;
       try {
+        if (args.title !== undefined) patch.title = normalizeTaskTitle(args.title);
         const ledger = await options.store.update(options.taskId, patch);
         options.publish(ledger);
         const next = ledger.tasks.find((task) => task.id === options.taskId);

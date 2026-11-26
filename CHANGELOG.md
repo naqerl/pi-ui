@@ -5,6 +5,10 @@
 - A self-healed MCP session no longer wakes the model: status prose that names no tracked subscription is display-only whatever `customType` carried it, so the runtime's `mcp-recovery` notice folds into the same chip row as every other blip instead of entering the outbox as a turn. Only a stream that has spent its whole retry ladder, a restore gap or a truncation warning still speaks. (q3vn)
 - The outage window is derived from the supervision ladder (5/10/20/40/60 s = 135 s plus two supervisor ticks) instead of a fixed 60 s, so a stream that reopens on its first retry stays silent; a `stalled` frame still escalates at once, and one escalation is followed by exactly one recovery notice. `PI_UI_MCP_OUTAGE_NOTIFY_MS` still overrides the window absolutely. (q3vn)
 
+### Changed
+
+- `propose_task` no longer stores the whole prompt as the task title: an agent-proposed draft is inserted once as `Proposed <id>`, its plan agent is asked to name it with one line of at most 120 characters, and the prompt stays the body. An operator-created Plan draft keeps the title they typed, and an unnamed agent draft stays visibly unnamed until the inline title editor or its plan agent names it. (n3s6)
+
 ## 1.14.0
 
 ### Added
