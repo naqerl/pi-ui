@@ -126,6 +126,25 @@ returned by `GET /api/dashboard` so the page can offer "Reset to default".
 `POST /api/dashboard/reset` replaces the board with `DEFAULT_DASHBOARD`, clears
 tombstones and returns the new dashboard state.
 
+## Full screen
+
+Every card carries a maximize control in its header, between the error/stale
+badge and the kebab menu. It is there for every widget kind and source and at
+every width, phone included. Maximizing opens the widget as an overlay over the
+whole viewport: one thin header with the card's title and a single minimize
+control, and the card body below it.
+
+There are three exits: minimize, Escape, and the browser's back button. The
+overlay pushes one history entry marked `piWidgetFullscreen` and leaves the URL
+alone, so Back closes the widget, the `?page=stats` pager state still wins on a
+reload, and a following Back never reopens it.
+
+A sparkline that is expanded fills the space under the header instead of using
+`chart.height`; the same widget keeps its `chart.height` in the card. This is a
+presentation rule of the expanded state only: card geometry, spans and saved
+grid slots are untouched, and the board is exactly where it was when the
+overlay closes.
+
 ## Guards
 
 The unit tests in `e2e/dashboard.test.ts` (part of the existing e2e gate) check

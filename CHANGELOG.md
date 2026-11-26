@@ -1,3 +1,9 @@
+## 1.15.0
+
+### Added
+
+- Every dashboard widget opens full screen from a maximize control in its card header. The overlay covers the viewport under one thin header with a single minimize control, the body scrolls, a sparkline fills the height it is given, and the overlay closes on minimize, Escape or the browser's back button. Card geometry (`chart.height`, spans and saved grid slots) is untouched. (fullscreen)
+
 ## 1.14.1
 
 ### Fixed

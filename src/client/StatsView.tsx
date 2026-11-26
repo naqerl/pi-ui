@@ -13,7 +13,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { flushSync } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import type { Layout } from "react-grid-layout";
 import GridLayout from "react-grid-layout";
 import {
@@ -64,7 +64,16 @@ import {
 } from "./components/ui/chart";
 import { getDashboard, setDashboard, subscribeDashboard } from "./dashboard-store";
 import { haptic } from "./haptics";
-import { CloseIcon, DotIcon, GripIcon, MoreIcon, TrendDownIcon, TrendUpIcon } from "./icons";
+import {
+  CloseIcon,
+  DotIcon,
+  GripIcon,
+  MaximizeIcon,
+  MinimizeIcon,
+  MoreIcon,
+  TrendDownIcon,
+  TrendUpIcon,
+} from "./icons";
 import { Markdown } from "./markdown";
 import { SECTION_BAR_ICON_BUTTON, SECTION_BAR_LABEL, SectionBar } from "./SectionBar";
 
@@ -89,6 +98,25 @@ const DRAGGABLE_CANCEL =
   "button:not(.dashboard-drag-handle), input, textarea, a, [data-no-press]:not(.dashboard-drag-handle)";
 
 type GridResizeHandle = "s" | "w" | "e" | "n" | "sw" | "nw" | "se" | "ne";
+
+type WidgetFullscreenHistoryState = Record<string, unknown> & { piWidgetFullscreen?: string };
+
+/** The current history state, when it is an object we can add the overlay marker to. */
+function widgetFullscreenHistory(): WidgetFullscreenHistoryState | null {
+  const state: unknown = window.history.state;
+  return state !== null && typeof state === "object"
+    ? (state as WidgetFullscreenHistoryState)
+    : null;
+}
+
+/** Drops the overlay marker from the current entry. */
+function stripWidgetFullscreenHistory() {
+  const state = widgetFullscreenHistory();
+  if (state?.piWidgetFullscreen === undefined) return;
+  const next = { ...state };
+  delete next.piWidgetFullscreen;
+  window.history.replaceState(next, "", window.location.href);
+}
 
 interface GridGesture {
   kind: "drag" | "resize";
@@ -563,10 +591,12 @@ function WidgetSparkline({
   id,
   view,
   chart,
+  expanded = false,
 }: {
   id: string;
   view: SparklineView;
   chart?: SparklineChart;
+  expanded?: boolean;
 }) {
   const chartId = useId().replace(/:/g, "");
   const chartRef = useRef<HTMLDivElement | null>(null);
@@ -861,76 +891,78 @@ function WidgetSparkline({
   const plotLabel = `Chart: ${series.map((item) => item.label).join(", ")}. Use the arrow keys to pin a point; Escape clears it.`;
   return (
     <>
-      <ChartContainer
-        ref={chartRef}
-        config={config}
-        className="aspect-auto w-full min-w-0"
-        style={{ height, minHeight: 24 }}
-        role="group"
-        tabIndex={0}
-        aria-label={plotLabel}
-        data-chart-widget={id}
-        onPointerDownCapture={onPointerDown}
-        onClick={onClick}
-        onPointerCancel={() => {
-          pressRef.current = null;
-        }}
-        onPointerLeave={() => {
-          pressRef.current = null;
-        }}
-        onKeyDown={onKeyDown}
-      >
-        {hasReference || types.size > 1 ? (
-          <ComposedChart {...props}>
-            {gradient}
-            {xAxis}
-            {yAxis}
-            {tooltip}
-            {legend}
-            {references}
-            {markers}
-            {parts}
-          </ComposedChart>
-        ) : type === "bar" ? (
-          <BarChart {...props}>
-            {gradient}
-            {xAxis}
-            {yAxis}
-            {tooltip}
-            {legend}
-            {markers}
-            {parts}
-          </BarChart>
-        ) : type === "line" ? (
-          <LineChart {...props}>
-            {gradient}
-            {xAxis}
-            {yAxis}
-            {tooltip}
-            {legend}
-            {markers}
-            {parts}
-          </LineChart>
-        ) : (
-          <AreaChart {...props}>
-            {gradient}
-            {xAxis}
-            {yAxis}
-            {tooltip}
-            {legend}
-            {markers}
-            {parts}
-          </AreaChart>
-        )}
-      </ChartContainer>
-      {pinnedRow === undefined ? null : (
-        <div
-          className="theme-radius mt-sm border border-border/70 bg-surface px-lg py-sm text-[10px] leading-4 whitespace-pre-line"
-          data-testid="chart-pin-caption"
+      <div className={expanded ? "flex min-h-0 flex-1 flex-col" : "contents"}>
+        <ChartContainer
+          ref={chartRef}
+          config={config}
+          className="aspect-auto w-full min-w-0"
+          style={expanded ? { height: "100%", minHeight: 24 } : { height, minHeight: 24 }}
+          role="group"
+          tabIndex={0}
+          aria-label={plotLabel}
+          data-chart-widget={id}
+          onPointerDownCapture={onPointerDown}
+          onClick={onClick}
+          onPointerCancel={() => {
+            pressRef.current = null;
+          }}
+          onPointerLeave={() => {
+            pressRef.current = null;
+          }}
+          onKeyDown={onKeyDown}
         >
-          {captionText}
-        </div>
-      )}
+          {hasReference || types.size > 1 ? (
+            <ComposedChart {...props}>
+              {gradient}
+              {xAxis}
+              {yAxis}
+              {tooltip}
+              {legend}
+              {references}
+              {markers}
+              {parts}
+            </ComposedChart>
+          ) : type === "bar" ? (
+            <BarChart {...props}>
+              {gradient}
+              {xAxis}
+              {yAxis}
+              {tooltip}
+              {legend}
+              {markers}
+              {parts}
+            </BarChart>
+          ) : type === "line" ? (
+            <LineChart {...props}>
+              {gradient}
+              {xAxis}
+              {yAxis}
+              {tooltip}
+              {legend}
+              {markers}
+              {parts}
+            </LineChart>
+          ) : (
+            <AreaChart {...props}>
+              {gradient}
+              {xAxis}
+              {yAxis}
+              {tooltip}
+              {legend}
+              {markers}
+              {parts}
+            </AreaChart>
+          )}
+        </ChartContainer>
+        {pinnedRow === undefined ? null : (
+          <div
+            className="theme-radius mt-sm border border-border/70 bg-surface px-lg py-sm text-[10px] leading-4 whitespace-pre-line"
+            data-testid="chart-pin-caption"
+          >
+            {captionText}
+          </div>
+        )}
+      </div>
       <p role="status" className="sr-only" data-testid="chart-pin-status">
         {captionText}
       </p>
@@ -950,7 +982,17 @@ function rowClass(): string {
   return "flex min-w-0 flex-wrap items-baseline justify-between gap-x-2xl gap-y-xs py-lg";
 }
 
-function ViewBody({ id, view, chart }: { id: string; view: WidgetView; chart?: SparklineChart }) {
+function ViewBody({
+  id,
+  view,
+  chart,
+  expanded = false,
+}: {
+  id: string;
+  view: WidgetView;
+  chart?: SparklineChart;
+  expanded?: boolean;
+}) {
   switch (view.kind) {
     case "stat":
       return (
@@ -1086,12 +1128,12 @@ function ViewBody({ id, view, chart }: { id: string; view: WidgetView; chart?: S
       );
     case "sparkline":
       return (
-        <div className="py-lg">
+        <div className={expanded ? "flex h-full min-h-0 flex-col py-lg" : "py-lg"}>
           <div className="flex items-baseline justify-between gap-2xl">
             <span className="text-muted-foreground">{view.label ?? ""}</span>
             <span data-testid={`stat-${id}`}>{view.value ?? ""}</span>
           </div>
-          <WidgetSparkline id={id} view={view} chart={chart} />
+          <WidgetSparkline id={id} view={view} chart={chart} expanded={expanded} />
         </div>
       );
     case "markdown":
@@ -1103,16 +1145,42 @@ function ViewBody({ id, view, chart }: { id: string; view: WidgetView; chart?: S
   }
 }
 
+function resolveWidgetValue(
+  widget: Widget,
+  values: DashboardState["values"],
+  builtinValues: Record<string, { view?: WidgetView; error?: string }>,
+): { view?: WidgetView; value?: WidgetValue } {
+  const stored = values[widget.id];
+  const live = builtinValues[widget.id];
+  const view = widget.source.type === "builtin" ? live?.view : stored?.view;
+  const value =
+    widget.source.type === "builtin"
+      ? live?.error === undefined
+        ? undefined
+        : { failures: 0, error: live.error }
+      : stored;
+  return { view, value };
+}
+
+function widgetPlaceholder(widget: Widget, error: string | undefined): string {
+  return (
+    error ??
+    (widget.source.type === "static" ? "waiting for data" : "waiting for the first poll")
+  );
+}
+
 function WidgetCard({
   widget,
   view,
   value,
   onRemove,
+  onMaximize,
 }: {
   widget: Widget;
   view: WidgetView | undefined;
   value: WidgetValue | undefined;
   onRemove: (id: string) => void;
+  onMaximize: (id: string) => void;
 }) {
   const [menu, setMenu] = useState(false);
   const press = useRef<{ timer: number; x: number; y: number } | null>(null);
@@ -1210,6 +1278,15 @@ function WidgetCard({
           <button
             type="button"
             className="theme-radius -my-sm px-md text-muted-foreground hover:bg-foreground/10"
+            aria-label={`Maximize ${widget.title}`}
+            data-testid={`widget-${widget.id}-maximize`}
+            onClick={() => onMaximize(widget.id)}
+          >
+            <MaximizeIcon size={16} />
+          </button>
+          <button
+            type="button"
+            className="theme-radius -my-sm px-md text-muted-foreground hover:bg-foreground/10"
             aria-label={`${widget.title} menu`}
             aria-haspopup="menu"
             aria-expanded={menu}
@@ -1224,8 +1301,7 @@ function WidgetCard({
           <ViewBody id={widget.id} view={view} chart={widget.chart} />
         ) : (
           <p className="py-lg text-muted-foreground [overflow-wrap:anywhere]">
-            {error ??
-              (widget.source.type === "static" ? "waiting for data" : "waiting for the first poll")}
+            {widgetPlaceholder(widget, error)}
           </p>
         )}
       </div>
@@ -1248,6 +1324,75 @@ function WidgetCard({
         </div>
       ) : null}
     </section>
+  );
+}
+
+function WidgetFullscreen({
+  widget,
+  view,
+  value,
+  onClose,
+}: {
+  widget: Widget;
+  view: WidgetView | undefined;
+  value: WidgetValue | undefined;
+  onClose: () => void;
+}) {
+  const minimizeRef = useRef<HTMLButtonElement | null>(null);
+  const error = value?.error;
+
+  useEffect(() => {
+    minimizeRef.current?.focus({ preventScroll: true });
+  }, []);
+
+  return createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={widget.title}
+      className="fixed inset-0 z-50 flex flex-col bg-background font-mono text-xs text-foreground"
+      data-testid={`widget-${widget.id}-fullscreen`}
+    >
+      <div className="flex shrink-0 items-center justify-between gap-lg border-b border-border/70 px-2xl py-xs">
+        <h2 className="min-w-0 truncate text-[11px] uppercase tracking-wide text-muted-foreground">
+          {widget.title}
+        </h2>
+        <span className="flex shrink-0 items-center gap-sm">
+          {error === undefined ? null : (
+            <span
+              className="theme-radius border border-status-bad/50 px-sm text-[10px] text-status-bad"
+              title={error}
+              data-testid={`widget-${widget.id}-fullscreen-error`}
+            >
+              {view === undefined ? "error" : "stale"}
+            </span>
+          )}
+          <button
+            ref={minimizeRef}
+            type="button"
+            className="theme-radius -my-sm px-md text-muted-foreground hover:bg-foreground/10"
+            aria-label={`Minimize ${widget.title}`}
+            data-testid={`widget-${widget.id}-minimize`}
+            onClick={onClose}
+          >
+            <MinimizeIcon size={16} />
+          </button>
+        </span>
+      </div>
+      <div
+        className="min-h-0 flex-1 overflow-y-auto px-2xl py-lg"
+        data-testid={`widget-${widget.id}-fullscreen-body`}
+      >
+        {view !== undefined ? (
+          <ViewBody id={widget.id} view={view} chart={widget.chart} expanded />
+        ) : (
+          <p className="py-lg text-muted-foreground [overflow-wrap:anywhere]">
+            {widgetPlaceholder(widget, error)}
+          </p>
+        )}
+      </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -1321,6 +1466,7 @@ function SectionGrid({
   builtinValues,
   desktop,
   onRemove,
+  onMaximize,
   onGestureStart,
   onGestureMove,
   onGestureStop,
@@ -1332,6 +1478,7 @@ function SectionGrid({
   builtinValues: Record<string, { view?: WidgetView; error?: string }>;
   desktop: boolean;
   onRemove: (id: string) => void;
+  onMaximize: (id: string) => void;
   onGestureStart: (kind: "drag" | "resize") => void;
   onGestureMove: (index: number, event: MouseEvent) => void;
   onGestureStop: (
@@ -1414,15 +1561,7 @@ function SectionGrid({
 
   const cards = visible.map((slot) => {
     const widget = byId.get(slot.id) as Widget;
-    const stored = values[widget.id];
-    const live = builtinValues[widget.id];
-    const view = widget.source.type === "builtin" ? live?.view : stored?.view;
-    const value =
-      widget.source.type === "builtin"
-        ? live?.error === undefined
-          ? undefined
-          : { failures: 0, error: live.error }
-        : stored;
+    const { view, value } = resolveWidgetValue(widget, values, builtinValues);
     return (
       <div
         key={widget.id}
@@ -1430,7 +1569,13 @@ function SectionGrid({
         data-widget-id={widget.id}
         data-span={slot.span}
       >
-        <WidgetCard widget={widget} view={view} value={value} onRemove={onRemove} />
+        <WidgetCard
+          widget={widget}
+          view={view}
+          value={value}
+          onRemove={onRemove}
+          onMaximize={onMaximize}
+        />
       </div>
     );
   });
@@ -1528,6 +1673,12 @@ export function StatsView({
   const dashboard = useSyncExternalStore(subscribeDashboard, getDashboard, getDashboard);
   const desktop = useDesktopGrid();
   useViewerReport(active);
+  const byId = new Map((dashboard?.widgets ?? []).map((widget) => [widget.id, widget]));
+  const [maximizedId, setMaximizedId] = useState<string | null>(null);
+  const maximizedRef = useRef<string | null>(null);
+  maximizedRef.current = maximizedId;
+  const closing = useRef(false);
+  const openFocus = useRef<string | null>(null);
   const inputs: BuiltinInputs = useMemo(
     () => ({
       usage: stats.usage,
@@ -1590,6 +1741,117 @@ export function StatsView({
     };
   }, [dashboard?.widgets, inputs]);
   const pageRef = useRef<HTMLDivElement | null>(null);
+
+  const leaveFullscreen = useCallback(() => {
+    stripWidgetFullscreenHistory();
+    closing.current = false;
+    setMaximizedId(null);
+  }, []);
+
+  const closeFullscreen = useCallback(() => {
+    if (closing.current) return;
+    const id = maximizedRef.current;
+    if (id !== null && widgetFullscreenHistory()?.piWidgetFullscreen === id) {
+      closing.current = true;
+      window.history.back();
+      return;
+    }
+    stripWidgetFullscreenHistory();
+    closing.current = false;
+    setMaximizedId(null);
+  }, []);
+
+  const maximize = useCallback((id: string) => {
+    if (maximizedRef.current === id) return;
+    const current = widgetFullscreenHistory();
+    const next = { ...(current ?? {}), piWidgetFullscreen: id };
+    // A forward step can land on a stale overlay entry after a minimize. Take
+    // that entry over instead of stacking another marker on top of it.
+    if (current?.piWidgetFullscreen === undefined) {
+      window.history.pushState(next, "", window.location.href);
+    } else {
+      window.history.replaceState(next, "", window.location.href);
+    }
+    closing.current = false;
+    openFocus.current = id;
+    maximizedRef.current = id;
+    setMaximizedId(id);
+  }, []);
+
+  useEffect(() => {
+    const root = pageRef.current;
+    if (maximizedId === null) {
+      closing.current = false;
+      const saved = openFocus.current;
+      if (saved === null) return;
+      openFocus.current = null;
+      root
+        ?.querySelector<HTMLElement>(`[data-testid="widget-${saved}-maximize"]`)
+        ?.focus({ preventScroll: true });
+      return;
+    }
+    if (root === null) return;
+    root.setAttribute("inert", "");
+    root.setAttribute("aria-hidden", "true");
+    root.setAttribute("data-pager-lock", "fullscreen");
+    const bodyOverflow = document.body.style.overflow;
+    const htmlOverflow = document.documentElement.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+    return () => {
+      root.removeAttribute("inert");
+      root.removeAttribute("aria-hidden");
+      root.removeAttribute("data-pager-lock");
+      document.body.style.overflow = bodyOverflow;
+      document.documentElement.style.overflow = htmlOverflow;
+    };
+  }, [maximizedId]);
+
+  useEffect(() => {
+    if (maximizedId === null) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.repeat) return;
+      event.preventDefault();
+      closeFullscreen();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [closeFullscreen, maximizedId]);
+
+  useEffect(() => {
+    const onPop = (event: PopStateEvent) => {
+      const id = maximizedRef.current;
+      if (id === null) return;
+      const state = event.state as WidgetFullscreenHistoryState | null;
+      if (state?.piWidgetFullscreen !== id) leaveFullscreen();
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [leaveFullscreen]);
+
+  useEffect(() => {
+    if (active || maximizedId === null) return;
+    leaveFullscreen();
+  }, [active, leaveFullscreen, maximizedId]);
+
+  useEffect(() => {
+    if (maximizedId === null || byId.has(maximizedId)) return;
+    leaveFullscreen();
+  }, [byId, leaveFullscreen, maximizedId]);
+
+  useEffect(
+    () => () => {
+      stripWidgetFullscreenHistory();
+    },
+    [],
+  );
+
+  // A reload during the overlay keeps the history entry but loses the React
+  // state. Clear that marker before the next maximize can mistake it for ours.
+  useEffect(() => {
+    stripWidgetFullscreenHistory();
+  }, []);
+
   const [layout, setLayout] = useState<DashboardLayout | null>(null);
   const layoutJson = useRef("");
   const confirmed = useRef<DashboardLayout | null>(null);
@@ -2242,60 +2504,70 @@ export function StatsView({
     [commitLayout, layout],
   );
 
-  const byId = new Map((dashboard?.widgets ?? []).map((widget) => [widget.id, widget]));
+  const maximizedWidget = maximizedId === null ? undefined : byId.get(maximizedId);
   const viewLayout = layout ?? (dashboard === null ? null : normalizeLayout(dashboard.layout));
 
   return (
-    <div
-      ref={pageRef}
-      className="h-full overflow-x-hidden overflow-y-auto"
-      data-testid="stats-page"
-    >
+    <>
       <div
-        className="mx-auto flex w-full max-w-5xl flex-col gap-2xl px-2xl"
-        style={{ paddingTop: 16, paddingBottom: footerClearance + 16 }}
+        ref={pageRef}
+        className="h-full overflow-x-hidden overflow-y-auto"
+        data-testid="stats-page"
       >
-        {!ready || dashboard === null ? (
-          <p className="font-mono text-xs text-muted-foreground">Loading…</p>
-        ) : null}
-        {viewLayout?.sections.map((section, index) => (
-          <div
-            key={sectionKey(index)}
-            className="dashboard-section relative flex flex-col gap-lg"
-            data-testid="dashboard-section"
-            data-section-index={index}
-          >
-            <SectionTitle
-              title={section.title}
-              onRename={(text) => renameSection(index, text)}
-              actions={
-                <button
-                  type="button"
-                  className={SECTION_BAR_ICON_BUTTON}
-                  aria-label={`Delete section ${index + 1}`}
-                  data-testid={`section-delete-${index}`}
-                  disabled={viewLayout.sections.length <= 1}
-                  onClick={() => deleteSection(index)}
-                >
-                  <CloseIcon size={12} />
-                </button>
-              }
-            />
-            <SectionGrid
-              index={index}
-              section={section}
-              byId={byId}
-              values={dashboard?.values ?? {}}
-              builtinValues={builtinValues}
-              desktop={desktop}
-              onRemove={remove}
-              onGestureStart={beginGridGesture}
-              onGestureMove={moveGridGesture}
-              onGestureStop={finishGridGesture}
-            />
-          </div>
-        ))}
+        <div
+          className="mx-auto flex w-full max-w-5xl flex-col gap-2xl px-2xl"
+          style={{ paddingTop: 16, paddingBottom: footerClearance + 16 }}
+        >
+          {!ready || dashboard === null ? (
+            <p className="font-mono text-xs text-muted-foreground">Loading…</p>
+          ) : null}
+          {viewLayout?.sections.map((section, index) => (
+            <div
+              key={sectionKey(index)}
+              className="dashboard-section relative flex flex-col gap-lg"
+              data-testid="dashboard-section"
+              data-section-index={index}
+            >
+              <SectionTitle
+                title={section.title}
+                onRename={(text) => renameSection(index, text)}
+                actions={
+                  <button
+                    type="button"
+                    className={SECTION_BAR_ICON_BUTTON}
+                    aria-label={`Delete section ${index + 1}`}
+                    data-testid={`section-delete-${index}`}
+                    disabled={viewLayout.sections.length <= 1}
+                    onClick={() => deleteSection(index)}
+                  >
+                    <CloseIcon size={12} />
+                  </button>
+                }
+              />
+              <SectionGrid
+                index={index}
+                section={section}
+                byId={byId}
+                values={dashboard?.values ?? {}}
+                builtinValues={builtinValues}
+                desktop={desktop}
+                onRemove={remove}
+                onMaximize={maximize}
+                onGestureStart={beginGridGesture}
+                onGestureMove={moveGridGesture}
+                onGestureStop={finishGridGesture}
+              />
+            </div>
+          ))}
+        </div>
       </div>
-    </div>
+      {maximizedWidget === undefined ? null : (
+        <WidgetFullscreen
+          widget={maximizedWidget}
+          {...resolveWidgetValue(maximizedWidget, dashboard?.values ?? {}, builtinValues)}
+          onClose={closeFullscreen}
+        />
+      )}
+    </>
   );
 }
