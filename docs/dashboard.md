@@ -4,8 +4,12 @@ The page left of the chat (`?page=stats`) is a dashboard the agent can edit. It
 starts from the committed default board, and the agent adds, moves and removes
 widgets with five tools. See [dashboard-widgets.md](dashboard-widgets.md) for
 the source registry, discovery endpoint, tombstones and reset. The chat
-header shows no MCP status; these two widgets replace it. Widgets only show data: the page never
-renders HTML or JS from a widget and there are no action buttons.
+header shows no MCP status; these two widgets replace it. Widgets only show
+data: the page never renders HTML or JS from a widget. Opening a bot from the
+bots list is the one row action; it opens that bot's chat, not a second widget
+renderer. The bot chat reuses the shared transcript and composer; because
+`/api/bots/:id/chat` has no stop or steer route, it hides those controls rather
+than showing buttons that cannot work.
 
 ## Files
 
@@ -50,6 +54,9 @@ at the page.
   - `mcp_events`: `total`, `live` (servers with a live subscription), `latest`, `events[]` (the last 3, newest first: `key`, `id`, `server`, `name`, `timestamp`, `time`, `summary`, `label`, `value`, and `replayed: true` only when it is a replay), `subscriptions[]` (`key`, `id`, `stableId`, `server`, `name`, `title`, `status`, `label`, `state`, `detail`; the label is the title, or `stableId` when the title is absent)
   - `jobs`: `total`, `running`, `jobs[]` (`id`, `name`, `status`, `exitCode`, `label`, `state`, `detail`, …)
   - `session`: `conversationId`, `model`, `run`, `rows[]`
+  - `task_reopens`: reopen totals and `rows[]` grouped by project
+  - `task_durations`: closed-task `count`, `avgMinutes`, `p50Minutes`, `p90Minutes`, `longestMinutes`, `projects[]`
+  - `bots`: `total`, `working`, and `bots[]` (`id`, `name`, `lastMessage`, `working`, plus the list-ready `label` and `value`)
 - `{"type": "poll", "script": "…", "intervalSec": 60, "timeoutSec": 10}`: the
   script is the body of an async function that gets `fetch`, `env`, `prev` (the
   last result) and `log(...)`, and returns JSON.

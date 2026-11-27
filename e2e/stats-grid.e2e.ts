@@ -32,6 +32,7 @@ const EXTRA_DEFAULT_IDS = [
   "go-usage",
   "bg-jobs",
   "task-durations",
+  "bots",
 ];
 
 /** This file's older grid assertions use the five-widget Session board. */

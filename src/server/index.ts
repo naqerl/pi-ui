@@ -479,7 +479,9 @@ const botChats = new BotChatManager({
   tasks: taskBridge,
   models: catalog.runtime,
   ...(catalog.model === undefined ? {} : { model: catalog.model }),
+  onChange: () => dashboard.broadcast(),
 });
+await botChats.hydrate();
 function builtinJobs() {
   return jobs.list().map((job) => ({
     id: job.id,
@@ -512,6 +514,7 @@ dashboard.setHost({
       session: builtinSession(),
       taskReopens: taskReopenStats(taskStore.ledger().tasks),
       taskDurations: taskDurationStats(taskStore.ledger().tasks),
+      bots: await botChats.summaries(),
     };
   },
   builtinsLite: () => ({
@@ -519,6 +522,7 @@ dashboard.setHost({
     session: builtinSession(),
     taskReopens: taskReopenStats(taskStore.ledger().tasks),
     taskDurations: taskDurationStats(taskStore.ledger().tasks),
+    bots: botChats.briefs(),
   }),
   notify(text) {
     void chat.submit(text, "queue").catch((error: unknown) => {

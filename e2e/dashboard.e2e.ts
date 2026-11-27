@@ -68,3 +68,28 @@ test("sources are discoverable and reset restores the committed default board", 
     defaultIds,
   );
 });
+
+test("a bot opens from the dashboard widget and answers in the shared chat", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open("/?page=stats");
+
+  const card = screen.getByTestId("widget-bots");
+  await expect(card).toBeVisible();
+  await screen.getByTestId("widget-item-open-job-hunter").click();
+
+  const chat = screen.getByTestId("bot-chat");
+  await expect(chat).toBeVisible();
+  await expect(screen.getByTestId("bot-chat-empty")).toBeVisible({ timeout: 15_000 });
+
+  await screen.getByTestId("bot-chat-input").fill("hello bots");
+  await screen.getByTestId("bot-chat-send").click();
+
+  const transcript = screen.getByTestId("bot-chat-transcript");
+  await expect(transcript.getByText("Echo: hello bots", { exact: false })).toBeVisible({
+    timeout: 30_000,
+  });
+});

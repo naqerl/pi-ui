@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { BotInput } from "../src/server/bot-body.js";
+import { BotChatManager, type BotChatManagerOptions } from "../src/server/bot-chat.js";
 import {
   BOT_TOOL_CATALOG,
   botChatPaths,
@@ -226,6 +227,40 @@ test("a tool outside the bot's allowance is refused by name", () => {
     () => allowance.assert("task_done"),
     (error: unknown) => error instanceof BotToolNotAllowedError,
   );
+});
+
+test("a restarted manager restores each bot's newest message", async () => {
+  const dir = await scratch();
+  try {
+    const store = new BotStore(join(dir, "bots.json"), { seed: [] });
+    await store.load();
+    const hunter = await store.create(input("job-hunter", { name: "Job hunter" }));
+    await mkdir(join(dir, "bots"), { recursive: true });
+    await writeFile(
+      join(dir, "bots", "summaries.json"),
+      JSON.stringify({
+        version: 1,
+        bots: [
+          { id: hunter.id, lastMessage: "Saved answer" },
+          { id: "deleted-bot", lastMessage: "orphan" },
+        ],
+      }),
+    );
+    const manager = new BotChatManager({
+      dataDir: dir,
+      cwd: dir,
+      bots: store,
+      tasks: {} as TaskBridge,
+      models: {} as BotChatManagerOptions["models"],
+    });
+    await manager.hydrate();
+    assert.deepEqual(manager.briefs(), [
+      { id: "job-hunter", name: "Job hunter", lastMessage: "Saved answer", working: false },
+    ]);
+    await manager.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("every bot keeps its conversation and pointer in its own directory", () => {

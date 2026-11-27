@@ -1,4 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
@@ -14,7 +15,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import type { ActivityItem, ChatMessage } from "../shared/types.js";
+import type { ActivityItem, BotSummary, ChatMessage } from "../shared/types.js";
 import { withConversationIdentity } from "./billion-context.js";
 import { botChatPaths, botConversationIdentity } from "./bot-defaults.js";
 import { BotError } from "./bot-error.js";
@@ -42,10 +43,21 @@ export interface BotChatManagerOptions {
   readonly tasks: TaskBridge;
   readonly models: ModelRuntime;
   readonly model?: Model<Api>;
+  /** Called when a bot's working state or newest message changes. */
+  readonly onChange?: () => void;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+/** The newest non-empty row, so one blank error row cannot hide the last real message. */
+function newestMessageText(messages: readonly ChatMessage[]): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const text = messages[index]?.text.trim() ?? "";
+    if (text !== "") return text;
+  }
+  return null;
 }
 
 async function readConversationId(path: string): Promise<ConversationId | undefined> {
@@ -82,23 +94,39 @@ async function writeConversationId(path: string, conversationId: ConversationId)
 class BotChatSession {
   private running = false;
   private error: string | undefined;
+  private lastMessage: string | null;
   private chain: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly bot: BotDefinition,
     private readonly harness: Harness,
     private readonly conversation: Conversation,
-  ) {}
+    private readonly onChange: (summary: BotSummary) => void,
+    lastMessage: string | null = null,
+  ) {
+    this.lastMessage = lastMessage;
+  }
 
   async snapshot(): Promise<BotChatSnapshot> {
     const entries = await readTranscriptEntries(this.conversation);
     const built = buildTranscript(entries);
+    this.lastMessage = newestMessageText(built.messages);
+    this.onChange(this.summary());
     return {
       botId: this.bot.id,
       messages: built.messages,
       activity: built.activity,
       running: this.running,
       ...(this.error === undefined ? {} : { error: this.error }),
+    };
+  }
+
+  private summary(): BotSummary {
+    return {
+      id: this.bot.id,
+      name: this.bot.name,
+      lastMessage: this.lastMessage,
+      working: this.running,
     };
   }
 
@@ -121,6 +149,7 @@ class BotChatSession {
     if (this.running) throw new BotError("The bot is still answering", 409, "busy");
     this.running = true;
     this.error = undefined;
+    this.onChange(this.summary());
     const identity = botConversationIdentity(this.bot.id);
     let submission: Submission;
     try {
@@ -132,6 +161,7 @@ class BotChatSession {
       );
     } catch (error) {
       this.running = false;
+      this.onChange(this.summary());
       throw error;
     }
     void this.settle(submission, identity);
@@ -156,6 +186,8 @@ class BotChatSession {
       this.error = error instanceof Error ? error.message : String(error);
     } finally {
       this.running = false;
+      this.onChange(this.summary());
+      await this.snapshot().catch(() => undefined);
     }
   }
 
@@ -170,11 +202,75 @@ class BotChatSession {
  */
 export class BotChatManager {
   private readonly sessions = new Map<string, Promise<BotChatSession>>();
+  private readonly known = new Map<string, BotSummary>();
+  private readonly summaryDir: string;
+  private readonly summaryPath: string;
+  private writes: Promise<void> = Promise.resolve();
 
-  constructor(private readonly options: BotChatManagerOptions) {}
+  constructor(private readonly options: BotChatManagerOptions) {
+    this.summaryDir = join(options.dataDir, "bots");
+    this.summaryPath = join(this.summaryDir, "summaries.json");
+  }
+
+  /** Restores newest messages persisted by an earlier process, before the dashboard reads. */
+  async hydrate(): Promise<void> {
+    await this.writes;
+    let raw: string;
+    try {
+      raw = await readFile(this.summaryPath, "utf8");
+    } catch (error) {
+      if (!(isRecord(error) && error.code === "ENOENT")) {
+        console.error("[bots] could not read persisted newest messages", error);
+      }
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      console.error("[bots] persisted newest messages are not valid JSON", error);
+      return;
+    }
+    const items = isRecord(parsed) && Array.isArray(parsed.bots) ? parsed.bots : [];
+    for (const item of items) {
+      if (!isRecord(item)) continue;
+      const id = typeof item.id === "string" ? item.id.trim().toLowerCase() : "";
+      const lastMessage = item.lastMessage;
+      if (id === "" || (lastMessage !== null && typeof lastMessage !== "string")) continue;
+      const bot = this.options.bots.get(id);
+      if (bot === undefined) continue;
+      this.known.set(bot.id, {
+        id: bot.id,
+        name: bot.name,
+        lastMessage,
+        working: false,
+      });
+    }
+  }
 
   async snapshot(botId: string): Promise<BotChatSnapshot> {
     return (await this.session(botId)).snapshot();
+  }
+
+  /** Reads every open transcript so the dashboard's newest-message column is current. */
+  async summaries(): Promise<BotSummary[]> {
+    await Promise.all(
+      [...this.sessions.values()].map(async (pending) => {
+        const session = await pending.catch(() => undefined);
+        await session?.snapshot().catch(() => undefined);
+      }),
+    );
+    return this.briefs();
+  }
+
+  /** A synchronous view for dashboard broadcasts; open transcripts update it on snapshot. */
+  briefs(): BotSummary[] {
+    return this.options.bots.list().map((bot) => {
+      const known = this.known.get(bot.id);
+      return known === undefined
+        ? { id: bot.id, name: bot.name, lastMessage: null, working: false }
+        : { ...known, name: bot.name };
+    });
   }
 
   async send(botId: string, text: string): Promise<BotChatSnapshot> {
@@ -200,6 +296,40 @@ export class BotChatManager {
         await session?.close();
       }),
     );
+    await this.writes;
+  }
+
+  private remember(summary: BotSummary): void {
+    const previous = this.known.get(summary.id);
+    if (
+      previous !== undefined &&
+      previous.name === summary.name &&
+      previous.lastMessage === summary.lastMessage &&
+      previous.working === summary.working
+    ) {
+      return;
+    }
+    this.known.set(summary.id, summary);
+    if (previous?.lastMessage !== summary.lastMessage) this.persist();
+    this.options.onChange?.();
+  }
+
+  private persist(): void {
+    const ids = new Set(this.options.bots.list().map((bot) => bot.id));
+    const bots = [...this.known.values()]
+      .filter(({ id }) => ids.has(id))
+      .map(({ id, lastMessage }) => ({ id, lastMessage }));
+    const payload = `${JSON.stringify({ version: 1, bots })}\n`;
+    this.writes = this.writes
+      .then(async () => {
+        await mkdir(this.summaryDir, { recursive: true });
+        const temporary = `${this.summaryPath}.tmp-${process.pid}`;
+        await writeFile(temporary, payload, "utf8");
+        await rename(temporary, this.summaryPath);
+      })
+      .catch((error: unknown) => {
+        console.error("[bots] could not persist newest messages", error);
+      });
   }
 
   private session(botId: string): Promise<BotChatSession> {
@@ -283,7 +413,15 @@ export class BotChatManager {
           SESSION_CONTEXT,
         );
       }
-      return new BotChatSession(bot, harness, conversation);
+      return new BotChatSession(
+        bot,
+        harness,
+        conversation,
+        (summary) => {
+          this.remember(summary);
+        },
+        this.known.get(bot.id)?.lastMessage ?? null,
+      );
     } catch (error) {
       await harness.close(SESSION_CONTEXT).catch(() => undefined);
       throw error;
