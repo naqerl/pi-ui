@@ -31,9 +31,9 @@ The registry is small and explicit:
 - `readSource(name, ctx)` reads one source, or throws for an unknown name.
 
 The builtin sources are registered in that file: `tokens`, `context`, `cache`,
-`mcp`, `mcp_events`, `jobs`, `session` and `task_reopens`. Their previous
-special-case data builders are gone; `read()` is the only way to get their
-payload.
+`mcp`, `mcp_events`, `jobs`, `session`, `task_reopens`, `task_durations` and
+`bots`. Their previous special-case data builders are gone; `read()` is the only
+way to get their payload.
 
 ## Discovery
 

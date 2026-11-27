@@ -13,7 +13,7 @@ import {
 } from "./dashboard.js";
 
 /** Bump when the default board changes; older files surface it for reset. */
-export const DEFAULT_DASHBOARD_VERSION = 3;
+export const DEFAULT_DASHBOARD_VERSION = 4;
 
 const MCP_STATUS: Widget = {
   id: "mcp",
@@ -72,6 +72,20 @@ const TASK_DURATIONS: Widget = {
   },
 };
 
+const BOTS: Widget = {
+  id: "bots",
+  title: "Bots",
+  kind: "list",
+  source: { type: "builtin", name: "bots" },
+  mapping: {
+    items: "bots",
+    key: "id",
+    label: "label",
+    value: "value",
+    empty: "=no bots configured",
+  },
+};
+
 /**
  * The board production actually shows. The live dashboard.json was not
  * reachable from the checkout that wrote this file, so the poll-only cards
@@ -125,6 +139,7 @@ export const DEFAULT_DASHBOARD: {
     MCP_EVENTS,
     TASK_REOPENS,
     TASK_DURATIONS,
+    BOTS,
     {
       id: "hetzner",
       title: "Hetzner",
@@ -181,6 +196,7 @@ export const DEFAULT_DASHBOARD: {
         { id: "mcp-events", span: "full", x: 0, y: 8, w: 12, h: DEFAULT_WIDGET_ROWS },
         { id: "task-reopens", span: "full", x: 0, y: 12, w: 12, h: DEFAULT_WIDGET_ROWS },
         { id: "task-durations", span: "full", x: 0, y: 16, w: 12, h: DEFAULT_WIDGET_ROWS },
+        { id: "bots", span: "full", x: 0, y: 20, w: 12, h: DEFAULT_WIDGET_ROWS },
       ],
     },
     {

@@ -1276,6 +1276,7 @@ export function Composer({
   commands,
   fullscreen = false,
   onExitFullscreen,
+  runControls = true,
 }: {
   tasksPage: boolean;
   /** When set, @project suggestions work even if this is not the create-task composer. */
@@ -1316,6 +1317,8 @@ export function Composer({
   fullscreen?: boolean;
   /** Escape in the dock leaves full screen instead of touching the draft. */
   onExitFullscreen?: () => void;
+  /** Stop/steer need a transport that can interrupt; bots hide them rather than no-op. */
+  runControls?: boolean;
   /** A successful Retry consumes the exact draft that was restored for its failed row. */
   clearDraft?: {
     key: string;
@@ -1382,8 +1385,13 @@ export function Composer({
   const rowWidthRef = useRef<number | null>(null);
 
   const hasText = value.trim().length > 0;
+  const steering = running && runControls;
   // A task still needs a title; a chat message can be images alone.
-  const canSend = !uploading && !failed && (hasText || (!tasksPage && readyIds.length > 0));
+  const canSend =
+    !uploading &&
+    !failed &&
+    (!running || runControls) &&
+    (hasText || (!tasksPage && readyIds.length > 0));
 
   // Retrying from the failed row clears only the draft it restored; text typed since wins.
   // Match the draft key and the raw submitted text, not a parsed title or another target.
@@ -1648,7 +1656,7 @@ export function Composer({
       data-testid="composer-form"
       onSubmit={(event) => {
         event.preventDefault();
-        void submit(running ? "steer" : "queue");
+        void submit(steering ? "steer" : "queue");
       }}
       onDragOver={(event) => {
         if (![...event.dataTransfer.types].includes("Files")) return;
@@ -1823,7 +1831,7 @@ export function Composer({
               }
               if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                 event.preventDefault();
-                void submit(running ? "steer" : "queue");
+                void submit(steering ? "steer" : "queue");
               }
             }}
           />
@@ -1870,7 +1878,7 @@ export function Composer({
             </Button>
           </DockAction>
           <DockAction
-            present={!tasksPage && running && !hasText && attachments.items.length === 0}
+            present={!tasksPage && steering && !hasText && attachments.items.length === 0}
             phase={dockPhase}
             order={3}
             swap={dockSwap}
@@ -1891,7 +1899,7 @@ export function Composer({
             </Button>
           </DockAction>
           <DockAction
-            present={!tasksPage && running && (hasText || attachments.items.length > 0)}
+            present={!tasksPage && steering && (hasText || attachments.items.length > 0)}
             phase={dockPhase}
             order={3}
             swap={dockSwap}
@@ -1909,7 +1917,7 @@ export function Composer({
               <SendIcon />
             </Button>
           </DockAction>
-          <DockAction present={!tasksPage && !running} phase={dockPhase} order={3} swap={dockSwap}>
+          <DockAction present={!tasksPage && !steering} phase={dockPhase} order={3} swap={dockSwap}>
             <Button
               type="submit"
               variant="ghost"

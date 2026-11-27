@@ -322,6 +322,11 @@ export interface UseChatOptions {
    * re-emitting a heartbeat would make its own strip look alive after the relay died.
    */
   publishLiveness?: boolean;
+  /**
+   * A transport without a live stream treats each successful running snapshot as
+   * activity, so polling keeps the quiet indicator honest.
+   */
+  snapshotActivity?: boolean;
 }
 
 export function useChat(options: UseChatOptions = {}) {
@@ -333,6 +338,8 @@ export function useChat(options: UseChatOptions = {}) {
   onQuestionsRef.current = options.onQuestions;
   const publishLivenessRef = useRef(options.publishLiveness !== false);
   publishLivenessRef.current = options.publishLiveness !== false;
+  const snapshotActivityRef = useRef(options.snapshotActivity === true);
+  snapshotActivityRef.current = options.snapshotActivity === true;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [liveTools, setLiveTools] = useState<ToolActivity[]>([]);
@@ -574,6 +581,7 @@ export function useChat(options: UseChatOptions = {}) {
       if (snapshot.mcpEvents !== undefined) applyEvents(snapshot.mcpEvents);
       if (snapshot.tasks !== undefined) applyTasks(snapshot.tasks);
       setReady(true);
+      if (snapshotActivityRef.current && snapshot.run === "running") markActivity();
       // A service worker may answer a failed request from its cache; keep what it showed,
       // but ask the network again instead of treating the cached render as hydrated.
       if (read.stale) scheduleRetry();
@@ -589,6 +597,7 @@ export function useChat(options: UseChatOptions = {}) {
     applyTasks,
     clearRetry,
     fullHistory,
+    markActivity,
     scheduleRetry,
     transport,
   ]);

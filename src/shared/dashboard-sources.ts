@@ -14,6 +14,7 @@ import {
 } from "./dashboard.js";
 import { formatDurationMinutes } from "./time.js";
 import type {
+  BotSummary,
   ContextUsage,
   McpEventsState,
   McpStatus,
@@ -32,6 +33,7 @@ export const BUILTIN_SOURCES = [
   "session",
   "task_reopens",
   "task_durations",
+  "bots",
 ] as const;
 export type BuiltinName = (typeof BUILTIN_SOURCES)[number];
 
@@ -44,6 +46,8 @@ export interface SourceContext {
   session: BuiltinSession;
   taskReopens?: TaskReopenStats;
   taskDurations?: TaskDurationStats;
+  /** Bots known to this workspace, with their newest message and working state. */
+  bots?: BotSummary[];
   /** Client-only display hook; the server deliberately leaves timestamps raw. */
   formatTime?: (timestamp: string) => string;
 }
@@ -450,6 +454,29 @@ function sessionData({ session }: SourceContext): unknown {
   };
 }
 
+function botMessageText(message: string | null): string {
+  if (message === null) return "no messages yet";
+  const text = message.replace(/\s+/g, " ").trim();
+  if (text === "") return "no messages yet";
+  return text.length > 120 ? `${text.slice(0, 120)}…` : text;
+}
+
+function botsData({ bots }: SourceContext): unknown {
+  const items = bots ?? [];
+  return {
+    total: items.length,
+    working: items.filter((bot) => bot.working).length,
+    bots: items.map((bot) => ({
+      id: bot.id,
+      name: bot.name,
+      lastMessage: bot.lastMessage,
+      working: bot.working,
+      label: `${bot.name} · ${bot.working ? "working" : "idle"}`,
+      value: botMessageText(bot.lastMessage),
+    })),
+  };
+}
+
 function registerBuiltin(
   name: BuiltinName,
   describe: string,
@@ -512,4 +539,9 @@ registerBuiltin(
   "Closed-task durations: count, p50, p90 and average minutes, plus rows[] with p50, p90, avg and one project row each.",
   taskDurationsData,
   TASK_DURATIONS_SAMPLE,
+);
+registerBuiltin(
+  "bots",
+  "Bots known to this workspace: total, working count and bots[] with id, name, lastMessage, working and a label/value row ready for a list widget.",
+  botsData,
 );

@@ -609,6 +609,14 @@ export interface TaskActivity {
   memoryWriteAt?: string | null;
 }
 
+/** One bot as the dashboard lists it: identity, the newest message and whether it is answering. */
+export interface BotSummary {
+  id: string;
+  name: string;
+  lastMessage: string | null;
+  working: boolean;
+}
+
 /** A run-level failure the server saw, shown as one dismissible line above the chat. */
 export interface RunError {
   /** Stable id so acknowledging one failure does not hide the next. */

@@ -1,10 +1,12 @@
 import {
+  lazy,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
   type PointerEvent as ReactPointerEvent,
   type Ref,
   type RefObject,
+  Suspense,
   useCallback,
   useEffect,
   useId,
@@ -987,11 +989,14 @@ function ViewBody({
   view,
   chart,
   expanded = false,
+  onOpenItem,
 }: {
   id: string;
   view: WidgetView;
   chart?: SparklineChart;
   expanded?: boolean;
+  /** Makes a list row's label an action; the bots widget uses it to open a chat. */
+  onOpenItem?: (key: string) => void;
 }) {
   switch (view.kind) {
     case "stat":
@@ -1049,20 +1054,36 @@ function ViewBody({
       if (view.items.length === 0) return <Empty id={id} text={view.empty} />;
       return (
         <dl className="divide-y divide-border/50">
-          {view.items.map((item, index) => (
-            <div
-              key={item.key ?? index}
-              className={rowClass()}
-              {...(item.key === undefined ? {} : { "data-testid": `stat-${item.key}` })}
-            >
-              <dt className="min-w-0 text-muted-foreground [overflow-wrap:anywhere]">
-                {item.label}
-              </dt>
-              <dd className="min-w-0 text-right [overflow-wrap:anywhere]">
-                {item.value === undefined ? null : <Value text={item.value} />}
-              </dd>
-            </div>
-          ))}
+          {view.items.map((item, index) => {
+            const key = item.key;
+            const open =
+              key !== undefined && onOpenItem !== undefined ? () => onOpenItem(key) : undefined;
+            return (
+              <div
+                key={key ?? index}
+                className={rowClass()}
+                {...(key === undefined ? {} : { "data-testid": `stat-${key}` })}
+              >
+                <dt className="min-w-0 text-muted-foreground [overflow-wrap:anywhere]">
+                  {open === undefined ? (
+                    item.label
+                  ) : (
+                    <button
+                      type="button"
+                      data-testid={`widget-item-open-${key}`}
+                      onClick={open}
+                      className="text-left underline-offset-2 hover:underline"
+                    >
+                      {item.label}
+                    </button>
+                  )}
+                </dt>
+                <dd className="min-w-0 text-right [overflow-wrap:anywhere]">
+                  {item.value === undefined ? null : <Value text={item.value} />}
+                </dd>
+              </div>
+            );
+          })}
         </dl>
       );
     case "status":
@@ -1174,12 +1195,14 @@ function WidgetCard({
   value,
   onRemove,
   onMaximize,
+  onOpenItem,
 }: {
   widget: Widget;
   view: WidgetView | undefined;
   value: WidgetValue | undefined;
   onRemove: (id: string) => void;
   onMaximize: (id: string) => void;
+  onOpenItem?: (key: string) => void;
 }) {
   const [menu, setMenu] = useState(false);
   const press = useRef<{ timer: number; x: number; y: number } | null>(null);
@@ -1297,7 +1320,7 @@ function WidgetCard({
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {view !== undefined ? (
-          <ViewBody id={widget.id} view={view} chart={widget.chart} />
+          <ViewBody id={widget.id} view={view} chart={widget.chart} onOpenItem={onOpenItem} />
         ) : (
           <p className="py-lg text-muted-foreground [overflow-wrap:anywhere]">
             {widgetPlaceholder(widget, error)}
@@ -1331,12 +1354,14 @@ function WidgetFullscreen({
   view,
   value,
   onClose,
+  onOpenItem,
 }: {
   widget: Widget;
   /** Absent when the widget has no value yet; `resolveWidgetValue` omits these keys. */
   view?: WidgetView | undefined;
   value?: WidgetValue | undefined;
   onClose: () => void;
+  onOpenItem?: (key: string) => void;
 }) {
   const minimizeRef = useRef<HTMLButtonElement | null>(null);
   const error = value?.error;
@@ -1384,7 +1409,13 @@ function WidgetFullscreen({
         data-testid={`widget-${widget.id}-fullscreen-body`}
       >
         {view !== undefined ? (
-          <ViewBody id={widget.id} view={view} chart={widget.chart} expanded />
+          <ViewBody
+            id={widget.id}
+            view={view}
+            chart={widget.chart}
+            expanded
+            onOpenItem={onOpenItem}
+          />
         ) : (
           <p className="py-lg text-muted-foreground [overflow-wrap:anywhere]">
             {widgetPlaceholder(widget, error)}
@@ -1467,6 +1498,7 @@ function SectionGrid({
   desktop,
   onRemove,
   onMaximize,
+  onOpenItem,
   onGestureStart,
   onGestureMove,
   onGestureStop,
@@ -1479,6 +1511,7 @@ function SectionGrid({
   desktop: boolean;
   onRemove: (id: string) => void;
   onMaximize: (id: string) => void;
+  onOpenItem?: (widget: Widget, key: string) => void;
   onGestureStart: (kind: "drag" | "resize") => void;
   onGestureMove: (index: number, event: MouseEvent) => void;
   onGestureStop: (
@@ -1562,6 +1595,10 @@ function SectionGrid({
   const cards = visible.map((slot) => {
     const widget = byId.get(slot.id) as Widget;
     const { view, value } = resolveWidgetValue(widget, values, builtinValues);
+    const opensBot =
+      widget.source.type === "builtin" && widget.source.name === "bots"
+        ? (key: string) => onOpenItem?.(widget, key)
+        : undefined;
     return (
       <div
         key={widget.id}
@@ -1575,6 +1612,7 @@ function SectionGrid({
           value={value}
           onRemove={onRemove}
           onMaximize={onMaximize}
+          onOpenItem={opensBot}
         />
       </div>
     );
@@ -1657,6 +1695,8 @@ function SectionGrid({
   );
 }
 
+const BotChat = lazy(() => import("./BotChat").then((module) => ({ default: module.BotChat })));
+
 /** The dashboard page: widgets the agent arranged, rendered from builtin stats, polls or pushed data. */
 export function StatsView({
   stats,
@@ -1675,6 +1715,7 @@ export function StatsView({
   useViewerReport(active);
   const byId = new Map((dashboard?.widgets ?? []).map((widget) => [widget.id, widget]));
   const [maximizedId, setMaximizedId] = useState<string | null>(null);
+  const [openBotId, setOpenBotId] = useState<string | null>(null);
   const maximizedRef = useRef<string | null>(null);
   maximizedRef.current = maximizedId;
   const closing = useRef(false);
@@ -1693,6 +1734,7 @@ export function StatsView({
       ...(dashboard?.builtins.taskDurations === undefined
         ? {}
         : { taskDurations: dashboard.builtins.taskDurations }),
+      bots: dashboard?.builtins.bots ?? [],
     }),
     [
       stats.usage,
@@ -1703,6 +1745,7 @@ export function StatsView({
       dashboard?.builtins.session,
       dashboard?.builtins.taskReopens,
       dashboard?.builtins.taskDurations,
+      dashboard?.builtins.bots,
     ],
   );
   const [builtinValues, setBuiltinValues] = useState<
@@ -1741,6 +1784,9 @@ export function StatsView({
     };
   }, [dashboard?.widgets, inputs]);
   const pageRef = useRef<HTMLDivElement | null>(null);
+  const openBot = useCallback((widget: Widget, key: string) => {
+    if (widget.source.type === "builtin" && widget.source.name === "bots") setOpenBotId(key);
+  }, []);
 
   const leaveFullscreen = useCallback(() => {
     stripWidgetFullscreenHistory();
@@ -2553,6 +2599,7 @@ export function StatsView({
                 desktop={desktop}
                 onRemove={remove}
                 onMaximize={maximize}
+                onOpenItem={openBot}
                 onGestureStart={beginGridGesture}
                 onGestureMove={moveGridGesture}
                 onGestureStop={finishGridGesture}
@@ -2566,8 +2613,27 @@ export function StatsView({
           widget={maximizedWidget}
           {...resolveWidgetValue(maximizedWidget, dashboard?.values ?? {}, builtinValues)}
           onClose={closeFullscreen}
+          onOpenItem={
+            maximizedWidget.source.type === "builtin" && maximizedWidget.source.name === "bots"
+              ? (key) => openBot(maximizedWidget, key)
+              : undefined
+          }
         />
       )}
+      {openBotId === null
+        ? null
+        : createPortal(
+            <Suspense fallback={null}>
+              <BotChat
+                botId={openBotId}
+                name={
+                  dashboard?.builtins.bots?.find((bot) => bot.id === openBotId)?.name ?? openBotId
+                }
+                onClose={() => setOpenBotId(null)}
+              />
+            </Suspense>,
+            document.body,
+          )}
     </>
   );
 }

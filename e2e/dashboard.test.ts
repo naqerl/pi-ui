@@ -450,6 +450,7 @@ test("the committed default dashboard is the operator board", () => {
       "mcp-events",
       "task-reopens",
       "task-durations",
+      "bots",
       "hetzner",
       "hetzner-cost",
       "go-usage",
@@ -568,6 +569,56 @@ test("task durations render p50, p90 and average rows from closed tasks", async 
   const emptyView = renderWidget(widget, emptyData) as { items: unknown[]; empty?: string };
   assert.deepEqual(emptyView.items, []);
   assert.equal(emptyView.empty, "no closed tasks yet");
+});
+
+test("the bots source lists each bot's newest message and working state", async () => {
+  const inputs = {
+    bots: [
+      {
+        id: "job-hunter",
+        name: "Job hunter",
+        lastMessage: "  Found  a listing\non the board",
+        working: true,
+      },
+      { id: "idle", name: "Idle bot", lastMessage: null, working: false },
+    ],
+  } as unknown as BuiltinInputs;
+  const data = (await readSource("bots", inputs)) as {
+    total: number;
+    working: number;
+    bots: { label: string; value: string }[];
+  };
+  assert.equal(data.total, 2);
+  assert.equal(data.working, 1);
+  assert.deepEqual(
+    data.bots.map((bot) => [bot.label, bot.value]),
+    [
+      ["Job hunter · working", "Found a listing on the board"],
+      ["Idle bot · idle", "no messages yet"],
+    ],
+  );
+
+  const widget = DEFAULT_DASHBOARD.widgets.find((item) => item.id === "bots");
+  assert.ok(widget);
+  const view = renderWidget(widget, data) as {
+    kind: string;
+    items: { key: string; label: string; value: string }[];
+    empty?: string;
+  };
+  assert.equal(view.kind, "list");
+  assert.deepEqual(
+    view.items.map((item) => [item.key, item.label, item.value]),
+    [
+      ["job-hunter", "Job hunter · working", "Found a listing on the board"],
+      ["idle", "Idle bot · idle", "no messages yet"],
+    ],
+  );
+
+  const emptyInputs = { bots: [] } as unknown as BuiltinInputs;
+  const emptyData = await readSource("bots", emptyInputs);
+  const emptyView = renderWidget(widget, emptyData) as { items: unknown[]; empty?: string };
+  assert.deepEqual(emptyView.items, []);
+  assert.equal(emptyView.empty, "no bots configured");
 });
 
 test("every registered source is described, has a sample and the default names it", () => {
