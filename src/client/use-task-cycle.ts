@@ -2,10 +2,8 @@ import { useCallback, useEffect, useRef } from "react";
 import type { Task } from "../shared/types";
 import { recentTaskOrder } from "./recent-tasks";
 
-/** A gap this long starts a new cycle burst instead of continuing the snapshot. */
 export const CYCLE_BURST_MS = 1500;
 
-/** Where the ring landed, for the HUD. `position` is one-based. */
 export interface TaskCycleHint {
   position: number;
   total: number;
@@ -14,7 +12,6 @@ export interface TaskCycleHint {
 
 interface TaskCycleOptions {
   tasks: Task[];
-  /** The task the operator is looking at, or null when none is open. */
   currentId: string | null;
   onOpen: (id: string) => void;
   onHint: (hint: TaskCycleHint) => void;
@@ -26,10 +23,8 @@ interface CycleBurst {
   at: number;
 }
 
-/** Ctrl+Tab / Ctrl+Shift+Tab move through the recent ring, with Ctrl+I / Ctrl+O aliases. */
 function cycleStep(event: KeyboardEvent): 1 | -1 | null {
   if (event.key === "Tab") return event.shiftKey ? -1 : 1;
-  // Ctrl+Shift+I and Ctrl+Shift+O belong to the browser, not the ring.
   if (event.shiftKey) return null;
   const key = event.key.toLowerCase();
   if (event.code === "KeyI" || key === "i") return 1;
@@ -37,11 +32,6 @@ function cycleStep(event: KeyboardEvent): 1 | -1 | null {
   return null;
 }
 
-/**
- * The editor-style recent-task switcher. Every press commits at once; the burst snapshot
- * keeps opening the next ring entry from reordering the ring under the operator's fingers.
- * Returns a reset for an open the operator made by hand.
- */
 export function useTaskCycle({ tasks, currentId, onOpen, onHint }: TaskCycleOptions): () => void {
   const burst = useRef<CycleBurst | null>(null);
 
@@ -61,12 +51,10 @@ export function useTaskCycle({ tasks, currentId, onOpen, onHint }: TaskCycleOpti
     };
 
     const onKey = (event: KeyboardEvent) => {
-      // IME candidate keys are text, not shortcuts.
       if (event.isComposing) return;
       if (!event.ctrlKey || event.altKey || event.metaKey) return;
       const step = cycleStep(event);
       if (step === null) return;
-      // A dialog owns the keyboard while it is open, including its own text fields.
       const active = document.activeElement;
       if (active instanceof Element && active.closest('[role="dialog"]') !== null) return;
 
@@ -75,10 +63,6 @@ export function useTaskCycle({ tasks, currentId, onOpen, onHint }: TaskCycleOpti
       let order: string[];
       let index: number;
       let opened: string | null;
-      // Reading the ring again after an open would bounce between two tasks, so a burst
-      // keeps its own order and index until a gap or a hand-picked task clears it. The task
-      // already open is the one the burst last landed on, not a prop that may still describe
-      // the render before this keypress.
       if (previous === null || now - previous.at > CYCLE_BURST_MS) {
         order = recentTaskOrder(tasks);
         index = currentId === null ? -1 : order.indexOf(currentId);
@@ -99,10 +83,8 @@ export function useTaskCycle({ tasks, currentId, onOpen, onHint }: TaskCycleOpti
         burst.current = null;
         return;
       }
-      // A ring of one and the wrap back to the open task stay the browser's keys.
       if (target === opened) return;
 
-      // Claim the key only now; every earlier return leaves the browser's Ctrl+Tab alone.
       event.preventDefault();
       burst.current = { order, index, at: now };
       onOpen(target);

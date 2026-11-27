@@ -102,30 +102,21 @@ import { workingWord } from "./working-state";
 interface ChatViewProps {
   timeline: TimelineItem[];
   running: boolean;
-  /** No frame from the live run within the retry budget; the status stays but stops moving. */
   quiet?: boolean;
   thinking: boolean;
   interrupted: boolean;
-  /** The server's last unacknowledged run failure, rendered as a thin header. */
   runError?: RunError | null;
   dismissRunError?: (id: string) => void;
-  /** Pushed by the server, so the dock does not poll for it. */
   delegates?: DelegateRunView[];
-  /** Background shell jobs, pushed by the server on every change. */
   jobs?: BuiltinJob[];
   ready: boolean;
   tasks: Task[];
-  /** Task ids whose plan agent currently has a live run. */
   planning?: readonly string[];
-  /** Measured run activity per task, from the ledger view. */
   taskActivity?: TaskActivity;
   send: (text: string, mode?: MessageMode, attachments?: string[]) => Promise<SendOutcome>;
   stop: () => Promise<void>;
-  /** Takes back the newest steer the run has not reached yet; absent or null when none can be. */
   unsendSteer?: () => Promise<QueuedMessage | null>;
-  /** Withdraws a follow-up that is waiting for the current turn to end. */
   cancelQueued?: (id: string) => Promise<boolean>;
-  /** How many steers are waiting for the run's next turn boundary. */
   pendingSteers?: number;
   applyTasks: (ledger: TaskLedger) => void;
   stats: ChatStats;
@@ -133,7 +124,6 @@ interface ChatViewProps {
   history?: HistoryControl;
 }
 
-// The side pages and the Markdown renderer are their own chunks, so the chat paints first.
 const loadStatsView = () => import("./StatsView");
 const loadTasksView = () => import("./TasksView");
 export const ActivityDialog = lazy(() =>
@@ -157,28 +147,20 @@ const PAGES = [
 const STATS_PAGE = 0;
 const CHAT_PAGE = 1;
 const TASKS_PAGE = 2;
-// The pager slides for 300ms; the composer body's height settles sooner.
 const PAGE_SETTLE_MS = 320;
-// A fast snapshot should never flash a loading card; a slow one gets an honest placeholder.
 const TRANSCRIPT_LOADING_DELAY_MS = 180;
-// The task-cycle HUD is a glance, not a notification; the last press owns its timer.
 const TASK_CYCLE_HINT_MS = 1400;
 
 function pageFromLocation(): number {
-  // A task-plan push opens the tasks page and the detail itself; the hash route
-  // is the canonical link and the path form is accepted for bookmarks.
   if (taskDeepLinkFromLocation(window.location.href) !== null) return TASKS_PAGE;
   const name = new URLSearchParams(window.location.search).get("page");
   const fromQuery = PAGES.findIndex((item) => item.id === name);
   if (fromQuery >= 0) return fromQuery;
-  // A push or a bookmark may carry the page as a real path (/tasks). The
-  // server serves the shell for it; the pager picks the matching page here.
   const fromPath = pageIdFromPath(window.location.pathname);
   const index = fromPath === undefined ? -1 : PAGES.findIndex((item) => item.id === fromPath);
   return index < 0 ? CHAT_PAGE : index;
 }
 
-/** A stable client key lets an optimistic task card be replaced by its ledger row. */
 function newTaskKey(): string {
   const cryptoApi = globalThis.crypto;
   if (typeof cryptoApi?.randomUUID === "function") return cryptoApi.randomUUID();
@@ -186,28 +168,22 @@ function newTaskKey(): string {
 }
 
 interface CreateTaskRequest {
-  /** The parsed title sent to the server; it can be empty when the draft was only @project. */
   title: string;
   attachments: string[];
   project?: string;
   options?: { backlog?: boolean; plan?: boolean; status?: TaskStatus; body?: string };
-  /** The composer draft that submitted this create, before @project and whitespace parsing. */
   draft?: { key: string; text: string };
 }
 
 interface OptimisticTask {
   key: string;
   task: Task;
-  /** Ids already in the ledger when this card was painted, so only a new row can replace it. */
   knownIds: Set<string>;
-  /** Everything a retry needs, including the text already painted in the row. */
   request: CreateTaskRequest;
-  /** Why the create failed, or null while it is still in flight. */
   error: string | null;
   pending: boolean;
 }
 
-/** A ledger row is the server's replacement for this painted card. */
 function matchesCreatedTask(item: OptimisticTask, task: Task): boolean {
   return (
     !item.knownIds.has(task.id) &&
@@ -217,14 +193,12 @@ function matchesCreatedTask(item: OptimisticTask, task: Task): boolean {
   );
 }
 
-/** The deep link /activity?run=... opens the chat with that run's activity already showing. */
 function activityRunFromLocation(): string | null | undefined {
   const path = window.location.pathname.replace(/\/+$/, "");
   if (path !== "/activity") return undefined;
   return new URLSearchParams(window.location.search).get("run");
 }
 
-/** True only after `active` has stayed on for `delayMs`, so a quick load never flashes. */
 function useDelayedFlag(active: boolean, delayMs: number): boolean {
   const [shown, setShown] = useState(false);
 
@@ -240,11 +214,6 @@ function useDelayedFlag(active: boolean, delayMs: number): boolean {
   return active && shown;
 }
 
-/**
- * The transcript's single placeholder while the first snapshot is in flight. It is only
- * mounted when the transcript has no live rows of its own, and the reserved reading area
- * keeps the composer in place when hydration replaces it with the transcript.
- */
 function TranscriptLoadingCard() {
   return (
     <div
@@ -270,7 +239,6 @@ function MessageTime({ timestamp }: { timestamp: string }) {
   );
 }
 
-/** True for the pi-ui update note, including entries recorded before it carried a marker. */
 function isVersionUpdate(message: ChatMessage): boolean {
   return (
     message.version !== undefined ||
@@ -278,10 +246,6 @@ function isVersionUpdate(message: ChatMessage): boolean {
   );
 }
 
-/**
- * The pi-ui update note: a card that opens the changelog the agent was told about. The note itself
- * stays one line, because the changelog is long and belongs in a sheet the operator asks for.
- */
 function VersionUpdateCard({ message }: { message: ChatMessage }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDialogElement>(null);
@@ -314,7 +278,6 @@ function VersionUpdateCard({ message }: { message: ChatMessage }) {
         {message.text}
       </button>
       {open ? (
-        // biome-ignore lint/a11y/useKeyWithClickEvents: Esc is handled by the dialog cancel event.
         <dialog
           ref={ref}
           data-testid="version-update-dialog"
@@ -355,7 +318,6 @@ function VersionUpdateCard({ message }: { message: ChatMessage }) {
   );
 }
 
-/** An assistant reply: its full Markdown, rendered the same way at any length. */
 function AssistantReply({ message }: { message: ChatMessage }) {
   return (
     <div
@@ -367,7 +329,6 @@ function AssistantReply({ message }: { message: ChatMessage }) {
   );
 }
 
-/** Non-text message parts, such as diagrams drawn by a tool. */
 function MessageParts({ parts }: { parts: ChatMessage["parts"] }) {
   if (parts === undefined || parts.length === 0) return null;
   return (
@@ -385,7 +346,6 @@ function MessageParts({ parts }: { parts: ChatMessage["parts"] }) {
   );
 }
 
-/** A queued machine notice, shown as the translucent version of its future notice chip. */
 function QueuedNoticeChip({
   message,
   notice,
@@ -587,7 +547,6 @@ interface MemoryChipView {
   reads: MemoryReadRange[];
 }
 
-/** Collapses every memory tool call in one activity group into the data its chip shows. */
 export function memoryChipView(items: ActivityItem[]): MemoryChipView | null {
   let hits: number | undefined = 0;
   let reportedTopics: number | undefined = 0;
@@ -637,7 +596,6 @@ export function memoryChipView(items: ActivityItem[]): MemoryChipView | null {
   return { label: parts.join(" · "), paths: [...paths.values()], reads: [...reads.values()] };
 }
 
-/** One chip for all the memory searches and reads in a turn. */
 function MemoryActivityChip({ items }: { items: ActivityItem[] }) {
   const [open, setOpen] = useState(false);
   const detailsId = useId();
@@ -721,8 +679,6 @@ function ActivityGroup({
   onOpen: (groupKey: string, trigger: HTMLButtonElement) => void;
 }) {
   const [now, setNow] = useState(Date.now);
-  // A row can be replaced by the result of the same call with a later timestamp. Keep the
-  // earliest start this group has shown, so the live duration never steps back when it is.
   const anchoredStart = useRef<number | null>(null);
   const derivedStart = groupStartMs(items);
   if (derivedStart !== undefined) {
@@ -757,7 +713,7 @@ function ActivityGroup({
         )}
       >
         <ChevronIcon size={14} className="shrink-0" />
-        {/* Each piece stays whole and the line wraps between pieces on a narrow screen. */}
+
         <span data-testid="run-info-summary" className="min-w-0">
           {parts.map((part, index) => (
             <Fragment key={part}>
@@ -789,14 +745,11 @@ function ActivityGroup({
 }
 
 const ACTION_BUTTON_CLASS = "h-9 w-full hover:bg-foreground/10";
-/** The square track of the status line's plan switch. */
 const PLAN_SWITCH_TRACK_CLASS =
   "relative block h-4 w-[30px] shrink-0 rounded-none border p-0 transition-colors duration-[120ms] ease-out motion-reduce:transition-none";
 const BACKLOG_LONG_PRESS_MS = 500;
-/** Matches `.bg-jobs-counts`: the one duration every dock swap uses. */
 const DOCK_EXIT_MS = 160;
 
-/** The old nodes must disappear in the swap frame, not linger through the enter. */
 function dockPhaseExitMs(phase: DockPhase): number {
   return phase === "enter" ? 0 : DOCK_EXIT_MS;
 }
@@ -809,14 +762,6 @@ function dockPhaseAttr(phase: DockPhase): "exit" | "enter" | undefined {
   return phase === "settled" ? undefined : phase;
 }
 
-/**
- * A node that took part in a sweep has already been painted by its outer
- * animation. Applying the settled text animation afterwards would fade it a
- * second time, so suppress it until the keyed child's identity changes again
- * outside a sweep. `identity` must describe that child, not just its surface:
- * the status word swaps between a running and an idle element on the same
- * surface, and each of those remounts owns the settled 160 ms fade.
- */
 function useDockTextIn(swap: boolean, identity: unknown): boolean {
   const previous = useRef(identity);
   const fresh = useRef(swap);
@@ -828,7 +773,6 @@ function useDockTextIn(swap: boolean, identity: unknown): boolean {
   return swap && fresh.current;
 }
 
-/** The enter leg mounts the incoming view in the swap frame, not in an effect. */
 function dockScanPresence(
   presence: PresenceState,
   phase: DockPhase,
@@ -854,8 +798,6 @@ function PlanTaskSwitch({
 }) {
   const presence = dockScanPresence(usePresence(present, dockPhaseExitMs(phase)), phase, present);
   const textIn = useDockTextIn(swap, presence.mounted);
-  // The exit keeps data-open for the sweep, but the leaving control is already
-  // gone from the accessibility tree and cannot take focus or a pointer.
   const interactive = presence.open && phase !== "exit";
   if (!presence.mounted) return null;
   return (
@@ -877,7 +819,6 @@ function PlanTaskSwitch({
         !interactive && "pointer-events-none",
       )}
       onPointerDown={(event) => {
-        // Keep the composer focused so a phone's keyboard stays open.
         event.preventDefault();
       }}
       onClick={onToggle}
@@ -903,11 +844,6 @@ function PlanTaskSwitch({
   );
 }
 
-/**
- * The one aria-live region for the dock's status word. The keyed child fades in
- * when the surface changes, and the whole word holds its last text for the exit
- * instead of disappearing between pages.
- */
 function DockStatusWord({
   word,
   running,
@@ -919,7 +855,6 @@ function DockStatusWord({
 }: {
   word: string | null;
   running: boolean;
-  /** The plan run has sent no frame within the retry budget: keep the word, stop the clock. */
   quiet?: boolean;
   surface: string;
   phase: DockPhase;
@@ -933,14 +868,11 @@ function DockStatusWord({
   );
   if (word !== null) last.current = { word, running, surface };
   const shown = word === null ? last.current : { word, running, surface };
-  // The keyed child changes branch (and remounts) when the run starts or stops,
-  // even though the surface key stays the same.
   const textIdentity =
     shown === null
       ? null
       : `${shown.surface}:${shown.running ? "running" : "word"}:${presence.mounted}`;
   const textIn = useDockTextIn(swap, textIdentity);
-  // A phased exit is leaving even though the frozen view still reports open.
   const leaving = !presence.open || phase === "exit";
   const textClass = textIn && "dock-text-in";
 
@@ -987,7 +919,6 @@ function DockStatusWord({
   );
 }
 
-/** One grid cell, two children: the arriving and the leaving action share a box. */
 function DockAction({
   present,
   phase,
@@ -1023,7 +954,6 @@ function DockAction({
     </div>
   );
 }
-/** Space above the first message and below the last, on every viewport. */
 const TRANSCRIPT_END_GAP = 16;
 
 function SendIcon() {
@@ -1113,7 +1043,6 @@ interface Attachment {
 
 let attachmentKey = 0;
 
-/** Images picked or pasted into the composer, uploaded as soon as they are added. */
 function useAttachments() {
   const [items, setItems] = useState<Attachment[]>([]);
   const itemsRef = useRef(items);
@@ -1169,7 +1098,6 @@ function useAttachments() {
     });
   }, []);
 
-  /** Puts already uploaded media back, such as the images of a steer taken back. */
   const restore = useCallback((ids: readonly string[]) => {
     setItems((current) => [
       ...current,
@@ -1279,13 +1207,11 @@ export function Composer({
   runControls = true,
 }: {
   tasksPage: boolean;
-  /** When set, @project suggestions work even if this is not the create-task composer. */
   projectMentions?: boolean;
   running: boolean;
   send: (text: string, mode?: MessageMode, attachments?: string[]) => Promise<boolean>;
   stop: () => Promise<void>;
   unsendSteer?: () => Promise<QueuedMessage | null>;
-  /** Without a project a subtask takes its parent's, and a top-level task gets none. */
   addTask: (
     text: string,
     attachments: string[],
@@ -1293,7 +1219,6 @@ export function Composer({
     options?: { backlog?: boolean; plan?: boolean; status?: TaskStatus; body?: string },
     draft?: { key: string; text: string },
   ) => Promise<boolean>;
-  /** Known project names, A–Z, for the `@` autocomplete. */
   projects: string[];
   error: string | null;
   onDismissError: () => void;
@@ -1303,23 +1228,14 @@ export function Composer({
   attachTestId?: string;
   inputLabel?: string;
   placeholder?: string;
-  /** Stable instance: text drafts are stored per target instead of remounting. */
   draftKey?: string;
-  /** The status line's plan-draft toggle was left on for this session. */
   planDraft?: boolean;
-  /** The settled text animation still applies to a lane changing outside a sweep. */
   dockSwap?: boolean;
-  /** The top-line sweep phase; the action lanes share the cell's third slot. */
   dockPhase?: DockPhase;
-  /** Slash commands drawn as ghost text in the composer's own space. */
   commands?: ComposerCommand[];
-  /** The tasks page is showing the open task's body at full width. */
   fullscreen?: boolean;
-  /** Escape in the dock leaves full screen instead of touching the draft. */
   onExitFullscreen?: () => void;
-  /** Stop/steer need a transport that can interrupt; bots hide them rather than no-op. */
   runControls?: boolean;
-  /** A successful Retry consumes the exact draft that was restored for its failed row. */
   clearDraft?: {
     key: string;
     text: string;
@@ -1347,7 +1263,6 @@ export function Composer({
   const [backlog, setBacklog] = useState(false);
   const backlogPress = useRef<{ timer: number; x: number; y: number } | null>(null);
   const suppressAddClick = useRef(false);
-  // Bumped by every user edit, so a failed send can tell an untouched composer from a new draft.
   const draftRevision = useRef(0);
   const mentions = projectMentions ?? tasksPage;
   const mention = mentions && caret !== null ? mentionAt(value, caret) : null;
@@ -1386,15 +1301,12 @@ export function Composer({
 
   const hasText = value.trim().length > 0;
   const steering = running && runControls;
-  // A task still needs a title; a chat message can be images alone.
   const canSend =
     !uploading &&
     !failed &&
     (!running || runControls) &&
     (hasText || (!tasksPage && readyIds.length > 0));
 
-  // Retrying from the failed row clears only the draft it restored; text typed since wins.
-  // Match the draft key and the raw submitted text, not a parsed title or another target.
   useEffect(() => {
     if (clearDraft === null || clearDraft === undefined) return;
     if (lastClearedDraft.current === clearDraft.request) return;
@@ -1504,7 +1416,6 @@ export function Composer({
     if (singleLine) element.scrollTop = 0;
   }, [textareaRef]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: value drives the autosize and caret reset
   useLayoutEffect(() => {
     const element = textareaRef.current;
     if (!element) return;
@@ -1512,14 +1423,12 @@ export function Composer({
     if (element.value.length === 0) element.setSelectionRange(0, 0);
   }, [value, resizeTextarea]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: value and matches drive the autosize and palette growth
   useLayoutEffect(() => {
     const element = textareaRef.current;
     const wasOpen = commandPaletteOpen.current;
     commandPaletteOpen.current = commandOpen;
     resizeTextarea();
     if (!commandOpen || commandActive < 0) {
-      // The overlay can make the composer taller than its text; restore the text height.
       if (wasOpen && element !== null) {
         element.style.height = "";
         resizeTextarea();
@@ -1577,8 +1486,6 @@ export function Composer({
     const parsed = tasksPage ? parseProjectToken(text, projects) : null;
     const sentRevision = draftRevision.current;
 
-    // Clear the draft when the send starts: the optimistic bubble is the only feedback
-    // while the request is in flight. Snapshot the text and attachments for a rejection.
     setValue("");
     attachments.clear(sentKeys);
     if (element !== null) {
@@ -1601,7 +1508,6 @@ export function Composer({
       sent = await send(text, mode, ids);
     }
     if (!sent) {
-      // A draft typed while the request was pending wins over the rejected text.
       if (draftRevision.current !== sentRevision) return;
       setValue(text);
       attachments.restore(ids);
@@ -1796,14 +1702,11 @@ export function Composer({
                   return;
                 }
               }
-              // The palette and the mentions above own Escape first; only then does it leave
-              // full screen, so one press never dismisses two surfaces.
               if (event.key === "Escape" && fullscreen) {
                 event.preventDefault();
                 onExitFullscreen?.();
                 return;
               }
-              // ArrowUp in an empty composer takes back the newest steer the run has not reached.
               if (
                 event.key === "ArrowUp" &&
                 unsendSteer !== undefined &&
@@ -1936,10 +1839,6 @@ export function Composer({
   );
 }
 
-/**
- * The row above the oldest loaded message. Coming within a screen of it loads the page before;
- * the stick hook keeps the message on screen in place while the older ones land above it.
- */
 function EarlierMessages({
   history,
   scroller,
@@ -1959,8 +1858,6 @@ function EarlierMessages({
     const observer = new IntersectionObserver(
       (entries) => {
         if (!entries.some((entry) => entry.isIntersecting)) return;
-        // Before the first scroll to the end the row is in view; only load once the reader
-        // has moved off the end, or when the loaded part does not fill the screen.
         if (attached && root.scrollHeight > root.clientHeight + 1) return;
         void loadEarlier();
       },
@@ -1982,10 +1879,6 @@ function EarlierMessages({
   );
 }
 
-/**
- * The one transcript row renderer. The main chat and the plan chat both pass their
- * grouped timeline here; neither owns a second copy of message/activity rendering.
- */
 export function TranscriptRows({
   groups,
   timeline,
@@ -2069,7 +1962,6 @@ export function ChatView({
   const [jobsSheet, setJobsSheet] = useState<BackgroundJobsKind | null>(null);
   const closeJobsSheet = useCallback(() => {
     setJobsSheet(null);
-    // A sheet is a detour; closing it returns the operator to the composer.
     window.requestAnimationFrame(() => {
       if (pager.page === CHAT_PAGE) composerRef.current?.focus({ preventScroll: true });
     });
@@ -2091,11 +1983,8 @@ export function ChatView({
   const activityTriggerRef = useRef<HTMLButtonElement | null>(null);
   const tasksPage = pager.page === TASKS_PAGE;
   const chatPage = pager.page === CHAT_PAGE;
-  // An error belongs to the page it was raised on.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reset on page change only
   useEffect(() => setComposerError(null), [pager.page]);
   const statsPage = pager.page === STATS_PAGE;
-  // A working task is still live work, so its project stays part of the vocabulary.
   const projects = useMemo(
     () => projectsOf(tasks.filter((task) => isActiveStatus(task.status))),
     [tasks],
@@ -2116,14 +2005,10 @@ export function ChatView({
     statsPage || (tasksPage && (composerMode === "collapsed" || composerMode === "task-plan"));
   const showPlanToggle = tasksPage && !wantTaskDock && !hideTasksComposer;
   const dockSurface = tasksPage ? (wantTaskDock ? "dock" : "create") : "chat";
-  // Each surface speaks for itself: the open task's plan run on the tasks page,
-  // the main conversation's run everywhere else. No task open means an empty slot.
   const chatStatusWord = running ? workingWord(thinking) : ready ? "idle" : "connecting";
   const statusWord = tasksPage ? (taskSurfaceStatus?.word ?? null) : chatStatusWord;
   const statusRunning = tasksPage ? statusWord === "planning" : running;
   const statusQuiet = tasksPage ? taskSurfaceStatus?.quiet === true : quiet;
-  // The top line sweeps as one unit: freeze the old identities, swap while every
-  // node is transparent, then enter from the final x. The composer stays live.
   const reducedMotion = useReducedMotion();
   const dockScan = useDockScan(
     {
@@ -2138,16 +2023,11 @@ export function ChatView({
     !reducedMotion,
   );
   const dockSwap = dockScan.phase === "settled" && !reducedMotion;
-  // One header, fed by the active surface: the open task's plan run on the tasks
-  // page when it has one, the main conversation everywhere else (and as the
-  // fallback, so a chat failure stays visible while a task is open).
   const taskError = tasksPage ? (taskRunError?.error ?? null) : null;
   const shownRunError = taskError ?? runError;
   const dismissShownRunError =
     taskError !== null && taskRunError !== null ? taskRunError.dismiss : dismissRunError;
   const lastPagerState = useRef({ page: pager.page, dragging: pager.dragging });
-  // Paint the server's row instead of the card it replaces in the same render: a push and
-  // the create response can both land before the cleanup effect below runs.
   const shownTasks = useMemo(() => {
     if (optimisticTasks.length === 0) return tasks;
     const painted = optimisticTasks.filter(
@@ -2156,8 +2036,6 @@ export function ChatView({
     return painted.length === 0 ? tasks : [...tasks, ...painted.map((item) => item.task)];
   }, [tasks, optimisticTasks]);
 
-  // The detail TasksView reports as open. It clears on close, so a new burst starts from
-  // the most recent ring entry instead of advancing from a detail that is no longer up.
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
   const ledgerTasksRef = useRef(tasks);
@@ -2170,8 +2048,6 @@ export function ChatView({
   }, []);
   const openCycledTask = useCallback(
     (id: string) => {
-      // The detail learns the open through TasksView as well; doing it here keeps the
-      // ring and the cycle position current even if the ledger is not ready to paint yet.
       rememberOpenedTask(id);
       pager.setPage(TASKS_PAGE);
       setTaskSelection((current) => ({ id, request: (current?.request ?? 0) + 1 }));
@@ -2196,7 +2072,6 @@ export function ChatView({
   const handleTaskDetailChange = useCallback(
     (id: string | null) => {
       setOpenTaskId(id);
-      // A closed detail is not a position in the ring; the next press starts from the front.
       if (id === null) resetTaskCycle();
     },
     [resetTaskCycle],
@@ -2234,8 +2109,6 @@ export function ChatView({
     [commandTask, fullscreen, removeOpenTask, wide],
   );
 
-  // Full screen only exists over an open detail on the wide tasks page. A task change
-  // alone keeps it, so Ctrl+Tab shows the next body at the same width.
   useEffect(() => {
     if (openTaskId === null || pager.page !== TASKS_PAGE || !wide) setFullscreen(false);
   }, [openTaskId, pager.page, wide]);
@@ -2246,8 +2119,6 @@ export function ChatView({
     };
   }, []);
 
-  // A task event can land before the create response. Retire the painted card as soon as
-  // a row that was not already in the ledger at paint time carries the same title.
   useEffect(() => {
     if (optimisticTasks.length === 0) return;
     setOptimisticTasks((current) => {
@@ -2260,16 +2131,12 @@ export function ChatView({
     if (statsPage) refreshStats?.();
   }, [statsPage, refreshStats]);
 
-  // A page change is the only thing worth a tap of haptics; a snap back to the
-  // same page, the first render, and layout-only renders all stay silent.
   useEffect(() => {
     if (lastVibratedPage.current === pager.page) return;
     lastVibratedPage.current = pager.page;
     haptic(10);
   }, [pager.page]);
 
-  // Keep the dock's blur off for the whole pager movement, including a drag that
-  // snaps back to the page it started on.
   useLayoutEffect(() => {
     const previous = lastPagerState.current;
     lastPagerState.current = { page: pager.page, dragging: pager.dragging };
@@ -2283,16 +2150,12 @@ export function ChatView({
     return () => window.clearTimeout(timer);
   }, [pager.page, pager.dragging]);
 
-  // Ctrl+J focuses the composer on whichever page renders it. Only page to
-  // chat when the composer is not available there (the stats page keeps the
-  // dock mounted but inert while it is collapsed).
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.isComposing) return;
       if (!event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
       if (event.code !== "KeyJ" && event.key.toLowerCase() !== "j") return;
       event.preventDefault();
-      // A dialog owns the focus while it is open, including its own text fields.
       const active = document.activeElement;
       if (active instanceof Element && active.closest('[role="dialog"]') !== null) return;
       const focusField = (element: HTMLTextAreaElement) => {
@@ -2344,7 +2207,6 @@ export function ChatView({
     };
   }, [pager.setPage]);
   useEffect(() => {
-    // Fetch the side pages once the chat is up, so a swipe does not wait on the network.
     const timer = window.setTimeout(() => {
       void loadStatsView();
       void loadTasksView();
@@ -2360,17 +2222,12 @@ export function ChatView({
       }),
     [timeline],
   );
-  // Hydration owns an empty, idle transcript; a live turn (with or without rows) takes priority.
   const hydrating = !ready && !running && groups.length === 0;
   const showTranscriptLoading = useDelayedFlag(hydrating, TRANSCRIPT_LOADING_DELAY_MS);
   const footerRef = useRef<HTMLDivElement | null>(null);
   const composerBodyRef = useRef<HTMLDivElement | null>(null);
   const shellRef = useRef<HTMLDivElement | null>(null);
 
-  // The plan overlay folds the composer body to zero height, so the dock is just
-  // the top line. The plan pane reads that box through a custom property on the
-  // shell both surfaces share; a state write per ResizeObserver frame would
-  // re-render the mounted stats page, task list and transcript on every toggle.
   useLayoutEffect(() => {
     const shell = shellRef.current;
     if (shell === null) return;
@@ -2396,13 +2253,8 @@ export function ChatView({
     if (footer !== null && active instanceof HTMLElement && footer.contains(active)) active.blur();
   }, [hideTasksComposer, statsPage]);
 
-  // Re-run the stick sync when the transcript changes. The scroller's own
-  // ResizeObserver keeps the end pinned while the dock animates below it.
   const stick = useStickToBottom(timeline.length);
 
-  // A page switch is a navigation, not a content change. Hold the reader's position on
-  // the way out and put it back before paint, so an off-screen dock resize cannot shift
-  // the transcript. The first mount and a drag that snaps back stay untouched.
   const wasChatPage = useRef(chatPage);
   useLayoutEffect(() => {
     if (wasChatPage.current === chatPage) return;
@@ -2411,9 +2263,6 @@ export function ChatView({
     else stick.holdPosition();
   }, [chatPage, stick.holdPosition, stick.restorePosition]);
 
-  // When a reply finishes, show it from its start (with the run info row above it) instead of
-  // leaving the reader at its last line. Only when the reader is still following the end:
-  // someone who scrolled away during the run stays where they are.
   const wasRunningRef = useRef(running);
   const [revealAfter, setRevealAfter] = useState<number | null>(null);
   useEffect(() => {
@@ -2432,7 +2281,6 @@ export function ChatView({
       }
     }
     if (reply === undefined) {
-      // The final message can land just after the run state flips; give it a moment.
       const timer = window.setTimeout(() => setRevealAfter(null), 3000);
       return () => window.clearTimeout(timer);
     }
@@ -2454,7 +2302,6 @@ export function ChatView({
   }, [revealAfter, timeline, revealTop]);
 
   const handleSend = async (text: string, mode: MessageMode = "queue", attachments?: string[]) => {
-    // `send` paints the optimistic bubble before its first await; scroll it into view now.
     const pending = send(text, mode, attachments);
     requestAnimationFrame(() => stick.scrollToBottom());
     const outcome = await pending;
@@ -2476,9 +2323,7 @@ export function ChatView({
 
   const openTaskFromChat = useCallback(
     (id: string) => {
-      // A hand-picked task ends the current burst; the next Ctrl+Tab starts from it.
       resetTaskCycle();
-      // Remember it now so a press before the task page paints still starts from this task.
       rememberOpenedTask(id);
       pager.setPage(TASKS_PAGE);
       setTaskSelection((current) => ({ id, request: (current?.request ?? 0) + 1 }));
@@ -2498,7 +2343,6 @@ export function ChatView({
     [],
   );
 
-  /** Send one create, keeping its painted row until the ledger has the server's copy. */
   const attemptCreate = useCallback(
     async (created: OptimisticTask, retried = false): Promise<boolean> => {
       const { title } = created.request;
@@ -2517,7 +2361,6 @@ export function ChatView({
         requestOptions,
       );
       if (!outcome.ok) {
-        // The row keeps the text and the server's reason so Retry has something to send.
         if (created.task.title.length > 0) {
           setOptimisticTasks((current) =>
             current.map((item) =>
@@ -2531,12 +2374,9 @@ export function ChatView({
         return false;
       }
       setComposerError(null);
-      // A retry consumed exactly the raw draft restored for the failed row.
       if (retried && created.request.draft !== undefined) {
         clearComposerDraft(created.request.draft, created.request.attachments);
       }
-      // Do not drop the painted card here: applyTasks may ignore a stale ledger, and the
-      // card must stay until a matching server row is actually in `tasks`.
       applyTasks(outcome.ledger);
       setOptimisticTasks((current) =>
         current.map((item) =>
@@ -2549,8 +2389,6 @@ export function ChatView({
           .sort((left, right) => (left.createdAt < right.createdAt ? 1 : -1))[0];
         if (opened !== undefined) {
           openTaskFromChat(opened.id);
-          // A plan create starts its run with the create response; a plain create starts
-          // the plan chat here, from the text that just named the task.
           if (created.request.options?.plan !== true) {
             void fetch(`/api/tasks/${encodeURIComponent(opened.id)}/chat`, {
               method: "POST",
@@ -2590,7 +2428,6 @@ export function ChatView({
     draft?: { key: string; text: string },
   ) => {
     const title = text.trim();
-    // A draft that is only @project still paints the raw text so its 400 has a row to land on.
     const paintedTitle = title.length > 0 ? title : (draft?.text.trim() ?? "");
     const key = newTaskKey();
     const created: OptimisticTask = {
@@ -2613,7 +2450,6 @@ export function ChatView({
         createdBy: "operator",
       },
     };
-    // Paint the card in this frame; the create request only confirms it.
     if (paintedTitle.length > 0) setOptimisticTasks((current) => [...current, created]);
     return attemptCreate(created);
   };
@@ -2652,7 +2488,6 @@ export function ChatView({
     setActivityJobId(null);
     const path = window.location.pathname.replace(/\/+$/, "");
     if (path === "/activity") {
-      // A direct deep link closes back to the chat rather than reloading the modal.
       const url = new URL(window.location.href);
       url.pathname = "/";
       url.searchParams.delete("run");
@@ -2677,9 +2512,6 @@ export function ChatView({
     setPlanDraft(next);
     writePlanTaskDraft(next);
     haptic();
-    // The toggle changes what Send does, not where the operator is typing. Put the
-    // keyboard back on the draft immediately and again after the state change, for
-    // a tap and a click alike.
     const focusComposer = () => composerRef.current?.focus({ preventScroll: true });
     focusComposer();
     window.requestAnimationFrame(focusComposer);

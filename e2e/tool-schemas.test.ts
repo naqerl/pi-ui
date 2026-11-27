@@ -17,7 +17,6 @@ type JsonSchema = Record<string, unknown>;
 export interface ProviderSchemaRule {
   readonly name: string;
   readonly message: string;
-  /** Returns true when the rule rejects this schema node. */
   readonly matches: (node: JsonSchema, root: JsonSchema) => boolean;
 }
 
@@ -44,27 +43,23 @@ function resolveJsonPointer(root: JsonSchema, ref: string): unknown {
 
 export const PROVIDER_SCHEMA_RULES: readonly ProviderSchemaRule[] = [
   {
-    // OpenAI function schemas accept one item schema; Type.Tuple serialises the array form.
     name: "items-array",
     message:
       "`items` must be one schema, not a tuple array (use Type.Array with minItems/maxItems)",
     matches: (node) => Array.isArray(node.items),
   },
   {
-    // OpenAI rejects `items: false` because an array must declare an item schema.
     name: "items-false",
     message: "`items: false` is not accepted by the model provider",
     matches: (node) => node.items === false,
   },
   {
-    // OpenAI resolves refs only inside the submitted document; external refs are refused.
     name: "unresolved-ref",
     message: "`$ref` does not resolve inside this schema document",
     matches: (node, root) =>
       typeof node.$ref === "string" && resolveJsonPointer(root, node.$ref) === undefined,
   },
   {
-    // OpenAI wants a nullable union as anyOf: [..., {type: "null"}], not type: [..., "null"].
     name: "nullable-type-array",
     message: '`type` must not be an array containing "null" (use anyOf with {"type":"null"})',
     matches: (node) => Array.isArray(node.type) && node.type.includes("null"),
@@ -90,7 +85,6 @@ function findSchemaViolations(toolName: string, schema: JsonSchema): string[] {
   return violations;
 }
 
-/** The static tools app-registry installs; MCP tools are discovered per deployment. */
 function collectAgentTools(): ToolRegistration[] {
   const unused = {} as never;
   return [

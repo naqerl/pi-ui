@@ -35,7 +35,6 @@ const EXTRA_DEFAULT_IDS = [
   "bots",
 ];
 
-/** This file's older grid assertions use the five-widget Session board. */
 type GridBrowser = {
   evaluate<T>(fn: (ids: string[]) => Promise<T> | T, ids: string[]): Promise<T>;
   evaluate<T>(fn: () => Promise<T> | T): Promise<T>;
@@ -77,7 +76,6 @@ async function resetMinimalDashboard(browser: GridBrowser) {
     .toEqual(["context", "tokens", "mcp", "mcp-events", "task-reopens"]);
 }
 
-/** Drives the page's hold-to-drag pointer shim with the same synthetic events a touch or mouse test uses. */
 async function dragPointer(
   browser: {
     evaluate<T>(
@@ -136,7 +134,6 @@ async function dragPointer(
   );
 }
 
-/** A press that ends before the hold delay must stay a tap. */
 test("drags a widget into free space, resizes it to half, and keeps both after reload", async ({
   app,
   browser,
@@ -185,7 +182,6 @@ test("drags a widget into free space, resizes it to half, and keeps both after r
   expect(tokensBefore?.y).toBe(4);
   expect(contextBefore?.y).toBe(0);
 
-  // The target row is free: context ends at y=2, tokens starts at y=4.
   await dragPointer(browser, '[data-widget-id="tokens"]', '[data-widget-id="context"]', 0, 168);
   await expect
     .poll(async () => {
@@ -209,7 +205,6 @@ test("drags a widget into free space, resizes it to half, and keeps both after r
   ]);
   await expect.poll(() => patches.length, { timeout: 5_000 }).toBe(1);
 
-  // Resize the full-width card down to half of the 12-column grid.
   await browser.evaluate(() => {
     const card = document.querySelector<HTMLElement>('[data-widget-id="tokens"]');
     const handle = card?.querySelector<HTMLElement>(".react-resizable-handle-se");
@@ -267,7 +262,6 @@ test("drags a widget into free space, resizes it to half, and keeps both after r
   expect(resized?.span).toBe("half");
   expect(resized?.w).toBe(6);
 
-  // Polling re-renders must not move the committed cells after the drop.
   await browser.evaluate(
     () => new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 2_000)),
   );
@@ -283,7 +277,6 @@ test("drags a widget into free space, resizes it to half, and keeps both after r
     ["task-reopens", 0, 22],
   ]);
 
-  // Reload: the stored coordinates and span drive the page again.
   await app.open("/?page=stats");
   await expect(screen.getByTestId("widget-tokens")).toBeVisible({ timeout: 30_000 });
   await expect
@@ -306,8 +299,6 @@ test("drags a widget into free space, resizes it to half, and keeps both after r
     ["task-reopens", 0, 22, "full"],
   ]);
 
-  // The route is only for this test's PATCH assertions; leaving it registered
-  // would intercept layout writes in every later test in the file.
   await browser.unroute("**/api/dashboard/layout");
 });
 
@@ -317,7 +308,6 @@ type GridSnapshot = {
   scrollTop: number;
 };
 
-/** The committed board and the reader's position: what a maximize round trip must leave alone. */
 async function gridSnapshot(browser: {
   evaluate<T>(fn: () => Promise<T> | T): Promise<T>;
 }): Promise<GridSnapshot> {
@@ -354,7 +344,6 @@ type OverlayCoverage = {
   onDock: boolean;
 };
 
-/** The overlay's viewport rect and what a hit test at the dock finds on top. */
 async function overlayCoverage(browser: {
   evaluate<T>(fn: () => Promise<T> | T): Promise<T>;
 }): Promise<OverlayCoverage | null> {
@@ -444,8 +433,6 @@ test("maximizes a widget to the viewport and closes from minimize, Escape and ba
   expect(await overlayHistoryId(browser)).toBeNull();
   expect(await gridSnapshot(browser)).toEqual(before);
 
-  // A forward step returns to the stale entry that minimize left behind. Taking
-  // that entry over must still let minimize close the overlay.
   await browser.evaluate(() => {
     window.history.forward();
     return null;
@@ -477,9 +464,6 @@ test("maximizes a widget to the viewport and closes from minimize, Escape and ba
   expect(await overlayHistoryId(browser)).toBeNull();
   expect(await gridSnapshot(browser)).toEqual(before);
 
-  // A reload keeps the history entry but loses the overlay state. The overlay
-  // must not reopen, and the next maximize must push instead of reusing the
-  // stale marker (which would send minimize one page back).
   await screen.getByTestId("widget-context-maximize").tap();
   await expect(screen.getByTestId("widget-context-fullscreen")).toBeVisible();
   await browser.reload();

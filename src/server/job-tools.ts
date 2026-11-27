@@ -24,7 +24,6 @@ function failure<TDetails extends JsonValue = JsonValue>(
   );
 }
 
-/** The read tool's text semantics, with a job id in place of a path. */
 const read = createReadTool();
 
 function noOutput<TDetails extends JsonValue = JsonValue>(
@@ -38,7 +37,6 @@ function isMissingLog(error: unknown): boolean {
   return code === "ENOENT" || code === "not_found";
 }
 
-/** Tools for long shell commands that should not hold up the turn. Not deferred. */
 export function createJobTools(jobs: JobManager): ToolRegistration[] {
   return [
     defineTool({
@@ -79,7 +77,6 @@ export function createJobTools(jobs: JobManager): ToolRegistration[] {
     }),
     defineTool({
       ...read,
-      // The read tool's repair and cancel, if any, expect a path; job_output takes an id.
       prepareArguments: undefined,
       cancel: undefined,
       name: "job_output",
@@ -110,8 +107,6 @@ export function createJobTools(jobs: JobManager): ToolRegistration[] {
             api,
             context,
           );
-          // `read` never parks; a park carries no result fields, so report it rather than
-          // spreading it and answering with an empty output.
           if ("sleep" in result || "wait" in result) {
             return failure(new JobError(`Job ${id}: reading its log did not return a result.`));
           }

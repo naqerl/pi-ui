@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import { cn } from "./lib/utils";
 
-/** Glass card for empty-state / helper text over the animated background. */
 export function EmptyCaption({
   children,
   className,

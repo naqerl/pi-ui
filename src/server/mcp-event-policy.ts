@@ -1,17 +1,7 @@
-/**
- * Delivery policy for MCP event notices.
- *
- * Subscription events are news for the activity page and every widget, but not
- * every event deserves its own chat notice and turn. This module decides which
- * events start a notice, which ones fold into the notice already open for the
- * same subject, and which ones say nothing new at all.
- */
-
 export type NoticeMode = "immediate" | "coalesce" | "drop";
 export type NoticeAction = "deliver" | "update" | "drop";
 
 export interface ClassifiedNotice {
-  /** `${server}/${event name}/${subjectId}`, or the event id when there is no subject. */
   readonly key: string;
   readonly mode: NoticeMode;
   readonly reason: string;
@@ -21,38 +11,28 @@ export interface ClassifiedNotice {
   readonly eventId: string;
   readonly subjectId: string | null;
   readonly subjectField: string | null;
-  /** Epoch milliseconds, from the event timestamp when it has one. */
   readonly at: number;
 }
 
 export interface NoticeDecision extends ClassifiedNotice {
   readonly action: NoticeAction;
-  /** True for the first notice of a key/window (or any immediate notice). */
   readonly first: boolean;
-  /** A dropped event that still belongs in the open notice's text. */
   readonly fold: boolean;
-  /** Stable per-window transcript id, so two windows of one key stay separate. */
   readonly noticeId: string | null;
 }
 
 export interface NoticeCoalescerOptions {
-  /** How long one key's notice stays open. Zero disables coalescing entirely. */
   readonly windowMs?: number;
-  /** Current time, injectable for tests. */
   readonly now?: () => number;
-  /** Two starts closer than this are the same transition, not two of them. */
   readonly sameFrameMs?: number;
-  /** The boundary and job/run pairs are immediate repeats only within this gap. */
   readonly sameMomentMs?: number;
 }
 
 export const DEFAULT_MCP_EVENT_WINDOW_MS = 600_000;
-/** The environment variable that overrides the window, in milliseconds. */
 export const MCP_EVENT_WINDOW_MS = DEFAULT_MCP_EVENT_WINDOW_MS;
 const DEFAULT_SAME_FRAME_MS = 1_000;
 const DEFAULT_SAME_MOMENT_MS = 10_000;
 
-/** `MCP_EVENT_WINDOW_MS`, where zero disables coalescing and junk keeps the default. */
 export function mcpEventWindowMs(): number {
   const raw = process.env.MCP_EVENT_WINDOW_MS;
   if (raw === undefined || raw.trim() === "") return DEFAULT_MCP_EVENT_WINDOW_MS;
@@ -336,10 +316,6 @@ function isRunning(facts: Facts): boolean {
   return normalizedWord(facts.action) === "running" || normalizedWord(facts.phase) === "running";
 }
 
-/**
- * The stateful drop rules. `previous` is the last event observed, while `open`
- * is the notice the event would otherwise update.
- */
 function redundancyReason(
   current: Facts,
   previous: Facts | undefined,
@@ -351,8 +327,6 @@ function redundancyReason(
 ): { reason: string; fold: boolean } | null {
   if (previous !== undefined) {
     const elapsed = Math.abs(current.at - previous.at);
-    // A boundary frame announces the transition with no node; the frame that
-    // immediately names the node is the same moment.
     if (
       elapsed <= sameMomentMs &&
       sameSubject(previous, current) &&
@@ -363,8 +337,6 @@ function redundancyReason(
       return { reason: "boundary-node", fold: false };
     }
 
-    // Two executions opening in the same frame are one transition. Keep the
-    // first notice and fold the second event into it.
     if (
       elapsed <= sameFrameMs &&
       sameSubject(previous, current) &&
@@ -378,8 +350,6 @@ function redundancyReason(
       return { reason: "duplicate-transition", fold: open !== undefined };
     }
 
-    // A repeated (node, phase) whose only change is the run cursor is the same
-    // statement again, such as v2:3 -> v2:6 -> v2:7 on an unchanged node.
     if (
       trackSequenceRules &&
       sameSubject(previous, current) &&
@@ -395,7 +365,6 @@ function redundancyReason(
       return { reason: "cursor-only", fold: false };
     }
 
-    // Periodic "has been running for Nm" warnings repeat one statement.
     if (
       trackSequenceRules &&
       sameSubject(previous, current) &&
@@ -410,8 +379,6 @@ function redundancyReason(
 
   if (previousRun !== undefined) {
     const elapsed = Math.abs(current.at - previousRun.at);
-    // The job frame already said the run is running. The run frame with the
-    // same run id and phase adds nothing.
     if (
       elapsed <= sameMomentMs &&
       previousRun.server === current.server &&
@@ -426,12 +393,8 @@ function redundancyReason(
   return null;
 }
 
-/** Decide what to do with one event, optionally in the context of the previous one. */
 export function classifyNotice(input: unknown, previousInput?: unknown): ClassifiedNotice {
   const facts = factsFrom(input);
-  // A replay flag is provenance, not novelty: the hub serves anything after a cursor
-  // marked `replayed: true`, and dropping it silently starves the conversation
-  // (SEP-3415 dedupes by eventId, so the delivered-id set decides what is news).
   if (facts.terminal) return classification(facts, "immediate", "terminal-state");
 
   const previous = previousInput === undefined ? undefined : factsFrom(previousInput);
@@ -452,11 +415,6 @@ export function classifyNotice(input: unknown, previousInput?: unknown): Classif
   return classification(facts, "coalesce", "coalescible");
 }
 
-/**
- * Small per-key window. The first event of a key opens a notice; later
- * coalescible events update it until the window closes. Immediate events never
- * wait, and the drop rules keep the notice text from repeating itself.
- */
 export class NoticeCoalescer {
   private readonly windowMs: number;
   private readonly clock: () => number;
@@ -479,7 +437,6 @@ export class NoticeCoalescer {
     return this.windowMs;
   }
 
-  /** Classify and advance the window state. */
   observe(input: unknown): NoticeDecision {
     const now = this.clock();
     const facts = factsFrom(input);
@@ -582,7 +539,6 @@ export class NoticeCoalescer {
     if (runKey !== null) this.previousByRun.set(runKey, facts);
   }
 
-  /** Aliases with verbs that read naturally at different call sites. */
   decide(input: unknown): NoticeDecision {
     return this.observe(input);
   }
@@ -595,14 +551,12 @@ export class NoticeCoalescer {
     return this.observe(input);
   }
 
-  /** The open notice for a key, when its window is still active. */
   openNotice(key: string): OpenNotice | undefined {
     const open = this.open.get(key);
     if (open === undefined || !this.active(open)) return undefined;
     return open;
   }
 
-  /** Every open notice, oldest first. */
   notices(): readonly OpenNotice[] {
     return [...this.open.values()]
       .filter((open) => this.active(open))

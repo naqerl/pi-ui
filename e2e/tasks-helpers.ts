@@ -1,7 +1,6 @@
 import type { Browser } from "@e2e-dev/web";
 import { expect, type Locator, type Screen } from "e2e";
 
-/** Deletes the named tasks and proves the shared ledger no longer has them. */
 export async function removeTasks(browser: Browser, titles: readonly string[]) {
   const left = await browser.evaluate(async (names) => {
     const matching = async () =>
@@ -18,7 +17,6 @@ export async function removeTasks(browser: Browser, titles: readonly string[]) {
 
 type TaskScreen = Pick<Screen, "getByTestId" | "getByRole">;
 
-/** Set the create composer's plan-draft choice when it differs from the stored one. */
 export async function setPlanDraft(screen: TaskScreen, on: boolean): Promise<void> {
   const toggle = screen.getByTestId("plan-task-toggle");
   if ((await toggle.count()) === 0) return;
@@ -26,7 +24,6 @@ export async function setPlanDraft(screen: TaskScreen, on: boolean): Promise<voi
   if (pressed !== on) await toggle.tap();
 }
 
-/** Focus the tasks-page composer, going back to the list first on mobile. */
 export async function openNewTaskComposer(screen: TaskScreen): Promise<Locator> {
   await backToTaskList(screen);
   const input = screen.getByRole("textbox", "New task");
@@ -34,14 +31,12 @@ export async function openNewTaskComposer(screen: TaskScreen): Promise<Locator> 
   return input;
 }
 
-/** Create an open task from the text composer and wait until its detail is open. */
 export async function createOpenTask(
   screen: TaskScreen,
   title: string,
   options?: { project?: string },
 ) {
   const input = await openNewTaskComposer(screen);
-  // These callers create ordinary open work; planning is now the composer default.
   await setPlanDraft(screen, false);
   const text = options?.project === undefined ? title : `@${options.project} ${title}`;
   await input.fill(text);
@@ -50,14 +45,12 @@ export async function createOpenTask(
   await expectDetailTitle(screen, expected);
 }
 
-/** Close a mobile task detail so the list is visible again. No-op on the desktop split. */
 export async function backToTaskList(screen: TaskScreen) {
   const back = screen.getByTestId("task-detail-back");
   if ((await back.count()) === 0) return;
   if (await back.isVisible()) await back.tap();
 }
 
-/** Task-agent chat routes must not be fulfilled as a task ledger. */
 export function isTaskChatUrl(url: string): boolean {
   try {
     return /\/api\/tasks\/[^/]+\/chat(?:\/|$)/.test(new URL(url).pathname);
@@ -66,7 +59,6 @@ export function isTaskChatUrl(url: string): boolean {
   }
 }
 
-/** Open the task-detail kebab so action items exist in the document (they portal). */
 export async function openTaskActions(screen: TaskScreen) {
   const content = screen.getByTestId("task-detail-menu-content");
   if ((await content.count()) > 0 && (await content.isVisible())) return;
@@ -76,20 +68,17 @@ export async function openTaskActions(screen: TaskScreen) {
   await expect(content).toBeVisible();
 }
 
-/** Open the kebab and tap a menu item by test id (status, backlog, remove). */
 export async function chooseTaskAction(screen: TaskScreen, testId: string) {
   await openTaskActions(screen);
   await screen.getByTestId(testId).tap();
 }
 
-/** Whether the open task detail is the desktop split (thin Task details bar). */
 export async function isDesktopDetail(screen: TaskScreen): Promise<boolean> {
   const detail = screen.getByTestId("task-detail");
   if ((await detail.count()) === 0) return false;
   return (await detail.getAttribute("data-layout")) === "desktop";
 }
 
-/** Assert the open task's title, using the list on desktop and the header on mobile. */
 export async function expectDetailTitle(screen: TaskScreen, expected: string) {
   await expect(screen.getByTestId("task-detail")).toBeVisible();
   if (await isDesktopDetail(screen)) {
@@ -100,7 +89,6 @@ export async function expectDetailTitle(screen: TaskScreen, expected: string) {
   }
 }
 
-/** Open the title editor: click the header title on mobile, or Rename… on desktop. */
 export async function beginRenameTask(screen: TaskScreen) {
   const title = screen.getByTestId("task-title");
   if ((await title.count()) > 0 && (await title.isVisible())) {
@@ -112,7 +100,6 @@ export async function beginRenameTask(screen: TaskScreen) {
   await expect(screen.getByTestId("task-title-input")).toBeVisible();
 }
 
-/** Open the header project dropdown and return its text field. */
 export async function openTaskProject(screen: TaskScreen) {
   const input = screen.getByTestId("task-project-input");
   if ((await input.count()) === 0 || !(await input.isVisible())) {
@@ -128,7 +115,6 @@ export async function openTaskProject(screen: TaskScreen) {
   return input;
 }
 
-/** Assert the current project (header trigger on mobile, picker or list on desktop). */
 export async function expectTaskProject(screen: TaskScreen, name: string) {
   const label = name.length === 0 ? "No project" : `@${name}`;
   const trigger = screen.getByTestId("task-header-project");
@@ -140,14 +126,12 @@ export async function expectTaskProject(screen: TaskScreen, name: string) {
   await expect(input).toHaveValue(name);
 }
 
-/** Switch the mobile detail to the Chat tab. No-op when the tab is already selected or hidden. */
 export async function openTaskChatTab(screen: TaskScreen) {
   const tab = screen.getByTestId("task-tab-chat");
   if ((await tab.count()) === 0) return;
   if (await tab.isVisible()) await tab.tap();
 }
 
-/** Switch the mobile detail to the Plan tab. No-op when the tab is already selected or hidden. */
 export async function openTaskPlanTab(screen: TaskScreen) {
   const tab = screen.getByTestId("task-tab-plan");
   if ((await tab.count()) === 0) return;

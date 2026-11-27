@@ -141,7 +141,6 @@ test("questions live on the Plan tab and answering nudges the agent with a notic
   const panel = screen.getByTestId("task-questions-panel");
   await expect(panel).toBeVisible({ timeout: 30_000 });
 
-  // The ask returned without parking the run: a normal message still gets its reply.
   expect(await postPlanMessage(browser, taskId, "After questions still responsive")).toBe(202);
   await openTaskChatTab(screen);
   await expect(screen.getByTestId("task-agent-transcript")).toContainText(
@@ -150,7 +149,6 @@ test("questions live on the Plan tab and answering nudges the agent with a notic
   );
   await expect(screen.getByTestId("working-status")).toHaveText("idle", { timeout: 60_000 });
 
-  // The Chat tab's waiting control must move the pager, not just relabel the tab.
   const waiting = screen.getByTestId("task-questions-waiting");
   await expect(waiting).toBeVisible();
   await waiting.tap();
@@ -212,7 +210,6 @@ test("a full question set scrolls into reach in the desktop Plan card", {
   const dismiss = screen.getByTestId("task-questions-dismiss");
   await expect(panel).toBeVisible({ timeout: 30_000 });
 
-  // Scroll the Plan card with the wheel exactly as a pointer user would.
   const panelBox = await panel.boundingBox();
   if (panelBox === null) throw new Error("question panel has no box");
   await browser.mouse.move(
@@ -355,7 +352,6 @@ test("dismiss clears the set, nudges the agent, and a replayed answer is refused
   }, taskId);
   expect(carried).toBe(setId);
 
-  // A pending set blocks approval / moving the task to working until it is answered or dismissed.
   expect(
     await browser.evaluate(
       async (id) =>
@@ -381,7 +377,6 @@ test("dismiss clears the set, nudges the agent, and a replayed answer is refused
   }, taskId);
   expect(cleared).toBeNull();
 
-  // Reposting the same set is a conflict and must not add a second prompt entry.
   expect(
     await answerQuestions(browser, taskId, setId, [
       { id: "transport", values: ["http"], text: "" },

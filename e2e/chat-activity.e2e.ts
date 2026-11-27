@@ -56,7 +56,6 @@ const longRunSnapshot = {
     arguments: JSON.stringify({ command: `echo step ${index}` }),
     output: `step ${index}`,
     isError: false,
-    // One long wall time and spend keep the summary wider than a 390px row.
     durationMs: index === 0 ? 1_234_567_000 : 0,
     timestamp: activityAt(0),
     order: 20 + index,
@@ -197,7 +196,6 @@ describe("activity surface against one shared app", { serial: true }, () => {
         return {
           button: { top: box.top, right: box.right, bottom: box.bottom, left: box.left },
           ink,
-          // A Range fragment can return several rects for one line, so count line tops.
           lines: new Set(lines.map((rect) => Math.round(rect.top * 2) / 2)).size,
           overflows:
             button.scrollWidth > button.clientWidth + 1 ||
@@ -210,16 +208,13 @@ describe("activity surface against one shared app", { serial: true }, () => {
     const expectContained = async () => {
       const geometry = await measure();
       expect(geometry).not.toBeNull();
-      // The painted border box must own the ink on all four sides, not just the top.
       expect(geometry?.button.top).toBeLessThanOrEqual((geometry?.ink.top ?? 0) + 0.5);
       expect(geometry?.button.right).toBeGreaterThanOrEqual((geometry?.ink.right ?? 0) - 0.5);
       expect(geometry?.button.bottom).toBeGreaterThanOrEqual((geometry?.ink.bottom ?? 0) - 0.5);
       expect(geometry?.button.left).toBeLessThanOrEqual((geometry?.ink.left ?? 0) + 0.5);
       expect(geometry?.lines).toBeGreaterThanOrEqual(2);
       expect(geometry?.overflows).toBe(false);
-      // A second flex box inside the button is what let the slab drift from its ink.
       expect(geometry?.summaryDisplay).not.toBe("flex");
-      // The common chip-only row must own the same paint isolation as a memory group.
       expect(geometry?.insideGroup).toBe(true);
       expect(geometry?.isolation).toBe("isolate");
     };
@@ -238,8 +233,6 @@ describe("activity surface against one shared app", { serial: true }, () => {
         await expect(screen.getByTestId("run-info")).toBeVisible();
         await expectContained();
       }
-      // Scroll the chip through the compositor before the evidence frame, so a
-      // stale background slab would show up instead of a freshly painted one.
       await browser.evaluate(async () => {
         const scroller = document.querySelector<HTMLElement>('[data-testid="chat-scroller"]');
         const chip = document.querySelector<HTMLElement>('[data-testid="run-info"]');

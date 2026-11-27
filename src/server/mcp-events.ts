@@ -20,22 +20,17 @@ export interface ExtensionNotice {
 }
 
 export interface McpEventFeedOptions {
-  /** Process start time; events stamped before it are replay, never news. */
   readonly startedAt?: number | string | Date;
-  /** The clock the quiet window reads; tests pass a controllable one. */
   readonly now?: () => number;
-  /** A shared quiet-window instance, mostly so a timer and the gate use one state. */
   readonly outageQuiet?: OutageQuiet;
 }
 
-/** The one intake decision for a status notice: model turn, chip, or nothing. */
 export interface StatusGate {
   readonly text: string;
   readonly mode: "deliver" | "chip" | "drop";
 }
 
 function startedAtOf(value: number | string | Date | undefined): number {
-  // A standalone feed has no process bundle; the server always passes its boot time.
   if (value === undefined) return 0;
   if (typeof value === "number") return Number.isFinite(value) ? value : 0;
   if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : 0;
@@ -48,34 +43,14 @@ function startedAtOf(value: number | string | Date | undefined): number {
 
 const LIVE_STATUS = new Set(["opening", "active", "reconnecting"]);
 const EVENT_LIMIT = 100;
-/**
- * A restart is allowed to replay what it missed while it was down, but only
- * for a short window and only for a handful of events. A stream whose first
- * missed event predates this process by more than the grace horizon is old
- * history, not a restart: resuming it would replay days of backlog into the
- * chat queue. A short outage on a busy hub is the same problem in miniature —
- * ten minutes can hold a hundred events — so a full probe page means "this is
- * a backlog, not a handful", however recent it looks. This is also the age
- * gate for the stream itself, so every ingest path uses the same horizon.
- */
 export const RESTORE_GRACE_MS = 15 * 60_000;
-/** A restored stream is capped for this long; a continuous replay cannot outrun the outbox. */
 const RESTORE_CAP_WINDOW_MS = RESTORE_GRACE_MS;
 
-/**
- * A stream the user could still be depending on. `failed` is deliberately not
- * live: retry exhaustion is the outage the status notice must announce.
- */
 function isLiveSubscription(view: McpSubscriptionView): boolean {
   if (view.state === "cancelled" || view.state === "dead" || view.state === "stalled") return false;
   return view.status === "active" || view.status === "reconnecting" || view.status === "opening";
 }
 
-/**
- * The extension's own heartbeat deadline. A stream that ends has not stopped
- * delivering until this long passes without an event or heartbeat: the adapter
- * reconnects inside that window and a quick generation swap is not an outage.
- */
 export const MCP_STREAM_HEARTBEAT_TIMEOUT_MS = 65_000;
 
 function parsedTime(value: string | undefined): number | undefined {
@@ -84,7 +59,6 @@ function parsedTime(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-/** The newest proof that this subscription delivered something. */
 function lastDeliveryAt(view: McpSubscriptionView): number | undefined {
   const eventAt = parsedTime(view.lastEventAt);
   const heartbeatAt = parsedTime(view.lastHeartbeatAt);
@@ -93,7 +67,6 @@ function lastDeliveryAt(view: McpSubscriptionView): number | undefined {
   return Math.max(eventAt, heartbeatAt);
 }
 
-/** True while the silence still fits inside the extension's heartbeat window. */
 function deliveryIsFresh(view: McpSubscriptionView, now = Date.now()): boolean {
   const at = lastDeliveryAt(view);
   return at !== undefined && now - at <= MCP_STREAM_HEARTBEAT_TIMEOUT_MS;
@@ -103,7 +76,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** One bounded event list plus how many events were too old to deliver. */
 export interface FreshMcpEvents {
   readonly items: unknown[];
   readonly dropped: number;
@@ -130,14 +102,6 @@ function eventLabel(item: Record<string, unknown>): string {
   return `${server}/${name}${id}`;
 }
 
-/**
- * A stream can reconnect and hand over its adapter's own buffered backlog,
- * not only the replay the cursor probe saw. The only thing pi-ui can judge is
- * whether an event is news, so each event is tested against the restore grace
- * individually: one old sibling must not drop a fresh event, and one fresh
- * sibling must not carry an old event into the queue. An event without a usable
- * timestamp cannot be judged, so it is delivered as before and logged.
- */
 export function filterStaleMcpEvents(
   items: readonly unknown[],
   startedAt: number,
@@ -192,13 +156,11 @@ function summarize(data: unknown): string {
   }
 }
 
-/** The real position rides in `event.data.cursor`; the envelope cursor is often null. */
 export function eventCursor(event: Record<string, unknown>): string | null {
   if (isRecord(event.data) && typeof event.data.cursor === "string") return event.data.cursor;
   return typeof event.cursor === "string" ? event.cursor : null;
 }
 
-/** Cursor reported by an events/poll response, wherever the server put it. */
 export function polledEventCursor(result: unknown): string | null {
   if (!isRecord(result)) return null;
   if (typeof result.cursor === "string") return result.cursor;
@@ -216,18 +178,12 @@ export function polledEventCursor(result: unknown): string | null {
   return found;
 }
 
-/**
- * Cursors are opaque, but a zero position is not a position. Keep the last real
- * cursor instead of letting a `:0` from an event or heartbeat become the value
- * a later transport subscribes from.
- */
 function serverCursor(current: string | null, incoming: string | null): string | null {
   if (hasPosition(incoming)) return incoming;
   if (hasPosition(current)) return current;
   return null;
 }
 
-/** The first real position in priority order; never returns a zero cursor. */
 function positionOf(...values: Array<string | null | undefined>): string | null {
   for (const value of values) {
     if (hasPosition(value)) return value;
@@ -239,15 +195,7 @@ function sameArguments(first: Record<string, unknown>, second: Record<string, un
   return JSON.stringify(first) === JSON.stringify(second);
 }
 
-/**
- * Trailing number of a cursor-style id (`hub:738` → 738). Hub ids are cursor
- * strings, so a reinstall or a state reset restarts the numbering; ids from an
- * older generation then collide with fresh ones and would look delivered.
- */
 function idSequence(value: string): number | undefined {
-  // A cursor-style id (`hub:738`) or a bare sequence is comparable. A
-  // synthetic event id such as `event-5` has a trailing number but says
-  // nothing about the hub cursor.
   const match = /^(\d+)$/.exec(value) ?? /:(\d+)$/.exec(value);
   if (match === null) return undefined;
   const parsed = Number(match[1]);
@@ -261,7 +209,6 @@ function eventIdsFrom(value: unknown): string[] {
   );
 }
 
-/** A server-stated generation, or the adapter session identity beside it. */
 function subscriptionGeneration(value: Record<string, unknown>): string | number | undefined {
   for (const candidate of [
     value.generation,
@@ -425,11 +372,6 @@ function collectStatusViews(value: unknown, views: StatusView[], depth = 0): voi
   }
 }
 
-/**
- * The one parser for status identity and state. JSON items name an id and a
- * state; prose can name either a bare adapter id, `subscription=<id>`, or an
- * `id is <state>` line. Identity checks and outage tracking read this same set.
- */
 function statusViews(text: string, details: unknown): StatusView[] {
   const views: StatusView[] = [];
   collectStatusViews(details, views);
@@ -437,9 +379,7 @@ function statusViews(text: string, details: unknown): StatusView[] {
   if (payloadStart >= 0) {
     try {
       collectStatusViews(JSON.parse(text.slice(payloadStart)), views);
-    } catch {
-      // A prose line can contain a brace; it is not a status payload.
-    }
+    } catch {}
   }
   const body = text.startsWith(MCP_STATUS_HEAD) ? text.slice(MCP_STATUS_HEAD.length) : text;
   for (const match of body.matchAll(/\bmcp-extension-[A-Za-z0-9][A-Za-z0-9._:-]*/gi)) {
@@ -473,7 +413,6 @@ function statusViews(text: string, details: unknown): StatusView[] {
   return views;
 }
 
-/** Every subscription id a status notice names, from its details or prose body. */
 function statusNoticeIds(text: string, details: unknown): string[] {
   const ids = new Set<string>();
   for (const view of statusViews(text, details)) {
@@ -483,7 +422,6 @@ function statusNoticeIds(text: string, details: unknown): string[] {
   return [...ids];
 }
 
-/** Accept either `(text, details)` or one extension notice in the status checks. */
 function statusInput(
   textOrDetails: string | unknown,
   details?: unknown,
@@ -504,7 +442,6 @@ function statusInput(
   return { text: "", source: textOrDetails };
 }
 
-/** The `(server, name)` a prose line or details value attributes itself to. */
 function statusAttribution(text: string, details: unknown): { server?: string; name?: string } {
   const source = isRecord(details) ? details : {};
   const server = typeof source.server === "string" ? source.server : undefined;
@@ -512,8 +449,6 @@ function statusAttribution(text: string, details: unknown): { server?: string; n
   if (server !== undefined) return { server, ...(name === undefined ? {} : { name }) };
   const line = statusProseLine(text);
   if (line === null) return {};
-  // The runtime prefixes its own notices with `mcp <server>: `, which is not a
-  // stable id but is a complete attribution for the chip identity.
   const prefixed = /^\s*mcp\s+([A-Za-z0-9_.-]+)(?:\/([A-Za-z0-9_.-]+))?:\s+/.exec(line);
   if (prefixed?.[1] !== undefined) {
     return {
@@ -529,10 +464,6 @@ function statusAttribution(text: string, details: unknown): { server?: string; n
   return single?.[1] === undefined ? {} : { server: single[1] };
 }
 
-/**
- * The stable row id for adapter prose that names no tracked subscription. A
- * colon cannot appear in a real stable id, so this never collides with one.
- */
 export function unattributedStatusKey(text: string): string | undefined {
   const attribution = statusAttribution(text, undefined);
   if (attribution.server === undefined) return undefined;
@@ -541,7 +472,6 @@ export function unattributedStatusKey(text: string): string | undefined {
     : `unattributed:${attribution.server}/${attribution.name}`;
 }
 
-/** The first prose line after the status head, or null for a JSON-only notice. */
 function statusProseLine(text: string): string | null {
   const body = text.startsWith(MCP_STATUS_HEAD) ? text.slice(MCP_STATUS_HEAD.length) : text;
   const line = body
@@ -557,17 +487,11 @@ function statusProseLine(text: string): string | null {
   return line.includes("{") ? null : line;
 }
 
-/**
- * A truncation warning names the tracked stream, not an old generation. It is
- * emitted on the adapter's prose channel without an id, so the generic live
- * fallback must not treat it as stale.
- */
 function isTruncationWarning(text: string): boolean {
   const line = statusProseLine(text);
   return line !== null && /^[^:\n]+:\s+replay is truncated for\b/i.test(line);
 }
 
-/** The adapter's failure prose (`server: error`) that may describe an old id. */
 function isAdapterFailureProse(text: string): boolean {
   const line = statusProseLine(text);
   if (line === null) return false;
@@ -576,7 +500,6 @@ function isAdapterFailureProse(text: string): boolean {
   );
 }
 
-/** Remove status items whose id this feed does not track from a JSON payload. */
 function filterUntrackedStatusItems(
   text: string,
   tracked: (id: string) => boolean,
@@ -604,8 +527,6 @@ function filterUntrackedStatusItems(
           : undefined;
     const idTracked = id !== undefined && id.length > 0 && tracked(id);
     const stableTracked = stableId !== undefined && stableId.length > 0 && tracked(stableId);
-    // An item can name only its durable identity. If neither name is tracked,
-    // it belongs to a zombie generation just like an unknown adapter id.
     if ((id !== undefined || stableId !== undefined) && !idTracked && !stableTracked) {
       dropped.push(id ?? stableId ?? "unknown");
       continue;
@@ -621,53 +542,28 @@ function filterUntrackedStatusItems(
   };
 }
 
-/**
- * Server-owned MCP subscription list and event log. Every connected client
- * reads this same snapshot, so a second browser does not keep a private feed.
- *
- * Replay detection is keyed by the durable stable id, not the adapter id: the
- * registry keeps the last `MAX_DELIVERED_EVENT_IDS` event ids for each stable
- * id. Novelty is judged from that id set per conversation: an id already
- * delivered is a re-delivery and never becomes a chat notice, and a novel id is
- * news even when it was produced while this process was down. Age is a separate
- * gate: an event older than the restore grace is news for neither the queue nor
- * the ledger, because the stream itself can hand over a stale adapter backlog.
- */
 export class McpEventFeed {
   private readonly subscriptions = new Map<string, McpSubscriptionView>();
-  /** Event ids whose notice was submitted (a chip was committed) for a stable id. */
   private readonly delivered = new Map<string, Set<string>>();
-  /** Event ids observed in this process, chipped or not. */
   private readonly seen = new Map<string, Set<string>>();
-  /** Replayed feed entries that have not produced a chip yet; the next drain retries them. */
   private readonly unchipped = new Map<string, { stableId: string; item: unknown }>();
-  /** Stable ids that existed before this feed started, so cursor fallback can replay. */
   private readonly restored = new Set<string>();
-  /** Stable ids explicitly cancelled; a late status notice must not revive them. */
   private readonly cancelled = new Set<string>();
-  /** Stable ids whose generation changed; the outbox must drop their old keys too. */
   private readonly generationClears = new Set<string>();
-  /** Every adapter id that ever represented a stable id, including replaced ones. */
   private readonly adapterAliases = new Map<string, string>();
   private events: McpEventView[] = [];
-  /** The last status text allowed to chat for an id, so an exact repeat is one chip. */
   private readonly reportedStatus = new Map<string, string>();
-  /** Stable ids whose last accepted status was an outage, not healthy traffic. */
   private readonly outageReported = new Set<string>();
-  /** Stable ids whose traffic recovered; the next active status is its one recovery. */
   private readonly recoveryPending = new Set<string>();
-  /** Stable ids that already spoke after their stream failed terminally. */
   private readonly terminalReported = new Set<string>();
   private notice: string | null = null;
   private gap:
     | { dropped: number; at: string; from?: string | null; missedSince?: string }
     | undefined;
-  /** Stable ids recently restored; their first batches may be a replay burst. */
   private readonly restoreBatchUntil = new Map<string, number>();
   private revision = 0;
   private readonly startedAt: number;
   private readonly now: () => number;
-  /** One quiet window per durable identity, shared with the ChatService timer. */
   private readonly outageQuiet: OutageQuiet;
 
   constructor(
@@ -677,11 +573,9 @@ export class McpEventFeed {
     this.startedAt = startedAtOf(options.startedAt);
     this.now = options.now ?? Date.now;
     this.outageQuiet = options.outageQuiet ?? new OutageQuiet(this.now);
-    // A registry that was read during boot already knows the durable rows.
     this.seedRecords(registry?.list() ?? []);
   }
 
-  /** Load the durable rows from disk. The index awaits this before observing events. */
   async hydrate(): Promise<void> {
     if (this.registry === undefined) return;
     this.seedRecords(await this.registry.read());
@@ -697,7 +591,6 @@ export class McpEventFeed {
     };
   }
 
-  /** The live view with this durable identity, regardless of its adapter id. */
   findByStableId(stableId: string): McpSubscriptionView | undefined {
     for (const subscription of this.subscriptions.values()) {
       if (subscription.stableId === stableId) return subscription;
@@ -705,11 +598,6 @@ export class McpEventFeed {
     return undefined;
   }
 
-  /**
-   * Every adapter id that has represented this stable id in this process,
-   * including rows replaced by a later subscribe. Cancelling must stop all of
-   * them, not just whichever row happens to be first in the feed.
-   */
   adapterIdsForStableId(stableId: string): string[] {
     const ids = new Set<string>();
     for (const [adapterId, mappedStableId] of this.adapterAliases) {
@@ -721,11 +609,6 @@ export class McpEventFeed {
     return [...ids];
   }
 
-  /**
-   * Stop showing a subscription as live. The runtime unsubscribes every
-   * adapter stream for this stable id and persists the cancelled record; this
-   * keeps the feed immediate.
-   */
   cancel(stableId: string): McpSubscriptionView | null {
     this.cancelled.add(stableId);
     let found: McpSubscriptionView | null = null;
@@ -746,30 +629,14 @@ export class McpEventFeed {
     return found;
   }
 
-  /** Alternate name for `cancel`, kept for callers that think in identity. */
   cancelByStableId(stableId: string): McpSubscriptionView | null {
     return this.cancel(stableId);
   }
 
-  /**
-   * True only for a status notice about a generation superseded by another
-   * subscription for the same durable identity. Ingest such a notice, but do
-   * not submit it to chat: the user depends on that other generation.
-   *
-   * The predicate runs after `ingestStatuses`, so the incoming ids are already
-   * known. It compares against *other* ids, never absence. A sibling is
-   * superseding when it is live, or when it owns the same durable identity:
-   * the current row stays authoritative even after its own failure, and its
-   * failure notice is the one the user needs. An item with no adapter id names
-   * the durable subscription itself, so only a live row that is still
-   * delivering makes it stale; silence must reach chat. A notice that names
-   * the live id itself, or one with no sibling at all, is authentic.
-   */
   isSupersededStatus(details: unknown): boolean {
     return this.isSupersededStatusInput("", details);
   }
 
-  /** The durable identity a status item names, resolving adapter aliases. */
   private statusStableId(item: StatusView): string | undefined {
     if (item.stableId !== undefined && item.stableId.length > 0) return item.stableId;
     if (item.id !== undefined && item.id.length > 0) {
@@ -784,12 +651,6 @@ export class McpEventFeed {
     return undefined;
   }
 
-  /**
-   * True when every status item describes a generation some other live row
-   * already supersedes. The durable id, not the adapter id, carries identity:
-   * a payload can name `stableId` without naming a generation at all, and that
-   * is still noise while the row is live or reconnecting.
-   */
   private isSupersededStatusInput(text: string, details: unknown): boolean {
     const incoming: Array<StatusView & { stableId?: string; namesDurable?: boolean }> = [];
     for (const item of statusViews(text, details)) {
@@ -797,10 +658,6 @@ export class McpEventFeed {
         continue;
       }
       const stableId = this.statusStableId(item);
-      // Prose that names the durable id itself (`hub/hub is stalled`) describes
-      // the row, not one generation of it. The row's current adapter id may be
-      // different, so supersession must not turn the runtime's stall/recovery
-      // into noise after the replacement connection comes up.
       const namesDurable = item.id !== undefined && item.id === stableId;
       incoming.push({
         ...item,
@@ -813,15 +670,10 @@ export class McpEventFeed {
     return incoming.every((item) => {
       if (item.namesDurable === true) return false;
       return known.some((view) => {
-        // A notice that names the current adapter id itself is authoritative.
         if (item.id !== undefined && view.id === item.id) return false;
         if (item.stableId !== undefined) {
           if (view.stableId !== item.stableId) return false;
-          // Supersession needs a generation identity. An item without an
-          // adapter id names only the durable subscription; freshness decides
-          // that case in `suppressDurableStatusWhileDelivering` instead.
           if (item.id === undefined) return false;
-          // The current row stays authoritative even after its own failure.
           return isLiveSubscription(view) || view.stableId === item.stableId;
         }
         if (item.server === undefined || view.server !== item.server) return false;
@@ -831,11 +683,6 @@ export class McpEventFeed {
     });
   }
 
-  /**
-   * A status id is tracked when it is the current adapter id, the durable
-   * stable id, or an adapter id already known to represent that stable id in
-   * this process. An id from before a restart has no alias and stays untracked.
-   */
   private tracksStatusId(id: string): boolean {
     if (this.subscriptions.has(id)) return true;
     for (const view of this.subscriptions.values()) {
@@ -857,8 +704,6 @@ export class McpEventFeed {
         (item.id === undefined ? undefined : this.subscriptions.get(item.id)) ??
         (item.stableId === undefined ? undefined : this.findByStableId(item.stableId)) ??
         (item.id === undefined ? undefined : this.findByStableId(item.id));
-      // An untracked sibling is filtered from the payload separately; it must
-      // not force a healthy tracked row to speak before that happens.
       if (tracked === undefined) continue;
       const key = `${tracked.stableId}\u0000${item.status}`;
       if (seen.has(key)) continue;
@@ -882,12 +727,6 @@ export class McpEventFeed {
     this.terminalReported.delete(view.stableId);
   }
 
-  /**
-   * Classify the health part of a status notice for the one intake gate. A down
-   * frame is a chip; a recovery inside the quiet window is the same chip; an
-   * active after an escalated outage is the existing recovery notice. Only an
-   * episode that crosses the window becomes a model turn.
-   */
   private statusMode(
     text: string,
     details: unknown,
@@ -895,11 +734,6 @@ export class McpEventFeed {
   ): "deliver" | "chip" | "drop" {
     const tracked = this.trackedStatusEntries(text, details);
     if (tracked.length === 0) {
-      // Only a closed list of notices still talks to the model when no tracked
-      // subscription owns them. `markDeliveredStatus` cannot dedupe an
-      // unattributed delivery, so anything else would speak on every repeat.
-      // Gap/restore notices and truncation warnings must never be swallowed;
-      // the `mcp-events` envelope is a batch, not a status transition.
       if (!text.startsWith(MCP_STATUS_HEAD)) return "deliver";
       const gap =
         customType === "mcp-events-gap" ||
@@ -930,8 +764,6 @@ export class McpEventFeed {
         .map(({ view }) => view.stableId),
     );
     const observation = this.outageQuiet.observe(views, now);
-    // The new episode has spoken: its previous delivery fingerprint is now
-    // history, so the recovery after this outage is allowed to speak too.
     const justEscalated = observed
       .map(({ view }) => view.stableId)
       .filter((stableId) => !before.has(stableId) && this.outageQuiet.escalated(stableId));
@@ -942,13 +774,6 @@ export class McpEventFeed {
     return "drop";
   }
 
-  /**
-   * Exhaustion is the frame's own `stalled` state. The tracked row's state is
-   * a fallback only when this frame did not derive it: an adapter `failed`
-   * status derives `stalled` in the row, but that is the adapter's terminal
-   * frame, not proof that the supervisor's ladder is spent, so it stays a chip.
-   * The supervisor's own stall notice always carries `state` explicitly.
-   */
   private outageFrameState(
     view: McpSubscriptionView,
     status: string,
@@ -959,17 +784,11 @@ export class McpEventFeed {
     return "stalled";
   }
 
-  /**
-   * `active` is the subscription's own assertion that it is live. `opening` is
-   * only live while the row still delivers, so a dead row cannot silence its
-   * own outage by claiming it is opening again.
-   */
   private liveStatus(view: McpSubscriptionView, status: string, now: number): boolean {
     if (status === "active") return true;
     return status === "opening" && isLiveSubscription(view) && deliveryIsFresh(view, now);
   }
 
-  /** Remember a delivered status so an exact repeat is still one model turn. */
   private markDeliveredStatus(
     text: string,
     details: unknown,
@@ -987,11 +806,6 @@ export class McpEventFeed {
     return true;
   }
 
-  /**
-   * Forget the last status a subscription delivered. An escalated outage is a
-   * new episode, so the recovery text may repeat the previous cycle's recovery
-   * and still be news.
-   */
   private clearDeliveredStatus(stableIds: readonly string[]): void {
     for (const stableId of stableIds) {
       this.reportedStatus.delete(stableId);
@@ -1001,11 +815,6 @@ export class McpEventFeed {
     }
   }
 
-  /**
-   * The durable identities and states a status notice names as rows this feed
-   * tracks. The cheap status chip uses this to keep one per stable id and to
-   * arm the outage timer without parsing the notice a second time.
-   */
   statusIdentities(
     textOrDetails: string | unknown,
     details?: unknown,
@@ -1025,17 +834,10 @@ export class McpEventFeed {
     return identities;
   }
 
-  /** True when this durable id's current outage already spoke to the model. */
   isOutageEscalated(stableId: string): boolean {
     return this.outageQuiet.escalated(stableId);
   }
 
-  /**
-   * The timer path for one quiet window. A row that is live and still
-   * delivering has recovered without a status frame, so cancel instead of
-   * escalating. Otherwise hand back the newest status text exactly when the
-   * window has passed; the second call is null, so one episode is one turn.
-   */
   takeOutageEscalation(stableId: string, now = this.now()): string | null {
     const view = this.findByStableId(stableId);
     const since = this.outageQuiet.downSince(stableId);
@@ -1044,8 +846,6 @@ export class McpEventFeed {
       this.outageQuiet.recovered(stableId);
       return null;
     }
-    // A status that already says active/opening and is still delivering
-    // recovered without a frame of its own; the watchdog row is authoritative.
     if ((view.status === "active" || view.status === "opening") && deliveryIsFresh(view, now)) {
       this.outageQuiet.recovered(stableId);
       return null;
@@ -1055,7 +855,6 @@ export class McpEventFeed {
     return text;
   }
 
-  /** Traffic after an outage becomes the pending recovery for the next active status. */
   private noteTraffic(view: McpSubscriptionView): void {
     if (!this.outageReported.has(view.stableId)) return;
     this.outageReported.delete(view.stableId);
@@ -1063,12 +862,6 @@ export class McpEventFeed {
     this.recoveryPending.add(view.stableId);
   }
 
-  /**
-   * True when every subscription id a status notice carries is absent from the
-   * live feed. Identity — not the notice's age — decides: an id minted before a
-   * restart is a different subscription even when its `(server, name)` matches
-   * the row this process restored. A notice with no id has no attribution.
-   */
   isUntrackedStatus(textOrDetails: string | unknown, details?: unknown): boolean {
     const { text, source } = statusInput(textOrDetails, details);
     const ids = statusNoticeIds(text, source);
@@ -1076,22 +869,12 @@ export class McpEventFeed {
     return ids.every((id) => !this.tracksStatusId(id));
   }
 
-  /**
-   * The identity-only part of the status gate. The intake runs the full gate
-   * once; a later delivery pass must not re-decide health or duplicate state,
-   * or it would drop the recovery that the intake just accepted.
-   */
   private isUntrackedOrSuperseded(text: string, details: unknown): boolean {
     const ids = statusNoticeIds(text, details);
     if (ids.length > 0 && ids.every((id) => !this.tracksStatusId(id))) return true;
     return this.isSupersededStatusInput(text, details);
   }
 
-  /**
-   * Re-apply only the identity rules to an already accepted status notice.
-   * Mixed batches still lose every item whose adapter id and stable id are
-   * both untracked.
-   */
   filterStatusIdentityNotice(textOrDetails: string | unknown, details?: unknown): string | null {
     const input = statusInput(textOrDetails, details);
     if (this.isUntrackedOrSuperseded(input.text, input.source)) return null;
@@ -1104,11 +887,6 @@ export class McpEventFeed {
     return filtered.text;
   }
 
-  /**
-   * An id-less status names the durable row, not one generation. While that row
-   * is live and still delivering, even a terminal-looking state is stale; once
-   * the heartbeat window has really passed it must reach chat.
-   */
   private suppressDurableStatusWhileDelivering(text: string, details: unknown): boolean {
     let sawDeath = false;
     for (const item of statusViews(text, details)) {
@@ -1124,13 +902,6 @@ export class McpEventFeed {
     return sawDeath;
   }
 
-  /**
-   * Decide one status notice before it reaches chat. A notice that names only
-   * ids this feed does not track is dropped and logged at debug; otherwise the
-   * existing supersession rule applies. With no id at all, a prose line can
-   * still be attributed to its server, and a live tracked stream there makes it
-   * a report about a generation this app is no longer using.
-   */
   shouldDropStatus(
     textOrDetails: string | unknown,
     details?: unknown,
@@ -1140,10 +911,6 @@ export class McpEventFeed {
     const text = input.text;
     const source = input.source;
     const kind = customType ?? input.customType;
-    // The runtime's own stall/recovery prose carries the durable id next to the
-    // replacement connection. The live row still owns the old adapter id, so
-    // the supersession check would drop the one recovery after an escalation.
-    // It is never noise on that channel, so it also never drops here.
     if (kind === "mcp-recovery") return false;
     const ids = statusNoticeIds(text, source);
     if (ids.length > 0 && ids.every((id) => !this.tracksStatusId(id))) {
@@ -1164,15 +931,9 @@ export class McpEventFeed {
       );
       return true;
     }
-    // A gap or channel notice is not a subscription status even though it uses
-    // the status head. Only the adapter's prose channel may fall back to server.
     if (kind !== undefined && kind !== "mcp-ui-status" && kind !== "mcp-events-status") {
       return false;
     }
-    // A notice that names a tracked id is authoritative. The server-attribution
-    // fallback is only for a prose line that names no generation at all;
-    // otherwise a fresh row's own reconnecting frame looks like a dead
-    // generation and its chip is lost.
     if (ids.length > 0) return false;
     if (isTruncationWarning(text)) return false;
     const attribution = statusAttribution(text, source);
@@ -1188,10 +949,6 @@ export class McpEventFeed {
       );
       return true;
     }
-    // A prose line that names no generation can still be the adapter reporting
-    // the death of one. The same freshness rule the JSON payload uses applies:
-    // if every tracked row on this server is live and recently delivering, the
-    // line belongs to a generation whose replacement is already connected.
     const freshLive = known.every((view) => isLiveSubscription(view) && deliveryIsFresh(view));
     if (!isAdapterFailureProse(text) && !freshLive) return false;
     const down = known.filter((view) => !isLiveSubscription(view));
@@ -1212,14 +969,6 @@ export class McpEventFeed {
     return true;
   }
 
-  /**
-   * Decide one status notice before it reaches chat. Identity and supersession
-   * may drop it outright; health then picks the surface: a model turn for an
-   * outage that crossed the quiet window (and the recovery after it), a chip
-   * for every other transition, and nothing for a repeat. A mixed batch keeps
-   * its tracked items and drops the untracked ones, so one stale id cannot
-   * carry its whole payload into the model context.
-   */
   filterStatusNotice(
     textOrDetails: string | unknown,
     details?: unknown,
@@ -1236,18 +985,13 @@ export class McpEventFeed {
         `[mcp] dropped status items for untracked subscriptions ${filtered.dropped.join(", ")}`,
       );
     }
-    // Health observes the same text the user will see, so an escalation stored
-    // for the quiet timer can never reintroduce an untracked sibling.
     const mode = this.statusMode(filtered.text, input.source, customType ?? input.customType);
-    // The quiet window only dedupes a model turn. A chip keeps its stable id so
-    // a repeated frame updates the same row instead of speaking again.
     if (mode === "deliver" && !this.markDeliveredStatus(filtered.text, input.source, options)) {
       return { text: "", mode: "drop" };
     }
     return { text: filtered.text, mode };
   }
 
-  /** Apply the watchdog's latest observation (poll, stall, recovery) to the visible row. */
   noteReconnect(record: McpSubscriptionRecord): boolean {
     const stableId = recordStableId(record);
     const current = this.findByStableId(stableId);
@@ -1302,7 +1046,6 @@ export class McpEventFeed {
     return true;
   }
 
-  /** Resolve an adapter id, including one replaced by a newer subscribe, to the current row. */
   private viewForAdapter(adapterId: string): McpSubscriptionView | undefined {
     const direct = this.subscriptions.get(adapterId);
     if (direct !== undefined) return direct;
@@ -1311,7 +1054,6 @@ export class McpEventFeed {
     return this.findByStableId(stableId);
   }
 
-  /** Keep exactly one visible row per durable identity. */
   private storeView(view: McpSubscriptionView): McpSubscriptionView {
     const previous = this.subscriptions.get(view.id);
     for (const [adapterId, existing] of this.subscriptions) {
@@ -1322,15 +1064,12 @@ export class McpEventFeed {
     }
     this.subscriptions.set(view.id, view);
     this.adapterAliases.set(view.id, view.stableId);
-    // A recovered stream is a new opportunity to fail: the next identical
-    // failure is news again, not a duplicate of the failure before recovery.
     if (previous !== undefined && !isLiveSubscription(previous) && isLiveSubscription(view)) {
       this.reportedStatus.delete(view.id);
     }
     return view;
   }
 
-  /** The adapter id whose cancellation must be preserved, undefined when not cancelled. */
   private cancellationId(stableId: string): string | null | undefined {
     const view = this.findByStableId(stableId);
     if (view?.status === "cancelled") return view.id;
@@ -1340,11 +1079,6 @@ export class McpEventFeed {
     return undefined;
   }
 
-  /**
-   * Stable across adapter replacement/restart, never based on timestamps. A
-   * stated generation separates two server epochs that reuse the same cursor;
-   * without one the key keeps the original two-part shape.
-   */
   eventKey(item: unknown): string {
     if (!isRecord(item) || !isRecord(item.event)) return JSON.stringify(item);
     const event = item.event;
@@ -1362,18 +1096,12 @@ export class McpEventFeed {
       : JSON.stringify([stable, generation, cursor]);
   }
 
-  /** Generation changes detected since the caller last drained them. */
   takeGenerationClears(): string[] {
     const cleared = [...this.generationClears];
     this.generationClears.clear();
     return cleared;
   }
 
-  /**
-   * The delivery copy of an event carries the generation its outbox key uses.
-   * Adapter event items have no generation of their own, so without this a
-   * merge could fold the new epoch into an old pending text with the same cursor.
-   */
   withEventGeneration(item: unknown): unknown {
     if (!isRecord(item) || !isRecord(item.event)) return item;
     const current =
@@ -1385,11 +1113,6 @@ export class McpEventFeed {
     return generation === undefined ? item : { ...item, generation };
   }
 
-  /**
-   * A new generation must not inherit the previous one's seen/delivered ids:
-   * same-numbered cursors are fresh news, and old pending entries may never
-   * block them. Only this stable id is touched.
-   */
   private clearGeneration(stableId: string): void {
     this.seen.delete(stableId);
     this.delivered.delete(stableId);
@@ -1405,8 +1128,6 @@ export class McpEventFeed {
     incoming: string | number | undefined,
   ): void {
     if (incoming === undefined || sameGeneration(previous, incoming)) return;
-    // The first stated generation is not a change. It still replaces history
-    // left by a row that predates generations, but only when there is any.
     if (
       previous === undefined &&
       !this.seen.has(stableId) &&
@@ -1418,7 +1139,6 @@ export class McpEventFeed {
     this.clearGeneration(stableId);
   }
 
-  /** The durable identity and event id of one adapter item, when it has both. */
   private itemIdentity(item: unknown): { stableId: string; eventId: string | undefined } | null {
     if (!isRecord(item) || typeof item.server !== "string" || !isRecord(item.event)) return null;
     const event = item.event;
@@ -1435,12 +1155,6 @@ export class McpEventFeed {
     };
   }
 
-  /**
-   * True when every item belongs to a stream restored in this process and the
-   * restore cap window is still open. A replay arrives as a continuous run of
-   * batches; treating each batch as a burst keeps it to one chip plus a gap,
-   * so it cannot outrun the outbox merger.
-   */
   isRestoreBatch(items: readonly unknown[]): boolean {
     if (items.length === 0) return false;
     const now = Date.now();
@@ -1452,20 +1166,10 @@ export class McpEventFeed {
     });
   }
 
-  /**
-   * Keep only the events that are news for this process. The delivery path runs
-   * this before it bounds a batch or writes the outbox, so an old adapter
-   * backlog never occupies a queue slot and never evicts a fresh sibling.
-   */
   filterStaleEvents(items: readonly unknown[], log = true): FreshMcpEvents {
     return filterStaleMcpEvents(items, this.startedAt, log);
   }
 
-  /**
-   * Exact novel subset, without advancing cursor/ids. Persist it before ingesting.
-   * A replayed entry that never produced a chip is included again, with the
-   * original item, so the next drain can still commit exactly one chip for it.
-   */
   novelEvents(items: readonly unknown[]): unknown[] {
     const batch = new Set<string>();
     const result: unknown[] = [];
@@ -1487,10 +1191,6 @@ export class McpEventFeed {
     return result;
   }
 
-  /**
-   * Commit the chip for these adapter items. Call this only after their notice
-   * was submitted; an id in the durable delivered set always means a chip exists.
-   */
   markDelivered(items: readonly unknown[]): void;
   markDelivered(stableId: string, eventId: string): void;
   markDelivered(itemsOrStableId: readonly unknown[] | string, eventId?: string): void {
@@ -1507,7 +1207,6 @@ export class McpEventFeed {
     }
   }
 
-  /** Alternate names for callers that describe the committed notice as a chip. */
   markChipped(items: readonly unknown[]): void;
   markChipped(stableId: string, eventId: string): void;
   markChipped(itemsOrStableId: readonly unknown[] | string, eventId?: string): void {
@@ -1548,11 +1247,6 @@ export class McpEventFeed {
     return false;
   }
 
-  /**
-   * The transport reconnected before it can emit the replacement stream's
-   * events. Refresh every tracked row on that server now, so the first
-   * renumbered event uses the new key and clears only its own stale history.
-   */
   private ingestGeneration(details: unknown): boolean {
     if (!isRecord(details) || typeof details.server !== "string") return false;
     const generation = subscriptionGeneration(details);
@@ -1572,7 +1266,6 @@ export class McpEventFeed {
     return changed;
   }
 
-  /** Record a window a restore deliberately skipped instead of replaying it. */
   private ingestGap(details: unknown): boolean {
     if (!isRecord(details)) return false;
     const raw = typeof details.count === "number" ? details.count : 0;
@@ -1607,8 +1300,6 @@ export class McpEventFeed {
     for (const record of records) {
       const stableId = recordStableId(record);
       this.restored.add(stableId);
-      // Events can arrive before the subscribe result is observed. Open the
-      // replay cap from the durable row so that early burst is still one batch.
       this.restoreBatchUntil.set(stableId, Date.now() + RESTORE_CAP_WINDOW_MS);
       this.seedDelivered(
         stableId,
@@ -1616,8 +1307,6 @@ export class McpEventFeed {
         true,
         record.cursor ?? undefined,
       );
-      // A restore rejected by the server has no live adapter session, but the
-      // durable cancellation must still be visible in /api/state.
       if (record.status === "cancelled" || record.state === "cancelled") {
         const view = subscriptionFrom({ ...record, id: record.id ?? stableId });
         if (view !== null) this.storeView(view);
@@ -1632,8 +1321,6 @@ export class McpEventFeed {
     cursor?: string,
   ): void {
     if (!historical || ids.length === 0) return;
-    // The cursor may arrive from any of three callers (startup record, registry
-    // row, restore result); resolve it here so no path can skip the epoch check.
     const resumeFrom =
       cursor ??
       this.savedRecord(stableId)?.cursor ??
@@ -1641,8 +1328,6 @@ export class McpEventFeed {
       undefined;
     const cursorSequence = resumeFrom === undefined ? undefined : idSequence(resumeFrom);
     if (cursorSequence === undefined) {
-      // Without a cursor there is nothing to compare against, and trusting the
-      // set is what silently killed every chip. Treat it as unknown instead.
       this.persistStaleEpoch(stableId, resumeFrom);
       return;
     }
@@ -1655,8 +1340,6 @@ export class McpEventFeed {
       this.persistStaleEpoch(stableId, resumeFrom);
       return;
     }
-    // Once this process has delivered something, a durable row is already
-    // represented by the in-memory sets and must not be relabelled historical.
     const known = this.delivered.get(stableId);
     if (known !== undefined && known.size > 0) return;
     const delivered = new Set<string>();
@@ -1673,7 +1356,6 @@ export class McpEventFeed {
     this.seedSeen(stableId, delivered);
   }
 
-  /** Adapter metadata proves an id was seen, never that pi-ui committed a chip. */
   private seedSeen(stableId: string, ids: Iterable<string>): void {
     let seen = this.seen.get(stableId);
     if (seen === undefined) {
@@ -1694,7 +1376,6 @@ export class McpEventFeed {
     return this.registry?.list().find((entry) => recordStableId(entry) === stableId);
   }
 
-  /** Seed from a row for a stable id if this feed has not seen the stream yet. */
   private seedFromRegistry(stableId: string): void {
     const record = this.savedRecord(stableId);
     if (record === undefined) return;
@@ -1705,10 +1386,6 @@ export class McpEventFeed {
     this.seedDelivered(stableId, record.deliveredEventIds ?? [], true, record.cursor ?? undefined);
   }
 
-  /**
-   * Record an observation. `chipped` is the only way into the durable delivered
-   * set; seeing an id (even repeatedly) never implies its notice was submitted.
-   */
   private remember(stableId: string, eventId: string, chipped: boolean): boolean {
     let seen = this.seen.get(stableId);
     if (seen === undefined) {
@@ -1739,8 +1416,6 @@ export class McpEventFeed {
 
   private rememberUnchipped(stableId: string, eventId: string, item: unknown): void {
     const key = JSON.stringify([stableId, eventId]);
-    // Keep the first observation: the eventual chip must carry its timestamp
-    // and cursor, not those of a later duplicate delivery.
     if (!this.unchipped.has(key)) this.unchipped.set(key, { stableId, item });
     while (this.unchipped.size > MAX_DELIVERED_EVENT_IDS) {
       const oldest = this.unchipped.keys().next().value;
@@ -1753,7 +1428,6 @@ export class McpEventFeed {
     this.unchipped.delete(JSON.stringify([stableId, eventId]));
   }
 
-  /** A durable set from an older hub epoch was discarded; say so once in the log. */
   private persistStaleEpoch(stableId: string, cursor: string | undefined): void {
     console.warn(
       `mcp: dropped stale delivered-id set for ${stableId} (cursor ${cursor ?? "unknown"}) — the hub renumbered its ids`,
@@ -1836,9 +1510,6 @@ export class McpEventFeed {
     if (!isRecord(details) || !Array.isArray(details.events)) return false;
     let stateChanged = false;
     let deliveredNew = false;
-    // A stream may hand over old adapter history and a subscribe may hand us a
-    // whole retained history. Age first, then size: dropping stale events must
-    // not consume the batch bound and evict a fresh sibling.
     const aged = filterStaleMcpEvents(details.events, this.startedAt);
     const batch = boundMcpEventBatch(aged.items);
     const reportedDropped = typeof details.dropped_events === "number" ? details.dropped_events : 0;
@@ -1856,8 +1527,6 @@ export class McpEventFeed {
       const server = item.server;
       const event = item.event;
       const streamName = typeof event.name === "string" ? event.name : "event";
-      // A multiplexed stream names every event after itself and carries the
-      // kind in `data.kind` (`hub.job` on a `hub` stream).
       const name =
         isRecord(event.data) && typeof event.data.kind === "string" && event.data.kind !== ""
           ? event.data.kind
@@ -1884,16 +1553,10 @@ export class McpEventFeed {
         timestamp,
         summary: summarize(event.data),
       });
-      // Novelty belongs to the conversation, not to this process. An id whose
-      // chip was committed — in this process or before it started — is a
-      // re-delivery; anything else is news, however old its timestamp looks.
       const delivered = this.isDelivered(stableId, eventId);
       const duplicate = eventId !== undefined && (delivered || this.isSeen(stableId, eventId));
 
       if (duplicate) {
-        // A duplicate may move the cursor but it never commits a chip. If the
-        // id was only seen before, keep the replay entry retryable for the next
-        // drain instead of silently recording it as delivered.
         if (this.trackCursor(item, streamName, cursor)) stateChanged = true;
         if (eventId !== undefined) this.remember(stableId, eventId, false);
         const index = this.events.findIndex((entry) => entry.id === id);
@@ -1912,8 +1575,6 @@ export class McpEventFeed {
           }
           stateChanged = true;
         } else if (eventId !== undefined && !delivered && matching.replayed === true) {
-          // Keep the original item: its timestamp and cursor are the ones the
-          // eventual chip must carry.
           this.rememberUnchipped(stableId, eventId, item);
         }
         const tracked =
@@ -1940,8 +1601,6 @@ export class McpEventFeed {
       } else if (index === -1) {
         this.events = [...this.events, eventView()].slice(-EVENT_LIMIT);
       } else {
-        // Same id, different generation: replace the old epoch's row instead
-        // of treating the renumbered event as its duplicate.
         const entry = eventView();
         this.events = this.events.map((item, at) => (at === index ? entry : item));
       }
@@ -1956,7 +1615,6 @@ export class McpEventFeed {
     return deliveredNew;
   }
 
-  /** Move the subscription's cursor to the event's, registering a subscription seen only through events. */
   private trackCursor(
     item: Record<string, unknown>,
     streamName: string,
@@ -2007,7 +1665,6 @@ export class McpEventFeed {
     return true;
   }
 
-  /** A stream heartbeat (or active acknowledgement) means the push path is alive. */
   private ingestTraffic(details: unknown): boolean {
     if (!isRecord(details) || typeof details.subscription_id !== "string") return false;
     const current = this.viewForAdapter(details.subscription_id);
@@ -2049,8 +1706,6 @@ export class McpEventFeed {
       let incoming = subscriptionFrom(item);
       let durableOnly = false;
       if (incoming === null) {
-        // Some status payloads name only the durable id. Resolve it to the
-        // current generation so a real outage can still update the row.
         const views: StatusView[] = [];
         collectStatusViews(item, views);
         const named = views.find(
@@ -2073,28 +1728,15 @@ export class McpEventFeed {
         };
         durableOnly = true;
       }
-      // A status can only describe a subscription this feed already tracks.
-      // An id from before a restart is a different stream; attaching its row
-      // would turn a dead generation into visible state and chat news.
       if (!this.subscriptions.has(incoming.id)) continue;
-      // A queued reconnect/active notice must not revive a cancelled entry.
       if (this.cancellationId(incoming.stableId) !== undefined) continue;
       const deliveredIds = eventIdsFrom(item);
       if (deliveredIds.length > 0) {
-        // The adapter only knows which frames it pushed. That is not proof that
-        // pi-ui submitted a chip, so these ids may not enter the delivered set.
         this.seedSeen(incoming.stableId, deliveredIds);
       }
       this.seedFromRegistry(incoming.stableId);
       const current = this.viewForAdapter(incoming.id) ?? this.findByStableId(incoming.stableId);
-      // Once an adapter id owns this stable id, a status for a different id is
-      // stale: it must not move the visible row back, even when the incoming
-      // status happens to look live. The owning row stays authoritative until
-      // a subscribe result names a real successor.
       if (current !== undefined && current.id !== incoming.id) continue;
-      // A stream object ending is not a delivery outage while the last event or
-      // heartbeat is still inside the extension's heartbeat window. The next
-      // generation reports its own active status; the row never flashes down.
       const freshDurableDeath =
         durableOnly &&
         current !== undefined &&
@@ -2287,15 +1929,10 @@ export class McpEventFeed {
       if (incoming === null) return false;
       const cancellationId = this.cancellationId(incoming.stableId);
       if (cancellationId !== undefined && cancellationId === incoming.id) {
-        // A late subscribe result for the adapter row that was cancelled.
         return false;
       }
       if (cancellationId !== undefined) this.cancelled.delete(incoming.stableId);
       const current = this.viewForAdapter(incoming.id) ?? this.findByStableId(incoming.stableId);
-      // The server's answer is the position. A zero cursor is not a position:
-      // never send it on, and never report it back from a fresh subscribe. An
-      // explicit zero is a start-now request; an omitted cursor on a
-      // re-subscribe falls back to the row that is already tracked.
       const requestedCursor = typeof args.cursor === "string" ? args.cursor : undefined;
       const explicitZero = requestedCursor !== undefined && !hasPosition(requestedCursor);
       const sentCursor =
@@ -2315,7 +1952,6 @@ export class McpEventFeed {
       if (delivered.length > 0) {
         this.restored.add(incoming.stableId);
         if (args.restored === true) {
-          // The restore result is enriched with our own durable delivered set.
           this.seedDelivered(incoming.stableId, delivered, true, answerCursor ?? undefined);
         } else {
           this.seedSeen(incoming.stableId, delivered);
@@ -2377,8 +2013,6 @@ export class McpEventFeed {
 
     if (action === "unsubscribe" && result.stopped === true) {
       const id = typeof args.subscription_id === "string" ? args.subscription_id : "";
-      // Only the current adapter row may move to stopped. A result for an id
-      // replaced by a later subscribe must not stop the newer stream.
       const current = id.length > 0 ? this.subscriptions.get(id) : undefined;
       if (current === undefined) return false;
       const subscription = {

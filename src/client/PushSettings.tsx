@@ -2,11 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { haptic } from "./haptics";
 import { cn } from "./lib/utils";
 
-/**
- * The five states the settings row can show. The render path reads only these
- * props: permission, service-worker and push-manager lookups happen in the
- * connected component's effects and click handlers.
- */
 export type PushRowState = "checking" | "unsupported" | "default" | "granted" | "denied";
 
 export const PUSH_ROW_STATES: readonly PushRowState[] = [
@@ -40,11 +35,6 @@ function status(state: PushRowState, busy: boolean): string {
   }
 }
 
-/**
- * One compact menu row: the same title, type scale and padding as Theme and
- * Model, with the switch on the right and a single status line underneath.
- * The row itself carries no card because its menu neighbours do not.
- */
 export function PushSettingsRow({
   state,
   busy = false,
@@ -100,7 +90,6 @@ export function PushSettingsRow({
   );
 }
 
-/** Converts the base64url VAPID key into the bytes `applicationServerKey` expects. */
 export function base64UrlToUint8Array(value: string): Uint8Array<ArrayBuffer> {
   const padding = "=".repeat((4 - (value.length % 4)) % 4);
   const normalized = (value + padding).replace(/-/g, "+").replace(/_/g, "/");
@@ -116,7 +105,6 @@ function supported(): boolean {
   return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
 }
 
-/** The display mode the page reports: an installed app or an ordinary tab. */
 export function pushDisplayMode(): "app" | "browser" {
   try {
     const standalone =
@@ -138,10 +126,6 @@ async function currentSubscription(): Promise<PushSubscription | null> {
   return registration.pushManager.getSubscription();
 }
 
-/**
- * Reads the browser state once, then enables or disables push. Only the pure
- * row above is rendered; every browser API call lives in an effect or handler.
- */
 export function PushSettings() {
   const [state, setState] = useState<PushRowState>("checking");
   const [busy, setBusy] = useState(false);

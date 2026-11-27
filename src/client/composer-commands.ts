@@ -1,9 +1,6 @@
 export interface ComposerCommandContext {
-  /** The task this composer speaks for; null off the tasks page or with no detail open. */
   task: { id: string; title: string } | null;
-  /** `useWide()` for the caller: the desktop-only commands read it, not the window. */
   desktop: boolean;
-  /** The tasks page is showing the body at full width. */
   fullscreen: boolean;
   remove: (id: string) => Promise<string | null>;
   toggleFullscreen: () => void;

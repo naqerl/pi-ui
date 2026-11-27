@@ -30,9 +30,7 @@ import { clampPushText, MAX_BODY_CHARS, notify, type PushNotification } from "./
 
 const ALPHABET = "abcdefghijkmnopqrstuvwxyz23456789";
 const TASK_LIMIT = 500;
-/** Changes closer together than this become one push notification. */
 export const TASK_PUSH_WINDOW_MS = 3_000;
-/** A burst replaces the previous burst notification instead of piling up. */
 export const TASK_PUSH_TAG = "ledger";
 
 export class TaskError extends Error {
@@ -45,7 +43,6 @@ export class TaskError extends Error {
   }
 }
 
-/** Older ledgers also stored self-reported time and tokens; only the evidence is kept. */
 function readCompletion(value: unknown): TaskCompletion | null {
   if (typeof value !== "object" || value === null) return null;
   const evidence = (value as Record<string, unknown>).evidence;
@@ -85,10 +82,6 @@ function cloneTask(task: Task): Task {
   };
 }
 
-/**
- * The project a task gets: `undefined` falls back to `inherited`, null clears it, and a
- * string must be a valid project name.
- */
 function chooseProject(
   value: string | null | undefined,
   tasks: readonly Task[],
@@ -103,8 +96,6 @@ function chooseProject(
       400,
     );
   }
-  // Reuse a live task's spelling so `PI-UI` and `pi-ui` stay one project. Closed,
-  // proposed and parked tasks are not part of the project vocabulary.
   return (
     tasks.find(
       (task) =>
@@ -140,7 +131,6 @@ function withoutRelease(task: Task): Task {
   return rest;
 }
 
-/** A title the ledger can store, or a 400 that names the field. */
 function normalizeTitle(value: unknown): string {
   if (typeof value !== "string") throw new TaskError("title must be a string", 400);
   const title = value.trim();
@@ -148,7 +138,6 @@ function normalizeTitle(value: unknown): string {
   return title;
 }
 
-/** A trimmed body, or undefined for an empty one, with the length cap enforced. */
 function normalizeBody(value: unknown): string | undefined {
   if (typeof value !== "string") throw new TaskError("body must be a string", 400);
   const body = value.trim();
@@ -158,7 +147,6 @@ function normalizeBody(value: unknown): string | undefined {
   return body.length === 0 ? undefined : body;
 }
 
-/** A deduplicated media-id list, or a 400 when the shape or cap is wrong. */
 function normalizeAttachments(value: unknown): string[] {
   if (!Array.isArray(value) || !value.every((id) => typeof id === "string")) {
     throw new TaskError("attachments must be a list of media ids", 400);
@@ -262,27 +250,17 @@ function sanitize(tasks: Task[]): Task[] {
 
 export type TaskNotifier = (notification: PushNotification) => Promise<void> | void;
 
-/** Where a proposal decision is delivered to the chat and the model. */
 export type TaskNoticeRecorder = (record: TaskDecisionNoticeRecord) => Promise<void> | void;
 
 export interface TaskStoreOptions {
-  /** Where a status change is announced. Tests replace the web push sender. */
   readonly notify?: TaskNotifier;
-  /** Where a proposal approval or decline is delivered as a chat notice. */
   readonly notice?: TaskNoticeRecorder;
-  /** Alias for callers that name the chat method. */
   readonly recordOperatorNotice?: TaskNoticeRecorder;
-  /** Alias for callers that describe the recorded action. */
   readonly recordNotice?: TaskNoticeRecorder;
-  /** How long a burst may keep growing before it is sent. Zero disables coalescing. */
   readonly pushWindowMs?: number;
-  /** Alias for callers that describe the window as a burst window. */
   readonly burstWindowMs?: number;
-  /** Alias for callers that describe the wait as a coalescing window. */
   readonly coalesceMs?: number;
-  /** Alias for callers that describe the wait as a plain window. */
   readonly windowMs?: number;
-  /** Why this task cannot be approved or sent to a worker, or null when it can. */
   readonly workingBlocker?: (taskId: string) => string | null;
 }
 
@@ -308,7 +286,6 @@ function pushTitle(kind: PendingTaskKind): string {
   }
 }
 
-/** A decision is shown in the chat but never rings the operator's phone. */
 function pushes(kind: PendingTaskKind): kind is "proposal" | "done" | "working" {
   return kind === "proposal" || kind === "done" || kind === "working";
 }
@@ -317,7 +294,6 @@ const defaultTaskNotifier: TaskNotifier = async (notification) => {
   await notify(notification);
 };
 
-/** Durable todo ledger at `DATA_DIR/tasks.json`. One list, shared by every client. */
 export class TaskStore {
   private tasks: Task[] = [];
   private revision = 0;
@@ -350,11 +326,6 @@ export class TaskStore {
     return { tasks: this.tasks.map(cloneTask), revision: this.revision };
   }
 
-  /**
-   * Remember that a tool call was attributed to this task. Only open work is touched: a closed
-   * task keeps its empty stamp, and a call that finishes after `task_done` must not revive it.
-   * A released task is open but no longer working, so a late call must not revive it either.
-   */
   noteWorked(id: string, at: number | string | Date = Date.now()): Promise<TaskLedger> {
     const date = at instanceof Date ? at : new Date(at);
     if (!Number.isFinite(date.getTime())) return Promise.reject(new TaskError("Invalid time", 400));
@@ -478,7 +449,6 @@ export class TaskStore {
       .ledger;
   }
 
-  /** Create a task and return the exact row this call inserted, even under concurrent writes. */
   createWithResult(
     title: string,
     parentId: string | null,
@@ -524,7 +494,6 @@ export class TaskStore {
     );
   }
 
-  /** Record a task idea for human approval. It is not open work until approved. */
   propose(
     title: string,
     rationale: string,
@@ -540,7 +509,6 @@ export class TaskStore {
     });
   }
 
-  /** Create a new open task and append it to `id`'s blockers. */
   addBlocker(
     id: string,
     title: string,
@@ -588,22 +556,15 @@ export class TaskStore {
   update(
     id: string,
     patch: {
-      /** A new title; trimmed and refused when empty. */
       title?: string;
-      /** Free markdown, or an empty string to clear it. */
       body?: string;
       status?: TaskStatus;
       blockedBy?: string[];
       completion?: TaskCompletion;
-      /** A new project name, or null to clear it. */
       project?: string | null;
-      /** Replaces the task's images; an empty list removes them all. */
       attachments?: string[];
-      /** Why a done task is coming back; required only when moving done to open. */
       reopenReason?: string;
-      /** Why a working task is being parked; required only when releasing to open. */
       releaseReason?: string;
-      /** Who reopened it. The tool passes "agent"; the HTTP API defaults to the operator. */
       reopenedBy?: TaskReopen["by"];
     },
   ): Promise<TaskLedger> {
@@ -648,7 +609,6 @@ export class TaskStore {
         if (patch.status === "planning") {
           throw new TaskError("A task cannot be moved to planning", 409);
         }
-        // A finished task can only come back through the audited open-plus-reason path.
         if (current.status === "done" && patch.status !== "done" && patch.status !== "open") {
           throw new TaskError("Task is done; use task_reopen with a reason to reopen it", 409);
         }
@@ -678,7 +638,6 @@ export class TaskStore {
         if (patch.status === "done" && current.status === "planning") {
           throw new TaskError("Task is still being planned; approve it first", 409);
         }
-        // A parent stays open until every subtask is done, same as kata's close rule.
         if (patch.status === "done" && hasOpenDescendant(tasks, id)) {
           throw new TaskError("Open subtasks", 409);
         }
@@ -690,7 +649,6 @@ export class TaskStore {
             ...next,
             status: "open",
             completedAt: null,
-            // The old report stays as history until the task is closed again.
             completion: current.completion,
             lastWorkedAt: null,
             reopens: [
@@ -709,7 +667,6 @@ export class TaskStore {
               current.status === "done" && current.completedAt !== null
                 ? current.completedAt
                 : new Date().toISOString(),
-            // A human closing a task may not leave evidence; keep what was there.
             completion:
               patch.completion === undefined
                 ? current.status === "done"
@@ -738,7 +695,6 @@ export class TaskStore {
             ...next,
             status: "working",
             completedAt: null,
-            // Repeating the call keeps the original start; moving back starts a new one.
             workingSince:
               current.status === "working" && typeof current.workingSince === "string"
                 ? current.workingSince
@@ -761,7 +717,6 @@ export class TaskStore {
             ...next,
             status: patch.status,
             completedAt: null,
-            // Reopening starts an untouched task; an already-open task keeps its stamp.
             ...(current.status === "open" ? {} : { lastWorkedAt: null }),
             ...(current.status === "proposed" ? { proposedAt: null } : {}),
             ...(releaseReason === undefined
@@ -829,11 +784,6 @@ export class TaskStore {
     return run;
   }
 
-  /**
-   * One push when a proposal appears, a task starts working or a task moves to
-   * done. Approving or declining a proposal records the chat notice only. A
-   * repeat write, or deleting anything that was not a proposal, stays quiet.
-   */
   private async announce(previous: readonly Task[], next: readonly Task[]): Promise<void> {
     const before = new Map(previous.map((task) => [task.id, task]));
     const present = new Set(next.map((task) => task.id));
@@ -841,7 +791,6 @@ export class TaskStore {
     for (const task of next) {
       const old = before.get(task.id);
       if (old?.status === "proposed" && task.status !== "proposed") {
-        // Approving makes it open; approving and completing in one step makes it done.
         changes.push({ task, kind: "approved" });
       } else if (task.status === "proposed" && old?.status !== "proposed") {
         changes.push({ task, kind: "proposal" });
@@ -854,36 +803,24 @@ export class TaskStore {
         old.status !== task.status &&
         this.pendingChanges.has(task.id)
       ) {
-        // The task left the state that was queued (for example a proposal was
-        // approved before the burst flushed), so the old summary would be wrong.
         this.pendingChanges.delete(task.id);
       }
     }
     for (const old of previous) {
       if (old.status !== "proposed" || present.has(old.id)) continue;
-      // Deleting a proposal is how a decline is expressed. Cancel its pending
-      // "New proposal" entry so the burst cannot describe the old state.
       this.pendingChanges.delete(old.id);
       changes.push({ task: old, kind: "declined" });
     }
     if (changes.length === 0) return;
 
-    // The ledger is already saved. Place the decision's chat entry before returning: the
-    // two writes are separate commits by design (a notice failure must not undo the task),
-    // but the caller now returns only after the queue owns the entry. A busy run still
-    // queues it immediately; the model reads it at the next boundary.
     const decisions = changes.map((change) => this.recordDecisionNotice(change));
 
-    // A decision stays in the chat. Drop its proposal's pending push, which
-    // would otherwise describe a state the ledger has already left.
     const notifiable = changes.filter((change) => {
       if (pushes(change.kind)) return true;
       this.pendingChanges.delete(change.task.id);
       return false;
     });
     if (notifiable.length > 0) {
-      // A write that arrives while another write is already queued belongs to a
-      // burst. A lone change still goes out with the write that caused it.
       if (this.pushWindowMs > 0 && (this.pendingChanges.size > 0 || this.queuedCommits > 1)) {
         this.queueBurst(notifiable, next);
       } else {
@@ -896,13 +833,11 @@ export class TaskStore {
   private queueBurst(changes: readonly PendingTaskChange[], next: readonly Task[]): void {
     for (const change of changes) this.pendingChanges.set(change.task.id, change);
 
-    // Ledger order, not arrival order, and one entry per task even if it moved twice.
     const ordered = new Map<string, PendingTaskChange>();
     for (const task of next) {
       const change = this.pendingChanges.get(task.id);
       if (change !== undefined) ordered.set(task.id, change);
     }
-    // A declined proposal is no longer in the ledger, so it has no ledger position.
     for (const [id, change] of this.pendingChanges) {
       if (change.kind === "declined") ordered.set(id, change);
     }
@@ -942,7 +877,6 @@ export class TaskStore {
         decision: approved ? "approved" : "declined",
       });
     } catch (error) {
-      // A notice failure must never fail the ledger write that caused it.
       console.error(`[pi] task notice failed for ${change.task.id}:`, error);
     }
   }
@@ -951,12 +885,10 @@ export class TaskStore {
     try {
       await this.notifyTask(notification);
     } catch (error) {
-      // A push failure must never fail the write that caused it.
       console.error(`[pi] task push failed for ${notification.tag}:`, error);
     }
   }
 
-  /** Sends the accumulated burst once its window closes. */
   private flushBurst(): Promise<void> {
     if (this.flushTimer !== undefined) {
       clearTimeout(this.flushTimer);
@@ -988,13 +920,11 @@ export class TaskStore {
     });
   }
 
-  /** Flushes a pending burst so shutdown does not silently drop it. */
   async flush(): Promise<void> {
     await this.flushBurst();
     await this.flushing;
   }
 
-  /** Alias with the plural that reads naturally at shutdown call sites. */
   flushNotifications(): Promise<void> {
     return this.flush();
   }
@@ -1012,7 +942,6 @@ export class TaskStore {
   }
 }
 
-/** Resolve the create API's status, `backlog` boolean, or options object. */
 function createStatus(
   mode:
     | TaskStatus
@@ -1049,7 +978,6 @@ function normalizeBlockers(
     }
     const blocker = byId.get(entry);
     if (blocker === undefined) throw new TaskError("Unknown blocker", 400);
-    // A proposal is not work, so it can never gate another task.
     if (blocker.status === "proposed") continue;
     if (next.includes(entry)) continue;
     const cycle = dependencyCyclePath(tasks, id, entry);
@@ -1061,7 +989,6 @@ function normalizeBlockers(
   return next;
 }
 
-/** Start of the current week, Monday 00:00 UTC, so stats do not depend on the browser. */
 function startOfWeek(now: number): number {
   const date = new Date(now);
   date.setUTCHours(0, 0, 0, 0);
@@ -1069,7 +996,6 @@ function startOfWeek(now: number): number {
   return date.getTime();
 }
 
-/** Count reopened tasks and this week's reopens, grouped by the task's project. */
 export function taskReopenStats(tasks: readonly Task[], now: number = Date.now()): TaskReopenStats {
   const weekStart = startOfWeek(now);
   const projects = new Map<string, TaskReopenProjectStats>();
@@ -1111,29 +1037,22 @@ export function taskReopenStats(tasks: readonly Task[], now: number = Date.now()
   };
 }
 
-/** The ledger spell for a task's close time; `completedAt` is the current field. */
 function taskClosedAt(task: Task): string | null {
   const legacy = (task as Task & { closedAt?: unknown }).closedAt;
   if (typeof legacy === "string") return legacy;
   return typeof task.completedAt === "string" ? task.completedAt : null;
 }
 
-/**
- * Nearest-rank percentile over an ascending list: rank = ceil(p * n), then the
- * value at that one-based rank. With no samples the result is zero.
- */
 function nearestRank(sorted: readonly number[], fraction: number): number {
   if (sorted.length === 0) return 0;
   const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(fraction * sorted.length) - 1));
   return sorted[index] ?? 0;
 }
 
-/** Closed-task durations and their p50/p90/average, grouped by the task's project. */
 export function taskDurationStats(
   tasks: readonly Task[],
   now: number = Date.now(),
 ): TaskDurationStats {
-  // Mirrors taskReopenStats' clock argument; a duration does not depend on when it is read.
   void now;
   const durations: number[] = [];
   const projects = new Map<string, { project: string; durations: number[] }>();

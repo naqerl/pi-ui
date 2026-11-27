@@ -1,6 +1,5 @@
 import type { TaskCycleHint } from "./use-task-cycle";
 
-/** A read-only pill that says where Ctrl+Tab landed in the recent-task ring. */
 export function TaskCycleHud({ hint }: { hint: TaskCycleHint }) {
   const project = hint.task.project?.trim() ?? "";
   return (

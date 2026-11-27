@@ -17,12 +17,7 @@ export interface BotDefinition {
 
 export interface BotStoreOptions {
   readonly now?: () => Date;
-  /** Bots written to a fresh file. Defaults to the shipped Job hunter. */
   readonly seed?: readonly BotSeed[];
-  /**
-   * Runs after the complete document is on disk and before its rename. Tests use
-   * it to fail a write at the last moment and prove the old document survives.
-   */
   readonly beforeRename?: () => void | Promise<void>;
 }
 
@@ -42,11 +37,6 @@ function errorCode(error: unknown): string | undefined {
   return isRecord(error) && typeof error.code === "string" ? error.code : undefined;
 }
 
-/**
- * Write a complete JSON document beside its destination, then rename it into
- * place. A reader therefore sees the old document or the new one, never a
- * half-written mix, and a failed write leaves the destination untouched.
- */
 export async function writeJsonAtomic(
   path: string,
   text: string,
@@ -189,10 +179,6 @@ function readStoredDefinition(value: unknown): BotDefinition | undefined {
   };
 }
 
-/**
- * The bot ledger: one JSON document, written whole and atomically. Every
- * mutation is serialized, so two concurrent creates cannot both claim one id.
- */
 export class BotStore {
   private bots: BotDefinition[] = [];
   private chain: Promise<unknown> = Promise.resolve();
@@ -209,7 +195,6 @@ export class BotStore {
     this.beforeRename = options.beforeRename;
   }
 
-  /** Read bots.json, or write the shipped definitions when it does not exist yet. */
   async load(): Promise<void> {
     let raw: string;
     try {

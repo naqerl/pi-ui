@@ -107,7 +107,6 @@ test("a stored job notice is one chip in the chat and one activity row", async (
   assert.equal(built.activity.length, 1);
   assert.equal(built.activity[0]?.order, chip?.order);
 
-  // A reload rebuilds the same single chip from the stored entry.
   const reloaded = buildTranscript(entries);
   assert.deepEqual(reloaded.messages, built.messages);
   assert.equal(reloaded.messages.filter((message) => message.notice?.kind === "job").length, 1);
@@ -283,11 +282,9 @@ test("an interrupted run becomes one warning chip after the partial reply", () =
   assert.match(markup, /class="[^"]*\bborder-status-warn\/40\b/);
   assert.match(markup, /class="[^"]*\bbg-status-warn\/10\b/);
   assert.match(markup, /class="[^"]*\btext-status-warn\b/);
-  // The neutral chip surface must not compete with the warning tone in CSS order.
   assert.doesNotMatch(markup, /class="[^"]*\bbg-surface\/90\b/);
   assert.doesNotMatch(markup, /class="[^"]*\btext-muted-foreground\b/);
   assert.doesNotMatch(markup, /class="[^"]*\bborder-foreground\/10\b/);
-  // Resuming is status: no dialog, no click affordance, no title acting as one.
   assert.doesNotMatch(markup, /<button/);
   assert.doesNotMatch(markup, /aria-haspopup/);
   assert.doesNotMatch(markup, /\stitle=/);
@@ -309,7 +306,6 @@ test("a memory write becomes a persistent chip with an undo steer", async () => 
   assert.equal(message.role, "system");
   assert.notEqual(entries[0]?.kind, "user");
 
-  // A later snapshot rebuild reads the same chip from the stored entry.
   const reloaded = buildTranscript(entries).messages[0];
   assert.deepEqual(reloaded?.notice, message.notice);
   const notice = reloaded?.notice;
@@ -409,7 +405,6 @@ test("a stopped run with no partial reply still records the stopped note", async
   assert.ok(message !== undefined);
   const notice = message.notice;
   assert.ok(notice !== undefined && !isQueuedNotice(notice));
-  // The stopped variant keeps its dialog so the recorded note stays available.
   const markup = renderToStaticMarkup(createElement(NoticeLine, { message, notice }));
   assert.match(markup, /<button/);
   assert.match(markup, /aria-haspopup="dialog"/);

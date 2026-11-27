@@ -1,10 +1,3 @@
-/**
- * Background job results and MCP events reach the transcript as messages the agent
- * already reads. These helpers recognise them: the chat shows both as a one-line
- * notice instead of a bubble, while the activity page also keeps the job row. The
- * text sent to the model is unchanged.
- */
-
 import { toIsoTimestamp } from "./time.js";
 import type { AnsweredQuestionItem } from "./types.js";
 
@@ -17,7 +10,6 @@ export interface JobNoticeDetails {
   exitCode: number | null;
   signal: string | null;
   duration: string | null;
-  /** The last lines of output, or "" when it printed nothing. */
   output: string;
   summary: string;
 }
@@ -45,58 +37,40 @@ export interface McpNoticeDetails {
   statuses: McpNoticeStatus[];
   dropped: number;
   summary: string;
-  /** The original notice text when its payload could not be read as events or statuses. */
   raw?: string;
 }
 
-/** A memory file written by the memory_write tool. */
 export interface MemoryNoticeDetails {
   kind: "memory";
-  /** Memory-relative path, such as topics/projects/widget.md. */
   path: string;
-  /** The written body, capped before it is stored. */
   text: string;
-  /** True when the body was longer than the stored cap. */
   truncated: boolean;
   summary: string;
 }
 
-/** One long-term topic changed by a memory_write. */
-// legacy: read-only, existing transcripts only
 export interface MemoryDeltaTopic {
-  /** Memory-relative path, such as topics/projects/widget.md. */
   path: string;
   title: string;
-  /** The new body length in characters. */
   chars: number;
-  /** ISO date the topic was restamped with. */
   updated: string;
-  /** Keeps the record JSON-safe for the durable entry payload. */
   readonly [key: string]: string | number;
 }
 
-/** The compact tail notice for long-term writes made during a turn. */
-// legacy: read-only, existing transcripts only
 export interface MemoryDeltaDetails {
   kind: "memory-delta";
   topics: MemoryDeltaTopic[];
   summary: string;
 }
 
-/** An automated nudge sent after the agent stayed idle with open work. */
 export interface IdleNoticeDetails {
   kind: "idle";
-  /** The prompt the agent received, also shown when the chip is opened. */
   text: string;
   taskIds: string[];
   summary: string;
-  /** True for the narrower status check after a live run went quiet on a task. */
   stale?: true;
-  /** True when the notice only asks for memory about closed tasks. */
   closed?: true;
 }
 
-/** A request the agent pushed to the operator's devices with notify_operator. */
 export interface OperatorNoticeRecord {
   title: string;
   body: string;
@@ -108,12 +82,10 @@ export interface OperatorNoticeDetails extends OperatorNoticeRecord {
   summary: string;
 }
 
-/** A human's decision on a proposed task, recorded as a notice the model reads. */
 export type TaskProposalDecision = "approved" | "declined";
 
 export interface TaskDecisionNoticeRecord extends OperatorNoticeRecord {
   proposalId: string;
-  /** The task the proposal became, or its id when it was declined. */
   taskId: string;
   taskTitle: string;
   decision: TaskProposalDecision;
@@ -121,12 +93,10 @@ export interface TaskDecisionNoticeRecord extends OperatorNoticeRecord {
 
 export interface TaskDecisionNoticeDetails extends TaskDecisionNoticeRecord {
   kind: "decision";
-  /** The prompt the agent received, also shown when the chip is opened. */
   text: string;
   summary: string;
 }
 
-/** A finished sub-agent turn, announced once as a chip. */
 export interface DelegateNoticeDetails {
   kind: "delegate";
   runId: string;
@@ -138,32 +108,24 @@ export interface DelegateNoticeDetails {
   duration: string | null;
   tokens: { input: number; output: number } | null;
   error: string | null;
-  /** Short copy of the final answer, when the chip included one. */
   excerpt: string | null;
   summary: string;
 }
 
-/** The operator's answers to one plan-agent question set, shown as a chip and dialog. */
 export interface QuestionNoticeDetails {
   kind: "questions";
   setId: string;
   count: number;
-  /** The prompt the agent received, also shown when the chip is opened. */
   text: string;
   summary: string;
-  /** Every answer, in question order, for the dialog body. */
   answers: AnsweredQuestionItem[];
-  /** True when the operator dismissed the set instead of answering it. */
   dismissed?: boolean;
 }
 
-/** The restart note recorded for an interrupted run. */
 export interface InterruptedNoticeDetails {
   kind: "interrupted";
   note: string;
-  /** True when the run was stopped deliberately before the restart. */
   stopped: boolean;
-  /** The note is the summary, so old callers can read either field. */
   summary?: string;
 }
 
@@ -185,14 +147,9 @@ const DELEGATE_HEAD =
 const DELEGATE_TURN_HEAD =
   /^\[acp_delegate (completed|FAILED[^\]]*|cancelled)\] run `([^`]+)` (finished|failed|cancelled) after (.+?)\.$/;
 export const MCP_EVENTS_HEAD = "MCP event data follows.";
-/**
- * The fixed line after every MCP event notice. It tells the model the notice is
- * background data, not a turn it should answer.
- */
 export const MCP_EVENTS_TRAILER =
   "This is a background MCP event notification, not a user message. Do not reply to it, do not summarise it, and never repeat its JSON. If it needs action, act; otherwise continue silently.";
 export const MCP_STATUS_HEAD = "MCP subscription status follows.";
-/** Events kept in one waiting delivery. Older events are dropped and counted. */
 export const MAX_PENDING_MCP_EVENTS = 50;
 const IDLE_HEAD = /^You have been idle for \d+ minutes and (\d+) task\(s\) are open: ([^.]+)\./;
 const IDLE_STATUS_HEAD = /(?:^|\. )Status check for tasks marked working: ([^.]+)\./;
@@ -213,17 +170,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** One bounded event list plus how many distinct events had to be dropped. */
 export interface BoundedMcpEventBatch {
   readonly items: unknown[];
   readonly dropped: number;
 }
 
-/**
- * Keep at most MAX_PENDING_MCP_EVENTS distinct event ids, newest last. A
- * duplicate id never consumes a slot. Keep the original array when it already
- * fits so its order (including repeated ids) is unchanged.
- */
 export function boundMcpEventBatch(items: readonly unknown[]): BoundedMcpEventBatch {
   const seen = new Set<string>();
   const distinct: unknown[] = [];
@@ -256,14 +207,12 @@ function text(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
-/** The notice body without the fixed trailer an event notice carries. */
 function withoutMcpTrailer(body: string): string {
   const trimmed = body.trimEnd();
   if (!trimmed.endsWith(MCP_EVENTS_TRAILER)) return trimmed;
   return trimmed.slice(0, -MCP_EVENTS_TRAILER.length).trimEnd();
 }
 
-/** Parses the JSON body of an MCP event notice, ignoring its fixed trailer. */
 export function parseMcpEventPayload(body: string): Record<string, unknown> | null {
   try {
     const payload: unknown = JSON.parse(withoutMcpTrailer(body));
@@ -277,11 +226,6 @@ function echoText(value: string): string {
   return value.trim().replace(/\s+/g, " ");
 }
 
-/**
- * True for an assistant message that repeats an MCP event notice instead of
- * answering the conversation: either the notice itself, or the most recently
- * delivered notice after whitespace normalisation.
- */
 export function isMcpEventEcho(value: string, latestNotice: string | null = null): boolean {
   const trimmed = value.trim();
   if (trimmed.startsWith(MCP_EVENTS_HEAD)) {
@@ -489,8 +433,6 @@ function parseIdle(body: string): IdleNoticeDetails | null {
       stale: true,
     };
   }
-  // A stale request and the memory ask follow the usual prompt on their own paragraphs;
-  // the first line still carries the task ids the chip and its summary need.
   const actualize = IDLE_ACTUALIZE_HEAD.exec(text);
   const actualizeTaskIds = actualize === null ? [] : actualizeIds(actualize[1] ?? "");
   const closureIds = memoryClosureIds(text);
@@ -548,7 +490,6 @@ function parseIdle(body: string): IdleNoticeDetails | null {
   };
 }
 
-/** A recognised MCP notice whose payload cannot become events or statuses. */
 function unparsedMcp(body: string): McpNoticeDetails {
   return {
     kind: "mcp",
@@ -580,7 +521,6 @@ function parseMcp(body: string, status: boolean): McpNoticeDetails {
       const timestamp = text(event.timestamp);
       events.push({
         server: item.server,
-        // A multiplexed stream carries the kind in data.kind (`hub.job` on a `hub` stream).
         name: (isRecord(event.data) ? text(event.data.kind) : null) || text(event.name) || "event",
         timestamp: timestamp === null ? null : toIsoTimestamp(timestamp),
         id: text(event.eventId),
@@ -624,15 +564,12 @@ function parseMcp(body: string, status: boolean): McpNoticeDetails {
   return { kind: "mcp", servers, events, statuses, dropped, summary: mcpSummary(servers, label) };
 }
 
-/** Longest memory body a chip keeps; the rest stays on disk only. */
 export const MEMORY_NOTICE_TEXT_LIMIT = 2_000;
 
 export function memoryNoticeSummary(path: string): string {
   return `memory · ${path}`;
 }
 
-/** The one-line summary a memory-delta chip shows. */
-// legacy: read-only, existing transcripts only
 export function memoryDeltaSummary(topics: readonly MemoryDeltaTopic[]): string {
   if (topics.length === 1) return `memory updated · ${topics[0]?.path ?? ""}`;
   return `memory updated · ${topics.length} topics`;
@@ -642,7 +579,6 @@ export function operatorNoticeSummary(title: string): string {
   return `operator · ${title}`;
 }
 
-/** The prompt that tells the model a proposal was approved or declined. */
 export function taskDecisionPrompt(record: TaskDecisionNoticeRecord): string {
   if (record.decision === "approved") {
     return `Task proposal ${record.proposalId} was approved and is now task ${record.taskId}: ${record.taskTitle}.\nYou may start working on it now; it is no longer waiting for approval.`;
@@ -683,23 +619,19 @@ function parseTaskDecision(body: string): TaskDecisionNoticeDetails | null {
   };
 }
 
-/** Caps the text stored with a memory chip, telling the panel when it was cut. */
 export function memoryNoticeText(value: string): { text: string; truncated: boolean } {
   if (value.length <= MEMORY_NOTICE_TEXT_LIMIT) return { text: value, truncated: false };
   return { text: value.slice(0, MEMORY_NOTICE_TEXT_LIMIT), truncated: true };
 }
 
-/** The steer a reader sends from a memory chip's Undo button. */
 export function memoryUndoPrompt(path: string): string {
   return `Undo the memory write to ${path} — restore the previous content of that file and confirm.`;
 }
 
-/** True when a message is an MCP notice, even if its payload is malformed. */
 export function isMcpNotice(message: string): boolean {
   return message.startsWith(MCP_EVENTS_HEAD) || message.startsWith(MCP_STATUS_HEAD);
 }
 
-/** The notice a message stands for, or null for an ordinary message. */
 export function parseNotice(message: string): ChatNotice | null {
   if (message.startsWith("[background job ")) return parseJob(message.split("\n"));
   if (message.startsWith("[acp_delegate ")) return parseDelegate(message.split("\n"));

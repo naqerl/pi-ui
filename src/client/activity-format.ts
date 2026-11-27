@@ -59,12 +59,6 @@ export function formatDuration(durationMs: number | undefined): string {
   return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
 }
 
-/**
- * How long one activity row took. A completed tool records its own execution time; a completed
- * thinking block only has the instant its message was stored, so it runs from the previous row
- * in the same activity group. A row that is still running has no duration yet, and a row without
- * usable timing information keeps its current markup.
- */
 export function rowDurationMs(
   activity: ActivityItem,
   previous: ActivityItem | undefined,
@@ -104,11 +98,6 @@ export function activitySummary(activity: ActivityItem, includeDuration = true):
   return `${activity.name} · ${formatDuration(activity.durationMs)} · ${activityStatus(activity)}`;
 }
 
-/**
- * A row's span. A completed tool's timestamp is when its result arrived, so its start is
- * derived once from the duration the result records; a live row's timestamp is already its
- * start. That keeps one item's start stable when the live copy is replaced by its result.
- */
 function activityWindow(item: ActivityItem): { start: number; end: number } | null {
   const stamp = Date.parse(item.timestamp);
   if (!Number.isFinite(stamp)) return null;
@@ -119,7 +108,6 @@ function activityWindow(item: ActivityItem): { start: number; end: number } | nu
   return { start: stamp - Math.max(0, item.durationMs), end: stamp };
 }
 
-/** Earliest start a group can derive from its rows, before any live anchor is applied. */
 export function groupStartMs(items: ActivityItem[]): number | undefined {
   let start = Number.POSITIVE_INFINITY;
   for (const item of items) {
@@ -176,10 +164,6 @@ function sumSpend(items: ActivityItem[], extra: TokenSpend | undefined): TokenSp
   return seen ? { input, output } : undefined;
 }
 
-/**
- * The pieces of a run's summary line: tool calls, tokens, and time. Thinking blocks are counted
- * in the group but not named here; `/activity` still lists them.
- */
 export function groupSummaryParts(
   items: ActivityItem[],
   running: boolean,

@@ -95,7 +95,6 @@ const snapshot = {
   },
 };
 
-/** Swaps the mocked state and refreshes the serial group's existing app. */
 async function openSnapshot(
   app: { open(path?: string): Promise<void> },
   browser: Browser,
@@ -111,13 +110,6 @@ async function openSnapshot(
   await app.open("/?page=tasks");
 }
 
-/**
- * Elements on the tasks page whose content is wider than their own box. Only
- * the nodes that intentionally clip their own overflow are exempt: the
- * offscreen dashboard pager is excluded by scanning inside the tasks page,
- * visually-hidden labels and the ellipsised run-error label never show it, and
- * a carousel viewport/track marks itself with data-overflow-clip.
- */
 async function horizontalOverflow(browser: Browser) {
   return browser.evaluate(() => {
     const page = document.querySelector<HTMLElement>('[data-testid="tasks-page"]');
@@ -190,7 +182,6 @@ async function paneSteps(browser: Browser) {
 async function expectProjectAboveBody(browser: Browser) {
   const projectAboveBody = await browser.evaluate(() => {
     const detail = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
-    // Desktop moves project into the kebab; only mobile keeps it in the header.
     if (detail?.getAttribute("data-layout") === "desktop") return true;
     const project = document.querySelector<HTMLElement>('[data-testid="task-project-line"]');
     const body = document.querySelector<HTMLElement>('[data-testid="task-body-section"]');
@@ -246,7 +237,6 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     await expectProjectAboveBody(browser);
     await expect(screen.getByTestId("task-filters")).toHaveCount(0);
 
-    // One assertion holds both stacks to the same rhythm, so they cannot drift apart.
     const rhythm = await browser.evaluate(() => {
       const detail = document.querySelector<HTMLElement>('[data-testid="task-detail-stack"]');
       const list = document.querySelector<HTMLElement>('[data-testid="task-list"]');
@@ -296,7 +286,6 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     });
     expect(contentTop).not.toBeNull();
     expect(contentTop?.barAbovePane).toBe(true);
-    // The section step under the bar and under the list's "Open" header is one 8px value.
     expect({ barGap: contentTop?.barGap, listStep: contentTop?.listStep }).toEqual({
       barGap: 8,
       listStep: 8,
@@ -343,10 +332,8 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     expect(body?.rationaleInside).toBe(true);
     expect(body?.aboveComposer).toBe(true);
 
-    // Keep the header-to-pane 8px step as visual evidence at the review width.
     await app.screenshot("tasks-detail-header-1280-after");
 
-    // Escape closes the desktop detail so the nav dock can return to full width.
     await browser.keyboard.press("Escape");
     await expect(screen.getByTestId("task-detail")).toHaveCount(0);
     await expect(screen.getByTestId("task-detail-empty")).toBeVisible();
@@ -420,7 +407,6 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     expect(wide?.planWidth ?? 0).toBeLessThanOrEqual(400);
     expect(await horizontalOverflow(browser)).toEqual([]);
 
-    // 16px only at the list↔details boundary; the body↔chat pane gap is 8px.
     const steps = await paneSteps(browser);
     expect(steps).not.toBeNull();
     expect(steps?.sideToDetail).toBe(16);
@@ -430,7 +416,6 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     expect(steps?.sideWidth).toBe(320);
     expect(steps?.detailTop).toBe(steps?.chatTop);
 
-    // The reporter judges the layout by eye, so keep the wide frame as evidence.
     await app.screenshot("tasks-wide");
 
     await browser.setViewport({ width: 1280, height: 800 });
@@ -456,7 +441,6 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     const phone = await browser.evaluate(() => {
       const header = document.querySelector<HTMLElement>('[data-testid="task-header"]');
       const detail = document.querySelector<HTMLElement>('[data-testid="task-detail"]');
-      // The plan pane starts at its first card, directly below the detail header.
       const plan = document.querySelector<HTMLElement>('[data-testid="task-detail-stack"]');
       if (header === null || detail === null || plan === null) return null;
       const h = header.getBoundingClientRect();
@@ -494,8 +478,6 @@ describe("task detail against a mocked state route", { serial: true }, () => {
   }) => {
     await openSnapshot(app, browser, snapshot, 1280, 800);
     const sent: string[] = [];
-    // The mocked ledger has no server task, so the dock's POST is answered here: the
-    // assertion is that the hidden chat column still sends for the open task.
     await browser.route("**/api/tasks/t1/chat", async (route) => {
       if (route.request.method !== "POST") {
         await route.continue();
@@ -567,10 +549,8 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     expect(full?.detailWidth).toBe(full?.contentWidth);
     expect(full?.headerWidth).toBe(full?.contentWidth);
     expect(await horizontalOverflow(browser)).toEqual([]);
-    // Enter ran the command; it did not send the text to the task agent.
     expect(sent).toEqual([]);
 
-    // Escape leaves full screen and keeps the detail open; nothing was sent.
     await input.press("Escape");
     await expect(screen.getByTestId("task-detail-back")).toBeVisible();
     await expect(screen.getByTestId("task-detail")).toHaveAttribute("aria-label", "Ship the modal");
@@ -578,14 +558,12 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     expect(restored).toMatchObject({ fullscreen: null, columns: 3, sideDisplay: "flex" });
     expect(restored?.chatDisplay).not.toBe("none");
 
-    // The dock still has focus, so the next Escape closes the detail from there.
     await input.press("Escape");
     await expect(screen.getByTestId("task-detail")).toHaveCount(0);
     expect(sent).toEqual([]);
     await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
     await expect(screen.getByTestId("task-detail")).toBeVisible();
 
-    // The corner cross is the other way out, and the dock keeps its task session.
     await input.fill("/full");
     await expect(screen.getByTestId("composer-command-fullscreen")).toBeVisible();
     await input.press("Enter");
@@ -607,8 +585,6 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     screen,
   }) => {
     await openSnapshot(app, browser, snapshot, 390, 844);
-    // The one-row dock is geometry, not a motion test, but the mid-flight sample
-    // below needs the existing 220 ms collapse instead of reduced motion.
     await browser.emulateMedia({ reducedMotion: "no-preference" });
     await screen.getByRole("button", { name: "Open Ship the modal" }).tap();
     await expect(screen.getByTestId("task-detail")).toHaveAttribute("data-layout", "mobile");
@@ -702,8 +678,6 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     expect(Math.abs((planOpen?.dockHeight ?? 0) - (planOpen?.lineHeight ?? 0))).toBeLessThanOrEqual(
       1,
     );
-    // The create-surface dock is 90 px; the Plan tab must be one line tall, not
-    // that full box with an empty row under the bar.
     expect(planOpen?.dockHeight ?? Number.POSITIVE_INFINITY).toBeLessThan(90);
     expect(planOpen?.inputVisible).toBe(false);
     expect(planOpen?.inputInert).toBe(true);
@@ -750,8 +724,6 @@ describe("task detail against a mocked state route", { serial: true }, () => {
     );
     expect(await horizontalOverflow(browser)).toEqual([]);
 
-    // Record every frame across the tap so the expansion cannot be missed by a
-    // round trip: the body must grow through the existing 220 ms curve.
     await browser.evaluate(() => {
       const body = document.querySelector<HTMLElement>('[data-testid="composer-body"]');
       const dock = document.querySelector<HTMLElement>('[data-testid="composer-dock"]');

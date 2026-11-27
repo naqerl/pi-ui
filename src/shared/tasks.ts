@@ -1,20 +1,15 @@
 import type { Task, TaskCompletion } from "./types.js";
 
-/** The longest task body the ledger and the API accept, in characters. */
 export const TASK_BODY_MAX_LENGTH = 20_000;
 
-/** The most images one task can carry after creation; creation itself keeps the composer cap. */
 export const TASK_ATTACHMENTS_MAX = 12;
 
-/** Placeholder title for a task created from the plus button, until the first message or the task agent names it. */
 export const DEFAULT_NEW_TASK_TITLE = "New task";
 
-/** Placeholder title for an agent-proposed draft, until its plan agent names it. */
 export function proposedDraftTitle(id: string): string {
   return `Proposed ${id}`;
 }
 
-/** True when a title is still the placeholder an agent-proposed draft starts with. */
 export function isProposedDraftTitle(title: string): boolean {
   return /^Proposed [abcdefghijkmnopqrstuvwxyz23456789]{4,8}$/.test(title);
 }
@@ -50,23 +45,14 @@ export function ancestorIds(tasks: readonly Task[], id: string): Set<string> {
   return out;
 }
 
-/** True while a task is still in flight: open, or explicitly marked working. */
 export function isActiveStatus(status: string): boolean {
   return status === "open" || status === "working";
 }
 
-/**
- * True when a dependency still gates a task: `open`, `working` or `planning`.
- * Done, backlog, proposed and missing ids are not gates.
- */
 export function isPendingStatus(status: string): boolean {
   return status === "open" || status === "working" || status === "planning";
 }
 
-/**
- * True when the task's last ledger transition was a release back to open. The idle nudge treats
- * a released task as parked: the release's old activity stamps and naming row must not revive it.
- */
 export function isReleasedTask(task: {
   status: string;
   releasedAt?: string;
@@ -77,10 +63,6 @@ export function isReleasedTask(task: {
   );
 }
 
-/**
- * The ids whose published status was `working` and whose current ledger status is not.
- * A release, a closure and a reopen all invalidate the nudge's naming row for the task.
- */
 export function leftWorking(
   previous: Readonly<Record<string, string>>,
   tasks: readonly Task[],
@@ -90,7 +72,6 @@ export function leftWorking(
     .map((task) => task.id);
 }
 
-/** Pending tasks in `blockedBy`. A done, backlog or proposed dependency does not gate. */
 export function liveBlockerIds(tasks: readonly Task[], task: Task): string[] {
   const pending = new Set(
     tasks.filter((item) => isPendingStatus(item.status)).map((item) => item.id),
@@ -103,10 +84,6 @@ export function hasOpenDescendant(tasks: readonly Task[], id: string): boolean {
   return tasks.some((task) => descendants.has(task.id) && isActiveStatus(task.status));
 }
 
-/**
- * The dependency path that adding `taskId` → `blockerId` would close, starting at
- * `blockerId` and ending at `blockerId` again. Empty when the edge is safe.
- */
 export function dependencyCyclePath(
   tasks: readonly Task[],
   taskId: string,
@@ -141,10 +118,6 @@ export function dependencyCyclePath(
   return [];
 }
 
-/**
- * True when `blockerId` already depends on `taskId`, so "blocked by blockerId"
- * would close a cycle. Self-block is a cycle.
- */
 export function blockerClosesCycle(
   tasks: readonly Task[],
   taskId: string,
@@ -153,7 +126,6 @@ export function blockerClosesCycle(
   return dependencyCyclePath(tasks, taskId, blockerId).length > 0;
 }
 
-/** Proposals first, then ready work, then blocked, then done, with parked backlog last. */
 export function compareTasks(tasks: readonly Task[], a: Task, b: Task): number {
   const rank = (task: Task) => {
     if (task.status === "proposed") return 0;
@@ -170,7 +142,6 @@ export function compareTasks(tasks: readonly Task[], a: Task, b: Task): number {
   return a.id < b.id ? -1 : 1;
 }
 
-/** A short token count for a dense ledger or card line, such as `120k`. */
 export function formatTokenCount(tokens: number): string {
   const compact = (value: number, suffix: string) => {
     const rounded = value >= 10 ? Math.round(value) : Math.round(value * 10) / 10;
@@ -181,7 +152,6 @@ export function formatTokenCount(tokens: number): string {
   return compact(tokens / 1_000_000, "m");
 }
 
-/** Active time for a stats cell, such as `42s`, `18m` or `1h 05m`. */
 export function formatActiveTime(ms: number): string {
   const seconds = Math.round(ms / 1000);
   if (seconds < 60) return `${seconds}s`;
@@ -190,7 +160,6 @@ export function formatActiveTime(ms: number): string {
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
 }
 
-/** Provider cost in USD, with cents below a dollar and a floor for tiny amounts. */
 export function formatCost(usd: number): string {
   if (usd <= 0) return "$0";
   if (usd < 0.01) return "<$0.01";
@@ -203,10 +172,6 @@ export type CompletionParseResult =
 
 const EVIDENCE_TARGET = "a commit sha, file path, screenshot path or sentence a reviewer can check";
 
-/**
- * Validate a completion for the task tool and the HTTP API. Only evidence is reported; time,
- * tokens and cost are measured from the runs that worked on the task.
- */
 export function parseCompletion(input: unknown): CompletionParseResult {
   if (typeof input !== "object" || input === null) {
     return { ok: false, error: `completion must contain evidence; point at ${EVIDENCE_TARGET}` };
@@ -228,12 +193,10 @@ export function parseCompletion(input: unknown): CompletionParseResult {
   return { ok: true, completion: { evidence } };
 }
 
-/** The longest reopen reason the ledger, the tool and the API accept, in characters. */
 export const TASK_REOPEN_REASON_MAX_LENGTH = 500;
 
 export type ReopenReasonParseResult = { ok: true; reason: string } | { ok: false; error: string };
 
-/** Validate the reason a finished task is coming back: trimmed, 1–500 characters. */
 export function parseReopenReason(input: unknown): ReopenReasonParseResult {
   if (typeof input !== "string" || input.trim().length === 0) {
     return { ok: false, error: "A reopen needs a reason" };
@@ -248,14 +211,11 @@ export function parseReopenReason(input: unknown): ReopenReasonParseResult {
   return { ok: true, reason };
 }
 
-/** The shortest release reason the ledger, the tool and the API accept, in characters. */
 export const TASK_RELEASE_REASON_MIN_LENGTH = 3;
-/** The longest release reason the ledger, the tool and the API accept, in characters. */
 export const TASK_RELEASE_REASON_MAX_LENGTH = 500;
 
 export type ReleaseReasonParseResult = { ok: true; reason: string } | { ok: false; error: string };
 
-/** Validate why a working task is being released: trimmed, 3–500 characters. */
 export function parseReleaseReason(input: unknown): ReleaseReasonParseResult {
   if (typeof input !== "string" || input.trim().length === 0) {
     return { ok: false, error: "A release needs a reason" };

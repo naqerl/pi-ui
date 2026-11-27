@@ -3,7 +3,6 @@ import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { MediaRef } from "../shared/types.js";
 
-/** Image types every image-capable provider accepts. */
 export const MEDIA_TYPES: Readonly<Record<string, string>> = {
   "image/png": "png",
   "image/jpeg": "jpg",
@@ -30,10 +29,6 @@ function mimeOf(id: string): string | undefined {
   return Object.entries(MEDIA_TYPES).find(([, value]) => value === ext)?.[0];
 }
 
-/**
- * Content-addressed image files in `DATA_DIR/media`. An id is a hash of the bytes plus the
- * extension, so the same image saved twice is one file and an id can be checked without I/O.
- */
 export class MediaStore {
   private readonly known = new Map<string, string>();
 
@@ -49,7 +44,6 @@ export class MediaStore {
       throw new MediaError("Only PNG, JPEG, GIF and WebP images can be attached", 415);
     }
     if (bytes.byteLength === 0) throw new MediaError("The image is empty", 400);
-    // A non-image in the transcript would make every later model request fail.
     if (!matchesSignature(bytes, mimeType)) {
       throw new MediaError(`The file is not a valid ${ext.toUpperCase()} image`, 400);
     }
@@ -67,12 +61,10 @@ export class MediaStore {
     return { id, mimeType };
   }
 
-  /** Whether an id names a saved file, checked without reading the image bytes. */
   async has(id: string): Promise<boolean> {
     return this.isId(id) && (await exists(join(this.dir, id)));
   }
 
-  /** The bytes and type for an id, or a 404 MediaError. */
   async read(id: string): Promise<{ bytes: Buffer; mimeType: string }> {
     const mimeType = this.isId(id) ? mimeOf(id) : undefined;
     if (mimeType === undefined) throw new MediaError("Unknown attachment", 404);
@@ -83,7 +75,6 @@ export class MediaStore {
     }
   }
 
-  /** Model image blocks for ids, in order. Rejects an unknown id. */
   async images(
     ids: readonly string[],
   ): Promise<{ type: "image"; data: string; mimeType: string }[]> {
@@ -96,10 +87,6 @@ export class MediaStore {
     return blocks;
   }
 
-  /**
-   * The id for an image block already in the conversation, writing the file when it is missing so
-   * the transcript can always show it. Cached by the base64 text, which the entry keeps.
-   */
   refFor(data: string, mimeType: string): MediaRef | undefined {
     const ext = MEDIA_TYPES[mimeType];
     if (ext === undefined) return undefined;
@@ -115,7 +102,6 @@ export class MediaStore {
   }
 }
 
-/** Attachment ids from a request body field, or a MediaError. */
 export function parseAttachmentIds(
   store: MediaStore,
   value: unknown,
@@ -135,7 +121,6 @@ export function parseAttachmentIds(
   return ids;
 }
 
-/** Ids the media store actually holds, or a 400 that names the first missing one. */
 export async function validateAttachmentIds(
   store: MediaStore,
   value: unknown,
@@ -161,7 +146,6 @@ function startsWith(bytes: Uint8Array, signature: readonly number[], offset = 0)
   return signature.every((value, index) => bytes[offset + index] === value);
 }
 
-/** The file's magic bytes agree with its declared type. */
 function matchesSignature(bytes: Uint8Array, mimeType: string): boolean {
   switch (mimeType) {
     case "image/png":

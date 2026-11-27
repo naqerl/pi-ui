@@ -775,8 +775,6 @@ test("a turn started on a repaired view reaches the first model call with one re
       BACKGROUND_CONTEXT,
     );
 
-    // The real package leaves the live document lazy. Seed the exact torn shape: a pending call
-    // in a valid base, followed by a delta that cannot be applied.
     addDocument(path, {
       id: 1_000,
       kind: "pi.live",
@@ -842,7 +840,6 @@ test("a turn started on a repaired view reaches the first model call with one re
     );
     assert.equal(afterTurn.length, 1, "later requests do not repeat the repair line");
 
-    // A tear that appears after start must be repaired by watchConversation and retried, not thrown.
     const db = new DatabaseSync(path);
     try {
       const max = db

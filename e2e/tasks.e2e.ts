@@ -3,7 +3,6 @@ import { expect } from "e2e";
 import { IdleNudge } from "../src/server/idle-nudge.js";
 import { backToTaskList, openTaskChatTab, setPlanDraft } from "./tasks-helpers";
 
-/** The built app registers /sw.js, and a worker's requests bypass Playwright routes. */
 async function disableServiceWorker(browser: Browser) {
   await browser.addInitScript(() => {
     if (!("serviceWorker" in navigator)) return;
@@ -43,7 +42,6 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
         return;
       }
       requests += 1;
-      // Hold the request open: the card below must be painted before the response exists.
       await gate;
       await route.continue();
     });
@@ -54,10 +52,7 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     try {
       await screen.getByRole("button", "Add task").tap();
       await expect(list.getByText(title, { exact: true })).toBeVisible({ timeout: 1_500 });
-      // The card is painted first; the POST that carries it may be dispatched a tick
-      // later, so poll for it instead of reading the counter once.
       await expect.poll(() => requests, { timeout: 1_500 }).toBe(1);
-      // Still no response, so the visible card is the optimistic one.
       await expect(
         browser.locator('[data-pending-task="true"]').filter({ hasText: title }),
       ).toBeVisible();
@@ -119,7 +114,6 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     await expect(failed.getByTestId("task-error")).toHaveText("Task list is full");
     const retry = failed.getByRole("button", { name: `Retry ${title}` });
     await expect(retry).toBeVisible();
-    // A pending id has no detail endpoint; tapping the failed card must not open one.
     await failed.getByRole("button", { name: `Open ${title}` }).tap();
     await expect(screen.getByTestId("task-detail")).toHaveCount(0);
     await expect(composer).toBeVisible();
@@ -128,7 +122,6 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     await expect(browser.locator('[data-create-failed="true"]')).toHaveCount(0);
     await expect(browser.locator('[data-pending-task="true"]')).toHaveCount(0);
     await expect(screen.getByTestId("composer-error")).toHaveCount(0);
-    // The successful retry consumes the draft it restored, so Add cannot duplicate it.
     await backToTaskList(screen);
     await expect(screen.getByRole("textbox", "New task")).toHaveValue("");
     expect(attempts).toBe(2);
@@ -165,7 +158,6 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     expect(existingId).not.toBeNull();
     await expect(screen.getByTestId(`task-${existingId}`)).toBeVisible();
 
-    // Park the same raw text in another target's draft: the task-chat composer.
     await screen.getByRole("button", { name: `Open ${existingTitle}` }).tap();
     await openTaskChatTab(screen);
     const taskChat = screen.getByTestId("task-agent-input");
@@ -191,7 +183,6 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     await composer.fill(raw);
     await screen.getByTestId("add-task").tap();
     await expect(screen.getByTestId("composer-error")).toHaveText("Task list is full");
-    // Failure restores the raw text, which differs from the parsed title and a bare trim.
     await expect(composer).toHaveValue(raw);
     const failed = browser
       .locator('[data-create-failed="true"]')
@@ -201,7 +192,6 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     await backToTaskList(screen);
     await expect(screen.getByRole("textbox", "New task")).toHaveValue("");
 
-    // The retry created one task, not a second copy when Add is pressed again.
     const parsedTitle = `Retry draft ${tag}`;
     const copies = await browser.evaluate(async (title) => {
       const ledger = (await (await fetch("/api/tasks", { cache: "no-store" })).json()) as {
@@ -212,7 +202,6 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     expect(copies).toBe(1);
     expect(attempts).toBe(2);
 
-    // The unrelated draft survived the retry's cleanup.
     await screen.getByRole("button", { name: `Open ${existingTitle}` }).tap();
     await openTaskChatTab(screen);
     await expect(screen.getByTestId("task-agent-input")).toHaveValue(raw);
@@ -223,8 +212,6 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     browser,
     screen,
   }) => {
-    // The fake model holds a HOLD turn open without a clock, so this run stays live until
-    // the stop at the end of the test; SLOW would end it on the provider's timer mid-test.
     const title = `HOLD plan the launch ${Date.now()}`;
     await browser.setViewport({ width: 390, height: 844 });
     await app.open("/?page=tasks");
@@ -235,11 +222,8 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     await app.open("/?page=tasks");
 
     const toggle = screen.getByTestId("plan-task-toggle");
-    // A fresh session starts with planning enabled.
     await expect(toggle).toHaveAttribute("aria-pressed", "true");
 
-    // The plan control is the first focusable control in the status row: before
-    // the live counts, the run word, the page tabs and the menu.
     expect(
       await browser.evaluate(() => {
         const button = document.querySelector<HTMLElement>('[data-testid="plan-task-toggle"]');
@@ -273,15 +257,12 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     await expect(toggle).toHaveAttribute("aria-pressed", "false");
     await expect.poll(focusedInput).toBe("New task");
     await expect(composer).toHaveValue("keep this draft");
-    // The state change only recolours the control; the row keeps its height.
     expect(Math.abs((await statusRowHeight()) - initialHeight)).toBeLessThan(0.5);
 
-    // A reload in the same browser session keeps the off choice over the default.
     await app.open("/?page=tasks");
     const offToggle = screen.getByTestId("plan-task-toggle");
     await expect(offToggle).toHaveAttribute("aria-pressed", "false");
 
-    // A tap keeps the draft focused too and turns planning back on.
     const tapComposer = screen.getByRole("textbox", "New task");
     await tapComposer.fill("keep this tapped draft");
     await offToggle.tap();
@@ -290,7 +271,6 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     await expect(tapComposer).toHaveValue("keep this tapped draft");
     expect(Math.abs((await statusRowHeight()) - initialHeight)).toBeLessThan(0.5);
 
-    // The on choice is remembered, and the submission starts a plan draft.
     await app.open("/?page=tasks");
     await expect(screen.getByTestId("plan-task-toggle")).toHaveAttribute("aria-pressed", "true");
 
@@ -317,7 +297,6 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     if (created === null) throw new Error("the plan draft is missing");
     await expect(screen.getByTestId(`task-detail-planning-${created.id}`)).toBeVisible();
 
-    // The create itself started the plan run, with the composer text as its first message.
     await expect
       .poll(
         () =>
@@ -336,8 +315,6 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
       )
       .toBe(true);
 
-    // The list card says which side of the run the draft is on; the detail's
-    // own planning badge and the chip-free card stay otherwise unchanged.
     await backToTaskList(screen);
     const draftCard = screen.getByTestId(`draft-${created.id}`);
     await expect(draftCard).toBeVisible();
@@ -345,7 +322,6 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     await expect(decisionTag).toHaveText("Planning");
     await expect(decisionTag).toHaveAttribute("title", "The plan agent is running");
 
-    // A reload has no local run state to fall back on; the ledger must still say Planning.
     await app.open("/?page=tasks");
     const reloadedCard = screen.getByTestId(`draft-${created.id}`);
     await expect(reloadedCard).toBeVisible();
@@ -353,7 +329,6 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
     await expect(reloadedTag).toHaveText("Planning");
     await expect(reloadedTag).toHaveAttribute("title", "The plan agent is running");
 
-    // Stopping the run leaves the draft waiting for a decision, not for the agent.
     await browser.evaluate(async (taskId) => {
       const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/chat/stop`, {
         method: "POST",
@@ -394,7 +369,6 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
         sessionStorage.removeItem("pi-ui:plan-task-draft");
         return null;
       }, created.id);
-      // Leave the default viewport for the specs that follow this one.
       await browser.setViewport({ width: 1280, height: 720 });
     }
   });
@@ -411,7 +385,6 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
       return null;
     });
     await app.open("/?page=tasks");
-    // A fresh session is already planning.
     await expect(screen.getByTestId("plan-task-toggle")).toHaveAttribute("aria-pressed", "true");
 
     let attempts = 0;
@@ -693,8 +666,6 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
       await expect(palette).toBeVisible();
       await expect(palette).toContainText("/remove");
       await expect(palette).toContainText("delete the open task");
-      // A second command now follows /remove in the cycle, so narrow the query
-      // back to Remove before Tab: Enter still deletes, not toggles full screen.
       await composer.fill("/rem");
       await browser.keyboard.press("Tab");
       await expect(screen.getByTestId("composer-command-remove")).toHaveAttribute(
@@ -713,8 +684,6 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
       await message.fill(plain);
       await message.press("Enter");
       await expect.poll(() => sent).toBe(1);
-      // The route callback assigns it, so the declaration's `null` is still the
-      // narrowed type at this point; read it through a call to get the union.
       expect(readSentText()).toBe(plain);
       await expect(message).toHaveValue("");
     } finally {
@@ -761,7 +730,6 @@ describe("trimmed task ledger against one shared app", { serial: true }, () => {
       expect(reopened?.reopens?.[0]?.by).toBe("agent");
       expect(reopened?.reopenedAt).toBe(reopened?.reopens?.[0]?.at);
 
-      // The nudge selector sees the reopened ledger task as open work, without a synthetic copy.
       if (reopened === null) throw new Error("the reopened task is missing");
       const nudge = new IdleNudge(1_000, 0, "");
       const prompt = nudge.maybeNudge({ active: false, queued: 0, tasks: [reopened] }, Date.now());

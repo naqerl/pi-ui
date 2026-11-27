@@ -52,7 +52,6 @@ function parseOptions(value: unknown, id: string): TaskQuestionOption[] | string
   return options;
 }
 
-/** Validate the model-supplied question list before it reaches the panel or the store. */
 export function parseTaskQuestions(value: unknown): QuestionParseResult {
   if (!Array.isArray(value) || value.length === 0) {
     return { ok: false, error: "questions must be a non-empty list" };
@@ -113,12 +112,10 @@ export function questionAnswerReady(
   if (question.kind === "text") return note.length > 0;
   const valid = optionValues(question);
   const values = answer.values.filter((value) => valid.has(value));
-  // Free text is available on every choice question and overrides its choices.
   if (question.kind === "single") return values.length === 1 || note.length > 0;
   return values.length > 0 || note.length > 0;
 }
 
-/** Validate submitted answers against the pending questions, preserving question order. */
 export function parseTaskQuestionAnswers(
   questions: readonly TaskQuestion[],
   value: unknown,
@@ -143,7 +140,6 @@ export function parseTaskQuestionAnswers(
       return { ok: false, error: `Answer "${id}" text must be a string` };
     }
     const note = typeof raw.text === "string" ? raw.text.trim() : "";
-    // A typed answer wins over the choices, so the choice list is not validated against it.
     const values =
       question.kind !== "text" && note.length > 0 ? [] : rawValues.map((item) => item.trim());
     if (new Set(values).size !== values.length) {
@@ -176,7 +172,6 @@ export function parseTaskQuestionAnswers(
   return { ok: true, answers };
 }
 
-/** Map answers to readable labels for the transcript block and the one-line summary. */
 export function questionAnswerItems(
   questions: readonly TaskQuestion[],
   answers: readonly TaskQuestionAnswer[],
@@ -199,7 +194,6 @@ export function questionAnswerItems(
   });
 }
 
-/** One line for the agent's tool result: what the operator chose. */
 export function taskQuestionAnswerSummary(items: readonly AnsweredQuestionItem[]): string {
   const count = items.length;
   const choices = items.map((item) => {
@@ -210,7 +204,6 @@ export function taskQuestionAnswerSummary(items: readonly AnsweredQuestionItem[]
   return line.replace(/\s+/g, " ").trim();
 }
 
-/** The JSON half of the tool result, kept separate so the summary stays one line. */
 export function taskQuestionAnswerPayload(
   items: readonly AnsweredQuestionItem[],
   answers: readonly TaskQuestionAnswer[],

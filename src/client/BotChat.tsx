@@ -9,7 +9,6 @@ import { useStickToBottom } from "./use-stick-to-bottom";
 import { WorkingIndicator } from "./WorkingIndicator";
 import { workingWord } from "./working-state";
 
-/** The first paint of an empty bot conversation; `ready` separates idle from still loading. */
 export function BotChatEmpty({
   name,
   ready,
@@ -35,10 +34,6 @@ export function BotChatEmpty({
   );
 }
 
-/**
- * One bot's chat surface. It is the plan chat's renderer over a bot transport: the same
- * transcript rows, activity chips and composer, with the bot's own durable conversation.
- */
 export function BotChat({
   botId,
   name,
@@ -64,7 +59,6 @@ export function BotChat({
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      // The run-error dialog owns Escape while it is open.
       if (document.querySelector("dialog[open]") !== null) return;
       onClose();
     };
@@ -160,7 +154,6 @@ export function BotChat({
           </div>
         </main>
         <div className="glass-composer theme-radius shrink-0">
-          {/* The bot route has no stop or steer endpoint; dead buttons are worse than none. */}
           <Composer
             tasksPage={false}
             runControls={false}

@@ -111,9 +111,6 @@ test("a payload cursor pins reconnects and a rejected event never becomes one", 
       eventId: "hub:2",
       name: "hub",
       timestamp: "2026-11-12T10:00:00.000Z",
-      // The production hub leaves the envelope null and carries the position
-      // in the payload. pi-mcp-events only reads the envelope, so this check
-      // propagates the payload position onto the frame.
       cursor: null,
       data: { kind: "hub.job", cursor: "hub:2" },
     },
@@ -131,7 +128,6 @@ test("a payload cursor pins reconnects and a rejected event never becomes one", 
   const heartbeatParams = received[1]?.params as { cursor?: string } | undefined;
   assert.equal(heartbeatParams?.cursor, "hub:2", "a heartbeat cannot skip past that event");
 
-  // Before its first event a brand-new stream keeps the announced position.
   raw.onmessage?.({
     jsonrpc: "2.0",
     method: "notifications/events/heartbeat",
@@ -140,7 +136,6 @@ test("a payload cursor pins reconnects and a rejected event never becomes one", 
   const freshParams = received[2]?.params as { cursor?: string } | undefined;
   assert.equal(freshParams?.cursor, "hub:99");
 
-  // A frame pi-mcp-events rejects must not move the reconnect position.
   await checked.send(stream("sub-3"));
   raw.onmessage?.({
     jsonrpc: "2.0",
@@ -162,7 +157,6 @@ test("a payload cursor pins reconnects and a rejected event never becomes one", 
   const afterRejected = received[4]?.params as { cursor?: string } | undefined;
   assert.equal(afterRejected?.cursor, "hub:9", "a rejected event is not a delivered position");
 
-  // A re-activation cannot jump ahead of the event either.
   raw.onmessage?.({
     jsonrpc: "2.0",
     method: "notifications/events/active",
@@ -187,10 +181,6 @@ test("a resumed stream keeps its position when activated without one", async () 
   const paramsOf = (index: number) =>
     received[index]?.params as { cursor?: string | null } | undefined;
 
-  // A cut stream is re-opened at its recorded cursor. The server closes it
-  // cleanly, answering the request, and only then acknowledges the stream with
-  // no position of its own. pi-mcp-events would store `null` and the next
-  // re-subscribe would ask for the stream from now.
   await checked.send(stream("sub-1", "cut:2"));
   raw.onmessage?.({ jsonrpc: "2.0", id: "sub-1", result: {} });
   raw.onmessage?.({
@@ -204,8 +194,6 @@ test("a resumed stream keeps its position when activated without one", async () 
     "an activation without a position cannot erase the resume cursor",
   );
 
-  // A heartbeat behind that position must not move the adapter backwards
-  // either. The clean close of the replacement stream is exactly this case.
   raw.onmessage?.({
     jsonrpc: "2.0",
     method: "notifications/events/heartbeat",
@@ -213,7 +201,6 @@ test("a resumed stream keeps its position when activated without one", async () 
   });
   assert.equal(paramsOf(2)?.cursor, "cut:2", "a heartbeat cannot move before the resume cursor");
 
-  // A stream opened from "now" has no position to keep.
   await checked.send(stream("sub-2", null));
   raw.onmessage?.({
     jsonrpc: "2.0",
@@ -451,7 +438,6 @@ test("status metadata is seen, not delivered, and an unchipped replay is retried
       data: { kind: "hub.job", id: "job-2" },
     },
   };
-  // The adapter says it pushed this id; that alone may not suppress a chip.
   feed.ingest({
     customType: "mcp-events-status",
     details: {
@@ -476,8 +462,6 @@ test("status metadata is seen, not delivered, and an unchipped replay is retried
   assert.equal(feed.state.events.at(-1)?.replayed, true);
   assert.equal(feed.state.subscriptions[0]?.cursor, "hub:2");
 
-  // A later duplicate with a different cursor must not replace the original
-  // timestamp/cursor that the eventual chip carries.
   const duplicate = {
     ...item,
     event: { ...item.event, timestamp: "2026-11-07T11:45:00.000Z", cursor: "hub:3" },
@@ -578,8 +562,6 @@ test("a subscribe keeps the cursor the server answered with, not the one sent", 
   });
   assert.equal(feed.state.subscriptions[0]?.cursor, "hub:361");
 
-  // The same rule repairs a record restored from a zero cursor: the restore
-  // result is the server's answer, so the stored position self-corrects.
   feed.ingest({
     customType: "mcp-events-tool",
     details: {
@@ -644,14 +626,12 @@ test("a re-subscribe without a cursor keeps the tracked position, not zero", () 
   subscribe("s1", "hub:867");
   assert.equal(feed.state.subscriptions[0]?.cursor, "hub:867");
 
-  // A reconnect may omit the cursor and the server may answer with zero.
   subscribe("s2", "hub:0");
   assert.equal(feed.state.subscriptions[0]?.cursor, "hub:867", "zero is not a resume point");
 
   subscribe("s3", null);
   assert.equal(feed.state.subscriptions[0]?.cursor, "hub:867", "an omitted answer keeps the row");
 
-  // An explicit zero is a start-now request, not a missing cursor.
   subscribe("s4", "hub:0", { cursor: "hub:0" });
   assert.equal(feed.state.subscriptions[0]?.cursor, null);
 });

@@ -13,7 +13,6 @@ import type {
 import type { ChatTransport, QueueMutation, TransportSendResult } from "./use-chat";
 import { useChat } from "./use-chat";
 
-/** The bot chat has no token or MCP accounting; these keep the shared snapshot shape. */
 const EMPTY_USAGE: UsageSummary = {
   input: 0,
   output: 0,
@@ -48,8 +47,6 @@ export function runErrorFrom(snapshot: BotChatSnapshot): RunError | null {
     id: `bot-error:${anchor?.id ?? "empty"}:${snapshot.error}`,
     class: "BotError",
     message: snapshot.error,
-    // A new send adds a row, so the id and time stay put while polling one failure.
-    // With no row yet, a stable sentinel beats a timestamp that moves every poll.
     at: anchor?.timestamp ?? new Date(0).toISOString(),
   };
 }
@@ -73,10 +70,6 @@ function asSnapshot(botId: string, snapshot: BotChatSnapshot): Snapshot {
   };
 }
 
-/**
- * The bot API has no event stream. The shim opens on the next microtask so the shared
- * chat core treats the transport as connected, then polling reconciles each snapshot.
- */
 function openInertStream(): EventSource {
   let closed = false;
   const shim = {
@@ -116,7 +109,6 @@ function createBotTransport(botId: string): ChatTransport {
       return { snapshot: asSnapshot(botId, snapshot), stale: false };
     },
     async readHistory() {
-      // A bot conversation is read whole; there is no earlier-page endpoint.
       return null;
     },
     async send(text, mode, attachments): Promise<TransportSendResult> {
@@ -148,7 +140,6 @@ function createBotTransport(botId: string): ChatTransport {
           .reverse()
           .find((message) => message.role === "user" && message.text.trim() === text);
         const data: SubmitMessageResponse = {
-          // The POST returns the placed user row; a missing row is reconciled by a refresh.
           message: placed ?? {
             id: `bot-send-${Date.now().toString(36)}`,
             role: "user",
@@ -179,29 +170,20 @@ function createBotTransport(botId: string): ChatTransport {
     } | null> {
       return null;
     },
-    async stop() {
-      // The bot route has no stop endpoint; the run settles on its own.
-    },
-    async dismissRunError() {
-      // Dismissal is local: the next snapshot without an error clears it.
-    },
+    async stop() {},
+    async dismissRunError() {},
     openStream() {
       return openInertStream();
     },
   };
 }
 
-/**
- * The bot surface uses the one chat core over `GET/POST /api/bots/:id/chat`. Everything
- * above the transport — transcript rows, scroll, status and the composer — is shared.
- */
 export function useBotChat(botId: string) {
   const [error, setError] = useState<string | null>(null);
   const transport = useMemo(() => createBotTransport(botId), [botId]);
   const chat = useChat({ transport, publishLiveness: false, snapshotActivity: true });
   const { dismissRunError } = chat;
 
-  // Poll after a send until the settled snapshot flips the run back to idle.
   useEffect(() => {
     if (!chat.running) return;
     const timer = window.setInterval(() => void chat.refresh(), 800);
@@ -220,8 +202,6 @@ export function useBotChat(botId: string) {
         if (outcome.error !== null) setError(outcome.error);
         return false;
       }
-      // The POST returns before the answer settles; reconcile the placed row before
-      // the optimistic copy is retired for good.
       await chat.refresh();
       return true;
     },

@@ -99,11 +99,6 @@ import { createProposeTaskTool, createTaskTools } from "./task-tools.js";
 import { TaskError, type TaskStore } from "./tasks.js";
 import { diffToolSlots, type ToolSlotFrame } from "./tool-frames.js";
 
-/**
- * The only tools a task planning agent may call: inspect the repo, read the task
- * ledger for this project, edit its task, ask the operator, propose distinct
- * follow-up work for approval, and use memory.
- */
 export const TASK_AGENT_MEMORY_TOOL_NAMES = [
   "memory_read",
   "memory_grep",
@@ -130,11 +125,6 @@ export type TaskAgentToolName = (typeof TASK_AGENT_TOOL_NAMES)[number];
 
 const TASK_AGENT_TOOL_SET = new Set<string>(TASK_AGENT_TOOL_NAMES);
 const TASK_AGENT_MEMORY_TOOL_SET = new Set<string>(TASK_AGENT_MEMORY_TOOL_NAMES);
-/**
- * The memory factory is shared with the main chat. Plan mode may write memory
- * (carried into the main chat by SnapshotCache.notePlanWrite), but dreaming stays
- * forbidden because it is not a plan action.
- */
 const TASK_AGENT_FORBIDDEN_TOOL_SET = new Set<string>(["memory_dream"]);
 
 export class TaskAgentError extends Error {
@@ -147,41 +137,24 @@ export class TaskAgentError extends Error {
   }
 }
 
-// A plan run must not pay for the same tool call forever: the guard below counts
-// identical calls in the plan lane only, warns once, then refuses and stops the run.
-
-/** Identical calls allowed before the result carries a warning. */
 export const REPETITION_WARN_AT = 3;
-/** The identical call that is refused before it runs; the lane then ends the run. */
 export const REPETITION_REFUSE_AT = 5;
-/** A call that took this long was real work — a wait or a poll — not a loop. */
 export const REPETITION_RESET_MS = 5_000;
 
 export interface RepetitionStop {
   readonly toolName: string;
   readonly count: number;
-  /** The pi-ui sentence that ends the run and is recorded in the transcript. */
   readonly message: string;
 }
 
 export interface RepetitionGuardOptions {
-  /**
-   * Called before the refused call is answered, so the owning lane can end its run.
-   * The guard itself never stops a run: it does not know how its lane aborts.
-   */
   readonly onStop?: (stop: RepetitionStop) => void | Promise<void>;
-  /** Injected clock, for tests that need a five-second call without waiting. */
   readonly now?: () => number;
   readonly warnAt?: number;
   readonly refuseAt?: number;
   readonly resetAfterMs?: number;
 }
 
-/**
- * JSON with object keys sorted at every depth, so two calls that differ only in key
- * order are one fingerprint. Cycles and non-JSON values are rendered instead of
- * thrown: a fingerprint must never fail a tool call.
- */
 export function canonicalArguments(value: unknown): string {
   return JSON.stringify(canonicalValue(value, new Set()));
 }
@@ -206,12 +179,10 @@ function canonicalValue(value: unknown, seen: Set<object>): unknown {
   }
 }
 
-/** What makes two calls the same: the tool name and its arguments, not their order. */
 export function repetitionFingerprint(toolName: string, args: unknown): string {
   return `${toolName}\u0000${canonicalArguments(args)}`;
 }
 
-/** Appended to the third identical result, before the call is ever refused. */
 export function repetitionWarning(toolName: string, warnAt = REPETITION_WARN_AT): string {
   return (
     `[pi-ui] This is the ${ordinal(warnAt)} identical ${toolName} call in a row. ` +
@@ -220,7 +191,6 @@ export function repetitionWarning(toolName: string, warnAt = REPETITION_WARN_AT)
   );
 }
 
-/** The reason the run stops; it names the tool, the count and the tools that do exist. */
 export function repetitionStopText(
   toolName: string,
   count: number,
@@ -242,17 +212,6 @@ function ordinal(value: number): string {
   return `${value}${suffix}`;
 }
 
-/**
- * One guard per conversation. It remembers the last call, not a log: a different
- * call, a real wait or a new run all start the count again.
- *
- * The counting happens in the harness's own tool hooks rather than in a wrapped
- * `execute`, because a tool's result may omit `output` and stream it instead
- * (`bash` does): only the settled result the hook receives carries the retained
- * text, so only there can a warning be appended without dropping it. A park
- * passes through the hooks untouched, and a refused call is blocked before it
- * runs instead of being answered with a fabricated result.
- */
 export class RepetitionGuard {
   private availableNames: string[] | undefined;
   private readonly now: () => number;
@@ -278,11 +237,6 @@ export class RepetitionGuard {
     this.stopHandler = options.onStop;
   }
 
-  /**
-   * The extension the plan lane installs: one hook pair on the built-in tool task, so
-   * every model-issued and nested call goes through this guard and nothing else in the
-   * lane changes.
-   */
   extension(): Extension<ToolRegistration> {
     return defineExtension({
       name: "task-agent-repetition-guard",
@@ -295,26 +249,18 @@ export class RepetitionGuard {
     });
   }
 
-  /** Late binding: the plan session does not exist yet when its registry does. */
   setStopHandler(handler: (stop: RepetitionStop) => void | Promise<void>): void {
     this.stopHandler = handler;
   }
 
-  /**
-   * The tools the model can actually call. The lane filters the registry down to a plan
-   * tool set, so the installed set is wider than what a plan turn can reach and a
-   * refusal must never advertise a tool the model has never been offered.
-   */
   setAvailable(names: readonly string[]): void {
     this.availableNames = [...new Set(names)].sort();
   }
 
-  /** The refusal's list: the lane's own tool set, or nothing before it is set. */
   available(): string[] {
     return this.availableNames ?? [];
   }
 
-  /** Start every new run from a clean count. */
   reset(): void {
     this.fingerprint = undefined;
     this.count = 0;
@@ -324,15 +270,9 @@ export class RepetitionGuard {
     this.blocked.clear();
   }
 
-  /**
-   * Count the call before it runs. A park's call phase runs again, so a call still in
-   * flight is not counted twice; a refused call is blocked here, before any work.
-   */
   beforeTool(call: ToolHookCall): { block: string } | undefined {
     if (this.calls.has(call.id)) return undefined;
     const fingerprint = repetitionFingerprint(call.name, call.arguments);
-    // A call that ran for five seconds was a wait or a poll: it did work, so the next
-    // identical call is the first of a new run, not the third of a loop.
     if (fingerprint === this.fingerprint && this.lastDurationMs >= this.resetAfterMs) {
       this.reset();
     }
@@ -355,7 +295,6 @@ export class RepetitionGuard {
     return undefined;
   }
 
-  /** Append the third call's warning to the settled result, keeping its retained output. */
   afterTool(call: ToolHookCall, result: ToolExecutionResult): ToolExecutionResult | undefined {
     if (this.blocked.delete(call.id)) return undefined;
     const pending = this.calls.get(call.id);
@@ -363,8 +302,6 @@ export class RepetitionGuard {
     if (pending === undefined) return undefined;
     const duration = this.now() - pending.startedAt;
     if (pending.fingerprint === this.fingerprint) this.lastDurationMs = duration;
-    // A call that took five seconds was real work: it never warns, and the lane's next
-    // identical call starts the count over in `beforeTool`.
     if (duration >= this.resetAfterMs) return undefined;
     if (pending.ordinal !== this.warnAt || this.warned) return undefined;
     this.warned = true;
@@ -375,7 +312,6 @@ export class RepetitionGuard {
   }
 }
 
-/** A provider loop guard must never reach the operator as raw provider text. */
 function annotateRunError(error: RunError | null): RunError | null {
   if (error === null) return null;
   const text = `${error.message}\n${error.detail ?? ""}`;
@@ -387,17 +323,12 @@ function annotateRunError(error: RunError | null): RunError | null {
 export interface TaskAgentChatSnapshot {
   taskId: string;
   messages: ChatMessage[];
-  /** Tool calls and thinking blocks from the same transcript the chat page renders. */
   activity: ActivityItem[];
   run: RunState;
-  /** The last plan-run failure, until dismissed or the next submit. */
   runError?: RunError | null;
   draft: { text: string; thinking: string; revision: number };
-  /** Follow-ups waiting for the current plan run to end. */
   queue?: QueuedMessage[];
-  /** Steers waiting for the run's next turn boundary. */
   steers?: QueuedMessage[];
-  /** Revision of the two lists above, so a late snapshot cannot undo a newer update. */
   queueRevision?: number;
 }
 
@@ -408,9 +339,7 @@ export interface TaskAgentSession {
   running(): boolean;
   snapshot(): Promise<TaskAgentChatSnapshot>;
   submit(text: string, attachments?: string[]): Promise<TaskAgentChatSnapshot>;
-  /** Put the task's images in an already-open plan conversation. */
   syncTaskAttachments?(task: Task): Promise<void>;
-  /** The main-chat-shaped send answer, used by the shared client core. */
   send?(
     text: string,
     attachments: string[],
@@ -422,21 +351,15 @@ export interface TaskAgentSession {
   unsendSteer?(id: string): Promise<QueuedMessage | null>;
   dismissError?(id?: string): Promise<TaskAgentChatSnapshot>;
   stop(): Promise<void>;
-  /** Persist the live turn and close the harness without aborting it. */
   shutdown?(): Promise<void>;
   close(): Promise<void>;
   applyInstructions?(instructions: string): Promise<void>;
-  /** The pending set for the answer panel, or null when nothing waits. */
   pendingQuestions?(): Promise<TaskQuestionSet | null>;
-  /** Record the operator's answers and nudge the agent with them as a notice. */
   answerQuestions?(setId: string, answers: unknown): Promise<void>;
-  /** Clear a pending set and nudge the agent to decide it itself. */
   dismissQuestions?(setId: string): Promise<void>;
-  /** Deliver a finished background job's notice to this plan conversation. */
   submitJobNotice?(text: string): Promise<void>;
 }
 
-/** The memory tree and the chat snapshot cache; plan sessions keep their own cache. */
 export interface TaskAgentMemory {
   readonly store: MemoryStore;
   readonly snapshot?: SnapshotCache;
@@ -449,50 +372,29 @@ export interface TaskAgentManagerOptions {
   readonly model: Model<Api> | undefined;
   readonly store: TaskStore;
   readonly publish: (ledger: TaskLedger) => void;
-  /**
-   * Base system prompt (coding-agent path with only read and bash described), or a
-   * builder for a per-session prompt that already includes the memory block.
-   */
   readonly baseInstructions: string | (() => Promise<string>);
-  /** The memory tree and snapshot block injected into the plan prompt. */
   readonly memory?: TaskAgentMemory;
-  /** Background jobs shared with the chat, so a handed-off plan command reports back. */
   readonly jobs?: JobManager;
-  /** Tests inject a fake session instead of opening a durable harness. */
   readonly openSession?: (taskId: string, manager: TaskAgentManager) => Promise<TaskAgentSession>;
-  /** Forward session frames onto the main /api/stream so the browser can reuse that EventSource. */
   readonly relay?: (taskId: string, frame: SseFrame) => void;
-  /** A plan run started or ended, so the tasks payload can be pushed again with `planning`. */
   readonly onRunState?: (taskId: string) => void;
-  /** The pending question set changed, so the tasks payload can be pushed again. */
   readonly onQuestions?: (taskId: string) => void;
-  /** Used to resolve image attachments sent in the plan chat. */
   readonly media?: MediaStore;
-  /** Where a finished planning turn is announced. Defaults to web push. */
   readonly notify?: PlanTurnPushSender;
-  /** Where a failed planning turn is announced. Defaults to web push. */
   readonly runErrorNotify?: RunErrorPushSender;
-  /** Reuse the chat page's failure notifier, so their 60 s windows share one clock. */
   readonly runErrorNotifier?: Pick<RunErrorNotifier, "deliver">;
-  /** Minimum milliseconds between pushes for the same task. Zero disables the guard. */
   readonly pushWindowMs?: number;
   readonly burstWindowMs?: number;
   readonly coalesceMs?: number;
-  /** Override the clock in tests. */
   readonly now?: () => number;
 }
 
-/**
- * Keep only the TASK_AGENT_TOOL_NAMES allow-list. Used both when building a registry
- * and in tests that assert the restriction without starting a harness.
- */
 export function selectTaskAgentTools<T extends { name: string }>(tools: readonly T[]): T[] {
   return tools.filter(
     (tool) => TASK_AGENT_TOOL_SET.has(tool.name) && !TASK_AGENT_FORBIDDEN_TOOL_SET.has(tool.name),
   );
 }
 
-/** Keep only the memory tools the plan agent is allowed to call. */
 export function selectTaskAgentMemoryTools<T extends { name: string }>(tools: readonly T[]): T[] {
   return tools.filter(
     (tool) =>
@@ -501,9 +403,7 @@ export function selectTaskAgentMemoryTools<T extends { name: string }>(tools: re
 }
 
 export interface PlanPromptFingerprintOptions {
-  /** Override the home directory in tests. */
   readonly homeDir?: string;
-  /** Override the coding agent directory in tests. */
   readonly agentDir?: string;
 }
 
@@ -516,7 +416,6 @@ async function fingerprintPath(path: string): Promise<string> {
   }
 }
 
-/** Include the directories and markdown skill files below one skills root. */
 async function collectSkillTree(root: string, paths: Set<string>): Promise<void> {
   paths.add(root);
   const entries = await readdir(root, { withFileTypes: true }).catch(() => undefined);
@@ -532,11 +431,6 @@ async function collectSkillTree(root: string, paths: Set<string>): Promise<void>
   }
 }
 
-/**
- * The plan prompt is rebuilt only when the skills or guidance files it lists have
- * changed. mtimeMs plus size is enough to notice an edit or a newly added skill;
- * a missing path is part of the signature, so creating one also rebuilds.
- */
 export async function planPromptFingerprint(
   cwd: string,
   options: PlanPromptFingerprintOptions = {},
@@ -566,20 +460,12 @@ export async function planPromptFingerprint(
 
 export interface PlanPromptBuilderOptions {
   readonly cwd: string;
-  /** Re-runs DefaultResourceLoader and returns the coding-agent system prompt. */
   readonly buildBase: () => Promise<string>;
   readonly memory?: TaskAgentMemory;
-  /** Set false for PI_PLAN_MEMORY=0; defaults to the environment. */
   readonly memoryEnabled?: boolean;
-  /** Override the file fingerprint in tests. */
   readonly fingerprint?: () => Promise<string>;
 }
 
-/**
- * One lazy plan-prompt builder shared by every plan session. The expensive
- * coding-agent prompt is memoized on a file fingerprint, while the memory block
- * is composed fresh so a plan never opens with the previous boot's snapshot.
- */
 export function createPlanPromptBuilder(options: PlanPromptBuilderOptions): () => Promise<string> {
   let cached: { key: string; base: Promise<string> } | undefined;
   const fingerprint = options.fingerprint ?? (() => planPromptFingerprint(options.cwd));
@@ -602,27 +488,16 @@ export function createPlanPromptBuilder(options: PlanPromptBuilderOptions): () =
 }
 
 export interface TaskAgentMemoryBaseOptions {
-  /** Read the project's current guidance files as part of the block. */
   readonly cwd?: string;
-  /**
-   * Build the memory block from the files instead of the shared snapshot cache.
-   * Defaults to true so a new session never inherits a block cached at boot.
-   */
   readonly fresh?: boolean;
 }
 
 const EMBEDDED_PROJECT_CONTEXT = /<project_context>[\s\S]*?<\/project_context>\s*/g;
 
-/** Drop the boot-time project block so the current files can be the only copy. */
 function withoutEmbeddedProjectContext(base: string): string {
   return base.replace(EMBEDDED_PROJECT_CONTEXT, "").trimEnd();
 }
 
-/**
- * The project guidance a session can be given, using the same files the coding
- * agent loads (AGENTS.override.md, AGENTS.md, CLAUDE.md, ancestor and global
- * files). The skills list itself comes from buildPiSystemPrompt.
- */
 export async function taskAgentProjectInstructions(cwd: string): Promise<string | undefined> {
   const files = loadProjectContextFiles({ cwd, agentDir: getAgentDir() });
   const blocks: string[] = [];
@@ -634,11 +509,6 @@ export async function taskAgentProjectInstructions(cwd: string): Promise<string 
   return blocks.length === 0 ? undefined : blocks.join("\n\n");
 }
 
-/**
- * Compose the plan's base prompt with the memory snapshot as it is now, plus the
- * current project guidance. The fresh path builds from the files and never
- * invalidates the chat's shared snapshot cache.
- */
 export async function taskAgentMemoryBase(
   base: string | (() => Promise<string>),
   memory: TaskAgentMemory | undefined,
@@ -665,10 +535,6 @@ export function isTaskAgentToolName(name: string): name is TaskAgentToolName {
   return TASK_AGENT_TOOL_SET.has(name);
 }
 
-/**
- * The task ids the tasks payload may report as Planning. `running` is the manager's
- * existing session bookkeeping; terminal and parked tasks are never planning work.
- */
 export function derivePlanningTaskIds(
   tasks: readonly Pick<Task, "id" | "status">[],
   running: Iterable<string>,
@@ -681,11 +547,6 @@ export function derivePlanningTaskIds(
     .map((task) => task.id);
 }
 
-/**
- * Visible chat rows: user and assistant text, plus system notes. A machine notice is
- * shown only when it is a system row, so the plan chat renders answer/dismiss chips
- * without turning user notices into bubbles. Never tool-call lists.
- */
 export function visibleTaskAgentMessages(messages: readonly ChatMessage[]): ChatMessage[] {
   return messages
     .filter((message) => {
@@ -695,7 +556,6 @@ export function visibleTaskAgentMessages(messages: readonly ChatMessage[]): Chat
     .map(rephraseLoopGuardMessage);
 }
 
-/** Compaction headroom for a plan conversation, in the shape the chat lane already uses. */
 export interface PlanCompactionPolicy {
   readonly enabled: true;
   readonly reserveTokens: number;
@@ -703,17 +563,9 @@ export interface PlanCompactionPolicy {
   readonly backgroundTokens: number;
 }
 
-/** The chat lane's own numbers, used when the plan model's window is unknown. */
 const CHAT_RESERVE_TOKENS = 16_384;
 const CHAT_KEEP_RECENT_TOKENS = 20_000;
 
-/**
- * The plan lane compacts with pi-durable, never with billion-context. Reserve one
- * reply's worth of room and keep the newest turns verbatim, both derived from the
- * plan model's context window so a small window still leaves a usable tail. A
- * window too small for both keeps whatever room is left rather than a tail that
- * can never be compacted.
- */
 export function planCompactionPolicy(contextWindow?: number): PlanCompactionPolicy {
   const window =
     typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0
@@ -735,13 +587,11 @@ export function planCompactionPolicy(contextWindow?: number): PlanCompactionPoli
   return { enabled: true, reserveTokens, keepRecentTokens, backgroundTokens: 0 };
 }
 
-/** The harness policy the plan agent opens with, so retries behave like the main chat. */
 export function taskAgentHarnessSettings(
   env: NodeJS.ProcessEnv = process.env,
   contextWindow?: number,
 ): HarnessSettings {
   return {
-    // The plan lane owns its context here; billion-context is not in this request path.
     compaction: planCompactionPolicy(contextWindow),
     retry: retrySettings(env),
     steeringMode: "all",
@@ -749,11 +599,8 @@ export function taskAgentHarnessSettings(
 }
 
 export interface TaskAgentInstructionOptions {
-  /** False when PI_PLAN_MEMORY=0 or no memory store was supplied. */
   readonly memoryEnabled?: boolean;
-  /** How many images the task carries, for the prompt header and the look-first rule. */
   readonly attachmentCount?: number;
-  /** False when the plan model cannot take image blocks. */
   readonly imagesInContext?: boolean;
 }
 
@@ -769,17 +616,13 @@ function taskAttachmentsPrompt(
   return `Task ${task.id} "${task.title}" has ${count} attached ${images}. These are the task's own attachments and are part of your context. Look at what they actually show — layout, states, visible text and what looks wrong — before you ask the operator anything.`;
 }
 
-/** A write whose entry is not yet committed to the transcript. */
 interface PendingAttachmentWrite {
   readonly submission: Submission;
   readonly ids: string[];
-  /** Whether this write carries image blocks (a text fallback does not). */
   readonly images: boolean;
 }
 
-/** Serialize the read-diff-write per conversation, so concurrent PATCHes cannot duplicate. */
 const attachmentSyncQueues = new WeakMap<Conversation, Promise<void>>();
-/** Writes admitted while the conversation is busy, until durable places or drops them. */
 const pendingAttachmentWrites = new WeakMap<Conversation, PendingAttachmentWrite[]>();
 
 async function withAttachmentSync<T>(
@@ -806,7 +649,6 @@ async function withAttachmentSync<T>(
   }
 }
 
-/** Keep only writes durable still holds queued; a done or dropped write is in context or gone. */
 async function livePendingAttachmentWrites(
   conversation: Conversation,
 ): Promise<PendingAttachmentWrite[]> {
@@ -817,8 +659,6 @@ async function livePendingAttachmentWrites(
       const record = await write.submission.status(SESSION_CONTEXT);
       if (record.status === "queued") live.push(write);
     } catch {
-      // A fake submission, or one whose conversation closed, cannot be inspected.
-      // Keep its ids: appending a duplicate image block is worse than skipping one.
       live.push(write);
     }
   }
@@ -827,12 +667,6 @@ async function livePendingAttachmentWrites(
   return live;
 }
 
-/**
- * Put the task's images into a plan conversation as a model-facing entry. Only the
- * added ids get image blocks; the entry's data keeps the full current set so the
- * next open, or a later PATCH, can diff without a state file. A text-only model
- * gets a truthful text note instead of image blocks it would reject.
- */
 export async function syncTaskAttachments(
   conversation: Conversation,
   task: Pick<Task, "id" | "title" | "attachments">,
@@ -869,7 +703,6 @@ export async function syncTaskAttachments(
         try {
           blocks.push(...(await media.images([id])));
         } catch {
-          // One bad id must not suppress every image, as in task_view.
           blocks.push({ type: "text", text: `image ${id} is missing` });
         }
       }
@@ -1017,7 +850,6 @@ const editSchema = Type.Object({
   ),
 });
 
-/** The one-line title budget for the plan agent; the operator's own title paths keep their rules. */
 const TASK_TITLE_MAX_LENGTH = 120;
 
 function normalizeTaskTitle(value: string): string {
@@ -1028,7 +860,6 @@ function normalizeTaskTitle(value: string): string {
   return title;
 }
 
-/** The one task-edit tool bound to a single task. It cannot target any other task. */
 export function createTaskEditTool(options: {
   taskId: string;
   store: TaskStore;
@@ -1127,7 +958,6 @@ function answerToolResult(result: QuestionAnswerResult) {
   };
 }
 
-/** The model prompt that delivers the operator's choices as decided facts. */
 export function questionAnswerPrompt(result: Pick<QuestionAnswerResult, "set" | "items">): string {
   const lines = result.items.map((item) => {
     const choice = item.labels.length > 0 ? item.labels.join(", ") : item.text;
@@ -1136,15 +966,10 @@ export function questionAnswerPrompt(result: Pick<QuestionAnswerResult, "set" | 
   return `The operator answered your questions (set ${result.set.id}).\n${lines.join("\n")}\nTreat these as decided. Do not ask them again; continue the plan and record the design in this task's body.`;
 }
 
-/** The model prompt for a dismissed set: the agent owns the decision now. */
 export function questionDismissedPrompt(setId: string): string {
   return `Questions dismissed — decide yourself (set ${setId}). Continue the plan and record the decision in this task's body; do not ask them again.`;
 }
 
-/**
- * The two plan-chat question tools. They are bound to one task and share the persisted pending
- * set, so append_questions can grow a set the operator has not answered yet.
- */
 export function createTaskQuestionTools(options: {
   taskId: string;
   questions: TaskQuestionsStore;
@@ -1160,7 +985,6 @@ export function createTaskQuestionTools(options: {
         try {
           const parsed = parseTaskQuestions(args.questions);
           if (!parsed.ok) return questionFailure(new Error(parsed.error));
-          // A tool task id is numeric; the call id is the stable string a replay reuses.
           const askedBy = api.callId;
           const replayed = await options.questions.answeredBy(askedBy);
           if (replayed !== null) return answerToolResult(replayed);
@@ -1210,10 +1034,6 @@ export function createTaskQuestionTools(options: {
   ];
 }
 
-/**
- * From a user message, the title/project that should land on a freshly created task
- * and the text that should go to the agent (@project tokens stripped).
- */
 export function openingTaskPatch(
   task: Pick<Task, "title" | "project">,
   text: string,
@@ -1286,9 +1106,7 @@ async function readConversationId(path: string): Promise<ConversationId | undefi
     ) {
       return value.conversationId as ConversationId;
     }
-  } catch {
-    // Replace a malformed pointer on the next create.
-  }
+  } catch {}
   return undefined;
 }
 
@@ -1298,15 +1116,12 @@ async function writeConversationId(path: string, conversationId: ConversationId)
   await rename(temporary, path);
 }
 
-/** Exported so the session's submit/settle/dismiss path can be exercised with a fake conversation. */
 export class DurableTaskAgentSession implements TaskAgentSession {
   closed = false;
   readonly hub = new StreamHub();
   private runState: RunState = "idle";
   private runError: RunError | null = null;
-  /** A deliberate stop must not turn its aborted turn into a phone notification. */
   private stopRequested = false;
-  /** One failure id reaches the notifier once, even if a watch replays it. */
   private pushedRunErrorId: string | undefined;
   private currentText = "";
   private currentThinking = "";
@@ -1314,21 +1129,14 @@ export class DurableTaskAgentSession implements TaskAgentSession {
   private lastViewEntryId: EntryRecord["id"] | undefined;
   private viewLive: LiveState | undefined;
   private watch: ConversationWatch | undefined;
-  /** Follow-ups durable has not placed yet, grouped by submission id. */
   private readonly queued = new Map<string, QueuedMessage>();
-  /** Steers still waiting for the current run, by submission id. */
   private readonly steers = new Map<string, QueuedMessage>();
-  /** Bumped on every queue/steer mutation; the client's monotonic guard reads this. */
   private queueRevision = 0;
-  /** The durable hint that this task had a live turn, kept beside pi.sqlite3. */
   private marker: RunMarker | undefined;
   private markerTimer: ReturnType<typeof setTimeout> | undefined;
   private markerWrites: Promise<void> = Promise.resolve();
-  /** True while shutting down, so an idle state cannot clear the marker being flushed. */
   private shuttingDown = false;
-  /** This plan conversation's same-call loop guard, reset when a run starts. */
   private repetitionGuard: RepetitionGuard | undefined;
-  /** True once the guard stopped this run, so a second refusal cannot record twice. */
   private repetitionStopped = false;
 
   constructor(
@@ -1451,10 +1259,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     });
   }
 
-  /**
-   * Delivers answers as one notice chip. A follow-up starts an idle run and joins a live
-   * one at its next boundary; the set id makes a retried delivery a no-op.
-   */
   private async submitQuestionPrompt(data: TaskQuestionPromptData): Promise<void> {
     const startsRun = this.runState !== "running" && this.queued.size === 0;
     const key = `questions:${data.setId}`;
@@ -1516,19 +1320,11 @@ export class DurableTaskAgentSession implements TaskAgentSession {
   }
 
   private identity<T>(run: () => T): T {
-    // The plan lane compacts with pi-durable. Every model request it makes must be
-    // free of a billion-context identity, or the inline engine would attach this
-    // task's turn to the main chat's conversation and inject its compress
-    // instruction. The sentinel, not `undefined`, is what overrides `current.json`.
     return withoutConversationIdentity(run);
   }
 
-  /** Attach this conversation's loop guard and give it the lane's stop hook. */
   attachRepetitionGuard(guard: RepetitionGuard): void {
     this.repetitionGuard = guard;
-    // The guard calls this from inside the refused tool call. It must return
-    // immediately: aborting or committing on a busy conversation can wait for the very
-    // turn that is calling it, and awaiting that here would deadlock the stop.
     guard.setStopHandler((stop) => {
       void this.stopRepeatedCalls(stop).catch((error: unknown) => {
         console.error(
@@ -1539,13 +1335,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     });
   }
 
-  /**
-   * The repetition guard refused a call, so this run ends here with pi-ui's own reason.
-   * The abort is deliberately not awaited and the reason does not wait on the settle:
-   * a resumed run has no submission to carry it, and a busy conversation would make the
-   * stop wait on its own turn. The abort settles as a silent `aborted`, so the error
-   * written here is the only thing the operator sees.
-   */
   async stopRepeatedCalls(stop: RepetitionStop): Promise<void> {
     if (this.closed || this.repetitionStopped) return;
     this.repetitionStopped = true;
@@ -1564,7 +1353,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     await this.recordRepetitionStop(stop);
   }
 
-  /** Put the stop in the transcript, so the reason survives a reload or a dismissal. */
   private async recordRepetitionStop(stop: RepetitionStop): Promise<void> {
     try {
       await appendAssistantError(this.conversation, stop.message);
@@ -1595,8 +1383,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
         console.error(`[task-agent] view handling failed for ${this.taskId}`, error);
       }
     });
-    // A stop requested before the process died is settled by the boot restore; never
-    // let opening the task chat quietly continue it.
     if (this.marker?.stopRequested !== true) {
       this.identity(() => this.harness.resume());
       const inspection = await this.harness.inspect(SESSION_CONTEXT);
@@ -1646,8 +1432,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     this.currentThinking = nextThinking;
     if (draftChanged) this.publishDraft();
 
-    // The run state goes out before the transcript rows. A client refresh triggered by
-    // `message.done` then cannot read a snapshot from before the run started and paint idle.
     const running = liveRunning(live);
     const wasRunning = liveRunning(previousLive);
     if (running !== wasRunning || (running && this.runState !== "running")) {
@@ -1660,16 +1444,11 @@ export class DurableTaskAgentSession implements TaskAgentSession {
 
     if (newEntries.length > 0) {
       const built = buildTranscript(newEntries, this.mediaRef);
-      // A job result rebuilds as its chip and its activity row; durable committed it already,
-      // so both match what a later snapshot builds.
       for (const activity of built.activity) {
         if (activity.kind === "job") {
           this.emit({ event: "activity", data: { activity } });
         }
       }
-      // A placed steer leaves the pending list in the same update as its transcript row.
-      // Otherwise a snapshot read before this entry still lists it, and the client would
-      // rebuild the pending bubble beside the delivered row.
       let consumedSteer = false;
       for (const message of built.messages) {
         if (this.takeTrackedSteer(message)) consumedSteer = true;
@@ -1687,7 +1466,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     }
   }
 
-  /** Emit the same tool frames the main chat publishes, using the committed result row when present. */
   private emitToolFrame(frame: ToolSlotFrame): void {
     if (frame.type === "start") {
       this.emit({
@@ -1704,7 +1482,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     const committed =
       frame.entry === undefined ? undefined : toolActivityFromEntry(frame.entry, frame.args);
     const result = frame.result;
-    // This is the same fallback `ChatService.toolActivity` uses when no committed row exists.
     const activity = committed ?? {
       kind: "tool" as const,
       id: `local-${frame.toolCallId}`,
@@ -1732,7 +1509,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     });
   }
 
-  /** Takes a tracked steer off the queue when its transcript entry carries the same key. */
   private takeTrackedSteer(message: ChatMessage, submissionId?: string): boolean {
     if (message.steerKey === undefined) return false;
     let removed = false;
@@ -1742,8 +1518,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
       this.steers.delete(id);
       removed = true;
     }
-    // Consuming a steer is a queue mutation too: the revision must move before any
-    // snapshot taken after this entry is accepted.
     if (removed) this.markQueueChanged();
     return removed;
   }
@@ -1756,14 +1530,12 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     return [...this.steers.values()];
   }
 
-  /** Bump before an await can interleave a snapshot read with a queue mutation. */
   private markQueueChanged(): void {
     this.queueRevision += 1;
     void this.persistMarkerState();
     this.maybeClearMarker();
   }
 
-  /** Keep the durable hint in step with the pending queue without a write per mutation. */
   private async persistMarkerState(flush = false): Promise<void> {
     const marker = this.marker;
     if (marker === undefined) return;
@@ -1834,7 +1606,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     this.emit({ event: "run.state", data: this.runStatus() });
   }
 
-  /** The placed transcript row for a submission, or the pending row while it waits. */
   private async submittedMessage(
     submission: Submission,
     text: string,
@@ -1892,10 +1663,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     };
   }
 
-  /**
-   * Waits for a submission to be placed or settled, retires its pending queue/steer
-   * row, and keeps the plan chat's run-error behaviour identical to the main chat.
-   */
   private async monitorSubmission(
     submission: Submission,
     startsRun: boolean,
@@ -1920,8 +1687,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
       if (final !== undefined && final.status === "unanswered") {
         this.dropTrackedSteer(steerId, steerDropReason(final.reason, final.detail));
       } else if (final !== undefined && final.type === "input" && final.status === "done") {
-        // The row may have been placed but the watch has not consumed it yet. Read the
-        // entry directly, then leave a failed bubble if the run ended without delivering it.
         if (await this.consumeSteerEntry(final.entry, steerId)) this.broadcastQueue();
         if (this.steers.has(steerId)) {
           this.dropTrackedSteer(steerId, "The run ended before the steer was delivered.");
@@ -1938,8 +1703,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
       this.broadcastQueue();
     }
 
-    // `done` is the run's successful answer, including a steer or follow-up placed into it.
-    // A failed, stopped or cancelled run settles `unanswered`, and keeps its in-app error.
     if (final !== undefined && final.status === "done") {
       try {
         await this.onTurnFinished?.(this.taskId);
@@ -1948,12 +1711,7 @@ export class DurableTaskAgentSession implements TaskAgentSession {
       }
     }
 
-    // A cancelled queued follow-up settles `unanswered`/`aborted` while the earlier run is
-    // still live. It must not turn that run idle or hand it a run error. The submission that
-    // started the run still ends it normally (including a deliberate stop).
     if (final !== undefined && final.status === "unanswered") {
-      // A stop the guard decided is already written and framed as the run error; its
-      // abort settles as a silent `aborted`, so this path must not overwrite it.
       if (this.repetitionStopped) return;
       if (this.closed) return;
       const errorId = `${this.taskId}:${submission.id}`;
@@ -1972,7 +1730,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     }
   }
 
-  /** Sends one failed planning turn to the phone, unless it was deliberately stopped. */
   private async announceRunError(runError: RunError): Promise<void> {
     if (this.stopRequested || this.pushedRunErrorId === runError.id) return;
     this.pushedRunErrorId = runError.id;
@@ -1983,7 +1740,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     }
   }
 
-  /** Drops a pending steer and reveals why it never reached the transcript. */
   private dropTrackedSteer(id: string, reason: string): boolean {
     if (!this.steers.delete(id)) return false;
     this.markQueueChanged();
@@ -1992,7 +1748,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     return true;
   }
 
-  /** Reads a done submission's entry and consumes the pending steer it placed. */
   private async consumeSteerEntry(entryId: number, submissionId: string): Promise<boolean> {
     const entry = await readTranscriptEntry(this.conversation, entryId as EntryRecord["id"]);
     if (entry === undefined) return false;
@@ -2000,7 +1755,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     return message === undefined ? false : this.takeTrackedSteer(message, submissionId);
   }
 
-  /** The shared chat core's send: a queued follow-up or a steer, with main-chat semantics. */
   async send(
     text: string,
     attachments: string[] = [],
@@ -2037,16 +1791,12 @@ export class DurableTaskAgentSession implements TaskAgentSession {
         partialEntryId: null,
         updatedAt: new Date().toISOString(),
       };
-      // The hint must be on disk before durable admits the turn: a process that dies
-      // after the submission is placed must still leave enough behind to resume it.
       await this.flushMarkerState();
       this.repetitionGuard?.reset();
       this.repetitionStopped = false;
       this.setRunState("running", null);
     }
     let submission: Submission;
-    // The plan lane compacts with pi-durable: the identity scope keeps these model
-    // requests away from billion-context entirely, including `current.json`.
     try {
       submission = await this.identity(() =>
         this.conversation.submit(
@@ -2119,7 +1869,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     };
   }
 
-  /** Delivers a finished job's notice as a queued message in this plan conversation. */
   async submitJobNotice(text: string): Promise<void> {
     if (this.closed) throw new TaskAgentError("Task agent has been closed", 409);
     const startsRun = this.runState !== "running" && this.queued.size === 0;
@@ -2200,11 +1949,7 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     } catch (error) {
       console.error(`[task-agent] could not move a queued message for ${this.taskId}`, error);
     }
-    // A message durable already placed is in the transcript; sending it again would
-    // duplicate it. Return null so the client refreshes from the authoritative state.
     if (!aborted) return null;
-    // Do not reuse the queue key: it is also the submission request id, so durable
-    // would deduplicate the new steer against the queued submission just aborted.
     return this.send(item.text, item.attachments ?? [], "steer");
   }
 
@@ -2262,7 +2007,6 @@ export class DurableTaskAgentSession implements TaskAgentSession {
     }
   }
 
-  /** Delete or replace: abort the turn and forget the marker before the directory goes. */
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -2275,13 +2019,10 @@ export class DurableTaskAgentSession implements TaskAgentSession {
       if (this.runState === "running") {
         await this.identity(() => this.conversation.abort(SESSION_CONTEXT));
       }
-    } catch {
-      // Closing anyway.
-    }
+    } catch {}
     await this.closeHarness();
   }
 
-  /** Process shutdown: keep the live turn and its marker for the next boot. */
   async shutdown(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -2312,22 +2053,13 @@ export class DurableTaskAgentSession implements TaskAgentSession {
   }
 }
 
-/**
- * A plan session holds a durable store, a harness and its own transcript. Opening one per
- * task and keeping it for the life of the process cost 2.5 MB each: 298 tasks reached
- * 750 MB and pushed the heap into a GC storm at V8's container-sized cap. A session nobody
- * is looking at is closed and reopened on demand instead.
- */
 const IDLE_SESSION_MS = 10 * 60_000;
-/** Idle sessions kept open even before one has been idle long enough to expire. */
 const IDLE_SESSION_MAX = 8;
 const IDLE_SWEEP_MS = 60_000;
 
 export class TaskAgentManager {
   private readonly sessions = new Map<string, TaskAgentSession>();
-  /** When each open session was last asked for, so the sweep can tell idle from in use. */
   private readonly lastUsed = new Map<string, number>();
-  /** Pending question stores live as long as the manager, so badging does not need a session. */
   private readonly questionStores = new Map<string, TaskQuestionsStore>();
   private sweeper: ReturnType<typeof setInterval> | undefined;
   private readonly opening = new Map<string, Promise<TaskAgentSession>>();
@@ -2359,7 +2091,6 @@ export class TaskAgentManager {
     });
   }
 
-  /** Announce one finished planning turn. Exposed so a caller can flush or test the path. */
   notifyTurnFinished(taskId: string): Promise<boolean> {
     return this.planTurnNotifier.notifyTurn(taskId);
   }
@@ -2419,11 +2150,6 @@ export class TaskAgentManager {
     return session.submit(patch.message, attachments);
   }
 
-  /**
-   * Delivers a finished job's notice to a live plan session. It never opens a session:
-   * a notice for a closed plan pane is recorded in the main chat as its chip and activity
-   * row instead of a paid plan turn.
-   */
   async submitJobNotice(taskId: string, text: string): Promise<boolean> {
     const session = this.sessions.get(taskId);
     if (session === undefined || session.closed || session.submitJobNotice === undefined) {
@@ -2433,7 +2159,6 @@ export class TaskAgentManager {
     return true;
   }
 
-  /** Send through the shared client core's main-chat-shaped endpoint. */
   async send(
     taskId: string,
     text: string,
@@ -2515,10 +2240,6 @@ export class TaskAgentManager {
     await session.stop();
   }
 
-  /**
-   * Seed an already-open plan conversation with images attached to its task.
-   * A closed session needs no work: the next open diffs the attachments itself.
-   */
   async syncTaskAttachments(taskId: string): Promise<void> {
     if (this.options.media === undefined) return;
     const opening = this.opening.get(taskId);
@@ -2558,7 +2279,6 @@ export class TaskAgentManager {
     await session.dismissQuestions(setId);
   }
 
-  /** Drop any pending plan question set when the task leaves planning, without waking the agent. */
   async clearQuestions(taskId: string): Promise<void> {
     const store = this.questionStores.get(taskId);
     if (store !== undefined) await store.clearPending();
@@ -2575,9 +2295,7 @@ export class TaskAgentManager {
             timer.unref?.();
           }),
         ]);
-      } catch {
-        // The opener failed or stalled; still remove any files.
-      }
+      } catch {}
     }
     const session = this.sessions.get(taskId);
     this.sessions.delete(taskId);
@@ -2595,7 +2313,6 @@ export class TaskAgentManager {
     this.sessions.clear();
     this.lastUsed.clear();
     this.questionStores.clear();
-    // A deploy is not a stop: leave every live plan turn for the next boot to resume.
     await Promise.all(
       sessions.map((session) =>
         session.shutdown === undefined ? session.close() : session.shutdown(),
@@ -2603,11 +2320,6 @@ export class TaskAgentManager {
     );
   }
 
-  /**
-   * Closes the plan sessions nobody is using: never one with a live run, and never more
-   * than `IDLE_SESSION_MAX` idle ones. Returns the task ids closed, so a test can assert
-   * the choice without a timer. A closed session reopens on the next request.
-   */
   async evictIdle(): Promise<string[]> {
     const now = this.clock();
     const idle: Array<{ taskId: string; session: TaskAgentSession; usedAt: number }> = [];
@@ -2636,16 +2348,10 @@ export class TaskAgentManager {
     return [...closing.keys()];
   }
 
-  /** Open plan sessions right now, for the periodic memory line. */
   poolSize(): number {
     return this.sessions.size;
   }
 
-  /**
-   * Open every plan turn the previous process left live. The marker only selects
-   * candidates; pi-durable decides whether there is work left to resume. Idle plans
-   * and tasks deleted or finished while the process was down stay closed.
-   */
   async restore(): Promise<string[]> {
     let entries: Dirent[];
     try {
@@ -2660,7 +2366,6 @@ export class TaskAgentManager {
       if (!entry.isDirectory()) continue;
       const taskId = entry.name;
       try {
-        // A pending set must badge after a restart even when no run needs resuming.
         await this.ensureQuestionStore(taskId);
       } catch (error) {
         console.error(`[task-agent] could not read questions for ${taskId}`, error);
@@ -2694,7 +2399,6 @@ export class TaskAgentManager {
     return resumed;
   }
 
-  /** Kept for callers from before the marker-based restore. */
   resumeInterrupted(): Promise<string[]> {
     return this.restore();
   }
@@ -2703,12 +2407,10 @@ export class TaskAgentManager {
     return this.options.now?.() ?? Date.now();
   }
 
-  /** The pending question set on the tasks payload, without opening or awaiting a session. */
   pendingQuestions(taskId: string): TaskQuestionSet | null {
     return this.questionStores.get(taskId)?.pendingSync() ?? null;
   }
 
-  /** Task ids with an unanswered question set, so the tasks payload can badge them. */
   questionTaskIds(): string[] {
     const ids: string[] = [];
     for (const [taskId, store] of this.questionStores) {
@@ -2717,7 +2419,6 @@ export class TaskAgentManager {
     return ids;
   }
 
-  /** Task ids whose plan agent has a live run, filtered to work the UI may badge. */
   planningTaskIds(): string[] {
     const running: string[] = [];
     for (const [taskId, session] of this.sessions) {
@@ -2766,8 +2467,6 @@ export class TaskAgentManager {
     const questions = await this.ensureQuestionStore(taskId);
     const storage = await openNodeSqliteStorage(databasePath);
     const registry = createRegistry<ToolRegistration>();
-    // One guard for this plan conversation, installed as the harness's own tool hooks
-    // so it sees every model-issued and nested call without wrapping a single tool.
     const repetitionGuard = new RepetitionGuard();
     registry.install(repetitionGuard.extension());
     const coding =
@@ -2835,8 +2534,6 @@ export class TaskAgentManager {
         .tools()
         .map(({ tool }) => tool),
     );
-    // The guard can only name tools the plan model is actually offered; the registry
-    // also holds job and memory tools that `selectTaskAgentTools` filters out.
     repetitionGuard.setAvailable(tools.map((tool) => tool.name));
     const model: ModelRef | undefined =
       this.options.model === undefined
@@ -2919,7 +2616,6 @@ export class TaskAgentManager {
     return session;
   }
 
-  /** The plan agent's propose_task, with this manager as the submitter of the new draft's run. */
   proposeTool(): ToolRegistration {
     return createProposeTaskTool({
       store: this.options.store,
@@ -2931,10 +2627,8 @@ export class TaskAgentManager {
     });
   }
 
-  /** The plan keeps its own snapshot cache for instructions while tools share the chat's cache. */
   private readonly planSnapshot = new SnapshotCache();
 
-  /** The memory tools use the shared cache, so a long-term write invalidates the chat's block. */
   private planMemory(): TaskAgentMemory | undefined {
     if (process.env.PI_PLAN_MEMORY === "0") return undefined;
     if (this.options.memory === undefined) return undefined;
@@ -2944,18 +2638,12 @@ export class TaskAgentManager {
     };
   }
 
-  /** Plan instructions keep their own cache so reading/writing them never disturbs the chat. */
   private planResolutionMemory(): TaskAgentMemory | undefined {
     if (process.env.PI_PLAN_MEMORY === "0") return undefined;
     if (this.options.memory === undefined) return undefined;
     return { store: this.options.memory.store, snapshot: this.planSnapshot };
   }
 
-  /**
-   * The plan registry's memory tools, with the same write path as chat. A long-term
-   * write invalidates the shared cache and is carried into the main chat's next
-   * instructions; the plan session itself is refreshed from the files immediately.
-   */
   planMemoryTools(taskId: string): ToolRegistration[] {
     const memory = this.planMemory();
     if (memory === undefined) return [];
@@ -2981,13 +2669,11 @@ export class TaskAgentManager {
     });
   }
 
-  /** Whether the plan model can take image blocks; a text-only model gets a text note. */
   private planAcceptsImages(): boolean {
     const input = this.options.model?.input;
     return Array.isArray(input) && input.includes("image");
   }
 
-  /** Rebuild a live plan session's instructions from the current task and files. */
   async refreshInstructions(taskId: string, fresh = false): Promise<void> {
     const session = this.sessions.get(taskId);
     if (session === undefined || session.closed || session.applyInstructions === undefined) return;

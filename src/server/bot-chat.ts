@@ -31,7 +31,6 @@ export interface BotChatSnapshot {
   readonly messages: ChatMessage[];
   readonly activity: ActivityItem[];
   readonly running: boolean;
-  /** The last failed answer, until the next successful turn. */
   readonly error?: string;
 }
 
@@ -39,11 +38,9 @@ export interface BotChatManagerOptions {
   readonly dataDir: string;
   readonly cwd: string;
   readonly bots: BotStore;
-  /** The ledger tools and the proposal submitter a bot may be granted. */
   readonly tasks: TaskBridge;
   readonly models: ModelRuntime;
   readonly model?: Model<Api>;
-  /** Called when a bot's working state or newest message changes. */
   readonly onChange?: () => void;
 }
 
@@ -51,7 +48,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-/** The newest non-empty row, so one blank error row cannot hide the last real message. */
 function newestMessageText(messages: readonly ChatMessage[]): string | null {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const text = messages[index]?.text.trim() ?? "";
@@ -78,9 +74,7 @@ async function readConversationId(path: string): Promise<ConversationId | undefi
     ) {
       return value.conversationId as ConversationId;
     }
-  } catch {
-    // Replace a malformed pointer on the next create.
-  }
+  } catch {}
   return undefined;
 }
 
@@ -90,7 +84,6 @@ async function writeConversationId(path: string, conversationId: ConversationId)
   await rename(temporary, path);
 }
 
-/** One bot's durable conversation, with its own system prompt and tool allowance. */
 class BotChatSession {
   private running = false;
   private error: string | undefined;
@@ -130,7 +123,6 @@ class BotChatSession {
     };
   }
 
-  /** Place one message and return the snapshot; the answer settles in the background. */
   send(text: string): Promise<BotChatSnapshot> {
     const work = this.chain.then(
       () => this.start(text),
@@ -196,10 +188,6 @@ class BotChatSession {
   }
 }
 
-/**
- * Opens one agent core per bot on its own durable database, so a restart resumes
- * that bot's transcript and no bot can read another bot's conversation.
- */
 export class BotChatManager {
   private readonly sessions = new Map<string, Promise<BotChatSession>>();
   private readonly known = new Map<string, BotSummary>();
@@ -212,7 +200,6 @@ export class BotChatManager {
     this.summaryPath = join(this.summaryDir, "summaries.json");
   }
 
-  /** Restores newest messages persisted by an earlier process, before the dashboard reads. */
   async hydrate(): Promise<void> {
     await this.writes;
     let raw: string;
@@ -252,7 +239,6 @@ export class BotChatManager {
     return (await this.session(botId)).snapshot();
   }
 
-  /** Reads every open transcript so the dashboard's newest-message column is current. */
   async summaries(): Promise<BotSummary[]> {
     await Promise.all(
       [...this.sessions.values()].map(async (pending) => {
@@ -263,7 +249,6 @@ export class BotChatManager {
     return this.briefs();
   }
 
-  /** A synchronous view for dashboard broadcasts; open transcripts update it on snapshot. */
   briefs(): BotSummary[] {
     return this.options.bots.list().map((bot) => {
       const known = this.known.get(bot.id);
@@ -277,7 +262,6 @@ export class BotChatManager {
     return (await this.session(botId)).send(text);
   }
 
-  /** Drop a stale prompt/model/tool config; the next request reopens the same transcript. */
   async reconfigure(botId: string): Promise<void> {
     const key = botId.trim().toLowerCase();
     const pending = this.sessions.get(key);

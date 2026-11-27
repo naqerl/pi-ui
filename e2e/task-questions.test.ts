@@ -21,7 +21,6 @@ function tool(name: string) {
 }
 
 async function call(name: string, questions: unknown, callId = "call-1") {
-  // The real harness gives every tool task a numeric id and every invocation a string call id.
   return tool(name).execute({ questions } as never, { taskId: 42, callId } as never, context);
 }
 
@@ -130,7 +129,6 @@ test("append_questions merges into the same persisted pending set", async () => 
   assert.equal(duplicate.isError, true);
   assert.match(duplicate.text, /already waiting/i);
 
-  // A fresh store reads the same pending set, as after a server restart.
   const reloaded = new TaskQuestionsStore(path);
   await reloaded.load();
   assert.deepEqual(await reloaded.pending(), merged);
@@ -176,7 +174,6 @@ test("ask_questions returns immediately and leaves the set pending for the Plan 
     ["layout", "parts", "notes"],
   );
 
-  // A fresh store reads the same pending set, as after a page reload or server restart.
   const reloaded = new TaskQuestionsStore(path);
   await reloaded.load();
   assert.deepEqual(await reloaded.pending(), set);
@@ -189,14 +186,12 @@ test("ask_questions returns immediately and leaves the set pending for the Plan 
   await store.answer(set.id, answers);
   assert.equal(await pending(), null);
 
-  // A replayed tool call still returns the recorded answers instead of re-asking.
   const replay = text(await call("ask_questions", questions, "tool-ask"));
   assert.equal(replay.isError, false);
   assert.match(replay.text, /Answered 3 questions/);
   assert.match(replay.text, /Split/);
   assert.equal(await pending(), null);
 
-  // A new call is not a replay: it may ask a different set in the same task.
   const fresh = text(
     await call(
       "ask_questions",

@@ -20,7 +20,6 @@ export class BotError extends Error {
   }
 }
 
-/** A create or PATCH tried to reuse a stored id. */
 export class DuplicateBotIdError extends BotError {
   constructor(readonly botId: string) {
     super(`A bot with id "${botId}" already exists`, 409, "duplicate-id");
@@ -35,7 +34,6 @@ export class UnknownBotError extends BotError {
   }
 }
 
-/** The named refusal for a tool the bot was not granted. */
 export class BotToolNotAllowedError extends BotError {
   readonly allowed: readonly string[];
 
@@ -55,7 +53,6 @@ export class BotToolNotAllowedError extends BotError {
   }
 }
 
-/** Refuse a tool outside the bot's allowance with the named error the chat lane reports. */
 export function assertBotToolAllowed(
   bot: { readonly id: string; readonly tools: readonly string[] },
   toolName: string,

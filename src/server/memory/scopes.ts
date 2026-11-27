@@ -1,8 +1,3 @@
-/**
- * Ordered scope rules for memory topics. The first matching rule wins; a section
- * that matches none belongs to `misc`. Keep the patterns structural rather than
- * tied to one operator's project names, so an invented fixture routes predictably.
- */
 export const SCOPE_RULES: ReadonlyArray<readonly [scope: string, pattern: RegExp]> = [
   ["core", /^(Standing rules|Who the user is|Operating role|Rules that always apply)\b/i],
   ["harness", /^(Pi|Skills|Harness)\b|\bpi MCP\b|\bqmd\b|skill discovery/i],
