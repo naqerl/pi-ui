@@ -309,3 +309,204 @@ test("drags a widget into free space, resizes it to half, and keeps both after r
   // would intercept layout writes in every later test in the file.
   await browser.unroute("**/api/dashboard/layout");
 });
+
+type GridSnapshot = {
+  spans: [string, string][];
+  titles: (string | null)[];
+  scrollTop: number;
+};
+
+/** The committed board and the reader's position: what a maximize round trip must leave alone. */
+async function gridSnapshot(browser: {
+  evaluate<T>(fn: () => Promise<T> | T): Promise<T>;
+}): Promise<GridSnapshot> {
+  const dashboard = await readDashboard(browser);
+  const scrollTop = await browser.evaluate(
+    () => document.querySelector<HTMLElement>('[data-testid="stats-page"]')?.scrollTop ?? -1,
+  );
+  return {
+    spans: dashboard.layout.sections.flatMap((section) =>
+      section.widgets.map((widget) => [widget.id, widget.span ?? ""] as [string, string]),
+    ),
+    titles: dashboard.layout.sections.map((section) => section.title ?? null),
+    scrollTop,
+  };
+}
+
+async function overlayHistoryId(browser: {
+  evaluate<T>(fn: () => Promise<T> | T): Promise<T>;
+}): Promise<string | null> {
+  return browser.evaluate(() => {
+    const state = window.history.state as { piWidgetFullscreen?: string } | null;
+    return state?.piWidgetFullscreen ?? null;
+  });
+}
+
+type OverlayCoverage = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  innerWidth: number;
+  innerHeight: number;
+  inside: boolean;
+  onDock: boolean;
+};
+
+/** The overlay's viewport rect and what a hit test at the dock finds on top. */
+async function overlayCoverage(browser: {
+  evaluate<T>(fn: () => Promise<T> | T): Promise<T>;
+}): Promise<OverlayCoverage | null> {
+  return browser.evaluate(() => {
+    const overlay = document.querySelector<HTMLElement>(
+      '[data-testid="widget-context-fullscreen"]',
+    );
+    if (overlay === null) return null;
+    const rect = overlay.getBoundingClientRect();
+    const point = document.elementFromPoint(window.innerWidth / 2, window.innerHeight - 2);
+    return {
+      left: rect.left,
+      top: rect.top,
+      width: rect.width,
+      height: rect.height,
+      innerWidth: window.innerWidth,
+      innerHeight: window.innerHeight,
+      inside: point !== null && overlay.contains(point),
+      onDock: point?.closest('[data-testid="composer-dock"]') !== null,
+    };
+  });
+}
+
+test("maximizes a widget to the viewport and closes from minimize, Escape and back", async ({
+  app,
+  browser,
+  screen,
+}) => {
+  await browser.setViewport({ width: 1280, height: 1000 });
+  await app.open("/?page=stats");
+  await browser.evaluate(async () => {
+    const reset = await fetch("/api/dashboard/reset", { method: "POST" });
+    if (!reset.ok) throw new Error(`reset failed: ${reset.status}`);
+    return null;
+  });
+  await app.open("/?page=stats");
+  await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
+  await expect(screen.getByTestId("widget-context-maximize")).toBeVisible();
+
+  await browser.evaluate(() => {
+    const page = document.querySelector<HTMLElement>('[data-testid="stats-page"]');
+    if (page === null) throw new Error("missing stats page");
+    page.scrollTop = Math.min(120, page.scrollHeight - page.clientHeight);
+    return page.scrollTop;
+  });
+  const before = await gridSnapshot(browser);
+  expect(before.scrollTop).toBeGreaterThan(0);
+
+  await screen.getByTestId("widget-context-maximize").tap();
+  await expect(screen.getByTestId("widget-context-fullscreen")).toBeVisible();
+  await expect(screen.getByTestId("widget-context-minimize")).toBeVisible();
+  expect(
+    await browser.evaluate(() => {
+      const overlay = document.querySelector('[data-testid="widget-context-fullscreen"]');
+      return overlay === null ? -1 : overlay.querySelectorAll("button").length;
+    }),
+  ).toBe(1);
+  expect(await overlayCoverage(browser)).toEqual({
+    left: 0,
+    top: 0,
+    width: 1280,
+    height: 1000,
+    innerWidth: 1280,
+    innerHeight: 1000,
+    inside: true,
+    onDock: false,
+  });
+  expect(await overlayHistoryId(browser)).toBe("context");
+  expect(await browser.evaluate(() => window.location.search)).toBe("?page=stats");
+  await expect
+    .poll(() =>
+      browser.evaluate(() => {
+        const page = document.querySelector<HTMLElement>('[data-testid="stats-page"]');
+        return {
+          inert: page?.hasAttribute("inert") ?? false,
+          ariaHidden: page?.getAttribute("aria-hidden") ?? null,
+          pagerLock: page?.hasAttribute("data-pager-lock") ?? false,
+          bodyOverflow: document.body.style.overflow,
+        };
+      }),
+    )
+    .toEqual({ inert: true, ariaHidden: "true", pagerLock: true, bodyOverflow: "hidden" });
+
+  await screen.getByTestId("widget-context-minimize").tap();
+  await expect(screen.getByTestId("widget-context-fullscreen")).toHaveCount(0);
+  await expect(screen.getByTestId("widget-context-maximize")).toBeVisible();
+  expect(await overlayHistoryId(browser)).toBeNull();
+  expect(await gridSnapshot(browser)).toEqual(before);
+
+  // A forward step returns to the stale entry that minimize left behind. Taking
+  // that entry over must still let minimize close the overlay.
+  await browser.evaluate(() => {
+    window.history.forward();
+    return null;
+  });
+  await expect.poll(() => overlayHistoryId(browser)).toBe("context");
+  await screen.getByTestId("widget-context-maximize").tap();
+  await expect(screen.getByTestId("widget-context-fullscreen")).toBeVisible();
+  await screen.getByTestId("widget-context-minimize").tap();
+  await expect(screen.getByTestId("widget-context-fullscreen")).toHaveCount(0);
+  expect(await overlayHistoryId(browser)).toBeNull();
+  expect(await gridSnapshot(browser)).toEqual(before);
+
+  await screen.getByTestId("widget-context-maximize").tap();
+  await expect(screen.getByTestId("widget-context-fullscreen")).toBeVisible();
+  await browser.keyboard.press("Escape");
+  await expect(screen.getByTestId("widget-context-fullscreen")).toHaveCount(0);
+  await expect
+    .poll(() => browser.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? null))
+    .toBe("widget-context-maximize");
+  expect(await overlayHistoryId(browser)).toBeNull();
+  expect(await gridSnapshot(browser)).toEqual(before);
+
+  await screen.getByTestId("widget-context-maximize").tap();
+  await expect(screen.getByTestId("widget-context-fullscreen")).toBeVisible();
+  await browser.back();
+  await expect(screen.getByTestId("widget-context-fullscreen")).toHaveCount(0);
+  await expect(screen.getByTestId("page-dot-stats")).toHaveAttribute("aria-selected", "true");
+  expect(await browser.evaluate(() => window.location.search)).toBe("?page=stats");
+  expect(await overlayHistoryId(browser)).toBeNull();
+  expect(await gridSnapshot(browser)).toEqual(before);
+
+  // A reload keeps the history entry but loses the overlay state. The overlay
+  // must not reopen, and the next maximize must push instead of reusing the
+  // stale marker (which would send minimize one page back).
+  await screen.getByTestId("widget-context-maximize").tap();
+  await expect(screen.getByTestId("widget-context-fullscreen")).toBeVisible();
+  await browser.reload();
+  await expect(screen.getByTestId("widget-context")).toBeVisible({ timeout: 30_000 });
+  await expect(screen.getByTestId("widget-context-fullscreen")).toHaveCount(0);
+  await expect.poll(() => overlayHistoryId(browser)).toBeNull();
+  const historyLength = await browser.evaluate(() => window.history.length);
+  await screen.getByTestId("widget-context-maximize").tap();
+  await expect(screen.getByTestId("widget-context-fullscreen")).toBeVisible();
+  expect(await browser.evaluate(() => window.history.length)).toBe(historyLength + 1);
+  await screen.getByTestId("widget-context-minimize").tap();
+  await expect(screen.getByTestId("widget-context-fullscreen")).toHaveCount(0);
+  await expect(screen.getByTestId("page-dot-stats")).toHaveAttribute("aria-selected", "true");
+
+  await browser.setViewport({ width: 390, height: 844 });
+  await expect(screen.getByTestId("widget-context-maximize")).toBeVisible();
+  await screen.getByTestId("widget-context-maximize").tap();
+  await expect(screen.getByTestId("widget-context-minimize")).toBeVisible();
+  expect(await overlayCoverage(browser)).toEqual({
+    left: 0,
+    top: 0,
+    width: 390,
+    height: 844,
+    innerWidth: 390,
+    innerHeight: 844,
+    inside: true,
+    onDock: false,
+  });
+  await screen.getByTestId("widget-context-minimize").tap();
+  await expect(screen.getByTestId("widget-context-fullscreen")).toHaveCount(0);
+});

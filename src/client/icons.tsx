@@ -234,3 +234,33 @@ export function DotIcon(props: IconProps) {
     </Icon>
   );
 }
+
+export function MaximizeIcon(props: IconProps) {
+  return (
+    <Icon name="maximize" {...props}>
+      <path d="M9 4H4v5" />
+      <path d="m4 4 5 5" />
+      <path d="M15 4h5v5" />
+      <path d="m20 4-5 5" />
+      <path d="M9 20H4v-5" />
+      <path d="m4 20 5-5" />
+      <path d="M15 20h5v-5" />
+      <path d="m20 20-5-5" />
+    </Icon>
+  );
+}
+
+export function MinimizeIcon(props: IconProps) {
+  return (
+    <Icon name="minimize" {...props}>
+      <path d="M4 9h5V4" />
+      <path d="m9 9-5-5" />
+      <path d="M20 9h-5V4" />
+      <path d="m15 9 5-5" />
+      <path d="M4 15h5v5" />
+      <path d="m9 15-5 5" />
+      <path d="M20 15h-5v5" />
+      <path d="m15 15 5 5" />
+    </Icon>
+  );
+}
