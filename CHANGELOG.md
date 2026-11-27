@@ -3,6 +3,14 @@
 ### Added
 
 - Every dashboard widget opens full screen from a maximize control in its card header. The overlay covers the viewport under one thin header with a single minimize control, the body scrolls, a sparkline fills the height it is given, and the overlay closes on minimize, Escape or the browser's back button. Card geometry (`chart.height`, spans and saved grid slots) is untouched. (fullscreen)
+- Bots are first class: a durable bot store keeps each bot's name, system prompt, tool allowance and its own billion-context conversation, its chat runs on the same core as the plan chat, the dashboard lists every bot and opens its chat from the card, and the Job hunter bot ships as a declared definition that proposes tasks instead of creating them. (bfya, nkm4)
+
+### Fixed
+
+- An object-form sparkline series keeps its null slots, so a projection is drawn on the days it names instead of sliding onto the days that carry a value. (pt3f)
+- A placed plan row renders as soon as the transcript has it, instead of waiting for the turn to finish, which is what took the browser suite from 517 s back to 231 s. (b43n)
+- The idle nudge reads the working set from the ledger, so a task that was released is never named as still working, and a task that is working is never claimed to be forgotten. (ogga)
+- On a phone, the task-detail Plan dock stays one row and its composer collapses with the stats page's slide. (vqhs)
 
 ## 1.14.1
 
