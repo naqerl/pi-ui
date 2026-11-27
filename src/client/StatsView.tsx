@@ -1,11 +1,11 @@
 import {
+  lazy,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
   type PointerEvent as ReactPointerEvent,
   type Ref,
   type RefObject,
-  lazy,
   Suspense,
   useCallback,
   useEffect,
