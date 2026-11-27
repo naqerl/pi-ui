@@ -114,6 +114,17 @@ approved"; when the planned task has no project it lists every project and names
 each line. Scoped `task_view` refuses ids outside that project, and scoped `task_depends` accepts
 only an ordering that involves the planned task in either direction.
 
+## Release
+
+`task_release` moves a working task back to `open` and records `releasedAt` and `releaseReason`,
+which the task details show; only a working task can be released. A release means the work is
+parked — queued, scheduled or waiting on another task. The idle nudge treats a released task as
+parked: it is left out of open work and of the status check until `task_working` marks the task
+working again, which clears both release fields. A task that depends on a released task is still
+blocked by it, so the "nothing is unblocked" sentence may name the released id as a blocker. A
+reopened task is not released: reopen is a human saying the work is live again, so it is offered
+as open work and is never named by the status check.
+
 ## Planning chat
 
 The list composer is gone. A plus-sign button in the dock creates an untitled

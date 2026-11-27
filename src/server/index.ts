@@ -287,11 +287,6 @@ memoryCheckpoints = new SnapshotController(
 /** The browser suite may read the live instructions and drive a memory checkpoint. */
 const e2eMemoryHook = process.env.PI_E2E_DATA_DIR !== undefined;
 const hub = new StreamHub();
-taskBridge.publish = (ledger) => {
-  taskActivity.observeLedger(ledger.tasks);
-  hub.broadcast({ event: "tasks", data: taskView(ledger) });
-  dashboard.broadcast();
-};
 // Tool calls arrive in bursts; one refresh per half second keeps the tasks page live enough.
 let activityTimer: NodeJS.Timeout | undefined;
 taskActivity.onChange(() => {
@@ -322,19 +317,19 @@ const chat = new ChatService(
     await memoryCheckpoints.refresh(reason);
   },
   (id) => diagrams.ref(id)?.revision,
-  () => {
-    const activity = taskActivity.view();
-    return taskStore.ledger().tasks.map((task) => {
-      if (task.status !== "open") return task;
-      const outcome = activity.traces[task.id]?.lastRun?.outcome;
-      return outcome === "running" || outcome === "ok"
-        ? { ...task, status: "working" as const }
-        : task;
-    });
-  },
+  // The ledger is the only source of "working": a run that ended ok is open work, not a
+  // working claim, so no derived activity state may promote it back into a status check.
+  () => taskStore.ledger().tasks,
   dataDir,
   boot.repairDurableState,
 );
+chat.observeTaskLedger(taskStore.ledger().tasks);
+taskBridge.publish = (ledger) => {
+  taskActivity.observeLedger(ledger.tasks);
+  chat.observeTaskLedger(ledger.tasks);
+  hub.broadcast({ event: "tasks", data: taskView(ledger) });
+  dashboard.broadcast();
+};
 operatorNotices.current = (record) => chat.recordOperatorNotice(record);
 taskNotices.current = (record) => chat.recordTaskDecision(record);
 memoryWrites.current = (record) =>

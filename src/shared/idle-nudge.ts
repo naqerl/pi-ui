@@ -50,16 +50,9 @@ export type IdleTask = Pick<Task, "id"> & {
   readonly closedAt?: string | null;
   /** A live trace's last attributed call, when the caller has one. */
   readonly lastActivityAt?: string | null;
-  /** A derived client state, when the caller already has one. */
+  /** A derived client state. Never used to decide whether a task is working. */
   readonly state?: IdleTaskState;
 };
-
-function taskState(task: IdleTask): IdleTaskStatus {
-  if (task.status === "working" || task.state === "working") return "working";
-  if (task.status === "blocked" || task.state === "blocked") return "blocked";
-  if (task.status === "open") return "open";
-  return task.status;
-}
 
 function instant(value: string | null | undefined): number | null {
   if (typeof value !== "string") return null;
@@ -97,7 +90,9 @@ function staleRequestText(tasks: readonly IdleTask[]): string {
 }
 
 export function withStaleRequest(text: string, tasks: readonly IdleTask[]): string {
-  return tasks.length === 0 ? text : `${text}\n\n${staleRequestText(tasks)}`;
+  if (tasks.length === 0) return text;
+  const request = staleRequestText(tasks);
+  return text.length === 0 ? request : `${text}\n\n${request}`;
 }
 
 /** The idle notice used when the only thing to do is revisit stale working tasks. */
@@ -206,21 +201,26 @@ export function staleRunNudgeText(taskIds: readonly string[]): string {
 
 /**
  * Open tasks that are ready to pick. A dependency gates while it is open, working
- * or planning; done, backlog, proposed and missing ids are not gates.
+ * or planning; done, backlog, proposed and missing ids are not gates. A released
+ * task is parked, so it is left out until `task_working` clears the release.
  */
 export function openTaskIds(tasks: readonly IdleTask[]): string[] {
   const live = liveOpenIds(tasks);
   return tasks
-    .filter((task) => taskState(task) === "open")
+    .filter((task) => task.status === "open" && !isReleasedTask(task))
     .filter((task) => !(task.blockedBy ?? []).some((id) => live.has(id)))
     .map((task) => task.id);
 }
 
-/** Tasks the agent has started and not finished; they are asked for a status. */
+/**
+ * Tasks the agent has started and not finished; they are asked for a status. The
+ * ledger status is the only source of `working`, so a derived state never promotes
+ * an open task, and a released task is open and therefore never working.
+ */
 export function workingTaskIds(tasks: readonly IdleTask[]): string[] {
   const live = liveOpenIds(tasks);
   return tasks
-    .filter((task) => taskState(task) === "working")
+    .filter((task) => task.status === "working")
     .filter((task) => !(task.blockedBy ?? []).some((id) => live.has(id)))
     .map((task) => task.id);
 }
@@ -242,13 +242,14 @@ export type WaitingOn = Record<string, string[]> & {
 
 /**
  * For each open task that still has pending dependencies, the ids of those
- * dependencies. Missing, done, backlog and proposed ids are not waiting on anything.
+ * dependencies. Missing, done, backlog and proposed ids are not waiting on anything,
+ * and a released task is parked rather than waiting.
  */
 export function waitingOn(tasks: readonly IdleTask[]): WaitingOn {
   const live = liveOpenIds(tasks);
   const out = {} as WaitingOn;
   for (const task of tasks) {
-    if (taskState(task) !== "open") continue;
+    if (task.status !== "open" || isReleasedTask(task)) continue;
     const blockers = (task.blockedBy ?? []).filter((id) => live.has(id));
     if (blockers.length > 0) out[task.id] = [...new Set(blockers)];
   }
@@ -290,10 +291,11 @@ export function idleDecisionNudgeText(
   const visibleOpen = capped(openIds);
   const room = Math.max(0, IDLE_NUDGE_TASK_LIMIT - visibleOpen.length);
   const working = workingIds.slice(0, room);
-  if (openIds.length === 0 && working.length > 0) {
+  // Nothing to ask for: an empty composition is silence, never "0 task(s) are open".
+  if (openIds.length === 0 && working.length === 0) return "";
+  if (openIds.length === 0) {
     return idleWorkingText(working, true);
   }
-  if (openIds.length === 0) return idleWorkText(openIds, totalOpen);
   const work = idleWorkText(visibleOpen, totalOpen);
   if (working.length === 0) return work;
   return `${work} Status check for tasks marked working: ${working.join(", ")}. Mark each complete with task_done, mark it blocked and propose_task what would unblock it, or leave it alone — ignoring it is a valid answer.`;

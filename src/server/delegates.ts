@@ -128,6 +128,8 @@ interface DelegateRun extends SerializedDelegateRun {
   cancelRequested: boolean;
   /** True while a prompt has been accepted and not yet finished. */
   turnOpen: boolean;
+  /** True while the finished turn's chip is still being recorded. */
+  chipPending: boolean;
   /** True when this turn was queued again because the process restarted. */
   resumed: boolean;
   gate: TurnGate;
@@ -398,9 +400,10 @@ export class DelegateManager {
     if (run.closed === true) {
       throw new DelegateError(`Sub-agent ${run.id} was closed. Start a new one with acp_delegate.`);
     }
-    if (run.status === "queued" || run.status === "running") {
+    if (run.status !== "idle" || run.chipPending) {
+      const state = run.chipPending ? "finishing" : run.status;
       throw new DelegateError(
-        `Sub-agent ${run.id} is still ${run.status}. Wait for its chip, then continue.`,
+        `Sub-agent ${run.id} is still ${state}. Wait for its chip, then continue.`,
       );
     }
     const task = prompt.trim();
@@ -597,6 +600,7 @@ export class DelegateManager {
       ...raw,
       cancelRequested: false,
       turnOpen: false,
+      chipPending: false,
       resumed: false,
       gate,
     };
@@ -680,6 +684,9 @@ export class DelegateManager {
       return;
     }
     run.turnOpen = false;
+    // A queued cancel already reports idle synchronously; a running turn stays
+    // unavailable until its chip is out, even though the ledger now says idle.
+    run.chipPending = run.status !== "idle";
     run.status = "idle";
     run.endedAt ??= new Date().toISOString();
     if (run.lastOutcome === undefined) {
@@ -703,6 +710,8 @@ export class DelegateManager {
         console.error(`[delegate] ${run.id} notice failed`, error);
       }
     }
+    run.chipPending = false;
+    this.save();
     run.gate.finish();
   }
 
@@ -836,7 +845,7 @@ export class DelegateManager {
       task: run.task,
       taskFirstLine: firstLine(run.task),
       cwd: run.cwd,
-      status: run.status,
+      status: run.chipPending && run.status === "idle" ? "running" : run.status,
       queuedAt: run.queuedAt,
       startedAt: run.startedAt,
       endedAt: run.endedAt,

@@ -211,6 +211,39 @@ test("a job notice reaches an open turn without starting another", async () => {
   }
 });
 
+test("a finished turn is not idle until its chip is recorded", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-ui-delegate-"));
+  let manager: DelegateManager | undefined;
+  try {
+    const box = await harness(dir);
+    manager = box.manager;
+    let waiting = false;
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    box.manager.setNotifier(async (text) => {
+      waiting = true;
+      await held;
+      box.chips.push(text);
+    });
+    const run = await box.manager.start({ prompt: "run the build" });
+    await box.submitted(run.id);
+
+    box.finish(run.id, { text: "build done" });
+    await waitFor(() => waiting);
+    assert.equal(box.chips.length, 0);
+    assert.equal(box.manager.get(run.id).status, "running", "a run with no chip is not idle");
+    await assert.rejects(() => box.manager.continue(run.id, "again"), /finishing/);
+
+    release();
+    await waitFor(() => box.manager.get(run.id).status === "idle");
+    assert.equal(box.chips.length, 1);
+  } finally {
+    await cleanup(manager, dir);
+  }
+});
+
 test("a job notice falls back to the parent when the run is not open", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-ui-delegate-"));
   let manager: DelegateManager | undefined;
