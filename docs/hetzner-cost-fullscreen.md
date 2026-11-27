@@ -10,13 +10,13 @@ below, applied with one call once a 1.15.0+ deployment with `pt3f` is up.
 
 ## The gate
 
-| Probe | Result |
-| --- | --- |
-| recorded deployment | 1.14.1, CHANGELOG stops at 1.14.1, no maximize control |
-| `curl http://127.0.0.1:8787/api/health` | exit 7, connection refused |
-| `https://magpie-lab.tail6dedc8.ts.net/api/health` | 401, "the key is the k= in the link magpie printed" |
-| `…/api/dashboard`, `…/api/state` | 401, same key gate |
-| `DATA_DIR` / `dashboard.json` | absent from the environment and the host |
+| Probe                                             | Result                                                 |
+| ------------------------------------------------- | ------------------------------------------------------ |
+| recorded deployment                               | 1.14.1, CHANGELOG stops at 1.14.1, no maximize control |
+| `curl http://127.0.0.1:8787/api/health`           | exit 7, connection refused                             |
+| `https://magpie-lab.tail6dedc8.ts.net/api/health` | 401, "the key is the k= in the link magpie printed"    |
+| `…/api/dashboard`, `…/api/state`                  | 401, same key gate                                     |
+| `DATA_DIR` / `dashboard.json`                     | absent from the environment and the host               |
 
 The version and the missing control are the ones recorded for this task; the
 worker could not re-read them, because the only reachable host is key-gated and
@@ -24,9 +24,11 @@ nothing answers on localhost, and `MAGPIE_WEB_KEY` is not in the environment.
 Nothing was emulated with CSS or a taller `chart.height`.
 
 The repository side is ready: `HEAD` is `499974e` (`origin/main`, package
-1.15.0), and both gates are ancestors of it, `o8d7` (#136, the maximize overlay
-that supplies the panel height) and `pt3f` (`e2ce7a9`, `namedSeries` keeps null
-slots). A deployed 1.15.0+ instance is what is missing.
+`1.14.1`, so the six commits since the `v1.14.1` tag are unreleased), and both
+gates are ancestors of it, `o8d7` (#136, the maximize overlay that supplies the
+panel height) and `pt3f` (`e2ce7a9`, `namedSeries` keeps null slots). A deployed
+instance carrying `o8d7` is what is missing — that needs a release tag, not
+another widget edit.
 
 ## The change: `chart.y.ticks` 4 → 6
 
@@ -130,9 +132,9 @@ synthetic, so it does not stand in for the live full-screen check.
 
 ## Gate commands
 
-| Command | Exit | Reason |
-| --- | --- | --- |
-| `npm ci --include=dev` | 1 | `E500` from the registry through the egress proxy |
-| `npx --no-install tsc --noEmit` | 124 | `tsc` absent, `npx` blocks on the registry |
-| `npx --no-install @biomejs/biome@2 check .` | 124 | `biome` absent for the same reason |
-| `node scripts/run-tests.mjs` | 1 | `ERR_MODULE_NOT_FOUND` for `tsx` |
+| Command                                     | Exit | Reason                                            |
+| ------------------------------------------- | ---- | ------------------------------------------------- |
+| `npm ci --include=dev`                      | 1    | `E500` from the registry through the egress proxy |
+| `npx --no-install tsc --noEmit`             | 124  | `tsc` absent, `npx` blocks on the registry        |
+| `npx --no-install @biomejs/biome@2 check .` | 124  | `biome` absent for the same reason                |
+| `node scripts/run-tests.mjs`                | 1    | `ERR_MODULE_NOT_FOUND` for `tsx`                  |
