@@ -27,6 +27,10 @@ import type {
   TaskStatus,
 } from "../shared/types.js";
 import { installBillionContextInline } from "./billion-context.js";
+import { botInputFromBody, botPatchFromBody } from "./bot-body.js";
+import { BotChatManager } from "./bot-chat.js";
+import { BotError } from "./bot-error.js";
+import { BotStore } from "./bots.js";
 import {
   ChatService,
   mcpDeliveryTexts,
@@ -112,6 +116,8 @@ const taskStore = new TaskStore(resolve(dataDir, "tasks.json"), {
 const media = new MediaStore(resolve(dataDir, "media"));
 const diagrams = new DiagramStore(resolve(dataDir, "diagrams"));
 await taskStore.load();
+const bots = new BotStore(resolve(dataDir, "bots.json"));
+await bots.load();
 const taskActivity = new TaskActivityTracker(
   resolve(dataDir, "task-activity.json"),
   Date.now,
@@ -466,6 +472,14 @@ pendingQuestionsFor = (taskId) => taskAgents.pendingQuestions(taskId);
 taskBridge.plan = async (taskId, body) => {
   await taskAgents.submit(taskId, body);
 };
+const botChats = new BotChatManager({
+  dataDir,
+  cwd,
+  bots,
+  tasks: taskBridge,
+  models: catalog.runtime,
+  ...(catalog.model === undefined ? {} : { model: catalog.model }),
+});
 function builtinJobs() {
   return jobs.list().map((job) => ({
     id: job.id,
@@ -988,6 +1002,12 @@ function taskAgentFailure(c: Context, error: unknown) {
   return c.text("Could not update the task agent", 500);
 }
 
+function botFailure(c: Context, error: unknown) {
+  if (error instanceof BotError) return c.text(error.message, error.status as 400);
+  console.error("[pi] bots failed", error);
+  return c.text("Could not update the bot", 500);
+}
+
 app.post("/api/tasks", async (c) => {
   let body: unknown;
   try {
@@ -1387,6 +1407,69 @@ app.post("/api/tasks/:id/chat/error/dismiss", async (c) => {
     return c.json(await taskAgents.dismissError(c.req.param("id"), errorId));
   } catch (error) {
     return taskAgentFailure(c, error);
+  }
+});
+
+app.get("/api/bots", (c) => c.json({ bots: bots.list() }));
+
+app.post("/api/bots", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.text("Expected a JSON body", 400);
+  }
+  try {
+    return c.json(await bots.create(botInputFromBody(body)), 201);
+  } catch (error) {
+    return botFailure(c, error);
+  }
+});
+
+app.get("/api/bots/:id", (c) => {
+  const bot = bots.get(c.req.param("id"));
+  return bot === undefined ? c.text("Unknown bot", 404) : c.json(bot);
+});
+
+app.patch("/api/bots/:id", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.text("Expected a JSON body", 400);
+  }
+  try {
+    const bot = await bots.update(c.req.param("id"), botPatchFromBody(body));
+    await botChats.reconfigure(bot.id);
+    return c.json(bot);
+  } catch (error) {
+    return botFailure(c, error);
+  }
+});
+
+app.get("/api/bots/:id/chat", async (c) => {
+  try {
+    return c.json(await botChats.snapshot(c.req.param("id")));
+  } catch (error) {
+    return botFailure(c, error);
+  }
+});
+
+app.post("/api/bots/:id/chat", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.text("Expected a JSON body", 400);
+  }
+  const text =
+    typeof body === "object" && body !== null && "text" in body && typeof body.text === "string"
+      ? body.text
+      : "";
+  try {
+    return c.json(await botChats.send(c.req.param("id"), text), 202);
+  } catch (error) {
+    return botFailure(c, error);
   }
 });
 
@@ -1794,6 +1877,7 @@ async function shutdown(): Promise<void> {
     await dashboard.flush();
     await restoring;
     await taskAgents.close();
+    await botChats.close();
     await taskStore.close();
     await chat.close();
     await boot.mcp.close();
