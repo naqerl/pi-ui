@@ -274,8 +274,7 @@ export class BotStore {
     return this.serialized(async () => {
       const normalized = normalizeInput(input);
       const id =
-        normalized.id ??
-        idFromName(normalized.name, new Set(this.bots.map((item) => item.id)));
+        normalized.id ?? idFromName(normalized.name, new Set(this.bots.map((item) => item.id)));
       if (this.bots.some((item) => item.id === id)) throw new DuplicateBotIdError(id);
       const stamp = this.stamp();
       const bot: BotDefinition = {

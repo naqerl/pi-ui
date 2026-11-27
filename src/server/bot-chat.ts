@@ -240,9 +240,7 @@ export class BotChatManager {
     registry.install(createBotToolGuard(bot));
     const resolved = this.modelOf(bot);
     const model: ModelRef | undefined =
-      resolved === undefined
-        ? undefined
-        : { provider: resolved.provider, modelId: resolved.id };
+      resolved === undefined ? undefined : { provider: resolved.provider, modelId: resolved.id };
     const harness = await HarnessImpl.open(
       storage,
       {
@@ -250,8 +248,7 @@ export class BotChatManager {
         registry,
         env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? this.options.cwd }),
         settings: taskAgentHarnessSettings(process.env, resolved?.contextWindow),
-        onReport: (report) =>
-          console.error(`[bots] harness report (${report.kind})`, report.error),
+        onReport: (report) => console.error(`[bots] harness report (${report.kind})`, report.error),
       },
       SESSION_CONTEXT,
     );

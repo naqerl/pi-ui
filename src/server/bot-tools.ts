@@ -9,7 +9,5 @@ import { createTaskTools, type TaskBridge } from "./task-tools.js";
  * names to the catalog so a second copy cannot creep back in.
  */
 export function botTools(bridge: TaskBridge): ToolRegistration[] {
-  return [createReadTool(), ...createTaskTools(bridge)].filter((tool) =>
-    isBotToolName(tool.name),
-  );
+  return [createReadTool(), ...createTaskTools(bridge)].filter((tool) => isBotToolName(tool.name));
 }
