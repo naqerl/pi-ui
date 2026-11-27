@@ -34,17 +34,11 @@ export function TaskAgentChat({
 }: {
   task: Task;
   projects: string[];
-  /** `pane` is the main-chat look: no card, bubbles, blurred composer. */
   variant?: "pane" | "flush";
-  /** `dock` registers send/stop on the persistent main-chat float footer. */
   composerTarget?: "local" | "dock";
-  /** False while a mobile tab hides the pane; the shared scroll hook restores on return. */
   active?: boolean;
-  /** Switch to the Plan tab, where the pending question set lives. */
   onShowPlan?: () => void;
-  /** Delete this task from the composer's `/remove` command. */
   onRemove?: () => Promise<string | null> | void;
-  /** The tasks page is showing the body at full width; a local composer toggles it back. */
   fullscreen?: boolean;
   onExitFullscreen?: () => void;
 }) {
@@ -156,8 +150,6 @@ export function TaskAgentChat({
 
   useRegisterTaskDock(session);
 
-  // The status belongs to the mounted plan surface, and its quiet flag comes from the
-  // same frame clock that drives the transcript. The ledger only says whether to plan.
   const surfaceStatus = useMemo(() => {
     const live =
       task.planning === true && (isActiveStatus(task.status) || task.status === "planning");
@@ -166,7 +158,6 @@ export function TaskAgentChat({
   }, [task.id, task.planning, task.status, chat.quiet]);
   useRegisterTaskSurfaceStatus(surfaceStatus);
 
-  // The plan pane has no header of its own: the one app-level host owns run errors.
   const runErrorSurface = useMemo(
     () => ({ taskId: task.id, error: chat.runError, dismiss: chat.dismissError }),
     [task.id, chat.runError, chat.dismissError],
@@ -185,7 +176,6 @@ export function TaskAgentChat({
       unsendSteer={chat.unsendSteer}
       addTask={async () => false}
       projects={projects}
-      // Send failures are not RunErrors; the global run-error header cannot carry them.
       error={chat.error}
       onDismissError={chat.dismissError}
       textareaRef={inputRef}
@@ -207,13 +197,10 @@ export function TaskAgentChat({
         ref={stick.containerRef}
         data-testid="task-agent-transcript"
         className={cn(
-          // Both end gutters belong inside the scroller so they scroll away with the
-          // transcript; padding on the pane would leave a fixed band at the end.
           "flex min-h-0 flex-1 flex-col overflow-y-auto px-xl pt-xl pb-2xl",
           "[scrollbar-gutter:stable]",
         )}
       >
-        {/* A shrinking flex item would hide the scroller's end padding from scrollHeight. */}
         <div ref={stick.contentRef} className="flex shrink-0 flex-col gap-xl">
           {groups.length === 0 ? (
             <div className="flex min-h-0 flex-1 items-center justify-center">

@@ -57,7 +57,6 @@ import { type PollOutcome, type PollRunner, runPollScript } from "./dashboard-ru
 
 export { DashboardError };
 
-/** What the dashboard needs from the rest of the server. Set once the chat is up. */
 export interface DashboardHost {
   builtinInputs(): Promise<BuiltinInputs>;
   builtinsLite(): {
@@ -72,13 +71,10 @@ export interface DashboardHost {
 }
 
 export interface DashboardOptions {
-  /** Shortest poll interval. 30s; tests lower it. */
   minIntervalMs?: number;
-  /** How long a client's "dashboard is open" report lasts without a refresh. */
   viewerTtlMs?: number;
   runner?: PollRunner;
   env?: Record<string, string | undefined>;
-  /** Cap on a poll result or pushed data, as JSON bytes. */
   maxBytes?: number;
   now?: () => number;
 }
@@ -96,7 +92,6 @@ export interface WidgetResult {
   view?: WidgetView;
   error?: string;
   updatedAt?: string;
-  /** Start of the source data, for writing the mapping. */
   sample?: string;
   logs?: string[];
   notes: string[];
@@ -142,7 +137,6 @@ const VAR_COLOR = /^var\(\s*--[A-Za-z0-9_-]+\s*\)$/;
 const COLOR_MIX = /^color-mix\(\s*in\s+srgb\s*,\s*(.+)\)$/i;
 const COLOR_MIX_COMPONENT = /^\s*var\(\s*--[A-Za-z0-9_-]+\s*\)(?:\s+\d+(?:\.\d+)?%)?\s*$/;
 
-/** Only theme tokens may colour a widget; a literal would survive a theme switch. */
 function isThemedChartColor(value: string): boolean {
   const text = value.trim();
   if (VAR_COLOR.test(text)) return true;
@@ -208,7 +202,6 @@ function parseSource(input: unknown, minIntervalSec: number, notes: string[]): W
   }
 }
 
-/** Checks a sparkline's presentation block. Data stays in `mapping`. */
 export function parseChart(input: unknown): SparklineChart {
   if (!isRecord(input)) throw new DashboardError("chart must be an object.");
   for (const key of Object.keys(input)) {
@@ -470,7 +463,6 @@ function parseChartReference(input: unknown): ChartReference[] {
   });
 }
 
-/** Checks and normalizes a widget from the agent or from disk. */
 export function parseWidget(input: unknown, minIntervalSec: number, notes: string[] = []): Widget {
   if (!isRecord(input)) throw new DashboardError("A widget must be an object.");
   const id = typeof input.id === "string" ? input.id.trim() : "";
@@ -519,7 +511,6 @@ function packSlots(slots: LayoutSlot[]): LayoutSlot[] {
   return packLayoutSlots(slots);
 }
 
-/** Checks a layout against the widget ids; widgets it leaves out go in a last section. */
 export function parseLayout(
   input: unknown,
   ids: readonly string[],
@@ -607,7 +598,6 @@ function publicValue(value: RuntimeValue | undefined): WidgetValue {
   };
 }
 
-/** Widget config, poll scheduling and last values for the dashboard page. */
 export class DashboardManager {
   private config: DashboardConfig = defaultDashboardConfig();
   private readonly values = new Map<string, RuntimeValue>();
@@ -654,7 +644,6 @@ export class DashboardManager {
     return Math.max(0.001, this.minIntervalMs / 1000);
   }
 
-  /** Reads dashboard.json, or seeds it from DEFAULT_DASHBOARD when it is absent. */
   async load(): Promise<void> {
     await mkdir(dirname(this.configPath), { recursive: true });
     let raw: string | undefined;
@@ -742,9 +731,7 @@ export class DashboardManager {
             : [],
         });
       }
-    } catch {
-      // No saved values yet.
-    }
+    } catch {}
   }
 
   setHost(host: DashboardHost | undefined): void {
@@ -759,14 +746,12 @@ export class DashboardManager {
     return structuredClone(this.config.layout);
   }
 
-  /** True while some client has the dashboard open. */
   polling(): boolean {
     const now = this.now();
     for (const [id, expires] of this.viewers) if (expires <= now) this.viewers.delete(id);
     return this.viewers.size > 0;
   }
 
-  /** A client reports whether it shows the dashboard. Polls run only while one does. */
   setViewer(id: string, visible: boolean): void {
     const viewer = id.trim().slice(0, 80);
     if (viewer === "") return;
@@ -795,7 +780,6 @@ export class DashboardManager {
     this.broadcast();
   }
 
-  /** The stream frame. Poll scripts stay on the server. */
   state(): DashboardState {
     return {
       widgets: this.config.widgets.map(stripScript),
@@ -816,7 +800,6 @@ export class DashboardManager {
     };
   }
 
-  /** What dashboard_get returns: layout, widgets and each one's current value. */
   async describe(): Promise<{
     polling: boolean;
     layout: DashboardLayout;
@@ -890,7 +873,6 @@ export class DashboardManager {
     }
   }
 
-  /** Adds or replaces a widget and renders it once, so the agent sees the result. */
   async upsert(input: unknown): Promise<WidgetResult> {
     const notes: string[] = [];
     const widget = parseWidget(input, this.minIntervalSec, notes);
@@ -1032,7 +1014,6 @@ export class DashboardManager {
     this.broadcast();
   }
 
-  /** Data for a static widget. */
   async push(id: string, data: unknown): Promise<WidgetResult> {
     const widget = this.config.widgets.find((item) => item.id === id.trim());
     if (widget === undefined) throw new DashboardError(`Unknown widget "${id}".`);
@@ -1080,7 +1061,6 @@ export class DashboardManager {
     return { layout: this.layout(), notes };
   }
 
-  /** Discovery: every registered source, its description and a live sample. */
   async sources(): Promise<Array<{ name: string; description: string; sample: unknown }>> {
     let inputs: BuiltinInputs | undefined;
     if (this.host !== undefined) {
@@ -1109,7 +1089,6 @@ export class DashboardManager {
     );
   }
 
-  /** Restores DEFAULT_DASHBOARD, including an empty tombstone list. */
   async reset(): Promise<DashboardState> {
     for (const widget of this.config.widgets) {
       this.clearTimer(widget.id);
@@ -1127,7 +1106,6 @@ export class DashboardManager {
     return this.state();
   }
 
-  /** Re-sends the frame, e.g. when jobs or the session change. */
   broadcast(): void {
     this.host?.broadcast(this.state());
   }
@@ -1140,7 +1118,6 @@ export class DashboardManager {
     this.active = false;
   }
 
-  /** Lets pending writes land; for tests and shutdown. */
   async flush(): Promise<void> {
     if (this.stateTimer !== undefined) {
       clearTimeout(this.stateTimer);
@@ -1196,7 +1173,6 @@ export class DashboardManager {
     return maskSecrets(text, this.secrets);
   }
 
-  /** Runs a poll widget's script once and records the outcome. */
   private poll(id: string, options: { initial?: boolean } = {}): Promise<PollOutcome> {
     const running = this.inflight.get(id);
     if (running !== undefined && !options.initial) return running;
@@ -1310,7 +1286,6 @@ function sampleOf(data: unknown): string | undefined {
     : json;
 }
 
-/** Keeps a discovery sample small without changing its shape. */
 function smallSample(value: unknown, depth = 0): unknown {
   if (typeof value === "string") {
     return value.length > 400 ? `${value.slice(0, 400)}…` : value;

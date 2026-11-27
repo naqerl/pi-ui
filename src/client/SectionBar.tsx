@@ -1,7 +1,6 @@
 import type { ElementType, ReactNode } from "react";
 import { cn } from "./lib/utils";
 
-/** Shared chrome for a stats-page section heading and the desktop task-details bar. */
 export const SECTION_BAR =
   "relative theme-radius flex items-center justify-between gap-xl border border-border/70 bg-surface px-lg py-sm";
 

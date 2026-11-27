@@ -147,9 +147,6 @@ server.setRequestHandler(
       return {};
     }
     if (params.name === "stub-cut") {
-      // One real loss, then a clean close that has no event of its own. The
-      // third subscribe only sends cut:3 when the cursor is still cut:2; a
-      // null cursor would be visible as cut:0 instead of a silent replay.
       if (!cutStarted) {
         cutStarted = true;
         setTimeout(() => {
@@ -263,8 +260,6 @@ server.setRequestHandler(
       return {};
     }
     if (params.name === "stub-hub") {
-      // A multiplexed stream, as a hub sends it: named after the stream, with
-      // the event's own kind in data.kind.
       setTimeout(() => {
         void notify("notifications/events/event", {
           eventId: "510",
@@ -275,7 +270,6 @@ server.setRequestHandler(
         });
         void notify("notifications/events/heartbeat", { cursor: "hub:510" });
       }, 100);
-      // Stays open like a real hub stream, until the client unsubscribes.
       await new Promise((resolve) => setTimeout(resolve, 120_000));
       return {};
     }

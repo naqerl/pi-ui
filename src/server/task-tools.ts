@@ -21,15 +21,11 @@ import type { Task, TaskLedger } from "../shared/types.js";
 import { MediaError, type MediaStore, validateAttachmentIds } from "./media.js";
 import { TaskError, type TaskStore } from "./tasks.js";
 
-/** Starts the plan run that writes a draft's body. The main chat injects the plan agent here. */
 export type PlanSubmitter = (taskId: string, body: string) => Promise<void>;
 
-/** The process-wide ledger and the hook that tells open browsers it changed. */
 export interface TaskBridge {
   readonly store: TaskStore;
-  /** Where task images live. Without it, task_view returns only the text. */
   readonly media?: MediaStore;
-  /** Starts a planning draft's plan run. Without it the draft is saved but stays unplanned. */
   plan?: PlanSubmitter;
   publish(ledger: TaskLedger): void;
 }
@@ -44,7 +40,6 @@ export interface PlanDraftInput {
   readonly createdBy?: NonNullable<Task["createdBy"]>;
 }
 
-/** Narrows the shared task tools to the planning agent's project and task. */
 export interface TaskToolOptions {
   readonly scope?: { readonly taskId: string };
 }
@@ -55,11 +50,6 @@ export interface PlanDraft {
   readonly started: boolean;
 }
 
-/**
- * Saves a task in the planning state and starts the plan run that writes its body.
- * A missing or failing runner leaves the draft in place for the operator to finish.
- * This is the one plan-draft path: the create route and propose_task both call it.
- */
 export async function createPlanDraft(
   bridge: TaskBridge,
   input: PlanDraftInput,
@@ -201,7 +191,6 @@ function titleOf(task: Task): string {
   return task.title.replace(/\s+/g, " ").trim();
 }
 
-/** `depends-on=id[,id(done)]`, naming every stored dependency. */
 function dependencyToken(task: Task, byId: ReadonlyMap<string, Task>): string {
   if (task.blockedBy.length === 0) return "";
   const ids = task.blockedBy.map((id) => (byId.get(id)?.status === "done" ? `${id}(done)` : id));
@@ -308,12 +297,6 @@ async function changed(
   }
 }
 
-/**
- * The one propose_task definition, shared by the main chat and the planning agent.
- * It always saves a planning draft whose body is the prompt, titled `Proposed <id>` until
- * its plan agent names it, and starts its plan run so the agent writes the body before
- * the operator approves it.
- */
 export function createProposeTaskTool(bridge: TaskBridge): ToolRegistration {
   return defineTool({
     name: "propose_task",
@@ -363,7 +346,6 @@ function planDraftText(draft: PlanDraft): string {
   return `Draft ${draft.task.id} is saved as "${draft.task.title}", but its plan run did not start. The operator should name the draft and edit the body on the tasks page before approving it.`;
 }
 
-/** Refuse a dependency list before a write: unknown, self, unapproved and cyclic ids. */
 function validateDependencies(ledger: TaskLedger, id: string, dependsOn: readonly string[]): void {
   const byId = new Map(ledger.tasks.map((task) => [task.id, task]));
   for (const dependencyId of dependsOn) {
@@ -388,7 +370,6 @@ function validateDependencies(ledger: TaskLedger, id: string, dependsOn: readonl
   }
 }
 
-/** Tools for the same ledger the tasks page edits. Not deferred, so every turn offers them. */
 export function createTaskTools(
   bridge: TaskBridge,
   options: TaskToolOptions = {},

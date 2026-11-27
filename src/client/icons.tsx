@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import type { NoticeIconName } from "../shared/queue";
 
-/** Pixel size of one square icon; it inherits the surrounding text colour. */
 export interface IconProps {
   size?: number;
   className?: string;
@@ -78,7 +77,6 @@ const NOTICE_ICON_PATHS: Record<NoticeIconName, ReactNode> = {
   ),
 };
 
-/** A notice's icon, selected by the shared kind-to-icon mapping. */
 export function NoticeIcon({ name, ...props }: IconProps & { name: NoticeIconName }) {
   return (
     <Icon name={name} {...props}>

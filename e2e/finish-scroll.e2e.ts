@@ -8,7 +8,6 @@ test("leaves the scroll alone when the reader scrolled away during the run", asy
 }) => {
   await browser.setViewport({ width: 390, height: 844 });
   await app.open("/");
-  // Enough history above to scroll into.
   const composer = screen.getByRole("textbox", "Message");
   await composer.fill("LONG warm up");
   await screen.getByRole("button", "Send").tap();
@@ -18,7 +17,6 @@ test("leaves the scroll alone when the reader scrolled away during the run", asy
 
   await composer.fill("LONGDRIP reply while I read");
   await screen.getByRole("button", "Send").tap();
-  // Wait until the slow reply is streaming.
   await expect(screen.getByText("LONGDRIP reply while I read", { exact: true })).toBeVisible();
   await new Promise((resolve) => setTimeout(resolve, 800));
   expect(
@@ -35,8 +33,6 @@ test("leaves the scroll alone when the reader scrolled away during the run", asy
     return main.scrollTop;
   });
   expect(scrolled).toBe(200);
-  // Earlier messages and lazily loaded images can land above the reader; the transcript keeps
-  // what is read in place while they do, so check the row in view, not the raw scroll offset.
   const reading = await browser.evaluate(async () => {
     const main = document.querySelector<HTMLElement>("main");
     if (main === null) return null;

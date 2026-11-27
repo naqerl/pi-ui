@@ -1,8 +1,3 @@
-/**
- * The committed default board: the layout a fresh DATA_DIR starts from and the
- * one "reset to default" restores. Widget ids are stable so a widget can be
- * replaced in place and a tombstone can keep a deleted keepsake deleted.
- */
 import {
   type DashboardConfig,
   DEFAULT_WIDGET_ROWS,
@@ -12,7 +7,6 @@ import {
   type Widget,
 } from "./dashboard.js";
 
-/** Bump when the default board changes; older files surface it for reset. */
 export const DEFAULT_DASHBOARD_VERSION = 4;
 
 const MCP_STATUS: Widget = {
@@ -86,13 +80,6 @@ const BOTS: Widget = {
   },
 };
 
-/**
- * The board production actually shows. The live dashboard.json was not
- * reachable from the checkout that wrote this file, so the poll-only cards
- * (host usage, prefix moments/cost, Hetzner and Go usage) use their closest
- * builtin equivalents. They keep the production ids and section positions and
- * can be replaced in place with a poll source later.
- */
 export const DEFAULT_DASHBOARD: {
   version: number;
   sections: LayoutSection[];
@@ -211,7 +198,6 @@ export const DEFAULT_DASHBOARD: {
   ],
 };
 
-/** A private copy of DEFAULT_DASHBOARD, ready to save as dashboard.json. */
 export function defaultDashboardConfig(): DashboardConfig {
   return {
     version: DEFAULT_DASHBOARD.version,
@@ -221,7 +207,6 @@ export function defaultDashboardConfig(): DashboardConfig {
   };
 }
 
-/** True when a default section already exists, or appends one with its title. */
 function sectionFor(config: DashboardConfig, definition: LayoutSection): LayoutSection {
   if (definition.title !== undefined) {
     const match = config.layout.sections.find((section) => section.title === definition.title);
@@ -237,10 +222,6 @@ function sectionFor(config: DashboardConfig, definition: LayoutSection): LayoutS
   return created;
 }
 
-/**
- * Adds default widgets an existing current-version file lacks, except the ones
- * the user deleted (tombstoned). An older file is left alone by the caller.
- */
 export function seedDashboard(config: DashboardConfig): boolean {
   const present = new Set(config.widgets.map((widget) => widget.id));
   const tombstoned = new Set(config.tombstones);

@@ -483,8 +483,6 @@ test("an exhausted ladder speaks once and leaves one recovery", async () => {
   });
   const recovery = feed.filterStatusNotice(up);
   assert.equal(recovery.mode, "deliver", "the following active frame is the one recovery");
-  // The outbox receives an accepted delivery and re-applies identity only;
-  // re-running the health gate there would turn the recovery back into a chip.
   await chat.submitMcpDelivery({
     id: "recovery-1",
     text: recovery.text,

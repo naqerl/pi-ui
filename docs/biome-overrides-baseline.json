@@ -1,0 +1,200 @@
+[
+  {
+    "file": "src/client/ChatView.tsx",
+    "rule": "lint/a11y/useKeyWithClickEvents",
+    "message": "Enforce to have the onClick mouse event with the onKeyUp, the onKeyDown, or the onKeyPress keyboard event.",
+    "count": 1
+  },
+  {
+    "file": "src/client/ChatView.tsx",
+    "rule": "lint/correctness/useExhaustiveDependencies",
+    "message": "This hook does not specify its dependency on textareaRef.current.",
+    "count": 2
+  },
+  {
+    "file": "src/client/ChatView.tsx",
+    "rule": "lint/correctness/useExhaustiveDependencies",
+    "message": "This hook specifies more dependencies than necessary: commandMatches, value.",
+    "count": 1
+  },
+  {
+    "file": "src/client/ChatView.tsx",
+    "rule": "lint/correctness/useExhaustiveDependencies",
+    "message": "This hook specifies more dependencies than necessary: pager.page.",
+    "count": 1
+  },
+  {
+    "file": "src/client/ChatView.tsx",
+    "rule": "lint/correctness/useExhaustiveDependencies",
+    "message": "This hook specifies more dependencies than necessary: value.",
+    "count": 1
+  },
+  {
+    "file": "src/client/DiagramViewer.tsx",
+    "rule": "lint/a11y/useKeyWithClickEvents",
+    "message": "Enforce to have the onClick mouse event with the onKeyUp, the onKeyDown, or the onKeyPress keyboard event.",
+    "count": 1
+  },
+  {
+    "file": "src/client/DiagramViewer.tsx",
+    "rule": "lint/correctness/useExhaustiveDependencies",
+    "message": "This hook specifies more dependencies than necessary: contentSize.height, contentSize.width.",
+    "count": 1
+  },
+  {
+    "file": "src/client/DiagramViewer.tsx",
+    "rule": "lint/security/noDangerouslySetInnerHtml",
+    "message": "Avoid passing content using the dangerouslySetInnerHTML prop.",
+    "count": 1
+  },
+  {
+    "file": "src/client/lazy-diagram.tsx",
+    "rule": "lint/security/noDangerouslySetInnerHtml",
+    "message": "Avoid passing content using the dangerouslySetInnerHTML prop.",
+    "count": 1
+  },
+  {
+    "file": "src/client/markdown.tsx",
+    "rule": "lint/suspicious/noArrayIndexKey",
+    "message": "Avoid using the index of an array as key property in an element.",
+    "count": 5
+  },
+  {
+    "file": "src/client/MediaViewer.tsx",
+    "rule": "lint/a11y/useKeyWithClickEvents",
+    "message": "Enforce to have the onClick mouse event with the onKeyUp, the onKeyDown, or the onKeyPress keyboard event.",
+    "count": 1
+  },
+  {
+    "file": "src/client/NoticeView.tsx",
+    "rule": "lint/a11y/useKeyWithClickEvents",
+    "message": "Enforce to have the onClick mouse event with the onKeyUp, the onKeyDown, or the onKeyPress keyboard event.",
+    "count": 1
+  },
+  {
+    "file": "src/client/NoticeView.tsx",
+    "rule": "lint/suspicious/noArrayIndexKey",
+    "message": "Avoid using the index of an array as key property in an element.",
+    "count": 2
+  },
+  {
+    "file": "src/client/PageSheet.tsx",
+    "rule": "lint/a11y/useKeyWithClickEvents",
+    "message": "Enforce to have the onClick mouse event with the onKeyUp, the onKeyDown, or the onKeyPress keyboard event.",
+    "count": 1
+  },
+  {
+    "file": "src/client/ProjectSuggestions.tsx",
+    "rule": "lint/a11y/useFocusableInteractive",
+    "message": "The HTML element with the interactive role \"option\" is not focusable.",
+    "count": 1
+  },
+  {
+    "file": "src/client/ProjectSuggestions.tsx",
+    "rule": "lint/a11y/useKeyWithClickEvents",
+    "message": "Enforce to have the onClick mouse event with the onKeyUp, the onKeyDown, or the onKeyPress keyboard event.",
+    "count": 1
+  },
+  {
+    "file": "src/client/RunErrorHeader.tsx",
+    "rule": "lint/a11y/useKeyWithClickEvents",
+    "message": "Enforce to have the onClick mouse event with the onKeyUp, the onKeyDown, or the onKeyPress keyboard event.",
+    "count": 1
+  },
+  {
+    "file": "src/client/StatsView.tsx",
+    "rule": "lint/correctness/useExhaustiveDependencies",
+    "message": "This hook does not specify its dependency on gridRef.current.",
+    "count": 1
+  },
+  {
+    "file": "src/client/StatsView.tsx",
+    "rule": "lint/correctness/useExhaustiveDependencies",
+    "message": "This hook specifies more dependencies than necessary: visible.",
+    "count": 1
+  },
+  {
+    "file": "src/client/StatsView.tsx",
+    "rule": "lint/suspicious/noArrayIndexKey",
+    "message": "Avoid using the index of an array as key property in an element.",
+    "count": 2
+  },
+  {
+    "file": "src/client/TaskAgentChat.tsx",
+    "rule": "lint/suspicious/noConfusingVoidType",
+    "message": "void is confusing inside a union type.",
+    "count": 1
+  },
+  {
+    "file": "src/client/TaskDetailVariants.tsx",
+    "rule": "lint/a11y/useSemanticElements",
+    "message": "The elements with this role can be changed to the following elements:\n<fieldset>",
+    "count": 1
+  },
+  {
+    "file": "src/client/TaskDetailVariants.tsx",
+    "rule": "lint/a11y/useSemanticElements",
+    "message": "The elements with this role can be changed to the following elements:\n<input type=\"text\">\n<textarea>",
+    "count": 1
+  },
+  {
+    "file": "src/client/TaskDetailVariants.tsx",
+    "rule": "lint/suspicious/noConfusingVoidType",
+    "message": "void is confusing inside a union type.",
+    "count": 1
+  },
+  {
+    "file": "src/client/TasksView.tsx",
+    "rule": "lint/a11y/useSemanticElements",
+    "message": "The elements with this role can be changed to the following elements:\n<button>",
+    "count": 2
+  },
+  {
+    "file": "src/client/TasksView.tsx",
+    "rule": "lint/correctness/useExhaustiveDependencies",
+    "message": "This hook does not specify its dependency on task.body.",
+    "count": 1
+  },
+  {
+    "file": "src/client/TasksView.tsx",
+    "rule": "lint/correctness/useExhaustiveDependencies",
+    "message": "This hook does not specify its dependency on task.project.",
+    "count": 1
+  },
+  {
+    "file": "src/client/TasksView.tsx",
+    "rule": "lint/correctness/useExhaustiveDependencies",
+    "message": "This hook does not specify its dependency on task.title.",
+    "count": 1
+  },
+  {
+    "file": "src/client/TasksView.tsx",
+    "rule": "lint/correctness/useExhaustiveDependencies",
+    "message": "This hook specifies more dependencies than necessary: bodyDraft, bodyError.",
+    "count": 1
+  },
+  {
+    "file": "src/client/TasksView.tsx",
+    "rule": "lint/correctness/useExhaustiveDependencies",
+    "message": "This hook specifies more dependencies than necessary: task.id.",
+    "count": 1
+  },
+  {
+    "file": "src/client/TasksView.tsx",
+    "rule": "lint/correctness/useExhaustiveDependencies",
+    "message": "This hook specifies more dependencies than necessary: titleDraft.",
+    "count": 1
+  },
+  {
+    "file": "src/client/TasksView.tsx",
+    "rule": "lint/suspicious/noConfusingVoidType",
+    "message": "void is confusing inside a union type.",
+    "count": 1
+  },
+  {
+    "file": "src/client/use-stick-to-bottom.ts",
+    "rule": "lint/correctness/useExhaustiveDependencies",
+    "message": "This hook specifies more dependencies than necessary: dependency.",
+    "count": 1
+  }
+]

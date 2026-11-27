@@ -3,7 +3,6 @@ import { expect } from "e2e";
 
 type Page = { evaluate: <T, A = undefined>(fn: (arg: A) => T | Promise<T>, arg?: A) => Promise<T> };
 
-/** The visible notices, as kind/role/summary, oldest first. */
 const notices = (browser: Page) =>
   browser.evaluate(() =>
     [...document.querySelectorAll<HTMLElement>('[data-testid="chat-notice"]')].map((node) => ({
@@ -12,7 +11,6 @@ const notices = (browser: Page) =>
       summary: node.querySelector('[data-testid="chat-notice-summary"]')?.textContent ?? "",
     })),
   );
-/** The job rows on the activity page, oldest first. */
 const jobRows = (browser: Page) =>
   browser.evaluate(() =>
     [...document.querySelectorAll<HTMLElement>('[data-testid="activity-job-summary"]')].map(
@@ -26,7 +24,6 @@ const dialogText = (browser: Page) =>
     return dialog?.open === true ? (dialog.textContent ?? "") : null;
   });
 
-/** No raw job or MCP text is left as a chat bubble. */
 const rawBubbles = (browser: Page) =>
   browser.evaluate(
     () =>
@@ -82,8 +79,6 @@ describe("notice policy against one shared app", { serial: true }, () => {
       )
       .toBe(true);
 
-    // The stored entry also feeds one chat chip where the notice woke the agent, and the
-    // result is never a user bubble.
     await app.open("/");
     await expect.poll(() => jobNotice(browser), { timeout: 10_000 }).toBe(true);
     expect(await rawBubbles(browser)).toBe(0);
@@ -100,7 +95,6 @@ describe("notice policy against one shared app", { serial: true }, () => {
       ),
     ).toHaveLength(1);
 
-    // The chip opens the same job details as its activity row.
     await browser.evaluate(() => {
       document
         .querySelector<HTMLElement>('[data-testid="chat-notice"][data-notice-kind="job"]')
@@ -180,7 +174,6 @@ describe("notice policy against one shared app", { serial: true }, () => {
       .poll(async () => (await chatState(browser)).run ?? "", { timeout: 60_000 })
       .toBe("idle");
 
-    // The delta prompt is the only thing that makes the fake model answer with this text.
     await new Promise((resolve) => setTimeout(resolve, 1_000));
     const state: ChatState = await chatState(browser);
     expect(state.run).toBe("idle");

@@ -1,7 +1,6 @@
 import { isPendingStatus } from "./tasks.js";
 import type { Task } from "./types.js";
 
-/** Immutable per-ledger facts. State precedence remains owned by taskState. */
 export function indexTasks(tasks: readonly Task[]) {
   const byId = new Map(tasks.map((task) => [task.id, task]));
   const pending = new Set(

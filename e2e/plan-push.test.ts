@@ -74,7 +74,6 @@ test("finished turns for one task coalesce, while another task still notifies", 
   assert.match(String(sent[0]?.body), /Design the inbox/);
   assert.match(String(sent[0]?.url), new RegExp(first.id));
 
-  // Once the window passes, the next finished turn announces again.
   now += PLAN_TURN_PUSH_WINDOW_MS;
   assert.equal(await notifier.notifyTurn(first.id), true);
   assert.equal(sent.length, 3);
@@ -181,7 +180,6 @@ test("a failed plan run pushes the task id and opens that task's plan chat", asy
   assert.equal(sent[0]?.url, taskPlanUrl("taskplan"));
   assert.deepEqual(sent[0]?.data, { taskId: "taskplan", tab: "plan" });
 
-  // The same failure id does not ring a second time.
   await session.submit("retry");
   for (let attempt = 0; attempt < 20; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 5));

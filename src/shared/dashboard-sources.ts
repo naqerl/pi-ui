@@ -1,8 +1,3 @@
-/**
- * The dashboard source registry. A source turns live data into JSON; widgets
- * render that JSON through their mapping, exactly like a poll or pushed value.
- * Builtin pi-ui data is registered here so it has no separate rendering path.
- */
 import {
   type BuiltinJob,
   type BuiltinSession,
@@ -46,21 +41,16 @@ export interface SourceContext {
   session: BuiltinSession;
   taskReopens?: TaskReopenStats;
   taskDurations?: TaskDurationStats;
-  /** Bots known to this workspace, with their newest message and working state. */
   bots?: BotSummary[];
-  /** Client-only display hook; the server deliberately leaves timestamps raw. */
   formatTime?: (timestamp: string) => string;
 }
 
-/** Compatibility name for the live data a builtin source reads. */
 export type BuiltinInputs = SourceContext;
 
 export interface SourceSpec {
   name: string;
-  /** What the source offers and the shape of its payload, for discovery. */
   describe: string;
   kind?: "builtin" | "poll" | "static";
-  /** A small, real payload with the source's shape. */
   sample: unknown;
   read(ctx: SourceContext): Promise<unknown>;
 }
@@ -122,7 +112,6 @@ function percent(value: number): string {
 
 const unavailable = (reason: string) => `unavailable · ${reason}`;
 
-/** Share of prompt tokens served from the provider cache. Null before any model call. */
 export function cacheHitRate(usage: UsageSummary): number | null {
   const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
   if (prompt <= 0) return null;

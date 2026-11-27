@@ -4,10 +4,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-/** Unit tests all live here; the glob is expanded by Node's test runner. */
 export const TEST_FILE_GLOB = "e2e/*.test.ts";
 
-/** Every path a test process may write to, mapped to its directory under the run root. */
 const ISOLATED_ENV_PATHS = {
   DATA_DIR: "data",
   PI_MEMORY_DIR: "memory",
@@ -16,11 +14,6 @@ const ISOLATED_ENV_PATHS = {
   XDG_CONFIG_HOME: "xdg-config",
 };
 
-/**
- * Builds the environment for one test process. The live `DATA_DIR` and the
- * user's XDG directories are overridden so no in-process module can resolve
- * its state into the real data directory.
- */
 export function computeTestEnv(root, baseEnv = process.env) {
   const env = { ...baseEnv, NODE_ENV: "test" };
   for (const [key, dir] of Object.entries(ISOLATED_ENV_PATHS)) {
@@ -29,7 +22,6 @@ export function computeTestEnv(root, baseEnv = process.env) {
   return env;
 }
 
-/** Creates the isolated directories so a test process never races on mkdir. */
 async function prepareRoot(root, env) {
   await mkdir(root, { recursive: true });
   await Promise.all(

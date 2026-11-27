@@ -4,62 +4,30 @@ import {
   positiveDurationMs,
 } from "./mcp-retry-budget.js";
 
-/**
- * The quiet window is the supervisor's whole retry ladder plus one interval of
- * adapter-retry grace on each side: the supervisor notices the dead row on its
- * next tick, waits one interval before spending 5+10+20+40+60 s, and a retry
- * that lands on the final attempt still needs the tick that sees it. Shorter
- * than the ladder and the model hears about an outage the runtime was already
- * healing. `PI_UI_MCP_OUTAGE_NOTIFY_MS` stays an absolute override.
- */
 export const MCP_OUTAGE_NOTIFY_MS =
   positiveDurationMs(process.env.PI_UI_MCP_OUTAGE_NOTIFY_MS) ??
   MCP_RETRY_BUDGET_MS + 2 * MCP_SUPERVISE_DEFAULT_MS;
 
-/** The statuses that prove a subscription is carrying traffic again. */
 const LIVE_STATUS = new Set(["active", "opening"]);
 
-/** One status frame as the quiet window sees it, after identity was resolved. */
 export interface StatusView {
-  /** The durable identity from `deriveStableId`, never the per-connection adapter id. */
   readonly stableId: string;
   readonly status: string;
-  /** The frame's own text, so a chip shows the adapter's words verbatim. */
   readonly text?: string;
-  /** The subscription state the frame carries; `stalled` means the ladder is spent. */
   readonly state?: string;
 }
 
 export interface OutageObservation {
-  /** Frames that belong on the chip: an outage, or a recovery inside the window. */
   readonly chips: string[];
-  /** Outages that crossed the window on this observation and still deserve a turn. */
   readonly escalations: string[];
 }
 
 interface Outage {
-  /** First unhealthy frame of this episode. */
   since: number;
-  /** Newest status frame text for the episode. */
   text: string;
-  /** The one model notice already spoke; only an active frame clears this. */
   escalated: boolean;
 }
 
-/**
- * One clock per durable subscription. The first unhealthy frame starts the
- * quiet window; a live frame before it expires cancels it and leaves a chip.
- * Once the window expires the outage is news exactly once, and the recovery
- * after it is the existing single recovery notice.
- *
- * A frame whose state is `stalled` is an exhausted ladder, not a retry, so it
- * escalates immediately even inside the window — otherwise a permanently dead
- * stream would never reach the model on a window longer than the ladder.
- *
- * Adapter ids change on every reconnect, so this is keyed by `stableId`; an
- * outage never restarts its own timer just because a replacement connection
- * announced itself.
- */
 export class OutageQuiet {
   private readonly outages = new Map<string, Outage>();
   private readonly now: () => number;
@@ -70,13 +38,6 @@ export class OutageQuiet {
     this.windowMs = windowMs;
   }
 
-  /**
-   * Apply one status observation. A down frame draws a chip and keeps the
-   * original `since`; a live frame clears the episode and, when it was not
-   * escalated, draws the recovery chip. An episode that crossed the window on
-   * this observation, or arrived already `stalled`, is returned once as an
-   * escalation.
-   */
   observe(views: readonly StatusView[], now: number = this.now()): OutageObservation {
     const chips: string[] = [];
     const escalations: string[] = [];
@@ -106,21 +67,14 @@ export class OutageQuiet {
     return { chips, escalations };
   }
 
-  /** True once this episode has spoken to the model and has not recovered. */
   escalated(stableId: string): boolean {
     return this.outages.get(stableId)?.escalated === true;
   }
 
-  /** When the current episode started, or undefined when the row is not down. */
   downSince(stableId: string): number | undefined {
     return this.outages.get(stableId)?.since;
   }
 
-  /**
-   * The timer path: mark this episode escalated when its window has passed and
-   * return the newest frame text for the one model notice. A recovered or
-   * already-escalated episode returns null.
-   */
   escalate(stableId: string, now: number = this.now()): string | null {
     const outage = this.outages.get(stableId);
     if (outage === undefined || outage.escalated) return null;
@@ -129,7 +83,6 @@ export class OutageQuiet {
     return outage.text;
   }
 
-  /** A live row or a cancelled one: cancel the timer and forget the episode. */
   recovered(stableId: string): void {
     this.outages.delete(stableId);
   }

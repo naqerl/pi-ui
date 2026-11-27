@@ -52,7 +52,6 @@ function bodyRecord(body: unknown): Record<string, unknown> {
   return body;
 }
 
-/** A POST /api/bots body, with its JSON types checked before the store sees it. */
 export function botInputFromBody(body: unknown): BotInput {
   const record = bodyRecord(body);
   const id = readField(record, "id");
@@ -69,7 +68,6 @@ export function botInputFromBody(body: unknown): BotInput {
   };
 }
 
-/** A PATCH /api/bots/:id body; every field is optional. */
 export function botPatchFromBody(body: unknown): BotPatch {
   const record = bodyRecord(body);
   const id = readField(record, "id");

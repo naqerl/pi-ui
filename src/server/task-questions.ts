@@ -17,7 +17,6 @@ import type {
 import { TaskError } from "./tasks.js";
 
 const MAX_ANSWERED_HISTORY = 20;
-/** The most questions one pending set may hold. */
 export const MAX_PENDING_QUESTIONS = 5;
 
 type TaskQuestionAnswerEntryItem = {
@@ -30,7 +29,6 @@ type TaskQuestionAnswerEntryItem = {
   readonly [key: string]: string | string[];
 };
 
-/** The durable answer rows written before questions moved to the Plan tab. */
 export type TaskQuestionAnswerEntryData = {
   setId: string;
   taskId: string;
@@ -39,7 +37,6 @@ export type TaskQuestionAnswerEntryData = {
   createdAt: string;
 };
 
-/** Legacy answer entries stay readable so transcripts recorded before the Plan-tab move survive. */
 export const TaskQuestionAnswerEntry = defineEntry<TaskQuestionAnswerEntryData>(
   "ui.task-question-answers",
 );
@@ -124,10 +121,6 @@ export interface QuestionAnswerResult {
   summary: string;
 }
 
-/**
- * The pending question set for one task. It lives in the task agent's directory, next to its
- * conversation, so a reload and a server restart both see the same unanswered questions.
- */
 export class TaskQuestionsStore {
   private state: StoredQuestions = { pending: null, answered: [] };
   private loading: Promise<void> | undefined;
@@ -187,7 +180,6 @@ export class TaskQuestionsStore {
     return this.state.pending === null ? null : clone(this.state.pending);
   }
 
-  /** The cached pending set, without touching disk, so a sync tasks payload can carry it. */
   pendingSync(): TaskQuestionSet | null {
     return this.state.pending === null ? null : clone(this.state.pending);
   }
@@ -215,7 +207,6 @@ export class TaskQuestionsStore {
     };
   }
 
-  /** Add questions, merging into the one pending set instead of replacing it. */
   async add(
     taskId: string,
     questions: readonly TaskQuestion[],
@@ -261,7 +252,6 @@ export class TaskQuestionsStore {
     return result;
   }
 
-  /** Record answers, clear the pending set, and keep a bounded history for replay. */
   async answer(setId: string, answers: unknown): Promise<QuestionAnswerResult> {
     const result = await this.mutate(() => {
       const pending = this.state.pending;
@@ -289,7 +279,6 @@ export class TaskQuestionsStore {
     return result;
   }
 
-  /** Drop a pending set without recording an answer, for a task that stopped planning. */
   async clearPending(): Promise<boolean> {
     const hadPending = await this.mutate(() => {
       const pending = this.state.pending !== null;
@@ -300,7 +289,6 @@ export class TaskQuestionsStore {
     return hadPending;
   }
 
-  /** Clear the pending set because the operator asked the agent to decide it itself. */
   async dismiss(setId: string): Promise<TaskQuestionSet> {
     const result = await this.mutate(() => {
       const pending = this.state.pending;

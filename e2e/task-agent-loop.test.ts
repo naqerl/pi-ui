@@ -40,7 +40,6 @@ import type { ChatMessage } from "../src/shared/types.js";
 
 let callSeq = 0;
 
-/** A model-issued tool call, as the harness hands it to `beforeTool`/`afterTool`. */
 function toolCall(args: unknown, name = "bash"): ToolHookCall {
   callSeq += 1;
   return {
@@ -51,7 +50,6 @@ function toolCall(args: unknown, name = "bash"): ToolHookCall {
   } as unknown as ToolHookCall;
 }
 
-/** A settled result in the shape the harness hands `afterTool`: its output is materialised. */
 function settled(text = "ok"): ToolExecutionResult {
   return { output: [{ type: "text", text }] };
 }
@@ -94,7 +92,6 @@ test("two calls that differ only in argument key order are one fingerprint", () 
     repetitionFingerprint("read", { path: "a" }),
     repetitionFingerprint("bash", { path: "a" }),
   );
-  // A fingerprint must never throw: cycles and unsupported values are rendered.
   const cyclic: Record<string, unknown> = { name: "loop" };
   cyclic.self = cyclic;
   assert.match(canonicalArguments(cyclic), /circular/);
@@ -112,7 +109,6 @@ test("the third identical call warns, the fifth is refused before it runs, and a
   });
   guard.setAvailable(["bash"]);
 
-  // One call as the harness runs it: the hook pair either blocks it or settles it.
   const run = (args: unknown) => {
     const call = toolCall(args);
     const blocked = guard.beforeTool(call);
@@ -124,8 +120,6 @@ test("the third identical call warns, the fifth is refused before it runs, and a
 
   const first = run({ command: "true" });
   const second = run({ command: "true" });
-  // The third call ran five seconds: a wait or a poll is real work, so it never warns,
-  // and the identical call after it starts the count over.
   duration = 5_000;
   const slow = run({ command: "true" });
   duration = 0;
@@ -145,15 +139,12 @@ test("the third identical call warns, the fifth is refused before it runs, and a
     "a five-second call starts over",
   );
   assert.doesNotMatch(resultText(secondAgain.result ?? {}), /\[pi-ui\]/);
-  // The streamed output survives the warning: the hook appends, it never rebuilds.
   assert.match(resultText(third.result ?? {}), /streamed bash output/);
   assert.ok(resultText(third.result ?? {}).includes(repetitionWarning("bash")));
   assert.match(resultText(third.result ?? {}), /3rd identical bash call/);
   assert.match(resultText(third.result ?? {}), /refuse the call and stop this run/);
   assert.doesNotMatch(resultText(fourth.result ?? {}), /\[pi-ui\]/, "the warning is appended once");
 
-  // The fifth call is refused before it runs: it never reaches a tool, it gets no result,
-  // and the reason is the sentence the run ends with.
   assert.equal(fifth.result, undefined);
   assert.equal(fifth.block, repetitionStopText("bash", 5, ["bash"]));
   assert.match(fifth.block ?? "", /bash was called 5 times in a row/);
@@ -164,7 +155,6 @@ test("the third identical call warns, the fifth is refused before it runs, and a
   assert.equal(stops[0]?.count, 5);
   assert.equal(stops[0]?.message, fifth.block);
 
-  // A refused call is not warned on top of its refusal.
   assert.equal(guard.afterTool(fifth.call, settled()), undefined);
 });
 
@@ -190,13 +180,11 @@ test("a different call starts the count again, so only a run of identical calls 
   assert.doesNotMatch(resultText(again ?? {}), /\[pi-ui\]/);
   assert.match(resultText(third ?? {}), /3rd identical bash call/);
 
-  // Key order is not a difference: the same arguments in another order are the same call.
   const reordered = run({ command: "b", timeoutMs: 1 });
   const ordered = run({ timeoutMs: 1, command: "b" });
   assert.doesNotMatch(resultText(reordered ?? {}), /\[pi-ui\]/);
   assert.doesNotMatch(resultText(ordered ?? {}), /\[pi-ui\]/);
 
-  // A new run never inherits the previous run's count.
   guard.reset();
   assert.doesNotMatch(resultText(run({ command: "b" }) ?? {}), /\[pi-ui\]/);
 });
@@ -213,11 +201,8 @@ test("the guard is an installed extension with tool hooks, and names only the of
   assert.equal(typeof hooks.beforeTool, "function");
   assert.equal(typeof hooks.afterTool, "function");
 
-  // The lane narrows the list to the tools the model is actually offered, so a refusal
-  // never names a registry tool the plan prompt does not carry.
   guard.setAvailable(["bash", "read", "bash"]);
   assert.deepEqual(guard.available(), ["bash", "read"]);
-  // Before the lane sets it, a refusal names no tool rather than inventing one.
   assert.deepEqual(new RepetitionGuard().available(), []);
 });
 
@@ -238,8 +223,6 @@ test("the plan harness compacts with pi-durable, scaled to the plan model's wind
   const large = planCompactionPolicy(1_048_576);
   assert.equal(large.reserveTokens, 16_384);
   assert.equal(large.keepRecentTokens, 20_000);
-  // A window too small for both keeps the tail inside the window, or compaction
-  // would never be able to run.
   const tiny = planCompactionPolicy(1_200);
   assert.ok(tiny.reserveTokens + tiny.keepRecentTokens < 1_200);
   assert.ok(tiny.keepRecentTokens > 0);
@@ -261,7 +244,6 @@ test("no plan request carries a billion-context id, even with a chat identity se
     assert.equal(scoped.length, 1);
     assert.equal(scoped[0], undefined);
 
-    // `current.json` alone must not leak either: that fallback is the whole trap.
     bili.setConversationIdentity(undefined);
     withoutConversationIdentity(() => {
       scoped.push(bili.currentConversationId());
@@ -300,14 +282,12 @@ test("no plan request carries a billion-context id, even with a chat identity se
     assert.equal(planHeaders.get("x-bili-plugin-conversation"), null);
     assert.equal(planHeaders.get("x-bili-plugin"), null);
     assert.equal(planHeaders.get("x-bili-plugin-model"), null);
-    // Un-stamped requests go straight to the provider: the engine never sees them.
     assert.equal(seen[1]?.url, "https://api.example.com/v1/chat/completions");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-/** A plan conversation with no durable store: enough for the submit/settle paths. */
 class LoopConversation {
   readonly appended: unknown[] = [];
   aborted = 0;
@@ -331,7 +311,6 @@ class LoopConversation {
     };
   }
 
-  /** The lane aborts the turn, not one submission: durable's conversation-level abort. */
   async abort() {
     this.aborted += 1;
     this.settle?.({ type: "input", status: "unanswered", reason: "aborted" });
@@ -365,8 +344,6 @@ test("a repeated-call stop ends the plan run with a pi-ui error and a transcript
   await session.send("start the loop");
   assert.equal(session.running(), true);
 
-  // Five identical calls, as the harness runs them through the guard's hooks: the
-  // fifth is blocked before it executes and the lane ends the run.
   for (let index = 0; index < 5; index += 1) {
     const call = toolCall({ command: "true" });
     const blocked = guard.beforeTool(call);
@@ -384,15 +361,12 @@ test("a repeated-call stop ends the plan run with a pi-ui error and a transcript
   assert.match(snapshot.runError?.message ?? "", /^pi-ui stopped this run: bash was called 5/);
   assert.match(snapshot.runError?.message ?? "", /Send a message to continue/);
   assert.equal(snapshot.run, "idle");
-  // The stop does not wait on the busy conversation to write its row, so the row lands
-  // just after the error rather than blocking the refusal.
   const appended = await eventually(
     async () => (conversation.appended.length === 1 ? conversation.appended : null),
     "the repetition stop row",
   );
   assert.match(JSON.stringify(appended[0]), /pi-ui stopped this run/);
 
-  // The stop is one run error, and the operator can dismiss it.
   await session.dismissError();
   assert.equal((await session.snapshot()).runError, null);
 });
@@ -413,7 +387,6 @@ test("a provider loop guard is explained in pi-ui's words, never as a settings p
 
   assert.equal(isProviderLoopGuard("the model returned a 400"), false);
 
-  // The plan transcript rephrases the row itself, not only the run error above it.
   const row: ChatMessage = {
     id: "m-1",
     role: "assistant",
@@ -428,15 +401,11 @@ test("a provider loop guard is explained in pi-ui's words, never as a settings p
   assert.match(visible?.text ?? "", /^pi-ui stopped this run:/);
   assert.equal(visibleTaskAgentMessages([ordinary])[0]?.text, "the model returned a 400");
 
-  // An answer that merely talks about repeating tool calls is prose, not a stop: only a
-  // failed row can carry the provider's guard, so only a failed row is rewritten.
   const prose = "The agent stops repeating tool calls once the file is written.";
   const answer: ChatMessage = { ...row, id: "m-3", isError: false, text: prose };
   assert.equal(isProviderLoopGuard(prose), false);
   assert.equal(visibleTaskAgentMessages([answer])[0]?.text, prose);
 
-  // Both lanes render rows through the one transcript builder, so the chat bubble is
-  // rewritten there too: a provider error is shown as pi-ui's own sentence.
   const chat = buildTranscript([
     {
       id: 7,
@@ -450,10 +419,6 @@ test("a provider loop guard is explained in pi-ui's words, never as a settings p
   assert.equal(chat[0]?.isError, true);
 });
 
-/**
- * A scripted model: every request is answered with the same `bash` call until the
- * test flips it to a plain answer, so a run can only end when pi-ui stops it.
- */
 interface ScriptedModel {
   readonly port: number;
   readonly requests: Array<{ headers: IncomingMessage["headers"]; body: string }>;
@@ -492,9 +457,7 @@ function chunk(content: string, finishReason: string | null = null): unknown {
 }
 
 interface ScriptedModelOptions {
-  /** Start in answer mode instead of emitting the tool call. */
   readonly answerFirst?: boolean;
-  /** The plain answer every non-tool request gets. */
   readonly answer?: string;
 }
 
@@ -585,16 +548,9 @@ test("a scripted plan model loops four times, is stopped by pi-ui, and continues
   const hitsPath = join(directory, "hits.txt");
   const command = `echo hit >> ${JSON.stringify(hitsPath)}`;
   const model = await startScriptedModel(command);
-  // The production identity wrapper, installed for this run. A plan request that still
-  // carried a billion-context id would be stamped and redirected into the inline engine,
-  // so the zero observations asserted below mean the plan lane ran outside it — not that
-  // no wrapper exists in this process.
   const previousFetch = globalThis.fetch;
   const identitySeen: ObservedRequest[] = [];
   const leaked: string[] = [];
-  // The engine transport answers its own origin and delegates everything else to the
-  // real fetch, so an un-stamped plan request still reaches the scripted model while a
-  // stamped one lands in `leaked` instead of arriving there.
   const engineFetch: typeof globalThis.fetch = async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (!url.startsWith("http://billion-context.inline/")) return previousFetch(input, init);
@@ -606,8 +562,6 @@ test("a scripted plan model loops four times, is stopped by pi-ui, and continues
     contextWindow: 200_000,
     maxOutput: 1_024,
   });
-  // Control: outside the plan scope the same wrapper stamps and redirects, so the empty
-  // `leaked` asserted after the run cannot pass because the wrapper is inert.
   await withConversationIdentity("chat-conversation-1", () =>
     globalThis
       .fetch(`${model.origin}/v1/chat/completions`, { method: "POST", body: "{}" })
@@ -694,31 +648,21 @@ test("a scripted plan model loops four times, is stopped by pi-ui, and continues
     assert.match(stopped.runError?.message ?? "", /pi-ui stopped this run: bash was called 5/);
     assert.match(stopped.runError?.message ?? "", /tools available/);
 
-    // The refused call never ran: exactly four identical commands reached the shell.
     const hits = (await readFile(hitsPath, "utf8")).trim().split("\n");
     assert.equal(hits.length, 4);
 
-    // The warning reached the model with the third result, before the refusal. The stop
-    // may land before or after the harness records the blocked call, so the request count
-    // is a floor: no request exists whose only effect could be a fifth identical call.
     assert.ok(model.requests.length >= 5, "the run stopped after the fifth request");
     assert.match(model.requests[3]?.body ?? "", /3rd identical bash call/);
 
-    // The plan lane carries no billion-context identity on any request, and the live
-    // wrapper never stamped one: nothing was observed and nothing was redirected into
-    // the engine, while the scripted model did receive every turn.
     assert.deepEqual(identitySeen, []);
     assert.deepEqual(leaked, []);
     for (const request of model.requests) {
       assert.equal(request.headers["x-bili-plugin-conversation"], undefined);
       assert.equal(request.headers["x-bili-plugin"], undefined);
       assert.equal(request.headers["x-bili-plugin-model"], undefined);
-      // The plan lane is bounded by pi-durable's compaction, so the model is never asked
-      // to compress its own context.
       assert.doesNotMatch(request.body, /\bcompress\b/i);
     }
 
-    // The stop is explicable in the transcript, not only in the header.
     const notice = await eventually(async () => {
       const snapshot = await session.snapshot();
       return snapshot.messages.find((message) => message.text.includes("pi-ui stopped this run"));
@@ -726,7 +670,6 @@ test("a scripted plan model loops four times, is stopped by pi-ui, and continues
     assert.equal(notice.role, "assistant");
     assert.match(notice.text, /Send a message to continue/);
 
-    // "Send a message to continue" is true: the same conversation runs again.
     model.answerWithText();
     await send("what now?", [], "queue");
     const answered = await eventually(
@@ -760,9 +703,6 @@ test("a plan conversation that crosses the window compacts with pi-durable", asy
   const directory = await mkdtemp(join(tmpdir(), "pi-ui-loop-compact-"));
   const agentDir = join(directory, "agent");
   await mkdir(agentDir, { recursive: true });
-  // Answers of roughly 1_400 tokens, so a few turns cross the 8_192-token window even
-  // with the plan instructions in the prompt, while a summary stays small enough that
-  // the compacted prompt is well under the window again.
   const answer = Array.from(
     { length: 100 },
     (_, index) => `Sentence ${index} keeps this answer long enough to cross a small window.`,
@@ -843,15 +783,11 @@ test("a plan conversation that crosses the window compacts with pi-durable", asy
     }
 
     const snapshot = await session.snapshot();
-    // The summary replaced the old prefix: the first turn is gone from the transcript.
     assert.equal(
       snapshot.messages.some((message) => message.text.includes("QUESTION-1 ")),
       false,
     );
-    // The newest turn is verbatim, so the conversation continues where it stopped.
     assert.ok(snapshot.messages.some((message) => message.text.includes("QUESTION-6 ")));
-    // pi-durable, not billion-context: the model is never asked to compress anything, and
-    // the prompt it gets for the last turn no longer carries the compacted first turn.
     for (const request of model.requests) assert.doesNotMatch(request.body, /\bcompress\b/i);
     assert.doesNotMatch(model.requests.at(-1)?.body ?? "", /QUESTION-1 /);
     assert.ok(model.requests.length > 6, "compaction made at least one summarising request");

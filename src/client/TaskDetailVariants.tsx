@@ -51,10 +51,8 @@ export interface TaskDetailModel {
   state: TaskState;
   trace: TaskTrace | undefined;
   wide: boolean;
-  /** The body owns the page width; the details bar's cross leaves the mode. */
   fullscreen: boolean;
   onExitFullscreen: () => void;
-  /** This task's plan agent currently has a live run. */
   planning: boolean;
   statusPending: boolean;
   notice: string | null;
@@ -171,7 +169,6 @@ function TitleField({ model, className }: { model: TaskDetailModel; className?: 
   }
   return (
     <div className={cn("w-full min-w-0", STACK_4)}>
-      {/* biome-ignore lint/a11y/useSemanticElements: the read-only markdown is replaced by a textarea when focused. */}
       <div
         role="textbox"
         aria-readonly="true"
@@ -353,8 +350,6 @@ function BodyField({ model, fill }: { model: TaskDetailModel; fill?: boolean }) 
     saveBody,
   } = model;
   const grow = fill === true;
-  // A wide plan card scrolls its own body; a narrow one leaves the body at its
-  // natural height so the detail pane stays the only scroll owner.
   const bodyScroll = grow
     ? cn("min-h-0 max-h-full flex-1 overflow-y-auto", SCROLLBAR_GUTTER)
     : undefined;
@@ -411,7 +406,6 @@ function BodyField({ model, fill }: { model: TaskDetailModel; fill?: boolean }) 
     );
   }
   return (
-    // biome-ignore lint/a11y/useSemanticElements: the body keeps its markdown descendants instead of becoming a fieldset.
     <div
       data-testid="task-body-section"
       role="group"
@@ -944,7 +938,6 @@ function hasLeftoverMeta(model: TaskDetailModel): boolean {
   );
 }
 
-/** The one place a proposal or plan draft is approved or dismissed. */
 function DecisionActions({ model }: { model: TaskDetailModel }) {
   const { draft, proposed, title, onApprove, onDismiss } = model;
   if (!draft && !proposed) return null;
@@ -1085,9 +1078,6 @@ const TAB_INDEX = { plan: 0, chat: 1 } as const;
 function MobileDetail({ model }: { model: TaskDetailModel }) {
   const [tab, setTab] = useState<"plan" | "chat">(() => linkedTab(model.task.id));
   const { onTabChange } = model;
-  // The same pager that drives the app's pages, nested in the detail body. It
-  // owns the swipe-to-tab state machine; `tab` stays the label TabBar and the
-  // hash link read.
   const tabs = usePager(2, TAB_INDEX[tab], { nested: true, keyboard: false });
   const lastTab = useRef(tabs.page);
 
@@ -1109,8 +1099,6 @@ function MobileDetail({ model }: { model: TaskDetailModel }) {
     return () => window.removeEventListener("hashchange", sync);
   }, [model.task.id, tabs.setPage]);
 
-  // A committed tab change is worth a tap of haptics; the first paint and a
-  // snap back to the current tab stay silent.
   useEffect(() => {
     if (lastTab.current === tabs.page) return;
     lastTab.current = tabs.page;

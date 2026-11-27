@@ -1,4 +1,3 @@
-// biome-ignore-all lint/suspicious/noArrayIndexKey: Markdown tokens have no ids; their order is the identity.
 import { Lexer, lexer, type Token, type Tokens } from "marked";
 import {
   Fragment,
@@ -40,7 +39,6 @@ const alignClasses: Record<NonNullable<Tokens.Table["align"][number]>, string> =
   right: "text-right",
 };
 
-/** Inside a button (a task card) links cannot be interactive, so they render as styled text. */
 type InlineMode = "interactive" | "static";
 
 function inline(
@@ -288,9 +286,7 @@ async function copyText(text: string): Promise<boolean> {
       await navigator.clipboard.writeText(text);
       return true;
     }
-  } catch {
-    // Fall back to a selection copy below; plain-http hosts have no clipboard API.
-  }
+  } catch {}
   const field = document.createElement("textarea");
   field.value = text;
   field.setAttribute("readonly", "");
@@ -389,9 +385,7 @@ function safeHref(value: string): string | undefined {
     if (url.protocol === "http:" || url.protocol === "https:" || url.protocol === "mailto:") {
       return value;
     }
-  } catch {
-    // Fall through and render the link label without an anchor.
-  }
+  } catch {}
   return undefined;
 }
 
@@ -560,8 +554,6 @@ function CodeSpan({ text, mode }: { text: string; mode: InlineMode }) {
 
 export function Markdown({ text }: { text: string }) {
   const tokens = useMemo(() => lexer(normalize(text)), [text]);
-  // overflow-wrap:anywhere lets long hashes, URLs and inline code break inside a bubble;
-  // code blocks and tables opt back out and scroll sideways instead.
   return (
     <div className="min-w-0 max-w-full space-y-lg [overflow-wrap:anywhere]">
       {blocks(tokens, "md")}
@@ -569,17 +561,11 @@ export function Markdown({ text }: { text: string }) {
   );
 }
 
-/**
- * One-line Markdown for task titles: bold, italic, strikethrough, inline code and links.
- * Block syntax stays literal, line breaks are kept, and links are plain styled text because
- * the title sits inside the task card's button.
- */
 export function InlineMarkdown({ text }: { text: string }) {
   const tokens = useMemo(() => Lexer.lexInline(text), [text]);
   return <>{inline(tokens, "imd", "static")}</>;
 }
 
-/** The text a reader sees in {@link InlineMarkdown}, for labels and titles. */
 export function plainInline(text: string): string {
   const flatten = (tokens: readonly Token[] | undefined): string =>
     (tokens ?? [])

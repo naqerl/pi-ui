@@ -2,55 +2,31 @@ import { STALE_WORKING_MS } from "./task-status.js";
 import { isActiveStatus, isPendingStatus, isReleasedTask } from "./tasks.js";
 import type { Task, TaskActivity } from "./types.js";
 
-/**
- * The browser-safe half of the idle nudge: wording and task selection. The
- * persisted record and the timer live in `src/server/idle-nudge.ts`, so the
- * client bundle never pulls in `node:` modules.
- */
-
-/** Twenty minutes, the default idle period before an automated nudge. */
 export const DEFAULT_IDLE_NUDGE_MS = 1_200_000;
-/** The wording names the default window; it is what the user sees in the prompt. */
 export const IDLE_NUDGE_MINUTES = 20;
-/** The persisted record of the last task set that produced a nudge. */
 export const IDLE_NUDGE_FILE = "idle-nudge.json";
-/** A nudge never lists more than this many task ids. */
 export const IDLE_NUDGE_TASK_LIMIT = 20;
-/** A working task is asked for a status no more often than once an hour. */
 export const IDLE_STATUS_INTERVAL_MS = 3_600_000;
-/** An ignored task is left out of this many nudges before it is named again. */
 export const IDLE_IGNORED_NUDGES = 3;
 
-/** The task states the nudge understands, including the derived working state. */
 export type IdleTaskStatus = Task["status"] | "working" | "blocked";
 export type IdleTaskState = "open" | "working" | "blocked";
 
-/** One hour; a live run with no tool call for this long gets a status nudge. */
 export const STALE_RUN_NUDGE_MS = 3_600_000;
-/** The wording names the stale-run window; it is what the user sees in the prompt. */
 export const STALE_RUN_NUDGE_MINUTES = 60;
-/** The persisted record of the last stale-run nudge for each task. */
 export const STALE_RUN_NUDGE_FILE = "stale-nudge.json";
 
-/** The fields the idle nudge needs from a task. */
 export type IdleTask = Pick<Task, "id"> & {
   readonly status: IdleTaskStatus;
   readonly title?: string;
   readonly blockedBy?: readonly string[];
   readonly lastWorkedAt?: string | null;
-  /** When task_working marked this task working, when the caller has it. */
   readonly workingSince?: string;
-  /** When task_release moved this task back to open, when the caller has it. */
   readonly releasedAt?: string;
-  /** Why the task was released, when the caller has it. */
   readonly releaseReason?: string;
-  /** When the task was closed, or null while it is open. */
   readonly completedAt?: string | null;
-  /** Older ledgers may spell the closure timestamp this way. */
   readonly closedAt?: string | null;
-  /** A live trace's last attributed call, when the caller has one. */
   readonly lastActivityAt?: string | null;
-  /** A derived client state. Never used to decide whether a task is working. */
   readonly state?: IdleTaskState;
 };
 
@@ -60,7 +36,6 @@ function instant(value: string | null | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-/** The newest attributed call an idle task knows about, or null when it was never worked on. */
 export function lastTouchedAt(task: IdleTask): number | null {
   let newest = instant(task.lastWorkedAt);
   const traced = instant(task.lastActivityAt);
@@ -68,11 +43,9 @@ export function lastTouchedAt(task: IdleTask): number | null {
   return newest;
 }
 
-/** Open tasks that still carry working but have not been touched for over an hour. */
 export function staleWorkedTasks(tasks: readonly IdleTask[], at: number = Date.now()): IdleTask[] {
   return tasks.filter((task) => {
     if (!isActiveStatus(task.status)) return false;
-    // A release is the last transition, even if an older attributed call left a stamp behind.
     if (isReleasedTask(task)) return false;
     const marked = instant(task.workingSince);
     const touched = lastTouchedAt(task);
@@ -95,7 +68,6 @@ export function withStaleRequest(text: string, tasks: readonly IdleTask[]): stri
   return text.length === 0 ? request : `${text}\n\n${request}`;
 }
 
-/** The idle notice used when the only thing to do is revisit stale working tasks. */
 export function idleActualizeNudgeText(tasks: readonly IdleTask[]): string {
   return `You have been idle for ${IDLE_NUDGE_MINUTES} minutes. ${staleRequestText(tasks)}`;
 }
@@ -109,10 +81,6 @@ function closedDescription(tasks: readonly IdleTask[]): string {
     .join(", ");
 }
 
-/**
- * The one-paragraph ask for a durable memory after a task was closed. It names
- * every closure that is still unrecorded so one nudge can cover a whole batch.
- */
 export function idleMemoryNudgeText(tasks: readonly IdleTask[]): string {
   const subject = tasks.length === 1 ? "it" : "them";
   return `You closed ${closedDescription(tasks)} since the last nudge and have not written anything durable about ${subject}.
@@ -121,18 +89,12 @@ memory_write (long_term for the topic, daily for the log). If it taught nothing 
 one line and continue.`;
 }
 
-/** Append the memory ask after the work and actualize paragraphs, when it is due. */
 export function withMemoryRequest(text: string, tasks: readonly IdleTask[]): string {
   return tasks.length === 0 ? text : `${text}\n\n${idleMemoryNudgeText(tasks)}`;
 }
 
-/** Alias for callers that name the prompt by the write it asks for. */
 export const idleMemoryWriteNudgeText = idleMemoryNudgeText;
 
-/**
- * The idle period from `PI_IDLE_NUDGE_MS`. Zero disables nudges; a missing or
- * invalid value keeps the twenty-minute default.
- */
 export function idleNudgeMs(env: Record<string, string | undefined> = process.env): number {
   const raw = env.PI_IDLE_NUDGE_MS;
   if (raw === undefined || raw.trim().length === 0) return DEFAULT_IDLE_NUDGE_MS;
@@ -141,11 +103,6 @@ export function idleNudgeMs(env: Record<string, string | undefined> = process.en
   return Math.floor(value);
 }
 
-/**
- * The stale-run window from `PI_STALE_RUN_NUDGE_MS`. Zero disables the check; a
- * missing or invalid value keeps the one-hour default. The same window is the
- * per-task cooldown, so a task is nudged at most once per hour in production.
- */
 export function staleRunNudgeMs(env: Record<string, string | undefined> = process.env): number {
   const raw = env.PI_STALE_RUN_NUDGE_MS;
   if (raw === undefined || raw.trim().length === 0) return STALE_RUN_NUDGE_MS;
@@ -154,11 +111,6 @@ export function staleRunNudgeMs(env: Record<string, string | undefined> = proces
   return Math.floor(value);
 }
 
-/**
- * Tasks whose live run has not made an attributed tool call for `windowMs`. A terminal
- * run, a closed or proposed task, and a task waiting on an open blocker are left
- * alone: only work that is still live and still unblocked is worth a status check.
- */
 export function staleRunTaskIds(
   tasks: readonly IdleTask[],
   activity: TaskActivity | undefined,
@@ -177,8 +129,6 @@ export function staleRunTaskIds(
     const trace = activity.traces[task.id];
     const run = trace?.lastRun;
     if (run?.outcome !== "running" || run.id !== activity.runId) continue;
-    // Quiet time starts at the later of the last tool call and the current run's start.
-    // Without this, an old timestamp from a previous run makes a fresh run look stale.
     const calledAt = trace.lastActivityAt === null ? Number.NaN : Date.parse(trace.lastActivityAt);
     const startedAt = Date.parse(run.at);
     const last = Math.max(
@@ -191,7 +141,6 @@ export function staleRunTaskIds(
   return ids;
 }
 
-/** The prompt sent when a live run has gone quiet on these tasks. */
 export function staleRunNudgeText(taskIds: readonly string[]): string {
   const list = taskIds.join(", ");
   const subject = taskIds.length === 1 ? `Task ${list}` : `Tasks ${list}`;
@@ -199,11 +148,6 @@ export function staleRunNudgeText(taskIds: readonly string[]): string {
   return `${subject} ${verb} had no tool call for ${STALE_RUN_NUDGE_MINUTES} minutes. Confirm whether ${taskIds.length === 1 ? "it is" : "they are"} still in progress, close ${taskIds.length === 1 ? "it" : "them"} if ${taskIds.length === 1 ? "it is" : "they are"} done, or mark ${taskIds.length === 1 ? "it" : "them"} blocked if not, and update the task ledger accordingly.`;
 }
 
-/**
- * Open tasks that are ready to pick. A dependency gates while it is open, working
- * or planning; done, backlog, proposed and missing ids are not gates. A released
- * task is parked, so it is left out until `task_working` clears the release.
- */
 export function openTaskIds(tasks: readonly IdleTask[]): string[] {
   const live = liveOpenIds(tasks);
   return tasks
@@ -212,11 +156,6 @@ export function openTaskIds(tasks: readonly IdleTask[]): string[] {
     .map((task) => task.id);
 }
 
-/**
- * Tasks the agent has started and not finished; they are asked for a status. The
- * ledger status is the only source of `working`, so a derived state never promotes
- * an open task, and a released task is open and therefore never working.
- */
 export function workingTaskIds(tasks: readonly IdleTask[]): string[] {
   const live = liveOpenIds(tasks);
   return tasks
@@ -229,7 +168,6 @@ function liveOpenIds(tasks: readonly IdleTask[]): Set<string> {
   return new Set(tasks.filter((task) => isPendingStatus(task.status)).map((task) => task.id));
 }
 
-/** A task-id to open-blocker-ids map that also offers the familiar Map accessors. */
 export type WaitingOn = Record<string, string[]> & {
   readonly size: number;
   get(taskId: string): string[] | undefined;
@@ -240,11 +178,6 @@ export type WaitingOn = Record<string, string[]> & {
   [Symbol.iterator](): IterableIterator<[string, string[]]>;
 };
 
-/**
- * For each open task that still has pending dependencies, the ids of those
- * dependencies. Missing, done, backlog and proposed ids are not waiting on anything,
- * and a released task is parked rather than waiting.
- */
 export function waitingOn(tasks: readonly IdleTask[]): WaitingOn {
   const live = liveOpenIds(tasks);
   const out = {} as WaitingOn;
@@ -269,20 +202,17 @@ function capped(ids: readonly string[]): string[] {
   return ids.slice(0, IDLE_NUDGE_TASK_LIMIT);
 }
 
-/** The work list asks every named task for one of three decisions. */
 function idleWorkText(taskIds: readonly string[], totalOpen = taskIds.length): string {
   const ids = capped(taskIds);
   return `You have been idle for ${IDLE_NUDGE_MINUTES} minutes and ${totalOpen} task(s) are open: ${ids.join(", ")}. Mark a task working with task_working before starting it; it sets the task to working and records when the work began. If it cannot be done now, mark it blocked and propose_task the task that would unblock it; if other tasks are already in progress, leave it alone — ignoring it is a valid answer.`;
 }
 
-/** Working tasks get a status question instead of being offered as new work. */
 function idleWorkingText(taskIds: readonly string[], withIdlePrefix: boolean): string {
   const ids = capped(taskIds);
   const prefix = withIdlePrefix ? `You have been idle for ${IDLE_NUDGE_MINUTES} minutes. ` : "";
   return `${prefix}Status check for tasks marked working: ${ids.join(", ")}. Mark each complete with task_done, mark it blocked and propose_task what would unblock it, or leave it alone — ignoring it is a valid answer.`;
 }
 
-/** The one-paragraph decision notice, with work and status names capped together. */
 export function idleDecisionNudgeText(
   openIds: readonly string[],
   workingIds: readonly string[] = [],
@@ -291,7 +221,6 @@ export function idleDecisionNudgeText(
   const visibleOpen = capped(openIds);
   const room = Math.max(0, IDLE_NUDGE_TASK_LIMIT - visibleOpen.length);
   const working = workingIds.slice(0, room);
-  // Nothing to ask for: an empty composition is silence, never "0 task(s) are open".
   if (openIds.length === 0 && working.length === 0) return "";
   if (openIds.length === 0) {
     return idleWorkingText(working, true);
@@ -301,7 +230,6 @@ export function idleDecisionNudgeText(
   return `${work} Status check for tasks marked working: ${working.join(", ")}. Mark each complete with task_done, mark it blocked and propose_task what would unblock it, or leave it alone — ignoring it is a valid answer.`;
 }
 
-/** The prompt sent as an automated notice; it is also its transcript text. */
 export function idleNudgeText(
   taskIdsOrTasks: readonly string[] | readonly IdleTask[] | WaitingOn,
   waiting?: WaitingOn,
@@ -336,7 +264,6 @@ export function idleNudgeText(
   return withStaleRequest(idleDecisionNudgeText(taskIds, workingIds), stale);
 }
 
-/** The notice used when the open work exists but every task is still blocked. */
 export function idleBlockedNudgeText(waiting: WaitingOn): string {
   const detail = Object.keys(waiting)
     .map((taskId) => [taskId, waiting[taskId]] as const)
@@ -346,6 +273,5 @@ export function idleBlockedNudgeText(waiting: WaitingOn): string {
   return `You have been idle for ${IDLE_NUDGE_MINUTES} minutes. Nothing is unblocked: ${detail}.`;
 }
 
-/** The same blocked notice under the names callers use in prose. */
 export const blockedNudgeText = idleBlockedNudgeText;
 export const idleNudgeBlockedText = idleBlockedNudgeText;

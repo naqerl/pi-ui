@@ -1,10 +1,5 @@
 import { join } from "node:path";
 
-/**
- * Every tool a bot may be offered. A definition's `tools` list is a subset; the
- * chat lane installs the whole catalog and refuses a call outside the subset, so
- * the refusal is visible instead of the tool silently disappearing from the turn.
- */
 export const BOT_TOOL_CATALOG = [
   "read",
   "propose_task",
@@ -28,7 +23,6 @@ export function isBotToolName(name: string): name is BotToolName {
   return BOT_TOOL_SET.has(name);
 }
 
-/** The trusted shape a seed supplies; the store stamps the timestamps. */
 export interface BotSeed {
   readonly id: string;
   readonly name: string;
@@ -37,7 +31,6 @@ export interface BotSeed {
   readonly model?: string;
 }
 
-/** The Job hunter proposes work; reading the ledger is all the context it needs. */
 export const JOB_HUNTER_TOOLS = ["propose_task", "task_list", "task_view"] as const;
 
 export const JOB_HUNTER_PROMPT = `You are Job hunter, a bot that finds worthwhile work in this repository and proposes it as tasks for the operator to approve.
@@ -57,7 +50,6 @@ export const DEFAULT_BOTS: readonly BotSeed[] = [
   },
 ];
 
-/** One durable conversation per bot, in a directory keyed by the bot id. */
 export interface BotChatPaths {
   readonly dir: string;
   readonly databasePath: string;
@@ -75,7 +67,6 @@ export function botChatPaths(dataDir: string, botId: string): BotChatPaths {
   };
 }
 
-/** The billion-context conversation id for one bot; never shared with another bot. */
 export function botConversationIdentity(botId: string): string {
   return `bot:${botId}`;
 }

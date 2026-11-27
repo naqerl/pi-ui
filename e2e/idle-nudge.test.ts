@@ -44,7 +44,6 @@ async function temporaryDataDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "pi-idle-nudge-"));
 }
 
-/** A ChatService wired to a task source, with the private idle entry points exposed. */
 function idleChat(directory: string, tasks: () => readonly Task[]) {
   const chat = new ChatService(
     {} as never,
@@ -77,7 +76,6 @@ function idleChat(directory: string, tasks: () => readonly Task[]) {
   return { chat, driven };
 }
 
-/** Run a task tool from the shared tool set against the store. */
 function taskToolCall(store: TaskStore, chat: ChatService) {
   const bridge = {
     store,
@@ -221,7 +219,6 @@ test("a released task is not stale-working", () => {
     blockedBy: [],
     releasedAt: old,
     releaseReason: "Waiting for the next build slot",
-    // The release's own attributed call used to land just after the release and revive this.
     lastWorkedAt: new Date(Date.parse(old) + 2).toISOString(),
   };
 
@@ -240,7 +237,6 @@ test("selection reads the ledger status, and a released task is parked", () => {
     "a derived state never promotes an open task into the working list",
   );
   assert.deepEqual(openTaskIds([{ id: "a1", status: "open", state: "working" }]), ["a1"]);
-  // A run that ended ok leaves the task open, so it is open work, not a working claim.
   assert.deepEqual(workingTaskIds([{ id: "c3", status: "open" }]), []);
   assert.deepEqual(openTaskIds([{ id: "c3", status: "open" }]), ["c3"]);
 
@@ -261,13 +257,11 @@ test("selection reads the ledger status, and a released task is parked", () => {
     "a released task does not wait on anything",
   );
 
-  // One task is still working: the status check names only that task.
   const working = { id: "a1", status: "working" as const, blockedBy: [] };
   const text = idleNudgeText([working, released]);
   assert.match(text, /Status check for tasks marked working: a1\./);
   assert.doesNotMatch(text, /b2/);
 
-  // A reopened ledger row is open with no release fields; it is live open work again.
   const reopened: IdleTask = { id: "r1", status: "open", blockedBy: [] };
   assert.deepEqual(openTaskIds([reopened]), ["r1"]);
   assert.deepEqual(workingTaskIds([reopened]), []);
@@ -350,11 +344,9 @@ test("a task re-marked working after a release is named at once", () => {
     /Status check for tasks marked working: a1/,
   );
 
-  // Without forgetting the row, the hourly interval holds the same working task back.
   nudge.noteActivity(now + 1_000);
   assert.equal(nudge.maybeNudge({ ...nothing, tasks: working }, now + 2_000), null);
 
-  // task_release forgot the row, so task_working names the task at once.
   nudge.forgetTasks(["a1"]);
   nudge.noteActivity(now + 3_000);
   assert.match(
@@ -558,7 +550,6 @@ test("an ignored task returns after three silent nudges", async () => {
     const first = nudge.maybeNudge({ ...nothing, tasks: firstTasks }, 1_000);
     for (const id of ["a1", "a2", "a3", "a4", "a5"]) assert.match(first ?? "", new RegExp(id));
 
-    // Three tasks were answered by starting them; two were silently ignored.
     const tasks = [
       task("a1", "working"),
       task("a2", "working"),
@@ -614,7 +605,6 @@ test("a single ignored task comes back on the fourth quiet idle window", async (
         tasks: Record<string, { silent: number }>;
       };
       assert.equal(record.tasks.a1?.silent, index, "each quiet window is remembered");
-      // The timer may poll again immediately; that must not burn another window.
       assert.equal(nudge.maybeNudge({ ...nothing, tasks }, at + 1), null);
     }
 
@@ -811,7 +801,6 @@ test("it never fires while running, queued, or with no open task", () => {
 
   nudge.noteActivity(5_000);
   assert.equal(nudge.maybeNudge({ ...work, active: true }, 10_000), null);
-  // The run end starts a fresh window; the active check above did not consume one.
   nudge.noteActivity(10_000);
   assert.equal(nudge.maybeNudge(work, 10_999), null);
   assert.ok(nudge.maybeNudge(work, 11_000), "an idle window starts after the run ends");
@@ -961,7 +950,6 @@ test("the nudge's own run re-arms, so a new task set fires again", async () => {
     assert.equal(seen[0]?.kind, IDLE_NUDGE_ENTRY_KIND);
     assert.equal(driven.idleNudge.armed, true, "the nudge's own run end re-arms");
 
-    // Move the clock past a second window without counting it as new user activity.
     tasks.push("a2");
     (driven.idleNudge as unknown as { lastActivityAt: number }).lastActivityAt = Date.now() - 1_001;
     await driven.checkIdleNudge();
@@ -1024,7 +1012,6 @@ test("the ledger drops a released task on the very next window", async () => {
     assert.equal(afterRelease.tasks[a1.id], undefined, "the release forgets the row at once");
     assert.ok(afterRelease.tasks[b2.id], "the other task keeps its row");
 
-    // New work opens the next window; the released id must not come back with it.
     const c3 = (await store.createWithResult("Fresh work", null)).task;
     chat.observeTaskLedger(store.ledger().tasks);
     nudgeClock.lastActivityAt = Date.now() - 1_001;

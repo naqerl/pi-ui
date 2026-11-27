@@ -1,7 +1,6 @@
 import { type Browser, beforeEach, describe, test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
-/** The built app registers /sw.js, and a worker's requests bypass Playwright routes. */
 async function openChat(
   app: { open: (path: string) => Promise<void> },
   browser: Browser,
@@ -17,11 +16,6 @@ async function openChat(
   await app.open(path);
 }
 
-/**
- * Gives the shared app a desktop viewport. A test that stubs /api/message
- * unroutes it before it ends: the fixture only knows the routes this test
- * registered, so one left behind by an earlier member would still answer.
- */
 async function resetSharedChat(browser: Browser) {
   await browser.unrouteAll();
   await browser.setViewport({ width: 1280, height: 900 });
@@ -105,7 +99,6 @@ describe("chat message lifecycle against one shared app", { serial: true }, () =
     let requests = 0;
     await browser.route("**/api/message", async (route) => {
       requests += 1;
-      // Hold the request open: a client that waits for 202 cannot paint this bubble.
       await gate;
       await route.continue();
     });
@@ -115,11 +108,8 @@ describe("chat message lifecycle against one shared app", { serial: true }, () =
     try {
       await screen.getByRole("button", "Send").tap();
       const pending = browser.locator('[data-pending-send="true"]').filter({ hasText: text });
-      // Poll instead of one short visibility probe: a busy runner can paint the
-      // optimistic bubble a frame late without anything being wrong.
       await expect.poll(() => pending.isVisible(), { timeout: 10_000 }).toBe(true);
       expect(requests).toBe(1);
-      // The gate is still closed, so the bubble above was painted before any response.
       await expect(pending).toBeVisible();
     } finally {
       release();
@@ -184,7 +174,6 @@ describe("chat message lifecycle against one shared app", { serial: true }, () =
     const spinner = screen.getByTestId("working-spinner");
     await expect(spinner).toBeVisible({ timeout: 15_000 });
     await expect(screen.getByTestId("header-activity")).toHaveText("working");
-    // PI_RETRY_BUDGET_MS=1000 in e2e/backend.mjs; the client checks it once a second.
     await expect(spinner).toHaveAttribute("data-motion", "quiet", { timeout: 15_000 });
 
     const quietFrames = await browser.evaluate(async () => {
@@ -218,17 +207,11 @@ describe("chat message lifecycle against one shared app", { serial: true }, () =
   });
 });
 
-// This test patches `window.fetch` for the whole page to hold one response. An
-// init script lives for the browser context, so sharing the app would keep
-// holding every later send; it keeps its own context and boot.
 test("keeps one user bubble when the server places a send before its response returns", async ({
   app,
   browser,
   screen,
 }) => {
-  // Hold the page's response only after the server has answered, so a snapshot can see the
-  // placed entry while the optimistic bubble is still pending. Patching fetch keeps the
-  // browser's shard cookie and let us release the response once the snapshot is checked.
   await browser.addInitScript(`
     (() => {
       const original = window.fetch.bind(window);
@@ -280,7 +263,6 @@ test("keeps one user bubble when the server places a send before its response re
           if (
             state.messages?.some((message) => message.role === "user" && message.text === needle)
           ) {
-            // Force the same snapshot path a tab focus or SSE reconnect uses.
             window.dispatchEvent(new Event("focus"));
             return true;
           }
@@ -290,7 +272,6 @@ test("keeps one user bubble when the server places a send before its response re
       return false;
     }, text);
     expect(placed).toBe(true);
-    // The HTTP response is still held; the snapshot must have retired the optimistic copy.
     await expect(pending).toHaveCount(0, { timeout: 3_000 });
     await expect(users).toHaveCount(1);
   } finally {

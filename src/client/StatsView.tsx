@@ -95,7 +95,6 @@ const DRAG_HOLD_MS = 350;
 const DRAG_HOLD_SLOP_PX = 6;
 const DRAG_BLOCKERS = 'button, a, input, textarea, select, [role="button"], [data-no-drag]';
 const DRAG_HANDLE = ".dashboard-drag-handle";
-// The grip is a button, so it has to opt out of the generic cancel selector.
 const DRAGGABLE_CANCEL =
   "button:not(.dashboard-drag-handle), input, textarea, a, [data-no-press]:not(.dashboard-drag-handle)";
 
@@ -103,7 +102,6 @@ type GridResizeHandle = "s" | "w" | "e" | "n" | "sw" | "nw" | "se" | "ne";
 
 type WidgetFullscreenHistoryState = Record<string, unknown> & { piWidgetFullscreen?: string };
 
-/** The current history state, when it is an object we can add the overlay marker to. */
 function widgetFullscreenHistory(): WidgetFullscreenHistoryState | null {
   const state: unknown = window.history.state;
   return state !== null && typeof state === "object"
@@ -111,7 +109,6 @@ function widgetFullscreenHistory(): WidgetFullscreenHistoryState | null {
     : null;
 }
 
-/** Drops the overlay marker from the current entry. */
 function stripWidgetFullscreenHistory() {
   const state = widgetFullscreenHistory();
   if (state?.piWidgetFullscreen === undefined) return;
@@ -228,7 +225,6 @@ function slotHeight(slot: LayoutSlot): number {
   return Math.max(1, Math.min(100, slot.h ?? DEFAULT_WIDGET_ROWS));
 }
 
-/** Packs a section top-left. `reset` ignores stored coordinates, for structural moves. */
 function packSection(slots: LayoutSlot[], reset = false): LayoutSlot[] {
   return packLayoutSlots(slots, reset);
 }
@@ -255,7 +251,6 @@ function gridLayout(section: LayoutSection): Layout[] {
   }));
 }
 
-/** The page exposes three resize widths; snap the final RGL width to one of them. */
 function snapResizeWidth(width: number): number {
   return [4, 6, 12].reduce((best, candidate) =>
     Math.abs(candidate - width) < Math.abs(best - width) ? candidate : best,
@@ -273,12 +268,6 @@ function cellsOverlap(a: GridCell, b: GridCell): boolean {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
-/**
- * Merge RGL's gesture layout back into one section. RGL owns positions during
- * the gesture; this only commits the moved cell, turns a resize into the stored
- * span, and pushes any widget the moved cell overlaps down exactly far enough
- * to keep the saved grid free of two widgets in one cell.
- */
 function applyGridLayout(
   layout: DashboardLayout,
   sectionIndex: number,
@@ -311,9 +300,6 @@ function applyGridLayout(
     return placedCell;
   };
 
-  // The moved widget wins its requested cell. Everything else keeps the stored
-  // cell unless the moved rectangle overlaps it, in which case it is pushed
-  // below the already-placed widgets in stored order.
   if (movedId !== undefined && movedItem !== undefined) {
     let w = Math.max(2, Math.min(GRID_COLUMNS, Math.round(movedItem.w)));
     if (kind === "resize") w = snapResizeWidth(w);
@@ -367,7 +353,6 @@ interface GridDropPoint {
   y: number;
 }
 
-/** The grid band wins; a heading belongs to the section it titles. */
 function sectionAtY(bands: readonly SectionBand[], y: number): SectionBand | undefined {
   for (const band of bands) {
     if (y >= band.grid.top && y <= band.grid.bottom) return band;
@@ -378,7 +363,6 @@ function sectionAtY(bands: readonly SectionBand[], y: number): SectionBand | und
   return undefined;
 }
 
-/** Move one slot as-is into another section, below everything already there. */
 function moveSlotToSection(
   layout: DashboardLayout,
   fromIndex: number,
@@ -418,11 +402,8 @@ function pointerY(event: MouseEvent | TouchEvent | undefined): number | undefine
 function dropPointFromEvent(
   event: MouseEvent | TouchEvent | undefined,
   grid: HTMLDivElement | null,
-  // RGL 1.5.4 passes null here; the DOM placeholder is the reliable fallback.
   placeholder: Layout | null,
 ): GridDropPoint | undefined {
-  // RGL can hand a synthetic stop event with zeroed coordinates; that is not
-  // a drop at the top of the page, so use the rendered placeholder instead.
   const y = pointerY(event);
   if (y !== undefined && y !== 0) return { y };
   const rect = grid?.querySelector<HTMLElement>(".react-grid-placeholder")?.getBoundingClientRect();
@@ -446,7 +427,6 @@ function viewerId(): string {
   }
 }
 
-/** Tells the server whether this tab shows the dashboard; poll widgets run only while one does. */
 function useViewerReport(active: boolean): void {
   const viewer = useMemo(viewerId, []);
   useEffect(() => {
@@ -513,7 +493,6 @@ const CHART_COLORS = [
 type SparklineView = Extract<WidgetView, { kind: "sparkline" }>;
 
 interface DrawnSeries {
-  /** A CSS-safe key, never the user-supplied series key. */
   id: string;
   label: string;
   color: string;
@@ -619,8 +598,6 @@ function WidgetSparkline({
           return row;
         });
 
-  // Polling swaps the view object every tick; the component's own state keeps
-  // the pin while only clearing it if the new data no longer has that row.
   useEffect(() => {
     if (pinned !== null && pinned >= data.length) setPinned(null);
   }, [pinned, data.length]);
@@ -862,8 +839,6 @@ function WidgetSparkline({
     const index = pinIndexAt(clientX);
     setPinned((current) => (current === index ? null : index));
   };
-  // The dashboard's drag capture listener stops pointerdown at the page root,
-  // so the capture phase is the only place a chart press is visible to us.
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.pointerType === "mouse" && event.button !== 0) return;
     pressRef.current = { x: event.clientX, y: event.clientY };
@@ -995,7 +970,6 @@ function ViewBody({
   view: WidgetView;
   chart?: SparklineChart;
   expanded?: boolean;
-  /** Makes a list row's label an action; the bots widget uses it to open a chat. */
   onOpenItem?: (key: string) => void;
 }) {
   switch (view.kind) {
@@ -1133,10 +1107,8 @@ function ViewBody({
             </thead>
             <tbody className="divide-y divide-border/50">
               {view.rows.map((row, rowIndex) => (
-                // biome-ignore lint/suspicious/noArrayIndexKey: rows have no identity
                 <tr key={rowIndex}>
                   {row.map((cell, cellIndex) => (
-                    // biome-ignore lint/suspicious/noArrayIndexKey: cells follow the columns
                     <td key={cellIndex} className="py-md pr-xl align-top [overflow-wrap:anywhere]">
                       {cell}
                     </td>
@@ -1241,8 +1213,6 @@ function WidgetCard({
         cancelPress();
         const timer = window.setTimeout(() => {
           press.current = null;
-          // A hold long enough to start a grid drag owns the press. The menu
-          // timer runs later, so suppress it while that drag is still active.
           if (cardRef.current?.closest("[data-pager-lock]") !== null) return;
           setMenu(true);
           haptic(10);
@@ -1264,7 +1234,6 @@ function WidgetCard({
     >
       <div className="flex items-start justify-between gap-lg pb-sm">
         <div className="flex min-w-0 items-start gap-sm">
-          {/* The grip owns the drag gesture, so a press scale would fight it. */}
           <button
             type="button"
             className="dashboard-drag-handle theme-radius -my-xs shrink-0 cursor-grab touch-none px-sm text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
@@ -1357,7 +1326,6 @@ function WidgetFullscreen({
   onOpenItem,
 }: {
   widget: Widget;
-  /** Absent when the widget has no value yet; `resolveWidgetValue` omits these keys. */
   view?: WidgetView | undefined;
   value?: WidgetValue | undefined;
   onClose: () => void;
@@ -1523,8 +1491,6 @@ function SectionGrid({
   ) => void;
 }) {
   const { ref: gridRef, width } = useGridWidth(desktop);
-  // `byId` can be a fresh Map on every poll frame; the id set is what decides
-  // which stored slots are visible, so key the memo on that set instead.
   const idSet = useMemo(() => new Set(byId.keys()), [byId]);
   const idKey = useMemo(() => [...idSet].sort().join("\u0000"), [idSet]);
   const visible = useMemo(() => {
@@ -1555,8 +1521,6 @@ function SectionGrid({
     (kind: "drag" | "resize") => {
       const current = itemsRef.current;
       if (kind === "drag") {
-        // RGL grows the source container with the dragged row. Freeze it for
-        // the gesture so sections below keep the rects snapshotted at start.
         const height = gridRef.current?.getBoundingClientRect().height ?? 0;
         setFrozenHeight(height > 0 ? height : null);
       } else {
@@ -1618,8 +1582,6 @@ function SectionGrid({
     );
   });
 
-  // RGL owns the resize DraggableCore, so its handle has to be the real corner.
-  // The per-widget test id and label are filled in once the grid item exists.
   const resizeHandle = (axis: GridResizeHandle, ref: Ref<HTMLElement>) => (
     <button
       ref={ref as Ref<HTMLButtonElement>}
@@ -1630,7 +1592,6 @@ function SectionGrid({
     />
   );
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: relabel RGL handles after every layout render; the grid node itself is stable
   useEffect(() => {
     if (!desktop) return;
     const grid = gridRef.current;
@@ -1697,7 +1658,6 @@ function SectionGrid({
 
 const BotChat = lazy(() => import("./BotChat").then((module) => ({ default: module.BotChat })));
 
-/** The dashboard page: widgets the agent arranged, rendered from builtin stats, polls or pushed data. */
 export function StatsView({
   stats,
   ready,
@@ -1706,7 +1666,6 @@ export function StatsView({
 }: {
   stats: ChatStats;
   ready: boolean;
-  /** True while the dashboard is the current page. */
   active: boolean;
   footerClearance: number;
 }) {
@@ -1751,8 +1710,6 @@ export function StatsView({
   const [builtinValues, setBuiltinValues] = useState<
     Record<string, { view?: WidgetView; error?: string }>
   >({});
-  // Builtin sources are registry readers like any other source. They are async,
-  // so render their mapped views just after the live inputs change.
   useEffect(() => {
     let cancelled = false;
     const widgets = (dashboard?.widgets ?? []).filter((widget) => widget.source.type === "builtin");
@@ -1811,8 +1768,6 @@ export function StatsView({
     if (maximizedRef.current === id) return;
     const current = widgetFullscreenHistory();
     const next = { ...(current ?? {}), piWidgetFullscreen: id };
-    // A forward step can land on a stale overlay entry after a minimize. Take
-    // that entry over instead of stacking another marker on top of it.
     if (current?.piWidgetFullscreen === undefined) {
       window.history.pushState(next, "", window.location.href);
     } else {
@@ -1892,8 +1847,6 @@ export function StatsView({
     [],
   );
 
-  // A reload during the overlay keeps the history entry but loses the React
-  // state. Clear that marker before the next maximize can mistake it for ours.
   useEffect(() => {
     stripWidgetFullscreenHistory();
   }, []);
@@ -1977,9 +1930,6 @@ export function StatsView({
       }
     } finally {
       saving.current = false;
-      // A newer layout was committed while this request was in flight. Send it
-      // only after the previous one settles, so the server cannot apply the
-      // writes out of order and leave an older section title or span behind.
       if (pending.current !== null && mounted.current) void flushPatch(keepalive);
     }
   }, []);
@@ -2093,7 +2043,6 @@ export function StatsView({
       let next: DashboardLayout;
       if (kind === "drag" && movedId !== undefined && drop !== undefined && bands !== null) {
         const target = sectionAtY(bands, drop.y);
-        // Outside every heading and grid the drop is cancelled, not committed.
         if (target === undefined) return;
         next =
           target.index === sectionIndex
@@ -2108,8 +2057,6 @@ export function StatsView({
     [clearDropTarget, commitLayout],
   );
 
-  // The stacked mobile layout has no RGL grid, so it keeps the older pointer
-  // reorder shim. The desktop grid below is driven entirely by RGL.
   useEffect(() => {
     if (desktop) return;
     const root = pageRef.current;
@@ -2190,8 +2137,6 @@ export function StatsView({
         slot.y = y;
       } else {
         const rawWidth = clamp(originW + dx, 2, GRID_COLUMNS - originX);
-        // The page exposes three widths; snap a resize to the nearest one so
-        // the stored w and span never disagree.
         const snapped = rawWidth >= 10 ? 12 : rawWidth >= 5 ? 6 : 4;
         const w = Math.min(snapped, GRID_COLUMNS - originX);
         const h = clamp(originH + dy, 2, 24);
@@ -2239,8 +2184,6 @@ export function StatsView({
         base: structuredClone(current),
         moved: false,
       };
-      // An explicit lock is more reliable than racing the pager's own
-      // direction decision, especially for a hold that starts before a move.
       root.setAttribute("data-pager-lock", kind);
       window.addEventListener("pointermove", moveGesture, true);
       window.addEventListener("pointerup", endGesture, true);
@@ -2253,9 +2196,7 @@ export function StatsView({
       };
       try {
         captureTarget.setPointerCapture(event.pointerId);
-      } catch {
-        // Synthetic pointer events do not own a capturable pointer.
-      }
+      } catch {}
       return true;
     };
 
@@ -2281,8 +2222,6 @@ export function StatsView({
       if (target.closest(DRAG_BLOCKERS) !== null) return;
       if (gesture !== null) return;
       cancelHold();
-      // Let the pager see the same pointerdown: a plain swipe over the card
-      // body must still page. The hold only takes over once it is armed.
       const armed = {
         timer: 0,
         pointerId: event.pointerId,
@@ -2332,11 +2271,6 @@ export function StatsView({
     };
   }, [commitLayout, desktop]);
 
-  // RGL's drag and resize listeners use mouse/touch events, while the browser
-  // suite (and a pointer-native page) speaks PointerEvents. For synthetic
-  // pointers bridge the gesture to RGL; real mouse/touch already emits the
-  // native events RGL listens for. The body hold remains: it starts a grip drag
-  // so a short tap or swipe still belongs to the card and the pager.
   useEffect(() => {
     if (!desktop) return;
     const root = pageRef.current;
@@ -2411,9 +2345,6 @@ export function StatsView({
           removeBridgeListeners = null;
         };
       }
-      // RGL starts the gesture from a React mousedown handler. A synthetic
-      // pointer sequence can send moves in the same task, so commit the start
-      // state before those moves arrive.
       flushSync(() => fireMouse("mousedown", target, event));
     };
 
@@ -2426,9 +2357,6 @@ export function StatsView({
       const resizeHandle = target.closest<HTMLElement>(".dashboard-resize-handle");
       if (resizeHandle !== null) {
         detachHold();
-        // Trusted mouse/touch emits the mousedown/touchstart RGL listens for;
-        // only synthetic pointer sequences need the bridge. Cancelling the
-        // trusted pointerdown would suppress those native compatibility events.
         if (!event.isTrusted) {
           event.preventDefault();
           event.stopPropagation();
@@ -2448,8 +2376,6 @@ export function StatsView({
       }
       if (target.closest(DRAG_BLOCKERS) !== null) return;
       detachHold();
-      // Let the pager see this pointerdown: a swipe on the card body still
-      // pages. The hold only takes over once it is armed.
       const armed = {
         timer: 0,
         pointerId: event.pointerId,
@@ -2487,8 +2413,6 @@ export function StatsView({
         removeHoldListeners = null;
         const handle = armed.card.querySelector<HTMLElement>(DRAG_HANDLE);
         if (handle === null) return;
-        // A trusted mouse already emits mousemove; everything else needs the
-        // pointer sequence forwarded so the same hold works on touch.
         startBridge(
           armed.event,
           handle,
