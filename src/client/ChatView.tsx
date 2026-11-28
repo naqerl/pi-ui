@@ -1,4 +1,5 @@
 import {
+  createContext,
   Fragment,
   lazy,
   memo,
@@ -7,6 +8,7 @@ import {
   type RefObject,
   Suspense,
   useCallback,
+  useContext,
   useEffect,
   useId,
   useLayoutEffect,
@@ -14,6 +16,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import type { BuiltinJob } from "../shared/dashboard";
 import type { MemoryPathMatch, MemoryReadRange, MemoryToolDetails } from "../shared/memory";
 import { pageIdFromPath, taskDeepLinkFromLocation } from "../shared/pages";
@@ -42,6 +45,7 @@ import {
   type BackgroundJobsKind,
   BackgroundJobsSheet,
 } from "./BackgroundJobs";
+import { type ChatReply, composeReplyText, replyExcerpt, splitLeadingQuote } from "./chat-reply";
 import { ComposerPalette } from "./ComposerPalette";
 import { Button } from "./components/ui/button";
 import { Textarea } from "./components/ui/textarea";
@@ -52,6 +56,7 @@ import {
   matchCommands,
 } from "./composer-commands";
 import { readPlanTaskDraft, writePlanTaskDraft } from "./composer-preferences";
+import { copyText } from "./copy-text";
 import { DiagramPart } from "./DiagramPart";
 import { EmptyCaption } from "./EmptyCaption";
 import { haptic } from "./haptics";
@@ -62,6 +67,7 @@ import {
   ChevronUpIcon,
   CloseIcon,
   NoticeIcon,
+  ReplyIcon,
   SearchIcon,
 } from "./icons";
 import { DeferredMarkdown, loadMarkdown } from "./lazy-markdown";
@@ -90,6 +96,7 @@ import {
   type TimelineGroup,
 } from "./timeline-groups";
 import type { SendOutcome, TimelineItem } from "./use-chat";
+import { useMessageContextMenu } from "./use-context-menu";
 import { type DockPhase, useDockScan } from "./use-dock-scan";
 import { usePager } from "./use-pager";
 import { type PresenceState, usePresence, useReducedMotion } from "./use-presence";
@@ -98,6 +105,190 @@ import { type TaskCycleHint, useTaskCycle } from "./use-task-cycle";
 import { useWide } from "./use-wide";
 import { WorkingIndicator } from "./WorkingIndicator";
 import { workingWord } from "./working-state";
+
+interface ChatReplyStore {
+  replies: Record<string, ChatReply>;
+  setReply: (key: string, reply: ChatReply) => void;
+  clearReply: (key: string) => void;
+}
+
+const ChatReplyContext = createContext<ChatReplyStore | null>(null);
+
+/** One reply per chat surface, above the pager so a page switch leaves it in place. */
+export function ChatReplyProvider({ children }: { children: ReactNode }) {
+  const [replies, setReplies] = useState<Record<string, ChatReply>>({});
+  const setReply = useCallback((key: string, reply: ChatReply) => {
+    setReplies((current) => ({ ...current, [key]: reply }));
+  }, []);
+  const clearReply = useCallback((key: string) => {
+    setReplies((current) => {
+      if (current[key] === undefined) return current;
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+  }, []);
+  const value = useMemo(
+    () => ({ replies, setReply, clearReply }),
+    [replies, setReply, clearReply],
+  );
+  return <ChatReplyContext.Provider value={value}>{children}</ChatReplyContext.Provider>;
+}
+
+/** The reply held for one surface; a null key has no reply and no way to set one. */
+export function useChatReply(key: string | null) {
+  const store = useContext(ChatReplyContext);
+  const reply = key === null ? null : (store?.replies[key] ?? null);
+  const setReply = useCallback(
+    (entry: ChatReply) => {
+      if (key !== null) store?.setReply(key, entry);
+    },
+    [key, store],
+  );
+  const clearReply = useCallback(() => {
+    if (key !== null) store?.clearReply(key);
+  }, [key, store]);
+  return { reply, setReply, clearReply };
+}
+
+interface MessageActionsMenuProps {
+  point: { x: number; y: number };
+  message: ChatMessage;
+  surfaceKey: string;
+  onClose: () => void;
+}
+
+/** A small portal popover; the action list is the extension point for a future Delete item. */
+function MessageActionsMenu({ point, message, surfaceKey, onClose }: MessageActionsMenuProps) {
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const firstRef = useRef<HTMLButtonElement | null>(null);
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const { setReply } = useChatReply(surfaceKey);
+
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (menu === null) return;
+    const box = menu.getBoundingClientRect();
+    const viewport = window.visualViewport;
+    const edge = 8;
+    const offsetLeft = viewport?.offsetLeft ?? 0;
+    const offsetTop = viewport?.offsetTop ?? 0;
+    const width = viewport?.width ?? window.innerWidth;
+    const height = viewport?.height ?? window.innerHeight;
+    setPosition({
+      left: Math.max(offsetLeft + edge, Math.min(point.x, offsetLeft + width - box.width - edge)),
+      top: Math.max(offsetTop + edge, Math.min(point.y, offsetTop + height - box.height - edge)),
+    });
+  }, [point]);
+
+  useEffect(() => {
+    firstRef.current?.focus({ preventScroll: true });
+  }, []);
+
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      const menu = menuRef.current;
+      if (menu !== null && event.target instanceof Node && menu.contains(event.target)) return;
+      onClose();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("scroll", onClose, true);
+    window.addEventListener("resize", onClose);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("scroll", onClose, true);
+      window.removeEventListener("resize", onClose);
+    };
+  }, [onClose]);
+
+  useEffect(() => {
+    if (copyState === "idle") return;
+    const timer = window.setTimeout(onClose, 1200);
+    return () => window.clearTimeout(timer);
+  }, [copyState, onClose]);
+
+  const actions = [
+    {
+      id: "reply",
+      label: "Reply",
+      testId: "message-menu-reply",
+      run: () => {
+        setReply({
+          messageId: message.id,
+          text: message.text,
+          excerpt: replyExcerpt(message.text),
+        });
+        onClose();
+      },
+    },
+    {
+      id: "copy",
+      label: copyState === "idle" ? "Copy" : copyState === "copied" ? "Copied" : "Copy failed",
+      testId: "message-menu-copy",
+      run: () => {
+        void copyText(message.text).then((ok) => setCopyState(ok ? "copied" : "failed"));
+      },
+    },
+  ];
+
+  return createPortal(
+    <div
+      ref={menuRef}
+      role="menu"
+      data-testid="message-menu"
+      aria-label="Message actions"
+      onContextMenu={(event) => event.preventDefault()}
+      style={{
+        left: position?.left ?? point.x,
+        top: position?.top ?? point.y,
+        visibility: position === null ? "hidden" : undefined,
+      }}
+      className="fixed z-50 flex w-40 flex-col gap-xs rounded-md border border-border bg-surface p-sm text-foreground shadow-lg backdrop-blur-md"
+    >
+      {actions.map((action, index) => (
+        <button
+          key={action.id}
+          ref={index === 0 ? firstRef : undefined}
+          type="button"
+          role="menuitem"
+          data-testid={action.testId}
+          className="w-full rounded-sm px-lg py-md text-left font-mono text-[11px] leading-4 text-foreground hover:bg-foreground/5 focus-visible:bg-foreground/5 focus-visible:outline-none"
+          onClick={action.run}
+        >
+          {action.label}
+        </button>
+      ))}
+    </div>,
+    document.body,
+  );
+}
+
+/** A user message: leading `>` lines paint as a quote block above the body. */
+function UserMessageText({ text }: { text: string }) {
+  const quoted = splitLeadingQuote(text);
+  if (quoted === null) {
+    return <div className="whitespace-pre-wrap [overflow-wrap:anywhere]">{text}</div>;
+  }
+  return (
+    <div className="flex flex-col gap-md">
+      <blockquote
+        data-testid="message-quote"
+        className="whitespace-pre-wrap border-l-2 border-foreground/30 pl-xl text-muted-foreground [overflow-wrap:anywhere]"
+      >
+        {quoted.quote}
+      </blockquote>
+      {quoted.body.length > 0 && (
+        <div className="whitespace-pre-wrap [overflow-wrap:anywhere]">{quoted.body}</div>
+      )}
+    </div>
+  );
+}
 
 interface ChatViewProps {
   timeline: TimelineItem[];
@@ -435,10 +626,13 @@ export function MessageBubble({
   message,
   onSteer,
   onCancelQueued,
+  surfaceKey = "main",
 }: {
   message: ChatMessage;
   onSteer?: (text: string) => void;
   onCancelQueued?: (id: string) => unknown;
+  /** The composer surface a Reply from this bubble belongs to. */
+  surfaceKey?: string;
 }) {
   if (message.kind === "session-reset") {
     return (
@@ -489,16 +683,40 @@ export function MessageBubble({
     );
   }
 
+  return (
+    <TextMessageBubble
+      message={message}
+      surfaceKey={surfaceKey}
+      {...(onCancelQueued === undefined ? {} : { onCancelQueued })}
+    />
+  );
+}
+
+function TextMessageBubble({
+  message,
+  onCancelQueued,
+  surfaceKey,
+}: {
+  message: ChatMessage;
+  onCancelQueued?: (id: string) => unknown;
+  surfaceKey: string;
+}) {
+  const menu = useMessageContextMenu();
   const mine = message.role === "user";
   const framed = mine || message.isError === true || message.partial === true;
   return (
     <div
+      {...menu.handlers}
       data-message-id={message.id}
       data-role={message.role}
+      data-message-row=""
+      data-press-armed={menu.armed ? "true" : undefined}
       data-pending-steer={message.pendingSteer ? "true" : undefined}
       data-pending-queue={message.pendingQueue ? "true" : undefined}
       data-pending-send={message.pendingSend ? "true" : undefined}
       data-steer-error={message.steerError === undefined ? undefined : "true"}
+      tabIndex={0}
+      style={{ WebkitTouchCallout: "none" }}
       className={cn(
         "theme-radius isolate w-fit min-w-0 max-w-[85%] bg-surface px-xl py-lg text-sm leading-relaxed [overflow-wrap:anywhere]",
         mine ? "ml-auto" : "mr-auto",
@@ -509,6 +727,7 @@ export function MessageBubble({
         message.isError && "border-destructive text-destructive",
         message.partial && "border-dashed",
         message.partial && !message.isError && "border-muted-foreground/70",
+        menu.armed && "bg-muted",
       )}
     >
       {message.pendingQueue && (
@@ -569,12 +788,18 @@ export function MessageBubble({
         </div>
       )}
       {mine
-        ? message.text.length > 0 && (
-            <div className="whitespace-pre-wrap [overflow-wrap:anywhere]">{message.text}</div>
-          )
+        ? message.text.length > 0 && <UserMessageText text={message.text} />
         : message.text.length > 0 && <AssistantReply message={message} />}
       <MessageParts parts={message.parts} />
       <MessageTime timestamp={message.timestamp} />
+      {menu.menu !== null && (
+        <MessageActionsMenu
+          point={menu.menu}
+          message={message}
+          surfaceKey={surfaceKey}
+          onClose={menu.close}
+        />
+      )}
     </div>
   );
 }
@@ -1277,6 +1502,7 @@ export function Composer({
   fullscreen = false,
   onExitFullscreen,
   runControls = true,
+  replyKey = null,
 }: {
   tasksPage: boolean;
   /** When set, @project suggestions work even if this is not the create-task composer. */
@@ -1319,6 +1545,8 @@ export function Composer({
   onExitFullscreen?: () => void;
   /** Stop/steer need a transport that can interrupt; bots hide them rather than no-op. */
   runControls?: boolean;
+  /** The surface whose reply bar sits above this composer's textarea. */
+  replyKey?: string | null;
   /** A successful Retry consumes the exact draft that was restored for its failed row. */
   clearDraft?: {
     key: string;
@@ -1327,6 +1555,7 @@ export function Composer({
     request: number;
   } | null;
 }) {
+  const reply = useChatReply(replyKey);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const key = draftKey ?? "default";
   const value = drafts[key] ?? "";
@@ -1572,6 +1801,8 @@ export function Composer({
     if (!canSend) return;
     const element = textareaRef.current;
     const text = value;
+    const held = reply.reply;
+    const outgoing = held === null ? text : composeReplyText(held.excerpt, text);
     const ids = readyIds;
     const sentKeys = attachments.items.map((item) => item.key);
     const parsed = tasksPage ? parseProjectToken(text, projects) : null;
@@ -1598,7 +1829,7 @@ export function Composer({
         { key, text },
       );
     } else {
-      sent = await send(text, mode, ids);
+      sent = await send(outgoing, mode, ids);
     }
     if (!sent) {
       // A draft typed while the request was pending wins over the rejected text.
@@ -1614,6 +1845,7 @@ export function Composer({
       return;
     }
     haptic();
+    reply.clearReply();
     if (backlog) setBacklog(false);
   };
 
@@ -1679,6 +1911,28 @@ export function Composer({
           onHover={setActiveIndex}
           onAccept={(item) => accept(item.name)}
         />
+      )}
+      {reply.reply !== null && (
+        <div
+          data-testid="composer-reply"
+          className="flex items-center gap-lg border-b border-border/70 px-xl py-sm"
+        >
+          <ReplyIcon size={14} className="shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-4 text-muted-foreground">
+            {reply.reply.excerpt}
+          </span>
+          <button
+            type="button"
+            aria-label="Cancel reply"
+            data-testid="composer-reply-cancel"
+            className="grid size-5 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+            onClick={() => {
+              reply.clearReply();
+            }}
+          >
+            <CloseIcon size={12} />
+          </button>
+        </div>
       )}
       {shownError !== null && (
         <p
@@ -1993,6 +2247,7 @@ export function TranscriptRows({
   onSteer,
   onCancelQueued,
   onOpen,
+  surfaceKey = "main",
 }: {
   groups: TimelineGroup[];
   timeline: TimelineItem[];
@@ -2000,6 +2255,7 @@ export function TranscriptRows({
   onSteer?: (text: string) => void;
   onCancelQueued?: (id: string) => unknown;
   onOpen?: (run: string, trigger: HTMLButtonElement) => void;
+  surfaceKey?: string;
 }) {
   const liveKey = useMemo(
     () => liveActivityGroupKey(timeline, groups, running),
@@ -2013,6 +2269,7 @@ export function TranscriptRows({
             <MemoMessageBubble
               key={group.key}
               message={group.message}
+              surfaceKey={surfaceKey}
               {...(onSteer === undefined ? {} : { onSteer })}
               {...(onCancelQueued === undefined ? {} : { onCancelQueued })}
             />
@@ -2773,6 +3030,7 @@ export function ChatView({
                     onSteer={steerNotice}
                     onCancelQueued={cancelQueued}
                     onOpen={openActivity}
+                    surfaceKey="main"
                   />
                 </div>
               </main>
@@ -2951,6 +3209,15 @@ export function ChatView({
                   commands={commands}
                   fullscreen={fullscreen}
                   onExitFullscreen={() => setFullscreen(false)}
+                  replyKey={
+                    wantTaskDock
+                      ? taskDock !== null
+                        ? `task:${taskDock.taskId}`
+                        : null
+                      : tasksPage
+                        ? null
+                        : "main"
+                  }
                 />
               </div>
             </div>
@@ -2982,14 +3249,16 @@ export function ChatView({
   );
 
   return (
-    <TaskLinkProvider tasks={shownTasks} openTask={openTaskFromChat}>
-      <TaskDockComposerProvider
-        onSession={setTaskDock}
-        onStatus={setTaskSurfaceStatus}
-        onRunError={setTaskRunError}
-      >
-        {content}
-      </TaskDockComposerProvider>
-    </TaskLinkProvider>
+    <ChatReplyProvider>
+      <TaskLinkProvider tasks={shownTasks} openTask={openTaskFromChat}>
+        <TaskDockComposerProvider
+          onSession={setTaskDock}
+          onStatus={setTaskSurfaceStatus}
+          onRunError={setTaskRunError}
+        >
+          {content}
+        </TaskDockComposerProvider>
+      </TaskLinkProvider>
+    </ChatReplyProvider>
   );
 }

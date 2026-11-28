@@ -153,6 +153,15 @@ export function ArrowDownIcon(props: IconProps) {
   );
 }
 
+export function ReplyIcon(props: IconProps) {
+  return (
+    <Icon name="reply" {...props}>
+      <path d="M9 7 4 12l5 5" />
+      <path d="M4 12h9a7 7 0 0 1 7 7v1" />
+    </Icon>
+  );
+}
+
 export function RefreshIcon(props: IconProps) {
   return (
     <Icon name="refresh" {...props}>
