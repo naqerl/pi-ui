@@ -13,6 +13,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import type { Task } from "../shared/types";
+import { copyText } from "./copy-text";
 import { taskForCode, useTaskLink } from "./task-link";
 
 const MarkdownDiagram = lazy(() =>
@@ -280,32 +281,6 @@ function listItem(item: Tokens.ListItem, key: string): ReactNode {
       )}
     </>
   );
-}
-
-async function copyText(text: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard !== undefined && window.isSecureContext) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch {
-    // Fall back to a selection copy below; plain-http hosts have no clipboard API.
-  }
-  const field = document.createElement("textarea");
-  field.value = text;
-  field.setAttribute("readonly", "");
-  field.style.position = "fixed";
-  field.style.opacity = "0";
-  document.body.append(field);
-  field.select();
-  let copied = false;
-  try {
-    copied = document.execCommand("copy");
-  } catch {
-    copied = false;
-  }
-  field.remove();
-  return copied;
 }
 
 const hoverCapableQuery = "(hover: hover) and (pointer: fine)";

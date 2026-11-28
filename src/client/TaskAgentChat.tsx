@@ -195,6 +195,7 @@ export function TaskAgentChat({
       inputLabel="Task message"
       placeholder={placeholderIdle}
       commands={commands}
+      replyKey={`task:${task.id}`}
     />
   );
 
@@ -230,6 +231,7 @@ export function TaskAgentChat({
               running={chat.running && !chat.quiet}
               onCancelQueued={chat.cancelQueued}
               onOpen={openActivity}
+              surfaceKey={`task:${task.id}`}
             />
           )}
         </div>

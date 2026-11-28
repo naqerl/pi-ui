@@ -155,6 +155,7 @@ export function BotChat({
                 running={chat.running}
                 onCancelQueued={chat.cancelQueued}
                 onOpen={openActivity}
+                surfaceKey={`bot:${botId}`}
               />
             )}
           </div>
@@ -179,6 +180,7 @@ export function BotChat({
             inputLabel={`Message ${name}`}
             placeholder={`Message ${name}…`}
             draftKey={`bot:${botId}`}
+            replyKey={`bot:${botId}`}
           />
         </div>
       </div>
