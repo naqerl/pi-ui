@@ -702,6 +702,7 @@ function TextMessageBubble({
   const mine = message.role === "user";
   const framed = mine || message.isError === true || message.partial === true;
   return (
+    // biome-ignore lint/a11y/useSemanticElements: a message row is the context-menu target and its text must stay selectable.
     <div
       {...menu.handlers}
       data-message-id={message.id}
@@ -712,7 +713,7 @@ function TextMessageBubble({
       data-pending-queue={message.pendingQueue ? "true" : undefined}
       data-pending-send={message.pendingSend ? "true" : undefined}
       data-steer-error={message.steerError === undefined ? undefined : "true"}
-      role="group"
+      role="button"
       tabIndex={0}
       aria-label={`Message from the ${message.role}, menu with Shift+F10`}
       style={{ WebkitTouchCallout: "none" }}
