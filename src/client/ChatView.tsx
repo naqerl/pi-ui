@@ -45,8 +45,8 @@ import {
   type BackgroundJobsKind,
   BackgroundJobsSheet,
 } from "./BackgroundJobs";
-import { type ChatReply, composeReplyText, replyExcerpt, splitLeadingQuote } from "./chat-reply";
 import { ComposerPalette } from "./ComposerPalette";
+import { type ChatReply, composeReplyText, replyExcerpt, splitLeadingQuote } from "./chat-reply";
 import { Button } from "./components/ui/button";
 import { Textarea } from "./components/ui/textarea";
 import {
@@ -128,10 +128,7 @@ export function ChatReplyProvider({ children }: { children: ReactNode }) {
       return next;
     });
   }, []);
-  const value = useMemo(
-    () => ({ replies, setReply, clearReply }),
-    [replies, setReply, clearReply],
-  );
+  const value = useMemo(() => ({ replies, setReply, clearReply }), [replies, setReply, clearReply]);
   return <ChatReplyContext.Provider value={value}>{children}</ChatReplyContext.Provider>;
 }
 
@@ -715,7 +712,9 @@ function TextMessageBubble({
       data-pending-queue={message.pendingQueue ? "true" : undefined}
       data-pending-send={message.pendingSend ? "true" : undefined}
       data-steer-error={message.steerError === undefined ? undefined : "true"}
+      role="group"
       tabIndex={0}
+      aria-label={`Message from the ${message.role}, menu with Shift+F10`}
       style={{ WebkitTouchCallout: "none" }}
       className={cn(
         "theme-radius isolate w-fit min-w-0 max-w-[85%] bg-surface px-xl py-lg text-sm leading-relaxed [overflow-wrap:anywhere]",
